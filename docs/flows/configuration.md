@@ -91,7 +91,7 @@ gateway that boots half-configured is worse than one that does not boot.
 | `livemode` ⇒ every host is `https://` | |
 | `livemode` ⇒ no host labelled `wiremock`/`stub`/`mock`/`localhost` | **The most valuable rule here.** It is what makes "the code cannot tell a stub from a real rail" safe to live with |
 | `livemode` ⇒ secrets come from `${}`, not literals | Stops a real key reaching git |
-| `partial-refunds` ⇒ `refunds` | Enforced in Rust today, **not** by a database constraint — see below |
+| `partial-refunds` ⇒ `refunds` | Enforced both in Rust and by a database CHECK constraint — see below |
 
 The three `livemode` rules — `https`-only, no stub-labelled host, and
 `${}`-only secrets — are implemented and tested in `vpay-config`
@@ -99,21 +99,39 @@ The three `livemode` rules — `https`-only, no stub-labelled host, and
 not a `vpay-config` boot guard at all**, despite living in this table; see the
 correction below for where it actually lives.
 
-**Correction:** this row previously said the rule "mirrors the DB CHECK." That
-was false on two counts. First, there is no database schema in this repo yet,
-and even once `schemas/vpay.cstack` is wired in, CrateStack's grammar has no
-way to express it as a constraint: `@db_enforce` only promotes a single-field
-`@range`/`@length`/`@iso4217` validator to a column-level CHECK, and there is
-no `@@check(expr)` or other cross-column boolean constraint (see the `GAP`
-comment on `Provider` in `schemas/vpay.cstack`). Second, this rule is not a
-boot-time config guard at all — it is enforced by types, not deployment
-config: `Capabilities::is_coherent` in
-`backends/crates/vpay-provider/src/lib.rs` requires
-`supports_partial_refunds ⇒ supports_refunds` on every adapter's static
-capability declaration, tested by
-`vpay-provider::tests::partial_refunds_imply_refunds` and by the conformance
-suite's `every_adapter_declares_coherent_capabilities`. It has nothing to do
-with `vpay-config` or a deployment's YAML.
+**Correction of the correction:** an earlier pass through this doc said the
+rule "mirrors the DB CHECK" was false, because at the time there was no
+database schema in this repo and `schemas/vpay.cstack`'s CrateStack grammar
+has no way to express a cross-column constraint (`@db_enforce` only promotes
+a single-field `@range`/`@length`/`@iso4217` validator to a column-level
+CHECK; there is no `@@check(expr)`; see the `GAP` comment on `Provider` in
+`schemas/vpay.cstack`). That was true of the `.cstack` grammar specifically,
+but the database schema has since been implemented in raw SQL, which has no
+such limitation. `backends/migrations/0002_create-providers.sql:37-38` now
+declares `CONSTRAINT partial_refunds_imply_refunds CHECK (NOT
+supports_partial_refunds OR supports_refunds)` on the `providers` table,
+proven to fire by
+`partial_refunds_without_refunds_is_rejected_by_the_database` in
+`backends/tests/integration/tests/postgres_smoke.rs` (against a real
+Postgres 16 via testcontainers). So the original "mirrors the DB CHECK"
+framing was right after all — it just could not have been built through
+`schemas/vpay.cstack`.
+
+What has not changed: this is still not a `vpay-config` boot-time guard. It
+is enforced twice, independently — belt and braces, not one mechanism
+standing in for the other:
+
+- **In Rust**, on every adapter's static capability declaration:
+  `Capabilities::is_coherent` in
+  `backends/crates/vpay-provider/src/lib.rs` requires
+  `supports_partial_refunds ⇒ supports_refunds`, tested by
+  `vpay-provider::tests::partial_refunds_imply_refunds` and by the
+  conformance suite's `every_adapter_declares_coherent_capabilities`.
+- **In the database**, on the `providers` table itself, as above.
+
+Neither has anything to do with `vpay-config` or a deployment's YAML — there
+is still no YAML-loading or reconciliation code in this repo (see the boot
+sequence section above).
 
 ## Config changes and in-flight payments
 
@@ -130,7 +148,10 @@ means recovery asks the wrong server and gets `NotFound` forever.
 The CLI/env layer (`vpay-config::cli`) is implemented and tested — flag
 parsing, env-var resolution, flag-beats-env precedence, and shared options
 between binaries. The config guard rules (stub-host detection, literal
-secrets, `partial-refunds ⇒ refunds`) are implemented and tested in Rust.
+secrets, `partial-refunds ⇒ refunds`) are implemented and tested in Rust;
+`partial-refunds ⇒ refunds` is additionally enforced by a database CHECK
+constraint (`backends/migrations/0002_create-providers.sql`), tested against
+a real Postgres — see the correction above.
 
 `--shutdown-grace-seconds` bounds `vpay-server`'s shutdown drain; it is
 accepted but inert on `vpay-worker-bin`.

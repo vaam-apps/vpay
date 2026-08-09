@@ -26,7 +26,13 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
-    /// Invariant mirrored by a CHECK constraint in the schema.
+    /// Invariant mirrored by a CHECK constraint in the schema: see
+    /// `partial_refunds_imply_refunds` in
+    /// `backends/migrations/0002_create-providers.sql`, proven to fire by
+    /// `partial_refunds_without_refunds_is_rejected_by_the_database` in
+    /// `backends/tests/integration/tests/postgres_smoke.rs`. This Rust check
+    /// runs independently — belt and braces, not a substitute for the DB
+    /// constraint or vice versa.
     #[must_use]
     pub const fn is_coherent(&self) -> bool {
         !self.supports_partial_refunds || self.supports_refunds

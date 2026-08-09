@@ -19,3 +19,22 @@ vpay-adapter-orange-money.workspace = true
 vpay-testkit.workspace = true
 tokio.workspace = true
 rstest.workspace = true
+sqlx.workspace = true
+testcontainers.workspace = true
+testcontainers-modules.workspace = true
+uuid.workspace = true
+time.workspace = true
+anyhow.workspace = true
+# Dev-only, for the acceptance test that proves `backends/migrations/0006_*`
+# (transcribed from this crate's own hardcoded SqlxOpStore DDL) is genuinely
+# compatible with SqlxOpStore<Postgres> — see
+# tests/authkestra_op_smoke.rs. `sqlx-postgres` is not part of the workspace's
+# own feature set for this crate (root Cargo.toml keeps it a dependency spike
+# with no sqlx feature enabled) because no *shipping* binary uses it yet; this
+# is exactly the kind of extra feature a dev-dependency is allowed to add on
+# top of the shared workspace declaration.
+authkestra-op = { workspace = true, features = ["sqlx-postgres"] }
+# For authkestra_engine::auth::state::Identity, the type AuthorizationCode /
+# RefreshToken embed — needed to construct one in the acceptance test.
+authkestra-engine.workspace = true
+chrono.workspace = true
