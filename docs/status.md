@@ -7,10 +7,28 @@ It is machine-checked. `cargo xtask verify-status` scans the workspace for every
 `ProviderError::NotImplemented("…")` token and fails the build if one is missing
 from this file. You cannot quietly ship an unimplemented path.
 
-Last verified: 2026-08-09, `cargo nextest run --workspace` (61 passed, 5
+Last verified: 2026-08-09, `cargo nextest run --workspace` (78 passed, 3
 skipped), `pnpm -r test` (10 assertions), `cargo xtask verify-status`, `cargo
 deny check`, and `just verify`, all run against the working tree of the
-stabilization pass described below.
+stabilization pass described below. The Rust count moved from 64 passed / 5
+skipped to 71 passed / 3 skipped in the prior pass (database schema and
+migrations 0001–0005), and from 71 to **78 passed / 3 skipped in this pass**:
+three more migrations landed (`0006_create-authkestra-op-tables.sql`,
+`0007_create-oauth-signing-keys.sql`, `0008_create-merchant-api-keys.sql` —
+see the "Authkestra OP tables", "OAuth signing keys" and "Merchant API keys"
+rows below), adding six new
+per-constraint tests to `backends/tests/integration/tests/postgres_smoke.rs`
+plus one new test file, `backends/tests/integration/tests/authkestra_op_smoke.rs`,
+whose single test,
+`sqlx_op_store_round_trips_a_client_and_enforces_single_use_codes`, drives the
+real `authkestra_op::sqlx_store::SqlxOpStore<Postgres>` against migration
+0006: it inserts a client, calls `find_client` (proving the JSONB columns
+decode through the store's own type), `store_code`, then `consume_code`
+twice and asserts the second call returns `None` — the store's single-use
+enforcement actually firing against this schema, not merely SQL that parses.
+The remaining 3 skipped are unrelated: the adapter conformance suite's
+`#[ignore]`d cases in `backends/tests/conformance/tests/adapter_conformance.rs`,
+gated on rail wire calls that are still `ProviderError::NotImplemented`.
 
 ---
 
@@ -51,7 +69,11 @@ Nothing in this repo is ✅ unless a test would fail if it broke.
 | `--shutdown-grace-seconds` bounded drain | 🟡 | On `vpay-server` this is now wired in: `serve_with_bounded_drain` in `backends/apps/vpay-server/src/main.rs` races the axum drain against a `shutdown_grace_seconds`-long clock and exits non-zero if the clock wins, logging that in-flight work was cut off. **No test exercises the timeout path itself** — the existing SIGTERM tests never have in-flight work to drain, so they would pass identically with the grace clock deleted; nothing here proves the bound actually holds under load. On `vpay-worker-bin` the flag is accepted and logged ("has no effect yet") but genuinely does nothing — there is no drain to bound because there is no job loop |
 | Poll ladder | 🟡 | `poll_delay` done + 3 tests. **Job loop not started** |
 | HTTP surface | 🟡 | Only `/healthz` and the Stripe-shaped 404. **No `/v1/*` route exists** |
-| Database schema / migrations | ⛔ | Designed in the design doc; no SQL in this repo yet |
+| Database schema / migrations (core) | ✅ | Five migrations exist in `backends/migrations/` (`0001_create-currencies.sql` … `0005_create-ledger.sql`), applied via `sqlx::migrate!` to a real `postgres:16-alpine` (testcontainers) and asserted against in `backends/tests/integration/tests/postgres_smoke.rs`: a clean migration run on an empty database, the `one_charge_per_intent` unique index, two cross-column `CHECK` constraints firing (`partial_refunds_imply_refunds` on `providers`, `no_over_refund` on `payment_intents`), a plain `amount >= 0` check, an FK violation, and an out-of-range currency exponent. Marked ✅ and not 🟡 because the claim this row makes — "the schema and migrations exist, apply cleanly, and their constraints actually fire" — is fully implemented and tested; a broken migration or a dead constraint would fail a real test. **This is narrower than "the database works."** Nothing in the application consumes this schema yet: there is no connection pool, no query/repository layer, and `--database-url` is still accepted-but-unused CLI/env plumbing (see the row above). `vpay-server` still only serves `/healthz` — no route reads or writes a row. That gap is tracked by the rows around it (CLI/env configuration, HTTP surface, dashboard auth below), not by this one, the same way "Provider port trait" being ✅ above does not imply the adapters' wire calls work |
+| Authkestra OP tables (`0006_create-authkestra-op-tables.sql`) | ✅ | `CREATE SCHEMA authkestra` plus `oauth_clients`, `oauth_codes`, `oauth_refresh_tokens`, `oauth_device_codes` — a byte-faithful transcription of the `CREATE TABLE` string literal hardcoded inside `authkestra-op` `=0.3.4`'s own `SqlxOpStore::migrate()` (not a vpay design; table/column names and types are not configurable — see the migration's header comment). Proven compatible, not just transcribed correctly by eye: `backends/tests/integration/tests/authkestra_op_smoke.rs`'s `sqlx_op_store_round_trips_a_client_and_enforces_single_use_codes` drives the real `SqlxOpStore<Postgres>` against this schema end to end — inserts a client, `find_client` (JSONB columns decode through the store's own type), `store_code`, `consume_code`, and asserts a second `consume_code` of the same code returns `None`, proving the crate's single-use `UPDATE … WHERE used = FALSE` actually fires here. A second test in `postgres_smoke.rs` proves the `oauth_codes → oauth_clients` FK fires. `oauth_device_codes` is created even though vpay's login flow (PKCE only) never uses the device grant, because `SqlxOpStore` implements `DeviceCodeStore` unconditionally. **Marked ✅ for what this row claims — the DDL exists, matches the pinned crate, and is proven compatible against a real store — not for dashboard auth working.** No shipping binary uses any of this: `authkestra-op`/`authkestra-engine` are dev-dependencies of `vpay-tests-integration` only (`backends/tests/integration/Cargo.toml`); `vpay-server` and `vpay-worker-bin` depend on neither. See "Dashboard auth" below. **Coupling risk:** this migration is pinned to `authkestra-op = "=0.3.4"` (root `Cargo.toml`) and must move in lockstep with it — the crate hand-builds SQL against these exact table/column names as string literals, so nothing type-checks a mismatch. Any future version bump of `authkestra-op` requires re-reading `sqlx_store.rs`'s `migrate()` block at the new version and re-diffing against this file before assuming compatibility still holds; the migration's own header comment says the same and this is not to be treated as a routine dependency bump |
+| OAuth signing keys (`0007_create-oauth-signing-keys.sql`) | 🟡 | vpay-owned table (authkestra ships no signing-key type, store, or rotation logic at any published version — confirmed by grepping `authkestra-op-0.3.4` and `authkestra-engine-0.3.4` source for `struct SigningKey`, `trait KeyStore` and `fn rotate`, with no hits). Partial unique index `one_active_signing_key` (at most one active key), `active_key_has_no_expiry`, and `expiry_after_creation` are each proven to fire by a dedicated test in `postgres_smoke.rs`. **Marked 🟡, not ✅: the private key PEM is stored in plaintext (`private_key_pem TEXT`) — encryption at rest is not implemented anywhere in this repository.** Anyone who can `SELECT` the column reads the live signing key outright; the column comment says this plainly. There is also no key-generation or rotation code at all — the table only proves its own constraints, not that a key will ever be written to it correctly |
+| Merchant API keys (`0008_create-merchant-api-keys.sql`) | 🟡 | The intended `/v1` credential store for Stripe-shaped `sk_live_`/`sk_test_` keys — deliberately not routed through Authkestra (no opaque-key primitive there; its `verify_secret()` is argon2, too slow for a hot path; `client_credentials` would break Stripe SDK drop-in compatibility). Unique SHA-256 `key_digest` (only the digest is ever stored — the plaintext key is unrecoverable after creation), `key_digest_is_sha256_hex` shape check, and `revoked_after_created` are each proven to fire by a dedicated test in `postgres_smoke.rs`. **Marked 🟡, not ✅: nothing generates, hashes, verifies, or revokes a key.** There is no `/v1` authentication middleware, no key-issuance endpoint, and no code anywhere that reads this table — it is schema only |
+| Dashboard auth (`/dash/v1` as an Authkestra OP) | ⛔ | Decision recorded in [ADR-0009](adr/0009-dashboard-oidc-provider.md), design in [docs/flows/dashboard-auth.md](flows/dashboard-auth.md). **Still no dashboard-auth code and no `/dash/v1` route.** `authkestra-op`/`authkestra-engine`/`authkestra-axum`/`authkestra-resource` now appear in the root `Cargo.toml` as pinned workspace dependency versions, and `authkestra-op`/`authkestra-engine` are real dev-dependencies of `vpay-tests-integration` (used only by `tests/authkestra_op_smoke.rs`, above) — but **no shipping binary depends on any of it**: `vpay-server` and `vpay-worker-bin` do not list `authkestra*` in their `Cargo.toml`s. The three new migrations (rows above) give this a real, tested schema, but a reader must not conclude login works from that — no login has ever been performed, no token has ever been issued by this code, and no key has ever been rotated. The actual blocker is unchanged from before this pass: there is still no connection pool and no query/repository layer anywhere in the workspace, so `authkestra_op::sqlx_store::SqlxOpStore` cannot be constructed by any binary that would serve traffic |
 | Webhooks (signing, outbox, delivery) | ⛔ | |
 | Idempotency | ⛔ | |
 | Reconciler | ⛔ | |
@@ -104,13 +126,13 @@ makes the core refuse a refund on that rail.
 
 | Area | Status | Notes |
 |---|---|---|
-| `compose.yml` (Postgres + 2 WireMock rails) | 🟡 | Written; **still not started in this sandbox — Docker unavailable**, unchanged by this pass |
+| `compose.yml` (Postgres + 2 WireMock rails) | 🟡 | Written; **still never started as a stack.** Docker itself works here — `backends/tests/integration` runs real `postgres:16-alpine` containers against it — but **Docker Hub is unreachable**, and `wiremock/wiremock:3.9.2` is not in the local image cache, so the two rail stubs cannot be pulled. Postgres is cached and does run |
 | `compose.e2e.yml` (full stack) | 🟡 | Revised this pass; **still never run** — see below |
 | `backends/Dockerfile` (musl → scratch) | 🟡 | Rewritten this pass; **still never built** — see below |
 | `frontends/Dockerfile` | 🟡 | Rewritten this pass; **still never built** — see below |
-| `deny.toml` | ✅ | `cargo deny check` now run and passes clean: `advisories ok, bans ok, licenses ok, sources ok`, with `ignore = []` (no advisory was suppressed). It failed before this pass; fixed by upgrading dependencies, not by adding exceptions — see below |
+| `deny.toml` | ✅ | `cargo deny check` passes clean: `advisories ok, bans ok, licenses ok, sources ok`. The three advisories that failed before were fixed by **upgrading dependencies, not by suppressing them** — see below. One advisory is explicitly ignored: **RUSTSEC-2023-0071** (Marvin Attack in `rsa`, no patched release, an unconditional dependency of `authkestra-engine` per [ADR-0009](adr/0009-dashboard-oidc-provider.md)), accepted deliberately with the reasoning recorded inline in `deny.toml`. **This entry was preemptive when added and now genuinely fires**: `authkestra-op`/`authkestra-engine` landed as dev-dependencies of `vpay-tests-integration` in this pass (see "Authkestra OP tables" above), and `cargo deny -L info check advisories` now reports `note[advisory-ignored]` against `rsa v0.9.10` via that path — independently re-run for this update, output confirmed. `cargo deny check` still passes with 0 errors because an `ignore`d advisory downgrades to a note, not a failure; the exposure itself is still narrower than "in production," since the only path to `rsa` is `vpay-tests-integration`'s dev-dependencies — no shipping binary pulls it in. Also bans `aws-lc-rs`/`aws-lc-sys` so a second rustls crypto provider cannot reappear |
 | GitHub Actions | 🟡 | Workflow written; **never executed** |
-| `schemas/*.cstack` | 🟡 | **Syntax now verified against real CrateStack 0.7.8**; content remains a design sketch, excluded from the build graph — see below |
+| `schemas/*.cstack` | 🟡 | **Syntax now verified against real CrateStack 0.7.8**; content remains a design sketch, excluded from the build graph — see below. **The migrations are now the authoritative schema, and this file has diverged from them on two constraints**: raw SQL in `backends/migrations/0002_create-providers.sql` and `0003_create-payment-intents.sql` expresses two `CHECK` constraints (`partial_refunds_imply_refunds`, `no_over_refund`) that CrateStack's grammar cannot — no `@@check(expr)` exists in this version. The `.cstack` file's own `GAP` comments on those two models now point at the migrations that implement them |
 
 ### Docker / compose — rewritten, still unverified
 
@@ -186,15 +208,27 @@ What this does and does not prove:
   queue, idempotency keys and `Merchant` — none of those has a backing Rust
   struct yet, and the file's own `GAP` comments say so rather than inventing a
   plausible shape.
-- **A previously-implied DB constraint does not exist in this grammar.** The
-  file's `GAP` comment on `Provider` explains that CrateStack's `@db_enforce`
-  only promotes a single-field `@range`/`@length`/`@iso4217` validator to a
-  column-level CHECK; there is no `@@check(expr)` or any other cross-column
-  boolean constraint. `supports_partial_refunds ⇒ supports_refunds` is
-  therefore enforced only in Rust today, by
-  `Capabilities::is_coherent` in `backends/crates/vpay-provider/src/lib.rs`
-  (tested by `vpay-provider::tests::partial_refunds_imply_refunds`) — see the
-  correction below and in `docs/flows/configuration.md`.
+- **Two constraints this grammar cannot express now exist in raw SQL, and the
+  migrations are the authoritative schema.** The file's `GAP` comments on
+  `Provider` and `PaymentIntent` explain that CrateStack's `@db_enforce` only
+  promotes a single-field `@range`/`@length`/`@iso4217` validator to a
+  column-level CHECK — there is no `@@check(expr)` or any other cross-column
+  boolean constraint, so `supports_partial_refunds ⇒ supports_refunds` and
+  the over-refund guard could never be expressed in this file. Raw SQL has no
+  such limitation: `backends/migrations/0002_create-providers.sql` and
+  `0003_create-payment-intents.sql` implement both as real `CHECK`
+  constraints, each proven to fire by a test in
+  `backends/tests/integration/tests/postgres_smoke.rs` against a real
+  Postgres. `Capabilities::is_coherent` in
+  `backends/crates/vpay-provider/src/lib.rs` (tested by
+  `vpay-provider::tests::partial_refunds_imply_refunds`) still enforces the
+  first of those in Rust too — belt and braces, not a replacement for the DB
+  constraint. **This file has diverged from what it mirrors**: it is still
+  syntax-verified against real CrateStack 0.7.8 and still excluded from the
+  build graph (below), but on these two constraints specifically it is now a
+  design sketch that the migrations have moved past, not the other way
+  around — see `docs/flows/configuration.md` and `docs/flows/ledger.md` for
+  the full corrections.
 - **A structural gap surfaced by the rewrite:** `LedgerEntry.account` mirrors
   `vpay_ledger::AccountKind`, which has exactly three variants
   (`MerchantPayable`, `PayerClearing`, `PlatformFeeRevenue`) with no
@@ -208,12 +242,32 @@ What this does and does not prove:
 
 ## What would have to be true to call this "an MVP"
 
-1. Database schema + migrations, with the `one_charge_per_intent` unique index.
+1. ~~Database schema + migrations, with the `one_charge_per_intent` unique
+   index.~~ **Done.** `backends/migrations/0004_create-charges.sql:73`
+   creates `one_charge_per_intent` as a plain unique index on
+   `charges (payment_intent_id)`, proven to reject a second charge by
+   `one_charge_per_intent_is_enforced_by_the_database` in
+   `backends/tests/integration/tests/postgres_smoke.rs`. This item is about
+   the schema existing and its constraints holding, not about the
+   application using it — see the "Database schema / migrations (core)" row
+   above for that distinction; the remaining items below are unaffected.
 2. Both adapters making real HTTP calls, passing the shared conformance suite
    with the `#[ignore]`s removed.
 3. The worker's job loop, poll ladder and reconciler, with crash tests.
 4. `/v1/payment_intents` create + confirm, form-encoded, with idempotency.
+   **The credential store this needs now exists as schema** (`merchant_api_keys`,
+   migration `0008` — see the row above), but nothing generates, hashes,
+   verifies, or checks a key against it yet; there is no `/v1` auth
+   middleware. Schema existing does not move this item to done.
 5. Signed webhooks with the two-step outbox.
 6. `just test-e2e` green against the compose stack.
+7. `/dash/v1` login working end to end against a real database — issuing an
+   access token, verifying it on a subsequent call, and rotating a signing
+   key at least once. The schema this needs now exists (migrations `0006` and
+   `0007`, rows above) and is proven compatible with `SqlxOpStore`, but
+   nothing in this repository has ever performed a login, issued a token, or
+   rotated a key — see "Dashboard auth" above. Not part of "does this take
+   payments," included here because it is the other place this pass's
+   migrations land, and the same "schema ≠ working feature" caution applies.
 
 Until every one of those is ✅, this README's own claim is: **it does not take payments.**

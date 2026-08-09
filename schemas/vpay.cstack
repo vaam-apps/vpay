@@ -132,12 +132,10 @@ model Provider {
 
   charges Charge[] @relation(fields: [code], references: [provider_code])
 
-  // GAP — no DB-level coherence CHECK. backends/crates/vpay-provider/src/lib.rs:28-34
-  // (Capabilities::is_coherent) enforces `supports_partial_refunds ⇒
-  // supports_refunds` in Rust, and its own doc comment says "mirrored by a
-  // CHECK constraint in the schema" — docs/flows/configuration.md repeats
-  // the same claim ("partial-refunds ⇒ refunds | Mirrors the DB CHECK").
-  // That claim cannot be honoured by this grammar version: @db_enforce
+  // GAP — no DB-level coherence CHECK expressible in THIS GRAMMAR.
+  // backends/crates/vpay-provider/src/lib.rs:28-34 (Capabilities::is_coherent)
+  // enforces `supports_partial_refunds ⇒ supports_refunds` in Rust. This
+  // claim cannot be honoured by CrateStack's grammar: @db_enforce
   // (crates/cratestack-migrate/src/convert/checks.rs) only promotes a
   // single field's @range/@length/@iso4217 validator to a CHECK. There is
   // no @@check(expr) or any other cross-column boolean constraint
@@ -147,8 +145,17 @@ model Provider {
   // "hand-written @@check constraints" as if the syntax existed; it does
   // not appear anywhere in the parser or its tests — that ADR text
   // describes something unimplemented, not something this schema failed
-  // to use.) This invariant remains Rust-only until the grammar grows a
-  // general CHECK escape hatch.
+  // to use.) This invariant remains Rust-only in THIS FILE until the
+  // grammar grows a general CHECK escape hatch.
+  //
+  // UPDATE: raw SQL has no such limitation, and the invariant is now real —
+  // see `CONSTRAINT partial_refunds_imply_refunds` in
+  // backends/migrations/0002_create-providers.sql, proven to fire by
+  // partial_refunds_without_refunds_is_rejected_by_the_database in
+  // backends/tests/integration/tests/postgres_smoke.rs. The migrations, not
+  // this file, are the authoritative schema for this constraint; this GAP
+  // is about what THIS grammar can express, not about what the database
+  // enforces.
 }
 
 // --- payments --------------------------------------------------------------
@@ -189,14 +196,24 @@ model PaymentIntent {
   // make this field "look" referentially sound would be exactly the
   // plausible-but-fabricated failure mode this rewrite exists to avoid.
 
-  // GAP — same missing CHECK class as Provider, above, for the over-refund
-  // invariant: docs/flows/ledger.md says "The over-refund CHECK rejects the
-  // second of two concurrent over-refunds at the database level" — i.e.
-  // amount_refunded + amount_refund_pending <= amount. That is a
-  // cross-column arithmetic CHECK; @db_enforce cannot express it for the
-  // same reason noted on Provider. Today this is enforced only by Money's
-  // type-level guarantees in vpay-core (docs/flows/money.md invariant 3)
-  // at the moment of construction, not by the database.
+  // GAP — same missing CHECK class as Provider, above, in THIS GRAMMAR, for
+  // the over-refund invariant: amount_refunded + amount_refund_pending <=
+  // amount is a cross-column arithmetic CHECK; @db_enforce cannot express
+  // it for the same reason noted on Provider. In this file it remains
+  // enforced only by Money's type-level guarantees in vpay-core
+  // (docs/flows/money.md invariant 3) at the moment of construction.
+  //
+  // UPDATE: raw SQL has no such limitation — see `CONSTRAINT
+  // no_over_refund` in backends/migrations/0003_create-payment-intents.sql,
+  // proven to fire by over_refund_is_rejected_by_the_database in
+  // backends/tests/integration/tests/postgres_smoke.rs. See that migration's
+  // own comment for exactly what concurrency guarantee this does and does
+  // not provide (it rejects any single committed write that would go
+  // over-refunded, including racing concurrent UPDATEs via Postgres's
+  // ordinary row-lock-then-recheck behaviour; it is not the same thing as
+  // an application-level SELECT ... FOR UPDATE, which does not exist here).
+  // The migrations, not this file, are the authoritative schema for this
+  // constraint.
 }
 
 model Charge {

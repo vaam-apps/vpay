@@ -68,6 +68,17 @@ sqlx = { version = "0.8", default-features = false, features = [
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 time = { version = "0.3", features = ["serde", "macros"] }
 rust_decimal = "1"
+# Not part of vpay's own `time`-crate convention (docs above/ADR none yet) —
+# pulled in solely because `authkestra-op`'s `sqlx` dependency hardcodes the
+# `chrono` feature (its own Cargo.toml: `sqlx = { version = "0.8", features =
+# ["runtime-tokio", "json", "chrono"] }`, not optional), so every
+# `DateTime<Utc>` column SqlxOpStore reads/writes (oauth_codes.expires_at,
+# oauth_refresh_tokens.expires_at/revoked_at, oauth_device_codes.expires_at/
+# last_polled_at) is chrono-typed, not time-typed, and the acceptance test in
+# backends/tests/integration/tests/authkestra_op_smoke.rs has to speak the
+# same type to construct an `AuthorizationCode`. Confined to a dev-dependency
+# of that one test crate — no shipping crate depends on chrono today.
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 
 # --- serde & config ---
 serde = { version = "1", features = ["derive"] }
@@ -87,6 +98,46 @@ anyhow = "1"
 
 # --- cli ---
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+
+# --- auth (dependency spike only — not yet used by any member crate) ---
+# Authkestra will run as vpay's own OIDC Provider for /dash/v1 (see the ADR
+# under docs/adr/ for the decision). Pinned exactly per Authkestra's own
+# convention (pre-1.0, fast-moving; see vsms's Cargo.toml, which hit the same
+# rustls-provider collision first) — the whole family must move in lockstep.
+#
+# The collision: vpay pins rustls to the `ring` CryptoProvider (below), but
+# every authkestra-* crate defaults to `reqwest`'s `rustls-tls` behaviour via
+# its own default feature `rustls-aws-lc-rs`, which pulls in the competing
+# `aws-lc-rs` provider. Two providers in one process makes
+# `rustls::crypto::CryptoProvider::install_default()` panic if it is ever
+# called without one already installed — unacceptable in a payment binary
+# (clippy `panic = "deny"`, docs/adr/0007). `default-features = false` +
+# `rustls-no-provider` builds every authkestra crate's reqwest client with
+# rustls but without selecting a provider, so `ring` (already installed by
+# vpay's own rustls/reqwest/sqlx stack) is the only `CryptoProvider` in the
+# graph. Verified via `cargo tree -i aws-lc-rs` / `cargo tree -i aws-lc-sys`
+# reporting no match — see the auth OP integration spike notes.
+#
+# REQUIRED FOLLOW-UP, not yet done here: `rustls-no-provider` does not fall
+# back to ring silently. reqwest 0.13's own client builder (vendored source,
+# reqwest-0.13.4/src/async_impl/client.rs) calls
+# `rustls::crypto::CryptoProvider::get_default()` and, finding none, panics
+# with "No rustls crypto provider is configured" unless a process-wide
+# default was installed first. So whichever vpay binary first constructs an
+# authkestra HTTP client (JWKS fetch, engine's own reqwest calls) MUST call
+# `rustls::crypto::ring::default_provider().install_default().ok();` — ignore
+# the Err, it only means something already installed one — once, in `main()`,
+# before that. Nothing in the workspace does this yet (grep confirms no
+# `install_default` call anywhere in backends/); this is a hard prerequisite
+# for the implementation step, not an optional hardening.
+authkestra-op = { version = "=0.3.4", default-features = false, features = ["rustls-no-provider"] }
+authkestra-engine = { version = "=0.3.4", default-features = false, features = ["rustls-no-provider", "token", "session"] }
+# `op` pulls in authkestra-op + implies `session`/`token`; this is how OP
+# routes get mounted onto an axum Router (crates/authkestra-axum's own
+# feature graph: op = ["dep:authkestra-op", "session", "token"]).
+authkestra-axum = { version = "=0.3.4", default-features = false, features = ["rustls-no-provider", "op"] }
+# JWKS-backed token validation for /dash/v1 request guards.
+authkestra-resource = { version = "=0.3.4", default-features = false, features = ["rustls-no-provider"] }
 
 # --- crypto ---
 sha2 = "0.10"

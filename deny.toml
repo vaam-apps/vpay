@@ -10,7 +10,36 @@ all-features = false
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+  # RUSTSEC-2023-0071 — "Marvin Attack": a timing side-channel in the `rsa`
+  # crate's PKCS#1 v1.5 decryption that can, given enough observations of a
+  # network-visible oracle, permit private-key recovery.
+  #
+  # Why it is accepted rather than fixed: there is no patched release. The
+  # advisory has carried no fixed version since 2023, and `rsa` is an
+  # unconditional, non-optional dependency of `authkestra-engine`
+  # (`[dependencies.rsa] version = "0.9.6"`, no `optional`), which vpay uses
+  # to run its own OpenID Provider for /dash/v1 (ADR-0009). It cannot be
+  # feature-gated away, and `authkestra-op` signs with RS256 only.
+  #
+  # Scope of the exposure, stated honestly rather than minimised: this is the
+  # crate that signs dashboard tokens, so the advisory is on-topic, not
+  # incidental. What limits it is that the attack targets PKCS#1 v1.5
+  # *decryption* oracles; vpay's use is JWT *signing* and verification, and
+  # the /dash/v1 surface is staff-only and not the merchant payment path
+  # (ADR-0008 — the dashboard acts on records, never on configuration).
+  # The merchant /v1 API does not depend on this crate.
+  #
+  # Accepted deliberately by the maintainer on 2026-08-09. Revisit if a fixed
+  # `rsa` release appears, if authkestra gains non-RSA signing, or if the
+  # Keycloak/ZITADEL comparison ADR-0009 leaves open is ever carried out.
+  #
+  # NOTE: as of this writing the advisory does not actually fire —
+  # `cargo tree -i rsa` finds no path on the targets configured above, so
+  # `cargo deny check` is clean without this entry. It is preemptive, and
+  # takes effect when authkestra is wired into a member crate.
+  "RUSTSEC-2023-0071",
+]
 
 [licenses]
 version = 2
@@ -40,6 +69,21 @@ deny = [
   { name = "openssl" },
   { name = "openssl-sys" },
   { name = "native-tls" },
+  # rustls has two interchangeable CryptoProvider backends, `ring` (what
+  # vpay pins, see [workspace.dependencies] in root Cargo.toml) and
+  # `aws-lc-rs`. Cargo will happily compile both into one binary if any
+  # dependency edge asks for the latter (e.g. reqwest/authkestra's default
+  # features) — and having two available providers makes
+  # `rustls::crypto::CryptoProvider::install_default()` panic at runtime if
+  # nothing has explicitly installed one first (rustls's own documented
+  # hazard). A panic in a payment binary is exactly what this repo's lint
+  # policy (docs/adr/0007, clippy `panic = "deny"`) exists to prevent, so
+  # this must be caught at `cargo deny check` time, not at runtime. Any new
+  # dependency that needs aws-lc-rs must instead be pointed at its
+  # ring-only / no-provider feature, the way the authkestra-* crates are
+  # configured above.
+  { name = "aws-lc-rs" },
+  { name = "aws-lc-sys" },
 ]
 skip = []
 
