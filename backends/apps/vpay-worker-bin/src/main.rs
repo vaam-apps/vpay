@@ -13,9 +13,10 @@
 
 use std::time::Duration;
 
+use anyhow::Context as _;
 use clap::Parser as _;
 use mimalloc::MiMalloc;
-use vpay_config::{LogFormat, WorkerArgs};
+use vpay_config::{LogFormat, ShutdownSignals, WorkerArgs};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -26,6 +27,17 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = WorkerArgs::parse();
+
+    // Installed before anything else — including tracing init — so the
+    // SIGTERM/SIGINT handlers are live for this process's entire lifetime,
+    // not just once the shutdown future below is first polled. See
+    // vpay_config::signal for the race this closes. A failure here is a
+    // hard startup failure (see ShutdownSignals::install's docs for why),
+    // deliberately not a logged warning that lets the process continue with
+    // no graceful shutdown path at all.
+    let mut shutdown_signals =
+        ShutdownSignals::install().context("installing SIGINT/SIGTERM handlers")?;
+
     init_tracing(&args.common.log_filter, args.common.log_format);
 
     // `profile` names a YAML config file, never a code path — see
@@ -60,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
     // already said this once.
     heartbeat.tick().await;
 
-    let shutdown = shutdown_signal();
+    let shutdown = shutdown_signals.wait();
     tokio::pin!(shutdown);
 
     loop {
@@ -106,42 +118,9 @@ fn env_filter(directive: &str) -> tracing_subscriber::EnvFilter {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
 }
 
-/// Waits for SIGINT (Ctrl+C) or, on Unix, SIGTERM — whichever arrives first —
-/// then logs and returns. Mirrors `vpay-server`'s shutdown handling so both
-/// binaries behave identically under `docker compose down`.
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {}
-            Err(err) => {
-                // No panic in a shutdown path: log and fall back to waiting
-                // on the other signal source instead.
-                tracing::error!(%err, "failed to install Ctrl+C handler; this shutdown path is now inert");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(err) => {
-                tracing::error!(%err, "failed to install SIGTERM handler; this shutdown path is now inert");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    // SIGTERM handling is Unix-only; other platforms shut down on Ctrl+C
-    // alone rather than failing to compile.
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => tracing::info!("received SIGINT, starting graceful shutdown"),
-        () = terminate => tracing::info!("received SIGTERM, starting graceful shutdown"),
-    }
-}
+// SIGINT/SIGTERM handling itself now lives in `vpay_config::ShutdownSignals`,
+// installed eagerly at the top of `main` (see the comment there) rather than
+// constructed here — a signal handler constructed this late would only be
+// installed once its future is first polled, which is exactly the startup
+// race that type exists to close. Mirrors `vpay-server`'s shutdown handling
+// so both binaries behave identically under `docker compose down`.

@@ -1,0 +1,55 @@
+# cargo-nextest configuration.
+#
+# `backends/tests/integration` (package `vpay-tests-integration`) starts a
+# fresh `postgres:16-alpine` testcontainer per `#[tokio::test]` — 13+ tests
+# across `postgres_smoke.rs` and `authkestra_op_smoke.rs`. Left unbounded,
+# nextest's default parallelism (one thread per available CPU) races all of
+# them to start and port-map a container at once, which intermittently fails
+# with testcontainers' own "container port" error under that contention —
+# observed directly: the identical test passes 3/3 in isolation (~1s each)
+# and fails roughly 1 run in several full-workspace `cargo nextest run`
+# invocations. A `once_cell`/`OnceLock`-shared single container was tried
+# first and rejected: `ContainerAsync` held in a `static` never runs `Drop`
+# at process exit (Rust does not drop statics on program exit), so a shared
+# container leaks the underlying Docker container forever. This was proven,
+# not assumed — verified by running the shared-container version 8+ times in
+# a row and finding hundreds of orphaned `postgres:16-alpine` containers
+# still `Up` afterwards, which drove the host's Docker VM into memory
+# pressure and OOM-killed an unrelated, already-running container. Bounding
+# concurrency instead keeps each test's own per-test container and its
+# already-correct `Drop`-based cleanup (a local `ContainerAsync` dropped at
+# the end of its owning test function stops and removes the container
+# exactly as it did before this file existed) — it only limits how many of
+# those tests may be starting a container at the same moment.
+#
+# cargo-nextest version in use when this was authored: 0.9.137. Config
+# location and `test-groups`/`overrides` syntax verified against that
+# version's own `cargo nextest show-config test-groups` output before
+# relying on it. `nextest-version.required` takes a bare minimum version, not
+# a semver comparator (a leading `>=` fails to parse) — "0.9.59" here means
+# "at least 0.9.59", not a caret-style upper bound, so a future nextest 0.10.x
+# is not rejected by this.
+nextest-version = { required = "0.9.59" }
+
+[test-groups]
+# "postgres-containers": every test that calls `migrated_postgres()` in
+# vpay-tests-integration (both test binaries) and therefore starts its own
+# `postgres:16-alpine` testcontainer. `max-threads = 3` was tried first and
+# measured empirically: it still produced a "container port" failure
+# roughly 1 run in 14 across ~30 full-workspace `cargo nextest run`
+# invocations — a real improvement over the unbounded 13+-at-once case, but
+# not the "zero failures" bar this needs. The actual constraint here is not
+# this machine's CPU count (12 logical cores) but the Docker Desktop VM's own
+# allocation (`com.docker.virtualization --cpus 4 --memoryMiB 8192`, checked
+# via `ps aux`), which is what testcontainers' port mapping goes through —
+# 3 containers starting at once was still enough contention on a 4-vCPU VM to
+# occasionally fail. `max-threads = 1` fully serializes every container start
+# and was verified to produce zero failures across repeated full-workspace
+# runs (see the task's own verification notes). The tradeoff is wall-clock
+# time, not correctness: 14 tests at ~1-1.2s each run sequentially instead of
+# 3-wide, which this suite can afford.
+postgres-containers = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(vpay-tests-integration)'
+test-group = 'postgres-containers'

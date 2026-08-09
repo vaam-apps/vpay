@@ -7,16 +7,27 @@ It is machine-checked. `cargo xtask verify-status` scans the workspace for every
 `ProviderError::NotImplemented("…")` token and fails the build if one is missing
 from this file. You cannot quietly ship an unimplemented path.
 
-Last verified: 2026-08-09, `cargo nextest run --workspace` (78 passed, 3
-skipped), `pnpm -r test` (10 assertions), `cargo xtask verify-status`, `cargo
-deny check`, and `just verify`, all run against the working tree of the
-stabilization pass described below. The Rust count moved from 64 passed / 5
-skipped to 71 passed / 3 skipped in the prior pass (database schema and
-migrations 0001–0005), and from 71 to **78 passed / 3 skipped in this pass**:
-three more migrations landed (`0006_create-authkestra-op-tables.sql`,
-`0007_create-oauth-signing-keys.sql`, `0008_create-merchant-api-keys.sql` —
-see the "Authkestra OP tables", "OAuth signing keys" and "Merchant API keys"
-rows below), adding six new
+Last verified: 2026-08-09, `cargo nextest run --workspace` (80 passed, 3
+skipped), `cargo fmt --all -- --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo xtask verify-status`, and `just verify`,
+all run against the working tree of the SIGTERM-startup-race fix described in
+the "Process lifecycle" row below. The Rust count moved from 78 passed / 3
+skipped to **80 passed / 3 skipped in this pass**: two new regression tests,
+one per binary (`sigterm_immediately_after_startup_still_triggers_graceful_shutdown`
+in `backends/apps/vpay-server/tests/cli.rs` and
+`backends/apps/vpay-worker-bin/tests/cli.rs`), covering a real startup race
+where a SIGTERM delivered immediately after process start bypassed graceful
+shutdown entirely — see the "Process lifecycle" row for the mechanism, the
+fix, and this pass's own honest accounting of the regression test's
+statistical (not deterministic) nature and its reduced sensitivity when run
+as part of the full workspace suite versus scoped/alone. Both new tests were
+verified to fail against the pre-fix code before this pass landed. The prior
+pass's own note is unchanged below: the Rust count moved from 64 passed / 5
+skipped to 71 passed / 3 skipped (database schema and migrations 0001–0005),
+then to 78 passed / 3 skipped (three more migrations —
+`0006_create-authkestra-op-tables.sql`, `0007_create-oauth-signing-keys.sql`,
+`0008_create-merchant-api-keys.sql` — see the "Authkestra OP tables", "OAuth
+signing keys" and "Merchant API keys" rows below), adding six new
 per-constraint tests to `backends/tests/integration/tests/postgres_smoke.rs`
 plus one new test file, `backends/tests/integration/tests/authkestra_op_smoke.rs`,
 whose single test,
@@ -65,7 +76,7 @@ Nothing in this repo is ✅ unless a test would fail if it broke.
 | Config guard rails (stub host, literal secret) | 🟡 | Rules done + 5 tests. **YAML loading and DB reconciliation not started** |
 | CLI / env configuration (`vpay-config::cli`) | 🟡 | `--version` reports `0.1.0`. Every option auto-resolves from an env var with an explicit flag winning, shared between both binaries via a flattened `CommonArgs`, covered by unit tests on the built `clap::Command` plus subprocess tests that set real env vars on a child process. **`--database-url`, `--config` and `--public-base-url` are accepted and parsed but not consumed by anything** — no DB connection is opened, no YAML is read, no redirect/webhook URL is built from them. This is CLI/env plumbing only, not the ADR-0003 config system (see the row below) |
 | Provider port trait | ✅ | Interface defined; both adapters implement it |
-| Process lifecycle (SIGINT/SIGTERM) | ✅ | `vpay-server` now shuts down via `axum::serve(...).with_graceful_shutdown(...)` on SIGINT or SIGTERM instead of requiring `docker compose down` to SIGKILL it. `vpay-worker-bin` no longer exits immediately on boot — it stays up, answers the same signals, and logs a startup WARN banner plus a 60-second WARN heartbeat stating the job loop is not implemented and no jobs are being processed. Both are exercised by subprocess tests that send a real `SIGTERM` and assert a clean exit (`backends/apps/vpay-server/tests/cli.rs`, `backends/apps/vpay-worker-bin/tests/cli.rs`) |
+| Process lifecycle (SIGINT/SIGTERM) | ✅ | `vpay-server` shuts down via `axum::serve(...).with_graceful_shutdown(...)` on SIGINT or SIGTERM instead of requiring `docker compose down` to SIGKILL it. `vpay-worker-bin` no longer exits immediately on boot — it stays up, answers the same signals, and logs a startup WARN banner plus a 60-second WARN heartbeat stating the job loop is not implemented and no jobs are being processed. **Startup race fixed this pass:** both binaries used to construct their shutdown-signal future late (inside `with_graceful_shutdown`'s argument, or just before the worker's select loop) — `tokio::signal::unix::signal(..)` and `tokio::signal::ctrl_c()` both install their OS-level handler on first *poll*, not at construction, so a SIGTERM delivered before that first poll (CLI parsing, tracing init, adapter-registry logging, `TcpListener::bind` all had to complete first) kept its default disposition and killed the process outright, skipping graceful shutdown and dropping any in-flight request. Confirmed by reproduction (`kill -TERM` sent tens of milliseconds after spawn reliably produced exit 143 with no shutdown log line) and by reading `tokio`'s own source (`signal_hook_registry::register` runs synchronously inside `tokio::signal::unix::signal`'s function body, not inside the future it returns). Fixed by `vpay_config::signal::ShutdownSignals`, a new type in `backends/crates/vpay-config/src/signal.rs` shared by both binaries (precedented by `CommonArgs` living in the same crate): `ShutdownSignals::install()` is now the first thing either binary's `main` does, before tracing init, registering SIGTERM/SIGINT handlers before any slower startup work can run. On Unix, SIGINT is now handled via `signal(SignalKind::interrupt())` rather than `tokio::signal::ctrl_c()` specifically because `ctrl_c()` is an `async fn` and would reintroduce the same late-installation race; non-Unix platforms still fall back to `ctrl_c()` inside `ShutdownSignals::wait()`, unchanged from before. A failure to install a handler is now a **hard startup failure** (`main` returns `Err`), not a logged warning that lets the process run its whole life with no graceful-shutdown path — deliberately stricter than before, since silently continuing would reintroduce the exact bug for the entire process lifetime rather than a brief window. Both binaries are exercised by subprocess tests that send a real `SIGTERM` and assert a clean exit (`backends/apps/vpay-server/tests/cli.rs`, `backends/apps/vpay-worker-bin/tests/cli.rs`), including a new regression test per binary (`sigterm_immediately_after_startup_still_triggers_graceful_shutdown`) that sends SIGTERM almost immediately after spawn and asserts both exit 0 and the graceful-shutdown log line. **That regression test's own limits, stated plainly:** it is a statistical majority-vote test (`ATTEMPTS`/`MIN_SUCCESSES` spawn-signal-wait trials), not a deterministic one, because the actual race window on modern hardware is on the order of a millisecond once other confounds (binary cold-start, CPU frequency ramp-up) are controlled for — verified in isolation to reliably fail against the pre-fix code and pass against the fix (repeated hundreds of times across macOS and a Linux container). But `cargo nextest run --workspace`'s real contention from ~20 concurrently running test binaries widens that window for *both* fixed and unfixed code enough that no single delay was both safe against the fixed binary and sensitive to the bug under full-suite load; the delay actually shipped (`DELAY = 50ms`) was chosen to never fail the full suite on correctly fixed code, at the cost of not reliably catching the bug when run as part of the full suite — its demonstrated sensitivity is strongest when run scoped/alone. This is disclosed in the test's own doc comment, not hidden. |
 | `--shutdown-grace-seconds` bounded drain | 🟡 | On `vpay-server` this is now wired in: `serve_with_bounded_drain` in `backends/apps/vpay-server/src/main.rs` races the axum drain against a `shutdown_grace_seconds`-long clock and exits non-zero if the clock wins, logging that in-flight work was cut off. **No test exercises the timeout path itself** — the existing SIGTERM tests never have in-flight work to drain, so they would pass identically with the grace clock deleted; nothing here proves the bound actually holds under load. On `vpay-worker-bin` the flag is accepted and logged ("has no effect yet") but genuinely does nothing — there is no drain to bound because there is no job loop |
 | Poll ladder | 🟡 | `poll_delay` done + 3 tests. **Job loop not started** |
 | HTTP surface | 🟡 | Only `/healthz` and the Stripe-shaped 404. **No `/v1/*` route exists** |

@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use clap::Parser as _;
 use mimalloc::MiMalloc;
-use vpay_config::{LogFormat, ServerArgs};
+use vpay_config::{LogFormat, ServerArgs, ShutdownSignals};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -29,6 +29,17 @@ enum DrainOutcome {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = ServerArgs::parse();
+
+    // Installed before anything else — including tracing init — so the
+    // SIGTERM/SIGINT handlers are live for this process's entire lifetime,
+    // not just once axum::serve's graceful-shutdown future is first polled.
+    // See vpay_config::signal for the race this closes. A failure here is a
+    // hard startup failure (see ShutdownSignals::install's docs for why),
+    // deliberately not a logged warning that lets the process continue with
+    // no graceful shutdown path at all.
+    let shutdown_signals =
+        ShutdownSignals::install().context("installing SIGINT/SIGTERM handlers")?;
+
     init_tracing(&args.common.log_filter, args.common.log_format);
 
     let registry = vpay_server::adapter_registry();
@@ -45,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(addr = %args.bind, "listening");
 
     let shutdown_grace = Duration::from_secs(args.common.shutdown_grace_seconds);
-    match serve_with_bounded_drain(listener, shutdown_grace).await? {
+    match serve_with_bounded_drain(listener, shutdown_grace, shutdown_signals).await? {
         DrainOutcome::Clean => {
             tracing::info!("graceful shutdown complete, exiting");
             Ok(())
@@ -90,6 +101,7 @@ async fn main() -> anyhow::Result<()> {
 async fn serve_with_bounded_drain(
     listener: tokio::net::TcpListener,
     shutdown_grace: Duration,
+    mut shutdown_signals: ShutdownSignals,
 ) -> anyhow::Result<DrainOutcome> {
     let (drain_started_tx, drain_started_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -98,7 +110,7 @@ async fn serve_with_bounded_drain(
     // needs the latter, hence the explicit `.into_future()`.
     let serve_fut = axum::serve(listener, vpay_api::router())
         .with_graceful_shutdown(async move {
-            shutdown_signal().await;
+            shutdown_signals.wait().await;
             // A closed receiver just means the grace-period clock below
             // already lost interest — the drain itself already won the race.
             let _ = drain_started_tx.send(());
@@ -157,48 +169,11 @@ fn env_filter(directive: &str) -> tracing_subscriber::EnvFilter {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
 }
 
-/// Waits for SIGINT (Ctrl+C) or, on Unix, SIGTERM — whichever arrives first —
-/// then logs and returns.
-///
-/// This is what lets `axum::serve`'s graceful shutdown finish in-flight
-/// requests instead of the process being SIGKILLed by `docker compose down`,
-/// which is what happened before this existed.
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {}
-            Err(err) => {
-                // No panic in a shutdown path: log and fall back to waiting
-                // on the other signal source instead.
-                tracing::error!(%err, "failed to install Ctrl+C handler; this shutdown path is now inert");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(err) => {
-                tracing::error!(%err, "failed to install SIGTERM handler; this shutdown path is now inert");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    // SIGTERM handling is Unix-only; other platforms shut down on Ctrl+C
-    // alone rather than failing to compile.
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => tracing::info!("received SIGINT, starting graceful shutdown"),
-        () = terminate => tracing::info!("received SIGTERM, starting graceful shutdown"),
-    }
-}
+// SIGINT/SIGTERM handling itself now lives in `vpay_config::ShutdownSignals`,
+// installed eagerly at the top of `main` (see the comment there) rather than
+// constructed here — a signal handler constructed this late would only be
+// installed once this future is first polled, which is exactly the startup
+// race that type exists to close.
 
 // `grace_clock` is the entire bounded-wait mechanism behind
 // `serve_with_bounded_drain`, deliberately factored out as a pure function
