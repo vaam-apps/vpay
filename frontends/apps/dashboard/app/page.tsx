@@ -15,7 +15,7 @@ export default function Home() {
       <div className="alert alert-warning mt-6" role="status">
         <span>
           Scaffold. No data source is connected — <code>/dash/v1</code> is not
-          implemented. See <code>docs/STATUS.md</code>.
+          implemented. See <code>docs/status.md</code>.
         </span>
       </div>
 

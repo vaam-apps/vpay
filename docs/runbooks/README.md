@@ -9,4 +9,4 @@ do, and how do I know it is fixed.
 | [provider-error-rate.md](provider-error-rate.md) | `provider_error` rate rising |
 
 **Status:** written from the design, never exercised against a running system.
-See [../STATUS.md](../STATUS.md).
+See [../status.md](../status.md).

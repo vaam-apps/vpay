@@ -91,4 +91,4 @@ before any `provider_requests` row; after that row and before the response;
 after the response and before the state update — and assert the recovery table
 resolves all three without double-charging.
 
-**Status: not implemented.** See [../STATUS.md](../STATUS.md).
+**Status: not implemented.** See [../status.md](../status.md).

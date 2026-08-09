@@ -41,4 +41,4 @@ Delivery is at-least-once; merchants must dedupe by `event.id`.
 
 ## Status
 
-**Not started.** See [../STATUS.md](../STATUS.md).
+**Not started.** See [../status.md](../status.md).

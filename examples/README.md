@@ -10,4 +10,4 @@ Runnable merchant-side integrations.
 
 **Status:** these describe the *intended* API. `/v1/*` is not implemented, so
 none of them will succeed against a running vpay today. See
-[../docs/STATUS.md](../docs/STATUS.md).
+[../docs/status.md](../docs/status.md).

@@ -1,7 +1,7 @@
 //! The Stripe-shaped HTTP surface.
 //!
 //! STATUS: only `/healthz` and the Stripe-shaped 404 envelope are implemented.
-//! No `/v1/*` route exists yet. See `docs/STATUS.md` — this file must never
+//! No `/v1/*` route exists yet. See `docs/status.md` — this file must never
 //! grow a route that returns fabricated data.
 
 use axum::{Json, Router, http::StatusCode, routing::get};

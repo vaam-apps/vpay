@@ -15,7 +15,7 @@ MTN MoMo and Orange Money are the first two adapters. Neither is the architectur
 > This repository is a **scaffold**. It compiles, lints clean and its tests pass,
 > but **no HTTP call to any payment rail has ever been made by this code**.
 >
-> Read [`docs/STATUS.md`](docs/STATUS.md) before forming any expectation of what
+> Read [`docs/status.md`](docs/status.md) before forming any expectation of what
 > works. That page is machine-checked: `cargo xtask verify-status` fails the
 > build if the code contains an unimplemented path that the status page does not
 > declare.
@@ -53,7 +53,7 @@ rail. `cargo xtask verify-no-mocks` enforces it.
 
 **2. Never claim a feature is done when it is not.** Unwritten code returns
 `ProviderError::NotImplemented` — it never fabricates a success. Every such path
-must appear in `docs/STATUS.md`, and `cargo xtask verify-status` fails the build
+must appear in `docs/status.md`, and `cargo xtask verify-status` fails the build
 otherwise. Tests for unbuilt features are `#[ignore]`d with a reason, so a green
 run never overstates coverage.
 
@@ -69,8 +69,8 @@ frontends/
   apps/         dashboard (Next.js)
   tests/        e2e (Cypress)
 examples/       merchant-curl · merchant-node · webhook-receiver
-docs/           adr/ · rfc/ · flows/ · runbooks/ · api/ · STATUS.md
-schemas/        *.cstack   (syntax verified, design sketch, excluded from the build — see docs/STATUS.md)
+docs/           adr/ · rfc/ · flows/ · runbooks/ · api/ · status.md
+schemas/        *.cstack   (syntax verified, design sketch, excluded from the build — see docs/status.md)
 .xtask/         repo automation and the two self-checks
 ```
 
@@ -122,7 +122,7 @@ Neither binary calls a payment rail. `vpay-server` writes rows and serves only
 its job loop is not implemented, and it says so in a startup banner and a
 repeating heartbeat log line. `--database-url`, `--config` and
 `--public-base-url` are accepted but not yet consumed by anything — see
-[`docs/STATUS.md`](docs/STATUS.md) and
+[`docs/status.md`](docs/status.md) and
 [`docs/flows/configuration.md`](docs/flows/configuration.md).
 
 ### Known environment gotchas
@@ -139,11 +139,11 @@ repeating heartbeat log line. `--database-url`, `--config` and
   `just build-dist`. `backends/Dockerfile` now builds the host's *implicit*
   musl target rather than hardcoding the x86_64 triple, but the Dockerfiles
   themselves have not been built in this repo's own development environment —
-  see [`docs/STATUS.md`](docs/STATUS.md)'s Infrastructure section for why.
+  see [`docs/status.md`](docs/status.md)'s Infrastructure section for why.
 
 ## Documentation
 
-Start with [`docs/STATUS.md`](docs/STATUS.md), then:
+Start with [`docs/status.md`](docs/status.md), then:
 
 - [Flows](docs/flows/) — one document per process, with invariants
 - [ADRs](docs/adr/) — decisions and what they cost

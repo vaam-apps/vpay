@@ -57,4 +57,4 @@ The `dedupe_key` is what stops duplicate callbacks becoming a job storm.
 ## Status
 
 `poll_delay` is implemented and tested. The job loop, the escalation and the
-callback endpoint are **not started** — see [../STATUS.md](../STATUS.md).
+callback endpoint are **not started** — see [../status.md](../status.md).

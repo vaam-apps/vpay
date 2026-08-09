@@ -43,7 +43,7 @@ pub struct CommonArgs {
     /// Postgres connection string.
     ///
     /// Accepted and threaded through even though the database layer is not
-    /// implemented yet (`docs/STATUS.md`) — the wiring exists so turning the
+    /// implemented yet (`docs/status.md`) — the wiring exists so turning the
     /// layer on later is a matter of using this value, not inventing a new
     /// flag.
     #[arg(long, env = "DATABASE_URL")]
@@ -59,7 +59,7 @@ pub struct CommonArgs {
     /// Path to the YAML configuration file (ADR-0003).
     ///
     /// Optional because figment layering / file loading is not implemented
-    /// yet (`docs/STATUS.md`).
+    /// yet (`docs/status.md`).
     #[arg(long, env = "VPAY_CONFIG")]
     pub config: Option<PathBuf>,
 
@@ -79,7 +79,7 @@ pub struct CommonArgs {
     /// before the process stops waiting and exits (see `main.rs`).
     /// `vpay-worker-bin` accepts and validates this same flag for parity
     /// across binaries, but has no in-flight work to bound yet — the job
-    /// loop is not implemented (`docs/STATUS.md`) — so today it has no
+    /// loop is not implemented (`docs/status.md`) — so today it has no
     /// effect there.
     #[arg(long, env = "VPAY_SHUTDOWN_GRACE_SECONDS", default_value_t = 25)]
     pub shutdown_grace_seconds: u64,
@@ -93,7 +93,7 @@ pub struct CommonArgs {
     about = "vpay payment gateway API server",
     long_about = "vpay payment gateway API server.\n\nWrites rows and returns; it never calls a payment rail itself \
                   (see docs/flows). This binary is a scaffold — run with --help \
-                  to see the full flag set, and see docs/STATUS.md for what is \
+                  to see the full flag set, and see docs/status.md for what is \
                   actually implemented behind it."
 )]
 pub struct ServerArgs {
@@ -119,7 +119,7 @@ pub struct ServerArgs {
     version,
     about = "vpay background worker",
     long_about = "vpay background worker: submit, poll, reconcile, deliver.\n\nThe job \
-                  loop is not implemented yet (docs/STATUS.md) — this process stays up \
+                  loop is not implemented yet (docs/status.md) — this process stays up \
                   and answers shutdown signals so orchestration (docker compose, k8s) \
                   behaves correctly around it, but it processes no jobs."
 )]

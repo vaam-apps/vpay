@@ -1,7 +1,7 @@
 /**
  * Pointing the official Stripe SDK at a vpay host.
  *
- * NOT RUNNABLE YET — /v1/* is not implemented. See ../../docs/STATUS.md.
+ * NOT RUNNABLE YET — /v1/* is not implemented. See ../../docs/status.md.
  *
  * This file exists to pin down the compatibility claim: if this script ever
  * needs a vpay-specific workaround, the API is not Stripe-shaped enough.

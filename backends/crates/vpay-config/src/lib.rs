@@ -4,7 +4,7 @@
 //! never select a *code path*. See `docs/adr/0003-yaml-configuration.md`.
 //!
 //! STATUS: types and the deployment guard rules are implemented and tested.
-//! Figment layering and DB reconciliation are NOT implemented — `docs/STATUS.md`.
+//! Figment layering and DB reconciliation are NOT implemented — `docs/status.md`.
 
 use serde::{Deserialize, Serialize};
 

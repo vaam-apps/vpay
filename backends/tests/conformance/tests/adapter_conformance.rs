@@ -6,7 +6,7 @@
 //!
 //! STATUS: only capability-level cases run today. The wire-level cases are
 //! `#[ignore]`d with a reason until the adapters exist, so a green run never
-//! overstates coverage. See docs/STATUS.md.
+//! overstates coverage. See docs/status.md.
 
 use vpay_provider::{Capabilities, ProviderAdapter, ProviderError};
 
@@ -66,19 +66,19 @@ fn unimplemented_operations_never_fabricate_success() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "not implemented: submit() — see docs/STATUS.md"]
+#[ignore = "not implemented: submit() — see docs/status.md"]
 fn duplicate_submit_reports_submitted_not_an_error() {
     unreachable!("enable when submit() lands")
 }
 
 #[test]
-#[ignore = "not implemented: query_status() — see docs/STATUS.md"]
+#[ignore = "not implemented: query_status() — see docs/status.md"]
 fn not_found_is_never_on_its_own_a_failure() {
     unreachable!("enable when query_status() lands")
 }
 
 #[test]
-#[ignore = "not implemented: redirect flow — see docs/STATUS.md"]
+#[ignore = "not implemented: redirect flow — see docs/status.md"]
 fn redirect_rails_commit_ref_extra_before_returning_a_url() {
     unreachable!("enable when the Orange adapter lands")
 }

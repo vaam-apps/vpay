@@ -4,7 +4,7 @@
 //! itself, because a promise nothing checks is a promise that decays:
 //!
 //! * `verify-no-mocks`  — no test double is reachable from a shipping binary.
-//! * `verify-status`    — every `NotImplemented` is declared in `docs/STATUS.md`.
+//! * `verify-status`    — every `NotImplemented` is declared in `docs/status.md`.
 
 // This is a CLI; stdout is its output medium, not stray debugging.
 #![allow(clippy::print_stdout)]
@@ -117,12 +117,12 @@ fn runtime_dependency_section(manifest: &str) -> String {
     out
 }
 
-/// Fail if the code claims something is unbuilt that `docs/STATUS.md` does not
+/// Fail if the code claims something is unbuilt that `docs/status.md` does not
 /// declare — or vice versa. Keeps the status page honest by construction.
 fn verify_status(root: &Path) -> Result<(), String> {
-    let status_path = root.join("docs/STATUS.md");
+    let status_path = root.join("docs/status.md");
     let status = fs::read_to_string(&status_path)
-        .map_err(|e| format!("docs/STATUS.md: {e} (the status page is mandatory)"))?;
+        .map_err(|e| format!("docs/status.md: {e} (the status page is mandatory)"))?;
 
     let mut found = BTreeSet::new();
     for src in rust_sources(&root.join("backends")) {
@@ -137,7 +137,7 @@ fn verify_status(root: &Path) -> Result<(), String> {
     let undeclared: Vec<_> = found.iter().filter(|t| !status.contains(*t)).collect();
     if !undeclared.is_empty() {
         return Err(format!(
-            "these unimplemented items are missing from docs/STATUS.md:\n  - {}",
+            "these unimplemented items are missing from docs/status.md:\n  - {}",
             undeclared
                 .iter()
                 .map(|s| s.as_str())
@@ -147,7 +147,7 @@ fn verify_status(root: &Path) -> Result<(), String> {
     }
 
     println!(
-        "verify-status: ok — {} unimplemented item(s), all declared in docs/STATUS.md",
+        "verify-status: ok — {} unimplemented item(s), all declared in docs/status.md",
         found.len()
     );
     Ok(())

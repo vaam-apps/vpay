@@ -8,10 +8,10 @@ is specific to working here as an agent.
 
 ```bash
 just verify    # the two self-checks; both must pass before AND after your change
-cat docs/STATUS.md
+cat docs/status.md
 ```
 
-`docs/STATUS.md` tells you what is actually built. Do not infer capability from
+`docs/status.md` tells you what is actually built. Do not infer capability from
 the presence of a file — most of this repo is scaffold, and it says so.
 
 ## The failure mode to avoid
@@ -24,20 +24,20 @@ than it is:
 - writing a test that asserts nothing so a suite goes green,
 - adding a mock adapter to make local development easier,
 - rendering fake rows in the dashboard so a screenshot looks good,
-- marking something ✅ in `docs/STATUS.md` because it compiles.
+- marking something ✅ in `docs/status.md` because it compiles.
 
 Each of these is worse than leaving the gap visible. This is a payment system;
 someone will eventually trust it with real money on the strength of what the
 repo claims about itself.
 
 If you cannot implement something properly, leave
-`ProviderError::NotImplemented`, list it in `docs/STATUS.md`, and say so plainly
+`ProviderError::NotImplemented`, list it in `docs/status.md`, and say so plainly
 in your summary.
 
 ## When you finish a task
 
 1. `just ci`
-2. Update `docs/STATUS.md` — in the same commit, not a follow-up.
+2. Update `docs/status.md` — in the same commit, not a follow-up.
 3. Update the relevant `docs/flows/*.md` **Status** section.
 4. In your summary to the user, state explicitly what you did **not** do.
 

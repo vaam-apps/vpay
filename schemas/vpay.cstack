@@ -19,7 +19,7 @@
 // │ overview page. It does NOT prove a working migration or a running       │
 // │ server: this file is still EXCLUDED FROM THE BUILD GRAPH. No crate      │
 // │ depends on it, `cratestack migrate diff` has never been run against a   │
-// │ real vpay Postgres, and `docs/STATUS.md` still lists the database       │
+// │ real vpay Postgres, and `docs/status.md` still lists the database       │
 // │ schema itself as not started. Wiring it in is separate future work.     │
 // │                                                                          │
 // │ One more thing this rewrite had to learn the hard way: `cratestack      │
@@ -36,7 +36,7 @@
 // │ provider_requests, webhook events/endpoints, the job queue, idempotency  │
 // │ keys, and Merchant. The "GAP" comments below explain exactly what's      │
 // │ missing and why it was left out rather than invented. See                │
-// │ docs/STATUS.md for the authoritative done/not-done list.                 │
+// │ docs/status.md for the authoritative done/not-done list.                 │
 // └──────────────────────────────────────────────────────────────────────────┘
 
 datasource db {
@@ -234,7 +234,7 @@ model Charge {
 // --- ledger ------------------------------------------------------------
 // Mirrors backends/crates/vpay-ledger/src/lib.rs field-for-field. That
 // crate's types and its balancing invariant ARE implemented and tested
-// (docs/STATUS.md: "🟡 Types and validate() done + 3 tests. Persistence not
+// (docs/status.md: "🟡 Types and validate() done + 3 tests. Persistence not
 // started") — unlike provider_requests/webhooks/jobs above, there is real,
 // tested Rust code this half of the file mirrors, which is the line this
 // rewrite draws between "design sketch of a tested type" and "invented
@@ -285,7 +285,7 @@ model LedgerEntry {
 // --- intentionally not modeled ------------------------------------------
 //
 // The following are named in docs/flows/*.md and marked ⛔ "not started" in
-// docs/STATUS.md, with zero corresponding Rust struct anywhere in
+// docs/status.md, with zero corresponding Rust struct anywhere in
 // backends/crates/*/src (checked by grep for each name below). Modeling
 // their column shapes from doc prose alone would be inventing a plausible
 // schema for code that does not exist — the exact failure mode this file
@@ -294,7 +294,7 @@ model LedgerEntry {
 //   - webhook endpoints, the event/outbox pair, and webhook_delivery
 //     (docs/flows/webhooks.md's two-step outbox — fanout_state, retries)
 //   - the job queue and its dedupe_key (docs/flows/reconciler.md)
-//   - idempotency keys (docs/STATUS.md: ⛔, no design doc field list either)
+//   - idempotency keys (docs/status.md: ⛔, no design doc field list either)
 //   - Merchant (referenced only as a bare merchant_id string everywhere
 //     above — see the GAP note on PaymentIntent.merchant_id)
 //

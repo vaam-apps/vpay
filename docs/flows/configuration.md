@@ -39,7 +39,7 @@ shutdown signal, via `serve_with_bounded_drain` in
 of that length and exits non-zero if the clock wins. `vpay-worker-bin` accepts
 and logs the same flag but does nothing with it; there is no drain to bound
 because there is no job loop yet. Neither binary's handling of the *timeout*
-case is covered by a test today — see [../STATUS.md](../STATUS.md).
+case is covered by a test today — see [../status.md](../status.md).
 
 ## There is no sandbox mode
 
@@ -67,7 +67,7 @@ behave differently*.
 boot sequence that actually exists. Nothing in this repo loads a YAML file,
 resolves a `${}` placeholder, runs the validation rules below, or reconciles
 anything into a database, because there is no database layer yet
-(`docs/STATUS.md`). The steps below describe the design this repo is building
+(`docs/status.md`). The steps below describe the design this repo is building
 towards, not current behaviour.
 
 1. Load `application.yml`, overlay `application-{profile}.yml`.
@@ -138,4 +138,4 @@ accepted but inert on `vpay-worker-bin`.
 **Not started:** everything else in the "Boot sequence" above — YAML loading,
 `${}` placeholder resolution, validation wired into boot, and database
 reconciliation. `--database-url` and `--config` are accepted CLI/env inputs
-with nothing behind them yet. See [../STATUS.md](../STATUS.md).
+with nothing behind them yet. See [../status.md](../status.md).

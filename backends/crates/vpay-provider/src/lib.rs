@@ -99,7 +99,7 @@ pub enum ProviderError {
     #[error("operation not supported by this rail")]
     Unsupported,
     /// Not yet built. This is NOT a mock: it never pretends to succeed.
-    /// Every occurrence must appear in `docs/STATUS.md`.
+    /// Every occurrence must appear in `docs/status.md`.
     #[error("not implemented yet: {0}")]
     NotImplemented(&'static str),
 }

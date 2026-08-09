@@ -78,4 +78,4 @@ noticeably from Stripe's ergonomics, and it is deliberate.
 
 Types and the flow-selection logic are implemented and tested
 (`vpay-core::state`). No transition is driven by real data yet — see
-[../STATUS.md](../STATUS.md).
+[../status.md](../status.md).

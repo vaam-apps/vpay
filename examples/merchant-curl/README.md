@@ -1,6 +1,6 @@
 # Raw HTTP
 
-> Not runnable yet — `/v1/*` is not implemented. See ../../docs/STATUS.md.
+> Not runnable yet — `/v1/*` is not implemented. See ../../docs/status.md.
 
 ## Create a PaymentIntent
 

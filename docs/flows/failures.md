@@ -31,4 +31,4 @@ Each adapter's mapping lives in its own flow doc:
 ## Status
 
 The taxonomy is implemented and tested (`vpay-core::failure`). Neither adapter's
-mapping is implemented — see [../STATUS.md](../STATUS.md).
+mapping is implemented — see [../status.md](../status.md).
