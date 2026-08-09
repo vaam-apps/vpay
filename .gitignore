@@ -4,6 +4,8 @@
 storybook-static/
 dist/
 *.log
+# `next build` turns on `incremental`, which drops a tsbuildinfo next to the app.
+*.tsbuildinfo
 .env
 .env.*
 !.env.example

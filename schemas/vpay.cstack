@@ -1,83 +1,302 @@
-# vpay — CrateStack schema
-#
-# ┌──────────────────────────────────────────────────────────────────────────┐
-# │ STATUS: UNVERIFIED — DO NOT TREAT AS WORKING                             │
-# │                                                                          │
-# │ CrateStack describes .cstack as the single source of truth for models,   │
-# │ procedures, auth and policies, from which it generates SQLx/Postgres,    │
-# │ embedded SQLite and typed HTTP clients.                                  │
-# │                                                                          │
-# │ The actual grammar is NOT publicly documented — cratestack.dev/docs      │
-# │ returns 404 and no authoritative reference was found at the time of      │
-# │ writing. What follows is a DESIGN SKETCH of the intended model, written  │
-# │ in a plausible shape, not a file known to parse.                         │
-# │                                                                          │
-# │ Consequently this file is deliberately EXCLUDED FROM THE BUILD GRAPH:    │
-# │ no crate depends on it and no macro consumes it. Rewrite it against the  │
-# │ real grammar before wiring it in.                                        │
-# │                                                                          │
-# │ See docs/STATUS.md.                                                      │
-# └──────────────────────────────────────────────────────────────────────────┘
+// vpay — CrateStack schema
+//
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │ STATUS: SYNTAX VERIFIED, CONTENT IS A DESIGN SKETCH — NOT WIRED IN        │
+// │                                                                          │
+// │ The previous version of this file admitted the real .cstack grammar was  │
+// │ unknown (cratestack.dev/docs 404s publicly) and was written in an        │
+// │ invented Prisma-like shape. It has been rewritten against the real       │
+// │ grammar, cross-checked field by field against cratestack-parser's own    │
+// │ test suite rather than guessed from an overview page.                    │
+// │                                                                          │
+// │ Verified against CrateStack 0.7.8:                                       │
+// │   $ cratestack check --schema schemas/vpay.cstack                       │
+// │   schema OK: schemas/vpay.cstack                                        │
+// │                                                                          │
+// │ That proves the file *parses and type-checks* against the real grammar  │
+// │ — every scalar, attribute, relation and enum below was cross-checked    │
+// │ against cratestack-parser's own test suite, not guessed from a public   │
+// │ overview page. It does NOT prove a working migration or a running       │
+// │ server: this file is still EXCLUDED FROM THE BUILD GRAPH. No crate      │
+// │ depends on it, `cratestack migrate diff` has never been run against a   │
+// │ real vpay Postgres, and `docs/STATUS.md` still lists the database       │
+// │ schema itself as not started. Wiring it in is separate future work.     │
+// │                                                                          │
+// │ One more thing this rewrite had to learn the hard way: `cratestack      │
+// │ check` rejects column-aligned field declarations (multiple spaces       │
+// │ between a field name and its type) with a confusing "invalid type       │
+// │ reference" error that points at the wrong token entirely. Every field   │
+// │ below is therefore single-spaced, matching the real project's own       │
+// │ example schemas — not a style choice, a parser constraint.              │
+// │                                                                          │
+// │ This file models only what has real, tested Rust types to mirror        │
+// │ (vpay-core::state, vpay-core::failure, vpay-provider::Capabilities,      │
+// │ vpay-ledger). It deliberately does NOT invent shapes for entities that   │
+// │ exist only as prose in docs/flows/*.md with zero backing Rust type —     │
+// │ provider_requests, webhook events/endpoints, the job queue, idempotency  │
+// │ keys, and Merchant. The "GAP" comments below explain exactly what's      │
+// │ missing and why it was left out rather than invented. See                │
+// │ docs/STATUS.md for the authoritative done/not-done list.                 │
+// └──────────────────────────────────────────────────────────────────────────┘
 
-# --- reference data --------------------------------------------------------
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+
+// --- enums -------------------------------------------------------------
+// Every enum below is a direct transcription of a real, tested Rust enum —
+// variant-for-variant, in the enum's #[serde(rename_all = "snake_case")]
+// wire form, so IntentStatus::RequiresPaymentMethod and this schema's
+// requires_payment_method are one signifier, not two that can drift.
+
+// backends/crates/vpay-core/src/state.rs — ProviderFlow
+enum ProviderFlow {
+  push
+  redirect
+}
+
+// backends/crates/vpay-core/src/state.rs — IntentStatus. Note there is no
+// `failed` variant: docs/flows/payment-lifecycle.md's own state diagram
+// labels its "failed" box as an alias for
+// "requires_payment_method + last_payment_error" — a rail-reported failure
+// returns the intent to requires_payment_method, it does not add a state.
+enum IntentStatus {
+  requires_payment_method
+  requires_action
+  processing
+  succeeded
+  canceled
+}
+
+// backends/crates/vpay-core/src/state.rs — ChargeState. Charge, unlike
+// PaymentIntent, does have a real terminal `failed`.
+enum ChargeState {
+  submitting
+  submitted
+  pending
+  unresolved
+  succeeded
+  failed
+}
+
+// backends/crates/vpay-core/src/failure.rs — FailureCode. Closed vocabulary
+// by design ("this vocabulary is closed and owned by the core").
+enum FailureCode {
+  insufficient_funds
+  payer_timeout
+  payer_declined
+  invalid_payer
+  payer_limit_reached
+  payer_account_blocked
+  invalid_payee
+  payee_account_blocked
+  provider_account_blocked
+  provider_unavailable
+  provider_error
+}
+
+// backends/crates/vpay-ledger/src/lib.rs — AccountKind
+enum AccountKind {
+  merchant_payable
+  payer_clearing
+  platform_fee_revenue
+}
+
+// backends/crates/vpay-ledger/src/lib.rs — Direction
+enum Direction {
+  debit
+  credit
+}
+
+// --- reference data ------------------------------------------------------
 
 model Currency {
-  code      String @id          # 'XAF', 'EUR'
-  exponent  Int                 # a property of the currency, not the environment
+  code String @id @iso4217 @db_enforce // 'XAF', 'EUR' — real DB CHECK, verified below
+  exponent Int @range(min: 0, max: 4) @db_enforce // docs/flows/money.md: a property of the currency, not the environment
+
+  payment_intents PaymentIntent[] @relation(fields: [code], references: [currency_code])
+  charges Charge[] @relation(fields: [code], references: [currency_code])
+  ledger_entries LedgerEntry[] @relation(fields: [code], references: [currency_code])
 }
 
 model Provider {
-  code                    String @id     # 'mtn_momo' | 'orange_money'
-  display_name            String
-  flow                    String         # 'push' | 'redirect'
-  supports_refunds        Bool   @default(false)
-  supports_partial_refunds Bool  @default(false)
-  delivers_callbacks      Bool   @default(false)
-  requires_ip_allowlist   Bool   @default(false)
-  enabled                 Bool   @default(true)
+  code String @id @length(min: 1, max: 64) @db_enforce // 'mtn_momo' | 'orange_money'
+  display_name String @length(min: 1, max: 128)
+  flow ProviderFlow
+  supports_refunds Boolean @default(false)
+  supports_partial_refunds Boolean @default(false)
+  delivers_callbacks Boolean @default(false)
+  requires_ip_allowlist Boolean @default(false)
+  enabled Boolean @default(true)
+
+  charges Charge[] @relation(fields: [code], references: [provider_code])
+
+  // GAP — no DB-level coherence CHECK. backends/crates/vpay-provider/src/lib.rs:28-34
+  // (Capabilities::is_coherent) enforces `supports_partial_refunds ⇒
+  // supports_refunds` in Rust, and its own doc comment says "mirrored by a
+  // CHECK constraint in the schema" — docs/flows/configuration.md repeats
+  // the same claim ("partial-refunds ⇒ refunds | Mirrors the DB CHECK").
+  // That claim cannot be honoured by this grammar version: @db_enforce
+  // (crates/cratestack-migrate/src/convert/checks.rs) only promotes a
+  // single field's @range/@length/@iso4217 validator to a CHECK. There is
+  // no @@check(expr) or any other cross-column boolean constraint
+  // implemented in cratestack-parser today — `grep -rn '"check"\|db_enforce'
+  // crates/cratestack-parser/src` turns up nothing beyond the three
+  // eligible validators. (The framework's own ADR 0004 prose mentions
+  // "hand-written @@check constraints" as if the syntax existed; it does
+  // not appear anywhere in the parser or its tests — that ADR text
+  // describes something unimplemented, not something this schema failed
+  // to use.) This invariant remains Rust-only until the grammar grows a
+  // general CHECK escape hatch.
 }
 
-# --- payments --------------------------------------------------------------
+// --- payments --------------------------------------------------------------
 
 model PaymentIntent {
-  id                    String   @id
-  merchant_id           String
-  livemode              Bool
-  amount                Int                 # minor units, always
-  amount_received       Int      @default(0)
-  amount_refunded       Int      @default(0)
-  amount_refund_pending Int      @default(0)
-  currency              String   @relation(Currency.code)
-  status                String              # requires_payment_method | requires_action
-                                            # | processing | succeeded | canceled
-  payment_method_types  String[]
-  created_at            DateTime @default(now())
+  id String @id @length(min: 1, max: 64)
+  merchant_id String @length(min: 1, max: 128)
+  livemode Boolean
+  amount Int @range(min: 0) @db_enforce
+  amount_received Int @default(0) @range(min: 0) @db_enforce
+  amount_refunded Int @default(0) @range(min: 0) @db_enforce
+  amount_refund_pending Int @default(0) @range(min: 0) @db_enforce
+  currency_code String
+  currency Currency @relation(fields: [currency_code], references: [code])
+  status IntentStatus
+  last_payment_error String? @length(max: 512) // docs/flows/payment-lifecycle.md: populated when a rail-reported failure returns the intent to requires_payment_method
+  payment_method_types Json // NOT String[] — see note below
+  created_at DateTime @default(dbgenerated())
+
+  charges Charge[] @relation(fields: [id], references: [payment_intent_id])
+
+  @@index([merchant_id])
+
+  // `payment_method_types Json`, not `String[]`: verified with the real CLI
+  // that a list-arity scalar on a datasource-backed model is a *parse-time
+  // rejection*, not a style preference —
+  //   $ cratestack check --schema <fixture with `tags String[]`>
+  //   Error: list-valued type `String[]` is not supported on a
+  //   database-backed model — there is no SQL bind representation for a
+  //   list-valued scalar ... (cratestack-parser/src/tests_list_arity.rs
+  //   documents the same rejection as a regression test for issue #229)
+  // This is the one place the original invented-syntax file would have
+  // failed outright had anyone tried to run it through the real tool.
+
+  // GAP — merchant_id has no @relation. There is no Merchant model in
+  // this schema because there is no `struct Merchant` anywhere in
+  // backends/crates/*/src (checked by grep — zero hits). Inventing one to
+  // make this field "look" referentially sound would be exactly the
+  // plausible-but-fabricated failure mode this rewrite exists to avoid.
+
+  // GAP — same missing CHECK class as Provider, above, for the over-refund
+  // invariant: docs/flows/ledger.md says "The over-refund CHECK rejects the
+  // second of two concurrent over-refunds at the database level" — i.e.
+  // amount_refunded + amount_refund_pending <= amount. That is a
+  // cross-column arithmetic CHECK; @db_enforce cannot express it for the
+  // same reason noted on Provider. Today this is enforced only by Money's
+  // type-level guarantees in vpay-core (docs/flows/money.md invariant 3)
+  // at the moment of construction, not by the database.
 }
 
 model Charge {
-  id                    String   @id
-  payment_intent_id     String   @relation(PaymentIntent.id) @unique  # one per intent, forever
-  provider_code         String   @relation(Provider.code)
-  provider_reference_id String                                        # ours, durable before submit
-  provider_ref_extra    Json?                                         # rail key material (pay_token)
-  redirect_url          String?
-  state                 String
-  amount                Int
-  currency              String   @relation(Currency.code)
-  payer_ref             String?                                       # null on redirect rails
-  payer_ref_masked      String?
-  failure_code          String?
-  created_at            DateTime @default(now())
+  id String @id @length(min: 1, max: 64)
+  payment_intent_id String @unique @length(min: 1, max: 64) // "one charge per intent, forever" — a plain unique index, exactly as AGENTS.md and docs/flows/payment-lifecycle.md describe. This one IS fully expressible and is now real.
+  payment_intent PaymentIntent @relation(fields: [payment_intent_id], references: [id])
+  provider_code String
+  provider Provider @relation(fields: [provider_code], references: [code])
+  provider_reference_id Uuid // matches vpay_provider::ChargeRef::reference_id: Uuid exactly — the original file had this as `String`
+  provider_ref_extra Json? // vpay_provider::RefExtra = BTreeMap<String, String>; rail key material (pay_token)
+  redirect_url String? @uri
+  state ChargeState
+  amount Int @range(min: 0) @db_enforce
+  currency_code String
+  currency Currency @relation(fields: [currency_code], references: [code])
+  payer_ref String? @sensitive // null on redirect rails
+  payer_ref_masked String?
+  failure_code FailureCode?
+  failure_raw String? @length(max: 2000) @sensitive // vpay_provider::ChargeStatus::Failed carries both `code` AND `raw` — the original file captured only failure_code and silently dropped the raw provider message
+  created_at DateTime @default(dbgenerated())
+
+  ledger_transactions LedgerTransaction[] @relation(fields: [id], references: [charge_id])
+
+  @@index([state])
+
+  // GAP — provider_requests, the table docs/flows/crash-safety.md
+  // requires to disambiguate a crashed `submitting` charge ("Row exists,
+  // status_code IS NULL" vs "no row at all" vs "row has a status code"), is
+  // not modeled. `grep -rn "ProviderRequest" backends/crates/*/src` is
+  // empty — no Rust type exists to mirror. This is the single biggest
+  // structural gap in this file relative to the crash-safety design, and it
+  // is left out rather than invented from prose alone.
 }
 
-# --- policies (shape unverified) -------------------------------------------
+// --- ledger ------------------------------------------------------------
+// Mirrors backends/crates/vpay-ledger/src/lib.rs field-for-field. That
+// crate's types and its balancing invariant ARE implemented and tested
+// (docs/STATUS.md: "🟡 Types and validate() done + 3 tests. Persistence not
+// started") — unlike provider_requests/webhooks/jobs above, there is real,
+// tested Rust code this half of the file mirrors, which is the line this
+// rewrite draws between "design sketch of a tested type" and "invented
+// shape for a concept nobody has written a struct for yet". No migration or
+// SQLx query in this repo writes to either table below; this is the
+// intended persistence shape, not evidence persistence exists.
 
-policy merchant_isolation on PaymentIntent {
-  read:  auth.merchant_id == row.merchant_id
-  write: false                    # intents are written by the core, never by a client
+model LedgerTransaction {
+  id Cuid @id @default(dbgenerated())
+  charge_id String
+  charge Charge @relation(fields: [charge_id], references: [id])
+  created_at DateTime @default(dbgenerated())
+
+  entries LedgerEntry[] @relation(fields: [id], references: [transaction_id])
+
+  // GAP — docs/flows/ledger.md invariant 1, "per transaction: SUM(debit) =
+  // SUM(credit), per currency", cannot be a CHECK constraint under *any*
+  // schema grammar, CrateStack included: SQL CHECK constraints evaluate one
+  // row at a time, and this invariant is an aggregate over every
+  // LedgerEntry row sharing a transaction_id. Expressing it at the database
+  // layer needs a trigger (not something .cstack generates) or, as today,
+  // application enforcement — exactly what
+  // vpay_ledger::Transaction::validate() already does, tested by
+  // a_capture_with_a_fee_balances / an_unbalanced_transaction_is_rejected.
 }
 
-policy ledger_is_append_only on Charge {
-  update: false
-  delete: false
+model LedgerEntry {
+  id Cuid @id @default(dbgenerated())
+  transaction_id Cuid
+  transaction LedgerTransaction @relation(fields: [transaction_id], references: [id])
+  account AccountKind
+  direction Direction
+  amount Int @range(min: 0) @db_enforce
+  currency_code String
+  currency Currency @relation(fields: [currency_code], references: [code])
+
+  // GAP — vpay_ledger::AccountKind has exactly 3 variants (MerchantPayable,
+  // PayerClearing, PlatformFeeRevenue) with no per-merchant dimension, and
+  // this table mirrors that Rust type exactly. But docs/flows/ledger.md
+  // invariant 2 is "per merchant: balance(merchant_payable) = Σ captures −
+  // Σ fees − Σ refunds" — a query this table cannot answer as modeled,
+  // because nothing here says *which* merchant a merchant_payable posting
+  // belongs to. That is a real gap in the Rust type this schema mirrors,
+  // not something to paper over by adding a merchant_id column the Rust
+  // side doesn't have.
 }
+
+// --- intentionally not modeled ------------------------------------------
+//
+// The following are named in docs/flows/*.md and marked ⛔ "not started" in
+// docs/STATUS.md, with zero corresponding Rust struct anywhere in
+// backends/crates/*/src (checked by grep for each name below). Modeling
+// their column shapes from doc prose alone would be inventing a plausible
+// schema for code that does not exist — the exact failure mode this file
+// was rewritten to stop doing:
+//
+//   - webhook endpoints, the event/outbox pair, and webhook_delivery
+//     (docs/flows/webhooks.md's two-step outbox — fanout_state, retries)
+//   - the job queue and its dedupe_key (docs/flows/reconciler.md)
+//   - idempotency keys (docs/STATUS.md: ⛔, no design doc field list either)
+//   - Merchant (referenced only as a bare merchant_id string everywhere
+//     above — see the GAP note on PaymentIntent.merchant_id)
+//
+// Add each once its crate has a real, tested type to mirror — the same bar
+// this file just applied to the ledger models above.

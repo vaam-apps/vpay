@@ -18,8 +18,16 @@ members = [
 ]
 
 [workspace.package]
+version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# Floor of the whole resolved dependency graph's own declared `rust-version`
+# fields (`cargo metadata` → max over every package's `rust_version`, incl.
+# dev-dependencies since `cargo test`/`--all-targets` must build too).
+# Currently driven by `time` 0.3.47 and `testcontainers`/`testcontainers-modules`
+# 0.27/0.15, all of which declare 1.88. This is metadata-derived only — it has
+# not been verified by actually compiling with a 1.88 toolchain; see the note
+# in rust-toolchain.toml.
+rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/vymalo/vpay"
 authors = ["Vymalo"]
@@ -43,7 +51,7 @@ print_stdout = "warn"
 
 [workspace.dependencies]
 # --- async runtime & http ---
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "form"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "request-id", "timeout", "limit"] }
@@ -77,6 +85,9 @@ opentelemetry = "0.27"
 thiserror = "2"
 anyhow = "1"
 
+# --- cli ---
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+
 # --- crypto ---
 sha2 = "0.10"
 hmac = "0.12"
@@ -88,23 +99,31 @@ rand = "0.8"
 mimalloc = { version = "0.1", default-features = false }
 
 # --- test-only ---
-testcontainers = "0.23"
-testcontainers-modules = { version = "0.11", features = ["postgres"] }
+# 0.27 (not the newer 0.28) matches the pin `testcontainers-modules 0.15` needs;
+# both moved off `bollard 0.18` and its unmaintained `rustls-pemfile` +
+# vulnerable `tokio-tar` transitive deps (RUSTSEC-2025-0134, RUSTSEC-2025-0111)
+# onto a maintained fork, `astral-tokio-tar`. See deny.toml for the advisories
+# this cleared.
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
 wiremock = "0.6"
 insta = { version = "1", features = ["json", "redactions"] }
 proptest = "1"
 rstest = "0.23"
 
 # --- internal ---
-vpay-config = { path = "backends/crates/vpay-config" }
-vpay-core = { path = "backends/crates/vpay-core" }
-vpay-ledger = { path = "backends/crates/vpay-ledger" }
-vpay-provider = { path = "backends/crates/vpay-provider" }
-vpay-adapter-mtn-momo = { path = "backends/crates/vpay-adapter-mtn-momo" }
-vpay-adapter-orange-money = { path = "backends/crates/vpay-adapter-orange-money" }
-vpay-api = { path = "backends/crates/vpay-api" }
-vpay-worker = { path = "backends/crates/vpay-worker" }
-vpay-testkit = { path = "backends/crates/vpay-testkit" }
+# `version` alongside `path` is required: cargo-deny's `[bans] wildcards =
+# "deny"` policy (deny.toml) flags any workspace dep with only a path and no
+# version as a wildcard dependency.
+vpay-config = { path = "backends/crates/vpay-config", version = "0.1.0" }
+vpay-core = { path = "backends/crates/vpay-core", version = "0.1.0" }
+vpay-ledger = { path = "backends/crates/vpay-ledger", version = "0.1.0" }
+vpay-provider = { path = "backends/crates/vpay-provider", version = "0.1.0" }
+vpay-adapter-mtn-momo = { path = "backends/crates/vpay-adapter-mtn-momo", version = "0.1.0" }
+vpay-adapter-orange-money = { path = "backends/crates/vpay-adapter-orange-money", version = "0.1.0" }
+vpay-api = { path = "backends/crates/vpay-api", version = "0.1.0" }
+vpay-worker = { path = "backends/crates/vpay-worker", version = "0.1.0" }
+vpay-testkit = { path = "backends/crates/vpay-testkit", version = "0.1.0" }
 
 [profile.release]
 opt-level = 3

@@ -1,0 +1,40 @@
+# Keeps the build context (and both Dockerfiles' COPYs) free of host-side
+# build artifacts and dependency trees. Without this, `COPY backends
+# ./backends` / `COPY frontends ./frontends` would also ship this machine's
+# own `target/` (Rust, host-arch, gigabytes) and every `node_modules/`
+# (potentially host-arch native binaries) straight into the build context —
+# wasting cache and, for node_modules, risking a macOS/arm64 native module
+# being copied into a linux/alpine build.
+
+# Rust
+/target
+**/target
+
+# Node / pnpm
+**/node_modules
+.next/
+**/.next/
+storybook-static/
+dist/
+**/dist/
+.turbo/
+**/.turbo/
+*.tsbuildinfo
+
+# VCS / editor / OS
+.git
+.github
+.DS_Store
+*.log
+
+# Local env files (never belong in an image layer)
+.env
+.env.*
+!.env.example
+
+# Test artifacts
+cypress/screenshots/
+cypress/videos/
+
+# Docs — not needed inside either build context
+docs/
