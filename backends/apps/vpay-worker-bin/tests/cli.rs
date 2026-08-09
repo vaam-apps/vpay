@@ -108,6 +108,52 @@ fn send_sigterm(child: &Child) {
     assert!(status.success(), "`kill -TERM {pid}` itself failed to run");
 }
 
+/// Polls `child` for exit with `Child::try_wait` up to `timeout`, instead of
+/// the blocking `Child::wait` (which has no timeout in `std`). Force-kills
+/// and reaps the child if it doesn't exit in time, returning `None`. Mirrors
+/// `vpay-server/tests/cli.rs`'s helper of the same name — see its doc
+/// comment for why this matters for a test that repeats a spawn/signal/wait
+/// cycle many times.
+#[cfg(unix)]
+fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Some(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Collects every remaining captured stdout line, up to `timeout`, stopping
+/// early once the reader thread's sender disconnects (which happens once
+/// the child's stdout pipe closes on process exit — call this only after
+/// the child has already been reaped). Used to assert a line never
+/// appeared anywhere in the process's whole output, not just within some
+/// arbitrary blocking window. Mirrors `vpay-server/tests/cli.rs`'s helper
+/// of the same name.
+#[cfg(unix)]
+fn collect_remaining_lines(rx: &Receiver<String>, timeout: Duration) -> Vec<String> {
+    let deadline = Instant::now() + timeout;
+    let mut lines = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(remaining) {
+            Ok(line) => lines.push(line),
+            Err(_) => break,
+        }
+    }
+    lines
+}
+
 #[test]
 fn an_invalid_log_format_env_var_is_read_and_rejected() {
     // No `--log-format` flag is passed at all, so a parse failure can only
@@ -187,5 +233,121 @@ fn an_explicit_profile_flag_wins_over_a_conflicting_env_var() {
     assert!(
         exit.success(),
         "expected exit 0 after SIGTERM, got {exit:?}"
+    );
+}
+
+/// Regression test for the SIGTERM-before-handler-installation startup race
+/// (shared with `vpay-server`, see that crate's `tests/cli.rs` for the fuller
+/// writeup and the calibration data behind this test's shape): `vpay-worker-bin`
+/// used to construct its shutdown-signal future right before entering its
+/// select loop, so the OS-level SIGTERM handler was only installed once that
+/// future was first polled — after CLI parsing, tracing init, the startup log
+/// lines, and the first heartbeat tick. A SIGTERM delivered before that point
+/// kept its default disposition (immediate termination) and bypassed graceful
+/// shutdown entirely.
+///
+/// The worker has no HTTP surface to poll for "is it up", and waiting for its
+/// startup log line would suffer the same problem `vpay-server`'s equivalent
+/// test avoids by not waiting for `/healthz`: by the time a log line is
+/// observed, tracing has already initialised, which (pre-fix) is well past
+/// where handler installation used to happen too, closing the window this
+/// test exists to catch.
+///
+/// Like the server's version of this test, this warms up the binary once
+/// first (a throwaway `--help` invocation) to pay this platform's one-time
+/// cold-start cost (disk page-in, and on macOS first-launch code-signature
+/// verification) outside the timed section, and uses the same
+/// spawn → `DELAY` → SIGTERM → `SETTLE`, majority-vote-of-`ATTEMPTS` shape
+/// for the same reason: a bare fixed sleep (even repeated with a strict
+/// "every attempt must succeed" rule) could not separate this platform's
+/// sub-5ms scheduling noise from the (still real) bug without an
+/// unacceptable false-failure rate on correctly fixed code, and a *tight*
+/// loop of back-to-back spawns lets CPU frequency scaling ramp up enough to
+/// wash the signal out entirely, regardless of which binary is under test —
+/// `SETTLE` exists to prevent that. See the server test's doc comment in
+/// `backends/apps/vpay-server/tests/cli.rs` for the full calibration
+/// writeup (measured rates, the intermediate designs that didn't hold up,
+/// the fully-cold and Linux-container cross-checks); the same `DELAY`,
+/// `ATTEMPTS` and `MIN_SUCCESSES` are used here since this binary's startup
+/// path is close enough to the server's (same signal-handling code, no
+/// adapter-registry log or `TcpListener::bind` to speak of) that a separate
+/// full calibration pass wasn't expected to land meaningfully differently,
+/// and spot-checks here did not contradict that.
+///
+/// **Known limitation, disclosed rather than hidden** (see the server
+/// test's own note for the full explanation, including why `DELAY = 50ms`
+/// specifically was chosen): this is a statistical, not deterministic, test
+/// of a genuinely narrow race, and `cargo nextest run --workspace`'s real
+/// contention from ~20 concurrently running test binaries measurably
+/// widened the window for *both* fixed and unfixed code — the delay that
+/// separated them cleanly in isolation does not survive running as part of
+/// the full suite. `DELAY = 50ms` prioritises never failing the full suite
+/// on correctly fixed code over maximal sensitivity to a reintroduced bug;
+/// this test's demonstrated ability to catch the bug is strongest when run
+/// scoped/alone. If this test becomes a source of CI flakiness, treat that
+/// as this limitation showing up, not necessarily a reintroduced bug.
+///
+/// Asserting on the log line, not just the exit code, matters regardless:
+/// exit 0 alone doesn't rule out some other reason the process happened to
+/// shut down cleanly.
+#[cfg(unix)]
+#[test]
+fn sigterm_immediately_after_startup_still_triggers_graceful_shutdown() {
+    // Pays the one-time cold-start cost described above so it isn't a
+    // confound for the timed attempts below. `--help` returns before this
+    // binary's own signal-handling or tracing code ever runs.
+    let _ = bin().arg("--help").output();
+
+    const ATTEMPTS: u8 = 20;
+    const MIN_SUCCESSES: u8 = 16;
+    const DELAY: Duration = Duration::from_millis(50);
+    /// Settle gap between attempts — see the server test's doc comment for
+    /// why this is load-bearing, not cosmetic: without it, back-to-back
+    /// spawns keep the CPU boosted from sustained load, which washes out
+    /// the very signal this test depends on.
+    const SETTLE: Duration = Duration::from_millis(100);
+
+    // Bounds each attempt's wait so one stuck child (see `wait_with_timeout`)
+    // can cost at most this much wall time rather than hanging the test.
+    const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+    let mut outcomes = Vec::with_capacity(ATTEMPTS as usize);
+    for attempt in 1..=ATTEMPTS {
+        let mut cmd = bin();
+        cmd.env("VPAY_PROFILE", "sigterm-race-test")
+            .env("VPAY_LOG_FORMAT", "text");
+        let (mut guard, rx) = spawn_and_capture_stdout(cmd);
+
+        std::thread::sleep(DELAY);
+
+        send_sigterm(&guard.0);
+        let exit = wait_with_timeout(&mut guard.0, WAIT_TIMEOUT);
+        let lines = collect_remaining_lines(&rx, Duration::from_secs(5));
+        let graceful = exit.is_some_and(|exit| exit.success())
+            && lines
+                .iter()
+                .any(|l| l.contains("received SIGTERM, starting graceful shutdown"));
+        outcomes.push((attempt, graceful, exit, lines));
+        std::thread::sleep(SETTLE);
+    }
+
+    let successes = outcomes.iter().filter(|(_, ok, _, _)| *ok).count();
+    assert!(
+        successes as u8 >= MIN_SUCCESSES,
+        "only {successes}/{ATTEMPTS} attempts shut down gracefully after an immediate SIGTERM \
+         (need at least {MIN_SUCCESSES}); this many failures indicates the handler is not \
+         installed early enough, not just scheduling noise. Failing attempts:\n{}",
+        outcomes
+            .iter()
+            .filter(|(_, ok, _, _)| !ok)
+            .map(|(attempt, _, exit, lines)| {
+                let exit_desc = match exit {
+                    Some(status) => format!("{status:?}"),
+                    None => format!("timed out after {WAIT_TIMEOUT:?} and was force-killed"),
+                };
+                format!("  attempt {attempt}/{ATTEMPTS}: exit={exit_desc} lines={lines:?}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }

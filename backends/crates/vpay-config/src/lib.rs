@@ -9,7 +9,9 @@
 use serde::{Deserialize, Serialize};
 
 pub mod cli;
+pub mod signal;
 pub use cli::{CommonArgs, LogFormat, ServerArgs, WorkerArgs};
+pub use signal::ShutdownSignals;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Deployment {
