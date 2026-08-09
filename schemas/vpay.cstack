@@ -9,9 +9,11 @@
 // │ grammar, cross-checked field by field against cratestack-parser's own    │
 // │ test suite rather than guessed from an overview page.                    │
 // │                                                                          │
-// │ Verified against CrateStack 0.7.8:                                       │
+// │ Verified against CrateStack 0.7.10, and 0.7.8 before it:                 │
 // │   $ cratestack check --schema schemas/vpay.cstack                       │
 // │   schema OK: schemas/vpay.cstack                                        │
+// │ Re-checked on the 0.7.10 release; no regression, and no grammar change  │
+// │ that affects this file (see the GAP notes on cross-column CHECKs).      │
 // │                                                                          │
 // │ That proves the file *parses and type-checks* against the real grammar  │
 // │ — every scalar, attribute, relation and enum below was cross-checked    │

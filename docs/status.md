@@ -143,7 +143,9 @@ makes the core refuse a refund on that rail.
 | `frontends/Dockerfile` | 🟡 | Rewritten this pass; **still never built** — see below |
 | `deny.toml` | ✅ | `cargo deny check` passes clean: `advisories ok, bans ok, licenses ok, sources ok`. The three advisories that failed before were fixed by **upgrading dependencies, not by suppressing them** — see below. One advisory is explicitly ignored: **RUSTSEC-2023-0071** (Marvin Attack in `rsa`, no patched release, an unconditional dependency of `authkestra-engine` per [ADR-0009](adr/0009-dashboard-oidc-provider.md)), accepted deliberately with the reasoning recorded inline in `deny.toml`. **This entry was preemptive when added and now genuinely fires**: `authkestra-op`/`authkestra-engine` landed as dev-dependencies of `vpay-tests-integration` in this pass (see "Authkestra OP tables" above), and `cargo deny -L info check advisories` now reports `note[advisory-ignored]` against `rsa v0.9.10` via that path — independently re-run for this update, output confirmed. `cargo deny check` still passes with 0 errors because an `ignore`d advisory downgrades to a note, not a failure; the exposure itself is still narrower than "in production," since the only path to `rsa` is `vpay-tests-integration`'s dev-dependencies — no shipping binary pulls it in. Also bans `aws-lc-rs`/`aws-lc-sys` so a second rustls crypto provider cannot reappear |
 | GitHub Actions | 🟡 | Workflow written; **never executed** |
-| `schemas/*.cstack` | 🟡 | **Syntax now verified against real CrateStack 0.7.8**; content remains a design sketch, excluded from the build graph — see below. **The migrations are now the authoritative schema, and this file has diverged from them on two constraints**: raw SQL in `backends/migrations/0002_create-providers.sql` and `0003_create-payment-intents.sql` expresses two `CHECK` constraints (`partial_refunds_imply_refunds`, `no_over_refund`) that CrateStack's grammar cannot — no `@@check(expr)` exists in this version. The `.cstack` file's own `GAP` comments on those two models now point at the migrations that implement them |
+| `schemas/*.cstack` | 🟡 | **Syntax verified against real CrateStack 0.7.10** (and 0.7.8 before it); content remains a design sketch, excluded from the build graph — see below. **The migrations are now the authoritative schema, and this file has diverged from them on two constraints**: raw SQL in `backends/migrations/0002_create-providers.sql` and `0003_create-payment-intents.sql` expresses two `CHECK` constraints (`partial_refunds_imply_refunds`, `no_over_refund`) that CrateStack's grammar cannot — no `@@check(expr)` exists in 0.7.8 or 0.7.10
+(the only `@@` attributes the parser accepts are `@@index` and `@@unique`, and
+`cratestack-migrate` still gates CHECK emission on a single field's validator). The `.cstack` file's own `GAP` comments on those two models now point at the migrations that implement them |
 
 ### Docker / compose — rewritten, still unverified
 
@@ -201,13 +203,14 @@ $ cratestack check --schema schemas/vpay.cstack
 schema OK: schemas/vpay.cstack
 ```
 
-Independently re-run for this pass (`cratestack 0.7.8`, the same version the
-header cites) — output confirmed verbatim.
+Independently re-run against `cratestack 0.7.10` on its release, and against
+`0.7.8` before it — same output verbatim from both, so the 0.7.10 release is a
+clean re-verification rather than a claim inherited from an older run.
 
 What this does and does not prove:
 
 - **Syntax is verified.** Every scalar, attribute, relation and enum in the
-  file parses and type-checks against the real CrateStack 0.7.8 grammar.
+  file parses and type-checks against the real CrateStack 0.7.10 grammar.
 - **It does not prove a working migration or a running server.** The file is
   still **excluded from the build graph** — no crate depends on it, no macro
   consumes it, and `cratestack migrate diff` has never been run against a real
@@ -235,7 +238,7 @@ What this does and does not prove:
   `vpay-provider::tests::partial_refunds_imply_refunds`) still enforces the
   first of those in Rust too — belt and braces, not a replacement for the DB
   constraint. **This file has diverged from what it mirrors**: it is still
-  syntax-verified against real CrateStack 0.7.8 and still excluded from the
+  syntax-verified against real CrateStack 0.7.10 and still excluded from the
   build graph (below), but on these two constraints specifically it is now a
   design sketch that the migrations have moved past, not the other way
   around — see `docs/flows/configuration.md` and `docs/flows/ledger.md` for
