@@ -8,6 +8,17 @@
 name: vpay
 
 services:
+  # No `healthcheck:` here. `vpay-server`'s runtime image is `FROM scratch`
+  # (docs/adr/0004-musl-mimalloc.md) — no shell, no curl/wget, no package
+  # manager, and the only executable in the image is `/vpay-server` itself.
+  # A shell-form `CMD-SHELL` healthcheck cannot run there, and adding a
+  # second static binary (busybox, wget) just to answer this check would
+  # reintroduce the exact attack surface the ADR removed on purpose. The
+  # honest fix is a `--healthcheck` self-check mode on the `vpay-server`
+  # binary (reusing the one executable already in the image, calling its own
+  # `/healthz` over loopback) — that's a `backends/apps/vpay-server` change,
+  # out of scope for this file. Until that lands, `dashboard`'s dependency
+  # below is the best ordering available, not a guarantee of readiness.
   vpay-server:
     build:
       context: .
@@ -22,6 +33,12 @@ services:
       wiremock-mtn: { condition: service_started }
       wiremock-orange: { condition: service_started }
     ports: ["8080:8080"]
+    restart: unless-stopped
+    # Comfortably above CommonArgs' default `--shutdown-grace-seconds` (25s,
+    # backends/crates/vpay-config/src/cli.rs) so `docker compose down` lets
+    # the server's own graceful-shutdown path finish instead of the
+    # container being SIGKILLed out from under it before it can.
+    stop_grace_period: 30s
 
   vpay-worker:
     build:
@@ -34,6 +51,8 @@ services:
       RUST_LOG: info
     depends_on:
       postgres: { condition: service_healthy }
+    restart: unless-stopped
+    stop_grace_period: 30s
 
   dashboard:
     build:
@@ -42,5 +61,13 @@ services:
     environment:
       VPAY_DASH_API: http://vpay-server:8080
     depends_on:
+      # `service_started`, not `service_healthy`: `vpay-server` has no
+      # healthcheck to report healthy (see the comment above it). This is a
+      # boot-order guarantee only — the dashboard can still start before the
+      # server has finished binding its listener. That race is currently
+      # harmless: per docs/STATUS.md the dashboard renders a static scaffold
+      # notice and makes no server-side call to `vpay-server` yet. Revisit
+      # this once the dashboard actually calls `/dash/v1` on render.
       vpay-server: { condition: service_started }
     ports: ["3000:3000"]
+    restart: unless-stopped

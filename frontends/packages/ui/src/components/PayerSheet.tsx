@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion';
 import { Drawer } from 'vaul';
 
-import { cn } from '../cn.js';
+import { cn } from '../cn';
 
 export interface PayerSheetProps {
   open: boolean;

@@ -73,7 +73,7 @@ jobs:
       - run: pnpm exec cypress install
       - name: bring up the real stack (rails stubbed by WireMock, not in-process)
         run: docker compose -f compose.yml -f compose.e2e.yml up -d --build
-      - run: pnpm --filter @vpay/e2e test
+      - run: pnpm --filter @vpay/e2e e2e
       - if: always()
         run: docker compose -f compose.yml -f compose.e2e.yml logs --no-color > compose.log
       - if: always()

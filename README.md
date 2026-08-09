@@ -70,7 +70,7 @@ frontends/
   tests/        e2e (Cypress)
 examples/       merchant-curl · merchant-node · webhook-receiver
 docs/           adr/ · rfc/ · flows/ · runbooks/ · api/ · STATUS.md
-schemas/        *.cstack   (UNVERIFIED — see docs/STATUS.md)
+schemas/        *.cstack   (syntax verified, design sketch, excluded from the build — see docs/STATUS.md)
 .xtask/         repo automation and the two self-checks
 ```
 
@@ -97,13 +97,49 @@ just ci               # everything CI runs, in CI's order
 
 `just` with no argument lists every task.
 
+### Running the binaries directly
+
+Both binaries take a `clap`-based CLI where every option auto-resolves from an
+environment variable, with an explicit flag beating its env var
+(`backends/crates/vpay-config/src/cli.rs`). Run `--help` on either to see the
+live flag set — that is more trustworthy than any doc if the two disagree:
+
+```bash
+cargo run -p vpay-server -- --help
+cargo run -p vpay-worker-bin -- --help
+```
+
+```bash
+# flags win over env vars
+cargo run -p vpay-server -- --bind 127.0.0.1:8080 --log-format text
+
+# or drive it by env, as compose.yml does
+VPAY_BIND=127.0.0.1:8080 VPAY_LOG_FORMAT=text cargo run -p vpay-server
+```
+
+Neither binary calls a payment rail. `vpay-server` writes rows and serves only
+`/healthz` today; `vpay-worker-bin` stays up answering shutdown signals but
+its job loop is not implemented, and it says so in a startup banner and a
+repeating heartbeat log line. `--database-url`, `--config` and
+`--public-base-url` are accepted but not yet consumed by anything — see
+[`docs/STATUS.md`](docs/STATUS.md) and
+[`docs/flows/configuration.md`](docs/flows/configuration.md).
+
 ### Known environment gotchas
 
-- **Cypress binary.** `pnpm install` needs `pnpm exec cypress install`
-  afterwards on a machine that can reach Cypress's CDN. In restricted networks,
-  `CYPRESS_INSTALL_BINARY=0` lets the rest of the install proceed.
+- **Cypress binary.** The e2e specs (`frontends/tests/e2e`, run via
+  `pnpm --filter @vpay/e2e run e2e`) need `pnpm exec cypress install`
+  afterwards on a machine that can reach Cypress's CDN — its binary is not
+  fetched by a plain `pnpm install` and is not present in every environment.
+  In restricted networks, `CYPRESS_INSTALL_BINARY=0` lets the rest of the
+  install proceed without it. `pnpm -r test` no longer touches Cypress at all
+  (`@vpay/e2e`'s own test script is `e2e`, not `test`), so the ordinary unit
+  test sweep works regardless of whether the binary is installed.
 - **musl target.** `rustup target add x86_64-unknown-linux-musl` before
-  `just build-dist`.
+  `just build-dist`. `backends/Dockerfile` now builds the host's *implicit*
+  musl target rather than hardcoding the x86_64 triple, but the Dockerfiles
+  themselves have not been built in this repo's own development environment —
+  see [`docs/STATUS.md`](docs/STATUS.md)'s Infrastructure section for why.
 
 ## Documentation
 

@@ -1,7 +1,7 @@
 import { cva, type VariantProps } from 'class-variance-authority';
 import { statusLabel, statusTone, type PaymentStatus } from '@vpay/tokens';
 
-import { cn } from '../cn.js';
+import { cn } from '../cn';
 
 const badge = cva('badge gap-1 whitespace-nowrap', {
   variants: {

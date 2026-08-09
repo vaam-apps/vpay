@@ -35,6 +35,10 @@ build-rust:
 build-web:
     pnpm -r build
 
+# CI's `web` job builds this too; not part of `pnpm -r build`.
+build-storybook:
+    pnpm --filter @vpay/ui build-storybook
+
 # musl static binaries, as shipped
 build-dist:
     cargo build --profile dist --target x86_64-unknown-linux-musl -p vpay-server -p vpay-worker-bin
@@ -56,10 +60,10 @@ test-web:
 
 test-e2e:
     docker compose -f compose.yml -f compose.e2e.yml up -d --build
-    pnpm --filter @vpay/e2e test; \
-      status=$?; \
+    pnpm --filter @vpay/e2e e2e; \
+      e2e_status=$?; \
       docker compose -f compose.yml -f compose.e2e.yml down -v; \
-      exit $status
+      exit $e2e_status
 
 # ------------------------------------------------------------------ lint ---
 

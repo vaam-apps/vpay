@@ -3,6 +3,13 @@ RUN corepack enable
 WORKDIR /build
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json .npmrc ./
 COPY frontends ./frontends
+# pnpm-workspace.yaml also globs `examples/*`, but that directory is
+# deliberately NOT copied into this build context. Verified directly
+# (reconstructing this exact context with `examples/` absent): pnpm resolves
+# the glob to zero matches and proceeds — `--frozen-lockfile` does not
+# require a workspace-glob match to exist on disk, only that the lockfile is
+# internally consistent with whatever *does* exist. Copying it would only
+# add unused files to the image build context.
 ENV CYPRESS_INSTALL_BINARY=0
 RUN pnpm install --frozen-lockfile --filter @vpay/dashboard...
 RUN pnpm --filter @vpay/dashboard build

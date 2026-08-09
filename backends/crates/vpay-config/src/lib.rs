@@ -8,6 +8,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod cli;
+pub use cli::{CommonArgs, LogFormat, ServerArgs, WorkerArgs};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Deployment {
     pub name: String,
