@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { PAYMENT_STATUS, statusLabel } from '@vpay/tokens';
 import { describe, expect, it } from 'vitest';
 
-import { StatusBadge } from './StatusBadge.js';
+import { StatusBadge } from './status-badge.js';
 
 describe('StatusBadge', () => {
   it('renders the shared label for every status', () => {

@@ -30,11 +30,11 @@ structurally possible.
 
 - Unwritten code returns `ProviderError::NotImplemented("<crate>::<fn>")`. It
   **never** returns a plausible-looking success, an empty list, or a zero.
-- Every such token must appear in `docs/STATUS.md`. `cargo xtask verify-status`
+- Every such token must appear in `docs/status.md`. `cargo xtask verify-status`
   fails the build otherwise — and it fails in both directions.
 - Tests for unbuilt behaviour are `#[ignore = "not implemented: … — see
-  docs/STATUS.md"]`, so a green run never overstates coverage.
-- When you finish something, update `docs/STATUS.md` in the same commit. A
+  docs/status.md"]`, so a green run never overstates coverage.
+- When you finish something, update `docs/status.md` in the same commit. A
   status page that lags is worse than none, because people trust it.
 
 If you are unsure whether something counts as done: would a test fail if it
@@ -122,7 +122,7 @@ Each ends with a **Status** section stating what is actually built.
 ## Commits and PRs
 
 - Conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`).
-- A PR that changes behaviour updates `docs/STATUS.md` and the relevant flow doc
+- A PR that changes behaviour updates `docs/status.md` and the relevant flow doc
   in the same PR.
 - `just ci` must pass locally before review.
 

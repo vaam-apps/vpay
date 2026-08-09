@@ -3,7 +3,7 @@
 //! Everything that touches the network happens here, never in the API process.
 //!
 //! STATUS: only the poll ladder is implemented and tested. Job dequeue,
-//! submission and delivery are NOT implemented — see `docs/STATUS.md`.
+//! submission and delivery are NOT implemented — see `docs/status.md`.
 
 use std::time::Duration;
 

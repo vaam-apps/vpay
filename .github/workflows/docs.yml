@@ -6,7 +6,7 @@ on:
 
 jobs:
   status-is-current:
-    name: STATUS.md matches the code
+    name: status.md matches the code
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

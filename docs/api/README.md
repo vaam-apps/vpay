@@ -8,7 +8,7 @@ Authenticated with `sk_live_` / `sk_test_` keys. Form-encoded bodies, Stripe's
 object model, Stripe's error envelope, Stripe's idempotency semantics.
 
 **Status: not implemented.** Only `/healthz` and a Stripe-shaped 404 exist. See
-[../STATUS.md](../STATUS.md).
+[../status.md](../status.md).
 
 Planned subset:
 

@@ -2,7 +2,7 @@
 #
 # Two invariants this repo enforces on itself, both wired into `just verify`:
 #   * no test double is reachable from a shipping binary
-#   * every unimplemented item is declared in docs/STATUS.md
+#   * every unimplemented item is declared in docs/status.md
 
 set shell := ["bash", "-uc"]
 
@@ -120,4 +120,4 @@ dev-dashboard:
 # Fail if a doc links to a file that does not exist.
 docs-check:
     cargo xtask verify-status
-    @echo "note: link checking is not implemented yet — see docs/STATUS.md"
+    @echo "note: link checking is not implemented yet — see docs/status.md"

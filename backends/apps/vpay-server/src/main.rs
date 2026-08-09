@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("binding {}", args.bind))?;
 
-    tracing::warn!("vpay-server is a scaffold: only /healthz is implemented. See docs/STATUS.md");
+    tracing::warn!("vpay-server is a scaffold: only /healthz is implemented. See docs/status.md");
     tracing::info!(addr = %args.bind, "listening");
 
     let shutdown_grace = Duration::from_secs(args.common.shutdown_grace_seconds);

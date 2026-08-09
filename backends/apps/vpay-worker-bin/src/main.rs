@@ -1,6 +1,6 @@
 //! vpay worker: submit, poll, reconcile, deliver.
 //!
-//! The job loop itself is not implemented (`docs/STATUS.md`) — this process
+//! The job loop itself is not implemented (`docs/status.md`) — this process
 //! supervises nothing yet. It used to exit immediately on start, on the
 //! theory that idling in a loop that did nothing would look like a running
 //! worker in `docker compose ps`. In practice that made the compose stack
@@ -35,14 +35,14 @@ async fn main() -> anyhow::Result<()> {
     tracing::warn!(
         "vpay-worker-bin is a scaffold: the job loop is NOT implemented. No jobs \
          are being dequeued, polled, or delivered. This process stays up only to \
-         answer shutdown signals correctly. See docs/STATUS.md."
+         answer shutdown signals correctly. See docs/status.md."
     );
 
     // `--shutdown-grace-seconds` / `VPAY_SHUTDOWN_GRACE_SECONDS` is parsed
     // and validated here (it is shared with `vpay-server` via
     // `CommonArgs`), but intentionally not consumed below: there is no
     // in-flight work for it to bound yet, because the job loop it is meant
-    // to bound the drain of does not exist (docs/STATUS.md). Once that loop
+    // to bound the drain of does not exist (docs/status.md). Once that loop
     // is implemented, this value should bound how long it waits for an
     // in-flight job to finish after a shutdown signal, the same way
     // `vpay-server`'s `main.rs` bounds its HTTP request drain. Wiring it in
@@ -52,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::debug!(
         shutdown_grace_seconds = args.common.shutdown_grace_seconds,
         "shutdown grace period accepted for CLI parity with vpay-server; has no effect yet, \
-         there is no job loop for it to bound (see docs/STATUS.md)"
+         there is no job loop for it to bound (see docs/status.md)"
     );
 
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
@@ -72,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
             _ = heartbeat.tick() => {
                 tracing::warn!(
                     "vpay-worker-bin heartbeat: job loop still not implemented, no jobs \
-                     are being processed. See docs/STATUS.md."
+                     are being processed. See docs/status.md."
                 );
             }
         }

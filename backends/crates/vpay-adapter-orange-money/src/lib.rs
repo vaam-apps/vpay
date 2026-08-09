@@ -2,7 +2,7 @@
 //!
 //! STATUS: capabilities are real and enforced; wire calls are NOT implemented.
 //! Every unimplemented method returns `ProviderError::NotImplemented` — it never
-//! fabricates a success. See `docs/STATUS.md` and `docs/flows/adapter-orange-money.md`.
+//! fabricates a success. See `docs/status.md` and `docs/flows/adapter-orange-money.md`.
 
 use vpay_core::{Money, ProviderFlow};
 use vpay_provider::{

@@ -81,4 +81,4 @@ Invariant 1 is implemented and tested in `vpay-ledger`
 (`a_capture_with_a_fee_balances`, `an_unbalanced_transaction_is_rejected`).
 **Persistence and invariants 2–4 are not started**, and invariant 2 additionally
 cannot be computed from the current `AccountKind` type as noted above — see
-[../STATUS.md](../STATUS.md).
+[../status.md](../status.md).

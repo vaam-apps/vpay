@@ -65,7 +65,7 @@ services:
       # healthcheck to report healthy (see the comment above it). This is a
       # boot-order guarantee only — the dashboard can still start before the
       # server has finished binding its listener. That race is currently
-      # harmless: per docs/STATUS.md the dashboard renders a static scaffold
+      # harmless: per docs/status.md the dashboard renders a static scaffold
       # notice and makes no server-side call to `vpay-server` yet. Revisit
       # this once the dashboard actually calls `/dash/v1` on render.
       vpay-server: { condition: service_started }

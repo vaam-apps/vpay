@@ -5,7 +5,7 @@
  * API). The dashboard authenticates with an OIDC session, never a merchant
  * secret key — see docs/adr/0008-dashboard-scope.md.
  *
- * STATUS: types only. No request is issued yet; see docs/STATUS.md.
+ * STATUS: types only. No request is issued yet; see docs/status.md.
  */
 
 import type { PaymentStatus } from '@vpay/tokens';
@@ -22,7 +22,7 @@ export interface PaymentIntentView {
 
 export class NotImplementedError extends Error {
   constructor(what: string) {
-    super(`${what} is not implemented — see docs/STATUS.md`);
+    super(`${what} is not implemented — see docs/status.md`);
     this.name = 'NotImplementedError';
   }
 }

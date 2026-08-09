@@ -85,4 +85,4 @@ method, not a core change.
 ## Status
 
 Capabilities are declared and tested. **No wire call is implemented** — see
-[../STATUS.md](../STATUS.md).
+[../status.md](../status.md).

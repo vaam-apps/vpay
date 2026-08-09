@@ -5,7 +5,7 @@
 //! merchant received. See `docs/flows/ledger.md`.
 //!
 //! STATUS: types and the balancing invariant are implemented and tested.
-//! Persistence is NOT implemented — see `docs/STATUS.md`.
+//! Persistence is NOT implemented — see `docs/status.md`.
 
 use vpay_core::{Money, MoneyError};
 

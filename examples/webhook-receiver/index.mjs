@@ -4,7 +4,7 @@
  * The scheme is Stripe's, so if you already verify Stripe webhooks this is the
  * same code with a different header name.
  *
- * vpay does not send webhooks yet (see ../../docs/STATUS.md), but the
+ * vpay does not send webhooks yet (see ../../docs/status.md), but the
  * verification below is complete and correct — copy it.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
