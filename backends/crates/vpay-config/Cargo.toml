@@ -1,0 +1,20 @@
+[package]
+name = "vpay-config"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+vpay-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+figment.workspace = true
+garde.workspace = true
+serde_yaml_ng.workspace = true

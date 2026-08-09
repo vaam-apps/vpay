@@ -1,0 +1,121 @@
+[workspace]
+resolver = "3"
+members = [
+    "backends/crates/vpay-config",
+    "backends/crates/vpay-core",
+    "backends/crates/vpay-ledger",
+    "backends/crates/vpay-provider",
+    "backends/crates/vpay-adapter-mtn-momo",
+    "backends/crates/vpay-adapter-orange-money",
+    "backends/crates/vpay-api",
+    "backends/crates/vpay-worker",
+    "backends/crates/vpay-testkit",
+    "backends/apps/vpay-server",
+    "backends/apps/vpay-worker-bin",
+    "backends/tests/integration",
+    "backends/tests/conformance",
+    ".xtask",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/vymalo/vpay"
+authors = ["Vymalo"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+# The house rule from docs/adr/0007: a panic in a payment path is a defect.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "warn"
+float_arithmetic = "deny"     # money is integer minor units, always (docs/flows/money.md)
+dbg_macro = "deny"
+print_stdout = "warn"
+
+[workspace.dependencies]
+# --- async runtime & http ---
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "form"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "request-id", "timeout", "limit"] }
+hyper = "1"
+
+# --- tls: rustls everywhere, never native-tls (docs/adr/0005) ---
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2"] }
+
+# --- data ---
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio", "tls-rustls-ring", "postgres", "uuid", "time", "json", "macros", "migrate",
+] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+time = { version = "0.3", features = ["serde", "macros"] }
+rust_decimal = "1"
+
+# --- serde & config ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+figment = { version = "0.10", features = ["yaml", "env"] }
+garde = { version = "0.22", features = ["derive"] }
+
+# --- observability ---
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+opentelemetry = "0.27"
+
+# --- errors ---
+thiserror = "2"
+anyhow = "1"
+
+# --- crypto ---
+sha2 = "0.10"
+hmac = "0.12"
+subtle = "2"
+aes-gcm = "0.10"
+rand = "0.8"
+
+# --- allocator (docs/adr/0004) ---
+mimalloc = { version = "0.1", default-features = false }
+
+# --- test-only ---
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }
+wiremock = "0.6"
+insta = { version = "1", features = ["json", "redactions"] }
+proptest = "1"
+rstest = "0.23"
+
+# --- internal ---
+vpay-config = { path = "backends/crates/vpay-config" }
+vpay-core = { path = "backends/crates/vpay-core" }
+vpay-ledger = { path = "backends/crates/vpay-ledger" }
+vpay-provider = { path = "backends/crates/vpay-provider" }
+vpay-adapter-mtn-momo = { path = "backends/crates/vpay-adapter-mtn-momo" }
+vpay-adapter-orange-money = { path = "backends/crates/vpay-adapter-orange-money" }
+vpay-api = { path = "backends/crates/vpay-api" }
+vpay-worker = { path = "backends/crates/vpay-worker" }
+vpay-testkit = { path = "backends/crates/vpay-testkit" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.dist]
+inherits = "release"
+
+# Faster test builds; nextest runs a lot of them.
+[profile.test]
+opt-level = 1

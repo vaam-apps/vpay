@@ -1,0 +1,21 @@
+[package]
+name = "vpay-tests-integration"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+vpay-core.workspace = true
+vpay-provider.workspace = true
+vpay-adapter-mtn-momo.workspace = true
+vpay-adapter-orange-money.workspace = true
+vpay-testkit.workspace = true
+tokio.workspace = true
+rstest.workspace = true

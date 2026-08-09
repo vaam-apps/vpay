@@ -1,0 +1,24 @@
+[package]
+name = "vpay-testkit"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# INVARIANT: this crate must appear ONLY under [dev-dependencies] elsewhere in
+# the workspace. `cargo xtask verify-no-mocks` fails the build otherwise.
+# See docs/adr/0006-no-mocks-in-main-processes.md
+
+[lints]
+workspace = true
+
+[dependencies]
+vpay-core.workspace = true
+vpay-provider.workspace = true
+testcontainers.workspace = true
+testcontainers-modules.workspace = true
+wiremock.workspace = true
+tokio.workspace = true
+uuid.workspace = true

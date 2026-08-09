@@ -1,0 +1,83 @@
+# vpay — CrateStack schema
+#
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │ STATUS: UNVERIFIED — DO NOT TREAT AS WORKING                             │
+# │                                                                          │
+# │ CrateStack describes .cstack as the single source of truth for models,   │
+# │ procedures, auth and policies, from which it generates SQLx/Postgres,    │
+# │ embedded SQLite and typed HTTP clients.                                  │
+# │                                                                          │
+# │ The actual grammar is NOT publicly documented — cratestack.dev/docs      │
+# │ returns 404 and no authoritative reference was found at the time of      │
+# │ writing. What follows is a DESIGN SKETCH of the intended model, written  │
+# │ in a plausible shape, not a file known to parse.                         │
+# │                                                                          │
+# │ Consequently this file is deliberately EXCLUDED FROM THE BUILD GRAPH:    │
+# │ no crate depends on it and no macro consumes it. Rewrite it against the  │
+# │ real grammar before wiring it in.                                        │
+# │                                                                          │
+# │ See docs/STATUS.md.                                                      │
+# └──────────────────────────────────────────────────────────────────────────┘
+
+# --- reference data --------------------------------------------------------
+
+model Currency {
+  code      String @id          # 'XAF', 'EUR'
+  exponent  Int                 # a property of the currency, not the environment
+}
+
+model Provider {
+  code                    String @id     # 'mtn_momo' | 'orange_money'
+  display_name            String
+  flow                    String         # 'push' | 'redirect'
+  supports_refunds        Bool   @default(false)
+  supports_partial_refunds Bool  @default(false)
+  delivers_callbacks      Bool   @default(false)
+  requires_ip_allowlist   Bool   @default(false)
+  enabled                 Bool   @default(true)
+}
+
+# --- payments --------------------------------------------------------------
+
+model PaymentIntent {
+  id                    String   @id
+  merchant_id           String
+  livemode              Bool
+  amount                Int                 # minor units, always
+  amount_received       Int      @default(0)
+  amount_refunded       Int      @default(0)
+  amount_refund_pending Int      @default(0)
+  currency              String   @relation(Currency.code)
+  status                String              # requires_payment_method | requires_action
+                                            # | processing | succeeded | canceled
+  payment_method_types  String[]
+  created_at            DateTime @default(now())
+}
+
+model Charge {
+  id                    String   @id
+  payment_intent_id     String   @relation(PaymentIntent.id) @unique  # one per intent, forever
+  provider_code         String   @relation(Provider.code)
+  provider_reference_id String                                        # ours, durable before submit
+  provider_ref_extra    Json?                                         # rail key material (pay_token)
+  redirect_url          String?
+  state                 String
+  amount                Int
+  currency              String   @relation(Currency.code)
+  payer_ref             String?                                       # null on redirect rails
+  payer_ref_masked      String?
+  failure_code          String?
+  created_at            DateTime @default(now())
+}
+
+# --- policies (shape unverified) -------------------------------------------
+
+policy merchant_isolation on PaymentIntent {
+  read:  auth.merchant_id == row.merchant_id
+  write: false                    # intents are written by the core, never by a client
+}
+
+policy ledger_is_append_only on Charge {
+  update: false
+  delete: false
+}

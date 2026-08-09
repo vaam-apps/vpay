@@ -1,0 +1,46 @@
+# Full end-to-end stack for Cypress.
+#
+#   docker compose -f compose.yml -f compose.e2e.yml up --build
+#
+# Brings up Postgres + both rail stubs (from compose.yml) plus the real server,
+# worker and dashboard. Nothing in the application knows it is talking to a stub.
+
+name: vpay
+
+services:
+  vpay-server:
+    build:
+      context: .
+      dockerfile: backends/Dockerfile
+      target: server
+    environment:
+      VPAY_PROFILE: sandbox
+      DATABASE_URL: postgres://vpay:vpay@postgres:5432/vpay
+      RUST_LOG: info
+    depends_on:
+      postgres: { condition: service_healthy }
+      wiremock-mtn: { condition: service_started }
+      wiremock-orange: { condition: service_started }
+    ports: ["8080:8080"]
+
+  vpay-worker:
+    build:
+      context: .
+      dockerfile: backends/Dockerfile
+      target: worker
+    environment:
+      VPAY_PROFILE: sandbox
+      DATABASE_URL: postgres://vpay:vpay@postgres:5432/vpay
+      RUST_LOG: info
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: frontends/Dockerfile
+    environment:
+      VPAY_DASH_API: http://vpay-server:8080
+    depends_on:
+      vpay-server: { condition: service_started }
+    ports: ["3000:3000"]

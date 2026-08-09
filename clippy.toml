@@ -1,0 +1,7 @@
+# Production code must not unwrap, expect or panic — a panic in a payment path
+# is a defect (docs/adr/0007-lint-policy.md). Tests are exempt: a failing
+# assertion SHOULD panic, that is how a test reports.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-dbg-in-tests = false

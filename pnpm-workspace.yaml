@@ -1,0 +1,5 @@
+packages:
+  - "frontends/packages/*"
+  - "frontends/apps/*"
+  - "frontends/tests/*"
+  - "examples/*"

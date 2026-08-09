@@ -1,0 +1,5 @@
+# Stable-only options. `imports_granularity` and `group_imports` would be nice
+# but are nightly-gated, and warning on every `cargo fmt` is worse than living
+# without them.
+edition = "2024"
+max_width = 100

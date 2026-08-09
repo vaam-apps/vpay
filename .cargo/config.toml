@@ -1,0 +1,14 @@
+[alias]
+xtask = "run --quiet --package xtask --"
+
+[build]
+# Keep incremental artifacts out of each crate directory.
+target-dir = "target"
+
+# musl static builds (docs/adr/0004): no glibc in the runtime image.
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[env]
+# rustls only; a native-tls backend must never be linked (docs/adr/0005).
+RUSTFLAGS_NOTE = "see docs/adr/0005-rustls-only.md"

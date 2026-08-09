@@ -1,0 +1,12 @@
+/target
+**/node_modules
+.next/
+storybook-static/
+dist/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+cypress/screenshots/
+cypress/videos/

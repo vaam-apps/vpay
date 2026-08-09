@@ -1,0 +1,14 @@
+name: docs
+
+on:
+  pull_request:
+    paths: ["docs/**", "README.md", "AGENTS.md", "CLAUDE.md"]
+
+jobs:
+  status-is-current:
+    name: STATUS.md matches the code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo xtask verify-status

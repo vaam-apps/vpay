@@ -1,0 +1,33 @@
+{
+  "mappings": [
+    {
+      "name": "oauth token",
+      "request": { "method": "POST", "urlPath": "/oauth/v2/token" },
+      "response": {
+        "status": 200,
+        "jsonBody": { "access_token": "stub-token", "token_type": "Bearer", "expires_in": 3600 }
+      }
+    },
+    {
+      "name": "webpayment returns a pay_token and a redirect URL",
+      "request": { "method": "POST", "urlPathPattern": "/orange-money-webpay/.*/v1/webpayment" },
+      "response": {
+        "status": 201,
+        "jsonBody": {
+          "pay_token": "stub-pay-token",
+          "payment_url": "http://localhost:8082/stub-hosted-page/stub-pay-token",
+          "notif_token": "stub-notif-token",
+          "status": 201
+        }
+      }
+    },
+    {
+      "name": "transactionstatus: success",
+      "request": { "method": "POST", "urlPathPattern": "/orange-money-webpay/.*/v1/transactionstatus" },
+      "response": {
+        "status": 200,
+        "jsonBody": { "status": "SUCCESS", "order_id": "stub-order", "txnid": "stub-txn" }
+      }
+    }
+  ]
+}

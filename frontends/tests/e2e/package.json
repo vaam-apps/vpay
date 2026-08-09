@@ -1,0 +1,12 @@
+{
+  "name": "@vpay/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "cypress run",
+    "open": "cypress open",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": { "cypress": "^13.17.0", "typescript": "^5.7.0" }
+}

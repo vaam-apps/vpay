@@ -1,0 +1,8 @@
+{
+  "name": "@vpay-examples/merchant-node",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node index.mjs" },
+  "dependencies": { "stripe": "^17.5.0" }
+}

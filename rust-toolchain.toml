@@ -1,0 +1,12 @@
+# Pinned so CI and every developer build the same compiler.
+#
+# NOTE: this repo was authored and verified against stable 1.95.0. The MSRV
+# declared in Cargo.toml (`rust-version = "1.85"`) is the *floor* required by
+# edition 2024 — it has NOT been verified here, because only stable was
+# available in the authoring environment. Verify before relying on it.
+#
+# The musl target is required by `just build-dist`; add it with
+#   rustup target add x86_64-unknown-linux-musl
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

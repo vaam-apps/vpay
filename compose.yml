@@ -1,0 +1,43 @@
+# Local development stack.
+#
+# Note what is NOT here: any service pretending to be a payment rail inside the
+# application. WireMock is a separate process the app reaches over HTTP via a
+# host entry in configuration — the same mechanism as production.
+# See docs/adr/0006-no-mocks-in-main-processes.md.
+
+name: vpay
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: vpay
+      POSTGRES_PASSWORD: vpay
+      POSTGRES_DB: vpay
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vpay -d vpay"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # Stands in for MTN MoMo. A *host*, not a linked mock.
+  wiremock-mtn:
+    image: wiremock/wiremock:3.9.2
+    command: ["--global-response-templating", "--verbose"]
+    ports: ["8081:8080"]
+    volumes:
+      - ./backends/tests/conformance/wiremock/mtn:/home/wiremock:ro
+
+  # Stands in for Orange Money Web Payment.
+  wiremock-orange:
+    image: wiremock/wiremock:3.9.2
+    command: ["--global-response-templating", "--verbose"]
+    ports: ["8082:8080"]
+    volumes:
+      - ./backends/tests/conformance/wiremock/orange:/home/wiremock:ro
+
+volumes:
+  pgdata:
