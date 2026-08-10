@@ -1,0 +1,13 @@
+# Minimal, valid configuration for the subprocess tests in
+# `backends/apps/vpay-server/tests/cli.rs`. Deliberately carries no
+# providers, currencies, or OAuth clients — all optional
+# (`#[serde(default)]` in `vpay_config::Config`) — so these tests need no
+# `${VAR}` environment variables beyond `DATABASE_URL` to boot the real
+# binary. See `backends/crates/vpay-config/src/config.rs` and
+# `config/application.yml` (the repo's own realistic example) for the full
+# shape this is a stripped-down instance of.
+
+deployment:
+  name: vpay-server-cli-test
+  livemode: false
+  public_base_url: http://localhost:8080

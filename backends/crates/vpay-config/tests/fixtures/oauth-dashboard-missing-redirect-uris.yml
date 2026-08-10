@@ -1,0 +1,14 @@
+# Fixture for `a_dashboard_client_with_no_redirect_uris_is_rejected`
+# (backends/crates/vpay-config/src/config.rs). A client that can never
+# redirect back can never complete authorization-code + PKCE, so an empty
+# `redirect_uris` is fatal at boot, unconditionally (not just in livemode).
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+dashboard_client:
+  client_id: vpay-dashboard
+  redirect_uris: []
+  scope: dashboard:read

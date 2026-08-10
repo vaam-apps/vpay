@@ -94,6 +94,27 @@ fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_vpay-worker-bin"))
 }
 
+/// A minimal, valid `vpay_config::Config` YAML file — mirrors
+/// `backends/apps/vpay-server/tests/cli.rs`'s helper of the same name; see
+/// that file's and this crate's own fixture comment for why it needs no
+/// `${VAR}` environment variables beyond `DATABASE_URL` to let this binary
+/// boot.
+fn valid_config_path() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/valid-config.yml"
+    )
+}
+
+/// A `vpay_config::Config` YAML file that fails validation
+/// (`ConfigError::InsecureHost`: an `http://` host under `livemode: true`).
+fn invalid_config_path() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/invalid-config.yml"
+    )
+}
+
 /// Spawns `cmd` with its stdout piped, and streams that stdout line-by-line
 /// into a channel from a background thread. Returns the guarded child
 /// (stderr is discarded) plus the receiving end.
@@ -224,13 +245,92 @@ fn an_invalid_log_format_env_var_is_read_and_rejected() {
     );
 }
 
+/// `--config` / `VPAY_CONFIG` stays `Option<PathBuf>` at the `clap` level
+/// (`vpay_config::CommonArgs::config`) but `main.rs` now treats it as
+/// required — mirrors `backends/apps/vpay-server/tests/cli.rs`'s test of the
+/// same name. No `DATABASE_URL` is supplied either: config loading happens
+/// before this binary ever tries to connect to a database, so a missing
+/// config must fail first.
+#[test]
+fn a_missing_config_is_a_non_zero_exit_naming_the_problem() {
+    let output = bin().output().expect("spawn vpay-worker-bin");
+
+    assert!(
+        !output.status.success(),
+        "expected a non-zero exit with no --config/VPAY_CONFIG at all"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--config") || stderr.contains("VPAY_CONFIG"),
+        "stderr should name the missing config, got: {stderr}"
+    );
+}
+
+/// A config file that exists but fails validation
+/// (`ConfigError::InsecureHost`, `tests/fixtures/invalid-config.yml`) must
+/// also fail clearly and before any database connection is attempted.
+#[test]
+fn a_bad_config_causes_a_non_zero_exit_naming_the_problem() {
+    let output = bin()
+        .env("VPAY_CONFIG", invalid_config_path())
+        .output()
+        .expect("spawn vpay-worker-bin");
+
+    assert!(
+        !output.status.success(),
+        "expected a non-zero exit for a config that fails validation"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("livemode requires https"),
+        "stderr should name the specific validation failure, got: {stderr}"
+    );
+}
+
+/// The positive counterpart: a config that passes validation lets this
+/// binary boot all the way to its startup log line and answer shutdown
+/// signals — proving `main.rs` actually calls `vpay_config::Config::load`
+/// rather than only proving the two failure paths above.
+#[test]
+fn a_valid_config_lets_the_worker_boot() {
+    with_live_postgres(|database_url| {
+        let mut cmd = bin();
+        cmd.env("VPAY_LOG_FORMAT", "text")
+            .env("DATABASE_URL", &database_url)
+            .env("VPAY_CONFIG", valid_config_path());
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let (mut guard, rx) = spawn_and_capture_stdout(cmd);
+
+        let line = wait_for_line(
+            &rx,
+            |l| l.contains("database connected and migrations applied"),
+            Duration::from_secs(5),
+        );
+        assert!(
+            line.is_some(),
+            "worker never logged a successful startup with a valid config"
+        );
+
+        #[cfg(unix)]
+        {
+            send_sigterm(&guard.0);
+            let exit = guard.0.wait().expect("wait for graceful shutdown");
+            assert!(
+                exit.success(),
+                "expected exit 0 after SIGTERM, got {exit:?}"
+            );
+        }
+    });
+}
+
 #[test]
 fn profile_env_var_is_read_and_stamped_into_the_startup_log() {
     with_live_postgres(|database_url| {
         let mut cmd = bin();
         cmd.env("VPAY_PROFILE", "integration-test-profile")
             .env("VPAY_LOG_FORMAT", "text")
-            .env("DATABASE_URL", &database_url);
+            .env("DATABASE_URL", &database_url)
+            .env("VPAY_CONFIG", valid_config_path());
         #[cfg_attr(not(unix), allow(unused_mut))]
         let (mut guard, rx) = spawn_and_capture_stdout(cmd);
 
@@ -264,6 +364,7 @@ fn an_explicit_profile_flag_wins_over_a_conflicting_env_var() {
         cmd.env("VPAY_PROFILE", "env-should-lose")
             .env("VPAY_LOG_FORMAT", "text")
             .env("DATABASE_URL", &database_url)
+            .env("VPAY_CONFIG", valid_config_path())
             .args(["--profile", "flag-should-win"]);
         let (mut guard, rx) = spawn_and_capture_stdout(cmd);
 
@@ -380,7 +481,8 @@ fn sigterm_immediately_after_startup_still_triggers_graceful_shutdown() {
             let mut cmd = bin();
             cmd.env("VPAY_PROFILE", "sigterm-race-test")
                 .env("VPAY_LOG_FORMAT", "text")
-                .env("DATABASE_URL", &database_url);
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_CONFIG", valid_config_path());
             let (mut guard, rx) = spawn_and_capture_stdout(cmd);
 
             std::thread::sleep(DELAY);

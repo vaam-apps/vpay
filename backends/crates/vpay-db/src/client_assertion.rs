@@ -1,0 +1,121 @@
+//! [`SqlClientAssertionStore`] — Postgres-backed replay protection for
+//! `private_key_jwt` client assertions (RFC 7523 §3 point 7), against
+//! `oauth_client_assertion_jtis` (`backends/migrations/0011_create-oauth-
+//! client-assertion-jtis.sql`).
+//!
+//! `authkestra-op` ships exactly two implementations of
+//! `authkestra_op::client_assertion::ClientAssertionStore`, and neither fits
+//! vpay's deployment: `NoClientAssertionStore` is the crate's own fail-closed
+//! default, refusing every assertion outright; `MemoryClientAssertionStore`
+//! is a single-process `Mutex<HashMap>` whose own doc comment names exactly
+//! vpay's situation as the case it does not cover — "a multi-node deployment
+//! gets one accepted replay per node; such a deployment must supply a store
+//! backed by something shared (Redis `SET NX`, a SQL unique index) instead."
+//! vpay runs multiple replicas on Kubernetes, so this is that SQL-unique-
+//! index store.
+
+use async_trait::async_trait;
+use authkestra_op::client_assertion::ClientAssertionStore;
+use authkestra_op::error::OpError;
+use chrono::{DateTime, Utc};
+use sqlx::PgPool;
+use time::OffsetDateTime;
+
+/// Postgres-backed [`ClientAssertionStore`], durable and shared across every
+/// vpay replica.
+///
+/// `PgPool` is a cheap `Arc`-backed handle (per `sqlx`'s own docs), so
+/// [`SqlClientAssertionStore::new`] does not open a connection — it just
+/// clones the handle in.
+#[derive(Debug, Clone)]
+pub struct SqlClientAssertionStore {
+    pool: PgPool,
+}
+
+impl SqlClientAssertionStore {
+    /// Builds a store against `pool`.
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+/// Converts `authkestra-op`'s `chrono::DateTime<Utc>` into the `time::
+/// OffsetDateTime` vpay's own convention (and every other TIMESTAMPTZ bind
+/// in this crate) uses, so this is the one place that boundary is crossed.
+///
+/// Exact for every representable instant: both types model the same instant
+/// in UTC, so the conversion is a lossless reinterpretation via the Unix
+/// timestamp, not an approximation — `time::OffsetDateTime::UNIX_EPOCH` and
+/// `chrono`'s epoch are the same instant, and both crates count elapsed
+/// seconds/nanoseconds from it. The two failure paths below are not really
+/// about precision loss:
+///
+/// - `from_unix_timestamp` rejects a `chrono::DateTime<Utc>` so far outside
+///   `time::OffsetDateTime`'s representable range that it cannot happen from
+///   a legitimate assertion — `authkestra_op`'s own
+///   `MAX_CLIENT_ASSERTION_LIFETIME_SECS` (300s) already bounds `expires_at`
+///   to a few minutes from now before this function is ever reached.
+/// - `replace_nanosecond` can only fail on a value in chrono's leap-second
+///   range (`1_000_000_000..=1_999_999_999`, chrono's own documented
+///   representation for `:60` — `time` has no leap-second slot at all). The
+///   clamp below maps that to the last representable nanosecond of the same
+///   second rather than failing replay protection over a leap second, which
+///   changes nothing about whether the jti has been spent.
+fn chrono_to_offset_date_time(dt: DateTime<Utc>) -> Result<OffsetDateTime, OpError> {
+    let without_nanos = OffsetDateTime::from_unix_timestamp(dt.timestamp()).map_err(|error| {
+        tracing::error!(
+            %error,
+            "client assertion expires_at is out of range for time::OffsetDateTime"
+        );
+        OpError::Storage
+    })?;
+
+    let nanos = dt.timestamp_subsec_nanos().min(999_999_999);
+    without_nanos.replace_nanosecond(nanos).map_err(|error| {
+        tracing::error!(
+            %error,
+            "client assertion expires_at nanosecond component is invalid"
+        );
+        OpError::Storage
+    })
+}
+
+#[async_trait]
+impl ClientAssertionStore for SqlClientAssertionStore {
+    /// Atomically records `jti` as spent until `expires_at`.
+    ///
+    /// The `INSERT` itself is the atomic guard (migration `0011`'s own
+    /// header comment, and the trait's own doc comment on `record_jti`):
+    /// never check-then-insert, since two concurrent presentations of the
+    /// same captured assertion would both observe "not yet seen" under that
+    /// pattern — precisely the race this store exists to close.
+    /// `rows_affected() == 1` after `ON CONFLICT (jti) DO NOTHING` means this
+    /// was the row's first insert (fresh, accept); `0` means the conflict
+    /// clause fired because the row already existed (replay, reject).
+    ///
+    /// # Errors
+    ///
+    /// Returns `OpError::Storage` — opaque by the trait's own design, so a
+    /// SQL failure never leaks into an OAuth error response — if the
+    /// `expires_at` conversion or the query itself fails. The real cause is
+    /// logged via `tracing::error!` before being discarded into the opaque
+    /// variant.
+    async fn record_jti(&self, jti: &str, expires_at: DateTime<Utc>) -> Result<bool, OpError> {
+        let expires_at = chrono_to_offset_date_time(expires_at)?;
+
+        let result = sqlx::query(
+            "INSERT INTO oauth_client_assertion_jtis (jti, expires_at) VALUES ($1, $2) \
+             ON CONFLICT (jti) DO NOTHING",
+        )
+        .bind(jti)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, jti, "failed to record client assertion jti");
+            OpError::Storage
+        })?;
+
+        Ok(result.rows_affected() == 1)
+    }
+}

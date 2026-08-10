@@ -1,0 +1,10 @@
+# Minimal, valid configuration for the subprocess tests in
+# `backends/apps/vpay-worker-bin/tests/cli.rs`. Mirrors
+# `backends/apps/vpay-server/tests/fixtures/valid-config.yml` — see that
+# file's comment for why this needs no `${VAR}` environment variables beyond
+# `DATABASE_URL` to boot the real binary.
+
+deployment:
+  name: vpay-worker-cli-test
+  livemode: false
+  public_base_url: http://localhost:8080

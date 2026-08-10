@@ -20,6 +20,35 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# Offline (cached-JWKS) bearer-token validation for the two authenticated
+# surfaces (`/v1`, `/dash/v1`) — see src/resource_auth.rs. Already a
+# workspace dependency (root Cargo.toml pins it for exactly this); added
+# here at the member level only, per docs/api/README.md's OP-3 scope.
+authkestra-resource.workspace = true
+# `authkestra-resource` depends on jsonwebtoken with the `rust_crypto`
+# backend (pure-Rust RSA/EC/Ed25519, no `ring`/`aws-lc-rs` — unrelated to
+# rustls's TLS crypto provider, see deny.toml). Not itself a workspace
+# dependency; pinned to the same major version and feature set authkestra-
+# resource already resolves, so this adds no new package to the graph, only
+# makes an already-resolved one directly importable here.
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 
 [dev-dependencies]
 tower.workspace = true
+wiremock.workspace = true
+rand.workspace = true
+# Test-only: `authkestra_resource::jwt::JwksCache` fetches over `reqwest`,
+# which eagerly builds a rustls TLS config even for a plain-HTTP wiremock
+# target and panics without a process-default `CryptoProvider` installed
+# (root Cargo.toml's own comment on the authkestra-* pins names this exact
+# prerequisite). Installing it is test setup here, not production code —
+# whichever agent wires this module into a real binary must make the same
+# call once in `main()`, before the first JWKS fetch.
+rustls.workspace = true
+# Test-only: mints RSA keypairs to sign JWTs against, so validation is
+# exercised against real cryptographic material rather than a stub. Already
+# in the resolved graph via authkestra-engine (see deny.toml's RUSTSEC-2023-
+# 0071 note); not a workspace dependency, so pinned directly here the same
+# way jsonwebtoken is above.
+rsa = "0.9"
+base64 = "0.22"

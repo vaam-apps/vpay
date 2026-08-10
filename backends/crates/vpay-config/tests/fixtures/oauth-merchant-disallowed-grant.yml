@@ -1,0 +1,20 @@
+# Fixture for `a_merchant_client_declaring_a_disallowed_grant_is_rejected`
+# (backends/crates/vpay-config/src/config.rs). ADR-0010 drops the device flow
+# and refresh tokens for /v1 outright — a merchant client declaring
+# `authorization_code` (the dashboard's grant, not a merchant's) must be
+# fatal at boot.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials, authorization_code]

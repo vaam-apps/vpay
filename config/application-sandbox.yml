@@ -5,3 +5,11 @@
 
 deployment:
   name: vpay-sandbox
+
+# Local dev typically runs the dashboard's own frontend dev server on 3000,
+# separate from vpay-server's own :8080 — override just this one field, not
+# the whole dashboard_client block; figment's dict merge leaves client_id
+# and scope untouched from the base file.
+dashboard_client:
+  redirect_uris:
+    - http://localhost:3000/dash/v1/callback

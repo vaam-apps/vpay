@@ -48,14 +48,44 @@ async fn main() -> anyhow::Result<()> {
     // vpay_config::cli and docs/adr/0003-yaml-configuration.md.
     tracing::info!(profile = %args.common.profile, "deployment profile (selects a config file only)");
 
+    // Load and validate the YAML deployment configuration (ADR-0003) before
+    // touching the database at all. Boot-sequence steps 1-3 in
+    // docs/flows/configuration.md — load, resolve `${ENV}`, validate — are
+    // deliberately ordered ahead of step 4 (DB reconciliation, not yet
+    // implemented) and step 5 (bind the port) in that doc, and this mirrors
+    // it: validating a local YAML file needs no network round trip, so a
+    // broken config fails in milliseconds instead of after paying for a
+    // Postgres connection attempt and a migration run this process is about
+    // to throw away anyway. `--config` / `VPAY_CONFIG` stays `Option<PathBuf>`
+    // at the clap level (`vpay_config::CommonArgs::config`) for the same
+    // reason `--database-url` does — see that field's doc comment — but is
+    // required here: a payment gateway that boots with no validated
+    // deployment configuration is exactly the half-configured process
+    // ADR-0003 says must never serve traffic, `/healthz` included.
+    let config = vpay_config::Config::load(args.common.config.as_deref(), &args.common.profile)
+        .context("loading and validating configuration (--config / VPAY_CONFIG, ADR-0003)")?;
+    // Redaction-safe by construction: discrete, non-secret fields only,
+    // never the `Config` struct itself (its `Debug` is safe too, per its
+    // own doc comment, but logging it wholesale would make that safety a
+    // load-bearing assumption of this log line instead of a defence in
+    // depth behind it).
+    tracing::info!(
+        deployment = %config.deployment.name,
+        livemode = config.deployment.livemode,
+        providers = config.providers.len(),
+        merchant_clients = config.merchant_clients.len(),
+        dashboard_client_configured = config.dashboard_client.is_some(),
+        "configuration loaded and validated"
+    );
+
     // `--database-url` / `DATABASE_URL` stays `Option<String>` at the clap
-    // level (`vpay_config::CommonArgs`, out of scope for this change — see
-    // docs/status.md) but is treated as required *here*: a payment server
-    // that binds a listener and answers `/healthz` with no database behind
-    // it would be lying about its own readiness (`/healthz` now runs a real
-    // `SELECT 1` — see `vpay_api::router`), and this repo's own rule is
-    // never to look more finished than it is. A missing value is a hard,
-    // loud startup failure, not a silently DB-less scaffold mode.
+    // level (`vpay_config::CommonArgs`) for the same reason `--config` does
+    // above, but is treated as required *here*: a payment server that binds
+    // a listener and answers `/healthz` with no database behind it would be
+    // lying about its own readiness (`/healthz` now runs a real `SELECT 1`
+    // — see `vpay_api::router`), and this repo's own rule is never to look
+    // more finished than it is. A missing value is a hard, loud startup
+    // failure, not a silently DB-less scaffold mode.
     let database_url = args.common.database_url.as_deref().context(
         "--database-url / DATABASE_URL is required: vpay-server cannot serve traffic without \
          a database to open a pool against and migrate (see docs/status.md)",

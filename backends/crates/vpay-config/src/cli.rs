@@ -51,10 +51,14 @@ pub enum LogFormat {
 pub struct CommonArgs {
     /// Postgres connection string.
     ///
-    /// Accepted and threaded through even though the database layer is not
-    /// implemented yet (`docs/status.md`) — the wiring exists so turning the
-    /// layer on later is a matter of using this value, not inventing a new
-    /// flag.
+    /// `Option<String>` at the clap level only: both `vpay-server` and
+    /// `vpay-worker-bin` treat this as required at runtime (see each
+    /// binary's own `main.rs`) — a missing value is a hard startup failure,
+    /// not a silently DB-less scaffold mode. It stays optional here rather
+    /// than `required = true` on the `clap` attribute so the CLI-parsing
+    /// layer and the binary-level "what does this process actually need to
+    /// run" decision stay separate concerns; `config` (below) follows the
+    /// same shape for the identical reason.
     ///
     /// Routinely embeds a password (`postgres://user:pass@host/db`) — see
     /// [`CommonArgs`]'s hand-written `Debug` impl below, which prints only
@@ -71,8 +75,14 @@ pub struct CommonArgs {
 
     /// Path to the YAML configuration file (ADR-0003).
     ///
-    /// Optional because figment layering / file loading is not implemented
-    /// yet (`docs/status.md`).
+    /// `Option<PathBuf>` at the clap level only, for the same reason
+    /// [`Self::database_url`] is — see that field's doc comment. Both
+    /// `vpay-server` and `vpay-worker-bin` treat this as required at
+    /// runtime: `vpay_config::Config::load` is called with it before either
+    /// binary connects to the database or binds a listener, and a missing
+    /// value is a hard, loud startup failure. A payment gateway that boots
+    /// with no validated deployment configuration is exactly the
+    /// half-configured process ADR-0003 says must never serve traffic.
     #[arg(long, env = "VPAY_CONFIG")]
     pub config: Option<PathBuf>,
 

@@ -19,23 +19,28 @@
 //! does not exist, only the base file's values apply. If it exists but is
 //! malformed, that is a hard error like any other load failure.
 //!
-//! # What is deliberately not modelled here
+//! # OAuth clients are modelled; merchant *payment routing* still is not
 //!
-//! Merchant OAuth clients and dashboard clients are not represented — those
-//! auth decisions are being written up as a separate ADR, and guessing
-//! their shape now would be exactly the fabrication `AGENTS.md` forbids.
-//! Concretely, this leaves two boot-guard rules from
-//! `docs/flows/configuration.md`'s table unimplemented, on purpose:
+//! ADR-0010 has since settled the OAuth client shape, so `merchant_clients`
+//! and `dashboard_client` below are real, validated config — see
+//! `crate::oauth` for the types and the module docs there for how they map
+//! onto `authkestra_op::client::ClientRegistration`. That is a narrower
+//! claim than "merchant onboarding is modelled": these are *authentication*
+//! clients (who may call `/v1` or `/dash/v1`, and how), not the payment
+//! routing concept the boot-guard table in `docs/flows/configuration.md`
+//! means by "merchant". Concretely, this still leaves two boot-guard rules
+//! from that table unimplemented, on purpose:
 //!
 //! - **"Every merchant's rail host appears in that rail's allowlist"** —
-//!   there is no `merchants` table to check against yet (`merchant_id` is a
-//!   free `TEXT` column with no FK on both `payment_intents` and
-//!   `merchant_api_keys` — see those migrations' own comments), so there is
-//!   nothing here to validate a merchant's host against.
+//!   there is no *payment-routing* `merchants` table to check against yet
+//!   (`merchant_id` is a free `TEXT` column with no FK on
+//!   `payment_intents` — see that migration's own comment); an OAuth
+//!   `MerchantClient`'s `client_id` is not the same thing and has no rail
+//!   host of its own to check.
 //! - **"Every referenced provider exists and is enabled"** — nothing in
-//!   this narrow config shape references a provider from outside the
-//!   `providers` list itself (no merchant-to-provider routing table
-//!   exists), so there is no dangling reference to check for.
+//!   this config shape references a provider from outside the `providers`
+//!   list itself (no merchant-to-provider routing table exists), so there
+//!   is no dangling reference to check for.
 //!
 //! Both gaps are real and are tracked here rather than papered over with an
 //! invented merchant/routing shape. `docs/status.md` is the source of truth
@@ -51,7 +56,8 @@ use garde::Validate;
 use serde::{Deserialize, Serialize};
 use vpay_core::Currency;
 
-use crate::{ConfigError, Deployment, HostEntry, validate_host, validate_secret};
+use crate::oauth::{DashboardClient, MerchantClient, jwks_has_at_least_one_key};
+use crate::{ConfigError, Deployment, GrantType, HostEntry, validate_host, validate_secret};
 
 /// One rail's connection details for this deployment.
 ///
@@ -151,6 +157,18 @@ pub struct Config {
     #[garde(dive)]
     #[serde(default)]
     pub currencies: Vec<CurrencyEntry>,
+    /// Statically registered merchant OAuth2 clients (ADR-0010). See
+    /// `crate::oauth` for the shape and what boots refuse to start.
+    #[garde(dive)]
+    #[serde(default)]
+    pub merchant_clients: Vec<MerchantClient>,
+    /// The dashboard's OAuth2 client (`docs/flows/dashboard-auth.md`).
+    /// `Option` because not every deployment needs the dashboard wired up
+    /// yet — unlike a merchant client, there is exactly one of these ever,
+    /// so there is nothing to default to an empty list.
+    #[garde(dive)]
+    #[serde(default)]
+    pub dashboard_client: Option<DashboardClient>,
 }
 
 impl Config {
@@ -255,8 +273,91 @@ impl Config {
             }
         }
 
+        // `client_id` is one namespace across every merchant and the
+        // dashboard combined (crate::oauth's module docs) — checked before
+        // either kind's own rules so a duplicate is reported as exactly
+        // that, not as whichever per-kind rule happens to run first.
+        let mut seen_client_ids = BTreeSet::new();
+        for merchant in &self.merchant_clients {
+            if !seen_client_ids.insert(merchant.client_id.as_str()) {
+                return Err(ConfigError::DuplicateClientId(merchant.client_id.clone()));
+            }
+        }
+        if let Some(dashboard) = &self.dashboard_client
+            && !seen_client_ids.insert(dashboard.client_id.as_str())
+        {
+            return Err(ConfigError::DuplicateClientId(dashboard.client_id.clone()));
+        }
+
+        for merchant in &self.merchant_clients {
+            validate_merchant_client(merchant)?;
+        }
+        if let Some(dashboard) = &self.dashboard_client {
+            validate_dashboard_client(dashboard, livemode)?;
+        }
+
         Ok(())
     }
+}
+
+/// ADR-0010's merchant-client rules: no client secret, ever; a non-empty,
+/// non-degenerate JWK set (`private_key_jwt` with no key can never
+/// authenticate); and `client_credentials` as the only permitted grant.
+fn validate_merchant_client(merchant: &MerchantClient) -> Result<(), ConfigError> {
+    if merchant.client_secret.is_some() {
+        return Err(ConfigError::ClientSecretPresent(merchant.client_id.clone()));
+    }
+    if !jwks_has_at_least_one_key(&merchant.jwks) {
+        return Err(ConfigError::EmptyMerchantJwks(merchant.client_id.clone()));
+    }
+    for grant in &merchant.grant_types {
+        if *grant != GrantType::ClientCredentials {
+            return Err(ConfigError::DisallowedMerchantGrant {
+                client_id: merchant.client_id.clone(),
+                grant: *grant,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The dashboard client's rules (`docs/flows/dashboard-auth.md`): no client
+/// secret, ever; at least one redirect URI (unconditionally — a client that
+/// can never redirect can never complete a login, sandbox or not); and,
+/// under `livemode`, every redirect URI is `https://` and not stub-labelled.
+///
+/// The `livemode` half reuses [`validate_host`] rather than reimplementing
+/// the same two checks: a redirect URI is, structurally, exactly the kind of
+/// host `validate_host` already guards against — a livemode dashboard
+/// redirecting to `http://` or to a leftover `localhost`/`wiremock`-looking
+/// URL is exactly as dangerous as a stub payment rail reachable in
+/// production, for the same reason (the code cannot tell a stub from a real
+/// destination, so the boot guard has to). Each redirect URI is wrapped in a
+/// throwaway [`HostEntry`] purely to reuse that tested function; the
+/// synthetic `label` only feeds `validate_host`'s stub-marker text search; it is not
+/// stored anywhere.
+fn validate_dashboard_client(
+    dashboard: &DashboardClient,
+    livemode: bool,
+) -> Result<(), ConfigError> {
+    if dashboard.client_secret.is_some() {
+        return Err(ConfigError::ClientSecretPresent(
+            dashboard.client_id.clone(),
+        ));
+    }
+    if dashboard.redirect_uris.is_empty() {
+        return Err(ConfigError::DashboardMissingRedirectUri(
+            dashboard.client_id.clone(),
+        ));
+    }
+    for uri in &dashboard.redirect_uris {
+        let synthetic_host = HostEntry {
+            url: uri.clone(),
+            label: format!("dashboard-redirect-uri:{}", dashboard.client_id),
+        };
+        validate_host(&synthetic_host, livemode)?;
+    }
+    Ok(())
 }
 
 /// See the module docs' "Locating the profile overlay" section.
@@ -395,6 +496,27 @@ mod tests {
             .find(|c| c.code == "XAF")
             .expect("XAF currency present");
         assert_eq!(xaf.exponent, 0);
+
+        let merchant = config
+            .merchant_clients
+            .iter()
+            .find(|m| m.client_id == "acme-cameroon")
+            .expect("acme-cameroon merchant client present");
+        assert_eq!(merchant.grant_types, vec![GrantType::ClientCredentials]);
+        assert!(
+            jwks_has_at_least_one_key(&merchant.jwks),
+            "example merchant jwks should be non-empty"
+        );
+        assert_eq!(merchant.client_secret, None);
+
+        let dashboard = config
+            .dashboard_client
+            .as_ref()
+            .expect("dashboard_client present");
+        assert_eq!(dashboard.client_id, "vpay-dashboard");
+        assert_eq!(dashboard.scope, "dashboard:read");
+        assert!(!dashboard.redirect_uris.is_empty());
+        assert_eq!(dashboard.client_secret, None);
     }
 
     #[test]
@@ -409,10 +531,35 @@ mod tests {
         let overlaid = Config::load_with_env(Some(Path::new(EXAMPLE_BASE)), "sandbox", &env)
             .expect("sandbox overlay should load");
         assert_eq!(overlaid.deployment.name, "vpay-sandbox");
-        // Only `deployment.name` differs in the overlay — the rest of the
-        // base document must survive the merge untouched.
+        // `deployment.name` differs in the overlay — the rest of the base
+        // document must survive the merge untouched.
         assert_eq!(overlaid.deployment.public_base_url, "http://localhost:8080");
         assert_eq!(overlaid.providers.len(), base_only.providers.len());
+
+        // The sandbox overlay also overrides `dashboard_client.redirect_uris`
+        // specifically (not the whole `dashboard_client` block) — this
+        // proves figment's dict merge is genuinely recursive one level
+        // deeper than the top-level `deployment.name` case above: only the
+        // one nested field named in the overlay changes, `client_id` and
+        // `scope` still come from the base file.
+        let base_dashboard = base_only
+            .dashboard_client
+            .as_ref()
+            .expect("base dashboard_client present");
+        let overlaid_dashboard = overlaid
+            .dashboard_client
+            .as_ref()
+            .expect("overlaid dashboard_client present");
+        assert_eq!(overlaid_dashboard.client_id, base_dashboard.client_id);
+        assert_eq!(overlaid_dashboard.scope, base_dashboard.scope);
+        assert_ne!(
+            overlaid_dashboard.redirect_uris,
+            base_dashboard.redirect_uris
+        );
+        assert_eq!(
+            overlaid_dashboard.redirect_uris,
+            vec!["http://localhost:3000/dash/v1/callback".to_owned()]
+        );
     }
 
     #[test]
@@ -635,5 +782,112 @@ mod tests {
         assert!(formatted.contains("vpay"), "{formatted}");
         assert!(formatted.contains("mtn_momo"), "{formatted}");
         assert!(formatted.contains("[redacted]"), "{formatted}");
+    }
+
+    // --- OAuth client validation rules (ADR-0010, docs/flows/dashboard-auth.md) ---
+
+    #[test]
+    fn a_duplicate_client_id_across_merchant_and_dashboard_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/oauth-duplicate-client-id.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("a client_id shared by a merchant and the dashboard must be rejected");
+        assert_eq!(err, ConfigError::DuplicateClientId("shared-id".to_owned()));
+    }
+
+    #[test]
+    fn a_merchant_client_with_an_empty_jwks_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/oauth-merchant-empty-jwks.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("an empty JWK set must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::EmptyMerchantJwks("acme-cameroon".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_merchant_client_declaring_a_disallowed_grant_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/oauth-merchant-disallowed-grant.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("a merchant declaring authorization_code must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::DisallowedMerchantGrant {
+                client_id: "acme-cameroon".to_owned(),
+                grant: GrantType::AuthorizationCode,
+            }
+        );
+    }
+
+    #[test]
+    fn a_dashboard_client_with_no_redirect_uris_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/oauth-dashboard-missing-redirect-uris.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("an empty redirect_uris must be rejected, even outside livemode");
+        assert_eq!(
+            err,
+            ConfigError::DashboardMissingRedirectUri("vpay-dashboard".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_livemode_dashboard_redirect_uri_that_is_not_https_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/oauth-dashboard-livemode-insecure-redirect.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("an http:// redirect_uri under livemode must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::InsecureHost("http://dashboard.vpay.example/callback".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_client_secret_anywhere_in_the_config_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/oauth-merchant-client-secret-present.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("a merchant client_secret must be rejected, never silently ignored");
+        assert_eq!(
+            err,
+            ConfigError::ClientSecretPresent("acme-cameroon".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_dashboard_client_secret_is_also_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/oauth-dashboard-client-secret-present.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("a dashboard client_secret must be rejected too — it is a public client");
+        assert_eq!(
+            err,
+            ConfigError::ClientSecretPresent("vpay-dashboard".to_owned())
+        );
     }
 }
