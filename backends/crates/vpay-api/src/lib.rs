@@ -4,12 +4,20 @@
 //! No `/v1/*` route exists yet. See `docs/status.md` — this file must never
 //! grow a route that returns fabricated data. A real database check (below)
 //! is the opposite of fabricated data, so it stays.
+//!
+//! [`resource_auth`] adds bearer-token validation for `/v1` and `/dash/v1`
+//! (OP-3) — a real `JwtValidator`/extractor pair, unit-tested against a real
+//! JWKS server, but **not mounted onto any route here**. Nothing in this
+//! file's `router()` changes as part of that: mounting `/v1`/`/dash/v1` is
+//! later work that needs the OP assembled first.
 
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::{Json, Router, http::StatusCode, routing::get};
 use serde_json::{Value, json};
 use vpay_db::PgPool;
+
+pub mod resource_auth;
 
 /// Stripe's error envelope, so SDK clients surface `.message` correctly.
 #[must_use = "the envelope is the response body"]

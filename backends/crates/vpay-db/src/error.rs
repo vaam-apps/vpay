@@ -27,4 +27,14 @@ pub enum DbError {
     /// is not answering right now. Surfaced by [`crate::check_connection`].
     #[error("database healthcheck query failed: {0}")]
     Healthcheck(#[source] sqlx::Error),
+
+    /// A repository query failed — the disabled-clients kill-switch lookup,
+    /// or the signing-key repository's read/rotate queries. Kept as one
+    /// opaque variant across both, mirroring `Healthcheck`/`Connect`'s own
+    /// granularity: callers of these repositories (a token-issuance path, an
+    /// operator endpoint, a JWKS handler) all want the same thing on
+    /// failure — log the real cause and fail the request — not a different
+    /// branch per query.
+    #[error("database query failed: {0}")]
+    Query(#[source] sqlx::Error),
 }

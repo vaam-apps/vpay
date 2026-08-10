@@ -1,0 +1,25 @@
+# Fixture for `a_duplicate_client_id_across_merchant_and_dashboard_is_rejected`
+# (backends/crates/vpay-config/src/config.rs). `client_id` is one namespace
+# across every merchant and the dashboard combined (crate::oauth's module
+# docs) — `shared-id` here is reused by both, which must be fatal.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: shared-id
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+
+dashboard_client:
+  client_id: shared-id
+  redirect_uris:
+    - http://localhost:3000/callback
+  scope: dashboard:read

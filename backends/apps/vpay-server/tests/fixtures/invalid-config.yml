@@ -1,0 +1,16 @@
+# Fixture for `a_bad_config_causes_a_non_zero_exit_naming_the_problem`
+# (`backends/apps/vpay-server/tests/cli.rs`). `livemode: true` with an
+# `http://` host must be rejected by `vpay_config::validate_host` —
+# `ConfigError::InsecureHost` — before this process ever touches the
+# database or binds a listener.
+
+deployment:
+  name: vpay-server-cli-test-invalid
+  livemode: true
+  public_base_url: https://api.vpay.example
+
+providers:
+  - code: mtn_momo
+    host:
+      url: http://proxy.momoapi.mtn.com
+      label: mtn-cm-prod

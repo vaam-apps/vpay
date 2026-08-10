@@ -121,6 +121,25 @@ fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_vpay-server"))
 }
 
+/// A minimal, valid `vpay_config::Config` YAML file — see the fixture's own
+/// comment for why it needs no `${VAR}` environment variables beyond
+/// `DATABASE_URL` to let this binary boot all the way to `/healthz`.
+fn valid_config_path() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/valid-config.yml"
+    )
+}
+
+/// A `vpay_config::Config` YAML file that fails validation
+/// (`ConfigError::InsecureHost`: an `http://` host under `livemode: true`).
+fn invalid_config_path() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/invalid-config.yml"
+    )
+}
+
 /// Polls `GET /healthz` on `addr` until it answers or `timeout` elapses.
 /// Returns the HTTP response's status code, or `None` if the deadline
 /// passed without ever getting a parseable response. Bounded, no fixed
@@ -242,6 +261,92 @@ fn collect_remaining_lines(rx: &Receiver<String>, timeout: Duration) -> Vec<Stri
     lines
 }
 
+/// `--config` / `VPAY_CONFIG` stays `Option<PathBuf>` at the `clap` level
+/// (`vpay_config::CommonArgs::config`) but `main.rs` now treats it as
+/// required — this is the deterministic negative-path proof, spawned with
+/// no `VPAY_CONFIG`/`--config` at all. No `DATABASE_URL` is supplied either
+/// deliberately: config loading happens *before* this binary ever tries to
+/// connect to a database (see `main.rs`'s own comment on that ordering), so
+/// a missing config must fail before a missing database URL would even be
+/// checked.
+#[test]
+fn a_missing_config_is_a_non_zero_exit_naming_the_problem() {
+    let output = bin().output().expect("spawn vpay-server");
+
+    assert!(
+        !output.status.success(),
+        "expected a non-zero exit with no --config/VPAY_CONFIG at all"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--config") || stderr.contains("VPAY_CONFIG"),
+        "stderr should name the missing config, got: {stderr}"
+    );
+}
+
+/// A config file that exists but fails validation
+/// (`ConfigError::InsecureHost`, see `tests/fixtures/invalid-config.yml`)
+/// must also produce a clear, non-zero-exit failure — and, like the missing
+/// case above, before this binary ever touches the database (config
+/// validation needs no network I/O and is ordered first in `main.rs`).
+#[test]
+fn a_bad_config_causes_a_non_zero_exit_naming_the_problem() {
+    let output = bin()
+        .env("VPAY_CONFIG", invalid_config_path())
+        .output()
+        .expect("spawn vpay-server");
+
+    assert!(
+        !output.status.success(),
+        "expected a non-zero exit for a config that fails validation"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("livemode requires https"),
+        "stderr should name the specific validation failure, got: {stderr}"
+    );
+}
+
+/// The positive counterpart to the two tests above: a config file that
+/// exists and passes validation lets this binary boot all the way to
+/// serving a real `200` from `/healthz` — proving `main.rs` actually calls
+/// `vpay_config::Config::load` (and does not, say, silently swallow its
+/// result) rather than only proving the two failure paths above.
+#[test]
+fn a_valid_config_lets_the_server_boot_and_serve_healthz() {
+    with_live_postgres(|database_url| {
+        let addr = free_addr();
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut guard = ChildGuard(
+            bin()
+                .env("VPAY_BIND", addr.to_string())
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_CONFIG", valid_config_path())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn vpay-server"),
+        );
+
+        let status = poll_healthz(addr, Duration::from_secs(5));
+        assert_eq!(
+            status,
+            Some(200),
+            "server never became healthy on {addr} with a valid config"
+        );
+
+        #[cfg(unix)]
+        {
+            send_sigterm(&guard.0);
+            let exit = guard.0.wait().expect("wait for graceful shutdown");
+            assert!(
+                exit.success(),
+                "expected exit 0 after SIGTERM, got {exit:?}"
+            );
+        }
+    });
+}
+
 #[test]
 fn an_invalid_bind_env_var_is_read_and_rejected() {
     // No `--bind` flag is passed at all, so a parse failure can only be
@@ -273,6 +378,7 @@ fn bind_and_log_format_env_vars_are_actually_applied() {
                 .env("VPAY_BIND", addr.to_string())
                 .env("VPAY_LOG_FORMAT", "text")
                 .env("DATABASE_URL", &database_url)
+                .env("VPAY_CONFIG", valid_config_path())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -308,6 +414,7 @@ fn an_explicit_flag_wins_over_a_conflicting_env_var() {
             bin()
                 .env("VPAY_BIND", env_addr.to_string())
                 .env("DATABASE_URL", &database_url)
+                .env("VPAY_CONFIG", valid_config_path())
                 .args(["--bind", &flag_addr.to_string()])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -362,6 +469,7 @@ fn shutdown_grace_period_flag_still_allows_a_prompt_clean_exit_with_no_in_flight
         cmd.env("VPAY_BIND", addr.to_string())
             .env("VPAY_LOG_FORMAT", "text")
             .env("DATABASE_URL", &database_url)
+            .env("VPAY_CONFIG", valid_config_path())
             .args(["--shutdown-grace-seconds", "2"]);
         #[cfg_attr(not(unix), allow(unused_mut))]
         let (mut guard, rx) = spawn_and_capture_stdout(cmd);
@@ -522,7 +630,8 @@ fn sigterm_immediately_after_startup_still_triggers_graceful_shutdown() {
             let mut cmd = bin();
             cmd.env("VPAY_BIND", addr.to_string())
                 .env("VPAY_LOG_FORMAT", "text")
-                .env("DATABASE_URL", &database_url);
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_CONFIG", valid_config_path());
             let (mut guard, rx) = spawn_and_capture_stdout(cmd);
 
             std::thread::sleep(DELAY);

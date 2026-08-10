@@ -44,14 +44,38 @@ async fn main() -> anyhow::Result<()> {
     // vpay_config::cli and docs/adr/0003-yaml-configuration.md.
     tracing::info!(profile = %args.common.profile, "deployment profile (selects a config file only)");
 
+    // Load and validate the YAML deployment configuration (ADR-0003) before
+    // touching the database — same ordering and reasoning as
+    // `vpay-server`'s `main.rs`: boot-sequence steps 1-3 in
+    // docs/flows/configuration.md (load, resolve `${ENV}`, validate) come
+    // before step 4 (DB reconciliation, not yet implemented), and a broken
+    // local YAML file should fail in milliseconds rather than after this
+    // process has already paid for a Postgres connection and migration run
+    // it is about to discard. `--config` / `VPAY_CONFIG` stays
+    // `Option<PathBuf>` at the clap level for the same reason
+    // `--database-url` does below, but is required here.
+    let config = vpay_config::Config::load(args.common.config.as_deref(), &args.common.profile)
+        .context("loading and validating configuration (--config / VPAY_CONFIG, ADR-0003)")?;
+    // Redaction-safe by construction — see `vpay-server`'s identical log
+    // line for why this logs discrete fields rather than the `Config`
+    // struct itself.
+    tracing::info!(
+        deployment = %config.deployment.name,
+        livemode = config.deployment.livemode,
+        providers = config.providers.len(),
+        merchant_clients = config.merchant_clients.len(),
+        dashboard_client_configured = config.dashboard_client.is_some(),
+        "configuration loaded and validated"
+    );
+
     // `--database-url` / `DATABASE_URL` stays `Option<String>` at the clap
-    // level (`vpay_config::CommonArgs`, out of scope for this change — see
-    // docs/status.md) but is treated as required *here*, matching
-    // `vpay-server`'s decision (see that binary's `main.rs` for the fuller
-    // reasoning): a process that boots with no database at all is not doing
-    // the thing this pass exists to do, and silently skipping the connection
-    // when the flag is absent would leave it dormant behind an optional
-    // flag rather than the live path this repo's delivery style requires.
+    // level (`vpay_config::CommonArgs`) but is treated as required *here*,
+    // matching `vpay-server`'s decision (see that binary's `main.rs` for the
+    // fuller reasoning): a process that boots with no database at all is not
+    // doing the thing this pass exists to do, and silently skipping the
+    // connection when the flag is absent would leave it dormant behind an
+    // optional flag rather than the live path this repo's delivery style
+    // requires.
     let database_url = args.common.database_url.as_deref().context(
         "--database-url / DATABASE_URL is required: vpay-worker-bin cannot start without \
          a database to open a pool against and migrate (see docs/status.md)",

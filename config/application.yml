@@ -43,3 +43,37 @@ currencies:
     exponent: 0
   - code: EUR
     exponent: 2
+
+# Statically registered OAuth2 clients (ADR-0010, docs/flows/dashboard-auth.md
+# — see backends/crates/vpay-config/src/oauth.rs for the validated shape).
+#
+# `jwks` below is each merchant's PUBLIC key set — publishing a public key
+# is the point, so a literal value is correct here, unlike
+# `providers[].credentials` above. Do not copy this "literal is fine"
+# pattern onto anything that is actually secret. The modulus (`n`) values
+# here are placeholders, not a real key — a real merchant's JWK arrives as
+# part of their onboarding PR (ADR-0010's "Merchant onboarding is a PR, not
+# a self-serve flow").
+merchant_clients:
+  - client_id: acme-cameroon
+    jwks:
+      keys:
+        - kty: RSA
+          use: sig
+          kid: acme-cameroon-2026-08
+          alg: RS256
+          n: placeholder-rsa-modulus-replace-with-the-merchants-real-public-key
+          e: AQAB
+    grant_types: [client_credentials]
+    scopes: [payments:write]
+    allowed_audiences: [vpay]
+
+# The dashboard's single OAuth2 client (docs/flows/dashboard-auth.md):
+# authorization-code + PKCE, a public client with no secret, requesting
+# exactly one read-only scope — the dashboard observes, it does not
+# administer (ADR-0008).
+dashboard_client:
+  client_id: vpay-dashboard
+  redirect_uris:
+    - http://localhost:8080/dash/v1/callback
+  scope: dashboard:read

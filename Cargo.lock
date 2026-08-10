@@ -4042,7 +4042,13 @@ dependencies = [
 name = "vpay-api"
 version = "0.1.0"
 dependencies = [
+ "authkestra-resource",
  "axum",
+ "base64 0.22.1",
+ "jsonwebtoken",
+ "rand 0.8.7",
+ "rsa",
+ "rustls",
  "serde",
  "serde_json",
  "thiserror",
@@ -4052,6 +4058,7 @@ dependencies = [
  "vpay-core",
  "vpay-db",
  "vpay-provider",
+ "wiremock",
 ]
 
 [[package]]
@@ -4062,6 +4069,7 @@ dependencies = [
  "figment",
  "garde",
  "serde",
+ "serde_json",
  "serde_yaml_ng",
  "thiserror",
  "tokio",
@@ -4084,10 +4092,15 @@ name = "vpay-db"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "authkestra-op",
+ "chrono",
+ "serde_json",
  "sqlx",
  "testcontainers",
  "testcontainers-modules",
  "thiserror",
+ "time",
  "tokio",
  "tracing",
 ]

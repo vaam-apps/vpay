@@ -6,16 +6,21 @@
 //! STATUS: boot-sequence steps 1-3 (`docs/flows/configuration.md`) are
 //! implemented and tested — [`config::Config::load`] loads
 //! `application.yml`, overlays `application-{profile}.yml`, resolves
-//! `${ENV}` placeholders (fatal if unresolved), and validates. Step 4 (DB
+//! `${ENV}` placeholders (fatal if unresolved), and validates. Both
+//! `vpay-server` and `vpay-worker-bin` now call it at startup, before
+//! connecting to the database or (for `vpay-server`) binding a listener —
+//! see each binary's `main.rs` for the ordering and why. Step 4 (DB
 //! reconciliation) is NOT implemented — `docs/status.md`.
 
 use serde::{Deserialize, Serialize};
 
 pub mod cli;
 pub mod config;
+pub mod oauth;
 pub mod signal;
 pub use cli::{CommonArgs, LogFormat, ServerArgs, WorkerArgs};
 pub use config::{Config, CurrencyEntry, ProviderHost};
+pub use oauth::{DashboardClient, GrantType, MerchantClient};
 pub use signal::ShutdownSignals;
 
 #[derive(Debug, Clone, Serialize, Deserialize, garde::Validate)]
@@ -97,6 +102,44 @@ pub enum ConfigError {
         given: u32,
         expected: u32,
     },
+
+    /// ADR-0010 / `docs/flows/dashboard-auth.md`: `client_id` is one
+    /// namespace across every merchant and the dashboard combined, not
+    /// per-kind — a merchant accidentally reusing the dashboard's id (or
+    /// vice versa) is exactly the kind of typo this rule exists to catch
+    /// before it reaches a real request.
+    #[error("duplicate OAuth client_id: {0}")]
+    DuplicateClientId(String),
+    /// ADR-0010: `private_key_jwt` with no key can never authenticate, so
+    /// booting with an empty or missing JWK set is exactly as pointless as
+    /// booting with none configured at all. See
+    /// [`oauth::jwks_has_at_least_one_key`] for the exact shapes this
+    /// rejects.
+    #[error("merchant client {0} has an empty or missing JWK set")]
+    EmptyMerchantJwks(String),
+    /// ADR-0010 drops the device-authorization grant and refresh tokens for
+    /// `/v1` outright — a merchant client may declare `client_credentials`
+    /// and nothing else.
+    #[error(
+        "merchant client {client_id} declares grant type {grant:?}, only client_credentials is allowed"
+    )]
+    DisallowedMerchantGrant {
+        client_id: String,
+        grant: oauth::GrantType,
+    },
+    /// `docs/flows/dashboard-auth.md`: authorization-code + PKCE needs
+    /// somewhere to redirect back to; a client that can never redirect can
+    /// never complete a login.
+    #[error("dashboard client {0} declares no redirect_uris")]
+    DashboardMissingRedirectUri(String),
+    /// ADR-0010 / `docs/flows/dashboard-auth.md`: vpay stores no client
+    /// secret, in any form, for any client kind — a merchant authenticates
+    /// only via a signed `private_key_jwt` assertion, and the dashboard is a
+    /// public client by design. A config that carries a secret is refused
+    /// outright rather than the secret being silently dropped as an unknown
+    /// field.
+    #[error("OAuth client {0} declares a client_secret; vpay stores none (see ADR-0010)")]
+    ClientSecretPresent(String),
 }
 
 /// Substrings that mark a host as a stub. A live deployment must refuse them.

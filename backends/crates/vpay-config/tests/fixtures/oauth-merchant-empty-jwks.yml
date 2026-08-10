@@ -1,0 +1,15 @@
+# Fixture for `a_merchant_client_with_an_empty_jwks_is_rejected`
+# (backends/crates/vpay-config/src/config.rs). `keys: []` can never verify a
+# `private_key_jwt` assertion, so this must be treated the same as no `jwks`
+# at all (ADR-0010).
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    jwks:
+      keys: []
+    grant_types: [client_credentials]

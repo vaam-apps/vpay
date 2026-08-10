@@ -14,6 +14,38 @@ workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# The OP's own trait for private_key_jwt replay protection (feature OP-2 /
+# ADR-0010). Only the base feature set is needed — `client_assertion` is not
+# gated behind any authkestra-op feature — so this inherits exactly the
+# `default-features = false, features = ["rustls-no-provider"]` spec from the
+# root Cargo.toml's [workspace.dependencies], with nothing added. In
+# particular this deliberately does NOT enable authkestra-op's own "sqlx"/
+# "sqlx-postgres" feature: that gates authkestra-op's *own* sqlx_store module
+# (unused here — vpay-db is the caller, not authkestra-op's store type) and
+# would pull sqlx's "chrono" feature into the whole workspace graph, which
+# the chrono/time boundary decision below exists specifically to avoid.
+authkestra-op.workspace = true
+# `ClientAssertionStore::record_jti`'s signature is `chrono::DateTime<Utc>`
+# (authkestra-op-0.3.4/src/client_assertion.rs), not vpay's own `time`-crate
+# convention. Used only to receive/return that one boundary type in
+# src/client_assertion.rs; converted explicitly to time::OffsetDateTime
+# before it ever reaches a query bind — see that module's own comment.
+chrono.workspace = true
+# vpay's own convention (time crate) for every TIMESTAMPTZ column this crate
+# binds directly (oauth_signing_keys.expires_at, disabled_clients.disabled_at
+# is DB-generated and never bound from Rust).
+time.workspace = true
+# oauth_signing_keys.public_jwk is JSONB; sqlx's "json" feature (already
+# enabled workspace-wide) decodes/encodes it as serde_json::Value directly.
+serde_json.workspace = true
+# `authkestra_op::client_assertion::ClientAssertionStore` is declared
+# `#[async_trait]`; implementing it requires the same expansion pattern.
+# Not in [workspace.dependencies] (root Cargo.toml, not owned here) — added
+# as a plain member-level dependency, pinned to the same "0.1" authkestra-op
+# itself depends on. Different crates implementing the same async-trait
+# trait do not need to share an exact patch version; the macro expands to an
+# ordinary `-> Pin<Box<dyn Future<...> + Send>>` signature either way.
+async-trait = "0.1"
 
 [dev-dependencies]
 # Real containers only (ADR-0006 / AGENTS.md rule 1: no mock, fake, stub or
