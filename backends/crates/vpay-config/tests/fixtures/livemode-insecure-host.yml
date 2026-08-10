@@ -1,0 +1,17 @@
+# Fixture for `a_livemode_config_with_an_http_host_is_rejected`
+# (backends/crates/vpay-config/src/config.rs). `mtn_momo`'s host is neither
+# https nor stub-labelled, so it exercises validate_host's InsecureHost arm
+# specifically, not StubHostInLivemode.
+
+deployment:
+  name: prod
+  livemode: true
+  public_base_url: https://api.vpay.example
+
+providers:
+  - code: mtn_momo
+    host:
+      url: http://proxy.momoapi.mtn.com
+      label: mtn-cm-prod
+    credentials:
+      api_key: ${MTN_API_KEY}

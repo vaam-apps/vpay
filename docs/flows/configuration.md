@@ -62,13 +62,16 @@ behave differently*.
 
 ## Boot sequence
 
-**Steps 1–4 below are not implemented.** Today, `vpay-server` parses its CLI
-(the table above), binds the port and serves `/healthz` — that is the whole
-boot sequence that actually exists. Nothing in this repo loads a YAML file,
-resolves a `${}` placeholder, runs the validation rules below, or reconciles
-anything into a database, because there is no database layer yet
-(`docs/status.md`). The steps below describe the design this repo is building
-towards, not current behaviour.
+**Steps 1–3 exist as a library; step 4 does not, and nothing calls any of
+them.** `vpay_config::Config::load` implements the YAML layering, the `${}`
+resolution and the validation rules below, and is tested — but **neither
+binary calls it**, so `--config` / `VPAY_CONFIG` is still parsed and ignored.
+Step 4 has no implementation at all: nothing reconciles configuration into
+the database or records a config hash, even though a database layer now
+exists (`vpay-db`). Today `vpay-server` parses its CLI, connects to Postgres,
+runs migrations, binds the port and serves `/healthz`. Two of the validation
+rules below are also unimplemented for a structural reason — see the table.
+See `docs/status.md` for the authoritative state.
 
 1. Load `application.yml`, overlay `application-{profile}.yml`.
 2. Resolve `${}` placeholders. **An unresolved placeholder is fatal**, never an

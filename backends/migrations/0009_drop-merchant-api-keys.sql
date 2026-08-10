@@ -1,0 +1,25 @@
+-- Drops merchant_api_keys (backends/migrations/0008_create-merchant-api-keys.sql).
+--
+-- The maintainer settled the merchant-API auth model after migrations
+-- 0006-0008 merged: `/v1` moves to `client_credentials` + `private_key_jwt`
+-- (authkestra-op, same OP the dashboard uses), with clients configured in
+-- vpay's own YAML config file, each merchant holding its own private key.
+-- There is no opaque `sk_live_`/`sk_test_` bearer key anymore, and no
+-- database-stored secret at all for merchant identity — YAML is the sole
+-- source of truth for *which* merchants exist and what their public key is.
+--
+-- Per this repository's hard-cutover rule (AGENTS.md / CLAUDE.md: rip out the
+-- old thing, no dormant tables kept "in case"), this is a straight DROP, not
+-- a deprecation. Nothing in the workspace ever read or wrote a row here —
+-- 0008's own STATUS entry says plainly "nothing generates, hashes, verifies,
+-- or revokes a key... it is schema only" — so there is no data-migration
+-- concern and no reason to keep it around.
+--
+-- The tests that proved this table's constraints
+-- (`a_duplicate_merchant_api_key_digest_is_rejected_by_the_database`,
+-- `a_malformed_merchant_api_key_digest_is_rejected_by_the_database` in
+-- `backends/tests/integration/tests/postgres_smoke.rs`) are deleted in the
+-- same change — they test a table that no longer exists after this
+-- migration runs, and a passing test for a dropped table would be exactly
+-- the "looks more finished than it is" failure mode CLAUDE.md warns against.
+DROP TABLE merchant_api_keys;

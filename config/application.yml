@@ -1,0 +1,45 @@
+# vpay base configuration (ADR-0003: docs/adr/0003-yaml-configuration.md).
+#
+# Loaded first; `application-{profile}.yml` in this same directory overlays
+# it (docs/flows/configuration.md, boot sequence step 1). `${VAR}` values
+# are resolved against the process environment at boot — an unresolved one
+# is a fatal, named error, never an empty string (step 2).
+#
+# This file is deliberately a sandbox-shaped example: `livemode: false`
+# below means the `https`-only / no-stub-host / no-literal-secret guard
+# rules do not apply to it, and its rail hosts point at the WireMock stubs
+# from compose.yml. A real livemode deployment overlay must flip
+# `livemode: true`, point every host at a real `https://` rail, and keep
+# every credential as a `${VAR}` placeholder — never a literal.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+providers:
+  - code: mtn_momo
+    host:
+      url: http://wiremock:8080
+      label: mtn-sandbox-wiremock
+    settings:
+      subscription_key_header: Ocp-Apim-Subscription-Key
+    credentials:
+      subscription_key: ${MTN_SUBSCRIPTION_KEY}
+      api_key: ${MTN_API_KEY}
+  - code: orange_money
+    host:
+      url: http://wiremock:8080
+      label: orange-sandbox-wiremock
+    credentials:
+      merchant_key: ${ORANGE_MERCHANT_KEY}
+
+# Mirrors backends/migrations/0001_create-currencies.sql. The exponent is a
+# property of the currency itself (vpay_core::Currency::exponent) — this
+# table is checked against that canonical value at load time, not treated
+# as the source of truth.
+currencies:
+  - code: XAF
+    exponent: 0
+  - code: EUR
+    exponent: 2

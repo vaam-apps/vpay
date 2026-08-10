@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 vpay-core.workspace = true
 vpay-config.workspace = true
+vpay-db.workspace = true
 vpay-provider.workspace = true
 vpay-adapter-mtn-momo.workspace = true
 vpay-adapter-orange-money.workspace = true
@@ -28,3 +29,8 @@ clap.workspace = true
 
 [dev-dependencies]
 vpay-testkit.workspace = true
+# Real containers only (ADR-0006 / AGENTS.md rule 1) — see
+# backends/apps/vpay-server/Cargo.toml's identical note; tests/cli.rs here
+# has the same shape.
+testcontainers.workspace = true
+testcontainers-modules.workspace = true

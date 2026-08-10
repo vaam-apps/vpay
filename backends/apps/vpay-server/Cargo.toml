@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 vpay-core.workspace = true
 vpay-config.workspace = true
+vpay-db.workspace = true
 vpay-provider.workspace = true
 vpay-adapter-mtn-momo.workspace = true
 vpay-adapter-orange-money.workspace = true
@@ -28,3 +29,10 @@ clap.workspace = true
 
 [dev-dependencies]
 vpay-testkit.workspace = true
+# Real containers only (ADR-0006 / AGENTS.md rule 1) — the subprocess CLI
+# tests in tests/cli.rs now spawn a real `vpay-server`, which requires a real
+# `--database-url` since it is no longer optional at the application layer
+# (see main.rs). See tests/cli.rs for the pinned image tag and why one
+# container is shared per test function rather than per SIGTERM-race attempt.
+testcontainers.workspace = true
+testcontainers-modules.workspace = true

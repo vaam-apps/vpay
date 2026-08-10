@@ -26,7 +26,7 @@ staff browser                    /dash/v1 (vpay, as OP)
       |<-------------------------------------------------------|
       |  POST /token  { code, code_verifier, redirect_uri }     |
       |------------------------------------------------------->|
-      |  200 { access_token, id_token, refresh_token? }         |
+      |  200 { access_token, id_token }                          |
       |<-------------------------------------------------------|
       |  subsequent /dash/v1/* calls, Authorization: Bearer …   |
       |------------------------------------------------------->|
@@ -36,18 +36,48 @@ staff browser                    /dash/v1 (vpay, as OP)
 (`authkestra_op::client::ClientRegistration::allows_redirect_uri`). PKCE is
 mandatory for the dashboard's client registration.
 
+The diagram above intentionally does not show a `refresh_token` in the
+`/token` response — see Token lifetimes below.
+
+## Scope
+
+The dashboard's client registration requests exactly **one** OAuth2 scope,
+not a scope per action. That follows directly from the dashboard being
+**read-only**: it observes state — charges, intents, ledger entries,
+adapter health — and performs no mutation today. One scope is all a
+read-only surface needs; a finer-grained set only earns its cost once a
+second, differently-privileged capability exists to distinguish from the
+first.
+
+[ADR-0008](../adr/0008-dashboard-scope.md) — immutable, per this repo's ADR
+rule, so it is not edited here — describes a dashboard that also performs
+per-record write operations ("re-poll a charge, replay a webhook, issue a
+refund, annotate an unresolved charge") with an `audit_log` row per write.
+That boundary (records, never configuration) is still the accepted
+architecture and this document does not reverse it. What changed, recorded
+here rather than in a new ADR because it is a sequencing decision and not an
+architectural one: **no mutating dashboard use case is being built now**, so
+there is nothing yet to scope beyond read access, and no `audit_log`-writing
+code exists. When a real mutating use case lands, it needs its own scope (or
+scopes) added to the client registration and its own write path — at that
+point ADR-0008's write actions move from described-but-unbuilt to actually
+scoped work, not before.
+
 ## Token lifetimes
 
 | Token | TTL knob | Notes |
 |---|---|---|
 | Authorization code | `OpConfig::authorization_code_ttl_secs` | Single use, consumed at `/token` |
 | Access token | `OpConfig::access_token_ttl_secs` | Bearer, presented on every `/dash/v1/*` call |
-| Refresh token | Issued via `RefreshTokenStore` | Rotated on use |
+| Refresh token | **Not issued** | vpay does not use `RefreshTokenStore` for this flow. Staff re-run authorization-code + PKCE when the access token expires — a short-TTL access token with no refresh token, rather than a long-lived refresh token that `authkestra-op` has no endpoint to revoke |
 | ID token | Same signing key/alg as access token | `RS256`; symmetric algorithms are not valid per Authkestra's own `OpConfig` docs |
 
 **No revocation endpoint exists in `authkestra-op`.** A stolen or misused
 access token cannot be revoked mid-lifetime through the OP itself — see the
-Consequences section of ADR-0009. This flow's mitigation is short TTLs
+Consequences section of ADR-0009. Not issuing a refresh token narrows this
+exposure rather than closing it: there is no long-lived refresh token to
+also protect, but the access token itself is still a live bearer credential
+for the whole of its TTL. This flow's mitigation is a short access-token TTL
 and/or a deny-list; **which one vpay implements is not yet decided.**
 
 ## JWKS publication and key rotation
@@ -63,22 +93,27 @@ and/or a deny-list; **which one vpay implements is not yet decided.**
   is vpay's own storage for this: at most one active key at a time (a partial
   unique index), an active key may not carry a scheduled expiry, and a
   retired key's expiry must postdate its own creation — all three proven to
-  fire against real Postgres. **The private key PEM is stored unencrypted**
-  (`private_key_pem TEXT`, no encryption at rest implemented anywhere in this
-  repository) — anyone able to `SELECT` that column reads the live signing
-  key outright. No code generates, writes, reads, or rotates a row in this
-  table yet; the schema alone does not make key rotation work.
+  fire against real Postgres. **No private key material is stored at all.**
+  Migration `0010_reshape-oauth-signing-keys.sql` dropped the original
+  `private_key_pem` column and replaced it with `public_jwk JSONB`: the
+  private PEM is to be injected from a Kubernetes Secret at boot and never
+  persisted, while the database holds only what `/jwks.json` must publish.
+  That is sound because `authkestra_engine::TokenManager::new_asymmetric`
+  parses the PEM once at construction and retains only derived keys. No code
+  generates, writes, reads, or rotates a row in this table yet; the schema
+  alone does not make key rotation work.
 
 ## Where each piece lives
 
 | Piece | Owner |
 |---|---|
 | OP handlers (`/authorize`, `/token`, `/userinfo`, discovery, jwks) | `authkestra-op`, mounted into `/dash/v1` |
-| Client registration (dashboard's own `client_id`, redirect URIs, PKCE requirement) | vpay configuration (ADR-0003 — YAML, not the dashboard) |
-| Authorization codes, refresh tokens, device codes | `authkestra_op::sqlx_store::SqlxOpStore` against vpay's Postgres. Schema exists (`backends/migrations/0006_create-authkestra-op-tables.sql`) and is proven compatible with the store (see Status below), but no shipping code constructs a `SqlxOpStore` yet |
+| Client registration (dashboard's own `client_id`, redirect URIs, PKCE requirement, single read-only scope) | vpay configuration (ADR-0003 — YAML, not the dashboard) |
+| Authorization codes, device codes | `authkestra_op::sqlx_store::SqlxOpStore` against vpay's Postgres. Schema exists (`backends/migrations/0006_create-authkestra-op-tables.sql`) and is proven compatible with the store (see Status below), but no shipping code constructs a `SqlxOpStore` yet |
+| `oauth_refresh_tokens`, `oauth_device_codes` | Created by the same migration (`authkestra-op`'s fixed DDL is transcribed wholesale, not column-by-column selected) but structurally unused by this flow: refresh tokens are not issued (Token lifetimes, above) and the device grant is not offered on any client this deployment registers |
 | Signing keys and rotation | vpay operational tooling. Storage schema exists (`backends/migrations/0007_create-oauth-signing-keys.sql`: `oauth_signing_keys`, at most one active key enforced by a partial unique index); key generation and rotation logic itself is not yet designed or written |
-| Session → per-record authorization (which staff member may refund which merchant's charge) | vpay's own layer on top of the validated token; not Authkestra's concern |
-| Audit log row per write | ADR-0008 — one row per dashboard action, independent of the auth mechanism |
+| Session → per-record authorization (which staff member may view which merchant's records) | vpay's own layer on top of the validated token; not Authkestra's concern. Scoped to *view* today — see Scope, above, for why there is nothing to authorize a write against yet |
+| Audit log row per write | [ADR-0008](../adr/0008-dashboard-scope.md) — one row per dashboard action, independent of the auth mechanism. Not yet applicable: there is no write path to log (Scope, above) |
 
 ## Status
 

@@ -13,9 +13,13 @@ workspace = true
 [dependencies]
 vpay-core.workspace = true
 vpay-provider.workspace = true
+vpay-db.workspace = true
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tower.workspace = true

@@ -1,0 +1,18 @@
+# Fixture for `a_duplicate_provider_code_is_rejected`
+# (backends/crates/vpay-config/src/config.rs). Mirrors the `providers` table's
+# primary key on `code` (backends/migrations/0002_create-providers.sql).
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+providers:
+  - code: mtn_momo
+    host:
+      url: http://wiremock:8080
+      label: mtn-sandbox-wiremock
+  - code: mtn_momo
+    host:
+      url: http://wiremock:8081
+      label: mtn-sandbox-wiremock-2
