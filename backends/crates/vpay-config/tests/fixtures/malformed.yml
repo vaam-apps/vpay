@@ -1,0 +1,8 @@
+# Fixture for `a_malformed_yaml_file_produces_a_clean_typed_error_not_a_panic`
+# (backends/crates/vpay-config/src/config.rs). The unterminated quote below
+# is a genuine YAML syntax error.
+
+deployment:
+  name: "unterminated
+  livemode: true
+  public_base_url: https://api.vpay.example

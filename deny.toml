@@ -56,6 +56,15 @@ allow = [
   "Zlib",
   "CC0-1.0",
   "MPL-2.0",
+  # CDLA-Permissive-2.0 covers `webpki-roots`, which is Mozilla's CA
+  # certificate bundle — *data*, not code. It reaches the graph through
+  # sqlx's `tls-rustls-ring` feature, and that feature is not negotiable:
+  # the runtime image is `FROM scratch` (ADR-0004), so there is no OS trust
+  # store for the `native-roots` alternative to read, and TLS to Postgres
+  # would fail in the shipped image while passing everywhere else.
+  # The licence itself is permissive — no copyleft, no source-disclosure
+  # obligation — so it clears the bar the comment above sets for this list.
+  "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 exceptions = []

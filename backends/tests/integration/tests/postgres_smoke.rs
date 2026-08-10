@@ -138,11 +138,17 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 8,
-        "all eight migrations under backends/migrations should be recorded as applied"
+        applied, 12,
+        "all twelve migrations under backends/migrations should be recorded as applied \
+         (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
+         0011 oauth_client_assertion_jtis, 0012 disabled_clients)"
     );
 
-    // And the tables they create are genuinely queryable.
+    // And the tables they create are genuinely queryable. merchant_api_keys
+    // is deliberately absent: 0009 drops it (the abandoned API-key design),
+    // and if that DROP had silently failed this migration run itself would
+    // have failed already, so there is nothing further to assert about its
+    // absence here.
     for table in [
         "currencies",
         "providers",
@@ -155,7 +161,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         "authkestra.oauth_refresh_tokens",
         "authkestra.oauth_device_codes",
         "oauth_signing_keys",
-        "merchant_api_keys",
+        "oauth_client_assertion_jtis",
+        "disabled_clients",
     ] {
         sqlx::query(&format!("SELECT COUNT(*) FROM {table}"))
             .fetch_one(&pool)
@@ -359,19 +366,30 @@ async fn an_authkestra_oauth_code_referencing_a_nonexistent_client_is_rejected_b
     Ok(())
 }
 
-// --- migration 0007 (oauth_signing_keys, vpay-owned) -----------------------
+// --- migration 0007 + 0010 (oauth_signing_keys, vpay-owned, reshaped) ------
+
+/// A minimal but shape-plausible public JWK, matching what
+/// `authkestra_engine::token::jwk::Jwk` actually derives (`kty`/`alg`/`n`/`e`/
+/// `kid`) — see migration 0010's header comment. `oauth_signing_keys.
+/// public_jwk` has no shape CHECK (unlike the dropped `private_key_pem`
+/// column), so any JSON object would satisfy `NOT NULL`; this fixture is
+/// realistic rather than minimal-to-pass, so these tests exercise the column
+/// the way real code will fill it.
+const FIXTURE_PUBLIC_JWK: &str =
+    r#"{"kty":"RSA","alg":"RS256","kid":"test-kid","n":"vGb-fixture-n","e":"AQAB"}"#;
 
 async fn insert_signing_key(
     pool: &PgPool,
-    id: &str,
+    kid: &str,
     active: bool,
     expires_at_clause: &str,
 ) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
     sqlx::query(&format!(
-        "INSERT INTO oauth_signing_keys (id, private_key_pem, active, expires_at) \
-         VALUES ($1, '-----BEGIN PRIVATE KEY-----\nMIIBVgIBADANBgkqhkiG9w0BAQEFAASCAUAw\n-----END PRIVATE KEY-----\n', $2, {expires_at_clause})"
+        "INSERT INTO oauth_signing_keys (kid, public_jwk, active, expires_at) \
+         VALUES ($1, $2::jsonb, $3, {expires_at_clause})"
     ))
-    .bind(id)
+    .bind(kid)
+    .bind(FIXTURE_PUBLIC_JWK)
     .bind(active)
     .execute(pool)
     .await
@@ -379,8 +397,10 @@ async fn insert_signing_key(
 
 /// "At most one active key at a time" — the `one_active_signing_key` partial
 /// unique index (`WHERE active`) in
-/// `backends/migrations/0007_create-oauth-signing-keys.sql`. Proves a second
-/// active key is genuinely rejected, not merely that the index was created.
+/// `backends/migrations/0007_create-oauth-signing-keys.sql`, carried forward
+/// untouched by migration 0010's reshape. Proves a second active key is
+/// genuinely rejected, not merely that the index was created — and that it
+/// still fires after `id`/`private_key_pem` became `kid`/`public_jwk`.
 #[tokio::test]
 async fn only_one_active_signing_key_is_enforced_by_the_database() -> anyhow::Result<()> {
     let (_container, pool) = migrated_postgres().await?;
@@ -412,9 +432,8 @@ async fn only_one_active_signing_key_is_enforced_by_the_database() -> anyhow::Re
 
 /// `active_key_has_no_expiry`: an active key must not carry a scheduled
 /// expiry — rotation is supposed to set `active = false` and `expires_at`
-/// together, never one without the other (this migration's own
-/// justification for why this is stricter than the vsms precedent, which has
-/// no such CHECK).
+/// together, never one without the other. Carried forward untouched by
+/// migration 0010's reshape; this proves it still fires afterward.
 #[tokio::test]
 async fn an_active_signing_key_with_an_expiry_is_rejected_by_the_database() -> anyhow::Result<()> {
     let (_container, pool) = migrated_postgres().await?;
@@ -434,90 +453,128 @@ async fn an_active_signing_key_with_an_expiry_is_rejected_by_the_database() -> a
     Ok(())
 }
 
-/// `private_key_pem_looks_like_pem`: a sanity floor, not a full PEM parser
-/// (Postgres CHECK is the wrong tool for that) — but it must still actually
-/// reject an obviously-wrong value like a plain string.
+// --- migration 0011 (oauth_client_assertion_jtis) --------------------------
+
+/// The `jti` primary key is the atomic single-use guard for `private_key_jwt`
+/// replay protection (migration 0011's header comment). A plain duplicate
+/// INSERT must be rejected by the database.
 #[tokio::test]
-async fn a_non_pem_shaped_signing_key_is_rejected_by_the_database() -> anyhow::Result<()> {
+async fn a_duplicate_client_assertion_jti_is_rejected_by_the_database() -> anyhow::Result<()> {
     let (_container, pool) = migrated_postgres().await?;
-
-    let err = sqlx::query(
-        "INSERT INTO oauth_signing_keys (id, private_key_pem, active) \
-         VALUES ('key_not_pem', 'definitely-not-a-pem-key', true)",
-    )
-    .execute(&pool)
-    .await
-    .expect_err("a non-PEM-shaped value must be rejected");
-
-    let db_err = err.as_database_error().expect("a database-level error");
-    eprintln!("observed rejection: {db_err}");
-    assert_eq!(
-        db_err.constraint(),
-        Some("private_key_pem_looks_like_pem"),
-        "the rejection must come from the PEM-shape CHECK specifically"
-    );
-
-    Ok(())
-}
-
-// --- migration 0008 (merchant_api_keys) ------------------------------------
-
-/// Instant, structural uniqueness on `key_digest` — a digest collision must
-/// be impossible, not merely unlikely (see this migration's header comment).
-#[tokio::test]
-async fn a_duplicate_merchant_api_key_digest_is_rejected_by_the_database() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    let digest = "a".repeat(64);
 
     sqlx::query(
-        "INSERT INTO merchant_api_keys (id, merchant_id, livemode, key_prefix, key_digest) \
-         VALUES ('mak_first', 'merchant_1', true, 'sk_live_abc', $1)",
+        "INSERT INTO oauth_client_assertion_jtis (jti, expires_at) \
+         VALUES ('jti_first', now() + interval '5 minutes')",
     )
-    .bind(&digest)
     .execute(&pool)
     .await
-    .context("the first key with this digest must succeed")?;
+    .context("the first insert of this jti must succeed")?;
 
     let err = sqlx::query(
-        "INSERT INTO merchant_api_keys (id, merchant_id, livemode, key_prefix, key_digest) \
-         VALUES ('mak_second', 'merchant_2', true, 'sk_live_xyz', $1)",
+        "INSERT INTO oauth_client_assertion_jtis (jti, expires_at) \
+         VALUES ('jti_first', now() + interval '5 minutes')",
     )
-    .bind(&digest)
     .execute(&pool)
     .await
-    .expect_err("a second key with the same digest must be rejected");
+    .expect_err("a duplicate jti must be rejected");
 
     let db_err = err.as_database_error().expect("a database-level error");
     eprintln!("observed rejection: {db_err}");
     assert_eq!(
         db_err.constraint(),
-        Some("merchant_api_keys_key_digest_idx"),
-        "the rejection must come from the key_digest uniqueness index specifically"
+        Some("oauth_client_assertion_jtis_pkey"),
+        "the rejection must come from the jti primary key specifically"
     );
 
     Ok(())
 }
 
-/// `key_digest_is_sha256_hex`: catches an accidental non-hex or
-/// wrong-length write (e.g. base64, or a raw binary digest) at INSERT time.
+/// The Rust side is specified to use `INSERT ... ON CONFLICT (jti) DO
+/// NOTHING` and read `rows_affected()` rather than check-then-insert
+/// (migration 0011's header comment — a TOCTOU race would defeat the whole
+/// point of replay protection). Proves that pattern actually reports 1 row
+/// affected on first use and 0 on a replay, rather than erroring or silently
+/// reporting 1 both times.
 #[tokio::test]
-async fn a_malformed_merchant_api_key_digest_is_rejected_by_the_database() -> anyhow::Result<()> {
+async fn on_conflict_do_nothing_reports_zero_rows_affected_for_a_replayed_jti() -> anyhow::Result<()>
+{
     let (_container, pool) = migrated_postgres().await?;
 
-    let err = sqlx::query(
-        "INSERT INTO merchant_api_keys (id, merchant_id, livemode, key_prefix, key_digest) \
-         VALUES ('mak_bad', 'merchant_1', true, 'sk_live_abc', 'not-a-sha256-digest')",
+    let first = sqlx::query(
+        "INSERT INTO oauth_client_assertion_jtis (jti, expires_at) \
+         VALUES ('jti_conflict', now() + interval '5 minutes') \
+         ON CONFLICT (jti) DO NOTHING",
     )
     .execute(&pool)
     .await
-    .expect_err("a malformed digest must be rejected");
+    .context("the first ON CONFLICT DO NOTHING insert must succeed")?;
+    assert_eq!(
+        first.rows_affected(),
+        1,
+        "the first presentation of a jti must report exactly 1 row affected (accept)"
+    );
+
+    let replay = sqlx::query(
+        "INSERT INTO oauth_client_assertion_jtis (jti, expires_at) \
+         VALUES ('jti_conflict', now() + interval '5 minutes') \
+         ON CONFLICT (jti) DO NOTHING",
+    )
+    .execute(&pool)
+    .await
+    .context("a replayed ON CONFLICT DO NOTHING insert must still succeed as a statement")?;
+    assert_eq!(
+        replay.rows_affected(),
+        0,
+        "a replayed jti must report exactly 0 rows affected (reject) rather than erroring"
+    );
+
+    Ok(())
+}
+
+// --- migration 0012 (disabled_clients) -------------------------------------
+
+/// The basic kill-switch write path: an operator disabling a client_id must
+/// simply succeed.
+#[tokio::test]
+async fn disabled_clients_accepts_an_insert() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    sqlx::query(
+        "INSERT INTO disabled_clients (client_id, reason) \
+         VALUES ('merchant_compromised', 'key compromised, ticket INC-123')",
+    )
+    .execute(&pool)
+    .await
+    .context("disabling a client_id must succeed")?;
+
+    Ok(())
+}
+
+/// `client_id` is the primary key: a client can only be disabled once (a
+/// second disable attempt for the same client_id must be rejected, not
+/// silently accepted as a second row) — the operator-facing "disable" action
+/// should be idempotent at the application layer, not double-insert at the
+/// database layer.
+#[tokio::test]
+async fn a_duplicate_disabled_client_id_is_rejected_by_the_database() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    sqlx::query("INSERT INTO disabled_clients (client_id) VALUES ('merchant_dupe')")
+        .execute(&pool)
+        .await
+        .context("the first disable of this client_id must succeed")?;
+
+    let err = sqlx::query("INSERT INTO disabled_clients (client_id) VALUES ('merchant_dupe')")
+        .execute(&pool)
+        .await
+        .expect_err("a duplicate client_id must be rejected");
 
     let db_err = err.as_database_error().expect("a database-level error");
     eprintln!("observed rejection: {db_err}");
     assert_eq!(
         db_err.constraint(),
-        Some("key_digest_is_sha256_hex"),
-        "the rejection must come from the key_digest shape CHECK specifically"
+        Some("disabled_clients_pkey"),
+        "the rejection must come from the client_id primary key specifically"
     );
 
     Ok(())

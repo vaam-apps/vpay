@@ -3,27 +3,37 @@
 //! Administration is YAML in git. A profile selects a *config file*; it must
 //! never select a *code path*. See `docs/adr/0003-yaml-configuration.md`.
 //!
-//! STATUS: types and the deployment guard rules are implemented and tested.
-//! Figment layering and DB reconciliation are NOT implemented — `docs/status.md`.
+//! STATUS: boot-sequence steps 1-3 (`docs/flows/configuration.md`) are
+//! implemented and tested — [`config::Config::load`] loads
+//! `application.yml`, overlays `application-{profile}.yml`, resolves
+//! `${ENV}` placeholders (fatal if unresolved), and validates. Step 4 (DB
+//! reconciliation) is NOT implemented — `docs/status.md`.
 
 use serde::{Deserialize, Serialize};
 
 pub mod cli;
+pub mod config;
 pub mod signal;
 pub use cli::{CommonArgs, LogFormat, ServerArgs, WorkerArgs};
+pub use config::{Config, CurrencyEntry, ProviderHost};
 pub use signal::ShutdownSignals;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, garde::Validate)]
 pub struct Deployment {
+    #[garde(length(min = 1))]
     pub name: String,
     /// Tenancy label stamped on API objects. Gates no behaviour, ever.
+    #[garde(skip)]
     pub livemode: bool,
+    #[garde(length(min = 1))]
     pub public_base_url: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, garde::Validate)]
 pub struct HostEntry {
+    #[garde(length(min = 1))]
     pub url: String,
+    #[garde(length(min = 1))]
     pub label: String,
 }
 
@@ -35,6 +45,58 @@ pub enum ConfigError {
     StubHostInLivemode(String),
     #[error("livemode secrets must come from ${{ENV}} placeholders, not literals: {0}")]
     LiteralSecret(String),
+
+    /// No `--config` / `VPAY_CONFIG` was given. There is no implicit
+    /// default path — ADR-0003 wants an explicit file per deployment, and
+    /// guessing one would be exactly the kind of silent behaviour this repo
+    /// forbids.
+    #[error("no config path given (pass --config or set VPAY_CONFIG)")]
+    MissingPath,
+    /// The base `--config` path does not exist. Figment itself is lenient
+    /// about a missing file (it yields an empty document), which would turn
+    /// a typo'd path into confusing downstream validation errors instead of
+    /// a clear one — so this is checked explicitly before Figment ever runs.
+    #[error("config file not found: {0}")]
+    FileNotFound(String),
+    /// The base or profile-overlay file exists but failed to load or parse.
+    #[error("failed to load {0}: {1}")]
+    Load(String, String),
+    /// A `${` was opened but never closed, or the name inside it was not a
+    /// plain identifier.
+    #[error("malformed ${{...}} placeholder in: {0}")]
+    MalformedPlaceholder(String),
+    /// Step 2 of the boot sequence: an unresolved placeholder is fatal,
+    /// never an empty string (`docs/flows/configuration.md`).
+    #[error("unresolved ${{ENV}} placeholder: environment variable {0} is not set")]
+    UnresolvedPlaceholder(String),
+    /// The merged, placeholder-resolved document does not match `Config`'s
+    /// shape (wrong type, missing required field, ...).
+    #[error("config does not match the expected shape: {0}")]
+    Shape(String),
+    /// A `garde`-derived structural rule failed.
+    #[error("config validation failed: {0}")]
+    Validation(String),
+    /// Mirrors the `providers` table's primary key
+    /// (`backends/migrations/0002_create-providers.sql`).
+    #[error("duplicate provider code: {0}")]
+    DuplicateProviderCode(String),
+    /// Mirrors the `currencies` table's primary key
+    /// (`backends/migrations/0001_create-currencies.sql`).
+    #[error("duplicate currency code: {0}")]
+    DuplicateCurrencyCode(String),
+    /// Not one of `vpay_core::Currency`'s variants.
+    #[error("unknown currency code: {0}")]
+    UnknownCurrency(String),
+    /// "Currency exponent matches the canonical table"
+    /// (`docs/flows/configuration.md`'s boot-guard table) — the exponent is
+    /// a property of the currency itself, never configurable per deployment
+    /// (`vpay_core::Currency::exponent`).
+    #[error("currency {code} exponent {given} does not match the canonical exponent {expected}")]
+    CurrencyExponentMismatch {
+        code: String,
+        given: u32,
+        expected: u32,
+    },
 }
 
 /// Substrings that mark a host as a stub. A live deployment must refuse them.

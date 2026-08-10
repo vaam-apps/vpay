@@ -1,0 +1,7 @@
+# Overlays application.yml when --profile sandbox / VPAY_PROFILE=sandbox —
+# the CLI's default profile (backends/crates/vpay-config/src/cli.rs). Only
+# keys that actually differ from the base belong here; figment deep-merges
+# dictionaries key-by-key, so anything omitted keeps the base's value.
+
+deployment:
+  name: vpay-sandbox

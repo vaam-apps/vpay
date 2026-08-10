@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "backends/crates/vpay-config",
     "backends/crates/vpay-core",
+    "backends/crates/vpay-db",
     "backends/crates/vpay-ledger",
     "backends/crates/vpay-provider",
     "backends/crates/vpay-adapter-mtn-momo",
@@ -62,6 +63,24 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2"] }
 
 # --- data ---
+# `tls-rustls-ring` (= `tls-rustls-ring-webpki`), which vendors Mozilla's CA
+# bundle via `webpki-roots`, rather than `tls-rustls-ring-native-roots`.
+# Both keep the single `ring` `CryptoProvider` invariant documented on the
+# `authkestra-*` deps below; they differ only in where trusted roots come
+# from, and that difference is decisive here.
+#
+# The runtime image is `FROM scratch` (docs/adr/0004-musl-mimalloc.md — no
+# glibc, no shell, no package manager). A scratch image has no OS trust
+# store, so `rustls-native-certs` would find nothing at connection time and
+# TLS to Postgres would fail *in the shipped image only* — while passing
+# locally and in CI, where a trust store exists and the test/compose
+# databases speak plain TCP anyway. Vendored roots are the only option that
+# works inside scratch.
+#
+# `webpki-roots` ships under `CDLA-Permissive-2.0`; that is allowed in
+# `deny.toml` with its own justification. Note this surfaces only now that a
+# non-dev crate depends on `sqlx` (`backends/crates/vpay-db`) — it was
+# latent in the workspace's own pins beforehand.
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio", "tls-rustls-ring", "postgres", "uuid", "time", "json", "macros", "migrate",
 ] }
@@ -168,6 +187,7 @@ rstest = "0.23"
 # version as a wildcard dependency.
 vpay-config = { path = "backends/crates/vpay-config", version = "0.1.0" }
 vpay-core = { path = "backends/crates/vpay-core", version = "0.1.0" }
+vpay-db = { path = "backends/crates/vpay-db", version = "0.1.0" }
 vpay-ledger = { path = "backends/crates/vpay-ledger", version = "0.1.0" }
 vpay-provider = { path = "backends/crates/vpay-provider", version = "0.1.0" }
 vpay-adapter-mtn-momo = { path = "backends/crates/vpay-adapter-mtn-momo", version = "0.1.0" }

@@ -1,0 +1,12 @@
+# Fixture for `a_currency_exponent_that_does_not_match_the_canonical_table_is_rejected`
+# (backends/crates/vpay-config/src/config.rs). XAF is canonically exponent 0
+# (vpay_core::Currency::exponent) — 2 here must be rejected.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+currencies:
+  - code: XAF
+    exponent: 2

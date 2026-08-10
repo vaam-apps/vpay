@@ -18,6 +18,7 @@
 //! only by which config file they load — not by a code branch. See
 //! `AGENTS.md` ("No environment branching").
 
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -38,7 +39,15 @@ pub enum LogFormat {
 /// Flattened into each binary's top-level [`clap::Parser`] struct via
 /// `#[command(flatten)]` so the server and worker cannot silently diverge on
 /// a shared flag's name, env var, or default.
-#[derive(Debug, Clone, Parser)]
+///
+/// `Debug` is hand-written below instead of derived, because
+/// `database_url` routinely embeds a plaintext password
+/// (`postgres://user:password@host/db`). `ServerArgs`/`WorkerArgs` are far
+/// more likely to reach a log line than the YAML config ever is — a startup
+/// trace or an early `anyhow` error commonly prints the parsed CLI args
+/// before anything else has happened — so this matters even more than
+/// [`crate::config::ProviderHost`]'s equivalent redaction.
+#[derive(Clone, Parser)]
 pub struct CommonArgs {
     /// Postgres connection string.
     ///
@@ -46,6 +55,10 @@ pub struct CommonArgs {
     /// implemented yet (`docs/status.md`) — the wiring exists so turning the
     /// layer on later is a matter of using this value, not inventing a new
     /// flag.
+    ///
+    /// Routinely embeds a password (`postgres://user:pass@host/db`) — see
+    /// [`CommonArgs`]'s hand-written `Debug` impl below, which prints only
+    /// whether this is set, never its value.
     #[arg(long, env = "DATABASE_URL")]
     pub database_url: Option<String>,
 
@@ -85,7 +98,35 @@ pub struct CommonArgs {
     pub shutdown_grace_seconds: u64,
 }
 
+/// Redacts `database_url` (a Postgres connection string that routinely
+/// embeds a plaintext password) while leaving every other field visible.
+///
+/// Prints only whether `database_url` is set, not its value — same
+/// redaction shape as [`crate::config::ProviderHost`]'s hand-written impl:
+/// presence is the useful debugging signal (did the flag/env var resolve at
+/// all), the value never is.
+impl fmt::Debug for CommonArgs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CommonArgs")
+            .field(
+                "database_url",
+                &self.database_url.as_deref().map(|_| "[redacted]"),
+            )
+            .field("profile", &self.profile)
+            .field("config", &self.config)
+            .field("log_filter", &self.log_filter)
+            .field("log_format", &self.log_format)
+            .field("shutdown_grace_seconds", &self.shutdown_grace_seconds)
+            .finish()
+    }
+}
+
 /// `vpay-server` CLI.
+///
+/// `#[derive(Debug)]` is safe here even though `common: CommonArgs` carries
+/// `database_url`: the derive formats `common` via *its own* `Debug` impl,
+/// which [`CommonArgs`] hand-writes to redact — same composition argued in
+/// [`crate::config::Config`]'s doc comment, proved by this module's tests.
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "vpay-server",
@@ -113,6 +154,9 @@ pub struct ServerArgs {
 }
 
 /// `vpay-worker-bin` CLI.
+///
+/// Same composition note as [`ServerArgs`]: `#[derive(Debug)]` is safe
+/// because `common: CommonArgs` formats via its own redacting `Debug` impl.
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "vpay-worker-bin",
@@ -311,5 +355,85 @@ mod tests {
     fn an_unparseable_bind_address_is_a_clean_parse_error_not_a_panic() {
         let result = ServerArgs::try_parse_from(["vpay-server", "--bind", "not-an-address"]);
         assert!(result.is_err());
+    }
+
+    /// A `--database-url` password must never appear in `CommonArgs`'s
+    /// `Debug` output. This is the test that would fail if someone
+    /// re-derived `Debug` on `CommonArgs`.
+    #[test]
+    fn common_args_debug_output_never_contains_the_database_password() {
+        let args = ServerArgs::parse_from([
+            "vpay-server",
+            "--database-url",
+            "postgres://vpay:hunter2-live-password@db.internal:5432/vpay",
+        ]);
+
+        let formatted = format!("{:?}", args.common);
+
+        assert!(
+            !formatted.contains("hunter2-live-password"),
+            "database password leaked into Debug output: {formatted}"
+        );
+    }
+
+    /// Same check through the whole `ServerArgs`/`WorkerArgs` — the types
+    /// actually likely to be logged at startup (see the doc comment on
+    /// `CommonArgs`) — proving the derive-delegates-to-nested-Debug
+    /// composition holds for both binaries' top-level parsers, not just
+    /// `CommonArgs` in isolation.
+    #[test]
+    fn server_and_worker_args_debug_output_never_contains_the_database_password() {
+        let server = ServerArgs::parse_from([
+            "vpay-server",
+            "--database-url",
+            "postgres://vpay:hunter2-live-password@db.internal:5432/vpay",
+        ]);
+        let worker = WorkerArgs::parse_from([
+            "vpay-worker-bin",
+            "--database-url",
+            "postgres://vpay:hunter2-live-password@db.internal:5432/vpay",
+        ]);
+
+        let server_formatted = format!("{server:?}");
+        let worker_formatted = format!("{worker:?}");
+
+        assert!(!server_formatted.contains("hunter2-live-password"));
+        assert!(!worker_formatted.contains("hunter2-live-password"));
+    }
+
+    /// The redaction must not swallow everything: `profile`, `config`,
+    /// `log_filter`, `log_format`, and `shutdown_grace_seconds` must stay
+    /// visible, and `database_url`'s *presence* (not its value) must still
+    /// be observable — otherwise the redacted `Debug` is useless for
+    /// diagnosing "did the flag even resolve."
+    #[test]
+    fn common_args_debug_output_still_contains_the_non_secret_fields() {
+        let args = ServerArgs::parse_from([
+            "vpay-server",
+            "--database-url",
+            "postgres://vpay:hunter2-live-password@db.internal:5432/vpay",
+            "--profile",
+            "prod-config",
+            "--log-format",
+            "text",
+            "--shutdown-grace-seconds",
+            "5",
+        ]);
+
+        let formatted = format!("{:?}", args.common);
+
+        assert!(formatted.contains("prod-config"), "{formatted}");
+        assert!(formatted.contains("Text"), "{formatted}");
+        assert!(formatted.contains('5'), "{formatted}");
+        assert!(formatted.contains("[redacted]"), "{formatted}");
+    }
+
+    /// When `database_url` is unset, `Debug` must say so plainly (`None`),
+    /// not silently omit the field or claim a redacted value exists.
+    #[test]
+    fn common_args_debug_output_shows_none_when_database_url_is_unset() {
+        let args = ServerArgs::parse_from(["vpay-server"]);
+        let formatted = format!("{:?}", args.common);
+        assert!(formatted.contains("database_url: None"), "{formatted}");
     }
 }

@@ -48,15 +48,42 @@ async fn main() -> anyhow::Result<()> {
     // vpay_config::cli and docs/adr/0003-yaml-configuration.md.
     tracing::info!(profile = %args.common.profile, "deployment profile (selects a config file only)");
 
+    // `--database-url` / `DATABASE_URL` stays `Option<String>` at the clap
+    // level (`vpay_config::CommonArgs`, out of scope for this change — see
+    // docs/status.md) but is treated as required *here*: a payment server
+    // that binds a listener and answers `/healthz` with no database behind
+    // it would be lying about its own readiness (`/healthz` now runs a real
+    // `SELECT 1` — see `vpay_api::router`), and this repo's own rule is
+    // never to look more finished than it is. A missing value is a hard,
+    // loud startup failure, not a silently DB-less scaffold mode.
+    let database_url = args.common.database_url.as_deref().context(
+        "--database-url / DATABASE_URL is required: vpay-server cannot serve traffic without \
+         a database to open a pool against and migrate (see docs/status.md)",
+    )?;
+
+    // Connect and migrate *before* binding the listener: a server that binds
+    // its port before proving the database is reachable and up to date would
+    // start accepting connections it cannot actually serve correctly.
+    let pool = vpay_db::connect(database_url)
+        .await
+        .context("connecting to Postgres")?;
+    vpay_db::run_migrations(&pool)
+        .await
+        .context("running database migrations")?;
+    tracing::info!("database connected and migrations applied");
+
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await
         .with_context(|| format!("binding {}", args.bind))?;
 
-    tracing::warn!("vpay-server is a scaffold: only /healthz is implemented. See docs/status.md");
+    tracing::warn!(
+        "vpay-server is a scaffold: only /healthz and the database connection are implemented. \
+         See docs/status.md"
+    );
     tracing::info!(addr = %args.bind, "listening");
 
     let shutdown_grace = Duration::from_secs(args.common.shutdown_grace_seconds);
-    match serve_with_bounded_drain(listener, shutdown_grace, shutdown_signals).await? {
+    match serve_with_bounded_drain(listener, pool, shutdown_grace, shutdown_signals).await? {
         DrainOutcome::Clean => {
             tracing::info!("graceful shutdown complete, exiting");
             Ok(())
@@ -100,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
 /// decides the [`DrainOutcome`].
 async fn serve_with_bounded_drain(
     listener: tokio::net::TcpListener,
+    pool: vpay_db::PgPool,
     shutdown_grace: Duration,
     mut shutdown_signals: ShutdownSignals,
 ) -> anyhow::Result<DrainOutcome> {
@@ -108,7 +136,7 @@ async fn serve_with_bounded_drain(
     // `axum::serve(..).with_graceful_shutdown(..)` returns a builder that
     // implements `IntoFuture`, not `Future` directly — `tokio::select!`
     // needs the latter, hence the explicit `.into_future()`.
-    let serve_fut = axum::serve(listener, vpay_api::router())
+    let serve_fut = axum::serve(listener, vpay_api::router(pool))
         .with_graceful_shutdown(async move {
             shutdown_signals.wait().await;
             // A closed receiver just means the grace-period clock below

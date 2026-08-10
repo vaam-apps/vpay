@@ -29,6 +29,16 @@ integrate Stripe — same object model, same idempotency semantics, same webhook
 signature scheme — while it talks underneath to mobile money rails that behave
 nothing like cards.
 
+**Authentication is the one place this comparison does not hold.** `/v1`
+does not accept an `sk_live_`/`sk_test_`-style API key. It authenticates
+merchants with OAuth2 `client_credentials` + `private_key_jwt` (RFC 7523):
+each merchant is a statically registered client, holding its own private
+key, configured directly in vpay's YAML — vpay stores only the public half.
+No Stripe SDK can authenticate against vpay as a result. See
+[ADR-0010](docs/adr/0010-merchant-auth-private-key-jwt.md) for why, and
+[`examples/merchant-curl`](examples/merchant-curl/) for the resulting
+two-step flow.
+
 Two rails ship in the MVP, and they have genuinely different payer journeys:
 
 | | **MTN MoMo** (`push`) | **Orange Money** (`redirect`) |

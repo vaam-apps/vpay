@@ -44,6 +44,35 @@ async fn main() -> anyhow::Result<()> {
     // vpay_config::cli and docs/adr/0003-yaml-configuration.md.
     tracing::info!(profile = %args.common.profile, "deployment profile (selects a config file only)");
 
+    // `--database-url` / `DATABASE_URL` stays `Option<String>` at the clap
+    // level (`vpay_config::CommonArgs`, out of scope for this change — see
+    // docs/status.md) but is treated as required *here*, matching
+    // `vpay-server`'s decision (see that binary's `main.rs` for the fuller
+    // reasoning): a process that boots with no database at all is not doing
+    // the thing this pass exists to do, and silently skipping the connection
+    // when the flag is absent would leave it dormant behind an optional
+    // flag rather than the live path this repo's delivery style requires.
+    let database_url = args.common.database_url.as_deref().context(
+        "--database-url / DATABASE_URL is required: vpay-worker-bin cannot start without \
+         a database to open a pool against and migrate (see docs/status.md)",
+    )?;
+
+    // Connect and migrate at startup, same as `vpay-server` — "database
+    // connectivity and migrations at boot" applies to both binaries, not
+    // just the one with an HTTP listener. The pool itself has no consumer
+    // yet (the job loop is not implemented, docs/status.md) so it is not
+    // held past this point; the goal here is only the loud, fail-fast proof
+    // that the database is reachable and up to date before this process
+    // claims to be running.
+    let pool = vpay_db::connect(database_url)
+        .await
+        .context("connecting to Postgres")?;
+    vpay_db::run_migrations(&pool)
+        .await
+        .context("running database migrations")?;
+    tracing::info!("database connected and migrations applied");
+    drop(pool);
+
     tracing::warn!(
         "vpay-worker-bin is a scaffold: the job loop is NOT implemented. No jobs \
          are being dequeued, polled, or delivered. This process stays up only to \

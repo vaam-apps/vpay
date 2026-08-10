@@ -30,6 +30,55 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use testcontainers::runners::AsyncRunner;
+use testcontainers::{ContainerAsync, ImageExt};
+use testcontainers_modules::postgres::Postgres as PostgresImage;
+
+/// Starts a fresh Postgres 16 container and returns its connection URL. Must
+/// be called from, and the returned container kept alive inside, the same
+/// tokio runtime for its entire lifetime — see [`with_live_postgres`] for
+/// why. Mirrors `backends/apps/vpay-server/tests/cli.rs`'s identical helper
+/// (same reasoning for the pinned `16-alpine` tag: `postgres:11-alpine`,
+/// this crate's default, is not cached on this machine and unreachable).
+async fn start_postgres() -> (ContainerAsync<PostgresImage>, String) {
+    let container = PostgresImage::default()
+        .with_tag("16-alpine")
+        .start()
+        .await
+        .expect("postgres:16-alpine container starts (it is cached locally on this machine)");
+    let host = container.get_host().await.expect("container host");
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .expect("container port");
+    let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    (container, url)
+}
+
+/// Runs `body` — a plain, synchronous test body that spawns and drives a
+/// `vpay-worker-bin` subprocess — with a real Postgres connection URL
+/// available to pass as `DATABASE_URL`. Mirrors
+/// `backends/apps/vpay-server/tests/cli.rs`'s identical helper of the same
+/// name; see that file's doc comment for the full reasoning (in short:
+/// `vpay-worker-bin` now requires a real database at startup too, one
+/// container is started per test *function* and reused across every
+/// subprocess spawn within it, and the container is deliberately a local of
+/// this function's own `block_on` rather than a `static`, because
+/// `ContainerAsync`'s `Drop` needs an active tokio runtime context to run
+/// its cleanup and a `static` would never run `Drop` at process exit at
+/// all — the exact leak `.config/nextest.toml` documents rejecting
+/// elsewhere in this workspace).
+fn with_live_postgres(body: impl FnOnce(String)) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build a tokio runtime to drive testcontainers");
+    rt.block_on(async {
+        let (_container, url) = start_postgres().await;
+        body(url);
+    });
+}
+
 /// RAII guard: kills and reaps the child on drop, so a panicking assertion
 /// can never leak a process behind it.
 struct ChildGuard(Child);
@@ -177,63 +226,69 @@ fn an_invalid_log_format_env_var_is_read_and_rejected() {
 
 #[test]
 fn profile_env_var_is_read_and_stamped_into_the_startup_log() {
-    let mut cmd = bin();
-    cmd.env("VPAY_PROFILE", "integration-test-profile")
-        .env("VPAY_LOG_FORMAT", "text");
-    #[cfg_attr(not(unix), allow(unused_mut))]
-    let (mut guard, rx) = spawn_and_capture_stdout(cmd);
+    with_live_postgres(|database_url| {
+        let mut cmd = bin();
+        cmd.env("VPAY_PROFILE", "integration-test-profile")
+            .env("VPAY_LOG_FORMAT", "text")
+            .env("DATABASE_URL", &database_url);
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let (mut guard, rx) = spawn_and_capture_stdout(cmd);
 
-    let line = wait_for_line(
-        &rx,
-        |l| l.contains("integration-test-profile"),
-        Duration::from_secs(5),
-    );
-    assert!(
-        line.is_some(),
-        "VPAY_PROFILE's value never appeared in the worker's startup log"
-    );
+        let line = wait_for_line(
+            &rx,
+            |l| l.contains("integration-test-profile"),
+            Duration::from_secs(5),
+        );
+        assert!(
+            line.is_some(),
+            "VPAY_PROFILE's value never appeared in the worker's startup log"
+        );
 
-    #[cfg(unix)]
-    {
+        #[cfg(unix)]
+        {
+            send_sigterm(&guard.0);
+            let exit = guard.0.wait().expect("wait for graceful shutdown");
+            assert!(
+                exit.success(),
+                "expected exit 0 after SIGTERM, got {exit:?}"
+            );
+        }
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn an_explicit_profile_flag_wins_over_a_conflicting_env_var() {
+    with_live_postgres(|database_url| {
+        let mut cmd = bin();
+        cmd.env("VPAY_PROFILE", "env-should-lose")
+            .env("VPAY_LOG_FORMAT", "text")
+            .env("DATABASE_URL", &database_url)
+            .args(["--profile", "flag-should-win"]);
+        let (mut guard, rx) = spawn_and_capture_stdout(cmd);
+
+        let line = wait_for_line(
+            &rx,
+            |l| l.contains("flag-should-win") || l.contains("env-should-lose"),
+            Duration::from_secs(5),
+        );
+        let line = line.expect("no profile line observed in the worker's startup log");
+        assert!(
+            line.contains("flag-should-win"),
+            "expected the --profile flag's value to win, got: {line}"
+        );
+        assert!(
+            !line.contains("env-should-lose"),
+            "VPAY_PROFILE's value should not have been used once --profile was passed, got: {line}"
+        );
+
         send_sigterm(&guard.0);
         let exit = guard.0.wait().expect("wait for graceful shutdown");
         assert!(
             exit.success(),
             "expected exit 0 after SIGTERM, got {exit:?}"
         );
-    }
-}
-
-#[cfg(unix)]
-#[test]
-fn an_explicit_profile_flag_wins_over_a_conflicting_env_var() {
-    let mut cmd = bin();
-    cmd.env("VPAY_PROFILE", "env-should-lose")
-        .env("VPAY_LOG_FORMAT", "text")
-        .args(["--profile", "flag-should-win"]);
-    let (mut guard, rx) = spawn_and_capture_stdout(cmd);
-
-    let line = wait_for_line(
-        &rx,
-        |l| l.contains("flag-should-win") || l.contains("env-should-lose"),
-        Duration::from_secs(5),
-    );
-    let line = line.expect("no profile line observed in the worker's startup log");
-    assert!(
-        line.contains("flag-should-win"),
-        "expected the --profile flag's value to win, got: {line}"
-    );
-    assert!(
-        !line.contains("env-should-lose"),
-        "VPAY_PROFILE's value should not have been used once --profile was passed, got: {line}"
-    );
-
-    send_sigterm(&guard.0);
-    let exit = guard.0.wait().expect("wait for graceful shutdown");
-    assert!(
-        exit.success(),
-        "expected exit 0 after SIGTERM, got {exit:?}"
-    );
+    });
 }
 
 /// Regression test for the SIGTERM-before-handler-installation startup race
@@ -295,59 +350,70 @@ fn an_explicit_profile_flag_wins_over_a_conflicting_env_var() {
 fn sigterm_immediately_after_startup_still_triggers_graceful_shutdown() {
     // Pays the one-time cold-start cost described above so it isn't a
     // confound for the timed attempts below. `--help` returns before this
-    // binary's own signal-handling or tracing code ever runs.
+    // binary's own signal-handling or tracing code ever runs (and before it
+    // ever looks at `DATABASE_URL`, so no container is needed for this
+    // warm-up call specifically).
     let _ = bin().arg("--help").output();
 
-    const ATTEMPTS: u8 = 20;
-    const MIN_SUCCESSES: u8 = 16;
-    const DELAY: Duration = Duration::from_millis(50);
-    /// Settle gap between attempts — see the server test's doc comment for
-    /// why this is load-bearing, not cosmetic: without it, back-to-back
-    /// spawns keep the CPU boosted from sustained load, which washes out
-    /// the very signal this test depends on.
-    const SETTLE: Duration = Duration::from_millis(100);
+    // One container, reused for all `ATTEMPTS` spawns below — see
+    // `with_live_postgres`'s doc comment, and
+    // `backends/apps/vpay-server/tests/cli.rs`'s identical test for why the
+    // added DB connect + idempotent migration per attempt does not affect
+    // this test's sensitivity to the race (`ShutdownSignals::install()`
+    // still runs first, before the DB connect).
+    with_live_postgres(|database_url| {
+        const ATTEMPTS: u8 = 20;
+        const MIN_SUCCESSES: u8 = 16;
+        const DELAY: Duration = Duration::from_millis(50);
+        /// Settle gap between attempts — see the server test's doc comment for
+        /// why this is load-bearing, not cosmetic: without it, back-to-back
+        /// spawns keep the CPU boosted from sustained load, which washes out
+        /// the very signal this test depends on.
+        const SETTLE: Duration = Duration::from_millis(100);
 
-    // Bounds each attempt's wait so one stuck child (see `wait_with_timeout`)
-    // can cost at most this much wall time rather than hanging the test.
-    const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+        // Bounds each attempt's wait so one stuck child (see `wait_with_timeout`)
+        // can cost at most this much wall time rather than hanging the test.
+        const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
-    let mut outcomes = Vec::with_capacity(ATTEMPTS as usize);
-    for attempt in 1..=ATTEMPTS {
-        let mut cmd = bin();
-        cmd.env("VPAY_PROFILE", "sigterm-race-test")
-            .env("VPAY_LOG_FORMAT", "text");
-        let (mut guard, rx) = spawn_and_capture_stdout(cmd);
+        let mut outcomes = Vec::with_capacity(ATTEMPTS as usize);
+        for attempt in 1..=ATTEMPTS {
+            let mut cmd = bin();
+            cmd.env("VPAY_PROFILE", "sigterm-race-test")
+                .env("VPAY_LOG_FORMAT", "text")
+                .env("DATABASE_URL", &database_url);
+            let (mut guard, rx) = spawn_and_capture_stdout(cmd);
 
-        std::thread::sleep(DELAY);
+            std::thread::sleep(DELAY);
 
-        send_sigterm(&guard.0);
-        let exit = wait_with_timeout(&mut guard.0, WAIT_TIMEOUT);
-        let lines = collect_remaining_lines(&rx, Duration::from_secs(5));
-        let graceful = exit.is_some_and(|exit| exit.success())
-            && lines
+            send_sigterm(&guard.0);
+            let exit = wait_with_timeout(&mut guard.0, WAIT_TIMEOUT);
+            let lines = collect_remaining_lines(&rx, Duration::from_secs(5));
+            let graceful = exit.is_some_and(|exit| exit.success())
+                && lines
+                    .iter()
+                    .any(|l| l.contains("received SIGTERM, starting graceful shutdown"));
+            outcomes.push((attempt, graceful, exit, lines));
+            std::thread::sleep(SETTLE);
+        }
+
+        let successes = outcomes.iter().filter(|(_, ok, _, _)| *ok).count();
+        assert!(
+            successes as u8 >= MIN_SUCCESSES,
+            "only {successes}/{ATTEMPTS} attempts shut down gracefully after an immediate SIGTERM \
+             (need at least {MIN_SUCCESSES}); this many failures indicates the handler is not \
+             installed early enough, not just scheduling noise. Failing attempts:\n{}",
+            outcomes
                 .iter()
-                .any(|l| l.contains("received SIGTERM, starting graceful shutdown"));
-        outcomes.push((attempt, graceful, exit, lines));
-        std::thread::sleep(SETTLE);
-    }
-
-    let successes = outcomes.iter().filter(|(_, ok, _, _)| *ok).count();
-    assert!(
-        successes as u8 >= MIN_SUCCESSES,
-        "only {successes}/{ATTEMPTS} attempts shut down gracefully after an immediate SIGTERM \
-         (need at least {MIN_SUCCESSES}); this many failures indicates the handler is not \
-         installed early enough, not just scheduling noise. Failing attempts:\n{}",
-        outcomes
-            .iter()
-            .filter(|(_, ok, _, _)| !ok)
-            .map(|(attempt, _, exit, lines)| {
-                let exit_desc = match exit {
-                    Some(status) => format!("{status:?}"),
-                    None => format!("timed out after {WAIT_TIMEOUT:?} and was force-killed"),
-                };
-                format!("  attempt {attempt}/{ATTEMPTS}: exit={exit_desc} lines={lines:?}")
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
+                .filter(|(_, ok, _, _)| !ok)
+                .map(|(attempt, _, exit, lines)| {
+                    let exit_desc = match exit {
+                        Some(status) => format!("{status:?}"),
+                        None => format!("timed out after {WAIT_TIMEOUT:?} and was force-killed"),
+                    };
+                    format!("  attempt {attempt}/{ATTEMPTS}: exit={exit_desc} lines={lines:?}")
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    });
 }

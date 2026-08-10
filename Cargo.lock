@@ -4047,8 +4047,10 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "tower",
  "tracing",
  "vpay-core",
+ "vpay-db",
  "vpay-provider",
 ]
 
@@ -4075,6 +4077,19 @@ dependencies = [
  "thiserror",
  "time",
  "uuid",
+]
+
+[[package]]
+name = "vpay-db"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "sqlx",
+ "testcontainers",
+ "testcontainers-modules",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4107,6 +4122,8 @@ dependencies = [
  "axum",
  "clap",
  "mimalloc",
+ "testcontainers",
+ "testcontainers-modules",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -4115,6 +4132,7 @@ dependencies = [
  "vpay-api",
  "vpay-config",
  "vpay-core",
+ "vpay-db",
  "vpay-provider",
  "vpay-testkit",
  "vpay-worker",
@@ -4190,6 +4208,8 @@ dependencies = [
  "axum",
  "clap",
  "mimalloc",
+ "testcontainers",
+ "testcontainers-modules",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -4198,6 +4218,7 @@ dependencies = [
  "vpay-api",
  "vpay-config",
  "vpay-core",
+ "vpay-db",
  "vpay-provider",
  "vpay-testkit",
  "vpay-worker",

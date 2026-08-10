@@ -1,6 +1,9 @@
 # ADR-0009: vpay runs Authkestra as its own OpenID Provider for `/dash/v1`
 
-- **Status:** Accepted
+- **Status:** Accepted. The "Scope boundary" paragraph below — that `/v1`
+  keeps Stripe-shaped `sk_live_`/`sk_test_` API keys — is **superseded** by
+  [ADR-0010](0010-merchant-auth-private-key-jwt.md). Everything else in this
+  ADR, including the `/dash/v1` decision itself, stands.
 - **Date:** 2026-08-09
 - **Deciders:** vpay maintainers
 
