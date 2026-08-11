@@ -155,6 +155,8 @@ repeating heartbeat log line. `--database-url`, `--config` and
 
 Start with [`docs/status.md`](docs/status.md), then:
 
+- [Roadmap](docs/roadmap.md) — the phases from scaffold to a deployable
+  gateway, and where the project stands in that sequence
 - [Flows](docs/flows/) — one document per process, with invariants
 - [ADRs](docs/adr/) — decisions and what they cost
 - [RFCs](docs/rfc/) — proposals not yet decided
