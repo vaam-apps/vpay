@@ -437,6 +437,13 @@ mod tests {
             alg: Some("RS256".to_string()),
             n: Some(URL_SAFE_NO_PAD.encode(public_key.n().to_bytes_be())),
             e: Some(URL_SAFE_NO_PAD.encode(public_key.e().to_bytes_be())),
+            // `authkestra-engine` 0.4.0 (PR #190) widened `Jwk` with two more
+            // fields to also represent the OKP/Ed25519 JWK shape (RFC 8037)
+            // alongside the existing RSA one. Both are `None` for every RSA
+            // key this test module generates — see the struct's own doc
+            // comment on `authkestra_engine::token::jwk::Jwk`.
+            crv: None,
+            x: None,
         };
 
         (encoding_key, jwk)

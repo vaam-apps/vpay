@@ -214,14 +214,15 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "authkestra-engine"
-version = "0.3.4"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78dea358b04bb17b24deab1d7f6320a755621a4d5bb82f217ad535777adca2b5"
+checksum = "85fae18dbca2dcb3b8c876380b930530dc9e05263244d45f03de4d95ae7d54eb"
 dependencies = [
  "aes-gcm",
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "ed25519-dalek",
  "http",
  "jsonwebtoken",
  "rand 0.9.5",
@@ -239,9 +240,9 @@ dependencies = [
 
 [[package]]
 name = "authkestra-op"
-version = "0.3.4"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ad96c309520c7d5fe51f15e46686a4c1c6617804291ed50bfe023f682aea257"
+checksum = "16c5c60f57f73f7e7fc7a8da29e9b7348d8798f90a9df76fa14fdd617f27c9d8"
 dependencies = [
  "argon2",
  "async-trait",
@@ -263,9 +264,9 @@ dependencies = [
 
 [[package]]
 name = "authkestra-resource"
-version = "0.3.4"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd3e981d7736fed0a72e54b97b8e187653288d4bddfbe2a1430b5852601307cb"
+checksum = "ebdc8a1942e6a660babb03b852557b44e1afcc6999b43d6d2feb07905033a617"
 dependencies = [
  "async-trait",
  "authkestra-engine",

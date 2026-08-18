@@ -149,14 +149,14 @@ clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 # before that. Nothing in the workspace does this yet (grep confirms no
 # `install_default` call anywhere in backends/); this is a hard prerequisite
 # for the implementation step, not an optional hardening.
-authkestra-op = { version = "=0.3.4", default-features = false, features = ["rustls-no-provider"] }
-authkestra-engine = { version = "=0.3.4", default-features = false, features = ["rustls-no-provider", "token", "session"] }
+authkestra-op = { version = "=0.5.1", default-features = false, features = ["rustls-no-provider"] }
+authkestra-engine = { version = "=0.5.1", default-features = false, features = ["rustls-no-provider", "token", "session"] }
 # `op` pulls in authkestra-op + implies `session`/`token`; this is how OP
 # routes get mounted onto an axum Router (crates/authkestra-axum's own
 # feature graph: op = ["dep:authkestra-op", "session", "token"]).
-authkestra-axum = { version = "=0.3.4", default-features = false, features = ["rustls-no-provider", "op"] }
+authkestra-axum = { version = "=0.5.1", default-features = false, features = ["rustls-no-provider", "op"] }
 # JWKS-backed token validation for /dash/v1 request guards.
-authkestra-resource = { version = "=0.3.4", default-features = false, features = ["rustls-no-provider"] }
+authkestra-resource = { version = "=0.5.1", default-features = false, features = ["rustls-no-provider"] }
 
 # --- crypto ---
 sha2 = "0.10"
