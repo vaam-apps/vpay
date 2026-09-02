@@ -40,9 +40,12 @@ No Stripe SDK can authenticate against vpay as a result. See
 two-step flow. vpay ships its own merchant SDKs that do that handshake —
 [`sdks/rust`](sdks/rust/) (`vpay-sdk`) and [`sdks/nodejs`](sdks/nodejs/)
 (`@vpay/sdk`) — implementing the wire contract in
-[`docs/flows/merchant-auth.md`](docs/flows/merchant-auth.md). They are
-tested against stubs of that contract; **no server serves `/v1` yet**, so
-neither has ever completed a request against a real vpay.
+[`docs/flows/merchant-auth.md`](docs/flows/merchant-auth.md). The Rust one
+has completed a real handshake against a running `vpay-server` — that is
+what [`examples/merchant-demo`](examples/merchant-demo/) and `just demo`
+below exist to show — and then reached the honest `404`, because **no `/v1`
+business resource exists yet**. The Node SDK is still tested only against
+stubs of the contract.
 
 Two rails ship in the MVP, and they have genuinely different payer journeys:
 
@@ -86,7 +89,7 @@ frontends/
 sdks/
   rust/         vpay-sdk   — merchant SDK (workspace crate; private_key_jwt handshake, /v1 resources, webhooks)
   nodejs/       @vpay/sdk  — the same, zero-dependency Node ≥ 22 ESM
-examples/       merchant-curl · merchant-node · webhook-receiver
+examples/       merchant-demo (runnable: `just demo`) · merchant-curl · merchant-node · webhook-receiver
 docs/           adr/ · rfc/ · flows/ · runbooks/ · api/ · status.md
 schemas/        *.cstack   (syntax verified, design sketch, excluded from the build — see docs/status.md)
 .xtask/         repo automation and the two self-checks
@@ -108,12 +111,71 @@ Vitest for units, Cypress for e2e.
 ```bash
 just install          # toolchains + pnpm deps
 just up               # Postgres + a WireMock host per rail
-just test             # cargo nextest + vitest
-just verify           # the two self-checks above
-just ci               # everything CI runs, in CI's order
 ```
 
 `just` with no argument lists every task.
+
+### Try it locally
+
+**Prerequisites:** Docker (with Compose v2.24+ — the demo overlay uses `!reset`),
+the Rust toolchain `rust-toolchain.toml` pins, `just`, `jq`, `curl` and
+`openssl`. `pnpm` is needed only if you want to work on the dashboard; `just
+demo` builds it in a container.
+
+```bash
+just demo
+```
+
+That generates a throwaway RS256 key for the server's OAuth provider and a
+second one for a demo merchant (`.e2e/`, git-ignored, both discarded with the
+stack), registers the merchant's **public** JWK in a `demo` profile overlay,
+brings up Postgres + both WireMock rail stubs + `vpay-server` + `vpay-worker` +
+the dashboard, waits for `/healthz`, and then runs
+[`examples/merchant-demo`](examples/merchant-demo/) — a small Rust binary built
+on the real merchant SDK ([`sdks/rust`](sdks/rust/)).
+
+What you will see, four steps, one line each:
+
+1. the OP's discovery document and JWKS — its issuer and the `kid` it signs with;
+2. an access token obtained with `client_credentials` + `private_key_jwt`, shown
+   as its decoded `iss`/`aud`/`sub`/`exp` claims (never the token itself);
+3. `GET /v1/payment_intents/pi_demo` **without** a token — a `401` carrying
+   vpay's error envelope, so you can see the authentication boundary is real;
+4. the same call **with** a token, through the SDK — a typed `404
+   unknown_route`, and the sentence *"payment intents are not built yet — this
+   is where the next step lands"*.
+
+Step 4 is the point. Everything up to the bearer-token boundary works; past it
+there is nothing, and the demo exits `0` for saying so. If it ever prints a
+payment intent, something fabricated one — treat that as a defect, not a
+feature.
+
+Then:
+
+```bash
+just demo-down        # containers and volumes
+```
+
+> **Note on the runtime image.** The first `just demo` run on 2026-09-02
+> found that `vpay-server` could not boot inside its own `FROM scratch`
+> image: the JWKS validator's HTTP client loaded trust roots from the OS
+> store, which that image does not have. Fixed the same day — the client is
+> now built on vendored `webpki-roots` (`vpay_api::http_client`) and pinned
+> by a subprocess test that boots the server with an empty trust store. See
+> the "Resource-server JWT validation" row in [`docs/status.md`](docs/status.md).
+
+### Testing
+
+Three commands, with genuinely different requirements:
+
+| Command | Needs | Runs |
+|---|---|---|
+| `just verify` | nothing but Rust; seconds | the three self-checks — no test double reachable from a shipping binary, every unimplemented path declared in `docs/status.md`, every error type classified |
+| `just test` | **Docker** | `cargo nextest run --workspace` + `pnpm -r test`. The Postgres-backed suites use testcontainers and **fail loudly** without a reachable daemon — they never skip, so a green run is a real one |
+| `just test-e2e` | Docker, and Cypress's binary | builds the images, boots `compose.yml` + `compose.e2e.yml`, runs the browser suite, tears the stack down. This is what CI's `e2e` job does |
+
+`just ci` runs everything CI runs, in CI's order, and is what to run before
+opening a PR.
 
 ### Running the binaries directly
 
@@ -127,20 +189,57 @@ cargo run -p vpay-server -- --help
 cargo run -p vpay-worker-bin -- --help
 ```
 
-```bash
-# flags win over env vars
-cargo run -p vpay-server -- --bind 127.0.0.1:8080 --log-format text
+`vpay-server` signs merchant tokens, so it needs an RS256 signing key before it
+will start. Generate one once, offline:
 
-# or drive it by env, as compose.yml does
+```bash
+cargo xtask gen-signing-key --out ./secrets   # writes ./secrets/oauth-signing-key.pem
+```
+
+The private key stays in that file — nothing prints it, logs it or stores it in
+the database. In a real deployment it is a Kubernetes Secret and
+`--oauth-signing-key-file` points at the mount.
+
+```bash
+# The rail credentials in config/application.yml are ${VAR} placeholders, and
+# an unresolved one is a fatal, named startup error — not an empty string.
+export MTN_SUBSCRIPTION_KEY=dev MTN_API_KEY=dev ORANGE_MERCHANT_KEY=dev
+
+# flags win over env vars
+cargo run -p vpay-server -- \
+  --config config/application.yml \
+  --database-url postgres://vpay:vpay@localhost:5432/vpay \
+  --oauth-signing-key-file ./secrets/oauth-signing-key.pem \
+  --bind 127.0.0.1:8080 --log-format text
+
+# or drive it by env, as compose.e2e.yml does
+VPAY_CONFIG=config/application.yml \
+DATABASE_URL=postgres://vpay:vpay@localhost:5432/vpay \
+VPAY_OAUTH_SIGNING_KEY_FILE=./secrets/oauth-signing-key.pem \
 VPAY_BIND=127.0.0.1:8080 VPAY_LOG_FORMAT=text cargo run -p vpay-server
 ```
 
+The Postgres those URLs point at is the one `just up` starts.
+
 Neither binary calls a payment rail. `vpay-server` connects to Postgres, runs
-migrations and serves only `/healthz` today; `vpay-worker-bin` stays up
-answering shutdown signals but its job loop is not implemented, and it says
-so in a startup banner and a repeating heartbeat log line. `--database-url`
-and `--config` are required at startup and genuinely consumed;
-`--public-base-url` is accepted but not yet consumed by anything — see
+migrations, and serves `/healthz` plus the merchant OP —
+`POST /v1/oauth/token` (`client_credentials` + `private_key_jwt`),
+`GET /v1/oauth/.well-known/openid-configuration` and
+`GET /v1/oauth/jwks.json`. Every other path under `/v1` is behind a merchant
+bearer token, and past that boundary answers the honest 404: no `/v1` resource
+route exists yet. `vpay-worker-bin` stays up answering shutdown signals but its
+job loop is not implemented, and it says so in a startup banner and a repeating
+heartbeat log line.
+
+`--config`, `--database-url` and `--oauth-signing-key-file` are required and
+genuinely consumed; a missing one exits `78` before the port is bound.
+`--public-base-url` is accepted and read by nothing: `ServerArgs::public_base_url`
+(`backends/crates/vpay-config/src/cli.rs`) is only ever touched by that module's
+own tests — grep the workspace for `public_base_url` and every remaining hit is
+`Config`'s `deployment.public_base_url`, which is a *different* value, read from
+the YAML. That YAML field is what the OP's issuer is derived from
+(`vpay_api::op::issuer_for` → `{public_base_url}/v1/oauth`), so the URL a
+merchant's tokens carry comes from the config file, never from the flag. See
 [`docs/status.md`](docs/status.md) and
 [`docs/flows/configuration.md`](docs/flows/configuration.md).
 

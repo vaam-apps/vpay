@@ -13,11 +13,12 @@
 //! merely re-reading the SQL and asserting it looks right (CLAUDE.md: "Reading
 //! SQL and asserting it is correct fails this task").
 //!
-//! Duplicates the small container-bootstrap helper from
-//! `tests/postgres_smoke.rs` rather than sharing it — each `tests/*.rs` file
-//! compiles to its own test binary, so there is no `pub` item to import
-//! without introducing a `tests/common/mod.rs` shared module; the duplication
-//! is a handful of lines and keeps this file independently readable.
+//! Repeats the small pool-and-migrate helper from `tests/postgres_smoke.rs`
+//! rather than sharing it — each `tests/*.rs` file compiles to its own test
+//! binary, so there is no `pub` item to import without introducing a
+//! `tests/common/mod.rs` shared module; the duplication is a handful of lines
+//! and keeps this file independently readable. The container start it wraps
+//! *is* shared: `vpay_testkit::containers::start_postgres_with_retry`.
 
 use std::collections::HashMap;
 
@@ -29,18 +30,15 @@ use authkestra_op::sqlx_store::SqlxOpStore;
 use authkestra_op::{AuthorizationCode, AuthorizationCodeStore, ClientStore, OpStore};
 use chrono::{Duration as ChronoDuration, Utc};
 use sqlx::PgPool;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, ImageExt};
+use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 
-/// Same rationale and pin as `tests/postgres_smoke.rs`: `testcontainers-modules`
-/// defaults to `postgres:11-alpine`, which is not cached here and this
-/// machine cannot reach Docker Hub to pull it. `16-alpine` is cached and
-/// matches `compose.yml`.
+/// Same as `tests/postgres_smoke.rs`'s: the container itself comes from
+/// `vpay_testkit::containers::start_postgres_with_retry` (why the tag is
+/// pinned, and which start errors are retried, are documented there); what
+/// stays per-file is the pool and the migration run.
 async fn migrated_postgres() -> anyhow::Result<(ContainerAsync<PostgresImage>, PgPool)> {
-    let container = PostgresImage::default()
-        .with_tag("16-alpine")
-        .start()
+    let container = vpay_testkit::containers::start_postgres_with_retry()
         .await
         .context("postgres:16-alpine container starts (it is cached locally on this machine)")?;
 

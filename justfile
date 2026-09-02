@@ -135,8 +135,14 @@ verify-errors:
 # numbers are deliberate and must be bumped in the same commit that
 # legitimately changes them — the three ignored tests today are the three
 # not-implemented conformance cases listed in docs/status.md.
+#
+# 32 -> 33 on 2026-09-02: `examples/merchant-demo` joined the workspace.
+# nextest lists a crate's binary target as a suite even when it holds no
+# `#[test]`, so a new member adds one here whether or not it adds a test —
+# `merchant-demo::bin/merchant-demo`, contributing 0 to the total. That is
+# also why this bump is +1 and `min_tests` is untouched: no test was added.
 expected_ignored := "3"
-expected_suites := "30"
+expected_suites := "33"
 min_tests := "320"
 
 verify-ignored:
@@ -172,8 +178,192 @@ up:
     docker compose up -d
     @echo "postgres :5432 · wiremock-mtn :8081 · wiremock-orange :8082"
 
+# A throwaway RS256 key for the merchant OP in the compose e2e stack
+# (compose.e2e.yml mounts it at /secrets/oauth-signing-key.pem). Uses
+# openssl rather than `cargo xtask gen-signing-key` so the CI e2e job needs
+# no Rust toolchain; the two produce interchangeable PKCS#8 PEMs. 0644 on
+# purpose: the scratch image runs as UID 65532 and must read the bind
+# mount. Never use this recipe for a real deployment key — `.e2e/` is
+# git-ignored and the file is meant to be discarded with the stack.
+gen-e2e-signing-key:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Checked up front: with `2>/dev/null` on the openssl call below, bash's
+    # own "command not found" would be swallowed and this recipe would exit
+    # 127 with no output at all (found in review, 2026-09-02).
+    for tool in openssl; do
+        command -v "$tool" >/dev/null 2>&1 || { echo "gen-e2e-signing-key: needs '$tool' on PATH" >&2; exit 1; }
+    done
+    mkdir -p .e2e
+    if [ -e .e2e/oauth-signing-key.pem ]; then
+        echo "gen-e2e-signing-key: .e2e/oauth-signing-key.pem already exists, keeping it"
+        exit 0
+    fi
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out .e2e/oauth-signing-key.pem 2>/dev/null
+    chmod 0644 .e2e/oauth-signing-key.pem
+    echo "gen-e2e-signing-key: wrote .e2e/oauth-signing-key.pem (throwaway, 3072-bit RSA, PKCS#8)"
+
 down:
     docker compose down -v
+
+# ------------------------------------------------------------------ demo ---
+
+# The three files, in the order that makes the last one win. Spelled once so a
+# `demo` and a `demo-down` can never disagree about which stack they mean —
+# `down -v` against a different file set leaves volumes behind.
+demo_compose := "-f compose.yml -f compose.e2e.yml -f compose.demo.yml"
+
+# Everything `just demo` needs on disk before a container starts: the server's
+# own OP signing key (the `gen-e2e-signing-key` dependency above) and the demo
+# merchant's key pair plus the profile overlay that registers its PUBLIC half.
+#
+# Idempotent, and deliberately treats the key and the overlay as ONE artefact.
+# The overlay carries the public JWK of that exact private key; a leftover key
+# with no overlay (or the reverse) authenticates nothing, and the failure is an
+# `invalid_client` with nothing in it pointing at a stale file. So: both
+# present, keep both; anything else, regenerate both. That is safe because
+# `.e2e/` is git-ignored throwaway state by construction — never point this
+# recipe at a directory holding a key you cannot lose.
+#
+# `cargo xtask gen-signing-key` rather than the `openssl` call
+# `gen-e2e-signing-key` uses: the JWK has to be extracted, and xtask already
+# prints the RFC 7638 `kid` and the JWK JSON that `vpay-api` will compute for
+# itself. Reproducing that in shell would be a second implementation of a
+# thumbprint. The cost is that this recipe needs the Rust toolchain — fine, so
+# does the demo binary it exists to feed.
+#
+# Generate the demo's throwaway keys and its profile overlay (idempotent).
+gen-demo-keys: gen-e2e-signing-key
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for tool in cargo jq; do
+        command -v "$tool" >/dev/null 2>&1 || { echo "gen-demo-keys: needs '$tool' on PATH" >&2; exit 1; }
+    done
+    key=.e2e/demo-merchant/oauth-signing-key.pem
+    overlay=.e2e/application-demo.yml
+
+    if [ -e "$key" ] && [ -e "$overlay" ]; then
+        echo "gen-demo-keys: $key and $overlay already exist, keeping them"
+        exit 0
+    fi
+    if [ -e "$key" ] || [ -e "$overlay" ]; then
+        echo "gen-demo-keys: $key and $overlay are out of sync — regenerating the pair"
+    fi
+    rm -f "$key" "$overlay"
+
+    generated=$(cargo xtask gen-signing-key --out .e2e/demo-merchant)
+    jwk=$(printf '%s\n' "$generated" | grep -m1 '^{"kty"' || true)
+    if [ -z "$jwk" ]; then
+        echo "gen-demo-keys: FAIL — could not find the public JWK in xtask's output:" >&2
+        printf '%s\n' "$generated" >&2
+        exit 1
+    fi
+    n=$(printf '%s' "$jwk" | jq -er .n)
+    e=$(printf '%s' "$jwk" | jq -er .e)
+    kid=$(printf '%s' "$jwk" | jq -er .kid)
+
+    # `merchant_clients` is a LIST, and a list in a profile overlay replaces
+    # the base list outright (figment merges maps, not sequences). So this one
+    # entry is the whole registry under the `demo` profile — `acme-cameroon`
+    # from config/application.yml is deliberately gone; its modulus is a
+    # placeholder nobody holds a key for.
+    cat > "$overlay" <<YAML
+    # GENERATED by \`just gen-demo-keys\` — do not edit, do not commit.
+    #
+    # The \`demo\` profile overlay (VPAY_PROFILE=demo, mounted at
+    # /config/application-demo.yml by compose.demo.yml). It registers the one
+    # merchant \`examples/merchant-demo\` authenticates as. Only the PUBLIC half
+    # of the key is here; the private half stays in $key, mode 0600, and is
+    # never mounted into a container.
+    #
+    # Regenerate with: rm -rf .e2e/demo-merchant .e2e/application-demo.yml && just gen-demo-keys
+
+    deployment:
+      name: vpay-demo
+
+    merchant_clients:
+      - client_id: demo-merchant
+        jwks:
+          keys:
+            - kty: RSA
+              use: sig
+              alg: RS256
+              # Informational: the assertion the SDK mints carries no \`kid\`,
+              # and the OP's \`select_key\` does not need one while the set holds
+              # exactly one key. Adding a second key here without teaching the
+              # demo to send a \`kid\` would break authentication.
+              kid: "$kid"
+              n: "$n"
+              e: "$e"
+        grant_types: [client_credentials]
+        scopes: ["payments:write"]
+        # Must contain vpay:v1 — vpay_config::MERCHANT_AUDIENCE. Without it the
+        # OP answers invalid_target, and the server refuses to boot.
+        allowed_audiences: ["vpay:v1"]
+    YAML
+    # The scratch image runs as UID 65532 and must read the bind mount. This
+    # file is a public key and a client id; there is nothing secret in it.
+    chmod 0644 "$overlay"
+
+    echo "gen-demo-keys: wrote $key (3072-bit RSA, mode 0600, host-only)"
+    echo "gen-demo-keys: wrote $overlay — client_id=demo-merchant kid=$kid"
+
+# Exits with the demo's own status, so `just demo` failing means the demo
+# failed — and still prints the URLs, because a failed demo run is exactly
+# when you want to go and look at the dashboard and the discovery document
+# yourself. (The earlier `/healthz` timeout is the one path that does not
+# print them: if the server never answered, there is nothing to visit. It
+# dumps `docker compose logs vpay-server` instead.)
+#
+# Boot the full stack and run the merchant demo against it.
+demo: gen-demo-keys
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Fail fast with a named tool rather than a 120 s readiness timeout whose
+    # message blames /healthz (review finding, 2026-09-02).
+    for tool in docker curl jq cargo; do
+        command -v "$tool" >/dev/null 2>&1 || { echo "demo: needs '$tool' on PATH" >&2; exit 1; }
+    done
+    docker compose {{demo_compose}} up -d --build
+
+    # `vpay-server` has no container healthcheck — its image is FROM scratch
+    # and holds no shell to run one (compose.e2e.yml's own note). Readiness is
+    # observed from outside instead, the same way .github/workflows/ci.yml's
+    # e2e job does it.
+    echo "demo: waiting for http://localhost:8080/healthz"
+    deadline=$((SECONDS + 120))
+    until curl -fsS -o /dev/null http://localhost:8080/healthz; do
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            echo "demo: FAIL — /healthz did not answer within 120s. Last 80 log lines:" >&2
+            docker compose {{demo_compose}} ps >&2
+            docker compose {{demo_compose}} logs --tail 80 vpay-server >&2
+            echo "demo: (exit 78 in that log means a config/CLI prerequisite is missing)" >&2
+            exit 1
+        fi
+        sleep 2
+    done
+    echo "demo: /healthz answered"
+    echo
+
+    set +e
+    cargo run -q -p merchant-demo
+    status=$?
+    set -e
+
+    echo
+    echo "  dashboard   http://localhost:3000"
+    echo "  server      http://localhost:8080"
+    echo "  discovery   http://localhost:8080/v1/oauth/.well-known/openid-configuration"
+    echo
+    echo "  tear down with: just demo-down"
+    exit $status
+
+# Removes the containers AND the volumes, so the next `just demo` starts on a
+# freshly migrated database rather than one carrying a previous run's rows.
+#
+# Stop the demo stack and delete its volumes.
+demo-down:
+    docker compose {{demo_compose}} down -v
 
 storybook:
     pnpm --filter @vpay/ui storybook

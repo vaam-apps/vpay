@@ -50,14 +50,14 @@ const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Builds a `PgPool` against `database_url` with vpay's pool policy.
 ///
 /// This is eager: it returns only once at least one connection has been
-/// established (or [`ACQUIRE_TIMEOUT`] has elapsed and it gives up) — never
+/// established (or `ACQUIRE_TIMEOUT` has elapsed and it gives up) — never
 /// a lazily-connecting pool that would let a caller believe startup
 /// succeeded when the database is actually unreachable.
 ///
 /// # Errors
 ///
 /// Returns [`DbError::Connect`] if no connection could be established within
-/// [`ACQUIRE_TIMEOUT`].
+/// `ACQUIRE_TIMEOUT`.
 pub async fn connect(database_url: &str) -> Result<PgPool, DbError> {
     PgPoolOptions::new()
         .max_connections(MAX_CONNECTIONS)

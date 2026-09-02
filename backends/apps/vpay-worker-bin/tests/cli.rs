@@ -30,20 +30,18 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, ImageExt};
+use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 
 /// Starts a fresh Postgres 16 container and returns its connection URL. Must
 /// be called from, and the returned container kept alive inside, the same
 /// tokio runtime for its entire lifetime — see [`with_live_postgres`] for
-/// why. Mirrors `backends/apps/vpay-server/tests/cli.rs`'s identical helper
-/// (same reasoning for the pinned `16-alpine` tag: `postgres:11-alpine`,
-/// this crate's default, is not cached on this machine and unreachable).
+/// why. Mirrors `backends/apps/vpay-server/tests/cli.rs`'s identical helper;
+/// both defer the container itself to
+/// `vpay_testkit::containers::start_postgres_with_retry`, where the pinned
+/// `16-alpine` tag and the host-port-collision retry are documented.
 async fn start_postgres() -> (ContainerAsync<PostgresImage>, String) {
-    let container = PostgresImage::default()
-        .with_tag("16-alpine")
-        .start()
+    let container = vpay_testkit::containers::start_postgres_with_retry()
         .await
         .expect("postgres:16-alpine container starts (it is cached locally on this machine)");
     let host = container.get_host().await.expect("container host");

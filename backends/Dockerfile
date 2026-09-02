@@ -59,6 +59,17 @@ COPY backends ./backends
 # build command below is how the omission was found, on 2026-09-02, before
 # this Dockerfile had ever been built.
 COPY sdks/rust ./sdks/rust
+# `examples/merchant-demo` is a member for the same reason and with the same
+# consequence: without it here the build fails at manifest load with "failed
+# to load manifest for workspace member `/build/examples/merchant-demo`",
+# which is exactly what happened the first time it was added (2026-09-02).
+# Both the manifest AND `src/` are needed — cargo infers a package's targets
+# while loading its manifest, so a manifest with no `src/main.rs` beside it is
+# an error even for a package this build never compiles. Nothing in either
+# shipping binary depends on it; it is two small files, and the alternative
+# (dropping it from `[workspace] members`) would mean `cargo run -p
+# merchant-demo` and `cargo clippy --workspace` no longer see it.
+COPY examples/merchant-demo ./examples/merchant-demo
 # Cache the crates.io index/tarball downloads across builds (keyed by content,
 # not by layer) without caching `target/` itself: a cache mount's contents are
 # not part of the final layer, so building the binary straight into a cached

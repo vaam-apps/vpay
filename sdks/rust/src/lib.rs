@@ -4,8 +4,14 @@
 //! `client_credentials` + `private_key_jwt` authentication (RFC 7523),
 //! Stripe-shaped form-encoded resources, and outbound-webhook verification.
 //!
-//! **There is no server to talk to yet.** `vpay-server` serves only
-//! `/healthz` and a 404 — see `docs/status.md` and this crate's own
+//! **Only the authentication half has a server to talk to.** `vpay-server`
+//! mounts `/v1/oauth` (token, discovery, JWKS) and the `/v1` bearer-token
+//! boundary, but no `/v1` resource route — every method on
+//! [`PaymentIntentsResource`], [`RefundsResource`], [`EventsResource`] and
+//! [`BalanceResource`] currently reaches a 404 there —
+//! `backends/tests/integration/tests/merchant_token_flow.rs` drives this
+//! crate against the real server and asserts exactly that for
+//! `payment_intents().retrieve`. See `docs/status.md` and this crate's own
 //! `README.md` "Status" section for exactly what is, and is not, proven by
 //! this crate's tests.
 //!

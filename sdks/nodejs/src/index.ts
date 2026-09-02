@@ -2,7 +2,8 @@
  * `@vpay/sdk` — the Node.js merchant SDK for vpay.
  *
  * See README.md for the handshake, a usage example, and this package's own
- * Status section (the server side of this contract does not exist yet).
+ * Status section (the server serves `/v1/oauth` and the `/v1` auth boundary;
+ * no `/v1` resource route exists yet).
  */
 export { VpayClient, type VpayClientOptions } from "./client.js";
 

@@ -12,3 +12,13 @@ dist/
 .DS_Store
 cypress/screenshots/
 cypress/videos/
+
+# Throwaway secrets, and the generated config that names their public halves,
+# for the compose e2e and demo stacks:
+#   just gen-e2e-signing-key  -> .e2e/oauth-signing-key.pem      (the OP's key)
+#   just gen-demo-keys        -> .e2e/demo-merchant/…            (the merchant's)
+#                                .e2e/application-demo.yml       (its public JWK)
+# The whole directory is ignored deliberately, including the YAML: it is
+# generated per checkout from a key that exists nowhere else, so a committed
+# copy would register a merchant nobody can authenticate as.
+.e2e/

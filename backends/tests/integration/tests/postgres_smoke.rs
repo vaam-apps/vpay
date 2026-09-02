@@ -7,12 +7,12 @@
 //! anywhere in this file (ADR-0006 forbids that for a database boundary in
 //! any case).
 //!
-//! `testcontainers-modules` 0.15 defaults to image `postgres:11-alpine`,
-//! which is not cached on this machine and this machine cannot reach Docker
-//! Hub to pull it. `16-alpine` IS cached locally, and it is also the more
-//! correct choice regardless: `compose.yml` runs Postgres 16, so testing
-//! against 11 would itself be a version mismatch. Hence the explicit
-//! `.with_tag("16-alpine")` below.
+//! The container is started by
+//! `vpay_testkit::containers::start_postgres_with_retry` — one helper shared
+//! by every Postgres-backed suite in the workspace, which is where the
+//! pinned `16-alpine` tag (`testcontainers-modules` 0.15 would otherwise
+//! give us `postgres:11-alpine`, which `compose.yml` does not run) and the
+//! retry on a host-port collision are explained.
 //!
 //! Helper functions here return `anyhow::Result` and propagate with `?`
 //! rather than `.expect`/`.unwrap`, matching the workspace lint policy:
@@ -22,18 +22,19 @@
 
 use anyhow::Context;
 use sqlx::{PgPool, Row};
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, ImageExt};
+use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use uuid::Uuid;
 
 /// Starts a fresh, migrated Postgres 16 container and returns a pool bound to
 /// it. The returned container guard must be kept alive for as long as the
 /// pool is used — dropping it stops the container.
+///
+/// The container itself comes from
+/// `vpay_testkit::containers::start_postgres_with_retry`, which is where the
+/// pinned tag and the host-port-collision retry are documented.
 async fn migrated_postgres() -> anyhow::Result<(ContainerAsync<PostgresImage>, PgPool)> {
-    let container = PostgresImage::default()
-        .with_tag("16-alpine")
-        .start()
+    let container = vpay_testkit::containers::start_postgres_with_retry()
         .await
         .context("postgres:16-alpine container starts (it is cached locally on this machine)")?;
 

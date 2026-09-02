@@ -56,3 +56,10 @@ tokio.workspace = true
 testcontainers.workspace = true
 testcontainers-modules.workspace = true
 anyhow.workspace = true
+# For `vpay_testkit::containers::start_postgres_with_retry`, the single
+# container-start helper every Postgres-backed suite in this workspace shares
+# (vpay-server, vpay-worker-bin and vpay-tests-integration already dev-depend
+# on it). Dev-only, as ADR-0006 requires and `cargo xtask verify-no-mocks`
+# checks; vpay-testkit itself depends only on vpay-core/vpay-provider, so this
+# adds no cycle back into vpay-db.
+vpay-testkit.workspace = true

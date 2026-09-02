@@ -1,13 +1,11 @@
 //! Integration tests for `vpay-db` against a real Postgres via testcontainers.
 //!
-//! Mirrors the pattern in `backends/tests/integration/tests/postgres_smoke.rs`
-//! (that crate is owned by another agent and out of scope here — this file
-//! is `vpay-db`'s own copy of the same, deliberately duplicated rather than
-//! shared, technique): `testcontainers-modules` 0.15 defaults to
-//! `postgres:11-alpine`, which is not cached on this machine and this
-//! machine cannot reach Docker Hub to pull it. `16-alpine` IS cached
-//! locally and matches `compose.yml`, hence the explicit `.with_tag(...)`
-//! below.
+//! The container itself is started by
+//! `vpay_testkit::containers::start_postgres_with_retry`, which every
+//! Postgres-backed suite in this workspace now shares (this file's own copy
+//! of the bootstrap was one of eight identical ones). Why the image tag is
+//! pinned to `16-alpine`, and why a start is retried on a host-port
+//! collision, are documented there rather than repeated here.
 //!
 //! Deliberately three tests, not four separate ones, to keep this crate's
 //! own container count down: `.config/nextest.toml` bounds
@@ -26,17 +24,18 @@
 //! body, not a plain helper one happens to call.
 
 use anyhow::Context;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, ImageExt};
+use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 
 /// Starts a fresh, unmigrated Postgres 16 container and returns its
 /// connection URL. The returned container guard must be kept alive for as
 /// long as the URL is used — dropping it stops and removes the container.
+///
+/// The image request and its host-port-collision retry live in
+/// `vpay_testkit::containers` — see that module for why the tag is pinned and
+/// which errors are retried.
 async fn start_postgres() -> anyhow::Result<(ContainerAsync<PostgresImage>, String)> {
-    let container = PostgresImage::default()
-        .with_tag("16-alpine")
-        .start()
+    let container = vpay_testkit::containers::start_postgres_with_retry()
         .await
         .context("postgres:16-alpine container starts (it is cached locally on this machine)")?;
 

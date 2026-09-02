@@ -1933,6 +1933,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "merchant-demo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "reqwest",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "vpay-sdk",
+]
+
+[[package]]
 name = "mimalloc"
 version = "0.1.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4065,17 +4078,23 @@ dependencies = [
 name = "vpay-api"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "authkestra-engine",
+ "authkestra-op",
  "authkestra-resource",
  "axum",
  "base64 0.22.1",
  "jsonwebtoken",
  "rand 0.8.7",
+ "reqwest",
  "rsa",
  "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "thiserror",
+ "time",
  "tokio",
  "tower",
  "tower-http",
@@ -4087,6 +4106,8 @@ dependencies = [
  "vpay-db",
  "vpay-ledger",
  "vpay-provider",
+ "vpay-sdk",
+ "webpki-roots 1.0.9",
  "wiremock",
 ]
 
@@ -4133,6 +4154,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vpay-core",
+ "vpay-testkit",
 ]
 
 [[package]]
@@ -4190,9 +4212,14 @@ dependencies = [
  "axum",
  "clap",
  "mimalloc",
+ "rand 0.8.7",
+ "rsa",
  "rustls",
+ "sqlx",
  "testcontainers",
  "testcontainers-modules",
+ "thiserror",
+ "time",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -4240,8 +4267,15 @@ dependencies = [
  "anyhow",
  "authkestra-engine",
  "authkestra-op",
+ "axum",
+ "base64 0.22.1",
  "chrono",
+ "rand 0.8.7",
+ "reqwest",
+ "rsa",
  "rstest",
+ "rustls",
+ "serde_json",
  "sqlx",
  "testcontainers",
  "testcontainers-modules",
@@ -4250,8 +4284,12 @@ dependencies = [
  "uuid",
  "vpay-adapter-mtn-momo",
  "vpay-adapter-orange-money",
+ "vpay-api",
+ "vpay-config",
  "vpay-core",
+ "vpay-db",
  "vpay-provider",
+ "vpay-sdk",
  "vpay-testkit",
 ]
 
@@ -4765,6 +4803,12 @@ dependencies = [
 [[package]]
 name = "xtask"
 version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "rand 0.8.7",
+ "rsa",
+ "sha2",
+]
 
 [[package]]
 name = "yansi"

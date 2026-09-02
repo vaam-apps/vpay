@@ -195,9 +195,9 @@ returns `ConfigError` before anything touches the network.
 | Setter | Default | Notes |
 |---|---|---|
 | `.credentials(..)` | — | Required. `Credentials::rsa_pem(client_id, pem)` (PKCS#1 or PKCS#8), then `.with_kid(..)` if you registered more than one key. |
-| `.issuer(..)` | `{base_url}/v1/oauth` | **Endpoint paths are provisional.** No ADR or server code has fixed them — `authkestra-op` derives every endpoint from one issuer string, and this default follows [`examples/merchant-curl`](../../examples/merchant-curl). Override if vpay's deployment differs. |
-| `.token_endpoint(..)` | `{issuer}/token` | Also the assertion's `aud` claim; overriding this moves the `aud` with it. |
-| `.audience(..)` | `vpay:v1` | The OAuth2 `audience` request parameter. Load-bearing: without it the OP mints a token whose `aud` is the `client_id`, which every `/v1` route would then reject. Provisional, and must stay equal to `vpay_api::resource_auth::Surface::Merchant::audience()`. |
+| `.issuer(..)` | `{base_url}/v1/oauth` | This default is now what the server does: `vpay_api::op::issuer_for` builds the issuer as `{public_base_url}/v1/oauth` (from the deployment YAML), and `vpay_api::router` mounts the OP there. Override only if a deployment sits behind a path prefix. |
+| `.token_endpoint(..)` | `{issuer}/token` | The server's token route, and also the assertion's `aud` claim; overriding this moves the `aud` with it. |
+| `.audience(..)` | `vpay:v1` | The OAuth2 `audience` request parameter. Load-bearing: without it the OP mints a token whose `aud` is the `client_id`, which every `/v1` route then rejects. Server-side the same string is `vpay_config::MERCHANT_AUDIENCE`, which both `Surface::Merchant::audience()` and each merchant's configured `allowed_audiences` check are derived from; this crate keeps its own copy so a merchant needs no vpay server crate, so the two must be changed together. |
 | `.scope(..)` | — | Omitted from the token request entirely unless set. |
 | `.assertion_lifetime(..)` | 60 s | Must be `1..=300` s; anything else is `ConfigError::InvalidAssertionLifetime` at `build()`, never silently clamped. |
 | `.timeout(..)` | 30 s | Applies to the token exchange and to every resource call. |
@@ -320,11 +320,16 @@ Where the two type systems land differently, and why:
 
 ## Status
 
-**The server side of this contract does not exist.** No `/v1` route, no OAuth2
-token endpoint, no OP for merchants is mounted anywhere in this repository —
-`vpay-server` serves `/healthz` and a Stripe-shaped 404. This SDK has never
-completed a request against a real vpay, because there is no real vpay to
-complete one against. See [`docs/status.md`](../../docs/status.md) and
+**Half of the server side of this contract exists.** `vpay-server` mounts the
+merchant OP — `POST /v1/oauth/token`, `GET /v1/oauth/jwks.json`,
+`GET /v1/oauth/.well-known/openid-configuration` — and gates every other `/v1`
+path behind a merchant bearer token. What does not exist is a single `/v1`
+*resource* route: past that boundary, `payment_intents`, `refunds`, `events`
+and `balance` all answer a Stripe-shaped `404 unknown_route`. So this SDK's
+authentication half has completed real requests against a real vpay
+(`backends/tests/integration/tests/merchant_token_flow.rs` drives this crate
+against the real router over a real Postgres) and its resource half never has.
+See [`docs/status.md`](../../docs/status.md) and
 [`docs/flows/merchant-auth.md`](../../docs/flows/merchant-auth.md).
 
 What the tests **do** prove — 107 tests, 0 ignored, run by
@@ -423,9 +428,17 @@ certificate verification against the vendored roots is exercised by no test at
 all. `tests/tls.rs` proves only that the stack is built and reached (a
 handshake is attempted against a plaintext listener and fails), and a unit
 test proves the root store is populated and ALPN advertises `h2`. Also not
-proven: that any of this works against a real vpay deployment; that the server's token endpoint or resource routes exist or
-behave as documented (they do not exist); that the provisional endpoint paths
-match whatever a deployment eventually chooses; or that `jti` replay
-protection works end to end (the OP verifier deliberately leaves spending the
-`jti` to a `ClientAssertionStore`, which lives server-side and is not wired
-into anything — see `docs/status.md`).
+proven here: that any of this works against a real vpay deployment over TLS.
+
+What *is* proven elsewhere, and what still is not: this crate is driven
+against the real `vpay_api::router` on a real socket over a real Postgres in
+`backends/tests/integration/tests/merchant_token_flow.rs` — a client built
+from nothing but a base URL and a credential obtains a token from
+`/v1/oauth/token` and crosses the `/v1` boundary with it, and a replayed
+`client_assertion` is refused the second time (the `ClientAssertionStore` is
+wired: `vpay_db::SqlClientAssertionStore`). What that suite reaches on the
+other side is a `404 unknown_route`, because vpay implements **no `/v1`
+resource route** — so every `payment_intents`, `refunds`, `events` and
+`balance` call in this crate is still unproven against a server, and the
+request/response shapes they encode remain this SDK's own claim about an
+API that does not answer yet. See `docs/status.md`.

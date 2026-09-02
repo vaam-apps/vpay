@@ -17,6 +17,7 @@ members = [
     "backends/tests/conformance",
     ".xtask",
     "sdks/rust",
+    "examples/merchant-demo",
 ]
 
 [workspace.package]
@@ -235,6 +236,12 @@ vpay-adapter-orange-money = { path = "backends/crates/vpay-adapter-orange-money"
 vpay-api = { path = "backends/crates/vpay-api", version = "0.1.0" }
 vpay-worker = { path = "backends/crates/vpay-worker", version = "0.1.0" }
 vpay-testkit = { path = "backends/crates/vpay-testkit", version = "0.1.0" }
+# The merchant SDK is a workspace member like the rest, but it is not a vpay
+# *component*: it is what a merchant depends on. Only `examples/merchant-demo`
+# takes it, and only so the demo drives the shipping artefact rather than a
+# second copy of the handshake. No `backends/` crate may depend on it — the
+# arrow points outward.
+vpay-sdk = { path = "sdks/rust", version = "0.1.0" }
 
 [profile.release]
 opt-level = 3

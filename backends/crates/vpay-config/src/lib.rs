@@ -20,7 +20,7 @@ pub mod oauth;
 pub mod signal;
 pub use cli::{CommonArgs, LogFormat, ServerArgs, WorkerArgs};
 pub use config::{Config, CurrencyEntry, ProviderHost};
-pub use oauth::{DashboardClient, GrantType, MerchantClient};
+pub use oauth::{DashboardClient, GrantType, MERCHANT_AUDIENCE, MerchantClient};
 pub use signal::ShutdownSignals;
 
 #[derive(Debug, Clone, Serialize, Deserialize, garde::Validate)]
@@ -113,7 +113,7 @@ pub enum ConfigError {
     /// ADR-0010: `private_key_jwt` with no key can never authenticate, so
     /// booting with an empty or missing JWK set is exactly as pointless as
     /// booting with none configured at all. See
-    /// [`oauth::jwks_has_at_least_one_key`] for the exact shapes this
+    /// `oauth::jwks_has_at_least_one_key` for the exact shapes this
     /// rejects.
     #[error("merchant client {0} has an empty or missing JWK set")]
     EmptyMerchantJwks(String),
@@ -127,6 +127,35 @@ pub enum ConfigError {
         client_id: String,
         grant: oauth::GrantType,
     },
+    /// ADR-0010: a merchant client whose `allowed_audiences` omits
+    /// [`oauth::MERCHANT_AUDIENCE`] can never hold a usable `/v1` token, and
+    /// neither of the two ways it fails names the cause:
+    ///
+    /// - The client requests `audience=vpay:v1` (what both SDKs send by
+    ///   default): `authkestra_op`'s `handle_client_credentials` checks the
+    ///   requested audience against `allowed_audiences` and answers
+    ///   `invalid_target` — an error about a *request* for what is really a
+    ///   server-side registration defect.
+    /// - The client omits `audience` (the SDKs make it configurable): the
+    ///   same handler falls back to `aud = client_id`, so the token endpoint
+    ///   returns `200` and every subsequent `/v1` call is rejected by
+    ///   `vpay_api::resource_auth`'s audience check as a bare `401` with no
+    ///   diagnostic — the worse of the two, because it looks like a
+    ///   credential problem and is not.
+    ///
+    /// Refusing to boot is the only place this is cheap to see.
+    ///
+    /// A named field rather than a tuple variant only because the message
+    /// interpolates [`oauth::MERCHANT_AUDIENCE`] itself — spelling the
+    /// audience a second time in this string is exactly the drift the
+    /// constant exists to prevent — and `thiserror` refuses to mix a
+    /// positional format argument with a tuple variant's own `{0}`.
+    #[error(
+        "merchant client {client_id} does not list `{}` in allowed_audiences; \
+         its /v1 tokens would be minted for the wrong audience (ADR-0010)",
+        oauth::MERCHANT_AUDIENCE
+    )]
+    MerchantMissingV1Audience { client_id: String },
     /// `docs/flows/dashboard-auth.md`: authorization-code + PKCE needs
     /// somewhere to redirect back to; a client that can never redirect can
     /// never complete a login.
