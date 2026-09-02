@@ -62,10 +62,17 @@ behave differently*.
 
 ## Boot sequence
 
-**Steps 1–3 exist as a library; step 4 does not, and nothing calls any of
-them.** `vpay_config::Config::load` implements the YAML layering, the `${}`
-resolution and the validation rules below, and is tested — but **neither
-binary calls it**, so `--config` / `VPAY_CONFIG` is still parsed and ignored.
+**Steps 1–3 are implemented and wired into both binaries; step 4 is not.**
+`vpay_config::Config::load` implements the YAML layering, the `${}`
+resolution and the validation rules below, and both `vpay-server` and
+`vpay-worker-bin` call it before opening a database connection — a missing
+or invalid `--config` / `VPAY_CONFIG` is exit 78 (proven by subprocess tests
+in each binary's `tests/cli.rs`; see `docs/status.md`, "YAML config
+loading"). *This paragraph said "neither binary calls it" until 2026-09-02;
+that had been false since 2026-08-11.* The deployment consequence is real:
+`backends/Dockerfile` bakes `config/` into the image and sets `VPAY_CONFIG`,
+and `compose.e2e.yml` supplies every `${VAR}` the file names, because a
+process without them does not start.
 Step 4 has no implementation at all: nothing reconciles configuration into
 the database or records a config hash, even though a database layer now
 exists (`vpay-db`). Today `vpay-server` parses its CLI, connects to Postgres,
@@ -159,7 +166,15 @@ a real Postgres — see the correction above.
 `--shutdown-grace-seconds` bounds `vpay-server`'s shutdown drain; it is
 accepted but inert on `vpay-worker-bin`.
 
-**Not started:** everything else in the "Boot sequence" above — YAML loading,
-`${}` placeholder resolution, validation wired into boot, and database
-reconciliation. `--database-url` and `--config` are accepted CLI/env inputs
-with nothing behind them yet. See [../status.md](../status.md).
+YAML loading, `${}` placeholder resolution and validation are implemented
+(`vpay_config::Config::load`) and wired into both binaries' boot as a hard
+requirement (steps 1–3 above; 48 tests in `vpay-config`, 23 of them in its `config`
+module, plus subprocess tests in each binary). `--database-url` is likewise required at runtime and opens
+a real pool. *Updated 2026-09-02 — this section had said all of that was
+"not started".*
+
+**Not started:** step 4 — reconciling configuration into the database in one
+transaction and recording a config hash — and the two boot-guard rules that
+need a payment-routing `merchants` concept ("every merchant's rail host is in
+the allowlist", "every referenced provider exists and is enabled"). See
+[../status.md](../status.md).

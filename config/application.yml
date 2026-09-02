@@ -20,7 +20,12 @@ deployment:
 providers:
   - code: mtn_momo
     host:
-      url: http://wiremock:8080
+      # The compose service name from compose.yml, port as seen *inside* the
+      # compose network (WireMock listens on 8080; the 8081 host mapping is
+      # for a developer's curl, not for vpay). This used to say `wiremock`,
+      # a host no compose file defines — never caught because the stack had
+      # never been started (docs/status.md, Infrastructure).
+      url: http://wiremock-mtn:8080
       label: mtn-sandbox-wiremock
     settings:
       subscription_key_header: Ocp-Apim-Subscription-Key
@@ -29,7 +34,13 @@ providers:
       api_key: ${MTN_API_KEY}
   - code: orange_money
     host:
-      url: http://wiremock:8080
+      # Includes the `/orange-money-webpay/{env}` path prefix on purpose:
+      # docs/flows/adapter-orange-money.md says `base_url` must carry it
+      # (`dev` in sandbox, country-specific in production). The WireMock
+      # stub's *webpayment* and *transactionstatus* mappings match only
+      # under that prefix; its OAuth token mapping (`/oauth/v2/token`) sits
+      # at the host root, which the adapter must account for when it exists.
+      url: http://wiremock-orange:8080/orange-money-webpay/dev
       label: orange-sandbox-wiremock
     credentials:
       merchant_key: ${ORANGE_MERCHANT_KEY}

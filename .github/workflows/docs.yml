@@ -10,5 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Same one-source-of-truth pattern as ci.yml: the compiler version comes
+      # from rust-toolchain.toml, never from a floating `@stable`.
+      - id: toolchain
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master, 2026-08-05; pinned as in ci.yml
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
       - run: cargo xtask verify-status

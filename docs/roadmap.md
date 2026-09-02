@@ -110,8 +110,10 @@ plus the Stripe-shaped 404.
 1. `YamlClientStore`: convert configured `vpay_config::oauth::MerchantClient`
    / `DashboardClient` into `authkestra_op::client::ClientRegistration` so
    the OP can look a configured client up at all. Nothing does this yet.
-2. `CompositeOpStore<C, A, R, D, J>` filling all five type slots (confirmed
-   by reading `authkestra-op = "0.3.4"`'s `store.rs`): the new
+2. `CompositeOpStore<C, A, R, D, J, P>` filling all **six** type slots
+   (*corrected 2026-09-02 against the pinned `=0.7.1` `store.rs`; the
+   original text said five, from `0.3.4`* — `P` is the DPoP replay store,
+   `NoDpopReplayStore` for vpay, which then fails closed): the new
    `YamlClientStore` for `C`, `SqlxOpStore` for the code/refresh/device
    slots, `vpay_db::SqlClientAssertionStore` wired in via
    `with_client_assertion_store` for `J`.
@@ -121,8 +123,9 @@ plus the Stripe-shaped 404.
    `vpay_db::signing_keys::rotate_signing_key` rotates the database's record
    to a `kid`/`public_jwk` its caller already computed; nothing derives one
    from a keypair.
-4. `rustls::crypto::CryptoProvider::install_default()` in both binaries'
-   `main()`, before the first JWKS fetch — see Risks below.
+4. ~~`rustls::crypto::CryptoProvider::install_default()` in both binaries'
+   `main()`, before the first JWKS fetch~~ — **done 2026-09-02**, see
+   `docs/status.md`'s "rustls `CryptoProvider` process default" row.
 5. Mounting discovery, `/jwks.json`, `/authorize`, `/token`, `/userinfo` —
    explicitly **not** device or refresh handlers (see Decisions).
 6. The `disabled_clients` kill-switch check on the token-issuance path.
@@ -182,11 +185,16 @@ imply dashboard login blocks the payment path, which it does not.
   where vpay chose Postgres durability instead
   (`vpay_db::SqlClientAssertionStore`, `INSERT … ON CONFLICT DO NOTHING`,
   proven race-safe by a 10-way concurrent test). There was never a drop-in
-  Redis option to choose against: `authkestra-op` ships no Redis-backed
-  store at any published version, confirmed against an open upstream issue,
+  Redis option to choose against *at the time*: `authkestra-op` shipped no
+  Redis-backed store at `0.3.4`, confirmed against an open upstream issue,
   [marcjazz/authkestra#185](https://github.com/marcjazz/authkestra/issues/185)
   ("no Redis-backed OpStore or ClientAssertionStore, though the docs point
-  integrators at Redis"). Revisit on a measured trigger, not on principle.
+  integrators at Redis"). *Stale as of `=0.7.1`* (noted 2026-09-02):
+  `authkestra-op-0.7.1/src/redis_store.rs` ships a
+  `RedisClientAssertionStore`. The Postgres decision stands on its own
+  reasoning — durability, one fewer moving part — but no longer on "there
+  was nothing to choose against." Revisit on a measured trigger, not on
+  principle.
 - **`disabled_clients` supplements YAML identity as a kill switch.**
   ADR-0010: YAML stays authoritative for identity; the table only ever
   *subtracts* access, so revocation is an `INSERT`, not a deploy. Cost: a
@@ -407,7 +415,16 @@ constraint above.
 with one command, the e2e specs run green against it, and runbooks have
 been walked against a real fault, not just written.
 
-**Status. Blocked by environment, not by unwritten code.** Docker Hub is
+**Status.** *Corrected 2026-09-02:* this used to say "blocked by
+environment, not by unwritten code," and that was wrong on two counts. The
+`ci` workflow had run five times and failed five times at the same
+self-inflicted step (`CYPRESS_INSTALL_BINARY: 0` set for the very job that
+runs Cypress), and the compose stack could not have booted even with
+registry access — nothing supplied the `VPAY_CONFIG` both binaries require,
+and the image did not contain a config file to name. Both are fixed; see
+`docs/status.md`'s "GitHub Actions" and "Docker / compose" entries for what
+is proven by what. The environment description that follows is still true
+of the original authoring machine and is kept for context. Docker Hub is
 unreachable from this development machine: `docker pull alpine:3.22` did
 not complete in five minutes, and `rust:1.95.0-alpine3.22`,
 `node:22-alpine`, `wiremock/wiremock:3.9.2` and `docker/dockerfile:1` are

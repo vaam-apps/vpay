@@ -99,6 +99,8 @@ async fn run() -> anyhow::Result<()> {
     let mut shutdown_signals =
         ShutdownSignals::install().context("installing SIGINT/SIGTERM handlers")?;
 
+    install_crypto_provider();
+
     init_tracing(&args.common.log_filter, args.common.log_format);
 
     // `profile` names a YAML config file, never a code path — see
@@ -207,6 +209,52 @@ async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Installs the process-wide rustls [`CryptoProvider`] this binary's HTTP
+/// clients need, before anything can build one.
+///
+/// [`CryptoProvider`]: rustls::crypto::CryptoProvider
+///
+/// **Why it exists at all.** The root `Cargo.toml` pins `reqwest` with
+/// `rustls-no-provider` (see the long comment on that pin, and the one on
+/// the `authkestra-*` pins below it): the alternative selects `aws-lc-rs`,
+/// which `deny.toml` bans outright because two providers in one process are
+/// exactly what makes `install_default()` panic. The cost of picking nothing
+/// is that reqwest 0.13's `ClientBuilder::build()` calls
+/// `CryptoProvider::get_default()` and **panics** — "No rustls crypto
+/// provider is configured" — when there is no process default. That is a
+/// panic in a shipping payment binary, i.e. a defect under ADR-0007, on a
+/// path no unit test reaches. `docs/status.md`'s "rustls `CryptoProvider`
+/// process default" row tracks it as a documented landmine, and until this
+/// call landed the workspace's only `install_default()` was a `#[cfg(test)]`
+/// helper in `vpay_api::resource_auth`.
+///
+/// **Why here.** The one ordering constraint is "before the first
+/// `reqwest::Client` is built". This process builds none today — the job
+/// loop that will call rails over HTTPS is not implemented
+/// (`docs/status.md`) — so this is a prerequisite put in place ahead of the
+/// first caller, not a fix for a panic anyone has seen here. It is
+/// nevertheless not speculative wiring: it is the same one-line startup
+/// invariant `vpay-server` needs, and having the two binaries diverge on it
+/// is how the worker would acquire the panic silently the day the job loop
+/// lands. Right after the signal handlers and above `init_tracing` means no
+/// future edit can slip a client construction in ahead of it.
+///
+/// **Why the result is dropped.** `install_default()` returns
+/// `Err(Arc<CryptoProvider>)` for exactly one reason: a default was already
+/// installed. In a binary that means some other code got there first, which
+/// is the state this call wanted anyway — so `.ok()`, which is what the root
+/// `Cargo.toml`'s own note on the `authkestra-*` pins recommends verbatim.
+/// `unwrap`/`expect` are denied here (ADR-0007) and would turn a harmless
+/// double install into a startup crash.
+///
+/// A byte-identical copy of `vpay-server`'s function of the same name, for
+/// the same reason `exit_code_for` and `init_tracing` are copies.
+fn install_crypto_provider() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+}
+
 /// Initialises the global tracing subscriber per `--log-format`.
 ///
 /// The two formats produce differently-typed subscriber builders, so this is
@@ -238,3 +286,40 @@ fn env_filter(directive: &str) -> tracing_subscriber::EnvFilter {
 // installed once its future is first polled, which is exactly the startup
 // race that type exists to close. Mirrors `vpay-server`'s shutdown handling
 // so both binaries behave identically under `docker compose down`.
+
+#[cfg(test)]
+mod tests {
+    use super::install_crypto_provider;
+
+    /// The provider install is idempotent and leaves a process default
+    /// behind.
+    ///
+    /// What this proves: after `install_crypto_provider()` returns,
+    /// `CryptoProvider::get_default()` is `Some`, and calling it a second
+    /// time does not panic — which is the whole contract the `.ok()` on the
+    /// `Err(Arc<CryptoProvider>)` relies on.
+    ///
+    /// What it deliberately does **not** prove: that a `reqwest::Client`
+    /// built later in this binary succeeds. No shipping code in either
+    /// binary builds one yet (the JWKS validator is mounted on no route,
+    /// `docs/status.md`), so there is nothing honest to assert about that
+    /// here — inventing a reqwest consumer purely to observe the provider
+    /// would be a test double in a shipping process. The reqwest-side
+    /// behaviour is documented on the root `Cargo.toml`'s pins and stays
+    /// unproven until a real caller exists.
+    #[test]
+    fn installing_the_crypto_provider_leaves_a_process_default_and_is_idempotent() {
+        install_crypto_provider();
+        assert!(
+            rustls::crypto::CryptoProvider::get_default().is_some(),
+            "no process-wide CryptoProvider after install_crypto_provider(); \
+             reqwest would panic on its first client"
+        );
+
+        // The second call takes the `Err(_)` branch by construction. It must
+        // stay silent rather than panic: in a real process this is what
+        // happens when some other component installed one first.
+        install_crypto_provider();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+    }
+}

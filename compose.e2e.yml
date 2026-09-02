@@ -18,7 +18,10 @@ services:
   # binary (reusing the one executable already in the image, calling its own
   # `/healthz` over loopback) — that's a `backends/apps/vpay-server` change,
   # out of scope for this file. Until that lands, `dashboard`'s dependency
-  # below is the best ordering available, not a guarantee of readiness.
+  # below is the best ordering available, not a guarantee of readiness, and
+  # CI observes readiness from outside instead: `.github/workflows/ci.yml`'s
+  # e2e job polls `http://localhost:8080/healthz` for a 200 before running
+  # Cypress.
   vpay-server:
     build:
       context: .
@@ -26,8 +29,20 @@ services:
       target: server
     environment:
       VPAY_PROFILE: sandbox
+      # Set in the image too (backends/Dockerfile `ENV VPAY_CONFIG`); restated
+      # here so the requirement is visible where an operator looks first.
+      # Both binaries exit 78 without it — this stack could not boot before
+      # 2026-09-02 for exactly that reason.
+      VPAY_CONFIG: /config/application.yml
       DATABASE_URL: postgres://vpay:vpay@postgres:5432/vpay
       RUST_LOG: info
+      # Every `${VAR}` in config/application.yml must resolve or the process
+      # refuses to start. These are the WireMock stubs' credentials — stub
+      # values for stub rails, and `livemode: false` in that file is what
+      # permits them. They are not secrets and must never be real ones.
+      MTN_SUBSCRIPTION_KEY: wiremock-stub-subscription-key
+      MTN_API_KEY: wiremock-stub-api-key
+      ORANGE_MERCHANT_KEY: wiremock-stub-merchant-key
     depends_on:
       postgres: { condition: service_healthy }
       wiremock-mtn: { condition: service_started }
@@ -47,8 +62,13 @@ services:
       target: worker
     environment:
       VPAY_PROFILE: sandbox
+      VPAY_CONFIG: /config/application.yml
       DATABASE_URL: postgres://vpay:vpay@postgres:5432/vpay
       RUST_LOG: info
+      # Same placeholders as vpay-server: the worker loads the same file.
+      MTN_SUBSCRIPTION_KEY: wiremock-stub-subscription-key
+      MTN_API_KEY: wiremock-stub-api-key
+      ORANGE_MERCHANT_KEY: wiremock-stub-merchant-key
     depends_on:
       postgres: { condition: service_healthy }
     restart: unless-stopped

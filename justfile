@@ -126,8 +126,45 @@ verify-status:
 verify-errors:
     cargo xtask verify-errors
 
+# Pins how much of the suite is `#[ignore]`d, how many test binaries exist,
+# and how big the suite is, so a new `#[ignore]` cannot quietly shrink
+# coverage and a test binary dropping out of the workspace cannot read as
+# "fewer tests, still green". The binary count is the one that actually
+# catches a dropped binary: 18 of the 30 hold eight tests or fewer, so a
+# global floor alone would let any one of them vanish unnoticed. All three
+# numbers are deliberate and must be bumped in the same commit that
+# legitimately changes them — the three ignored tests today are the three
+# not-implemented conformance cases listed in docs/status.md.
+expected_ignored := "3"
+expected_suites := "30"
+min_tests := "320"
+
+verify-ignored:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ignored=$(cargo nextest list --workspace --run-ignored ignored-only --message-format json \
+        | jq '[."rust-suites"[]."testcases" | to_entries[] | select(.value.ignored)] | length')
+    listing=$(cargo nextest list --workspace --message-format json)
+    total=$(printf '%s' "$listing" | jq '[."rust-suites"[]."testcases" | to_entries[]] | length')
+    suites=$(printf '%s' "$listing" | jq '."rust-suites" | length')
+    echo "verify-ignored: $ignored ignored (expected {{expected_ignored}}), $suites test binaries (expected {{expected_suites}}), $total total (minimum {{min_tests}})"
+    if [ "$suites" -ne "{{expected_suites}}" ]; then
+        echo "verify-ignored: FAIL — $suites test binaries listed, expected {{expected_suites}}; a test binary was added or dropped out of the workspace" >&2
+        printf '%s' "$listing" | jq -r '."rust-suites" | keys[]' >&2
+        exit 1
+    fi
+    if [ "$ignored" -ne "{{expected_ignored}}" ]; then
+        echo "verify-ignored: FAIL — expected exactly {{expected_ignored}} ignored tests; update docs/status.md and this recipe together" >&2
+        cargo nextest list --workspace --run-ignored ignored-only >&2
+        exit 1
+    fi
+    if [ "$total" -lt "{{min_tests}}" ]; then
+        echo "verify-ignored: FAIL — only $total tests listed, fewer than the {{min_tests}} floor; did a test binary drop out of the workspace?" >&2
+        exit 1
+    fi
+
 # Everything CI runs, in CI's order.
-ci: fmt-check clippy verify test-rust lint-web test-web deny
+ci: fmt-check clippy verify test-rust verify-ignored lint-web test-web deny
 
 # -------------------------------------------------------------- dev loop ---
 
