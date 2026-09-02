@@ -51,8 +51,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # No `version:` here on purpose: pnpm/action-setup@v4 refuses to run
+      # when both it and package.json's `packageManager` name a version
+      # ("Multiple versions of pnpm specified"). package.json is the single
+      # source of truth (pnpm@9.15.0). This was the workflow's first-ever
+      # run and it failed on exactly that, 2026-09-02.
       - uses: pnpm/action-setup@v4
-        with: { version: 9 }
       - uses: actions/setup-node@v4
         with: { node-version-file: .nvmrc, cache: pnpm }
       - run: pnpm install --frozen-lockfile
@@ -69,8 +73,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # No `version:` here on purpose: pnpm/action-setup@v4 refuses to run
+      # when both it and package.json's `packageManager` name a version
+      # ("Multiple versions of pnpm specified"). package.json is the single
+      # source of truth (pnpm@9.15.0). This was the workflow's first-ever
+      # run and it failed on exactly that, 2026-09-02.
       - uses: pnpm/action-setup@v4
-        with: { version: 9 }
       - uses: actions/setup-node@v4
         with: { node-version-file: .nvmrc, cache: pnpm }
       - run: pnpm install --frozen-lockfile
