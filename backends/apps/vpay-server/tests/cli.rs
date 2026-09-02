@@ -202,6 +202,16 @@ fn invalid_config_path() -> &'static str {
     )
 }
 
+/// A config that `vpay_config` itself accepts but this binary cannot serve:
+/// it names a `providers[].code` no linked adapter answers to. See the
+/// fixture's own comment.
+fn provider_without_adapter_config_path() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/provider-without-adapter.yml"
+    )
+}
+
 /// Polls `GET /healthz` on `addr` until it answers or `timeout` elapses.
 /// Returns the HTTP response's status code, or `None` if the deadline
 /// passed without ever getting a parseable response. Bounded, no fixed
@@ -417,6 +427,94 @@ fn a_bad_config_is_exit_78_naming_the_problem() {
     assert!(
         stderr.contains("livemode requires https"),
         "stderr should name the specific validation failure, got: {stderr}"
+    );
+}
+
+/// Boot step 4's join: a `providers[]` entry with no linked adapter is exit
+/// `78`, and the message names the rail.
+///
+/// This is the one boot check `vpay-config` structurally *cannot* make —
+/// which adapters exist is a property of the binary, and `vpay-config` links
+/// none of them (ADR-0002) — so it is only observable from out here, on the
+/// real process.
+///
+/// **No container, and that is the assertion's other half.** The join runs
+/// immediately after the config is validated, before the signing key is
+/// read and long before `vpay_db::connect`, so this test passes no
+/// `DATABASE_URL` and no `VPAY_OAUTH_SIGNING_KEY_FILE` at all. If someone
+/// later moves `boot_seeds` below the database connection, this test starts
+/// failing with `69` (or with the missing-signing-key `78` for the wrong
+/// reason, which is why the stderr assertion is on the rail's name and not
+/// merely on the number).
+#[test]
+fn a_provider_code_with_no_linked_adapter_is_exit_78() {
+    let output = bin()
+        .env("VPAY_CONFIG", provider_without_adapter_config_path())
+        .output()
+        .expect("spawn vpay-server");
+
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "expected EX_CONFIG (78) for a configured rail with no linked adapter, got {:?}; \
+         stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("a_rail_that_does_not_exist"),
+        "stderr should name the rail that has no adapter, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("mtn_momo"),
+        "stderr should list the rails this binary does link, so the message is actionable \
+         without a second lookup, got: {stderr}"
+    );
+}
+
+/// The other side of the same join: the repo's own `config/application.yml`
+/// names exactly the rails this binary links, so a valid config gets past
+/// step 4's join and fails on the *next* thing instead.
+///
+/// Without this, `a_provider_code_with_no_linked_adapter_is_exit_78` would
+/// still pass if `boot_seeds` rejected every configuration.
+#[test]
+fn the_repositorys_own_configuration_passes_the_adapter_join() {
+    let output = bin()
+        .env(
+            "VPAY_CONFIG",
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../config/application.yml"
+            ),
+        )
+        // The rail credentials `config/application.yml` reads from the
+        // environment. Values are irrelevant — nothing connects to a rail
+        // here; what matters is that the placeholders resolve so the load
+        // gets as far as the join.
+        .env("MTN_SUBSCRIPTION_KEY", "not-a-real-key")
+        .env("MTN_API_KEY", "not-a-real-key")
+        .env("ORANGE_MERCHANT_KEY", "not-a-real-key")
+        .output()
+        .expect("spawn vpay-server");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("links no adapter"),
+        "config/application.yml must name only rails this binary links, got: {stderr}"
+    );
+    // It still fails — on the missing signing key, the step after the join.
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "expected the *next* startup requirement to be what fails, got {:?}; stderr: {stderr}",
+        output.status,
+    );
+    assert!(
+        stderr.contains("oauth-signing-key-file"),
+        "the join must not be what stops this config; the next requirement should be, got: \
+         {stderr}"
     );
 }
 

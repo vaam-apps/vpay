@@ -159,6 +159,22 @@ try {
 }
 ```
 
+`VpayApiError` is one class for every error envelope: the envelope's `type`
+is a *field*, not a subclass. Branch on `code`, which is what the server
+treats as the machine-readable answer — two idempotency errors share a status
+(`400`) and a `type` (`idempotency_error`) and mean opposite things:
+
+```ts
+if (err instanceof VpayApiError) {
+  if (err.code === "idempotency_key_in_flight") {
+    // The first request under this key has not finished. Wait, then send
+    // the same call again — do not mint a new key.
+  } else if (err.code === "idempotency_key_in_use") {
+    // The key was already used with a different body. Retrying cannot help.
+  }
+}
+```
+
 ## Webhook verification
 
 ```ts

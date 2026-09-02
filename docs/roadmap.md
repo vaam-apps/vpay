@@ -54,7 +54,10 @@ signal-handler race fix) → `3d7635a` (#5, CrateStack re-verify) →
   race where a SIGTERM delivered before the first signal-future poll bypassed
   shutdown entirely (`vpay_config::signal::ShutdownSignals`).
 - All 12 Postgres migrations (`backends/migrations/0001`–`0012`), applied
-  and constraint-tested against a real database.
+  and constraint-tested against a real database. *This is Phase 1's scope,
+  not the repository total: there are **18** migrations as of 2026-09-03
+  (`0013` with the authkestra upgrade, `0014`–`0018` with Step 2, of which
+  `0017` and `0018` are schema only). See the Phase 3 addendum.*
 - YAML configuration loading (`vpay_config::Config::load`: Figment layers +
   hand-rolled `${ENV}` resolution + `garde` validation), wired into both
   binaries as a hard startup requirement — [ADR-0003](adr/0003-yaml-configuration.md).
@@ -66,7 +69,7 @@ signal-handler race fix) → `3d7635a` (#5, CrateStack re-verify) →
 **Definition of done (met).** `cargo xtask verify-status` and
 `cargo xtask verify-no-mocks` pass; both binaries exit non-zero, naming the
 problem, on a missing or invalid `--config`/`--database-url`
-(`a_missing_config_is_a_non_zero_exit_naming_the_problem` and siblings in
+(`a_missing_config_is_exit_78_naming_the_problem` and siblings in
 each binary's `tests/cli.rs`); `/healthz` returns 200 or 503 based on a real
 `SELECT 1`, not a static string; all 12 migrations apply cleanly and
 idempotently with their constraints proven to fire in
@@ -445,9 +448,11 @@ done, and the revocation-endpoint gap.
 **Goal.** Merchants can create and confirm `PaymentIntent`s through `/v1`,
 authenticated, idempotent.
 
-**Status.** Not started. The object model and state machine
-(`vpay-core::state`) are implemented and tested; nothing routes an HTTP
-request through them.
+**Status.** In progress — see the 2026-09-03 addendum at the end of this
+phase. *This line said "Not started" until then.* The object model and state
+machine (`vpay-core::state`) are implemented and tested, and four
+`/v1/payment_intents` paths now route HTTP requests through them; `confirm`
+reaches the rail adapter and stops at its `NotImplemented`.
 
 **Scope.**
 - `POST /v1/payment_intents` (create) — writes a row via the existing
@@ -495,7 +500,69 @@ worker (Phase 5, needs charges to poll).
   ("generate the reference, persist it, only then call the rail") is
   documented but unimplemented — this phase is where it has to land, and
   getting the ordering wrong is the exact failure mode the doc exists to
-  prevent.
+  prevent. *Landed for `confirm` on 2026-09-03; the recovery half did not —
+  see the addendum.*
+
+### Status addendum — 2026-09-03 (Step 2, branch `claude/step2-payment-intents`)
+
+**Done, with the test that would fail if it broke.** Everything below ran
+against a real `postgres:16-alpine` on the authoring machine on 2026-09-03
+(74 container-backed tests, 0 failures); it has not run in CI.
+
+- **`POST /v1/payment_intents`** — form-encoded, validated, merchant-scoped,
+  idempotent, writing a real row
+  (`create_then_retrieve_round_trips_through_the_sdk`).
+- **`GET /v1/payment_intents/{id}`**, with another merchant's id answering a
+  byte-identical 404 (`merchant_b_cannot_read_merchant_as_intent`).
+- **`GET /v1/payment_intents`** — keyset pagination over a new `seq` column
+  (`list_pages_forward_and_backward_with_cursors`,
+  `a_list_refuses_two_cursors_and_a_malformed_one`).
+- **`POST …/cancel`** — a compare-and-swap that also refuses while a charge
+  is live (`cancel_is_legal_only_from_requires_payment_method`,
+  `a_confirmed_intent_cannot_be_canceled`).
+- **Idempotency on every `POST`**, required rather than optional: replay,
+  mismatch, in-flight, release-on-`5xx`, reclaim-expired and sweep, each with
+  a named test (see `docs/status.md`'s Idempotency row).
+- **Request-auth middleware (D3)** validating once, resolving the tenant, and
+  checking `payments:write` / `payments:read`
+  (`a_client_registered_for_no_scopes_is_forbidden_while_a_scoped_one_is_not`).
+- **Boot step 4** — `vpay_db::config_reconcile::reconcile`, one
+  advisory-locked transaction in both binaries, with a YAML rail that has no
+  linked adapter exiting `78`
+  (`a_provider_code_with_no_linked_adapter_is_exit_78`).
+- **Five migrations**, `0014`–`0018`. *This document's Phase 1 scope line
+  says "All 12 Postgres migrations (`0001`–`0012`)"; that remains an accurate
+  description of **Phase 1's** scope, and is not the repository total. The
+  repository now has **18** (`0001`–`0018`): `0013` landed with the
+  authkestra upgrade, `0014`–`0016` are Step 2's working schema, and `0017`
+  (`refunds`) and `0018` (`events`) are **schema only — no code reads or
+  writes either table**.*
+
+**The three "definition of done" items above are all still unmet, and none of
+them can be met before Step 3 / Phase 4:**
+
+- *"create → confirm → a terminal state over real HTTP"* — **unmet.**
+  `confirm` reaches `adapter.submit(..)` and receives
+  `ProviderError::NotImplemented`, which is a real `501`. No intent has ever
+  reached `processing`, `requires_action` or `succeeded`. The terminal state
+  in this criterion requires a rail.
+- *"`one_charge_per_intent` proven at the API level"* — **met in the half
+  that does not need a rail**, and stated exactly: a second confirm produces
+  no second charge (`a_second_confirm_cannot_produce_a_second_charge`, with
+  `a_second_charge_for_one_intent_is_refused_as_a_named_unique_violation`
+  under it). What is not proven is the same property across a *successful*
+  submission, because there has never been one.
+- *"a replayed idempotency key returns the same object without a second
+  row"* — **met**
+  (`a_replayed_idempotency_key_returns_the_same_object_and_no_second_row`).
+
+**Also not done in this phase, and not hidden by the above:** `next_action`
+is never populated and a redirect `return_url` is validated and then dropped
+(no column); there is no recovery pass reading the `submitting` charges and
+status-less `provider_requests` rows that `confirm` deliberately leaves
+behind; `/v1/refunds`, `/v1/events` and `/v1/balance` are unrouted; the
+worker sweeps nothing; and the Node SDK has still never spoken to a running
+vpay.
 
 ---
 

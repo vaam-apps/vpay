@@ -1,0 +1,423 @@
+//! Boot step 4's *derivation*: turning this deployment's YAML plus the
+//! adapters a binary links into the seeds `vpay_db::config_reconcile`
+//! writes.
+//!
+//! # Why this lives in `vpay-api` and not in either binary
+//!
+//! It used to live in both. `vpay-server`'s `main.rs` and
+//! `vpay-worker-bin`'s carried verbatim copies of `adapters_by_code`,
+//! `boot_seeds`, `flow_label` and `display_name_for` — about 150 lines each,
+//! with comments explaining that the duplication was deliberate. It was not
+//! safe: the two processes reconcile the *same two tables* in the same
+//! database, so a change to one copy and not the other is a rollout where
+//! `providers.display_name` or `providers.flow` flips back and forth
+//! depending on which binary restarted last, with nothing to report it. The
+//! previous arrangement had no drift guard of any kind — not a shared test,
+//! not a compile-time link.
+//!
+//! What stays per-binary is the thing that genuinely *is* per-binary: the
+//! four-line `adapters()` list of linked rails (Step 2's D6). A worker that
+//! learned which rails exist from `vpay-server`'s crate would make its
+//! capabilities a function of the API server, and the two deploy
+//! independently. Everything downstream of that list — the map, the join
+//! against the YAML, the enum labels — is one derivation and now has one
+//! implementation.
+//!
+//! `vpay-api` is the home because it is the only crate both binaries already
+//! link that also depends on `vpay-config` (the YAML), `vpay-provider` (the
+//! port) and `vpay-db` (the seed types). No new dependency edge exists
+//! because of this module.
+
+use std::collections::BTreeMap;
+
+use vpay_config::{Config, ConfigError};
+use vpay_core::ProviderFlow;
+use vpay_db::{CurrencySeed, ProviderSeed};
+use vpay_provider::ProviderAdapter;
+
+/// A binary's linked adapters, keyed by `providers.code`.
+///
+/// The map — rather than the `Vec` a binary's own `adapters()` returns — is
+/// what both the boot-time join below and `RouterDeps::adapters` need: a
+/// `confirm` resolves a rail by the `payment_method_data[type]` a caller
+/// sent, and boot resolves one by the `providers[].code` the YAML names.
+///
+/// Keyed by [`ProviderAdapter::code`] rather than by a string the caller
+/// supplies, so the key can never disagree with the adapter's own idea of
+/// what it is. Two adapters claiming one code would silently collapse to
+/// one entry — that is a linking mistake inside a single binary, caught by
+/// `vpay-server`'s `both_mvp_rails_are_linked` and by the panic-free
+/// assertion in this module's tests, not something a running deployment can
+/// cause.
+#[must_use]
+pub fn adapters_by_code(
+    adapters: Vec<Box<dyn ProviderAdapter>>,
+) -> BTreeMap<String, Box<dyn ProviderAdapter>> {
+    adapters
+        .into_iter()
+        .map(|adapter| (adapter.code().to_owned(), adapter))
+        .collect()
+}
+
+/// Boot step 4's inputs: what this deployment's YAML says the reference
+/// tables should hold, once joined against the adapters the calling binary
+/// links.
+///
+/// Call it **before** the database is touched, as both binaries do: a
+/// `providers[]` entry naming a rail with no linked adapter is then exit
+/// `78` in milliseconds rather than after a connection and a migration run —
+/// the same "cheapest hard failure first" ordering the config load itself
+/// follows. `vpay-server/tests/cli.rs`
+/// (`a_provider_code_with_no_linked_adapter_is_exit_78`) needs no container
+/// precisely because of that placement, so moving the call site below
+/// `vpay_db::connect` would break it.
+///
+/// # Errors
+///
+/// [`ConfigError::ProviderWithoutAdapter`] for a configured rail the calling
+/// binary links no code for; [`ConfigError::Validation`] for a currency
+/// exponent that does not fit the column (unreachable while
+/// `Config::validate_all` bounds it, and therefore a signal that the bound
+/// is gone).
+pub fn boot_seeds(
+    config: &Config,
+    adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
+) -> Result<(Vec<CurrencySeed>, Vec<ProviderSeed>), ConfigError> {
+    let currencies = config
+        .currencies
+        .iter()
+        .map(|entry| {
+            let exponent = i32::try_from(entry.exponent).map_err(|_error| {
+                ConfigError::Validation(format!(
+                    "currency {} declares exponent {}, which does not fit the \
+                     `currencies.exponent` column; Config::validate_all bounds it to 0..=4, so \
+                     reaching this means that bound is gone",
+                    entry.code, entry.exponent
+                ))
+            })?;
+            Ok(CurrencySeed {
+                code: entry.code.to_ascii_uppercase(),
+                exponent,
+            })
+        })
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+
+    let providers = config
+        .providers
+        .iter()
+        .map(|provider| {
+            // The join, and the only place a configured rail meets the code
+            // that would have to serve it. Fatal rather than skipped — see
+            // `ConfigError::ProviderWithoutAdapter`.
+            let adapter = adapters.get(&provider.code).ok_or_else(|| {
+                ConfigError::ProviderWithoutAdapter {
+                    code: provider.code.clone(),
+                    linked: adapters.keys().cloned().collect::<Vec<_>>().join(", "),
+                }
+            })?;
+            let capabilities = adapter.capabilities();
+            Ok(ProviderSeed {
+                code: provider.code.clone(),
+                display_name: display_name_for(&provider.code),
+                flow: flow_label(capabilities.flow).to_owned(),
+                supports_refunds: capabilities.supports_refunds,
+                supports_partial_refunds: capabilities.supports_partial_refunds,
+                delivers_callbacks: capabilities.delivers_callbacks,
+                requires_ip_allowlist: capabilities.requires_ip_allowlist,
+                // The one field the *deployment* owns. Every other field
+                // above comes from the adapter, because a capability is a
+                // property of the rail's code and not of a config file
+                // (ADR-0002); whether a rail is offered right now is the
+                // opposite (`ProviderHost::enabled`).
+                enabled: provider.enabled,
+            })
+        })
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+
+    Ok((currencies, providers))
+}
+
+/// The `provider_flow` enum label for a flow shape.
+///
+/// Spelled here rather than through `serde` because the column is read and
+/// written as a `String` (Step 2's D4) and [`ProviderFlow`] has no
+/// `as_wire_str` of its own the way `IntentStatus` and `ChargeState` do. A
+/// label that disagreed with migration 0002's `CREATE TYPE provider_flow AS
+/// ENUM ('push', 'redirect')` is a `DbError::Query` at boot, not a silently
+/// stored typo — which is why this is a `match` and not a `to_lowercase` of
+/// the variant name.
+///
+/// Private: nothing outside [`boot_seeds`] should be turning a flow into a
+/// column value, and a `pub` version would be a second vocabulary competing
+/// with the enum itself.
+const fn flow_label(flow: ProviderFlow) -> &'static str {
+    match flow {
+        ProviderFlow::Push => "push",
+        ProviderFlow::Redirect => "redirect",
+    }
+}
+
+/// `providers.display_name`, derived from the rail code.
+///
+/// **Derived, because nothing else in the tree has one.** [`ProviderAdapter`]
+/// exposes `code()` and `capabilities()` and no display name, and
+/// `ProviderHost` deliberately carries no capability or presentation fields
+/// (`host.label` names the *host* — "mtn-sandbox-wiremock" — not the rail,
+/// and putting that in front of an operator would be worse than this). So
+/// `mtn_momo` becomes `Mtn Momo`: mechanical, obviously derived, and wrong
+/// about nothing. When the port grows a real `display_name()`, this should
+/// read it instead of transforming a code.
+fn display_name_for(code: &str) -> String {
+    code.split('_')
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use vpay_config::{CurrencyEntry, Deployment, HostEntry, ProviderHost};
+    use vpay_core::Money;
+    use vpay_provider::{
+        CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderConfig, ProviderError,
+        Submitted,
+    };
+
+    use super::*;
+
+    /// A rail with a code and a flow, and nothing else.
+    ///
+    /// **Not a test double of an adapter.** It implements the real port so
+    /// [`boot_seeds`] can be exercised on the two flow shapes without
+    /// linking an adapter crate into `vpay-api` (which would invert the
+    /// dependency ADR-0002 draws), and every method that would talk to a
+    /// rail answers `Unsupported` rather than a plausible success — this
+    /// type can only ever be handed to the pure join above. It is
+    /// `#[cfg(test)]`, so no shipping binary can reach it.
+    ///
+    /// `Unsupported` rather than a `NotImplemented` token: the latter is a
+    /// *declaration* that a real code path is unbuilt, tracked by
+    /// `cargo xtask verify-status` against `docs/status.md`, and a fixture
+    /// in a unit test has no business adding a row to that page.
+    #[derive(Debug)]
+    struct TestRail {
+        code: &'static str,
+        flow: ProviderFlow,
+    }
+
+    impl ProviderAdapter for TestRail {
+        fn code(&self) -> &'static str {
+            self.code
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                flow: self.flow,
+                supports_refunds: true,
+                supports_partial_refunds: true,
+                delivers_callbacks: true,
+                requires_ip_allowlist: false,
+            }
+        }
+
+        fn submit(
+            &self,
+            _charge: &ChargeRef,
+            _config: &ProviderConfig,
+        ) -> Result<Submitted, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        fn query_status(
+            &self,
+            _charge: &ChargeRef,
+            _config: &ProviderConfig,
+        ) -> Result<ChargeStatus, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        fn parse_callback(&self, _body: &[u8]) -> Result<CallbackRef, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        fn refund(
+            &self,
+            _charge: &ChargeRef,
+            _amount: Money,
+            _config: &ProviderConfig,
+        ) -> Result<Submitted, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+    }
+
+    fn config_with(codes: &[&str]) -> Config {
+        Config {
+            deployment: Deployment {
+                name: "boot-tests".to_owned(),
+                livemode: false,
+                public_base_url: "http://localhost:8080".to_owned(),
+            },
+            providers: codes
+                .iter()
+                .map(|code| ProviderHost {
+                    code: (*code).to_owned(),
+                    enabled: true,
+                    host: HostEntry {
+                        url: "https://rail.example".to_owned(),
+                        label: "rail".to_owned(),
+                    },
+                    settings: BTreeMap::new(),
+                    credentials: BTreeMap::new(),
+                })
+                .collect(),
+            currencies: vec![CurrencyEntry {
+                code: "xaf".to_owned(),
+                exponent: 0,
+            }],
+            merchant_clients: Vec::new(),
+            dashboard_client: None,
+        }
+    }
+
+    fn two_rails() -> BTreeMap<String, Box<dyn ProviderAdapter>> {
+        adapters_by_code(vec![
+            Box::new(TestRail {
+                code: "mtn_momo",
+                flow: ProviderFlow::Push,
+            }),
+            Box::new(TestRail {
+                code: "orange_money",
+                flow: ProviderFlow::Redirect,
+            }),
+        ])
+    }
+
+    /// The join both binaries run, end to end: every configured rail is
+    /// seeded with the *adapter's* capabilities and the *config's* enabled
+    /// flag, and the currency code is uppercased for migration 0001's
+    /// `code_is_iso4217_shape` CHECK (the YAML above spells it lowercase on
+    /// purpose).
+    #[test]
+    fn boot_seeds_joins_the_yaml_against_the_linked_adapters() {
+        let adapters = two_rails();
+        let (currencies, providers) =
+            boot_seeds(&config_with(&["mtn_momo", "orange_money"]), &adapters)
+                .expect("both rails are linked");
+
+        assert_eq!(
+            currencies
+                .iter()
+                .map(|seed| (seed.code.as_str(), seed.exponent))
+                .collect::<Vec<_>>(),
+            vec![("XAF", 0)]
+        );
+        assert_eq!(
+            providers
+                .iter()
+                .map(|seed| (
+                    seed.code.as_str(),
+                    seed.flow.as_str(),
+                    seed.display_name.as_str(),
+                    seed.enabled
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("mtn_momo", "push", "Mtn Momo", true),
+                ("orange_money", "redirect", "Orange Money", true),
+            ],
+            "the flow and the capabilities must come from the adapter, the enabled flag from \
+             the YAML"
+        );
+    }
+
+    /// A rail switched off in the YAML is still seeded — with
+    /// `enabled = false`, so its configuration survives while new charges
+    /// stop. Dropping it from the seed instead would make boot step 4's
+    /// disable pass indistinguishable from "this rail was deleted".
+    #[test]
+    fn a_disabled_rail_is_seeded_disabled_rather_than_omitted() {
+        let adapters = two_rails();
+        let mut config = config_with(&["mtn_momo", "orange_money"]);
+        // `.get_mut` rather than `[1]`: the workspace denies
+        // `clippy::indexing_slicing` in tests too.
+        config
+            .providers
+            .get_mut(1)
+            .expect("the fixture configures two rails")
+            .enabled = false;
+
+        let (_currencies, providers) = boot_seeds(&config, &adapters).expect("both are linked");
+        assert_eq!(
+            providers
+                .iter()
+                .map(|seed| (seed.code.as_str(), seed.enabled))
+                .collect::<Vec<_>>(),
+            vec![("mtn_momo", true), ("orange_money", false)],
+            "a disabled rail is seeded disabled, not dropped — the YAML owns this field alone"
+        );
+    }
+
+    /// The failure both binaries turn into exit 78, with a message naming
+    /// the rail *and* what is linked — the two assertions
+    /// `vpay-server/tests/cli.rs` makes on the real process's stderr.
+    #[test]
+    fn a_configured_rail_with_no_linked_adapter_is_a_named_config_error() {
+        let adapters = two_rails();
+        let error = boot_seeds(&config_with(&["a_rail_that_does_not_exist"]), &adapters)
+            .expect_err("an unlinked rail must be refused");
+
+        match &error {
+            ConfigError::ProviderWithoutAdapter { code, linked } => {
+                assert_eq!(code, "a_rail_that_does_not_exist");
+                assert!(
+                    linked.contains("mtn_momo") && linked.contains("orange_money"),
+                    "the message must list what IS linked so it is actionable: {linked}"
+                );
+            }
+            other => panic!("expected ProviderWithoutAdapter, got {other:?}"),
+        }
+    }
+
+    /// `display_name_for` is mechanical, and the inputs that would otherwise
+    /// panic or produce a ragged name are the ones worth pinning: an empty
+    /// segment from a doubled underscore, and a non-ASCII first character
+    /// (`char::to_uppercase` can yield more than one `char`).
+    #[test]
+    fn a_display_name_is_derived_from_the_code_without_panicking() {
+        assert_eq!(display_name_for("mtn_momo"), "Mtn Momo");
+        assert_eq!(display_name_for("orange_money"), "Orange Money");
+        assert_eq!(display_name_for("a__b"), "A B");
+        assert_eq!(display_name_for(""), "");
+        assert_eq!(display_name_for("etoile_pay"), "Etoile Pay");
+    }
+
+    /// The labels migration 0002's `provider_flow` enum accepts. A typo here
+    /// is a `DbError::Query` at boot in every deployment at once.
+    #[test]
+    fn the_flow_labels_are_the_enum_members_migration_0002_declares() {
+        assert_eq!(flow_label(ProviderFlow::Push), "push");
+        assert_eq!(flow_label(ProviderFlow::Redirect), "redirect");
+    }
+
+    /// The map is keyed by the adapter's own `code()`, which is what lets a
+    /// `confirm` resolve `payment_method_data[type]` and boot resolve
+    /// `providers[].code` through one structure.
+    #[test]
+    fn the_adapter_map_is_keyed_by_the_adapters_own_code() {
+        let adapters = two_rails();
+        assert_eq!(
+            adapters.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["mtn_momo", "orange_money"]
+        );
+        for (key, adapter) in &adapters {
+            assert_eq!(key, adapter.code());
+        }
+    }
+}

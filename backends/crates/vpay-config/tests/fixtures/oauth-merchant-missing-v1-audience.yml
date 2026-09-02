@@ -16,6 +16,7 @@ deployment:
 
 merchant_clients:
   - client_id: acme-cameroon
+    merchant_id: acme-cameroon
     jwks:
       keys:
         - kty: RSA

@@ -1,0 +1,1881 @@
+//! `/v1/payment_intents`, end to end: the real `vpay_api::router` on a real
+//! socket, over a real Postgres, driven by the real merchant SDK.
+//!
+//! `vpay-api`'s own unit tests cover the pieces — form decoding, validation
+//! bounds, the state table, the error envelope — and each of them substitutes
+//! something: a lazy pool, a request that never authenticates, a handler
+//! called as a function. The claims that only this file can make are the ones
+//! that span the whole path:
+//!
+//! 1. an intent created through the SDK reads back through the SDK, with the
+//!    same values and the deployment's `livemode`;
+//! 2. a replayed `Idempotency-Key` returns the *same object* and creates no
+//!    second row;
+//! 3. the same key with a different body is the documented `400`
+//!    `idempotency_error` / `idempotency_key_in_use`;
+//! 4. a second confirm cannot produce a second charge — one charge per
+//!    intent, forever;
+//! 5. a confirm reaches the linked rail adapter and answers the documented
+//!    `501`, leaving the `submitting` charge row and the status-less
+//!    `provider_requests` row a recovery pass will need;
+//! 6. `cancel` is legal only from `requires_payment_method`;
+//! 7. cursor paging walks forward and backward over 25 rows and comes back
+//!    to the same page;
+//! 8. one merchant cannot read another's intent, and the refusal is **byte
+//!    for byte** the answer for an id that never existed;
+//! 9. every route the router registers is behind the authentication boundary
+//!    (Step 2's D3);
+//! 10. a `POST` with no `Idempotency-Key` is the documented `400`;
+//! 11. a claim is ended on *every* path out of a `POST`, including the one
+//!     where the work succeeded and only the write that records the response
+//!     failed — see test 17, which injects that failure in Postgres because
+//!     it is not otherwise reachable from outside the process.
+//!
+//! # What is deliberately not claimed here
+//!
+//! No adapter implements `submit` (`docs/status.md`), so nothing in this file
+//! shows a payment being taken. Test 5 asserts the `501` *and the rows left
+//! behind*, which is the honest whole of what a confirm does today. When a
+//! rail lands, that test is the one that has to change.
+//!
+//! `just sdk-conformance-node` cannot be pointed at this server — it verifies
+//! an assertion shape only — so nothing here claims Node/Rust SDK parity
+//! against a live vpay. The Rust SDK is exercised; the Node one is not.
+//!
+//! # Why the SDK and not a hand-rolled client
+//!
+//! `vpay-sdk` (`sdks/rust`) is the artefact a merchant integrates, not a test
+//! double. Where a raw `reqwest` request appears below it is because the SDK
+//! deliberately cannot express it: a request with no bearer token (test 9), a
+//! `POST` with no `Idempotency-Key` (test 10 — the SDK always sends one), and
+//! the byte-level body comparison test 8 needs.
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+use std::collections::{BTreeMap, HashMap};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Context as _;
+use serde_json::Value;
+use sqlx::PgPool;
+use testcontainers::ContainerAsync;
+use testcontainers_modules::postgres::Postgres as PostgresImage;
+use vpay_api::op::MerchantOp;
+use vpay_api::op::keys::LoadedSigningKey;
+use vpay_api::resource_auth::{JwtValidator, MerchantJwtValidator, Surface};
+use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost};
+use vpay_sdk::{
+    ConfirmPaymentIntentParams, CreatePaymentIntentParams, Credentials, IntentStatus,
+    ListPaymentIntentsParams, PaymentMethodType, RequestOptions,
+};
+
+mod support;
+
+use support::{
+    ensure_crypto_provider_installed, generate_key, merchant_client, merchant_client_with_scopes,
+    migrated_postgres, reconcile_from_config, router_deps,
+};
+
+/// The merchant every test acts as, and the tenant it acts for. Never the
+/// same string: a query filtered by `client_id` instead of `merchant_id`
+/// would otherwise pass.
+const CLIENT_A: &str = "acme-cameroon";
+const MERCHANT_A: &str = "acme-cameroon-tenant";
+
+/// The second merchant, which exists only so test 8 has someone else's
+/// intent to fail to read.
+const CLIENT_B: &str = "beta-douala";
+const MERCHANT_B: &str = "beta-douala-tenant";
+
+/// The third merchant: registered, mapped to a tenant, and registered for
+/// **no scopes at all**. It exists so test 11 can tell a `403` about the
+/// credential's *authorisation* apart from every other `403` this surface
+/// can produce — an unregistered `client_id` is also 403, so a test using an
+/// unregistered client would pass with no scope check in the code at all.
+const CLIENT_C: &str = "gamma-yaounde";
+const MERCHANT_C: &str = "gamma-yaounde-tenant";
+
+/// The push rail (MTN) and the redirect rail (Orange), both configured and
+/// both enabled — the flow branch in `confirm` is only meaningful with one of
+/// each.
+const PUSH_RAIL: &str = "mtn_momo";
+const REDIRECT_RAIL: &str = "orange_money";
+
+/// The currency this deployment configures. XAF is zero-decimal, so `5000`
+/// is 5,000 FCFA (`docs/flows/money.md`).
+const CURRENCY: &str = "xaf";
+const AMOUNT: i64 = 5000;
+
+// ------------------------------------------------------------------ harness
+
+/// A running vpay server, its database, and the two merchants' credentials.
+struct Harness {
+    _container: ContainerAsync<PostgresImage>,
+    server: tokio::task::JoinHandle<()>,
+    pool: PgPool,
+    base_url: String,
+    /// Merchant A's, B's and C's private keys, PEM-encoded.
+    pem_a: String,
+    pem_b: String,
+    pem_c: String,
+    /// The server's own signing key, so a test can mint a bearer token
+    /// directly for the raw requests the SDK cannot make.
+    signing_key: LoadedSigningKey,
+}
+
+impl Harness {
+    fn sdk(&self, client_id: &str, pem: &str) -> vpay_sdk::Client {
+        vpay_sdk::Client::builder(&self.base_url)
+            .credentials(
+                Credentials::rsa_pem(client_id, pem).expect("the generated PEM parses as RSA"),
+            )
+            .build()
+            .expect("the SDK client builds from a base URL and a credential")
+    }
+
+    /// Merchant A's SDK client — the one almost every test uses.
+    fn a(&self) -> vpay_sdk::Client {
+        self.sdk(CLIENT_A, &self.pem_a)
+    }
+
+    /// Merchant B's SDK client.
+    fn b(&self) -> vpay_sdk::Client {
+        self.sdk(CLIENT_B, &self.pem_b)
+    }
+
+    /// Merchant C's SDK client — the one registered for no scopes.
+    fn c(&self) -> vpay_sdk::Client {
+        self.sdk(CLIENT_C, &self.pem_c)
+    }
+
+    /// A bearer token for `client_id`, minted with the server's own signer.
+    ///
+    /// The same shape the OP would mint — same issuer, same key, same
+    /// `vpay:v1` audience — so a request carrying it is indistinguishable to
+    /// `/v1` from one the SDK obtained. It exists because the SDK holds its
+    /// token privately, and the raw-request tests below need one in hand.
+    fn bearer(&self, client_id: &str) -> String {
+        self.bearer_with_scope(client_id, Some(vpay_api::SCOPE_PAYMENTS_WRITE))
+    }
+
+    /// The same, with the `scope` claim named explicitly.
+    ///
+    /// The OP grants a client's registered scopes when a token request names
+    /// none (RFC 6749 §3.3, `vpay_api::op::token::token_handler`), so a
+    /// hand-minted token has to say what it carries or it would be *less*
+    /// authorised than the one the SDK obtains — and every raw-request test
+    /// below would be asserting against a `403` instead of the answer it is
+    /// actually about.
+    fn bearer_with_scope(&self, client_id: &str, scope: Option<&str>) -> String {
+        self.signing_key
+            .token_manager()
+            .issue_client_token_with_extra(
+                client_id,
+                900,
+                scope.map(str::to_owned),
+                Some(MERCHANT_AUDIENCE.to_owned()),
+                HashMap::new(),
+            )
+            .expect("the server's own signer mints a merchant token")
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.base_url)
+    }
+
+    async fn shutdown(self) {
+        self.server.abort();
+    }
+}
+
+/// The configuration this deployment runs under: three merchants, two rails,
+/// one currency, `livemode: false`.
+///
+/// `push_rail_enabled` exists for one test
+/// (`a_replay_survives_the_rail_being_disabled`), which stands a second
+/// server up over the same database with the rail an intent was created for
+/// switched off — the configuration change an operator makes between a
+/// merchant's request and their retry.
+fn config_with(
+    base_url: &str,
+    jwks_a: Value,
+    jwks_b: Value,
+    jwks_c: Value,
+    push_rail_enabled: bool,
+) -> Config {
+    Config {
+        deployment: Deployment {
+            name: "payment-intents".to_owned(),
+            livemode: false,
+            public_base_url: base_url.to_owned(),
+        },
+        providers: vec![
+            ProviderHost {
+                code: PUSH_RAIL.to_owned(),
+                enabled: push_rail_enabled,
+                host: HostEntry {
+                    // Never reached: no adapter implements `submit`, so the
+                    // rail is resolved and then answers `NotImplemented`
+                    // before any HTTP client is built. A reachable host here
+                    // would make that silence look like configuration.
+                    url: "http://127.0.0.1:1".to_owned(),
+                    label: "unreachable-by-design".to_owned(),
+                },
+                settings: BTreeMap::new(),
+                credentials: BTreeMap::new(),
+            },
+            ProviderHost {
+                code: REDIRECT_RAIL.to_owned(),
+                enabled: true,
+                host: HostEntry {
+                    url: "http://127.0.0.1:1".to_owned(),
+                    label: "unreachable-by-design".to_owned(),
+                },
+                settings: BTreeMap::new(),
+                credentials: BTreeMap::new(),
+            },
+        ],
+        currencies: vec![CurrencyEntry {
+            code: "XAF".to_owned(),
+            exponent: 0,
+        }],
+        merchant_clients: vec![
+            merchant_client(CLIENT_A, MERCHANT_A, jwks_a),
+            merchant_client(CLIENT_B, MERCHANT_B, jwks_b),
+            // Registered, and registered for nothing — see `CLIENT_C`.
+            merchant_client_with_scopes(CLIENT_C, MERCHANT_C, jwks_c, &[]),
+        ],
+        dashboard_client: None,
+    }
+}
+
+/// Boots a real server, in `vpay-server`'s own order: migrate, run boot step
+/// 4, announce the signing key, bind, then serve.
+///
+/// A harness that assembled things in a different order would be testing a
+/// different program — and boot step 4 in particular is not optional here:
+/// `charges.provider_code` and `charges.currency_code` are foreign keys, so
+/// without it every confirm below would fail on a constraint instead of on
+/// the thing it is testing.
+async fn harness() -> anyhow::Result<Harness> {
+    ensure_crypto_provider_installed();
+
+    let (container, pool) = migrated_postgres().await?;
+
+    let (server_pem, _server_jwks) = generate_key();
+    let (pem_a, jwks_a) = generate_key();
+    let (pem_b, jwks_b) = generate_key();
+    let (pem_c, jwks_c) = generate_key();
+
+    let served = serve(&pool, &server_pem, |base_url| {
+        config_with(base_url, jwks_a, jwks_b, jwks_c, true)
+    })
+    .await?;
+
+    Ok(Harness {
+        _container: container,
+        server: served.server,
+        pool,
+        base_url: served.base_url,
+        pem_a,
+        pem_b,
+        pem_c,
+        signing_key: served.signing_key,
+    })
+}
+
+/// One running server: the task serving it, where it is, and the key it
+/// signs tokens with.
+struct Served {
+    server: tokio::task::JoinHandle<()>,
+    base_url: String,
+    signing_key: LoadedSigningKey,
+}
+
+/// Stands a vpay server up on an ephemeral port over `pool`, in
+/// `vpay-server`'s own boot order: announce the signing key, run boot step 4,
+/// bind, serve.
+///
+/// `make_config` takes the base URL because the configuration cannot be
+/// built until the port is known — `public_base_url` is what the issuer, the
+/// assertion audience and every callback URL are derived from, and a
+/// placeholder would make the OP mint tokens no validator here would accept.
+///
+/// A function rather than inlined in [`harness`] because one test boots a
+/// *second* server over the same database, with a different configuration,
+/// which is exactly what an operator changing `application.yml` and
+/// redeploying does. Two hand-rolled copies of this would be two chances to
+/// boot it in an order the binary does not.
+async fn serve(
+    pool: &PgPool,
+    server_pem: &str,
+    make_config: impl FnOnce(&str) -> Config,
+) -> anyhow::Result<Served> {
+    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .context("binding an ephemeral loopback port")?;
+    let bound = listener.local_addr().context("reading the bound port")?;
+    let base_url = format!("http://{bound}");
+    let issuer = format!("{base_url}/v1/oauth");
+
+    let signing_key =
+        LoadedSigningKey::from_pem(server_pem, &issuer).context("loading the signing key")?;
+    signing_key
+        .ensure_active_in_database(pool)
+        .await
+        .context("announcing the signing key in oauth_signing_keys")?;
+
+    let config = make_config(&base_url);
+    reconcile_from_config(pool, &config).await?;
+
+    let merchant_op = Arc::new(MerchantOp::new(&config, signing_key.clone(), pool.clone()));
+    let merchant_validator = MerchantJwtValidator(
+        JwtValidator::new(
+            format!("{base_url}/v1/oauth/jwks.json"),
+            Duration::from_secs(300),
+            merchant_op.issuer(),
+            Surface::Merchant,
+        )
+        .expect("the vendored-roots JWKS client builds"),
+    );
+
+    let deps = router_deps(pool.clone(), merchant_op, merchant_validator, &config);
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, vpay_api::router(deps)).await;
+    });
+
+    Ok(Served {
+        server,
+        base_url,
+        signing_key,
+    })
+}
+
+fn raw_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .build()
+        .expect("a plain-HTTP reqwest client builds once a CryptoProvider is installed")
+}
+
+/// `CreatePaymentIntentParams` for the push rail, with one metadata entry so
+/// the round trip covers a nested form key.
+fn create_params() -> CreatePaymentIntentParams {
+    CreatePaymentIntentParams {
+        amount: AMOUNT,
+        currency: CURRENCY.to_owned(),
+        payment_method_types: vec![PaymentMethodType::MtnMomo],
+        metadata: BTreeMap::from([("order_id".to_owned(), "1234".to_owned())]),
+        description: Some("Order #42 (rush)".to_owned()),
+    }
+}
+
+/// The `ApiError` fields a test cares about, pulled out of the SDK's typed
+/// error. Panics on any other variant, because "the request never produced an
+/// HTTP response" is never the answer one of these tests is asserting.
+fn api_error(error: vpay_sdk::Error) -> (u16, String, Option<String>, Option<String>) {
+    match error {
+        vpay_sdk::Error::Api {
+            status,
+            kind,
+            code,
+            param,
+            ..
+        } => (status, kind, code, param),
+        other => panic!("expected a vpay API error envelope, got {other:?}"),
+    }
+}
+
+async fn count(pool: &PgPool, sql: &str, bind: &str) -> anyhow::Result<i64> {
+    sqlx::query_scalar::<_, i64>(sql)
+        .bind(bind)
+        .fetch_one(pool)
+        .await
+        .context("counting rows")
+}
+
+// ------------------------------------------------------------------ test 1
+
+/// The round trip: what the SDK sent is what the SDK reads back, including
+/// the fields the *deployment* owns rather than the caller.
+#[tokio::test]
+async fn create_then_retrieve_round_trips_through_the_sdk() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let client = harness.a();
+
+    let created = client
+        .payment_intents()
+        .create(create_params(), RequestOptions::new())
+        .await
+        .context("creating a payment intent through the SDK")?;
+
+    assert!(
+        created.id.starts_with("pi_"),
+        "an intent id is prefixed: {}",
+        created.id
+    );
+    assert_eq!(created.object, "payment_intent");
+    assert_eq!(created.amount, AMOUNT);
+    assert_eq!(created.currency, CURRENCY, "lowercase on the wire");
+    assert_eq!(created.status, IntentStatus::RequiresPaymentMethod);
+    assert_eq!(created.payment_method_types, vec![PUSH_RAIL.to_owned()]);
+    assert_eq!(created.next_action, None, "nothing has been confirmed");
+    assert_eq!(created.last_payment_error, None);
+    assert_eq!(
+        created.metadata.get("order_id").map(String::as_str),
+        Some("1234")
+    );
+    assert_eq!(created.description.as_deref(), Some("Order #42 (rush)"));
+    assert!(
+        !created.livemode,
+        "the deployment is livemode: false, and the object says so"
+    );
+    assert!(created.created > 0, "created is unix seconds, not zero");
+
+    let retrieved = client
+        .payment_intents()
+        .retrieve(&created.id)
+        .await
+        .context("retrieving the intent just created")?;
+    assert_eq!(
+        retrieved, created,
+        "a retrieve must return the object the create returned, field for field"
+    );
+
+    // The row is the merchant's, not the client's — the whole tenancy
+    // boundary, read straight from the table.
+    let merchant_id: String =
+        sqlx::query_scalar("SELECT merchant_id FROM payment_intents WHERE id = $1")
+            .bind(&created.id)
+            .fetch_one(&harness.pool)
+            .await
+            .context("reading the stored merchant_id")?;
+    assert_eq!(
+        merchant_id, MERCHANT_A,
+        "the row is filed under the tenant, never under the client_id"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------------------ test 2
+
+/// A replayed key returns the stored answer and does no work: the object is
+/// identical *and* there is exactly one row.
+///
+/// The row count is the half that matters. Returning the same object could
+/// also happen if the second request created a second intent and the two
+/// happened to look alike; `count(*) = 1` is what rules that out.
+#[tokio::test]
+async fn a_replayed_idempotency_key_returns_the_same_object_and_no_second_row() -> anyhow::Result<()>
+{
+    let harness = harness().await?;
+    let client = harness.a();
+    let opts = RequestOptions::new().with_idempotency_key("order-1234-create");
+
+    let first = client
+        .payment_intents()
+        .create(create_params(), opts.clone())
+        .await
+        .context("the first create")?;
+    let second = client
+        .payment_intents()
+        .create(create_params(), opts)
+        .await
+        .context("the same request under the same key")?;
+
+    assert_eq!(
+        first, second,
+        "a replay must answer with the stored response, not a new object"
+    );
+
+    let rows = count(
+        &harness.pool,
+        "SELECT count(*) FROM payment_intents WHERE merchant_id = $1",
+        MERCHANT_A,
+    )
+    .await?;
+    assert_eq!(rows, 1, "the replay must not have created a second intent");
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------------------ test 3
+
+/// The same key with a *different* body is refused, with the envelope
+/// `docs/api/README.md` documents.
+///
+/// `idempotency_error` / `idempotency_key_in_use` is
+/// `vpay_core::Category::Idempotency`'s own kind and code — the API does not
+/// choose them at this call site (ADR-0011), which is why they are asserted
+/// verbatim here.
+#[tokio::test]
+async fn a_reused_key_with_a_different_body_is_the_400_envelope() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let client = harness.a();
+    let opts = RequestOptions::new().with_idempotency_key("order-1234-create");
+
+    client
+        .payment_intents()
+        .create(create_params(), opts.clone())
+        .await
+        .context("the first create")?;
+
+    let mut different = create_params();
+    different.amount = AMOUNT + 1;
+    let error = client
+        .payment_intents()
+        .create(different, opts)
+        .await
+        .expect_err("the same key with a different body must be refused");
+
+    let (status, kind, code, _param) = api_error(error);
+    assert_eq!(status, 400);
+    assert_eq!(kind, "idempotency_error");
+    assert_eq!(code.as_deref(), Some("idempotency_key_in_use"));
+
+    let rows = count(
+        &harness.pool,
+        "SELECT count(*) FROM payment_intents WHERE merchant_id = $1",
+        MERCHANT_A,
+    )
+    .await?;
+    assert_eq!(rows, 1, "the refused request must not have created a row");
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------------------ test 4
+
+/// "One charge per intent, forever" (`AGENTS.md`), observed from outside: the
+/// second confirm is a `409` and there is still exactly one charge row.
+///
+/// Both confirms reach the rail — the first one gets the `501` of test 5 —
+/// so this is specifically about the *charge*, not about the confirm
+/// succeeding.
+#[tokio::test]
+async fn a_second_confirm_cannot_produce_a_second_charge() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let client = harness.a();
+
+    let intent = client
+        .payment_intents()
+        .create(create_params(), RequestOptions::new())
+        .await
+        .context("creating the intent to confirm")?;
+
+    let first = client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            ConfirmPaymentIntentParams::mtn_momo("237670000000"),
+            RequestOptions::new(),
+        )
+        .await
+        .expect_err("no rail implements submit; a confirm cannot succeed today");
+    assert_eq!(
+        api_error(first).0,
+        501,
+        "the first confirm reaches the rail"
+    );
+
+    let second = client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            ConfirmPaymentIntentParams::mtn_momo("237670000000"),
+            RequestOptions::new(),
+        )
+        .await
+        .expect_err("the intent already has a charge");
+    let (status, kind, _code, _param) = api_error(second);
+    assert_eq!(
+        status, 409,
+        "a second confirm is a conflict, not a second charge"
+    );
+    assert_eq!(kind, "invalid_request_error");
+
+    let charges = count(
+        &harness.pool,
+        "SELECT count(*) FROM charges WHERE payment_intent_id = $1",
+        &intent.id,
+    )
+    .await?;
+    assert_eq!(charges, 1, "one charge per intent, forever");
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------------------ test 5
+
+/// The confirm path, whole: the documented `501`, **and** the two rows it
+/// deliberately leaves behind.
+///
+/// The rows are not incidental. `docs/flows/crash-safety.md` requires the
+/// reference to be durable before anything is submitted, so the charge is
+/// committed in `submitting` and the attempt is recorded with no status
+/// *before* the adapter is called. What a crash between those writes and the
+/// answer would leave is exactly what a `NotImplemented` leaves — which is
+/// why asserting only the `501` would let someone delete both writes and
+/// still pass.
+#[tokio::test]
+async fn confirm_reaches_the_adapter_and_renders_the_documented_501() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let client = harness.a();
+
+    let intent = client
+        .payment_intents()
+        .create(create_params(), RequestOptions::new())
+        .await
+        .context("creating the intent to confirm")?;
+
+    let error = client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            ConfirmPaymentIntentParams::mtn_momo("237670000000"),
+            RequestOptions::new(),
+        )
+        .await
+        .expect_err("mtn_momo::submit is not implemented (docs/status.md)");
+
+    let (status, kind, code, _param) = api_error(error);
+    assert_eq!(status, 501);
+    assert_eq!(kind, "api_error");
+    assert_eq!(
+        code.as_deref(),
+        Some("not_implemented"),
+        "the 501 must be the adapter's own NotImplemented, not an invented failure"
+    );
+
+    // The charge: committed before the call, in the initial state, carrying
+    // the reference it would have submitted under.
+    let (charge_id, charge_state, provider_code, reference): (String, String, String, uuid::Uuid) =
+        sqlx::query_as(
+            "SELECT id, state::text, provider_code, provider_reference_id \
+         FROM charges WHERE payment_intent_id = $1",
+        )
+        .bind(&intent.id)
+        .fetch_one(&harness.pool)
+        .await
+        .context("the charge row a confirm commits before submitting")?;
+    assert_eq!(
+        charge_state, "submitting",
+        "the charge stays in the state it was committed in; nothing was submitted"
+    );
+    assert_eq!(provider_code, PUSH_RAIL);
+
+    // The attempt: recorded before the call, still with no response.
+    let (attempt_status, error_kind, responded_at, attempt_reference): (
+        Option<i32>,
+        Option<String>,
+        Option<time::OffsetDateTime>,
+        uuid::Uuid,
+    ) = sqlx::query_as(
+        "SELECT status_code, error_kind, responded_at, provider_reference_id \
+         FROM provider_requests WHERE charge_id = $1",
+    )
+    .bind(&charge_id)
+    .fetch_one(&harness.pool)
+    .await
+    .context("the provider_requests row a confirm inserts before submitting")?;
+    assert_eq!(
+        attempt_status, None,
+        "no HTTP status: nothing was sent, so status_code stays NULL"
+    );
+    assert_eq!(
+        responded_at, None,
+        "the (status_code IS NULL) = (responded_at IS NULL) CHECK, observed"
+    );
+    assert_eq!(
+        error_kind.as_deref(),
+        Some("not_implemented"),
+        "the attempt records why it ended, using the error's own classification code"
+    );
+    assert_eq!(
+        attempt_reference, reference,
+        "the attempt is recorded against the same reference the charge carries"
+    );
+
+    // And the intent itself did not move: nothing was submitted, so nothing
+    // about the payer's world changed.
+    let after = client
+        .payment_intents()
+        .retrieve(&intent.id)
+        .await
+        .context("re-reading the intent after the failed confirm")?;
+    assert_eq!(after.status, IntentStatus::RequiresPaymentMethod);
+    assert_eq!(after.next_action, None);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------------------ test 6
+
+/// `cancel` is a compare-and-swap on the status, so it is legal exactly once
+/// and only from `requires_payment_method`.
+#[tokio::test]
+async fn cancel_is_legal_only_from_requires_payment_method() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let client = harness.a();
+
+    let intent = client
+        .payment_intents()
+        .create(create_params(), RequestOptions::new())
+        .await
+        .context("creating the intent to cancel")?;
+
+    let canceled = client
+        .payment_intents()
+        .cancel(&intent.id, RequestOptions::new())
+        .await
+        .context("cancelling a fresh intent")?;
+    assert_eq!(canceled.status, IntentStatus::Canceled);
+    assert_eq!(canceled.id, intent.id);
+
+    // A second cancel: the object exists, its status forbids the move.
+    let error = client
+        .payment_intents()
+        .cancel(&intent.id, RequestOptions::new())
+        .await
+        .expect_err("a canceled intent cannot be canceled again");
+    let (status, kind, _code, _param) = api_error(error);
+    assert_eq!(status, 409, "409, not 404: the object is there");
+    assert_eq!(kind, "invalid_request_error");
+
+    // And a canceled intent cannot then be confirmed.
+    let error = client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            ConfirmPaymentIntentParams::mtn_momo("237670000000"),
+            RequestOptions::new(),
+        )
+        .await
+        .expect_err("a canceled intent cannot be confirmed");
+    assert_eq!(api_error(error).0, 409);
+    let charges = count(
+        &harness.pool,
+        "SELECT count(*) FROM charges WHERE payment_intent_id = $1",
+        &intent.id,
+    )
+    .await?;
+    assert_eq!(
+        charges, 0,
+        "the refused confirm must not have inserted a charge"
+    );
+
+    // Cancelling something that never existed is a 404, not a 409.
+    let error = client
+        .payment_intents()
+        .cancel("pi_00000000000000000000000x", RequestOptions::new())
+        .await
+        .expect_err("no such intent");
+    assert_eq!(api_error(error).0, 404);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------------------ test 7
+
+/// Cursor paging, forward and back, over 25 rows at `limit: 10`.
+///
+/// The backward walk is the half worth having: `ending_before` queries
+/// ascending and reverses in Rust (Step 2's D8), so a page read backwards has
+/// to come back *identical* to the page read forwards — same ids, same order,
+/// newest first. Asserting only `has_more` would not notice a reversed page.
+#[tokio::test]
+async fn list_pages_forward_and_backward_with_cursors() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let client = harness.a();
+
+    // Created one at a time, in order, so `seq` is the creation order and the
+    // expected page contents are known.
+    let mut created = Vec::new();
+    for index in 0..25 {
+        let mut params = create_params();
+        params.description = Some(format!("intent {index}"));
+        created.push(
+            client
+                .payment_intents()
+                .create(params, RequestOptions::new())
+                .await
+                .with_context(|| format!("creating intent {index}"))?
+                .id,
+        );
+    }
+    // Newest first is the order the API answers in.
+    let newest_first: Vec<String> = created.iter().rev().cloned().collect();
+
+    let page = |params: ListPaymentIntentsParams| {
+        let client = client.clone();
+        async move { client.payment_intents().list(params).await }
+    };
+
+    let first = page(ListPaymentIntentsParams {
+        limit: Some(10),
+        ..Default::default()
+    })
+    .await
+    .context("the first page")?;
+    assert_eq!(first.object, "list");
+    assert_eq!(first.url, "/v1/payment_intents");
+    assert!(first.has_more, "25 rows, 10 per page");
+    let first_ids: Vec<String> = first.data.iter().map(|i| i.id.clone()).collect();
+    assert_eq!(
+        first_ids,
+        newest_first.get(0..10).expect("25 ids were created")
+    );
+
+    let second = page(ListPaymentIntentsParams {
+        limit: Some(10),
+        starting_after: first_ids.last().cloned(),
+        ..Default::default()
+    })
+    .await
+    .context("the second page")?;
+    let second_ids: Vec<String> = second.data.iter().map(|i| i.id.clone()).collect();
+    assert_eq!(
+        second_ids,
+        newest_first.get(10..20).expect("25 ids were created")
+    );
+    assert!(second.has_more);
+
+    let third = page(ListPaymentIntentsParams {
+        limit: Some(10),
+        starting_after: second_ids.last().cloned(),
+        ..Default::default()
+    })
+    .await
+    .context("the third page")?;
+    let third_ids: Vec<String> = third.data.iter().map(|i| i.id.clone()).collect();
+    assert_eq!(
+        third_ids,
+        newest_first.get(20..25).expect("25 ids were created")
+    );
+    assert!(
+        !third.has_more,
+        "25 rows exactly, so the third page is last"
+    );
+
+    // Backwards from the third page's first id: the second page again,
+    // identical and in the same order.
+    let back = page(ListPaymentIntentsParams {
+        limit: Some(10),
+        ending_before: third_ids.first().cloned(),
+        ..Default::default()
+    })
+    .await
+    .context("paging backwards")?;
+    let back_ids: Vec<String> = back.data.iter().map(|i| i.id.clone()).collect();
+    assert_eq!(
+        back_ids, second_ids,
+        "ending_before must return the previous page, newest first"
+    );
+
+    // And backwards past the beginning is a short page, not an error.
+    let start = page(ListPaymentIntentsParams {
+        limit: Some(10),
+        ending_before: newest_first.get(3).cloned(),
+        ..Default::default()
+    })
+    .await
+    .context("paging backwards past the start")?;
+    let start_ids: Vec<String> = start.data.iter().map(|i| i.id.clone()).collect();
+    assert_eq!(
+        start_ids,
+        newest_first.get(0..3).expect("25 ids were created")
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------------------ test 8
+
+/// Merchant B cannot read merchant A's intent — and the refusal is **byte for
+/// byte** the answer for an id that never existed.
+///
+/// Byte-identical is the whole assertion. A 404 whose body differed (a
+/// different message, a different `param`, anything) would turn this API into
+/// an oracle for "does this id exist under some other tenant", which is the
+/// reason `ApiError::NotFound` is what a foreign id answers rather than
+/// `Forbidden`. Compared as raw bytes, over raw HTTP, because the SDK decodes
+/// the envelope into a struct and a struct comparison would not notice a
+/// difference in a field it does not model.
+#[tokio::test]
+async fn merchant_b_cannot_read_merchant_as_intent() -> anyhow::Result<()> {
+    let harness = harness().await?;
+
+    let intent = harness
+        .a()
+        .payment_intents()
+        .create(create_params(), RequestOptions::new())
+        .await
+        .context("merchant A creates an intent")?;
+
+    let bearer_b = harness.bearer(CLIENT_B);
+    let http = raw_client();
+
+    let foreign = http
+        .get(harness.url(&format!("/v1/payment_intents/{}", intent.id)))
+        .bearer_auth(&bearer_b)
+        .send()
+        .await
+        .context("merchant B asks for merchant A's intent")?;
+    let foreign_status = foreign.status().as_u16();
+    let foreign_body = foreign.bytes().await.context("the body is readable")?;
+
+    // An id of exactly the same shape that no merchant has ever had.
+    let missing_id = "pi_00000000000000000000000x";
+    let missing = http
+        .get(harness.url(&format!("/v1/payment_intents/{missing_id}")))
+        .bearer_auth(&bearer_b)
+        .send()
+        .await
+        .context("merchant B asks for an id that never existed")?;
+    let missing_status = missing.status().as_u16();
+    let missing_body = missing.bytes().await.context("the body is readable")?;
+
+    assert_eq!(foreign_status, 404);
+    assert_eq!(missing_status, 404);
+
+    // The bodies differ only where the *caller's own id* is echoed, which is
+    // the id they sent — so compare with each request's own id substituted
+    // out. Anything else differing would be a distinguisher.
+    let foreign_text = String::from_utf8_lossy(&foreign_body).replace(&intent.id, "<id>");
+    let missing_text = String::from_utf8_lossy(&missing_body).replace(missing_id, "<id>");
+    assert_eq!(
+        foreign_text, missing_text,
+        "another merchant's intent and an id that never existed must be indistinguishable"
+    );
+
+    // And merchant B's own list does not contain it either.
+    let listed = harness
+        .b()
+        .payment_intents()
+        .list(ListPaymentIntentsParams::default())
+        .await
+        .context("merchant B lists its own intents")?;
+    assert!(
+        listed.data.is_empty(),
+        "merchant B has created nothing, so its list is empty: {:?}",
+        listed.data
+    );
+
+    // Nor can B confirm or cancel it.
+    for path in ["confirm", "cancel"] {
+        let response = http
+            .post(harness.url(&format!("/v1/payment_intents/{}/{path}", intent.id)))
+            .bearer_auth(&bearer_b)
+            .header("Idempotency-Key", format!("b-tries-{path}"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("payment_method_data[type]=mtn_momo&payment_method_data[mtn_momo][msisdn]=237670000000")
+            .send()
+            .await
+            .context("merchant B tries to act on merchant A's intent")?;
+        assert_eq!(
+            response.status().as_u16(),
+            404,
+            "a write to a foreign id is the same 404 as a read"
+        );
+    }
+
+    // A's intent is untouched.
+    let still_there = harness
+        .a()
+        .payment_intents()
+        .retrieve(&intent.id)
+        .await
+        .context("merchant A can still read its own intent")?;
+    assert_eq!(still_there.status, IntentStatus::RequiresPaymentMethod);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------------------ test 9
+
+/// Step 2's D3, asserted over the router's *own* route table: every path
+/// `vpay_api::V1_ROUTES` registers, on every method it registers, answers
+/// `401` with no bearer token.
+///
+/// The table is not a copy — `vpay_api::v1::routes` folds the same constant
+/// into the `Router`, so a route cannot exist without appearing here, and
+/// this test cannot fall behind the surface it is checking. Removing the
+/// `require_merchant_token` layer from the `/v1` nest fails this test on
+/// every entry.
+///
+/// Path parameters are filled with a syntactically valid id: a `401` decided
+/// before routing would pass either way, but a `{id}` left literal would make
+/// a *routing* failure look like a boundary success.
+#[tokio::test]
+async fn every_registered_v1_path_answers_401_without_a_token() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let http = raw_client();
+
+    assert!(
+        !vpay_api::V1_ROUTES.is_empty(),
+        "an empty route table would make this test vacuous"
+    );
+
+    let mut checked = 0_usize;
+    for route in vpay_api::V1_ROUTES {
+        let path = route.path.replace("{id}", "pi_00000000000000000000000x");
+        for method in route.methods {
+            let url = harness.url(&format!("/v1{path}"));
+            let request = match *method {
+                "GET" => http.get(&url),
+                "POST" => http
+                    .post(&url)
+                    .header("Idempotency-Key", "unauthenticated")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(""),
+                other => panic!("this test does not know how to send {other}"),
+            };
+            let response = request
+                .send()
+                .await
+                .with_context(|| format!("{method} {url}"))?;
+            assert_eq!(
+                response.status().as_u16(),
+                401,
+                "{method} /v1{path} must be behind the merchant authentication boundary"
+            );
+            let body: Value = response.json().await.context("the 401 body is JSON")?;
+            assert_eq!(
+                body.pointer("/error/type").and_then(Value::as_str),
+                Some("authentication_error"),
+                "{method} /v1{path}: got {body:#}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 5,
+        "the four /v1 routes answer five method/path pairs; only {checked} were checked"
+    );
+
+    // The other side: an unrouted `/v1` path is *also* behind the boundary,
+    // so a caller with no token cannot learn which resources exist.
+    for path in ["/v1/balance", "/v1/events", "/v1/refunds"] {
+        let response = http
+            .get(harness.url(path))
+            .send()
+            .await
+            .context("an unrouted /v1 path")?;
+        assert_eq!(
+            response.status().as_u16(),
+            401,
+            "{path} is not implemented, and an anonymous caller must not learn that"
+        );
+    }
+
+    // And with a token, an unrouted path is the honest 404 — the pair of
+    // answers that shows the boundary is in front of the fallback too.
+    let bearer = harness.bearer(CLIENT_A);
+    let response = http
+        .get(harness.url("/v1/balance"))
+        .bearer_auth(&bearer)
+        .send()
+        .await
+        .context("an authenticated request for an unimplemented resource")?;
+    assert_eq!(response.status().as_u16(), 404);
+    let body: Value = response.json().await.context("the 404 body is JSON")?;
+    assert_eq!(
+        body.pointer("/error/code").and_then(Value::as_str),
+        Some("unknown_route"),
+        "got {body:#}"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 10
+
+/// D7: an `Idempotency-Key` is required on every `POST` under `/v1`, and its
+/// absence is a `400` naming `idempotency_key`.
+///
+/// Raw HTTP, because the SDK always sends one — which is the correct SDK
+/// behaviour and exactly why it cannot express this request.
+#[tokio::test]
+async fn a_post_without_an_idempotency_key_is_the_documented_400() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let http = raw_client();
+    let bearer = harness.bearer(CLIENT_A);
+
+    let response = http
+        .post(harness.url("/v1/payment_intents"))
+        .bearer_auth(&bearer)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("amount=5000&currency=xaf&payment_method_types[0]=mtn_momo")
+        .send()
+        .await
+        .context("a POST with no Idempotency-Key")?;
+
+    assert_eq!(response.status().as_u16(), 400);
+    let body: Value = response.json().await.context("the 400 body is JSON")?;
+    assert_eq!(
+        body.pointer("/error/type").and_then(Value::as_str),
+        Some("invalid_request_error"),
+        "got {body:#}"
+    );
+    assert_eq!(
+        body.pointer("/error/param").and_then(Value::as_str),
+        Some("idempotency_key"),
+        "the envelope must name the header the caller has to add: {body:#}"
+    );
+
+    // Nothing was created.
+    let rows = count(
+        &harness.pool,
+        "SELECT count(*) FROM payment_intents WHERE merchant_id = $1",
+        MERCHANT_A,
+    )
+    .await?;
+    assert_eq!(rows, 0);
+
+    // The same request *with* a key succeeds, so the 400 above is about the
+    // header and not about the body.
+    let response = http
+        .post(harness.url("/v1/payment_intents"))
+        .bearer_auth(&bearer)
+        .header("Idempotency-Key", "with-a-key")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("amount=5000&currency=xaf&payment_method_types[0]=mtn_momo")
+        .send()
+        .await
+        .context("the same POST with a key")?;
+    assert_eq!(response.status().as_u16(), 200);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 11
+
+/// F1: an intent whose confirm reached the rail cannot be canceled.
+///
+/// The dangerous version of this test passes today's code before the fix:
+/// `confirm` commits its charge and then answers `501`, leaving the intent
+/// at `requires_payment_method` — so a status-only compare-and-swap cancels
+/// it happily, and vpay tells a merchant the payment was withdrawn while the
+/// rail may hold the reference it was given. Never say that.
+///
+/// Asserts all three halves, because the `409` alone would pass a "fix" that
+/// simply refused every cancel: the intent must be *unchanged*, and the
+/// charge must still be there.
+#[tokio::test]
+async fn a_confirmed_intent_cannot_be_canceled() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let client = harness.a();
+
+    let intent = client
+        .payment_intents()
+        .create(create_params(), RequestOptions::new())
+        .await
+        .context("creating the intent to confirm")?;
+
+    let confirmed = client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            ConfirmPaymentIntentParams::mtn_momo("237670000000"),
+            RequestOptions::new(),
+        )
+        .await
+        .expect_err("no rail implements submit");
+    assert_eq!(
+        api_error(confirmed).0,
+        501,
+        "the confirm must have reached the rail — this test is about what it left behind"
+    );
+
+    let error = client
+        .payment_intents()
+        .cancel(&intent.id, RequestOptions::new())
+        .await
+        .expect_err("an intent with a live charge must not be cancellable");
+    let (status, kind, _code, _param) = api_error(error);
+    assert_eq!(
+        status, 409,
+        "409, not 200: a payment vpay cannot prove was never submitted must not be reported \
+         as withdrawn"
+    );
+    assert_eq!(kind, "invalid_request_error");
+
+    // The intent did not move.
+    let after = client
+        .payment_intents()
+        .retrieve(&intent.id)
+        .await
+        .context("re-reading the intent after the refused cancel")?;
+    assert_eq!(
+        after.status,
+        IntentStatus::RequiresPaymentMethod,
+        "the refused cancel must not have changed the status"
+    );
+
+    // And the charge the rail was given a reference for is still there.
+    let charges = count(
+        &harness.pool,
+        "SELECT count(*) FROM charges WHERE payment_intent_id = $1",
+        &intent.id,
+    )
+    .await?;
+    assert_eq!(charges, 1, "the charge is what makes the cancel unsafe");
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 12
+
+/// F2: a `5xx` hands the `Idempotency-Key` back, so the merchant's retry
+/// re-executes instead of being told the first attempt is still running.
+///
+/// Before the fix, the `501` left the key `in_flight` and nothing in the
+/// system ever moved that row again: every retry under it was answered "a
+/// request with this Idempotency-Key is still in progress" for the life of
+/// the deployment, and since *every* confirm ends in that `501` today, every
+/// confirm burned a key permanently.
+///
+/// **What the retry answers is `409`, not a second `501`, and that is the
+/// correct outcome** — the first confirm committed a charge before reaching
+/// the rail, so a re-executed retry meets "one charge per intent, forever"
+/// and says so. The assertion that matters is therefore *which* 409: the
+/// re-executed one names the charge, while the bug's answer names the
+/// in-flight key. They are the same status and the same `code`, so the
+/// message is what tells them apart.
+#[tokio::test]
+async fn a_5xx_releases_its_idempotency_key_so_the_retry_re_executes() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let client = harness.a();
+
+    let intent = client
+        .payment_intents()
+        .create(create_params(), RequestOptions::new())
+        .await
+        .context("creating the intent to confirm")?;
+
+    let opts = RequestOptions::new().with_idempotency_key("confirm-once");
+    let first = client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            ConfirmPaymentIntentParams::mtn_momo("237670000000"),
+            opts.clone(),
+        )
+        .await
+        .expect_err("mtn_momo::submit is not implemented");
+    assert_eq!(api_error(first).0, 501);
+
+    // The row is gone: the key is claimable again by anyone.
+    let held = count(
+        &harness.pool,
+        "SELECT count(*) FROM idempotency_keys WHERE merchant_id = $1 \
+         AND idempotency_key = 'confirm-once'",
+        MERCHANT_A,
+    )
+    .await?;
+    assert_eq!(
+        held, 0,
+        "a 5xx is not stored, so the key must be released rather than left claimed"
+    );
+
+    let second = client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            ConfirmPaymentIntentParams::mtn_momo("237670000000"),
+            opts,
+        )
+        .await
+        .expect_err("the intent already has a charge");
+    let message = match second {
+        vpay_sdk::Error::Api {
+            status,
+            ref message,
+            ..
+        } => {
+            assert_eq!(status, 409);
+            message.clone()
+        }
+        other => panic!("expected an API error envelope, got {other:?}"),
+    };
+    assert!(
+        message.contains("already has a charge"),
+        "the retry must have re-executed and met the one-charge rule; instead it was answered \
+         {message:?}"
+    );
+    assert!(
+        !message.contains("in progress"),
+        "the key was left in flight: {message:?}"
+    );
+
+    // And re-executing did not produce a second charge.
+    let charges = count(
+        &harness.pool,
+        "SELECT count(*) FROM charges WHERE payment_intent_id = $1",
+        &intent.id,
+    )
+    .await?;
+    assert_eq!(
+        charges, 1,
+        "releasing the key is safe precisely because the unique index still holds"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 13
+
+/// F3: `/v1` checks the token's `scope`, and a client registered for nothing
+/// is refused while the ordinary client is not.
+///
+/// Both halves are needed. The `403` alone would pass a router that refused
+/// everything; the `200` alone would pass one that checked nothing. And
+/// merchant C is *registered* — it resolves to a tenant — so this cannot be
+/// satisfied by the unregistered-client `403` that was already there.
+///
+/// The token itself is obtained through the OP by the real SDK: a client
+/// registered for no scopes still authenticates, which is the point. What it
+/// cannot do is act.
+#[tokio::test]
+async fn a_client_registered_for_no_scopes_is_forbidden_while_a_scoped_one_is_not()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+
+    let error = harness
+        .c()
+        .payment_intents()
+        .create(create_params(), RequestOptions::new())
+        .await
+        .expect_err("a client registered for no scopes may not create a payment intent");
+    let (status, kind, code, _param) = api_error(error);
+    assert_eq!(
+        status, 403,
+        "the credential is genuine; what is missing is a scope"
+    );
+    assert_eq!(kind, "invalid_request_error");
+    assert_eq!(code.as_deref(), Some("forbidden"));
+
+    // Reads are refused too: no scope is no scope.
+    let error = harness
+        .c()
+        .payment_intents()
+        .list(ListPaymentIntentsParams::default())
+        .await
+        .expect_err("nor may it read");
+    assert_eq!(api_error(error).0, 403);
+
+    // The ordinary client, registered for `payments:write`, is unaffected —
+    // and its token carries that scope without ever asking for one.
+    let created = harness
+        .a()
+        .payment_intents()
+        .create(create_params(), RequestOptions::new())
+        .await
+        .context("a registered, scoped client must still get through")?;
+    assert_eq!(created.status, IntentStatus::RequiresPaymentMethod);
+
+    // A read scope authorises a GET and not a POST. Hand-minted because no
+    // registration here holds `payments:read` — the rule under test is the
+    // middleware's, not the registry's.
+    let http = raw_client();
+    let read_only = harness.bearer_with_scope(CLIENT_A, Some(vpay_api::SCOPE_PAYMENTS_READ));
+    let response = http
+        .get(harness.url("/v1/payment_intents"))
+        .bearer_auth(&read_only)
+        .send()
+        .await
+        .context("a read-scoped token listing intents")?;
+    assert_eq!(response.status().as_u16(), 200);
+
+    let response = http
+        .post(harness.url("/v1/payment_intents"))
+        .bearer_auth(&read_only)
+        .header("Idempotency-Key", "read-only-tries-to-write")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("amount=5000&currency=xaf&payment_method_types[0]=mtn_momo")
+        .send()
+        .await
+        .context("a read-scoped token creating an intent")?;
+    assert_eq!(
+        response.status().as_u16(),
+        403,
+        "a read-only credential must not be able to take a payment"
+    );
+
+    // A token with no scope claim at all is refused, not admitted by
+    // default — the shape every token had before the OP learned to apply a
+    // default scope.
+    let unscoped = harness.bearer_with_scope(CLIENT_A, None);
+    let response = http
+        .get(harness.url("/v1/payment_intents"))
+        .bearer_auth(&unscoped)
+        .send()
+        .await
+        .context("an unscoped token")?;
+    assert_eq!(response.status().as_u16(), 403);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 14
+
+/// F4: the two cursor rules `list_page`'s documentation claims are enforced
+/// at the boundary, enforced at the boundary.
+///
+/// Both were silent failures rather than errors: two cursors at once applied
+/// *both* predicates and returned a page that is the intersection — a
+/// perfectly plausible-looking answer to a question nobody asked — and a
+/// mistyped cursor resolves to `NULL` inside the query, which reads as "the
+/// end of the list". A merchant paging with a typo saw an empty list and had
+/// nothing to fix.
+#[tokio::test]
+async fn a_list_refuses_two_cursors_and_a_malformed_one() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let client = harness.a();
+
+    let first = client
+        .payment_intents()
+        .create(create_params(), RequestOptions::new())
+        .await
+        .context("an intent to cursor from")?;
+    let second = client
+        .payment_intents()
+        .create(create_params(), RequestOptions::new())
+        .await
+        .context("a second intent")?;
+
+    let error = client
+        .payment_intents()
+        .list(ListPaymentIntentsParams {
+            limit: Some(10),
+            starting_after: Some(second.id.clone()),
+            ending_before: Some(first.id.clone()),
+        })
+        .await
+        .expect_err("two cursors name opposite directions and must be refused");
+    let (status, kind, _code, param) = api_error(error);
+    assert_eq!(status, 400);
+    assert_eq!(kind, "invalid_request_error");
+    assert_eq!(param.as_deref(), Some("starting_after"));
+
+    for (starting_after, ending_before, expected_param) in [
+        (Some("pi_not-an-id".to_owned()), None, "starting_after"),
+        (
+            None,
+            Some(format!("ch_{}", "0".repeat(24))),
+            "ending_before",
+        ),
+        // The right shape for a charge id, and a real one would still be
+        // refused: a cursor names an intent.
+        (Some("pi_".to_owned()), None, "starting_after"),
+    ] {
+        let error = client
+            .payment_intents()
+            .list(ListPaymentIntentsParams {
+                limit: Some(10),
+                starting_after,
+                ending_before,
+            })
+            .await
+            .expect_err("a malformed cursor must be named, not answered with an empty page");
+        let (status, _kind, _code, param) = api_error(error);
+        assert_eq!(status, 400);
+        assert_eq!(param.as_deref(), Some(expected_param));
+    }
+
+    // One cursor, well formed, still works — the refusals above are about
+    // the two rules and not about cursors.
+    let page = client
+        .payment_intents()
+        .list(ListPaymentIntentsParams {
+            limit: Some(10),
+            starting_after: Some(second.id.clone()),
+            ..Default::default()
+        })
+        .await
+        .context("one well-formed cursor")?;
+    assert_eq!(
+        page.data.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+        vec![first.id],
+    );
+
+    // And a well-formed cursor that names nothing is still an empty page,
+    // not a 400: telling those apart would be an existence oracle.
+    let page = client
+        .payment_intents()
+        .list(ListPaymentIntentsParams {
+            limit: Some(10),
+            starting_after: Some("pi_00000000000000000000000x".to_owned()),
+            ..Default::default()
+        })
+        .await
+        .context("a well-formed cursor for an id that never existed")?;
+    assert!(page.data.is_empty());
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 15
+
+/// F5: a replay answers what the original answered, even when the request
+/// would no longer be valid.
+///
+/// The configuration a create is validated against is not fixed: an operator
+/// can disable a rail, or drop a currency, between a merchant's request and
+/// their retry. Validating before claiming the key made the retry a `400`
+/// for an intent that already existed — the merchant's own bookkeeping says
+/// the payment intent was never created, while vpay holds one.
+///
+/// The second server is the honest way to stage that: same database, same
+/// merchants, same signing key, `mtn_momo` disabled — which is what
+/// `vpay-server` comes up as after an operator edits `application.yml` and
+/// redeploys.
+#[tokio::test]
+async fn a_replay_survives_the_rail_being_disabled() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let opts = RequestOptions::new().with_idempotency_key("order-9001-create");
+
+    let created = harness
+        .a()
+        .payment_intents()
+        .create(create_params(), opts.clone())
+        .await
+        .context("the original create, while the rail was enabled")?;
+
+    // The redeploy: a second server over the same database, with the rail
+    // the intent was created for switched off.
+    let (pem_a, jwks_a) = generate_key();
+    let (_pem_b, jwks_b) = generate_key();
+    let (_pem_c, jwks_c) = generate_key();
+    let (server_pem, _server_jwks) = generate_key();
+    let served = serve(&harness.pool, &server_pem, |base_url| {
+        config_with(base_url, jwks_a, jwks_b, jwks_c, false)
+    })
+    .await?;
+    let after_change = vpay_sdk::Client::builder(&served.base_url)
+        .credentials(
+            vpay_sdk::Credentials::rsa_pem(CLIENT_A, &pem_a).expect("the generated PEM parses"),
+        )
+        .build()
+        .expect("the SDK client builds");
+
+    // The rail really is gone: a *new* create naming it is refused.
+    let error = after_change
+        .payment_intents()
+        .create(create_params(), RequestOptions::new())
+        .await
+        .expect_err("a disabled rail may not be named on a new intent");
+    let (status, _kind, _code, param) = api_error(error);
+    assert_eq!(status, 400);
+    assert_eq!(param.as_deref(), Some("payment_method_types"));
+
+    // The retry of the original request, under its own key, on the changed
+    // deployment: the stored answer, unchanged.
+    let replayed = after_change
+        .payment_intents()
+        .create(create_params(), opts)
+        .await
+        .context("the replay must answer what the original answered")?;
+    assert_eq!(
+        replayed, created,
+        "a replay is the stored response; what the deployment would answer today is irrelevant"
+    );
+
+    // And no second intent was created by any of it.
+    let rows = count(
+        &harness.pool,
+        "SELECT count(*) FROM payment_intents WHERE merchant_id = $1",
+        MERCHANT_A,
+    )
+    .await?;
+    assert_eq!(rows, 1);
+
+    served.server.abort();
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 16
+
+/// A `POST` under a key whose first request has not finished is answered with
+/// its **own** code — `idempotency_key_in_flight` — and not the
+/// `invalid_state` a lifecycle conflict carries.
+///
+/// The distinction is what a merchant's client branches on: `invalid_state`
+/// means "your object moved on, look at it", while this means "your own
+/// earlier call is still running, wait". Until this had its own variant both
+/// rendered as `409 invalid_request_error / invalid_state` and differed only
+/// in an English sentence.
+///
+/// **How the in-flight state is reached, and why not by racing.** The window
+/// is however long the first `POST` takes, so two concurrent requests would
+/// usually observe a *replay* and only occasionally this — a flaky test
+/// asserting the wrong thing most of the time. Instead the first request is
+/// made for real and its now-`complete` row is put back into `in_flight`,
+/// which is the state that same row was in while the request was running.
+/// Nothing is stubbed: the row, its `request_hash` and the retry that meets
+/// it are all the server's own. Rebuilding the row from the test side
+/// instead would mean recomputing the hash, and therefore guessing the path
+/// `axum`'s `nest` leaves on the URI — guess wrong and the claim is a
+/// `Mismatch`, i.e. the *neighbouring* error this test exists to tell apart.
+#[tokio::test]
+async fn a_key_whose_first_request_is_still_running_is_answered_with_its_own_code()
+-> anyhow::Result<()> {
+    const PATH: &str = "/v1/payment_intents";
+    const BODY: &str = "amount=5000&currency=xaf&payment_method_types[0]=mtn_momo";
+    const KEY: &str = "first-attempt-still-running";
+
+    let harness = harness().await?;
+    let http = raw_client();
+    let bearer = harness.bearer(CLIENT_A);
+
+    let created = http
+        .post(harness.url(PATH))
+        .bearer_auth(&bearer)
+        .header("Idempotency-Key", KEY)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(BODY)
+        .send()
+        .await
+        .context("the first POST under this key")?;
+    assert_eq!(created.status().as_u16(), 200);
+
+    // Back to the state that row was in while the request above was still
+    // executing: claimed, with nothing stored to replay.
+    let reopened = sqlx::query(
+        "UPDATE idempotency_keys SET state = 'in_flight', response_status = NULL, \
+         response_body = NULL, completed_at = NULL \
+         WHERE merchant_id = $1 AND idempotency_key = $2",
+    )
+    .bind(MERCHANT_A)
+    .bind(KEY)
+    .execute(&harness.pool)
+    .await
+    .context("re-opening the stored claim")?;
+    assert_eq!(
+        reopened.rows_affected(),
+        1,
+        "the first request must have left exactly one claimed row"
+    );
+
+    let response = http
+        .post(harness.url(PATH))
+        .bearer_auth(&bearer)
+        .header("Idempotency-Key", KEY)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(BODY)
+        .send()
+        .await
+        .context("a POST under a key that is still in flight")?;
+
+    let status = response.status().as_u16();
+    let body: Value = response.json().await.context("the body is JSON")?;
+    assert_eq!(
+        status,
+        // The policy row for `Category::Idempotency`, asked rather than
+        // hard-coded: this test is about the `code`, and pinning the number
+        // here as well would make it fail for the unrelated reason of
+        // someone deliberately moving that row (see
+        // `ApiError::IdempotencyKeyInFlight` on Stripe's 409).
+        vpay_core::Category::Idempotency.http_status(),
+        "got {body:#}"
+    );
+    assert_eq!(
+        body.pointer("/error/type").and_then(Value::as_str),
+        Some("idempotency_error"),
+        "an in-flight key is an idempotency problem, not a state problem: {body:#}"
+    );
+    assert_eq!(
+        body.pointer("/error/code").and_then(Value::as_str),
+        Some("idempotency_key_in_flight"),
+        "this is the assertion that fails if the answer goes back to a Conflict: {body:#}"
+    );
+    assert_eq!(
+        body.pointer("/error/message").and_then(Value::as_str),
+        Some("A request with this Idempotency-Key is still in progress; retry shortly."),
+    );
+    assert!(
+        !serde_json::to_string(&body)?.contains(KEY),
+        "the key itself must not be echoed into the body: {body:#}"
+    );
+
+    // And the refused request created nothing: the answer is "wait", not
+    // "here is a second intent".
+    let rows = count(
+        &harness.pool,
+        "SELECT count(*) FROM payment_intents WHERE merchant_id = $1",
+        MERCHANT_A,
+    )
+    .await?;
+    assert_eq!(
+        rows, 1,
+        "only the first request's intent may exist; an in-flight refusal creates nothing"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+// ----------------------------------------------------------------- test 17
+
+/// A `store` that fails **after** the work is done still hands the key back,
+/// so the merchant's retry re-executes rather than being answered "still in
+/// progress" for 24 hours.
+///
+/// `PostRequest::finish` used to `?`-return on this path with the key still
+/// claimed. That is the same stuck-`in_flight` bug test 12 pins for a `5xx`,
+/// reached through a different door: there the response *is* the failure and
+/// the release is obvious, here the response is a perfectly good `200` and
+/// only the bookkeeping write fails. Nothing else in the system ever moves
+/// such a row, so the merchant's key was dead until it expired.
+///
+/// # Why the failure is injected in Postgres
+///
+/// Every other way to make `store` fail is unreachable from a real handler:
+/// the response body is always JSON (`json_response`/`value_response`, or
+/// `ApiError::into_response`) and always far under `V1_BODY_LIMIT_BYTES`, so
+/// the two sibling paths in `finish` cannot be provoked from outside at all.
+/// What is left is the write itself, and the honest way to make a real write
+/// fail is to make the real database refuse it. The trigger below is fault
+/// injection at the infrastructure layer — the same posture `AGENTS.md` takes
+/// with WireMock for rails — not a stub inside the process under test: the
+/// server, the repository and the SQL are all the shipping ones, and the
+/// server never learns that anything is unusual.
+///
+/// The trigger fires only for the `UPDATE ... SET state = 'complete'` that
+/// `store` issues, so `claim` still inserts and `release` still deletes; if
+/// it caught those too, the test could not tell "released" from "never
+/// claimed".
+///
+/// Decisive: put the `?` back on `idempotency::store` in
+/// `PostRequest::finish` and the second assertion fails — the row is still
+/// there, `in_flight`, and the retry is answered
+/// `idempotency_key_in_flight`.
+#[tokio::test]
+async fn a_failed_store_releases_the_key_so_the_retry_re_executes() -> anyhow::Result<()> {
+    const PATH: &str = "/v1/payment_intents";
+    const BODY: &str = "amount=5000&currency=xaf&payment_method_types[0]=mtn_momo";
+    const KEY: &str = "store-fails-after-the-work";
+
+    let harness = harness().await?;
+    let http = raw_client();
+    let bearer = harness.bearer(CLIENT_A);
+
+    sqlx::raw_sql(
+        "CREATE FUNCTION refuse_completion() RETURNS trigger AS $$ \
+         BEGIN RAISE EXCEPTION 'injected: completing an idempotency key failed'; END; \
+         $$ LANGUAGE plpgsql; \
+         CREATE TRIGGER refuse_completion BEFORE UPDATE ON idempotency_keys \
+         FOR EACH ROW WHEN (NEW.state = 'complete') EXECUTE FUNCTION refuse_completion();",
+    )
+    .execute(&harness.pool)
+    .await
+    .context("installing the fault injection must succeed")?;
+
+    let response = http
+        .post(harness.url(PATH))
+        .bearer_auth(&bearer)
+        .header("Idempotency-Key", KEY)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(BODY)
+        .send()
+        .await
+        .context("a POST whose response cannot be stored")?;
+    assert_eq!(
+        response.status().as_u16(),
+        // `DbError::Query` is `Category::Storage`, so the refused write is
+        // reported as one — asked of the policy table rather than pinned as
+        // a literal, for the same reason test 16 does it. What this test is
+        // about is the row, not the number; the status is asserted only so a
+        // silent `200` (a response reported as stored when it was not)
+        // cannot pass.
+        vpay_core::Category::Storage.http_status(),
+        "a response that cannot be recorded for replay is vpay's failure, and is reported as one"
+    );
+
+    // The intent itself was created — that write happened before the one
+    // that failed — which is exactly why the key has to be handed back
+    // rather than frozen around a request the merchant was told failed.
+    let intents = count(
+        &harness.pool,
+        "SELECT count(*) FROM payment_intents WHERE merchant_id = $1",
+        MERCHANT_A,
+    )
+    .await?;
+    assert_eq!(intents, 1);
+
+    // The assertion this test exists for.
+    let held = count(
+        &harness.pool,
+        "SELECT count(*) FROM idempotency_keys WHERE merchant_id = $1 \
+         AND idempotency_key = 'store-fails-after-the-work'",
+        MERCHANT_A,
+    )
+    .await?;
+    assert_eq!(
+        held, 0,
+        "a store that failed must release the claim; leaving it in_flight answers every retry \
+         under this key `in progress` until it expires"
+    );
+
+    // And the merchant's retry re-executes rather than meeting the claim.
+    // The fault is lifted first, because a retry that also failed to store
+    // would answer 500 for a reason that says nothing about the claim.
+    sqlx::raw_sql("DROP TRIGGER refuse_completion ON idempotency_keys;")
+        .execute(&harness.pool)
+        .await
+        .context("lifting the fault injection must succeed")?;
+
+    let response = http
+        .post(harness.url(PATH))
+        .bearer_auth(&bearer)
+        .header("Idempotency-Key", KEY)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(BODY)
+        .send()
+        .await
+        .context("the retry under the released key")?;
+    let status = response.status().as_u16();
+    let body: Value = response.json().await.context("the body is JSON")?;
+    assert_eq!(
+        status, 200,
+        "the released key must be claimable again; got {body:#}"
+    );
+    assert_ne!(
+        body.pointer("/error/code").and_then(Value::as_str),
+        Some("idempotency_key_in_flight"),
+        "the key was left claimed: {body:#}"
+    );
+
+    // Re-executing is what "released" means: a second intent, and the retry
+    // is now the replayable one.
+    let intents = count(
+        &harness.pool,
+        "SELECT count(*) FROM payment_intents WHERE merchant_id = $1",
+        MERCHANT_A,
+    )
+    .await?;
+    assert_eq!(
+        intents, 2,
+        "the first attempt's intent plus the re-executed retry's — the documented cost of \
+         releasing a key whose response could not be stored"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}

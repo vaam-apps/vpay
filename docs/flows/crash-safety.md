@@ -91,4 +91,49 @@ before any `provider_requests` row; after that row and before the response;
 after the response and before the state update — and assert the recovery table
 resolves all three without double-charging.
 
-**Status: not implemented.** See [../status.md](../status.md).
+**Status: the ordering is implemented for `confirm`; the recovery is not.**
+Updated 2026-09-03 (Step 2).
+
+**What is built.** `POST /v1/payment_intents/{id}/confirm`
+(`backends/crates/vpay-api/src/v1/payment_intents.rs`) performs exactly the
+ordering this document requires, and in this order:
+
+1. mint the `provider_reference_id`;
+2. **commit** the charge row in `submitting` carrying that reference, in its
+   own transaction, before any network call
+   (`vpay_db::charges::insert_for_intent` takes a connection precisely so the
+   commit point is the caller's);
+3. insert a `provider_requests` row with `status_code IS NULL` (migration
+   `0016`);
+4. call the adapter's `submit`;
+5. record what came back on that row.
+
+**What proves it.** `confirm_reaches_the_adapter_and_renders_the_documented_501`
+(`backends/tests/integration/tests/payment_intents.rs`) asserts the rows that
+survive the refusal: a `submitting` charge with the reference, and a
+`provider_requests` row whose `error_kind` is `not_implemented`.
+`provider_requests_record_attempts_and_keep_status_and_responded_at_in_step`
+(`backends/crates/vpay-db/tests/repositories.rs`) pins the `response_is_paired`
+CHECK, so a row can never claim a status without a `responded_at`.
+`a_second_confirm_cannot_produce_a_second_charge` proves the reference is not
+regenerated — there is no second charge to regenerate it for.
+
+**Those rows are deliberately left behind.** A confirm that ends in the
+adapter's `501` leaves precisely the state a crash between steps 3 and 5
+would leave. That is the point: it is what a recovery pass has to read.
+
+**What is not built, and is the whole rest of this document:**
+
+- **No recovery pass.** Nothing reads the table above. No code resubmits, no
+  code polls, no code advances a state from a status code. The worker's job
+  loop does not exist.
+- **No retry of any kind.** The "retry with the same reference" rule is
+  written down and executed by nothing.
+- **No redirect-rail ordering.** `return_url` is validated on a redirect
+  confirm and then dropped — `charges` has no column for it — because the
+  only thing that would read it is a `next_action` a successful `submit`
+  would produce, and no adapter implements `submit`.
+- **No crash tests.** The three kill points above are not exercised by
+  anything; nothing kills a process mid-confirm.
+
+See [../status.md](../status.md).

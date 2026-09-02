@@ -117,6 +117,37 @@ pub struct MerchantClient {
     /// client's own `garde` rules can see.
     #[garde(length(min = 1))]
     pub client_id: String,
+    /// The tenant every object this client creates belongs to —
+    /// `payment_intents.merchant_id`, and the value every `/v1` query is
+    /// filtered by.
+    ///
+    /// **Separate from [`Self::client_id`] because they are different
+    /// things.** A `client_id` names a *credential*: it is what a token's
+    /// `sub` carries, it is what an operator disables through
+    /// `disabled_clients`, and it is expected to be rotated or duplicated
+    /// when a merchant re-keys. A `merchant_id` names the *tenant* whose
+    /// rows those tokens may touch, and it must outlive any one credential —
+    /// rotating a key must not orphan a merchant's payment intents. Deriving
+    /// one from the other would tie them together permanently and make that
+    /// rotation impossible without a data migration.
+    ///
+    /// Required, not defaulted to `client_id`: a default would mean a config
+    /// that forgot this field still boots and silently invents a tenancy
+    /// boundary, which is the one property `/v1` has no second line of
+    /// defence for (there is no `merchants` table and therefore no foreign
+    /// key — see `backends/migrations/0003_create-payment-intents.sql`).
+    ///
+    /// Unique across `merchant_clients`
+    /// ([`ConfigError::DuplicateMerchantId`](crate::ConfigError::DuplicateMerchantId),
+    /// checked in `Config::validate_all`): the `/v1` boundary resolves a
+    /// token's `client_id` to exactly one merchant, and two clients sharing
+    /// a tenant would be two credentials that can read each other's objects.
+    /// That may become a legitimate shape (one merchant, several keys) — it
+    /// is refused today because nothing in vpay yet models what a merchant
+    /// *is* independently of its credential, so the resemblance would be a
+    /// guess rather than a decision.
+    #[garde(length(min = 1, max = 128))]
+    pub merchant_id: String,
     /// The merchant's public JWK Set (`{"keys": [...]}`), used to verify the
     /// `private_key_jwt` assertion this client signs (RFC 7523 §2.2).
     ///
@@ -148,7 +179,22 @@ pub struct MerchantClient {
     /// discouraged.
     #[garde(skip)]
     pub grant_types: Vec<GrantType>,
-    /// Scopes this client may request.
+    /// Scopes this client may request — **and**, since it is what a token
+    /// carries when the client requests none, what it is actually authorised
+    /// to do.
+    ///
+    /// The vocabulary is `vpay_api::v1`'s `SCOPE_PAYMENTS_WRITE`
+    /// (`payments:write`) and `SCOPE_PAYMENTS_READ` (`payments:read`); those
+    /// constants are the only definition, and `/v1` refuses a request whose
+    /// token carries neither of the ones its method needs
+    /// (`vpay_api::v1::required_scopes`). Not validated here, deliberately:
+    /// this crate does not depend on `vpay-api` (see this module's docs on
+    /// why it depends on neither it nor `authkestra-op`), and a *copy* of the
+    /// vocabulary in a validator here would be a second definition able to
+    /// disagree with the one that decides requests.
+    ///
+    /// An empty list is legal and means what it says: the client can obtain
+    /// a token, and every `/v1` request it makes with that token is `403`.
     #[garde(skip)]
     #[serde(default)]
     pub scopes: Vec<String>,
@@ -176,6 +222,7 @@ impl fmt::Debug for MerchantClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MerchantClient")
             .field("client_id", &self.client_id)
+            .field("merchant_id", &self.merchant_id)
             .field("jwks", &self.jwks)
             .field("grant_types", &self.grant_types)
             .field("scopes", &self.scopes)
@@ -292,6 +339,7 @@ mod tests {
     fn merchant_client_debug_output_never_contains_a_client_secret_value() {
         let client = MerchantClient {
             client_id: "acme".to_owned(),
+            merchant_id: "acme".to_owned(),
             jwks: Some(serde_json::json!({"keys": [{"kid": "k1"}]})),
             grant_types: vec![GrantType::ClientCredentials],
             scopes: vec!["payments:write".to_owned()],

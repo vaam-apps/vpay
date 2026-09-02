@@ -78,7 +78,9 @@ behave differently*.
 
 ## Boot sequence
 
-**Steps 1–3 are implemented and wired into both binaries; step 4 is not.**
+**Steps 1–4 are implemented and wired into both binaries; the config hash
+half of step 4 is not.** *Updated 2026-09-03 (Step 2); this paragraph said
+"step 4 is not" until then.*
 `vpay_config::Config::load` implements the YAML layering, the `${}`
 resolution and the validation rules below, and both `vpay-server` and
 `vpay-worker-bin` call it before opening a database connection — a missing
@@ -89,18 +91,49 @@ that had been false since 2026-08-11.* The deployment consequence is real:
 `backends/Dockerfile` bakes `config/` into the image and sets `VPAY_CONFIG`,
 and `compose.e2e.yml` supplies every `${VAR}` the file names, because a
 process without them does not start.
-Step 4 has no implementation at all: nothing reconciles configuration into
-the database or records a config hash, even though a database layer now
-exists (`vpay-db`). Two of the validation rules below are also unimplemented
-for a structural reason — see the table. See `docs/status.md` for the
-authoritative state.
+**Step 4 now exists** (`vpay_db::config_reconcile::reconcile`, 2026-09-03):
+both binaries make `currencies` and `providers` match the deployment's own
+configuration in **one transaction**, opened by taking the
+`pg_advisory_xact_lock` `lock_keys::CONFIG_RECONCILE` so that N replicas and
+both binaries booting at once cannot interleave. Configuration is the
+authority and the tables are the mirror: a rail present in the seed is
+upserted, and a rail **absent** from it is set `enabled = false` rather than
+deleted, because a rail that has ever taken money must stay nameable
+forever. **The config hash half of step 4 is still not implemented** —
+nothing records or compares one. See `docs/status.md` for the authoritative
+state.
 
-**`vpay-server`'s actual startup order, as of 2026-09-02**, which is the
+**What the seeds are joined against.** `vpay_api::v1::boot::boot_seeds` is
+the single derivation both binaries call: it walks the YAML's `providers`
+and, for each, looks up a *linked adapter* to take `flow`,
+`supports_refunds`, `supports_partial_refunds`, `delivers_callbacks` and
+`requires_ip_allowlist` from — capabilities come from the adapter, the
+`enabled` flag from the YAML
+(`boot_seeds_joins_the_yaml_against_the_linked_adapters`,
+`a_disabled_rail_is_seeded_disabled_rather_than_omitted`). **A YAML provider
+code with no linked adapter is `ConfigError::ProviderWithoutAdapter` and
+exit `78`**, before the port is bound
+(`a_configured_rail_with_no_linked_adapter_is_a_named_config_error` as a unit
+test, and `a_provider_code_with_no_linked_adapter_is_exit_78` in
+`backends/apps/vpay-server/tests/cli.rs` as a subprocess test against a
+fixture config; `the_repositorys_own_configuration_passes_the_adapter_join`
+asserts the real `config/application.yml` satisfies it).
+
+`providers.display_name` is **derived from the code**
+(`display_name_for`: `mtn_momo` → `Mtn Momo`) rather than configured. The
+provider port has no `display_name()`, so this is a placeholder that is
+honest about being one — `a_display_name_is_derived_from_the_code_without_panicking`
+pins it, empty string included.
+
+**`vpay-server`'s actual startup order, as of 2026-09-03**, which is the
 "cheapest hard failure first" ordering this document's own steps imply:
 
 1. Install the SIGINT/SIGTERM handlers and the rustls crypto provider.
 2. Load and validate the YAML config (steps 1–3 above). Missing or invalid
    → exit `78`, before any network round trip.
+2b. Link the adapters this binary was built with and **join the YAML's rails
+   against them** (`adapters_by_code` + `boot_seeds`). A configured rail with
+   no adapter → exit `78`, still before any network round trip.
 3. **Load the RS256 signing key** from `--oauth-signing-key-file` /
    `VPAY_OAUTH_SIGNING_KEY_FILE`, and derive the issuer from
    `deployment.public_base_url` so the key stamps the same `iss` the OP
@@ -115,16 +148,23 @@ authoritative state.
    port, answer `/healthz` with a cheerful 200, and refuse every real
    request.
 4. Connect to Postgres and run migrations. Unreachable → exit `69`.
-5. Announce the key as active in `oauth_signing_keys`
+5. **Reconcile `currencies` and `providers` from configuration**
+   (`vpay_db::config_reconcile::reconcile`, one transaction, advisory-locked
+   — step 4 above). Fatal on failure. The seeds were derived back at step 2b
+   (`boot_seeds`, which is why a rail with no adapter exits `78` before
+   Postgres is even contacted). `vpay-worker-bin` does the same thing, from
+   the same function, at the same point in its own boot.
+6. Announce the key as active in `oauth_signing_keys`
    (`ensure_active_signing_key`, advisory-locked). Fatal on failure: a
    process whose key is not published mints tokens nothing can verify.
-6. Sweep expired client-assertion `jti`s once — a boot-time stopgap,
-   non-fatal, because there is no worker job loop to schedule it properly.
-7. Bind the listener, **then** build the token validator, because it needs
+7. Sweep expired client-assertion `jti`s **and expired `idempotency_keys`**
+   once — boot-time stopgaps, both non-fatal, because there is no worker job
+   loop to schedule either properly. `vpay-worker-bin` sweeps nothing.
+8. Bind the listener, **then** build the token validator, because it needs
    the port actually bound (`--bind 127.0.0.1:0` is a real configuration)
    and validates over loopback against this process's own
    `/v1/oauth/jwks.json`.
-8. Serve.
+9. Serve.
 
 **A pre-existing gap this ordering does not fix:** a missing
 `--database-url` still exits `1`, not `78`, because `main` produces a bare
@@ -148,6 +188,7 @@ gateway that boots half-configured is worse than one that does not boot.
 |---|---|
 | Every merchant's rail host appears in that rail's allowlist | The host allowlist, checked before the FK |
 | Every referenced provider exists and is enabled | A typo fails at boot, not at first payment |
+| Every merchant registration carries a unique `merchant_id` | The `/v1` tenancy boundary has no foreign key behind it |
 | Currency exponent matches the canonical table | A 100× amount bug is otherwise silent |
 | `livemode` ⇒ every host is `https://` | |
 | `livemode` ⇒ no host labelled `wiremock`/`stub`/`mock`/`localhost` | **The most valuable rule here.** It is what makes "the code cannot tell a stub from a real rail" safe to live with |
@@ -156,7 +197,39 @@ gateway that boots half-configured is worse than one that does not boot.
 
 The three `livemode` rules — `https`-only, no stub-labelled host, and
 `${}`-only secrets — are implemented and tested in `vpay-config`
-(`validate_host`, `validate_secret`). **The `partial-refunds ⇒ refunds` row is
+(`validate_host`, `validate_secret`).
+
+**The `merchant_id` row is new on 2026-09-03 and is fully enforced.**
+`MerchantClient::merchant_id` is required (no default to `client_id`: a
+config that forgot it would otherwise boot and silently invent a tenancy
+boundary) and unique across `merchant_clients`
+(`ConfigError::DuplicateMerchantId`). Proven by
+`a_merchant_client_without_a_merchant_id_does_not_load` and
+`two_merchant_clients_sharing_a_merchant_id_are_rejected` in `vpay-config`,
+with `oauth-duplicate-merchant-id.yml` as the fixture. It is separate from
+`client_id` deliberately — a credential may be rotated, a tenant may not —
+and it is what every `/v1` query filters by, because there is no `merchants`
+table and therefore no foreign key to catch a query that forgot.
+
+**`ProviderHost.enabled` is also new**: absent means enabled
+(`a_provider_with_no_enabled_line_is_enabled`), and `enabled: false` keeps
+the rail configured while `reconcile` writes `enabled = false` into
+`providers` (`an_explicitly_disabled_provider_stays_disabled`). A disabled
+rail cannot be named on a new intent or on a confirm
+(`a_disabled_rail_is_configured_but_not_offered`,
+`a_disabled_rail_cannot_be_named_on_a_new_intent`).
+
+**The "every referenced provider exists and is enabled" row, exactly.** Half
+of it is now a boot rule and half of it is not, and conflating the two would
+overstate what boots safely. What *is* enforced at boot is the join above: a
+rail named in the YAML with no linked adapter exits `78`. What is **not** a
+boot rule is the original intent of this row — a *merchant*'s reference to a
+rail — because there is still no merchant→rail routing concept in this
+config shape; an OAuth `MerchantClient` names no rails. A payment intent's
+rails are instead checked per request, against the deployment's enabled set,
+and answered as a `400` naming `payment_method_types`.
+
+**The `partial-refunds ⇒ refunds` row is
 not a `vpay-config` boot guard at all**, despite living in this table; see the
 correction below for where it actually lives.
 
@@ -190,9 +263,13 @@ standing in for the other:
   conformance suite's `every_adapter_declares_coherent_capabilities`.
 - **In the database**, on the `providers` table itself, as above.
 
-Neither has anything to do with `vpay-config` or a deployment's YAML — there
-is still no YAML-loading or reconciliation code in this repo (see the boot
-sequence section above).
+Neither has anything to do with `vpay-config` or a deployment's YAML. *That
+sentence used to end "there is still no YAML-loading or reconciliation code
+in this repo", which stopped being true for loading on 2026-09-02 and for
+reconciliation on 2026-09-03 — see the boot sequence above. The
+`partial_refunds_imply_refunds` CHECK is now reachable from `reconcile`
+itself: a seed setting `supports_partial_refunds` without `supports_refunds`
+is a `DbError::Query` that rolls the whole reconcile back.*
 
 ## Config changes and in-flight payments
 
@@ -219,9 +296,10 @@ accepted but inert on `vpay-worker-bin`.
 
 YAML loading, `${}` placeholder resolution and validation are implemented
 (`vpay_config::Config::load`) and wired into both binaries' boot as a hard
-requirement (steps 1–3 above; **53 tests in `vpay-config`** as of 2026-09-02
-— 25 in `config`, 18 in `cli`, 5 in `oauth`, 5 crate-level — plus subprocess
-tests in each binary). `--database-url` is likewise required at runtime and opens
+requirement (steps 1–3 above; **57 tests in `vpay-config`** as of 2026-09-03
+— 29 in `config`, 18 in `cli`, 5 in `oauth`, 5 crate-level; it was 53 on
+2026-09-02, and the four new ones are the `merchant_id` and `enabled` rules
+described below — plus subprocess tests in each binary). `--database-url` is likewise required at runtime and opens
 a real pool. *Updated 2026-09-02 — this section had said all of that was
 "not started".*
 
@@ -229,7 +307,7 @@ a real pool. *Updated 2026-09-02 — this section had said all of that was
 on `vpay-server`, required at runtime and checked *before* the database
 connection, so its three failure modes exit `78` and are covered by
 subprocess tests that need no Docker (named in the boot sequence above).
-Eighteen of `vpay-config`'s 53 tests are in its `cli` module.
+Eighteen of `vpay-config`'s 57 tests are in its `cli` module.
 
 **Also new 2026-09-02, and a boot rule rather than a flag:**
 `ConfigError::MerchantMissingV1Audience` refuses to start a deployment whose
@@ -241,9 +319,27 @@ is verbatim what `config/application.yml` shipped until that day, and
 real file satisfies the rule by carrying the *constant*, not a second copy
 of the spelling.
 
-**Not started:** step 4 — reconciling configuration into the database in one
-transaction and recording a config hash — and the two boot-guard rules that
-need a payment-routing `merchants` concept ("every merchant's rail host is in
-the allowlist", "every referenced provider exists and is enabled").
-`--public-base-url` remains accepted, parsed and read by nothing. See
-[../status.md](../status.md).
+**New 2026-09-03 (Step 2), and the reason this section's "Not started" list
+shrank:** boot step 4's reconciliation half is implemented
+(`vpay_db::config_reconcile::reconcile`, one advisory-locked transaction,
+called by both binaries), the YAML↔adapter join that feeds it is implemented
+(`vpay_api::v1::boot::boot_seeds`, exit `78` for a rail with no adapter), and
+`merchant_clients` gained a required, unique `merchant_id` while `providers`
+gained `enabled`. `vpay-config` now runs **57 tests** (up from 53), measured
+by `cargo nextest run -p vpay-config` on 2026-09-03. The reconcile itself is
+proven against a real Postgres by
+`reconcile_is_idempotent_and_disables_a_dropped_provider_code`,
+`reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_released` and
+`two_concurrent_reconciles_with_the_seeds_in_opposite_orders_both_succeed_and_converge`
+in `backends/crates/vpay-db/tests/repositories.rs` — 74 container-backed
+tests passed on this machine that day.
+
+**Still not started:** the **config hash** half of step 4 — nothing records
+or compares one, so nothing detects a replica booted from a different config
+file; the two boot-guard rules that need a payment-routing `merchants`
+concept ("every merchant's rail host is in the allowlist", and the
+merchant-facing half of "every referenced provider exists and is enabled" —
+see that row above for what *is* enforced); a `display_name` that is a real
+port capability rather than a derivation of the code; and any hot reload —
+a config change is still a redeploy. `--public-base-url` remains accepted,
+parsed and read by nothing. See [../status.md](../status.md).

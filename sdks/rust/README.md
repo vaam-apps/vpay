@@ -235,6 +235,26 @@ retrying an `Api` `400` is a bug, and only a caller who can tell them apart
 can get that right. Nothing is retried automatically except the single re-auth
 on a `401`.
 
+**`Error::Api` is one variant for every envelope**; the envelope's `type` is
+carried in `kind` and is *not* mapped to a variant of its own. Branch on
+`code`, which is the field the server treats as the machine-readable answer.
+The case where that matters today is idempotency, where two errors share a
+status (`400`) and a `type` (`idempotency_error`) and mean opposite things:
+
+```rust,ignore
+match error {
+    // The first request under this key has not finished. Wait and send the
+    // same call again — do not mint a new key.
+    vpay_sdk::Error::Api { ref code, .. }
+        if code.as_deref() == Some("idempotency_key_in_flight") => retry_later(),
+    // The key was already used with a *different* body. Retrying cannot
+    // help; the caller has a bug.
+    vpay_sdk::Error::Api { ref code, .. }
+        if code.as_deref() == Some("idempotency_key_in_use") => give_up(),
+    other => return Err(other),
+}
+```
+
 ## Webhook verification
 
 ```rust,no_run

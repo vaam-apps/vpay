@@ -136,6 +136,15 @@ time.workspace = true
 # `sqlx::Error` construction as before — a `[dependencies]` entry is visible
 # to them too.
 sqlx.workspace = true
+# Step 2's `confirm` path mints the `provider_reference_id` a charge row
+# carries before anything is submitted to a rail (`docs/flows/crash-safety.md`:
+# persist the reference *before* submitting), and `vpay_db::ChargeRow` names it
+# as a `Uuid`, so the handler cannot avoid the type. Moved from
+# `[dev-dependencies]` — where it was for the request-id tests, which still use
+# it, since a `[dependencies]` entry is visible to tests too. No new package
+# and no new feature in any graph: this is the same workspace pin `vpay-db`
+# and tower-http's `request-id` feature already resolve.
+uuid.workspace = true
 
 [dev-dependencies]
 # Test-only: the merchant SDK, used by `op::clients`'s conformance tests to
@@ -152,11 +161,6 @@ sqlx.workspace = true
 # "deny"`, and a path-only dependency is a wildcard requirement as far as
 # `cargo deny check bans` is concerned — it fails the supply-chain gate.
 vpay-sdk = { path = "../../../sdks/rust", version = "0.1.0" }
-# Test-only: the request-id tests parse the generated header value as a UUID
-# rather than asserting it is merely non-empty, so a `MakeRequestId` that
-# handed back a constant would fail. Already resolved in the graph via
-# tower-http's `request-id` feature; the workspace pin is reused verbatim.
-uuid.workspace = true
 # Test-only: captures `tracing` output into a buffer so the log/body split
 # above is asserted on what an operator would actually see, rather than on the
 # arguments this crate passed to a macro.

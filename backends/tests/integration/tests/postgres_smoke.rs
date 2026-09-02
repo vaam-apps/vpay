@@ -125,7 +125,7 @@ async fn insert_charge(
 /// MVP requirement #1 (docs/status.md): the schema must migrate cleanly on an
 /// empty database. This also exercises every `CREATE TYPE`/`CREATE
 /// TABLE`/`CREATE INDEX`/`CHECK` statement in `backends/migrations` at once —
-/// a syntax error anywhere in the five migration files fails this test.
+/// a syntax error anywhere in the migration files fails this test.
 #[tokio::test]
 async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
     let (_container, pool) = migrated_postgres().await?;
@@ -139,11 +139,12 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 13,
-        "all thirteen migrations under backends/migrations should be recorded as applied \
+        applied, 18,
+        "all eighteen migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
-         0013 add-authkestra-op-0-7-columns)"
+         0013 add-authkestra-op-0-7-columns, and Step 2's 0014 payment-intent API fields, \
+         0015 idempotency_keys, 0016 provider_requests, 0017 refunds, 0018 events)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -165,6 +166,14 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         "oauth_signing_keys",
         "oauth_client_assertion_jtis",
         "disabled_clients",
+        // Step 2's five. `refunds` and `events` have no reader or writer yet
+        // (`docs/status.md`) — the schema landing ahead of the code is
+        // deliberate, and listing them here is what keeps "the table exists"
+        // from being an unchecked claim.
+        "idempotency_keys",
+        "provider_requests",
+        "refunds",
+        "events",
     ] {
         sqlx::query(&format!("SELECT COUNT(*) FROM {table}"))
             .fetch_one(&pool)

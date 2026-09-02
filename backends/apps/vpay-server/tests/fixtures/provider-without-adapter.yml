@@ -1,0 +1,27 @@
+# A configuration that is *structurally* valid — `Config::validate_all`
+# accepts it, because whether a rail has code behind it is not something
+# `vpay-config` can see (ADR-0002: it links no adapter) — but which names a
+# `providers[].code` no binary in this workspace implements.
+#
+# The join that catches it lives in each binary's `main.rs`
+# (`boot_seeds`), and the failure is `ConfigError::ProviderWithoutAdapter`,
+# i.e. exit 78. See `a_provider_code_with_no_linked_adapter_is_exit_78` in
+# `tests/cli.rs`.
+#
+# `mtn_momo` is listed alongside it on purpose: the error must name the rail
+# that is missing, not simply report that the join failed.
+
+deployment:
+  name: vpay-server-cli-test
+  livemode: false
+  public_base_url: http://localhost:8080
+
+providers:
+  - code: mtn_momo
+    host:
+      url: http://wiremock-mtn:8080
+      label: mtn-sandbox-wiremock
+  - code: a_rail_that_does_not_exist
+    host:
+      url: http://wiremock-nothing:8080
+      label: no-such-rail

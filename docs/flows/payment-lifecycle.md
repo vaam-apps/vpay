@@ -76,6 +76,40 @@ noticeably from Stripe's ergonomics, and it is deliberate.
 
 ## Status
 
-Types and the flow-selection logic are implemented and tested
-(`vpay-core::state`). No transition is driven by real data yet — see
+**Updated 2026-09-03 (Step 2).** Types and the flow-selection logic are
+implemented and tested in `vpay_core::state`: `Transition`, `next_status`,
+and a transition table proven exhaustive over every (status, verb) pair
+(`next_status_answers_the_lifecycle_diagram_for_every_pair`,
+`the_transition_table_covers_every_status_and_verb`,
+`cancel_is_legal_only_from_requires_payment_method`,
+`confirm_routes_through_the_flows_own_answer`,
+`a_new_intent_starts_where_the_diagram_says`,
+`every_state_is_live_or_terminal_exclusively`).
+
+**Two transitions are now driven by real HTTP requests, and neither of them
+reaches a rail:**
+
+- **Birth.** `POST /v1/payment_intents` writes a row in
+  `requires_payment_method` — the status comes from `IntentStatus::INITIAL`,
+  never a literal (`create_then_retrieve_round_trips_through_the_sdk`,
+  `backends/tests/integration/tests/payment_intents.rs`).
+- **Cancel.** `POST /v1/payment_intents/{id}/cancel` moves
+  `requires_payment_method` → `canceled` as a compare-and-swap that also
+  refuses when a live charge exists
+  (`cancel_is_legal_only_from_requires_payment_method`,
+  `a_confirmed_intent_cannot_be_canceled`, and
+  `cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_terminal_charge`
+  in `backends/crates/vpay-db/tests/repositories.rs`).
+
+**`confirm` does not move the intent at all.** It commits a charge in
+`submitting`, records the attempt, calls the adapter, and gets
+`ProviderError::NotImplemented` — a `501`
+(`confirm_reaches_the_adapter_and_renders_the_documented_501`). The intent
+stays `requires_payment_method` on purpose: nothing was submitted, so
+claiming `processing` or `requires_action` would be the fabricated success
+`CLAUDE.md` names first. **No intent in this repository has ever reached
+`processing`, `requires_action` or `succeeded`**, and `last_payment_error`
+(columns since migration `0014`) is written by nothing. One charge per
+intent is enforced at the API level as well as by the index
+(`a_second_confirm_cannot_produce_a_second_charge`). See
 [../status.md](../status.md).

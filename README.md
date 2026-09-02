@@ -43,9 +43,11 @@ two-step flow. vpay ships its own merchant SDKs that do that handshake —
 [`docs/flows/merchant-auth.md`](docs/flows/merchant-auth.md). The Rust one
 has completed a real handshake against a running `vpay-server` — that is
 what [`examples/merchant-demo`](examples/merchant-demo/) and `just demo`
-below exist to show — and then reached the honest `404`, because **no `/v1`
-business resource exists yet**. The Node SDK is still tested only against
-stubs of the contract.
+below exist to show — and, since 2026-09-03, has created, retrieved, listed
+and cancelled real payment intents through `/v1/payment_intents`. **It has
+never taken a payment:** `confirm` reaches the rail adapter and gets
+`501 not_implemented`. The Node SDK is still tested only against stubs of the
+contract.
 
 Two rails ship in the MVP, and they have genuinely different payer journeys:
 
@@ -126,7 +128,24 @@ demo` builds it in a container.
 just demo
 ```
 
-That generates a throwaway RS256 key for the server's OAuth provider and a
+**If port 8080 is taken on your machine** — another project's compose stack, a
+local Postgres proxy, anything — pass a different one; nothing else needs
+changing:
+
+```bash
+just demo_port=18080 demo
+just demo-down                # teardown needs no port
+```
+
+That number is the *host* port only: the server still binds 8080 inside its
+container, and the dashboard still reaches it over the compose network. `just
+demo` propagates it to the three places that must agree — the published port,
+the demo profile's `deployment.public_base_url` (which the OP turns into the
+`issuer` on every token), and `VPAY_BASE_URL` for the demo binary — and
+regenerates the profile overlay if you change it. `compose.e2e.yml` and CI are
+untouched by the override; they keep 8080.
+
+`just demo` generates a throwaway RS256 key for the server's OAuth provider and a
 second one for a demo merchant (`.e2e/`, git-ignored, both discarded with the
 stack), registers the merchant's **public** JWK in a `demo` profile overlay,
 brings up Postgres + both WireMock rail stubs + `vpay-server` + `vpay-worker` +
@@ -134,21 +153,23 @@ the dashboard, waits for `/healthz`, and then runs
 [`examples/merchant-demo`](examples/merchant-demo/) — a small Rust binary built
 on the real merchant SDK ([`sdks/rust`](sdks/rust/)).
 
-What you will see, four steps, one line each:
+What you will see, five steps, one line each:
 
 1. the OP's discovery document and JWKS — its issuer and the `kid` it signs with;
 2. an access token obtained with `client_credentials` + `private_key_jwt`, shown
    as its decoded `iss`/`aud`/`sub`/`exp` claims (never the token itself);
-3. `GET /v1/payment_intents/pi_demo` **without** a token — a `401` carrying
-   vpay's error envelope, so you can see the authentication boundary is real;
-4. the same call **with** a token, through the SDK — a typed `404
-   unknown_route`, and the sentence *"payment intents are not built yet — this
-   is where the next step lands"*.
+3. a `/v1` call **without** a token — a `401` carrying vpay's error envelope,
+   so you can see the authentication boundary is real;
+4. `payment_intents().create(…)` then `.retrieve(…)` through the SDK — a real
+   `pi_…` written to a real database, printed with its status, amount and
+   `livemode`, and read back to prove the retrieve returns what the create did;
+5. `payment_intents().confirm(…)` through the SDK — a typed **`501
+   not_implemented`**, because the rail adapters are the next step.
 
-Step 4 is the point. Everything up to the bearer-token boundary works; past it
-there is nothing, and the demo exits `0` for saying so. If it ever prints a
-payment intent, something fabricated one — treat that as a defect, not a
-feature.
+Step 5 is the point. A payment intent can be created, read, listed and
+cancelled; it cannot be *paid*, because no rail exists, and the demo exits `0`
+for saying so. If it ever prints a **confirmed** payment intent, something
+fabricated one — treat that as a defect, not a feature.
 
 Then:
 
@@ -226,8 +247,12 @@ migrations, and serves `/healthz` plus the merchant OP —
 `POST /v1/oauth/token` (`client_credentials` + `private_key_jwt`),
 `GET /v1/oauth/.well-known/openid-configuration` and
 `GET /v1/oauth/jwks.json`. Every other path under `/v1` is behind a merchant
-bearer token, and past that boundary answers the honest 404: no `/v1` resource
-route exists yet. `vpay-worker-bin` stays up answering shutdown signals but its
+bearer token and a scope check. Since 2026-09-03 that boundary has four
+payment-intent paths behind it — `POST`/`GET /v1/payment_intents`,
+`GET /v1/payment_intents/{id}`, `POST …/confirm` and `POST …/cancel`, with an
+`Idempotency-Key` required on every `POST`. `confirm` calls the rail adapter
+and receives `501 not_implemented`; `/v1/refunds`, `/v1/events` and
+`/v1/balance` still answer the honest 404. `vpay-worker-bin` stays up answering shutdown signals but its
 job loop is not implemented, and it says so in a startup banner and a repeating
 heartbeat log line.
 

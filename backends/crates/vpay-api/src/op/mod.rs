@@ -58,6 +58,7 @@
 //! fetch the real copy from crates.io when an `authkestra-op` bump makes it
 //! worth re-diffing.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use authkestra_engine::token::TokenManager;
@@ -167,6 +168,7 @@ pub struct MerchantOp {
     config: OpConfig,
     store: Arc<dyn OpStore>,
     tokens: Arc<TokenManager>,
+    default_scopes: BTreeMap<String, String>,
 }
 
 /// Shows the configuration (public metadata, all of it published at
@@ -247,6 +249,7 @@ impl MerchantOp {
         .with_client_assertion_store(SqlClientAssertionStore::new(pool));
 
         Self {
+            default_scopes: default_scopes(config),
             config: OpConfig {
                 issuer: issuer_for(config),
                 scopes_supported: scopes_supported(config),
@@ -339,6 +342,17 @@ impl MerchantOp {
         self.store.as_ref()
     }
 
+    /// The scope a token request from `client_id` is granted when it asks
+    /// for none — RFC 6749 §3.3's "locally defined default", which the RFC
+    /// requires an authorization server to have if it does not fail such a
+    /// request outright.
+    ///
+    /// vpay's default is the client's own registered `scopes:`, space-joined.
+    /// See [`default_scopes`] for why that, and not "nothing".
+    pub(crate) fn default_scope_for(&self, client_id: &str) -> Option<&str> {
+        self.default_scopes.get(client_id).map(String::as_str)
+    }
+
     /// The signer `handle_token` mints with. `pub(crate)` for the reason
     /// given on [`Self::config`] — and additionally because this is the
     /// private key: a public accessor would let any crate in the workspace
@@ -381,6 +395,40 @@ pub fn issuer_for(config: &Config) -> String {
         "{}/v1/oauth",
         config.deployment.public_base_url.trim_end_matches('/')
     )
+}
+
+/// Every client's registered scopes, space-joined, indexed by `client_id` —
+/// the default scope [`MerchantOp::default_scope_for`] hands a token request
+/// that names none.
+///
+/// # Why there is a default at all
+///
+/// `authkestra_op`'s `client_credentials` handler grants exactly what was
+/// asked for: no `scope` parameter means a token with **no** `scope` claim.
+/// That is one of the two behaviours RFC 6749 §3.3 permits, and it is the
+/// wrong one for vpay, because `/v1` now refuses a request whose token
+/// carries no scope for it (`vpay_api::require_merchant_token`). Without a
+/// default, every merchant that does not explicitly ask — which is every
+/// caller of both SDKs' defaults, and `examples/merchant-curl`'s documented
+/// `curl` — would get a token that authenticates and then authorises
+/// nothing, and the diagnostic would be a `403` on a client whose
+/// registration plainly lists the scope it was refused for.
+///
+/// So the registration is what authorises: what an operator writes in
+/// `merchant_clients[].scopes` is what a token for that client carries. A
+/// client that asks for a *narrower* scope still gets exactly what it asked
+/// for (the request's own `scope` wins), and one that asks for something not
+/// in its registration is still `invalid_scope` — this widens nothing. A
+/// registration with an empty `scopes:` list gets no default and therefore
+/// an unscoped token, which is the honest outcome: it was registered as
+/// being allowed to do nothing.
+fn default_scopes(config: &Config) -> BTreeMap<String, String> {
+    config
+        .merchant_clients
+        .iter()
+        .filter(|client| !client.scopes.is_empty())
+        .map(|client| (client.client_id.clone(), client.scopes.join(" ")))
+        .collect()
 }
 
 /// Every scope any configured merchant may request, deduplicated and sorted.
@@ -467,6 +515,45 @@ mod tests {
                 "payments:write".to_owned(),
                 "refunds:write".to_owned()
             ]
+        );
+    }
+
+    /// The default scope is the registration's own list, and a client
+    /// registered for nothing gets no default.
+    ///
+    /// The empty case is the one worth pinning: `Some("")` would put an
+    /// empty `scope` claim on the token instead of leaving the claim off,
+    /// and `authkestra_op` would then check "" against the registration and
+    /// answer `invalid_scope` — turning "this client may do nothing" into a
+    /// failure to obtain a token at all, which is a different (and much
+    /// harder to read) answer than the `403` `/v1` gives it.
+    #[test]
+    fn the_default_scope_is_the_clients_own_registration_and_nothing_wider() {
+        let config = config_with(
+            "https://api.vpay.test",
+            vec![
+                merchant("a", &["payments:write", "refunds:write"]),
+                merchant("b", &["payments:read"]),
+                merchant("nothing", &[]),
+            ],
+        );
+        let defaults = default_scopes(&config);
+
+        assert_eq!(
+            defaults.get("a").map(String::as_str),
+            Some("payments:write refunds:write"),
+            "space-joined, RFC 6749 §3.3's encoding of a scope list"
+        );
+        assert_eq!(defaults.get("b").map(String::as_str), Some("payments:read"));
+        assert_eq!(
+            defaults.get("nothing"),
+            None,
+            "a client registered for no scope must not be handed one"
+        );
+        assert_eq!(
+            defaults.get("never-registered"),
+            None,
+            "the default comes from the registration, never from the request"
         );
     }
 

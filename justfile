@@ -141,9 +141,21 @@ verify-errors:
 # `#[test]`, so a new member adds one here whether or not it adds a test —
 # `merchant-demo::bin/merchant-demo`, contributing 0 to the total. That is
 # also why this bump is +1 and `min_tests` is untouched: no test was added.
+#
+# 33 -> 34 on 2026-09-02: `backends/tests/integration/tests/payment_intents.rs`,
+# the Docker-backed suite for the `/v1/payment_intents` surface (Step 2). One
+# new test *binary*; the tests it holds are real and raise the total, which is
+# why the floor moves too.
+#
+# min_tests 320 -> 500 on 2026-09-02, in the same change: Step 2 took the
+# workspace from ~330 listed tests to 520 (`just verify-ignored` prints the
+# live number), and a floor 200 below the real count would let a whole suite's
+# worth of coverage disappear without the recipe noticing — which is the one
+# thing this floor exists to prevent. 500 rather than 520 so an ordinary
+# refactor that legitimately merges a few cases does not fail CI.
 expected_ignored := "3"
-expected_suites := "33"
-min_tests := "320"
+expected_suites := "34"
+min_tests := "500"
 
 verify-ignored:
     #!/usr/bin/env bash
@@ -213,6 +225,31 @@ down:
 # `down -v` against a different file set leaves volumes behind.
 demo_compose := "-f compose.yml -f compose.e2e.yml -f compose.demo.yml"
 
+# The host port `just demo` publishes `vpay-server` on. Override it per
+# invocation when 8080 is taken on your machine:
+#
+#     just demo_port=18080 demo
+#
+# `just demo-down` needs no port — see that recipe.
+#
+# Three things have to agree about this number or the demo fails in a way that
+# does not name the port, which is why it is one variable and not three:
+#
+#   1. the published port (`compose.demo.yml` reads `$VPAY_DEMO_PORT`, which
+#      the recipes below export). Only the DEMO stack is remapped —
+#      `compose.e2e.yml` still publishes 8080:8080 for CI, and compose.demo.yml
+#      overrides that mapping rather than adding to it;
+#   2. `deployment.public_base_url` in the generated `.e2e/application-demo.yml`
+#      overlay. The OP's `issuer` is derived from it (`vpay_api::op::issuer_for`),
+#      it is what every access token carries as `iss`, and the SDK derives the
+#      same string from its own base URL — a mismatch is an `invalid_client`
+#      at the token endpoint with nothing in it pointing at a port;
+#   3. `VPAY_BASE_URL` for `examples/merchant-demo`, which runs on the host.
+#
+# `gen-demo-keys` regenerates the overlay when this changes (its shape check
+# covers the URL), so switching ports needs no manual cleanup.
+demo_port := "8080"
+
 # Everything `just demo` needs on disk before a container starts: the server's
 # own OP signing key (the `gen-e2e-signing-key` dependency above) and the demo
 # merchant's key pair plus the profile overlay that registers its PUBLIC half.
@@ -243,10 +280,34 @@ gen-demo-keys: gen-e2e-signing-key
     overlay=.e2e/application-demo.yml
 
     if [ -e "$key" ] && [ -e "$overlay" ]; then
-        echo "gen-demo-keys: $key and $overlay already exist, keeping them"
-        exit 0
-    fi
-    if [ -e "$key" ] || [ -e "$overlay" ]; then
+        # ...unless the overlay predates a required field. `merchant_id`
+        # became required on `merchant_clients` in Step 2, and an overlay
+        # generated before that makes the server exit 78 on every restart
+        # with `missing field \`merchant_id\`` — while this recipe cheerfully
+        # says it kept a file that no longer loads. Measured: `just demo`
+        # spent its whole 120 s readiness budget on a crash loop. The check is
+        # on the *shape* rather than a version stamp because the overlay is
+        # generated, git-ignored, and cheap to rebuild.
+        #
+        # The same check now covers `deployment.public_base_url`, for the
+        # same class of failure: `just demo_port=18080 demo` against an
+        # overlay generated for 8080 mints tokens whose `iss` is
+        # `http://localhost:8080/v1/oauth` while the SDK, reading its own
+        # base URL, signs assertions for `http://localhost:18080/v1/oauth`.
+        # The OP answers `invalid_client` and neither message mentions a
+        # port. The overlay is generated and git-ignored, so it is rebuilt
+        # rather than patched.
+        if grep -q '^\s*merchant_id:' "$overlay" \
+            && grep -q "^\s*public_base_url: http://localhost:{{demo_port}}$" "$overlay"; then
+            echo "gen-demo-keys: $key and $overlay already exist, keeping them"
+            exit 0
+        fi
+        if grep -q '^\s*merchant_id:' "$overlay"; then
+            echo "gen-demo-keys: $overlay was generated for a different demo_port than {{demo_port}} — regenerating the pair"
+        else
+            echo "gen-demo-keys: $overlay predates the required \`merchant_id\` field — regenerating the pair"
+        fi
+    elif [ -e "$key" ] || [ -e "$overlay" ]; then
         echo "gen-demo-keys: $key and $overlay are out of sync — regenerating the pair"
     fi
     rm -f "$key" "$overlay"
@@ -280,9 +341,18 @@ gen-demo-keys: gen-e2e-signing-key
 
     deployment:
       name: vpay-demo
+      # The port \`just demo\` publishes on ({{demo_port}}), which the OP turns
+      # into its \`issuer\` and the SDK independently derives from
+      # VPAY_BASE_URL. See the \`demo_port\` variable in the justfile for what
+      # goes wrong when the two disagree.
+      public_base_url: http://localhost:{{demo_port}}
 
     merchant_clients:
       - client_id: demo-merchant
+        # The tenant, separate from the credential: every payment intent the
+        # demo creates carries this as its merchant_id and every query it
+        # makes is filtered by it (vpay_config::MerchantClient::merchant_id).
+        merchant_id: demo-merchant-tenant
         jwks:
           keys:
             - kty: RSA
@@ -296,6 +366,11 @@ gen-demo-keys: gen-e2e-signing-key
               n: "$n"
               e: "$e"
         grant_types: [client_credentials]
+        # What the demo is authorised to do. The SDK asks for no scope, so
+        # this list is what its token carries (RFC 6749 §3.3 default scope,
+        # applied in vpay_api::op::token::token_handler) — and \`payments:write\`
+        # is what /v1 requires on the demo's POST /v1/payment_intents. An
+        # empty list here would still mint a token and then 403 every call.
         scopes: ["payments:write"]
         # Must contain vpay:v1 — vpay_config::MERCHANT_AUDIENCE. Without it the
         # OP answers invalid_target, and the server refuses to boot.
@@ -324,15 +399,19 @@ demo: gen-demo-keys
     for tool in docker curl jq cargo; do
         command -v "$tool" >/dev/null 2>&1 || { echo "demo: needs '$tool' on PATH" >&2; exit 1; }
     done
+    # Read by compose.demo.yml's `ports:` for vpay-server. Exported rather
+    # than passed per command, because `docker compose` interpolates each
+    # file from its own environment.
+    export VPAY_DEMO_PORT={{demo_port}}
     docker compose {{demo_compose}} up -d --build
 
     # `vpay-server` has no container healthcheck — its image is FROM scratch
     # and holds no shell to run one (compose.e2e.yml's own note). Readiness is
     # observed from outside instead, the same way .github/workflows/ci.yml's
     # e2e job does it.
-    echo "demo: waiting for http://localhost:8080/healthz"
+    echo "demo: waiting for http://localhost:{{demo_port}}/healthz"
     deadline=$((SECONDS + 120))
-    until curl -fsS -o /dev/null http://localhost:8080/healthz; do
+    until curl -fsS -o /dev/null http://localhost:{{demo_port}}/healthz; do
         if [ "$SECONDS" -ge "$deadline" ]; then
             echo "demo: FAIL — /healthz did not answer within 120s. Last 80 log lines:" >&2
             docker compose {{demo_compose}} ps >&2
@@ -346,20 +425,29 @@ demo: gen-demo-keys
     echo
 
     set +e
-    cargo run -q -p merchant-demo
+    # The demo runs on the host, so it needs the *published* port — the same
+    # one the overlay's `public_base_url` names, or step 2 is an
+    # `invalid_client` (see `demo_port`).
+    VPAY_BASE_URL=http://localhost:{{demo_port}} cargo run -q -p merchant-demo
     status=$?
     set -e
 
     echo
     echo "  dashboard   http://localhost:3000"
-    echo "  server      http://localhost:8080"
-    echo "  discovery   http://localhost:8080/v1/oauth/.well-known/openid-configuration"
+    echo "  server      http://localhost:{{demo_port}}"
+    echo "  discovery   http://localhost:{{demo_port}}/v1/oauth/.well-known/openid-configuration"
     echo
     echo "  tear down with: just demo-down"
     exit $status
 
 # Removes the containers AND the volumes, so the next `just demo` starts on a
 # freshly migrated database rather than one carrying a previous run's rows.
+#
+# Takes no port, and does not need one whatever `just demo` was run with:
+# compose matches containers by project name and label, not by published port,
+# and `compose.demo.yml`'s `${VPAY_DEMO_PORT:-8080}` has a default, so an unset
+# variable is not even a warning. Measured, not assumed — brought up on 18080,
+# torn down with the variable unset, container and volume both gone.
 #
 # Stop the demo stack and delete its volumes.
 demo-down:

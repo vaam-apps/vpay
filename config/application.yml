@@ -17,6 +17,11 @@ deployment:
   livemode: false
   public_base_url: http://localhost:8080
 
+# Each entry may carry `enabled: false` to stop new charges being routed to
+# that rail while keeping its host and credentials loaded for the charges
+# already on it (boot step 4 writes it to `providers.enabled`). Absent means
+# `true`. Capabilities — flow, refund support — are NOT configurable here:
+# they belong to the adapter (ADR-0002).
 providers:
   - code: mtn_momo
     host:
@@ -67,6 +72,12 @@ currencies:
 # a self-serve flow").
 merchant_clients:
   - client_id: acme-cameroon
+    # The tenant this credential acts for: every payment intent it creates
+    # carries this as `payment_intents.merchant_id`, and every `/v1` query it
+    # makes is filtered by it. Required, unique across `merchant_clients`, and
+    # deliberately a separate value from `client_id` — see
+    # `MerchantClient::merchant_id` for why a rotated key must not change it.
+    merchant_id: acme-cameroon
     jwks:
       keys:
         - kty: RSA
@@ -76,6 +87,15 @@ merchant_clients:
           n: placeholder-rsa-modulus-replace-with-the-merchants-real-public-key
           e: AQAB
     grant_types: [client_credentials]
+    # What this credential may do, and — because a token request that names
+    # no scope is granted this list (RFC 6749 §3.3's default scope, applied
+    # in `vpay_api::op::token::token_handler`) — what its tokens carry.
+    # `/v1` refuses a request whose token holds none of the scopes its method
+    # needs: `payments:write` for a POST, either scope for a GET. The
+    # spellings are `vpay_api::v1::SCOPE_PAYMENTS_WRITE` /
+    # `SCOPE_PAYMENTS_READ`; nothing validates this list against them at
+    # boot, so a typo here is a 403 at runtime rather than a refusal to
+    # start.
     scopes: [payments:write]
     # Must contain "vpay:v1" — `vpay_config::MERCHANT_AUDIENCE`, the `aud`
     # `vpay_api::resource_auth::Surface::Merchant` requires on every `/v1`

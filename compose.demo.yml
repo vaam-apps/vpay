@@ -68,6 +68,23 @@ services:
     ports: !reset []
 
   vpay-server:
+    # `!override`, not an addition. Compose merges `ports:` across files by
+    # appending, so a plain `ports:` here would leave compose.e2e.yml's
+    # `8080:8080` in place *as well* — and the whole point of the variable is
+    # that 8080 may already be taken, which would fail the whole `up` with
+    # "port is already allocated". `!override` replaces the list outright.
+    #
+    # `just demo` exports `VPAY_DEMO_PORT` from its `demo_port` variable
+    # (`just demo_port=18080 demo`); the `:-8080` default keeps a bare
+    # `docker compose -f ... -f compose.demo.yml up` working, and keeps this
+    # file readable as a document about the demo rather than about `just`.
+    #
+    # The CONTAINER port stays 8080 — that is what `vpay-server` binds
+    # (`--bind 0.0.0.0:8080` in compose.e2e.yml) and what the dashboard
+    # reaches over the compose network as `http://vpay-server:8080`. Only the
+    # host side moves, which is why nothing inside the stack has to know.
+    # compose.e2e.yml itself is untouched: CI's e2e job still gets 8080.
+    ports: !override ["${VPAY_DEMO_PORT:-8080}:8080"]
     environment:
       VPAY_PROFILE: demo
     volumes:

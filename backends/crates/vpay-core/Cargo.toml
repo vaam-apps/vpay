@@ -14,4 +14,13 @@ workspace = true
 serde.workspace = true
 thiserror.workspace = true
 time.workspace = true
+# `ids`: the CSPRNG behind every public object id (`pi_…`), via `Uuid::new_v4`.
 uuid.workspace = true
+
+[dev-dependencies]
+# Test-only. `state.rs` writes each status's wire label twice — once for
+# `serde` (what a merchant reads) and once as `as_wire_str` (what a `WHERE`
+# clause matches) — and the test that pins the two together needs a
+# serializer to compare them through. No production dependency: this crate
+# still has no JSON in its own API.
+serde_json.workspace = true

@@ -3,14 +3,16 @@
 //! Administration is YAML in git. A profile selects a *config file*; it must
 //! never select a *code path*. See `docs/adr/0003-yaml-configuration.md`.
 //!
-//! STATUS: boot-sequence steps 1-3 (`docs/flows/configuration.md`) are
+//! STATUS: boot-sequence steps 1-4 (`docs/flows/configuration.md`) are
 //! implemented and tested — [`config::Config::load`] loads
 //! `application.yml`, overlays `application-{profile}.yml`, resolves
-//! `${ENV}` placeholders (fatal if unresolved), and validates. Both
-//! `vpay-server` and `vpay-worker-bin` now call it at startup, before
-//! connecting to the database or (for `vpay-server`) binding a listener —
-//! see each binary's `main.rs` for the ordering and why. Step 4 (DB
-//! reconciliation) is NOT implemented — `docs/status.md`.
+//! `${ENV}` placeholders (fatal if unresolved), and validates; then each
+//! binary joins `providers` against its own linked adapters and calls
+//! `vpay_db::config_reconcile::reconcile` to make `currencies` and
+//! `providers` match. Both `vpay-server` and `vpay-worker-bin` do all of it
+//! at startup, before binding a listener — see each binary's `main.rs` for
+//! the ordering and why, and [`ConfigError::ProviderWithoutAdapter`] for the
+//! one check this crate cannot make itself.
 
 use serde::{Deserialize, Serialize};
 
@@ -89,6 +91,31 @@ pub enum ConfigError {
     /// (`backends/migrations/0001_create-currencies.sql`).
     #[error("duplicate currency code: {0}")]
     DuplicateCurrencyCode(String),
+    /// A `providers[]` entry names a rail this binary links no adapter for,
+    /// so boot step 4 has no `vpay_provider::Capabilities` to seed the
+    /// `providers` row from.
+    ///
+    /// **Not raised by `Config::validate_all`**, and it cannot be: which
+    /// adapters exist is a property of the *binary*, not of the YAML, and
+    /// `vpay-config` links none of them (ADR-0002 — the port is the only
+    /// thing the core knows). Each binary raises it while joining its own
+    /// `adapters()` against `config.providers`, which is why the message
+    /// lists what that binary actually has.
+    ///
+    /// Fatal rather than skipped: a configured rail with no code behind it
+    /// is a deployment that would accept `payment_method_types[]=<code>` on
+    /// a payment intent and then fail to confirm it, and the operator who
+    /// wrote that line believed it would work.
+    #[error(
+        "provider {code} is configured but this binary links no adapter for it (linked: {linked})"
+    )]
+    ProviderWithoutAdapter {
+        /// The `providers[].code` from the YAML.
+        code: String,
+        /// The codes this binary does link, comma-separated, so the message
+        /// is actionable without a second lookup.
+        linked: String,
+    },
     /// Not one of `vpay_core::Currency`'s variants.
     #[error("unknown currency code: {0}")]
     UnknownCurrency(String),
@@ -110,6 +137,13 @@ pub enum ConfigError {
     /// before it reaches a real request.
     #[error("duplicate OAuth client_id: {0}")]
     DuplicateClientId(String),
+    /// Two merchant clients claim the same tenant. `/v1` resolves a token's
+    /// `client_id` to exactly one `merchant_id` and filters every query by
+    /// it, so a shared tenant is two credentials with access to each other's
+    /// payment intents — and nothing downstream of boot could tell that from
+    /// the intended shape. See [`oauth::MerchantClient::merchant_id`].
+    #[error("duplicate merchant_id: {0}")]
+    DuplicateMerchantId(String),
     /// ADR-0010: `private_key_jwt` with no key can never authenticate, so
     /// booting with an empty or missing JWK set is exactly as pointless as
     /// booting with none configured at all. See

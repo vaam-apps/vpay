@@ -225,6 +225,98 @@ pub enum ApiError {
         key_hint: String,
     },
 
+    /// A request under this `Idempotency-Key` has not finished yet, so this
+    /// one cannot proceed and there is nothing stored to replay.
+    ///
+    /// **Its own variant, not [`Self::Conflict`].** Both are things a
+    /// merchant retries, and that is where the resemblance ends: a
+    /// `Conflict` is about the *object* ("this intent already has a charge"),
+    /// is permanent until the merchant does something different, and renders
+    /// as `invalid_request_error`/`invalid_state`. This is about the
+    /// *request*, resolves on its own the moment the first attempt lands, and
+    /// tells the caller to do nothing but wait. Rendered as a `Conflict` — as
+    /// it was until this variant existed — an SDK reading `code` could not
+    /// tell "your intent moved on without you" from "your own earlier call is
+    /// still running", and the only difference on the wire was a sentence.
+    ///
+    /// **On the status code.** [`Category::Idempotency`]'s policy row says
+    /// `400`/`idempotency_error` (`vpay-core`'s `http_status`), so that is
+    /// what this answers — ADR-0011 derives the status from the category and
+    /// never lets a variant pick one. Stripe answers `409` for this case and
+    /// `400` for a replayed key with a different body, i.e. it splits a
+    /// status across one `type`, which this policy table cannot express.
+    /// Moving to `409` is therefore an ADR-level change (a new `Category`, or
+    /// `Category::Idempotency` becoming `409` — which would also move
+    /// [`Self::IdempotencyKeyReused`], pinned at `400` by
+    /// `a_reused_key_with_a_different_body_is_the_400_envelope`), and is left
+    /// as a maintainer decision rather than taken here. The `code` is what an
+    /// SDK should branch on either way.
+    ///
+    /// Carries a hint of the key for the **log only** — the public message is
+    /// a fixed sentence, so a merchant's key cannot reach a response body
+    /// through this variant at all. Build it with
+    /// [`ApiError::idempotency_key_in_flight`], which truncates.
+    #[error("a request under Idempotency-Key {key_hint} is still in flight")]
+    IdempotencyKeyInFlight {
+        /// The first `KEY_HINT_CHARS` characters of the key, plus an
+        /// ellipsis. Operator-facing: it is what correlates this refusal with
+        /// the log line of the request that is still holding the key.
+        key_hint: String,
+    },
+
+    /// No such object — or none this client may see. **Both**: a merchant
+    /// asking for another merchant's `pi_…` gets this, byte for byte
+    /// identical to asking for one that never existed, so the API cannot be
+    /// used to discover which ids exist under some other tenant. That is why
+    /// [`Self::Forbidden`] is *not* what a foreign id answers.
+    ///
+    /// `resource` is a `&'static str` on purpose: it names one of our own
+    /// object types (`payment_intent`, `refund`), it is rendered into the
+    /// public message, and a `String` there would be one refactor away from
+    /// being something the caller sent.
+    #[error("no such {resource}: {id}")]
+    NotFound {
+        /// The object type, in the API's own vocabulary — `payment_intent`,
+        /// not `payment_intents` and not a table name.
+        resource: &'static str,
+        /// The id as the caller spelled it. Echoed back (Stripe does the
+        /// same, and a merchant grepping their logs for it needs it) but
+        /// bounded on the render path like every other reflected value.
+        id: String,
+    },
+
+    /// The object exists and the request is well-formed, but the object's
+    /// current state does not allow it: confirming an intent that is already
+    /// `processing`, cancelling one the rail already has, a second charge on
+    /// an intent that has one.
+    ///
+    /// `409`, and the message is written at the call site because *which*
+    /// state and *which* action is the only useful thing to say. It is a
+    /// public sentence, so it must name our own vocabulary and never echo a
+    /// value the caller sent.
+    ///
+    /// Reaching this is not permission to skip the compare-and-swap: the
+    /// state a handler read may already be stale by the time it writes, so
+    /// the `UPDATE ... WHERE status = $expected` is what actually enforces
+    /// the lifecycle. This variant is how *that* update's zero-rows answer
+    /// reaches a merchant.
+    #[error("conflict: {message}")]
+    Conflict {
+        /// What is wrong, written for the merchant: this variant's message
+        /// *is* the public message.
+        message: String,
+    },
+
+    /// The client authenticated, and is not allowed to do this.
+    ///
+    /// Deliberately rare: object-level tenancy answers [`Self::NotFound`]
+    /// instead (see there). This is for a *scope* the token does not carry —
+    /// a decision about the credential rather than about an object, where
+    /// telling the caller plainly is right because they can see their own
+    /// scopes.
+    #[error("the client is not permitted to perform that action")]
+    Forbidden,
+
     /// An invariant this layer guarantees was violated — the "should be
     /// impossible" arm. `String` rather than a wrapped error because there
     /// is no error type to wrap: it is reached when the code discovers a
@@ -244,6 +336,19 @@ impl ApiError {
     #[must_use]
     pub fn idempotency_key_reused(key: &str) -> Self {
         Self::IdempotencyKeyReused {
+            key_hint: key_hint(key),
+        }
+    }
+
+    /// Builds an [`ApiError::IdempotencyKeyInFlight`] from the raw key,
+    /// truncating it to a hint on the way in.
+    ///
+    /// Same shape and same reason as [`Self::idempotency_key_reused`]: the
+    /// obvious way to build the variant is the one that cannot put a whole
+    /// merchant-chosen key into a log line.
+    #[must_use]
+    pub fn idempotency_key_in_flight(key: &str) -> Self {
+        Self::IdempotencyKeyInFlight {
             key_hint: key_hint(key),
         }
     }
@@ -429,7 +534,12 @@ impl Classify for ApiError {
             // "no such object" are the same class of mistake.
             Self::UnknownRoute { .. } => Category::NotFound,
             Self::InvalidParam { .. } => Category::InvalidRequest,
-            Self::IdempotencyKeyReused { .. } => Category::Idempotency,
+            Self::IdempotencyKeyReused { .. } | Self::IdempotencyKeyInFlight { .. } => {
+                Category::Idempotency
+            }
+            Self::NotFound { .. } => Category::NotFound,
+            Self::Conflict { .. } => Category::Conflict,
+            Self::Forbidden => Category::Forbidden,
             // The only variant that pages. If this is ever logged, something
             // this layer promised was true was not.
             Self::Internal(_) => Category::Internal,
@@ -457,6 +567,22 @@ impl Classify for ApiError {
             // code per parameter would be an open-ended vocabulary.
             Self::InvalidParam { .. } => Category::InvalidRequest.default_code(),
             Self::IdempotencyKeyReused { .. } => Category::Idempotency.default_code(),
+            // The one *other* deliberate override in this enum, and the
+            // whole reason the variant exists: `idempotency_key_in_use` (the
+            // category default, above) means "you changed the body", which
+            // is a merchant bug they must fix. This means "your own earlier
+            // request has not finished", which they fix by waiting. Same
+            // status and same `type`; only the code tells them apart, so an
+            // SDK's retry logic branches on this string.
+            Self::IdempotencyKeyInFlight { .. } => "idempotency_key_in_flight",
+            // The category defaults, spelled through the category rather than
+            // as literals: `resource_missing`, `invalid_state` and
+            // `forbidden` are Stripe's own codes and `vpay-core` owns them
+            // (docs/flows/errors.md's policy table). `UnknownRoute` above is
+            // the one deliberate override in this enum, and it says why.
+            Self::NotFound { .. } => Category::NotFound.default_code(),
+            Self::Conflict { .. } => Category::Conflict.default_code(),
+            Self::Forbidden => Category::Forbidden.default_code(),
             Self::Internal(_) => Category::Internal.default_code(),
         }
     }
@@ -473,9 +599,19 @@ impl Classify for ApiError {
             // No overrides: none of this layer's own failures heals on its
             // own, and every one of these categories already defaults to
             // `Retry::Never`.
+            // The one override this layer makes, and the only variant here
+            // that heals without anyone doing anything: the first request
+            // finishing is what clears it, so the honest instruction is
+            // "the same call, shortly" rather than `Category::Idempotency`'s
+            // default `Retry::Never` (which is right for its sibling — a key
+            // reused with a different body never becomes valid).
+            Self::IdempotencyKeyInFlight { .. } => Retry::AfterBackoff,
             Self::UnknownRoute { .. }
             | Self::InvalidParam { .. }
             | Self::IdempotencyKeyReused { .. }
+            | Self::NotFound { .. }
+            | Self::Conflict { .. }
+            | Self::Forbidden
             | Self::Internal(_) => self.category().default_retry(),
         }
     }
@@ -495,6 +631,10 @@ impl Classify for ApiError {
             Self::UnknownRoute { .. }
             | Self::InvalidParam { .. }
             | Self::IdempotencyKeyReused { .. }
+            | Self::IdempotencyKeyInFlight { .. }
+            | Self::NotFound { .. }
+            | Self::Conflict { .. }
+            | Self::Forbidden
             | Self::Internal(_) => self.category().default_severity(),
         }
     }
@@ -530,6 +670,32 @@ impl Classify for ApiError {
                 "The Idempotency-Key beginning {} was already used with a different request body.",
                 key_hint(hint)
             ),
+            // A fixed sentence, and deliberately not the key: unlike its
+            // sibling above, nothing here needs to identify *which* key —
+            // the caller sent it and has exactly one request in flight under
+            // it. `key_hint` stays in the `Display` for the log. The
+            // semicolon is load-bearing prose: "retry shortly" is the entire
+            // instruction, and a merchant who reads `Category::Conflict`'s
+            // "the object is in a state that does not allow this action"
+            // (what this answered before it had its own variant) goes and
+            // looks at their intent instead.
+            Self::IdempotencyKeyInFlight { .. } => {
+                "A request with this Idempotency-Key is still in progress; retry shortly."
+                    .to_owned()
+            }
+            // Stripe's own sentence, and the id the caller asked for — the
+            // one thing that makes a 404 actionable when a merchant is
+            // holding two ids and does not know which one is stale. Bounded
+            // like every other reflected value: the id comes from a URL path
+            // segment, so it is caller-controlled text.
+            Self::NotFound { resource, id } => bounded_message(&format!("No such {resource}: {id}")),
+            // The whole point of the variant, exactly as `InvalidParam`:
+            // our own words about the object's own state.
+            Self::Conflict { message } => bounded_message(message),
+            // Nothing about *why*: the category's sentence is all a client
+            // can act on, and enumerating the scope it lacks would describe
+            // the authorisation model to something that failed it.
+            Self::Forbidden => Category::Forbidden.generic_message().to_owned(),
             // Never the payload. `Internal(..)` is reached when an invariant
             // broke, and the text describing it is about our internals by
             // definition.
@@ -831,6 +997,39 @@ mod tests {
                 "idempotency_error",
                 "idempotency_key_in_use",
             ),
+            // Same category and therefore the same status and `type` as the
+            // row above; the `code` is the entire difference, which is why
+            // both rows are here. If the two ever collapse to one code, a
+            // client can no longer tell a merchant bug from a wait.
+            (
+                || ApiError::idempotency_key_in_flight("idem_0123456789_tail"),
+                400,
+                "idempotency_error",
+                "idempotency_key_in_flight",
+            ),
+            (
+                || ApiError::NotFound {
+                    resource: "payment_intent",
+                    id: "pi_0000000000000000000000000".into(),
+                },
+                404,
+                "invalid_request_error",
+                "resource_missing",
+            ),
+            (
+                || ApiError::Conflict {
+                    message: "This PaymentIntent is already processing.".into(),
+                },
+                409,
+                "invalid_request_error",
+                "invalid_state",
+            ),
+            (
+                || ApiError::Forbidden,
+                403,
+                "invalid_request_error",
+                "forbidden",
+            ),
             (
                 || ApiError::Internal("the ledger did not balance".into()),
                 500,
@@ -838,6 +1037,102 @@ mod tests {
                 "internal_error",
             ),
         ]
+    }
+
+    /// A 404 for someone else's object must be indistinguishable from a 404
+    /// for an object that never existed, or the API answers "does this id
+    /// exist under some other merchant?" — see `ApiError::NotFound`. This is
+    /// the assertion behind the integration suite's
+    /// `merchant_b_cannot_read_merchant_as_intent`; it lives here too because
+    /// the property belongs to the *renderer*, and a future `Forbidden` arm
+    /// added for "wrong tenant" would break it without touching a handler.
+    #[tokio::test]
+    async fn a_foreign_object_and_a_missing_object_are_byte_identical() {
+        const ID: &str = "pi_zzzzzzzzzzzzzzzzzzzzzzzz";
+        let foreign = ApiError::NotFound {
+            resource: "payment_intent",
+            id: ID.to_owned(),
+        };
+        let missing = ApiError::NotFound {
+            resource: "payment_intent",
+            id: ID.to_owned(),
+        };
+        assert_eq!(
+            body_string(foreign.into_response()).await,
+            body_string(missing.into_response()).await
+        );
+
+        // And it is *not* the shape a Forbidden would have had, which is the
+        // mistake this variant exists to prevent.
+        assert_ne!(
+            ApiError::Forbidden.category().http_status(),
+            ApiError::NotFound {
+                resource: "payment_intent",
+                id: ID.to_owned(),
+            }
+            .category()
+            .http_status()
+        );
+    }
+
+    /// The three variants Step 2 added carry text a *caller* controls (an id
+    /// out of a URL path) or text a call site writes freehand. Both go
+    /// through the same bound every other public message does.
+    #[tokio::test]
+    async fn the_step_2_variants_say_what_they_should_and_no_more() {
+        let body = body_json(
+            ApiError::NotFound {
+                resource: "payment_intent",
+                id: "pi_missing".to_owned(),
+            }
+            .into_response(),
+        )
+        .await;
+        assert_eq!(
+            error_field(&body, "message"),
+            Some("No such payment_intent: pi_missing"),
+            "the id is echoed, as Stripe does"
+        );
+        assert!(
+            body.get("error").is_some_and(|e| e.get("param").is_none()),
+            "a missing object is not a bad parameter: {body}"
+        );
+
+        // A megabyte of id in a path segment must not be a megabyte of body.
+        let body = body_string(
+            ApiError::NotFound {
+                resource: "payment_intent",
+                id: "z".repeat(1024 * 1024),
+            }
+            .into_response(),
+        )
+        .await;
+        assert!(
+            body.len() < 1_024,
+            "the envelope must stay small: {}",
+            body.len()
+        );
+
+        let body = body_json(
+            ApiError::Conflict {
+                message:
+                    "A PaymentIntent may only be canceled while it is requires_payment_method."
+                        .to_owned(),
+            }
+            .into_response(),
+        )
+        .await;
+        assert_eq!(
+            error_field(&body, "message"),
+            Some("A PaymentIntent may only be canceled while it is requires_payment_method.")
+        );
+
+        // `Forbidden` says nothing about which scope was missing.
+        let body = body_json(ApiError::Forbidden.into_response()).await;
+        assert_eq!(
+            error_field(&body, "message"),
+            Some("This client is not permitted to perform that action.")
+        );
     }
 
     #[test]
@@ -1010,6 +1305,70 @@ mod tests {
         assert!(
             !body.contains("merchant_order_88"),
             "a hand-built variant must still be truncated on the way out: {body}"
+        );
+    }
+
+    /// The two idempotency refusals are told apart by `code`, and the
+    /// in-flight one says nothing about the key.
+    ///
+    /// **This is the assertion that fails if `IdempotencyKeyInFlight` is
+    /// removed and the handler goes back to `ApiError::Conflict`**: the code
+    /// becomes `invalid_state`, which is the same code a lifecycle conflict
+    /// carries, and a client can no longer tell "wait" from "your intent
+    /// moved on". `docs/flows/errors.md`'s policy table is what decides the
+    /// status and the type; only the code is this variant's own.
+    #[tokio::test]
+    async fn a_key_still_in_flight_is_a_different_code_from_a_key_reused_and_from_a_conflict() {
+        const KEY: &str = "idem_0123_merchant_order_88_customer_email";
+
+        let in_flight = ApiError::idempotency_key_in_flight(KEY);
+        assert_eq!(in_flight.code(), "idempotency_key_in_flight");
+        assert_eq!(in_flight.category(), Category::Idempotency);
+        // It heals on its own — the only variant this layer owns that does.
+        assert_eq!(in_flight.retry(), Retry::AfterBackoff);
+        assert_ne!(
+            in_flight.code(),
+            ApiError::idempotency_key_reused(KEY).code(),
+            "a body mismatch and a request still running are different problems"
+        );
+        assert_ne!(
+            in_flight.code(),
+            ApiError::Conflict {
+                message: "This PaymentIntent already has a charge.".into(),
+            }
+            .code(),
+            "an in-flight key must not render as a lifecycle conflict"
+        );
+
+        let response = in_flight.into_response();
+        assert_eq!(response.status(), Category::Idempotency.http_status());
+        let body = body_json(response).await;
+        assert_eq!(error_field(&body, "type"), Some("idempotency_error"));
+        assert_eq!(
+            error_field(&body, "code"),
+            Some("idempotency_key_in_flight")
+        );
+        assert_eq!(
+            error_field(&body, "message"),
+            Some("A request with this Idempotency-Key is still in progress; retry shortly.")
+        );
+        // The key is not in the body at all — not even as a hint. It is in
+        // the log line, which is where an operator correlates it.
+        let rendered = serde_json::to_string(&body).expect("the envelope re-serialises");
+        assert!(
+            !rendered.contains("idem_0123"),
+            "the in-flight message must not carry the key: {rendered}"
+        );
+        let (_, log) = with_captured_log(|| {
+            ApiError::idempotency_key_in_flight(KEY).log();
+        });
+        assert!(
+            log.contains("idem_012\u{2026}") || log.contains("idem_012"),
+            "the operator half must carry the hint: {log}"
+        );
+        assert!(
+            !log.contains("merchant_order_88"),
+            "not even the log carries the whole key: {log}"
         );
     }
 
