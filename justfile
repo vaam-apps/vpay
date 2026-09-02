@@ -58,6 +58,29 @@ test-rust-all:
 test-web:
     pnpm -r test
 
+# `test-rust` above already covers this (it runs --workspace, which now
+# includes sdks/rust); this recipe exists to scope a run to just the SDK
+# while iterating on it.
+test-sdk-rust:
+    cargo nextest run -p vpay-sdk
+
+test-sdk-node:
+    pnpm --filter @vpay/sdk test
+
+build-sdk-node:
+    pnpm --filter @vpay/sdk build
+
+# Cross-language conformance: mint a private_key_jwt assertion with the Node
+# SDK and verify it with the REAL OP verifier vpay will run
+# (authkestra_op::client_assertion::verify_client_assertion at the pinned
+# version, wrapped by sdks/rust/examples/verify_assertion.rs). The Rust SDK
+# has this as a test; the Node SDK cannot link the Rust crate, so this
+# recipe is the bridge. Not part of `just ci` — run it by hand, and record
+# the outcome in docs/status.md when you do.
+sdk-conformance-node: build-sdk-node
+    set -o pipefail; \
+      tmp=$(mktemp -d);       node -e 'const {generateKeyPairSync}=require("node:crypto"); const {privateKey}=generateKeyPairSync("rsa",{modulusLength:2048}); process.stdout.write(privateKey.export({type:"pkcs8",format:"pem"}))' > "$tmp/key.pem";       VPAY_CLIENT_ID=merchant_a VPAY_PRIVATE_KEY_FILE="$tmp/key.pem" VPAY_KID=k1         VPAY_AUDIENCE=https://api.vpay.example/v1/oauth/token         node sdks/nodejs/scripts/mint-assertion.mjs       | cargo run -q -p vpay-sdk --example verify_assertion -- - merchant_a           https://api.vpay.example/v1/oauth/token https://api.vpay.example/v1/oauth;       status=$?; rm -rf "$tmp"; exit $status
+
 test-e2e:
     docker compose -f compose.yml -f compose.e2e.yml up -d --build
     pnpm --filter @vpay/e2e e2e; \

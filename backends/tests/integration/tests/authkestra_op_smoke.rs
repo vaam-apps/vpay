@@ -1,6 +1,7 @@
 //! Proves `authkestra_op::sqlx_store::SqlxOpStore<Postgres>` genuinely works
-//! against `backends/migrations/0006_create-authkestra-op-tables.sql` — the
-//! transcribed copy of that store's own hardcoded DDL.
+//! against `backends/migrations/0006_create-authkestra-op-tables.sql` plus
+//! `0013_add-authkestra-op-0-7-columns.sql` — the transcribed copies of that
+//! store's own hardcoded DDL at 0.3.4 and the additive delta at 0.7.1.
 //!
 //! This is the strongest available check for migration 0006's whole risk:
 //! that DDL is not a design we control, it is a byte-for-byte transcription
@@ -22,8 +23,10 @@ use std::collections::HashMap;
 
 use anyhow::Context;
 use authkestra_engine::auth::state::Identity;
+use authkestra_op::client::TokenEndpointAuthMethod;
+use authkestra_op::refresh::{RefreshToken, RefreshTokenStore};
 use authkestra_op::sqlx_store::SqlxOpStore;
-use authkestra_op::{AuthorizationCode, AuthorizationCodeStore, ClientStore};
+use authkestra_op::{AuthorizationCode, AuthorizationCodeStore, ClientStore, OpStore};
 use chrono::{Duration as ChronoDuration, Utc};
 use sqlx::PgPool;
 use testcontainers::runners::AsyncRunner;
@@ -64,16 +67,26 @@ async fn migrated_postgres() -> anyhow::Result<(ContainerAsync<PostgresImage>, P
 /// only `find_client`; registration is expected to happen out of band, e.g.
 /// via vpay configuration per docs/flows/dashboard-auth.md), matching every
 /// column `SqlxOpStore::find_client`'s `SELECT` names.
+///
+/// `token_endpoint_auth_method` and `jwks` are the two columns migration 0013
+/// adds for authkestra-op 0.7.1 (authkestra#287). They are populated here —
+/// even though the dashboard client itself is a public PKCE client that would
+/// register `"none"`/no keys in real life — precisely so the round trip
+/// below proves the store *reads* them back through its own JSONB decoding,
+/// rather than silently returning `None` for a column it never selected.
 async fn insert_dashboard_client(pool: &PgPool) -> anyhow::Result<()> {
     sqlx::query(
         "INSERT INTO authkestra.oauth_clients \
-            (client_id, client_secret_hash, require_pkce, redirect_uris, grant_types, scopes, allowed_audiences) \
+            (client_id, client_secret_hash, require_pkce, redirect_uris, grant_types, scopes, \
+             allowed_audiences, token_endpoint_auth_method, jwks) \
          VALUES \
             ('vpay_dashboard', NULL, true, \
              '[\"https://dash.vpay.test/callback\"]'::jsonb, \
              '[\"authorization_code\"]'::jsonb, \
              '[\"openid\", \"profile\"]'::jsonb, \
-             '[]'::jsonb)",
+             '[]'::jsonb, \
+             '\"private_key_jwt\"'::jsonb, \
+             '{\"keys\": [{\"kty\": \"RSA\", \"kid\": \"k1\", \"n\": \"AQAB\", \"e\": \"AQAB\"}]}'::jsonb)",
     )
     .execute(pool)
     .await
@@ -123,10 +136,11 @@ async fn sqlx_op_store_round_trips_a_client_and_enforces_single_use_codes() -> a
         client.client_secret_hash.is_none(),
         "public client, no secret"
     );
-    assert!(
-        client.require_pkce,
-        "PKCE is mandatory for the dashboard client (docs/flows/dashboard-auth.md)"
-    );
+    // `require_pkce` is deprecated as of authkestra-op 0.7.0 (authkestra#273):
+    // PKCE is mandatory for every client on the authorization code grant,
+    // unconditionally, and the field is no longer read by any handler. The
+    // column still exists (the store still SELECTs it), but asserting on it
+    // would only prove a value nothing consults — so nothing here does.
     assert_eq!(
         client.redirect_uris,
         vec!["https://dash.vpay.test/callback".to_string()],
@@ -136,21 +150,42 @@ async fn sqlx_op_store_round_trips_a_client_and_enforces_single_use_codes() -> a
         client.scopes,
         vec!["openid".to_string(), "profile".to_string()]
     );
+    // Migration 0013's two `oauth_clients` columns, decoded by the 0.7.1
+    // store's own `try_get::<Option<Json<_>>>` — at 0.3.4 `find_client`
+    // hardcoded both to `None` (the premise of ADR-0010's context section).
+    assert_eq!(
+        client.token_endpoint_auth_method,
+        Some(TokenEndpointAuthMethod::PrivateKeyJwt),
+        "token_endpoint_auth_method JSONB must decode through the store's own type"
+    );
+    assert_eq!(
+        client
+            .jwks
+            .as_ref()
+            .and_then(|jwks| jwks.pointer("/keys/0/kid"))
+            .and_then(|kid| kid.as_str()),
+        Some("k1"),
+        "jwks JSONB must round-trip as the raw JSON the OP re-validates on every use"
+    );
 
     // --- 2 & 3. store_code / consume_code single-use. ---
     let code_value = "authz_code_test_123".to_string();
-    let code = AuthorizationCode {
-        code: code_value.clone(),
-        client_id: "vpay_dashboard".to_string(),
-        redirect_uri: "https://dash.vpay.test/callback".to_string(),
-        scope: "openid profile".to_string(),
-        code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_string()),
-        code_challenge_method: Some("S256".to_string()),
-        nonce: None,
-        identity: test_identity(),
-        expires_at: Utc::now() + ChronoDuration::seconds(60),
-        used: false,
-    };
+    // `AuthorizationCode` became `#[non_exhaustive]` in authkestra-op 0.6.0
+    // (authkestra#259), so struct-literal construction from outside the
+    // crate no longer compiles; `new` (authkestra#268) is the seam its own
+    // store implementations use. `used: false` is a required argument by
+    // design — see the constructor's doc comment for why it never defaults.
+    let mut code = AuthorizationCode::new(
+        code_value.clone(),
+        "vpay_dashboard".to_string(),
+        "https://dash.vpay.test/callback".to_string(),
+        "openid profile".to_string(),
+        test_identity(),
+        Utc::now() + ChronoDuration::seconds(60),
+        false,
+    );
+    code.code_challenge = Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_string());
+    code.code_challenge_method = Some("S256".to_string());
 
     AuthorizationCodeStore::store_code(&store, code)
         .await
@@ -176,6 +211,75 @@ async fn sqlx_op_store_round_trips_a_client_and_enforces_single_use_codes() -> a
          single-use guarantee AuthorizationCodeStore::consume_code documents, and the reason \
          its Postgres implementation is an atomic `UPDATE ... WHERE used = FALSE RETURNING *` \
          rather than a separate SELECT then UPDATE"
+    );
+
+    Ok(())
+}
+
+/// Migration 0013's `oauth_refresh_tokens.jkt` column, proven through the
+/// store's own `store_token` INSERT and `get_token` SELECT — both of which
+/// name `jkt` unconditionally at 0.7.1, so this test fails against 0006's
+/// table alone with a "column does not exist" error rather than passing
+/// vacuously. vpay's dashboard flow issues no refresh token at all
+/// (docs/flows/dashboard-auth.md) and offers no DPoP-bound grant; this is
+/// schema compatibility with the pinned crate, not a feature claim.
+#[tokio::test]
+async fn sqlx_op_store_round_trips_a_refresh_token_with_its_jkt_column() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    insert_dashboard_client(&pool).await?;
+    let store = SqlxOpStore::<sqlx::Postgres>::new(pool.clone());
+
+    let token = RefreshToken::new(
+        "rt_test_0013".to_string(),
+        "vpay_dashboard".to_string(),
+        test_identity(),
+        "openid".to_string(),
+        Utc::now() + ChronoDuration::seconds(60),
+        Some("jkt-thumbprint-0013".to_string()),
+    );
+    RefreshTokenStore::store_token(&store, token)
+        .await
+        .map_err(|e| anyhow::anyhow!("store_token: {e}"))?;
+
+    let fetched = RefreshTokenStore::get_token(&store, "rt_test_0013")
+        .await
+        .map_err(|e| anyhow::anyhow!("get_token: {e}"))?
+        .context("the refresh token just stored must be readable back")?;
+    assert_eq!(fetched.client_id, "vpay_dashboard");
+    assert_eq!(
+        fetched.jkt,
+        Some("jkt-thumbprint-0013".to_string()),
+        "jkt must round-trip through the store's own INSERT/SELECT of the 0013 column"
+    );
+
+    Ok(())
+}
+
+/// Migration 0013's `authkestra.oauth_dpop_jti` table, proven through the
+/// store's own `check_and_record_dpop_jti` override — a single
+/// `INSERT ... ON CONFLICT (jti) DO UPDATE ... WHERE expires_at <= now()`
+/// against that exact table. First claim of a fresh `jti` must succeed and a
+/// second, unexpired presentation must be refused: the replay guard actually
+/// firing against this schema, not just DDL that parses.
+#[tokio::test]
+async fn sqlx_op_store_records_a_dpop_jti_once_against_migration_0013s_table() -> anyhow::Result<()>
+{
+    let (_container, pool) = migrated_postgres().await?;
+    let store = SqlxOpStore::<sqlx::Postgres>::new(pool.clone());
+    let expires_at = Utc::now() + ChronoDuration::seconds(120);
+
+    let first = OpStore::check_and_record_dpop_jti(&store, "dpop_jti_0013", expires_at)
+        .await
+        .map_err(|e| anyhow::anyhow!("first check_and_record_dpop_jti: {e}"))?;
+    assert!(first, "a never-seen jti must be accepted");
+
+    let replay = OpStore::check_and_record_dpop_jti(&store, "dpop_jti_0013", expires_at)
+        .await
+        .map_err(|e| anyhow::anyhow!("second check_and_record_dpop_jti: {e}"))?;
+    assert!(
+        !replay,
+        "an unexpired jti presented again must be refused — the ON CONFLICT ... WHERE \
+         expires_at <= now() clause is what makes the table a replay guard"
     );
 
     Ok(())

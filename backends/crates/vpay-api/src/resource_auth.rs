@@ -21,7 +21,8 @@
 //! [`authkestra_resource::jwt::JwksCache`] fetches the JWKS once and caches
 //! it (`jwks_refresh_interval`, below); every call after that looks the key
 //! up by `kid` from memory and verifies the signature locally with
-//! `jsonwebtoken`. Confirmed by reading `authkestra-resource-0.3.4/src/jwt.rs`:
+//! `jsonwebtoken`. Confirmed by reading `authkestra-resource-0.3.4/src/jwt.rs`,
+//! and re-confirmed unchanged at the current `0.7.1` pin:
 //! `JwksCache::get_key` only calls `self.refresh()` (an HTTP GET) on a cache
 //! miss or once the TTL has elapsed, never on every `validate_jwt_generic`
 //! call. That is what makes this safe to put in front of a payment-processing

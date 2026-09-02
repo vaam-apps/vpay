@@ -58,6 +58,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r typecheck
       - run: pnpm -r test
+      # The Node SDK is the one package whose `build` actually emits JS
+      # (`dist/`, consumed by merchants and by `just sdk-conformance-node`);
+      # `pnpm -r typecheck` alone would not catch an emit-time failure.
+      - run: pnpm --filter @vpay/sdk build
       - run: pnpm --filter @vpay/ui build-storybook
 
   e2e:

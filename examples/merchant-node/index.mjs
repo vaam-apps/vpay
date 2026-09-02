@@ -1,71 +1,70 @@
 /**
- * Pointing the official Stripe SDK at a vpay host.
+ * A merchant backend talking to vpay through `@vpay/sdk` (sdks/nodejs).
  *
- * NOT RUNNABLE YET — /v1/* is not implemented, and neither is the
- * client_credentials + private_key_jwt token endpoint this now needs. See
- * ../../docs/status.md and
- * ../../docs/adr/0010-merchant-auth-private-key-jwt.md.
+ * NOT RUNNABLE AGAINST A REAL VPAY YET — /v1/* is not implemented, and
+ * neither is the client_credentials + private_key_jwt token endpoint this
+ * SDK speaks to. See ../../docs/status.md and
+ * ../../docs/flows/merchant-auth.md (the wire contract the SDK implements).
+ * What this file shows is the shape of a real integration; the SDK itself is
+ * tested against an HTTP stub of that contract, not against vpay.
  *
- * This file exists to pin down the compatibility claim, but that claim is
- * narrower than it used to be: the *object model* and *idempotency
- * semantics* are still Stripe-shaped; *authentication* is not
- * (ADR-0010 supersedes the part of ADR-0009 that had kept `/v1` on
- * sk_live_/sk_test_ keys). The Stripe SDK has no built-in support for OAuth2
- * client_credentials or RFC 7523 private_key_jwt — it only knows how to send
- * a fixed string as `Authorization: Bearer <value>`. A real integration
- * needs glue the SDK cannot provide on its own: sign a client assertion,
- * exchange it for a short-lived access token out of band, and hand that
- * token to the SDK in place of an API key — the one place this still lines
- * up, since the SDK sends whatever string it is given as a bearer token.
- * Because the grant issues no refresh token, that token must be refetched
- * and the client rebuilt before every expiry; the SDK has no concept of
- * doing that itself. `fetchAccessToken` below is pseudocode — it has never
- * run against a real vpay, because no vpay token endpoint exists yet.
+ * Why not the Stripe SDK: vpay's object model and idempotency semantics are
+ * Stripe-shaped, but its authentication is not (ADR-0010) — a Stripe SDK can
+ * only send a fixed bearer string, and cannot sign an RFC 7523 client
+ * assertion or refresh a short-lived access token. `@vpay/sdk` does both,
+ * transparently, on every call.
+ *
+ * Build the SDK first: `pnpm --filter @vpay/sdk build`.
  */
-import Stripe from 'stripe';
+import { readFileSync } from "node:fs";
+import { VpayClient, VpayError } from "@vpay/sdk";
 
-/**
- * Sign a client assertion and exchange it for a bearer access token.
- * Pseudocode — no vpay token endpoint exists yet (ADR-0010), and no
- * vpay-provided helper library exists to build the assertion.
- */
-async function fetchAccessToken() {
-  throw new Error(
-    'not implemented — the /v1 OAuth2 token endpoint does not exist yet, see docs/status.md',
-  );
-}
+const vpay = new VpayClient({
+  baseUrl: process.env.VPAY_BASE_URL ?? "https://api.vpay.example",
+  // `merchant_a` is the client_id vpay registered from your YAML config PR;
+  // the private key never leaves your systems — vpay holds only the public
+  // JWK. Register more than one key and you must also pass `kid`.
+  clientId: process.env.VPAY_CLIENT_ID ?? "merchant_a",
+  privateKey: readFileSync(
+    process.env.VPAY_PRIVATE_KEY_FILE ?? "./merchant-a-private-key.pem",
+    "utf8",
+  ),
+  kid: process.env.VPAY_KID,
+});
 
 async function main() {
-  const accessToken = await fetchAccessToken();
-
-  const stripe = new Stripe(accessToken, {
-    host: process.env.VPAY_HOST ?? 'api.vpay.example',
-    protocol: 'https',
-    port: 443,
-  });
-
-  const intent = await stripe.paymentIntents.create(
+  const intent = await vpay.paymentIntents.create(
     {
-      amount: 5000, // 5,000 FCFA — XAF is zero-decimal
-      currency: 'xaf',
-      payment_method_types: ['mtn_momo'],
-      metadata: { order_id: '1234' },
+      amount: 5000, // 5,000 FCFA — XAF is zero-decimal, integer minor units
+      currency: "xaf",
+      payment_method_types: ["mtn_momo"],
+      metadata: { order_id: "1234" },
     },
-    { idempotencyKey: 'order_1234_attempt_1' },
+    { idempotencyKey: "order_1234_attempt_1" },
+  );
+  console.log("created", intent.id, intent.status);
+
+  const confirmed = await vpay.paymentIntents.confirm(
+    intent.id,
+    {
+      payment_method_data: {
+        type: "mtn_momo",
+        mtn_momo: { msisdn: "237670000000" },
+      },
+    },
+    { idempotencyKey: "order_1234_confirm_1" },
   );
 
-  console.log('created', intent.id, intent.status);
-
-  const confirmed = await stripe.paymentIntents.confirm(intent.id, {
-    // @ts-expect-error — mtn_momo is a vpay rail, absent from Stripe's types
-    payment_method_data: { type: 'mtn_momo', mtn_momo: { msisdn: '237670000000' } },
-  });
-
-  // `processing` means NOT YET. Wait for payment_intent.succeeded.
-  console.log('confirmed', confirmed.status);
+  // `processing` means NOT YET. The payer has a prompt on their handset;
+  // wait for the payment_intent.succeeded webhook (see ../webhook-receiver).
+  console.log("confirmed", confirmed.status);
 }
 
 main().catch((err) => {
-  console.error('failed:', err.message);
+  if (err instanceof VpayError) {
+    console.error(`${err.name}: ${err.message}`);
+  } else {
+    console.error("failed:", err);
+  }
   process.exitCode = 1;
 });

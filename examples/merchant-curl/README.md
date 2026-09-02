@@ -5,7 +5,11 @@
 > ../../docs/status.md and
 > [ADR-0010](../../docs/adr/0010-merchant-auth-private-key-jwt.md). The
 > token endpoint's exact path below is illustrative — it has not been
-> decided.
+> decided; the SDKs default to it and make it configurable
+> ([docs/flows/merchant-auth.md](../../docs/flows/merchant-auth.md)).
+> Array parameters are shown in Stripe's curl style (`key[]=v`); the SDKs
+> send the indexed form (`key[0]=v`) Stripe's own SDKs use, and the server
+> must accept both, as Stripe does.
 
 ## Authenticate — `client_credentials` + `private_key_jwt`
 
@@ -16,10 +20,12 @@ see [ADR-0003](../../docs/adr/0003-yaml-configuration.md)), then exchanges
 that assertion for a bearer access token:
 
 ```bash
-# 1. Build a client assertion (RFC 7523). Pseudocode — no vpay-provided
-#    helper library exists. `merchant_a` is the client_id vpay registered
-#    from the merchant's YAML config PR; merchant-a-private-key.pem never
-#    leaves the merchant's own systems.
+# 1. Build a client assertion (RFC 7523). Pseudocode for the raw shape —
+#    both vpay SDKs do this for you (`vpay_sdk::auth` in sdks/rust,
+#    `mintClientAssertion` in sdks/nodejs); the exact claims the OP checks
+#    are tabulated in docs/flows/merchant-auth.md. `merchant_a` is the
+#    client_id vpay registered from the merchant's YAML config PR;
+#    merchant-a-private-key.pem never leaves the merchant's own systems.
 ASSERTION=$(build_signed_jwt \
   --iss merchant_a --sub merchant_a --aud https://api.vpay.example/v1/oauth/token \
   --exp "+300s" --jti "$(uuidgen)" \

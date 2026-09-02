@@ -453,3 +453,12 @@ this phase cannot be closed regardless of how much other work is done.
 *Written 2026-08-11 against `master` at `33f2913`. If this page and the code
 disagree, the code — and `docs/status.md`'s machine-checked account of it —
 is correct.*
+
+**Addendum, 2026-09-02.** Two things landed that this snapshot does not
+place in a phase: the merchant SDKs (`sdks/rust`, `sdks/nodejs`) implement the
+*client* half of Phase 3's `/v1` contract — pinned down in
+[`docs/flows/merchant-auth.md`](flows/merchant-auth.md) — ahead of any server
+route existing, so Phase 3 now has a consumer to build against; and the
+dependency floor moved (`authkestra-*` 0.5.4 → 0.7.1 with migration `0013`,
+CrateStack re-verified at 0.10.1). Phase 2's "assembled but not mounted"
+status is unchanged. See `docs/status.md` for the row-by-row account.
