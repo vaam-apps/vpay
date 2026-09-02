@@ -44,6 +44,57 @@ pub enum LedgerError {
     Money(#[from] MoneyError),
 }
 
+impl vpay_core::Classify for LedgerError {
+    fn category(&self) -> vpay_core::Category {
+        match self {
+            // No caller builds a ledger transaction; the core does, from
+            // amounts it already validated. An unbalanced or degenerate one
+            // is therefore this code's own invariant failing — the most
+            // expensive kind of bug this system can have (ADR-0007).
+            Self::Unbalanced { .. } | Self::TooFewEntries => vpay_core::Category::Internal,
+            Self::Money(inner) => inner.category(),
+        }
+    }
+
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Unbalanced { .. } => "ledger_unbalanced",
+            Self::TooFewEntries => "ledger_degenerate",
+            Self::Money(inner) => inner.code(),
+        }
+    }
+
+    // The three methods below are exhaustive rather than
+    // `Self::Money(..) => .., _ => ..`: a wildcard would silently give a new
+    // variant the *invariant-violation* policy (never retry, page, say
+    // nothing), which is right for the two that exist and would be a lie for,
+    // say, a future `AccountNotFound`. Adding a variant should not compile
+    // until someone has decided.
+    fn retry(&self) -> vpay_core::Retry {
+        match self {
+            Self::Money(inner) => inner.retry(),
+            Self::Unbalanced { .. } | Self::TooFewEntries => vpay_core::Retry::Never,
+        }
+    }
+
+    fn severity(&self) -> vpay_core::Severity {
+        match self {
+            Self::Money(inner) => inner.severity(),
+            Self::Unbalanced { .. } | Self::TooFewEntries => vpay_core::Severity::Page,
+        }
+    }
+
+    fn public_message(&self) -> String {
+        match self {
+            Self::Money(inner) => inner.public_message(),
+            // Internal: the merchant learns nothing about the ledger.
+            Self::Unbalanced { .. } | Self::TooFewEntries => {
+                self.category().generic_message().to_owned()
+            }
+        }
+    }
+}
+
 impl Transaction {
     /// # Errors
     /// [`LedgerError::Unbalanced`] unless debits equal credits.

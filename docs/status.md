@@ -5,14 +5,39 @@ rule: *never advertise a feature as done when it clearly is not.*
 
 It is machine-checked. `cargo xtask verify-status` scans the workspace for every
 `ProviderError::NotImplemented("…")` token and fails the build if one is missing
-from this file. You cannot quietly ship an unimplemented path.
+from this file. You cannot quietly ship an unimplemented path. Since 2026-09-02
+`cargo xtask verify-errors` likewise fails the build if an error type in
+`backends/crates` is not classified per [ADR-0011](adr/0011-error-modelling.md),
+or if `anyhow` leaks into a library crate.
 
-Last verified: 2026-09-02, on branch `claude/sdk-rust-nodejs-0c1ecf` against
-`8c0760e`. `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
--- -D warnings`, `cargo xtask verify-no-mocks`, `cargo xtask verify-status`,
-`cargo deny check` (`advisories ok, bans ok, licenses ok, sources ok`),
-`pnpm -r typecheck`, `pnpm -r test` (136 passed) and `RUSTDOCFLAGS="-D
-warnings" cargo doc -p vpay-sdk` all clean. `cargo nextest run --workspace`:
+Last verified: 2026-09-02, on branch `claude/error-modelling` (the
+error-modelling pass, [ADR-0011](adr/0011-error-modelling.md)) rebased on
+`master` at `985bd96` (the merge of the SDK/authkestra pass below).
+`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D
+warnings`, `just verify` (`verify-no-mocks`, `verify-status`, and the new
+`verify-errors` — `9 error type(s), all classified`), `cargo deny check`,
+`pnpm -r typecheck`, and `RUSTDOCFLAGS="-D warnings" cargo doc` for
+`vpay-core`/`vpay-api`/`vpay-worker`/`vpay-sdk` all clean. `cargo nextest
+run` over every crate that needs no container (`vpay-core`, `vpay-api`,
+`vpay-worker`, `vpay-provider`, `vpay-ledger`, `vpay-config`, `xtask`,
+`vpay-sdk`): **262 passed, 0 skipped**; the six new exit-code CLI tests in
+the two binaries pass without Docker. The container-backed suites still
+cannot run on the authoring machine (same daemon fault as the previous
+pass, described below) and are not claimed to pass here — the previous
+pass's CI run on `master` is the last evidence for them, and this pass
+changed no code in `vpay-db` or the migrations. **What this pass adds is
+the error model: the `Classify` seam and policy table in `vpay-core`, a
+`Classify` impl on every leaf error, the `ApiError` and `JobError`
+composites, exit codes from `Category` in both binaries, and the
+`verify-errors` self-check — see the six "Error …" rows in the Backend
+table and [docs/flows/errors.md](flows/errors.md); none of it serves a
+request or moves money, and the rows say so.** The SDK/authkestra pass's
+own note follows, unchanged: on branch `claude/sdk-rust-nodejs-0c1ecf`
+against `8c0760e`, `cargo fmt --all -- --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo xtask verify-no-mocks`, `cargo xtask
+verify-status`, `cargo deny check` (`advisories ok, bans ok, licenses ok,
+sources ok`), `pnpm -r typecheck`, `pnpm -r test` (136 passed) and
+`RUSTDOCFLAGS="-D warnings" cargo doc -p vpay-sdk` all clean. `cargo nextest run --workspace`:
 **248 tests, 214 passed, 34 failed, 3 skipped** — and the 34 failures must be
 read exactly: every one is in a suite that starts a `postgres:16-alpine`
 testcontainer (`vpay-db`, `vpay-server::cli`, `vpay-worker-bin::cli`,
@@ -185,6 +210,11 @@ Nothing in this repo is ✅ unless a test would fail if it broke.
 |---|---|---|
 | Workspace, edition 2024, resolver 3 | ✅ | `cargo check --workspace --all-targets` clean |
 | Lint policy (no `unwrap`/`expect`/`panic`/float in prod) | ✅ | `cargo clippy -- -D warnings` clean; tests exempted via `clippy.toml` |
+| Error classification seam (`vpay_core::error`, [ADR-0011](adr/0011-error-modelling.md), [docs/flows/errors.md](flows/errors.md)) | ✅ | `Category` (12 variants), `Retry`, `Severity`, the `Classify` trait and `find_in_chain`. The whole policy table — HTTP status, Stripe `type`, default `code`, retry, severity, public message, exit code — is one set of exhaustive `match`es on `Category`, pinned two ways: invariant tests over every category (caller categories are 4xx and system categories 5xx, only `Rail`/`Storage`/`RateLimited` retry after backoff, only `Internal` pages, every `type` is in Stripe's closed vocabulary, no generic message names anything internal, exit codes follow `sysexits`) **and** a literal transcription of [docs/flows/errors.md](flows/errors.md)'s twelve-row table, so the document and the code fail together; `Category::ALL` is proven complete by an exhaustive index function, so a thirteenth variant fails to compile there and fails the test if left out of `ALL`. 28 test functions in `vpay-core`. ✅ for what this row claims — the seam exists and its policy is proven — not for any request being answered through it (see the `ApiError` row) |
+| Leaf errors classified (`MoneyError`, `UnknownCurrency`, `LedgerError`, `ConfigError`, `DbError`, `ProviderError`, `AuthRejection`) | ✅ | Each has an `impl Classify` next to its definition, with a comment per non-obvious choice (`DbError::Migrate` is `Configuration` not `Storage`; `ProviderError::Rejected` is `Conflict` with `Retry::NewAttempt`; `LedgerError::Unbalanced` pages). `ProviderError::Rejected` is the one that carries policy of its own: its envelope `code` is the constant `charge_declined` (an earlier draft reused the `FailureCode` string, which collided with `Transport`'s `provider_unavailable` at a different status), the `FailureCode` is in the public message, and its severity follows [docs/flows/failures.md](flows/failures.md)'s own table — `provider_account_blocked` pages, `provider_unavailable`/`provider_error` warn — proven exhaustively over all eleven codes. **Machine-checked**: `cargo xtask verify-errors` fails `just verify` and CI if any `pub` type under `backends/crates` that derives `thiserror::Error` **or** is named `*Error`/`*Rejection` lacks an `impl Classify` outside test code, or if a library crate lists `anyhow` under `[dependencies]` — proven live by deleting `UnknownCurrency`'s impl, by moving an impl into a `#[cfg(test)]` module, and by injecting `anyhow`, all three refused; it currently counts 9 types. Scope, stated plainly: `pub` types only, `backends/crates` only, `tests/` directories and `#[cfg(test)]` blocks excluded, line and block comments stripped; the SDKs and `backends/apps` are outside it by design |
+| `vpay_api::ApiError` (HTTP composite) | 🟡 | `#[from]` every leaf the HTTP layer can meet (`DbError`, `ProviderError`, `MoneyError`, `UnknownCurrency`, `LedgerError`, `ConfigError`, `AuthRejection`) plus `UnknownRoute`/`InvalidParam`/`IdempotencyKeyReused`/`Internal`; axum's `Form`/`Json`/`Path`/`Query` rejections convert into `InvalidParam` with a curated sentence (a real `Form` extractor failing over a router yields the 400 envelope with `param: "body"`, never axum's plain text); no blanket `From<serde_json::Error>`, by design. `Classify` delegates all five methods to the leaf, pinned by a test asserting a wrapped leaf answers exactly as the bare leaf for `retry`/`severity`/`public_message` too. `IntoResponse` derives status, `type`, `code`, `message` and optional `param` from the classification and logs the full `Display` **and** source chain at the mapped `tracing` level (`alert = true` on `Page`) — a `DbError` carrying `host-secret-xyz` reaches the log and never the body (tested). `InvalidParam.param` must look like a field name (else `request`) and `message` is capped at 200 chars at render time; a 1 MB input yields a body under 1 KiB (tested). **The two envelope renderers are `pub(crate)`**, so a handler cannot build one by hand — one renderer is structural; `error_envelope` itself is now test-only (its pinned-shape test remains), and `IntoResponse` calls `error_envelope_with_param`. `AuthRejection` is classified and rendered through it; the 404 fallback is an `ApiError`; the pre-existing 404 and 401 envelope bytes are pinned unchanged. 29 test functions in `vpay-api`, 0 ignored. **🟡 because in a running `vpay-server` the only reachable `ApiError` is the 404 fallback**: no `/v1` handler exists, and the bearer-token extractor is mounted on no route, so no 401 envelope can occur in production yet. `vpay-api` gained `vpay-config` and `vpay-ledger` as runtime dependencies for variants no handler can produce today. `vpay-config` was already in both binaries' graphs; `vpay-ledger` is a workspace crate that **neither binary linked before** and now both do (via `vpay-api` and `vpay-worker`). No third-party package is new to either binary, but `vpay-api`'s own graph now includes `clap`/`figment`/`garde`/`serde_yaml_ng`; `cargo deny check` still clean |
+| `vpay_worker::JobError` (job-loop composite) | 🟡 | `Db`/`Provider`/`Money`/`Ledger` wrapped with all-five-method delegation, plus `Poisoned` (`Internal`) and `Exhausted` — the reconciler's `unresolved` state, which [docs/flows/reconciler.md](flows/reconciler.md) defines as "still polled, once an hour, and now raising an alert": `Rail`, `Retry::AfterBackoff`, severity `Error`, code `charge_unresolved`. `decision(attempt)` is a wildcard-free `match` on `Classify::retry` alone: `AfterBackoff → RetryAfter { delay, alert }` with `delay = poll_delay(attempt)` (or the documented hour, `UNRESOLVED_POLL_INTERVAL`, for `Exhausted`) and `alert = severity ≥ Error`; `NewAttempt → Terminal`; `Never → DeadLetter`. 12 test functions: a declined charge is `Terminal`, `NotImplemented` dead-letters, `Db::Connect` rides the ladder *and* alerts (Storage is severity `Error`), `Transport` rides it and wakes nobody, `Exhausted` retries hourly with `alert: true` at every attempt and is never a `DeadLetter`. **🟡 because nothing calls `decision()`**: the job loop is ⛔ (Poll ladder row); `JobError` has no consumer anywhere in the workspace and is the contract Phase 5 consumes |
+| Binary exit codes (`vpay-server`, `vpay-worker-bin`) | ✅ | `main` returns `ExitCode`: on a startup error the full `anyhow` chain is printed to stderr and the code comes from the first classifiable leaf in that chain (`ConfigError` looked up before `DbError`, since a config naming a dead database is still a config problem), `Internal`/1 if nothing matched. Proven by subprocess tests that need no Docker: missing `--config` → 78, invalid config → 78, a closed Postgres port → 69 (the `sqlx` acquire timeout makes that test take ~5 s, documented on the constant). A mutation forcing `1` fails all six. The drain-timeout `exit(1)` on `vpay-server` is unchanged |
 | `Money` — integer minor units, XAF zero-decimal | ✅ | 6 tests incl. cross-currency and over-refund rejection |
 | Canonical failure taxonomy | ✅ | 3 tests |
 | Charge / intent state + `ProviderFlow` | ✅ | 3 tests incl. live-xor-terminal exhaustiveness |

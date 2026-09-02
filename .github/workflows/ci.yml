@@ -9,9 +9,12 @@ env:
   CYPRESS_INSTALL_BINARY: 0
 
 jobs:
-  # The two promises this repo makes about itself. Fast, and first — if these
+  # The promises this repo makes about itself. Fast, and first — if these
   # fail, nothing else is worth running.
   verify:
+    # The job's display name is what branch protection pins as a required
+    # check, so it stays exactly as it was; the new check is named in its
+    # own step instead.
     name: self-checks (no-mocks, status)
     runs-on: ubuntu-latest
     steps:
@@ -20,6 +23,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo xtask verify-no-mocks
       - run: cargo xtask verify-status
+      - name: verify-errors (ADR-0011)
+        run: cargo xtask verify-errors
 
   rust:
     name: rust

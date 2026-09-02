@@ -4070,12 +4070,16 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sqlx",
  "thiserror",
  "tokio",
  "tower",
  "tracing",
+ "tracing-subscriber",
+ "vpay-config",
  "vpay-core",
  "vpay-db",
+ "vpay-ledger",
  "vpay-provider",
  "wiremock",
 ]
@@ -4122,6 +4126,7 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
+ "vpay-core",
 ]
 
 [[package]]
@@ -4250,10 +4255,14 @@ dependencies = [
  "axum",
  "serde",
  "serde_json",
+ "sqlx",
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
  "vpay-core",
+ "vpay-db",
+ "vpay-ledger",
  "vpay-provider",
 ]
 

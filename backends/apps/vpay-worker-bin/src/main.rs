@@ -11,12 +11,15 @@
 //! makes shutdown/orchestration behaviour real and testable today, without
 //! pretending the job loop exists.
 
+use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::Context as _;
 use clap::Parser as _;
 use mimalloc::MiMalloc;
-use vpay_config::{LogFormat, ShutdownSignals, WorkerArgs};
+use vpay_config::{ConfigError, LogFormat, ShutdownSignals, WorkerArgs};
+use vpay_core::error::{Category, Classify as _, find_in_chain};
+use vpay_db::DbError;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -24,8 +27,66 @@ static GLOBAL: MiMalloc = MiMalloc;
 /// How often the "not implemented" banner repeats while the process is up.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Runs [`run`] and turns its failure into a *classified* exit code.
+///
+/// Synchronous, returning [`ExitCode`] rather than `anyhow::Result<()>`,
+/// for the same reason as `vpay-server`'s `main` (see that binary): the
+/// `Termination` impl for `Result` always exits `1`, which is precisely the
+/// "a supervisor cannot tell 'fix the YAML' from 'Postgres is down'" problem
+/// ADR-0011 exists to fix. Both binaries must answer identically, since an
+/// operator debugging a compose stack reads both exit codes the same way.
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            // `eprintln!`, not `tracing::error!`: a missing or invalid
+            // `--config` fails before `init_tracing` has installed a
+            // subscriber, so a `tracing` event would be dropped and the
+            // process would exit with a bare number and no explanation.
+            // `{error:#}` renders the full `anyhow` context chain inline so
+            // the `.context(..)` calls in `run` actually reach an operator.
+            eprintln!("vpay-worker-bin: {error:#}");
+            ExitCode::from(exit_code_for(&error))
+        }
+    }
+}
+
+/// The exit code for a failed startup, per ADR-0011's Tier 3 and the table in
+/// `docs/flows/errors.md`. Deliberately a near-copy of `vpay-server`'s
+/// function of the same name rather than a shared helper. A shared version
+/// has to name both leaf types it looks for, so it needs a home that depends
+/// on `vpay-config` **and** `vpay-db` — and that home would exist only to
+/// hold this function. "The set of leaf errors a binary knows how to
+/// classify" is not a library boundary this workspace wants: it is a
+/// property of the binary, and the two binaries are free to diverge as they
+/// grow (this one will learn about job-queue failures the server never
+/// meets). Two copies of eight lines, each pinned by its own CLI tests, cost
+/// less than a crate that exists to avoid them. ADR-0011 also keeps `anyhow`
+/// out of every library crate's `[dependencies]`, so the shared helper could
+/// not take an `&anyhow::Error` anyway.
+///
+/// The order is load-bearing, not alphabetical: `ConfigError` is looked for
+/// **before** `DbError`, so a chain carrying both (a config that names an
+/// unreachable database) reports the operator's real problem — `78` ("fix the
+/// deploy") rather than `69` ("wait for Postgres"). `find_in_chain` is typed,
+/// so this is also the exhaustive list of leaf errors this binary knows how
+/// to classify; anything else falls through to [`Category::Internal`], exit
+/// `1`. That fallback is the pessimistic one on purpose: an unclassified
+/// startup failure in a payment binary should look like a bug.
+fn exit_code_for(error: &anyhow::Error) -> u8 {
+    let category = find_in_chain::<ConfigError>(error.chain())
+        .map(|e| e.category())
+        .or_else(|| find_in_chain::<DbError>(error.chain()).map(|e| e.category()))
+        .unwrap_or(Category::Internal);
+    // Every `Category::exit_code()` is in `1..=78` (pinned by a test in
+    // `vpay_core::error`), so this conversion cannot fail in practice; `1`
+    // is the same honest fallback as an unclassified error, rather than a
+    // truncating cast.
+    u8::try_from(category.exit_code()).unwrap_or(1)
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn run() -> anyhow::Result<()> {
     let args = WorkerArgs::parse();
 
     // Installed before anything else — including tracing init — so the

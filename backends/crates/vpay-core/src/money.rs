@@ -152,6 +152,87 @@ pub enum MoneyError {
     Overflow,
 }
 
+impl crate::error::Classify for MoneyError {
+    fn category(&self) -> crate::error::Category {
+        use crate::error::Category;
+        match self {
+            // An amount or a currency pair came from a caller's request.
+            Self::Negative(_) | Self::CurrencyMismatch { .. } => Category::InvalidRequest,
+            // `i64` minor units overflowing is not a request a merchant can
+            // make; it is arithmetic this crate performed on values it had
+            // already accepted — a bug, and one in the money path.
+            Self::Overflow => Category::Internal,
+        }
+    }
+
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Negative(_) => "amount_negative",
+            Self::CurrencyMismatch { .. } => "currency_mismatch",
+            Self::Overflow => "internal_error",
+        }
+    }
+
+    fn public_message(&self) -> String {
+        match self {
+            // Caller-category errors say exactly what to fix; the value is
+            // the caller's own, so echoing it leaks nothing.
+            Self::Negative(n) => format!("amount must not be negative, got {n}"),
+            Self::CurrencyMismatch { left, right } => {
+                format!("currency mismatch: {} vs {}", left.code(), right.code())
+            }
+            Self::Overflow => self.category().generic_message().to_owned(),
+        }
+    }
+}
+
+/// How many characters of a rejected currency code may be echoed back.
+///
+/// An ISO-4217 code is three characters; eight is generous enough that a
+/// merchant recognises what they sent (`"xaf "`, `"XAFF"`, `"xaf\n"`) and
+/// short enough that the echo cannot become a reflection channel. Without a
+/// bound, [`Currency::from_code`] would happily build an `UnknownCurrency`
+/// around a megabyte of caller-supplied bytes and
+/// [`Classify::public_message`](crate::error::Classify::public_message)
+/// would put all of it in a response body.
+const CURRENCY_ECHO_CHARS: usize = 8;
+
+/// The first [`CURRENCY_ECHO_CHARS`] characters of `code`, with an ellipsis
+/// iff anything was dropped.
+///
+/// Character-wise, not byte-wise: the code is caller-supplied text and
+/// slicing at byte 8 would panic on a multi-byte boundary — ADR-0007 denies
+/// panics in production code, and this runs on a request path. Nothing is
+/// appended when the input already fits, so the overwhelmingly common case
+/// (a three-letter typo) reads back exactly as the caller sent it.
+fn echoed_currency(code: &str) -> String {
+    let mut out: String = code.chars().take(CURRENCY_ECHO_CHARS).collect();
+    if code.chars().nth(CURRENCY_ECHO_CHARS).is_some() {
+        out.push('\u{2026}');
+    }
+    out
+}
+
+impl crate::error::Classify for UnknownCurrency {
+    fn category(&self) -> crate::error::Category {
+        crate::error::Category::InvalidRequest
+    }
+
+    fn code(&self) -> &'static str {
+        "currency_unknown"
+    }
+
+    /// Echoes the offending code, bounded. The value is the caller's own so
+    /// echoing it leaks nothing — but it is also *unbounded*: `from_code`
+    /// accepts whatever arrived on the wire, so the public message truncates
+    /// rather than trusting an upstream length check that does not exist
+    /// yet. `Display` keeps the whole string, because that half goes to an
+    /// operator's log, not into a response body.
+    fn public_message(&self) -> String {
+        format!("unknown currency: {}", echoed_currency(&self.0))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +279,45 @@ mod tests {
             xaf(100).checked_sub(xaf(101)),
             Err(MoneyError::Negative(_))
         ));
+    }
+
+    #[test]
+    fn a_short_currency_code_is_echoed_verbatim() {
+        use crate::error::Classify as _;
+        let e = Currency::from_code("xaf").expect_err("lowercase is not a known code");
+        assert_eq!(e.public_message(), "unknown currency: xaf");
+    }
+
+    /// A megabyte of caller-supplied bytes must not become a megabyte of
+    /// response body. `from_code` is the real ingress — it wraps whatever
+    /// arrived — so the bound has to live in `public_message`, not in a
+    /// caller that may forget.
+    #[test]
+    fn a_megabyte_of_currency_code_is_bounded_in_the_public_message() {
+        use crate::error::Classify as _;
+        let huge = "A".repeat(1024 * 1024);
+        let e = Currency::from_code(&huge).expect_err("that is not a currency");
+        let message = e.public_message();
+        assert_eq!(message, "unknown currency: AAAAAAAA\u{2026}");
+        assert!(
+            message.len() < 64,
+            "the public message must stay small, got {} bytes",
+            message.len()
+        );
+        // The operator-facing half is deliberately unbounded: `Display` goes
+        // to a log, never to a response body.
+        assert!(e.to_string().len() > 1024 * 1024);
+    }
+
+    /// Byte-wise truncation would panic here; ADR-0007 denies panics on a
+    /// request path and this runs on one.
+    #[test]
+    fn a_multibyte_currency_code_is_truncated_on_a_character_boundary() {
+        use crate::error::Classify as _;
+        let e = Currency::from_code("€€€€€€€€€€").expect_err("that is not a currency");
+        assert_eq!(
+            e.public_message(),
+            "unknown currency: \u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{2026}"
+        );
     }
 }

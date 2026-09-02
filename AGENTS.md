@@ -76,7 +76,18 @@ status. The authenticated status query is the only thing that moves money.
 - `unwrap`, `expect`, `panic`, `todo`, `unimplemented`, float arithmetic: denied
   in production code. Tests are exempt via `clippy.toml`. `unsafe` is forbidden.
   ([ADR-0007](docs/adr/0007-lint-policy.md))
-- Errors: `thiserror` for library crates, `anyhow` only in binaries.
+- Errors are typed at the leaves, composed per layer, classified once
+  ([ADR-0011](docs/adr/0011-error-modelling.md),
+  [docs/flows/errors.md](docs/flows/errors.md)). A library crate defines closed
+  `thiserror` enums for its own concerns and each one implements
+  `vpay_core::error::Classify`; a layer that consumes several crates defines a
+  composite that `#[from]`s the leaves and *delegates* its classification
+  rather than re-deciding it; `anyhow` appears only at the boundary — in
+  `backends/apps/*` `main()`, and in `[dev-dependencies]`. Status, retry
+  policy, log severity and exit code are all derived from `Category`, never
+  chosen at a call site. `cargo xtask verify-errors` fails the build if a `pub`
+  `…Error`/`…Rejection` type in `backends/crates` has no `impl Classify`, or if
+  a library crate lists `anyhow` under `[dependencies]`.
 - TLS: rustls only. `openssl`, `openssl-sys` and `native-tls` are banned in
   `deny.toml`; do not add a dependency that needs them without a new ADR.
 - Doc comments on every public item, explaining *why*, not restating the name.

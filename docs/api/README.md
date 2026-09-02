@@ -20,6 +20,17 @@ Everything else about `/v1` is still Stripe-shaped: form-encoded bodies,
 Stripe's object model, Stripe's error envelope, Stripe's idempotency
 semantics.
 
+**Errors.** Every non-2xx response is the Stripe envelope
+`{ "error": { "type", "code", "message", "param"? } }`, and the status,
+`type` and `code` are *derived* from the failing error's classification
+(`vpay_core::error::Classify` → `vpay_api::ApiError`), never chosen per
+handler — so the same failure always gets the same answer. The full
+category → status/type/code table is in
+[../flows/errors.md](../flows/errors.md); the decision is
+[ADR-0011](../adr/0011-error-modelling.md). `message` is the error's
+public message and never contains hosts, tables, library text or
+credentials; the full chain goes to the server log.
+
 **Status: not implemented server-side.** Only `/healthz` and a Stripe-shaped
 404 exist — that includes the OAuth2 token endpoint this auth model needs,
 which also does not exist yet. See [../status.md](../status.md).

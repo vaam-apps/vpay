@@ -100,14 +100,144 @@ pub enum ProviderError {
     Malformed(String),
     #[error("adapter configuration is invalid: {0}")]
     Config(String),
-    /// Returned by an operation this rail does not support. Honest by design —
-    /// the core checks [`Capabilities`] first, so reaching this is a bug.
+    /// Returned by an operation this rail does not support.
+    ///
+    /// Two facts, and they decide different columns. The *request* cannot
+    /// proceed and never will on this rail, so the category is
+    /// [`vpay_core::Category::Conflict`] — 409, and a merchant reading the
+    /// envelope learns the truth. But the core is supposed to branch on
+    /// [`Capabilities`] before it ever calls (ADR-0002), so reaching this
+    /// arm at all means *our* check was skipped: the severity is therefore
+    /// overridden to [`vpay_core::Severity::Error`] rather than the
+    /// `Conflict` default of `Info`, so it shows up in a log an operator
+    /// reads instead of being counted alongside merchants' typos.
     #[error("operation not supported by this rail")]
     Unsupported,
     /// Not yet built. This is NOT a mock: it never pretends to succeed.
     /// Every occurrence must appear in `docs/status.md`.
     #[error("not implemented yet: {0}")]
     NotImplemented(&'static str),
+}
+
+impl vpay_core::Classify for ProviderError {
+    fn category(&self) -> vpay_core::Category {
+        use vpay_core::Category;
+        match self {
+            // The rail could not be reached or spoke gibberish. The worker's
+            // poll ladder retries these (docs/flows/reconciler.md); nobody
+            // else should, and a merchant re-submitting would risk a double
+            // charge on a push rail (docs/flows/crash-safety.md).
+            Self::Transport(_) | Self::Malformed(_) => Category::Rail,
+            // A rail *decision*, not a rail *failure*: the charge is
+            // declined, the intent goes back to requires_payment_method with
+            // `last_payment_error`, and the merchant starts a new intent.
+            // Classified as Conflict (the charge's state now forbids
+            // retrying it) with `Retry::NewAttempt` below.
+            Self::Rejected { .. } => Category::Conflict,
+            Self::Config(_) => Category::Configuration,
+            // The request cannot proceed on this rail, so 409 — whose *bug*
+            // it is (ours) is carried by the severity override below, not by
+            // the category. See the variant's own doc comment.
+            Self::Unsupported => Category::Conflict,
+            Self::NotImplemented(_) => Category::NotImplemented,
+        }
+    }
+
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Transport(_) => "provider_unavailable",
+            Self::Malformed(_) => "provider_error",
+            // A constant, *not* the `FailureCode`'s own string. The two
+            // vocabularies overlap: `FailureCode::ProviderUnavailable`
+            // renders `provider_unavailable`, which is also
+            // `Category::Rail`'s default code — the one `Transport` emits
+            // with a 502 and "we are retrying this". A merchant branching on
+            // the envelope's `code` would then see the same token for "the
+            // rail is down, we will retry" (502) and "your charge was
+            // declined, start a new intent" (409). One code per outcome:
+            // `charge_declined` says the outcome, and the specific
+            // `FailureCode` reaches the merchant through the charge's own
+            // `failure_code` field (docs/flows/failures.md) and through the
+            // public message below.
+            Self::Rejected { .. } => "charge_declined",
+            Self::Config(_) => "misconfigured",
+            Self::Unsupported => "operation_unsupported_by_rail",
+            Self::NotImplemented(_) => "not_implemented",
+        }
+    }
+
+    fn retry(&self) -> vpay_core::Retry {
+        match self {
+            // "Retry means a new PaymentIntent" (docs/flows/payment-lifecycle.md).
+            Self::Rejected { .. } => vpay_core::Retry::NewAttempt,
+            // Exhaustive rather than a wildcard: a new variant must state
+            // its retry policy here, not inherit one silently from whatever
+            // category it happened to pick.
+            Self::Transport(_)
+            | Self::Malformed(_)
+            | Self::Config(_)
+            | Self::Unsupported
+            | Self::NotImplemented(_) => self.category().default_retry(),
+        }
+    }
+
+    fn severity(&self) -> vpay_core::Severity {
+        use vpay_core::Severity;
+        match self {
+            // A decline is a business outcome, and `Category::Conflict`
+            // would log every one of them at `Info`. Most of them should be:
+            // an insufficient balance is the payer's problem and a gateway
+            // sees thousands a day. But the taxonomy already carries its own
+            // policy (docs/flows/failures.md), and two of its codes are not
+            // about the payer at all, so the severity follows the
+            // `FailureCode` rather than the category.
+            Self::Rejected { code, .. } => match code {
+                // "**Your** partner account is blocked … Page yourself" —
+                // docs/flows/failures.md. Every charge on this rail is
+                // failing and no payer can fix it.
+                vpay_core::FailureCode::ProviderAccountBlocked => Severity::Page,
+                // The rail is down, or the adapter's mapping table has
+                // drifted behind it ("`provider_error` is an alert, not a
+                // resting place" — same doc). Degraded and self-healing, or
+                // degraded and needing a mapping fix: `Warn` either way.
+                vpay_core::FailureCode::ProviderUnavailable
+                | vpay_core::FailureCode::ProviderError => Severity::Warn,
+                // Everything else is about this payer or this merchant's
+                // configuration, and is the caller's to act on.
+                vpay_core::FailureCode::InsufficientFunds
+                | vpay_core::FailureCode::PayerTimeout
+                | vpay_core::FailureCode::PayerDeclined
+                | vpay_core::FailureCode::InvalidPayer
+                | vpay_core::FailureCode::PayerLimitReached
+                | vpay_core::FailureCode::PayerAccountBlocked
+                | vpay_core::FailureCode::InvalidPayee
+                | vpay_core::FailureCode::PayeeAccountBlocked => Severity::Info,
+            },
+            // Overrides `Conflict`'s `Info`: the 409 is honest about the
+            // request, but reaching this arm means the core did not check
+            // `Capabilities` first, and that is ours to fix. See the
+            // variant's doc comment.
+            Self::Unsupported => Severity::Error,
+            Self::Transport(_) | Self::Malformed(_) | Self::Config(_) | Self::NotImplemented(_) => {
+                self.category().default_severity()
+            }
+        }
+    }
+
+    fn public_message(&self) -> String {
+        match self {
+            // The taxonomy's meaning is public by design; the rail's raw
+            // reason string is not — it is logged via Display, never sent.
+            // The `FailureCode` moves here now that the envelope's `code` is
+            // a constant, so a merchant still learns *why* without the two
+            // vocabularies colliding on one field.
+            Self::Rejected { code, .. } => format!("The payment was declined ({code})."),
+            Self::Unsupported => "This rail does not support the requested operation.".to_owned(),
+            Self::Transport(_) | Self::Malformed(_) | Self::Config(_) | Self::NotImplemented(_) => {
+                self.category().generic_message().to_owned()
+            }
+        }
+    }
 }
 
 /// Opaque per-merchant, per-rail configuration handed to the adapter.
@@ -164,7 +294,128 @@ pub trait ProviderAdapter: Debug + Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    use vpay_core::{Category, Classify as _, Retry, Severity};
+
     use super::*;
+
+    /// Every code in the taxonomy, so the severity table below cannot pass
+    /// by only exercising the rows someone remembered. `docs/flows/failures.md`
+    /// is the list; adding a code there means adding it here.
+    const EVERY_FAILURE_CODE: [FailureCode; 11] = [
+        FailureCode::InsufficientFunds,
+        FailureCode::PayerTimeout,
+        FailureCode::PayerDeclined,
+        FailureCode::InvalidPayer,
+        FailureCode::PayerLimitReached,
+        FailureCode::PayerAccountBlocked,
+        FailureCode::InvalidPayee,
+        FailureCode::PayeeAccountBlocked,
+        FailureCode::ProviderAccountBlocked,
+        FailureCode::ProviderUnavailable,
+        FailureCode::ProviderError,
+    ];
+
+    fn rejected(code: FailureCode) -> ProviderError {
+        ProviderError::Rejected {
+            code,
+            message: "the rail's own words".to_owned(),
+        }
+    }
+
+    /// The collision this constant exists to prevent: `FailureCode`'s
+    /// strings and `Category`'s default codes are two vocabularies that
+    /// overlap, and the envelope's `code` field can only carry one meaning.
+    #[test]
+    fn a_decline_has_one_code_of_its_own_and_never_borrows_the_rails() {
+        for code in EVERY_FAILURE_CODE {
+            assert_eq!(rejected(code).code(), "charge_declined", "{code}");
+        }
+        // Same `code` string, wildly different meaning: 502 "we are
+        // retrying" vs. 409 "start a new intent". They must not collide.
+        assert_eq!(
+            ProviderError::Transport("timeout".to_owned()).code(),
+            "provider_unavailable"
+        );
+        assert_eq!(
+            ProviderError::Malformed("not json".to_owned()).code(),
+            "provider_error"
+        );
+        assert_eq!(
+            FailureCode::ProviderUnavailable.as_str(),
+            "provider_unavailable",
+            "if this ever stops overlapping, the constant above is still right but this test's premise changed"
+        );
+    }
+
+    #[test]
+    fn a_decline_names_the_failure_code_in_the_message_a_merchant_sees() {
+        assert_eq!(
+            rejected(FailureCode::InsufficientFunds).public_message(),
+            "The payment was declined (insufficient_funds)."
+        );
+        // The rail's own reason string stays in `Display` (an operator's
+        // half) and never crosses into the merchant's.
+        let e = rejected(FailureCode::PayerDeclined);
+        assert!(e.to_string().contains("the rail's own words"));
+        assert!(!e.public_message().contains("the rail's own words"));
+    }
+
+    /// `Conflict` defaults to `Info`, which is right for a payer's declined
+    /// charge and wrong for a blocked partner account. The taxonomy already
+    /// carries that policy (`docs/flows/failures.md`); this asserts the
+    /// severity follows it rather than the category.
+    #[test]
+    fn a_declines_severity_follows_the_failure_codes_own_policy() {
+        assert_eq!(Category::Conflict.default_severity(), Severity::Info);
+
+        // "Page yourself" — every charge on the rail is failing.
+        assert_eq!(
+            rejected(FailureCode::ProviderAccountBlocked).severity(),
+            Severity::Page
+        );
+        // Degraded, or an adapter mapping that has drifted: warn.
+        assert_eq!(
+            rejected(FailureCode::ProviderUnavailable).severity(),
+            Severity::Warn
+        );
+        assert_eq!(
+            rejected(FailureCode::ProviderError).severity(),
+            Severity::Warn
+        );
+        // Everything else is the payer's or the merchant's, and a gateway
+        // sees thousands a day.
+        for code in EVERY_FAILURE_CODE {
+            let expected = match code {
+                FailureCode::ProviderAccountBlocked => Severity::Page,
+                FailureCode::ProviderUnavailable | FailureCode::ProviderError => Severity::Warn,
+                _ => Severity::Info,
+            };
+            assert_eq!(rejected(code).severity(), expected, "{code}");
+        }
+    }
+
+    #[test]
+    fn a_decline_is_a_conflict_the_caller_must_start_over_from() {
+        for code in EVERY_FAILURE_CODE {
+            let e = rejected(code);
+            assert_eq!(e.category(), Category::Conflict, "{code}");
+            assert_eq!(e.retry(), Retry::NewAttempt, "{code}");
+        }
+    }
+
+    /// 409 for the merchant, `Error` for us: the request genuinely cannot
+    /// proceed, *and* the core skipped the capability check it is supposed
+    /// to branch on (ADR-0002). Logging it at `Conflict`'s default `Info`
+    /// would bury our own bug among merchants' typos.
+    #[test]
+    fn an_unsupported_operation_answers_409_but_is_logged_as_our_bug() {
+        let e = ProviderError::Unsupported;
+        assert_eq!(e.category(), Category::Conflict);
+        assert_eq!(e.category().http_status(), 409);
+        assert_eq!(Category::Conflict.default_severity(), Severity::Info);
+        assert_eq!(e.severity(), Severity::Error);
+        assert_eq!(e.retry(), Retry::Never);
+    }
 
     #[test]
     fn partial_refunds_imply_refunds() {

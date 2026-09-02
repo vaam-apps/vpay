@@ -38,3 +38,29 @@ pub enum DbError {
     #[error("database query failed: {0}")]
     Query(#[source] sqlx::Error),
 }
+
+impl vpay_core::Classify for DbError {
+    fn category(&self) -> vpay_core::Category {
+        use vpay_core::Category;
+        match self {
+            // The next request may well succeed; this one must fail rather
+            // than guess. Retried after backoff, 503 on the wire, exit 69
+            // at startup — all from the category's defaults.
+            Self::Connect(_) | Self::Healthcheck(_) | Self::Query(_) => Category::Storage,
+            // A migration that fails to apply is a broken deploy, not a
+            // transient outage: retrying it against the same schema fails
+            // the same way. Classified as Configuration so a supervisor sees
+            // exit 78 ("fix the deploy") rather than 69 ("wait for Postgres").
+            Self::Migrate(_) => Category::Configuration,
+        }
+    }
+
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Connect(_) => "database_unreachable",
+            Self::Healthcheck(_) => "database_unhealthy",
+            Self::Query(_) => "database_query_failed",
+            Self::Migrate(_) => "database_migration_failed",
+        }
+    }
+}

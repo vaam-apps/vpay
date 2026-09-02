@@ -2,10 +2,15 @@
 //!
 //! Everything that touches the network happens here, never in the API process.
 //!
-//! STATUS: only the poll ladder is implemented and tested. Job dequeue,
-//! submission and delivery are NOT implemented — see `docs/status.md`.
+//! STATUS: only the poll ladder and the job loop's *error contract*
+//! ([`JobError`]) are implemented and tested. Job dequeue, submission,
+//! polling and delivery are NOT implemented — see `docs/status.md`. Nothing
+//! here calls [`JobError::decision`]; it is the type Phase 5 consumes.
 
 use std::time::Duration;
+
+pub mod error;
+pub use error::{Decision, JobError, tracing_level};
 
 /// Delay before poll number `n` (0-indexed), per `docs/flows/reconciler.md`.
 ///
@@ -21,9 +26,29 @@ pub fn poll_delay(attempt: u32) -> Duration {
     }
 }
 
+/// How often an `unresolved` charge is polled after the 24-hour ladder has
+/// run out — `docs/flows/reconciler.md`: "still polled, once an hour, and now
+/// raising an alert for a human".
+///
+/// Deliberately *not* the last rung of [`poll_delay`] (15 minutes). Once a
+/// human is reconciling the charge against the rail's settlement statement,
+/// four polls an hour buy nothing; one keeps the charge live — and it must
+/// stay live, because a late success at hour 30 is a normal transition, not
+/// an exception. This is the delay [`JobError::decision`] pairs with
+/// `alert: true` for [`JobError::Exhausted`].
+pub const UNRESOLVED_POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_unresolved_interval_is_the_documented_hour() {
+        assert_eq!(UNRESOLVED_POLL_INTERVAL, Duration::from_secs(3_600));
+        // Slower than every rung of the ladder, which is the point: the
+        // escalated charge stays live without being hammered.
+        assert!(UNRESOLVED_POLL_INTERVAL > poll_delay(1_000));
+    }
 
     #[test]
     fn the_ladder_starts_fast() {
