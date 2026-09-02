@@ -118,7 +118,7 @@ pub enum WebhookError {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// A non-2xx response shaped like `vpay_api::error_envelope`
+    /// A non-2xx response shaped like `vpay_api`'s Stripe-style error envelope
     /// (`docs/api/README.md`): `{ "error": { "type", "code", "message",
     /// "param" } }`. `code` and `param` are optional on the wire.
     #[error("vpay API error ({status}): {kind} — {message}")]

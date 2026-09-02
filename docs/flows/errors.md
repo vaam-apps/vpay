@@ -121,7 +121,10 @@ log     = at err.severity() (alert=true when Page), with the full Display + sour
 The full chain goes to the log; only `public_message()` goes to the
 merchant. The two envelope renderers are `pub(crate)`, so a handler
 *cannot* build one by hand — "one renderer" is structural, not a
-convention. `InvalidParam.message` and `UnknownCurrency`'s echoed code are
+convention. (ADR-0011 names the renderer `error_envelope`; the production
+one is its sibling `error_envelope_with_param`, and `error_envelope`
+survives only as a test-side wrapper. The ADR's claim — one renderer,
+called from `IntoResponse` and nowhere else — holds for the family.) `InvalidParam.message` and `UnknownCurrency`'s echoed code are
 length-bounded at render time so a caller cannot reflect a megabyte back
 into the envelope.
 
@@ -164,7 +167,7 @@ dead database is still a config problem), and exits with
 |---|---|---|
 | A new error type forgets `impl Classify` | `cargo xtask verify-errors` fails `just verify`: it finds every `pub` type in `backends/crates` that derives `thiserror::Error` **or** is named `*Error`/`*Rejection`, outside `#[cfg(test)]` blocks and `tests/` directories, and requires an impl in the same crate that is itself outside test code | nothing unclassified reaches a boundary — within that scan; the SDKs and `backends/apps` are outside it by design |
 | A library crate adds `anyhow` to `[dependencies]` | same check | `anyhow` stays at the edge |
-| A handler hand-builds an envelope with the wrong status | review — `error_envelope` has one production caller and grep finds a second | one status per category |
+| A handler hand-builds an envelope with the wrong status | the renderers are `pub(crate)` to `vpay-api`, so code outside the crate cannot call them at all; inside the crate, `error_envelope_with_param` has one production caller (`ApiError::into_response`) and a second is a review finding | one status per category |
 | A leaf's `Display` includes a secret | the existing redaction tests (`Debug` on `ProviderHost`, `CommonArgs`, SDK `Credentials`) — extend them when adding a payload that could carry one | secrets never reach a log |
 | A `public_message()` override leaks a table or host name | test in `vpay-core` for the generic messages; add one per override | merchants see nothing internal |
 | Two boundaries disagree on retry | impossible by construction — both read `Classify::retry` | one policy |

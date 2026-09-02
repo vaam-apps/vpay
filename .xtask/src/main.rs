@@ -447,7 +447,7 @@ fn strip_cfg_test_items(text: &str) -> String {
 /// collapsed and nothing guarantees rustfmt's spelling forever.
 fn match_cfg_test(chars: &[char], i: usize) -> Option<usize> {
     let mut pos = i;
-    for token in ["#", "[", "cfg", "(", "test", ")", "]"] {
+    for token in ["#", "[", "cfg", "("] {
         while chars.get(pos).is_some_and(|c| c.is_whitespace()) {
             pos += 1;
         }
@@ -458,7 +458,56 @@ fn match_cfg_test(chars: &[char], i: usize) -> Option<usize> {
             pos += 1;
         }
     }
-    Some(pos)
+    // Capture the balanced predicate inside `cfg( ... )`.
+    let start = pos;
+    let mut depth = 1usize;
+    while let Some(&c) = chars.get(pos) {
+        pos += 1;
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
+    let predicate: String = chars.get(start..pos.saturating_sub(1))?.iter().collect();
+    while chars.get(pos).is_some_and(|c| c.is_whitespace()) {
+        pos += 1;
+    }
+    if chars.get(pos) != Some(&']') {
+        return None;
+    }
+    pos += 1;
+    if cfg_predicate_is_test_gated(&predicate) {
+        Some(pos)
+    } else {
+        None
+    }
+}
+
+/// Whether a `cfg(...)` predicate compiles the item *only* under `cargo
+/// test` for at least one of its branches: bare `test`, `any(test, ..)`,
+/// `all(test, ..)`, at any nesting — but never `not(test)`, which is the
+/// *production*-only spelling. An impl gated this way cannot satisfy a
+/// production caller, so the scanner treats it as absent. Deliberately
+/// textual: the alternative is a `cfg` expression parser, and this check
+/// only needs to refuse the spellings a reviewer actually tried
+/// (`any(test, feature = "unused")` slipped past the literal-`test` match).
+fn cfg_predicate_is_test_gated(predicate: &str) -> bool {
+    let compact: String = predicate.chars().filter(|c| !c.is_whitespace()).collect();
+    if compact.contains("not(test)") {
+        return false;
+    }
+    compact
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|token| token == "test")
 }
 
 /// The index just past the item that `#[cfg(test)]` at `start` annotates.
@@ -837,6 +886,29 @@ mod tests {
 }
 ";
         assert!(error_types(source).is_empty());
+    }
+
+    #[test]
+    fn an_impl_gated_on_any_test_does_not_classify_anything() {
+        // The exact spelling a reviewer used to slip past the literal
+        // `#[cfg(test)]` match: gated on `any(test, ..)`, compiled only
+        // under `cargo test`, so absent from every production build.
+        let text = "pub struct Probe;\n\
+                    #[cfg(any(test, feature = \"unused\"))]\n\
+                    impl vpay_core::Classify for Probe { fn category(&self) -> C { C::Internal } }\n";
+        assert!(!has_classify_impl(&searchable(text), "Probe"));
+        let text = "pub struct Probe;\n\
+                    #[cfg(all(test, unix))]\n\
+                    impl vpay_core::Classify for Probe { fn category(&self) -> C { C::Internal } }\n";
+        assert!(!has_classify_impl(&searchable(text), "Probe"));
+    }
+
+    #[test]
+    fn an_impl_gated_on_not_test_is_production_code_and_classifies() {
+        let text = "pub struct Probe;\n\
+                    #[cfg(not(test))]\n\
+                    impl vpay_core::Classify for Probe { fn category(&self) -> C { C::Internal } }\n";
+        assert!(has_classify_impl(&searchable(text), "Probe"));
     }
 
     #[test]
