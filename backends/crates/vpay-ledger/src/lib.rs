@@ -64,25 +64,33 @@ impl vpay_core::Classify for LedgerError {
         }
     }
 
+    // The three methods below are exhaustive rather than
+    // `Self::Money(..) => .., _ => ..`: a wildcard would silently give a new
+    // variant the *invariant-violation* policy (never retry, page, say
+    // nothing), which is right for the two that exist and would be a lie for,
+    // say, a future `AccountNotFound`. Adding a variant should not compile
+    // until someone has decided.
     fn retry(&self) -> vpay_core::Retry {
         match self {
             Self::Money(inner) => inner.retry(),
-            _ => vpay_core::Retry::Never,
+            Self::Unbalanced { .. } | Self::TooFewEntries => vpay_core::Retry::Never,
         }
     }
 
     fn severity(&self) -> vpay_core::Severity {
         match self {
             Self::Money(inner) => inner.severity(),
-            _ => vpay_core::Severity::Page,
+            Self::Unbalanced { .. } | Self::TooFewEntries => vpay_core::Severity::Page,
         }
     }
 
     fn public_message(&self) -> String {
         match self {
-            // Internal: the merchant learns nothing about the ledger.
             Self::Money(inner) => inner.public_message(),
-            _ => self.category().generic_message().to_owned(),
+            // Internal: the merchant learns nothing about the ledger.
+            Self::Unbalanced { .. } | Self::TooFewEntries => {
+                self.category().generic_message().to_owned()
+            }
         }
     }
 }

@@ -307,18 +307,29 @@ fn relative(root: &Path, path: &Path) -> String {
         .to_string()
 }
 
-/// Drop whole-line comments, then collapse whitespace runs to one space.
+/// Drop comments and `#[cfg(test)]` items, then collapse whitespace runs to
+/// one space.
 ///
-/// Two reasons, both about not lying: a doc comment quoting
-/// `impl Classify for FooError` must not satisfy the check, and rustfmt is
-/// free to wrap a long `impl` header across lines, which a line-based scan
-/// would miss. Only *leading* `//` is stripped — a trailing comment is left
-/// alone so that a string literal containing `//` (a URL) cannot swallow the
-/// rest of its line and hide a declaration.
+/// Three reasons, all about not lying:
+///
+/// * a doc comment quoting `impl Classify for FooError` must not satisfy the
+///   check — including a `/* */` one, which is why block comments go too;
+/// * rustfmt is free to wrap a long `impl` header across lines, which a
+///   line-based scan would miss;
+/// * an `impl` that only exists under `cargo test` satisfies no caller in
+///   production, and a type declared inside a test module reaches no
+///   boundary. Both are removed here rather than tolerated, so the check
+///   cannot be satisfied *or* tripped by test code.
+///
+/// Only *leading* `//` is stripped — a trailing comment is left alone so that
+/// a string literal containing `//` (a URL) cannot swallow the rest of its
+/// line and hide a declaration.
 fn searchable(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
+    let without_blocks = strip_block_comments(text);
+    let without_tests = strip_cfg_test_items(&without_blocks);
+    let mut out = String::with_capacity(without_tests.len());
     let mut in_whitespace = false;
-    for line in text
+    for line in without_tests
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
     {
@@ -337,11 +348,177 @@ fn searchable(text: &str) -> String {
     out
 }
 
-/// Every `pub enum`/`pub struct` whose name marks it as an error.
+/// Replace `/* ... */` comments with a space, leaving line breaks intact so
+/// the line-based half of [`searchable`] still sees the same lines.
+///
+/// Nesting is honoured (Rust's block comments nest), and `"/*"` inside a
+/// string literal is not a comment — a scan that ignored either would delete
+/// live code and make this check pass by finding nothing.
+fn strip_block_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(c) = chars.next() {
+        if depth > 0 {
+            if c == '\n' {
+                out.push('\n');
+            } else if c == '/' && chars.peek() == Some(&'*') {
+                chars.next();
+                depth += 1;
+            } else if c == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                depth -= 1;
+                out.push(' ');
+            }
+            continue;
+        }
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_string = true;
+                out.push(c);
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                depth = 1;
+            }
+            // A line comment is left for `searchable`'s line filter, but its
+            // contents must not open a block comment.
+            '/' if chars.peek() == Some(&'/') => {
+                out.push(c);
+                for rest in chars.by_ref() {
+                    out.push(rest);
+                    if rest == '\n' {
+                        break;
+                    }
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Delete every item annotated `#[cfg(test)]`, body and all.
+///
+/// The scan that follows must not see test code at all: a `pub enum
+/// FooError` declared in a test module reaches no boundary and needs no
+/// classification, and — the direction that actually matters — an
+/// `impl Classify for FooError` written inside `#[cfg(test)] mod tests`
+/// would satisfy this check while satisfying no caller in production.
+///
+/// Deletes from the attribute to the end of the item: to the matching `}` of
+/// the item's first block (`mod tests { .. }`, a function body), or to the
+/// terminating `;` if one comes first (`#[cfg(test)] use ...;`). String
+/// literals are skipped while counting, because a test containing
+/// `from_str("{")` would otherwise unbalance the count and swallow the rest
+/// of the file.
+fn strip_cfg_test_items(text: &str) -> String {
+    let bytes: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if let Some(after_attr) = match_cfg_test(&bytes, i) {
+            i = end_of_cfg_test_item(&bytes, after_attr);
+            continue;
+        }
+        if let Some(c) = bytes.get(i) {
+            out.push(*c);
+        }
+        i += 1;
+    }
+    out
+}
+
+/// If `#[cfg(test)]` starts at `i`, the index just past it. Whitespace
+/// between the tokens is allowed, because this runs before whitespace is
+/// collapsed and nothing guarantees rustfmt's spelling forever.
+fn match_cfg_test(chars: &[char], i: usize) -> Option<usize> {
+    let mut pos = i;
+    for token in ["#", "[", "cfg", "(", "test", ")", "]"] {
+        while chars.get(pos).is_some_and(|c| c.is_whitespace()) {
+            pos += 1;
+        }
+        for expected in token.chars() {
+            if chars.get(pos) != Some(&expected) {
+                return None;
+            }
+            pos += 1;
+        }
+    }
+    Some(pos)
+}
+
+/// The index just past the item that `#[cfg(test)]` at `start` annotates.
+fn end_of_cfg_test_item(chars: &[char], start: usize) -> usize {
+    let mut depth = 0usize;
+    let mut i = start;
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut escaped = false;
+    while i < chars.len() {
+        let Some(&c) = chars.get(i) else { break };
+        i += 1;
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if in_string || in_char {
+            match c {
+                '\\' => escaped = true,
+                '"' if in_string => in_string = false,
+                '\'' if in_char => in_char = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            // A lifetime (`'a`) is not a char literal; only treat `'` as one
+            // when the character after next closes it.
+            '\'' if chars.get(i + 1) == Some(&'\'') || chars.get(i) == Some(&'\\') => {
+                in_char = true;
+            }
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return i;
+                }
+            }
+            ';' if depth == 0 => return i,
+            _ => {}
+        }
+    }
+    chars.len()
+}
+
+/// Every `pub enum`/`pub struct` that is an error: one that derives
+/// `thiserror::Error`, or one whose name says so.
+///
+/// The derive is the primary signal and the naming convention is the
+/// backstop, not the other way round. Names miss: `UnknownCurrency` is a
+/// `thiserror` enum that crosses the boundary and reaches a merchant through
+/// the same envelope every other error does, and a suffix-only scan had
+/// never seen it. Derives miss too — a hand-written `impl std::error::Error`
+/// has no derive — so both are kept.
 ///
 /// `pub` only: a private or `pub(crate)` type cannot reach a boundary, so
-/// nothing outside its module has to classify it. Input must have been through
-/// [`searchable`].
+/// nothing outside its module has to classify it. Input must have been
+/// through [`searchable`], which has already removed comments and
+/// `#[cfg(test)]` items.
 fn scan_error_types(searchable_text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for keyword in ["pub enum ", "pub struct "] {
@@ -360,12 +537,88 @@ fn scan_error_types(searchable_text: &str) -> Vec<String> {
                 .chars()
                 .take_while(|c| is_ident_char(*c))
                 .collect();
-            if ERROR_SUFFIXES.iter().any(|s| name.ends_with(s)) {
+            if name.is_empty() {
+                continue;
+            }
+            if ERROR_SUFFIXES.iter().any(|s| name.ends_with(s)) || derives_error(searchable_text, i)
+            {
                 out.push(name);
             }
         }
     }
     out
+}
+
+/// Whether the attribute block immediately above the declaration at
+/// `decl_start` contains a `derive` naming `Error`.
+///
+/// Walks backwards over consecutive `#[..]` attributes, because the derive is
+/// rarely the last one (`#[derive(Debug, thiserror::Error)]` then
+/// `#[error("unknown currency: {0}")]` then the declaration). Stops at the
+/// first thing that is not an attribute, so a derive on an *unrelated*
+/// earlier item cannot bleed onto this one.
+fn derives_error(searchable_text: &str, decl_start: usize) -> bool {
+    let mut before = &searchable_text[..decl_start];
+    loop {
+        before = before.trim_end();
+        if !before.ends_with(']') {
+            return false;
+        }
+        let Some(open) = matching_open_bracket(before) else {
+            return false;
+        };
+        let Some(attribute) = before.get(open + 1..before.len() - 1) else {
+            return false;
+        };
+        // `#[..]`, not `[..]` — an index expression or a slice type is not
+        // an attribute.
+        if !before[..open].trim_end().ends_with('#') {
+            return false;
+        }
+        if attribute_derives_error(attribute) {
+            return true;
+        }
+        before = &before[..before[..open].trim_end().len() - 1];
+    }
+}
+
+/// The byte index of the `[` matching the `]` that ends `text`.
+fn matching_open_bracket(text: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in text.char_indices().rev() {
+        match c {
+            ']' => depth += 1,
+            '[' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether an attribute's body (`derive(Debug, thiserror::Error)`) derives
+/// something whose final path segment is `Error`.
+///
+/// Both spellings count: `thiserror::Error` and a bare `Error` brought in by
+/// a `use`. A trait merely *named* like one (`ErrorKind`) does not — the
+/// segment must be exactly `Error`.
+fn attribute_derives_error(attribute: &str) -> bool {
+    let attribute = attribute.trim();
+    let Some(list) = attribute
+        .strip_prefix("derive")
+        .map(str::trim_start)
+        .and_then(|rest| rest.strip_prefix('('))
+        .and_then(|rest| rest.strip_suffix(')'))
+    else {
+        return false;
+    };
+    list.split(',')
+        .map(str::trim)
+        .any(|path| path.rsplit("::").next().is_some_and(|last| last == "Error"))
 }
 
 /// Whether this file implements `Classify` for `name`, in any of the spellings
@@ -503,6 +756,134 @@ pub enum LedgerError {
             error_types(source),
             vec!["AuthRejection", "UnknownCurrencyError"]
         );
+    }
+
+    #[test]
+    fn scan_finds_a_thiserror_type_whose_name_says_nothing() {
+        // The type that was invisible to a suffix-only scan: it derives
+        // `thiserror::Error`, crosses the boundary, and reaches a merchant
+        // through the same envelope as everything else.
+        let source = "\
+#[derive(Debug, thiserror::Error)]
+#[error(\"unknown currency: {0}\")]
+pub struct UnknownCurrency(pub String);
+";
+        assert_eq!(error_types(source), vec!["UnknownCurrency"]);
+    }
+
+    #[test]
+    fn a_bare_error_derive_counts_as_well_as_the_qualified_one() {
+        // `use thiserror::Error;` then `#[derive(Error)]` is the other
+        // spelling, and it is just as much an error type.
+        assert_eq!(
+            error_types("#[derive(Debug, Error)]\npub enum Whatever { A }"),
+            vec!["Whatever"]
+        );
+    }
+
+    #[test]
+    fn a_derive_that_is_not_error_does_not_make_a_type_an_error() {
+        for source in [
+            "#[derive(Debug, Clone, Serialize)]\npub struct Money(i64);",
+            // Not `Error`: the final path segment has to match exactly, or
+            // every `ErrorKind`-ish helper type would demand a `Classify`.
+            "#[derive(Debug, thiserror::ErrorKind)]\npub enum Whatever { A }",
+            // An attribute that is not a derive at all.
+            "#[non_exhaustive]\npub struct Money(i64);",
+        ] {
+            assert!(error_types(source).is_empty(), "matched: {source}");
+        }
+    }
+
+    #[test]
+    fn a_derive_on_an_earlier_item_does_not_bleed_onto_a_later_one() {
+        let source = "\
+#[derive(Debug, thiserror::Error)]
+pub enum RealError { A }
+
+pub struct Innocent(i64);
+";
+        assert_eq!(error_types(source), vec!["RealError"]);
+    }
+
+    #[test]
+    fn a_block_comment_neither_declares_nor_classifies() {
+        // Same rule as line comments: the check must not be satisfiable, or
+        // trippable, by writing about the code.
+        let commented_impl = "/* impl Classify for LedgerError {} */\npub enum LedgerError { A }";
+        assert!(!classifies(commented_impl, "LedgerError"));
+
+        let commented_decl = "/*\n#[derive(thiserror::Error)]\npub enum GhostError {}\n*/";
+        assert!(error_types(commented_decl).is_empty());
+
+        // A `/*` inside a string literal opens no comment, so the
+        // declaration after it is still found.
+        let in_a_string = "const GLOB: &str = \"/*\";\npub enum RealError { A }";
+        assert_eq!(error_types(in_a_string), vec!["RealError"]);
+    }
+
+    #[test]
+    fn a_type_declared_inside_a_cfg_test_module_needs_no_classification() {
+        // It reaches no boundary, so requiring an impl for it would be noise
+        // — and `vpay-core`'s own test module declares exactly this shape.
+        let source = "\
+#[cfg(test)]
+mod tests {
+    #[derive(Debug, thiserror::Error)]
+    #[error(\"leaf\")]
+    pub struct Leaf(&'static str);
+
+    pub enum WrapperError { A }
+}
+";
+        assert!(error_types(source).is_empty());
+    }
+
+    #[test]
+    fn an_impl_inside_a_cfg_test_module_does_not_classify_anything() {
+        // The direction that matters: an impl that only exists under
+        // `cargo test` satisfies no caller in production, so it must not
+        // satisfy the check either.
+        let source = "\
+pub enum LedgerError { A }
+
+#[cfg(test)]
+mod tests {
+    impl vpay_core::Classify for LedgerError {}
+}
+";
+        assert_eq!(error_types(source), vec!["LedgerError"]);
+        assert!(!classifies(source, "LedgerError"));
+    }
+
+    #[test]
+    fn an_unbalanced_brace_in_a_test_string_does_not_swallow_the_rest_of_the_file() {
+        // A real line from `vpay-api`'s tests. Counting braces without
+        // skipping string literals would delete everything after it —
+        // including live declarations — and the check would pass by finding
+        // nothing.
+        let source = "\
+#[cfg(test)]
+mod tests {
+    fn t() {
+        let _ = serde_json::from_str::<Payload>(\"{\");
+    }
+}
+
+pub enum RealError { A }
+";
+        assert_eq!(error_types(source), vec!["RealError"]);
+    }
+
+    #[test]
+    fn a_cfg_test_item_with_no_block_ends_at_its_semicolon() {
+        let source = "\
+#[cfg(test)]
+use something::Else;
+
+pub enum RealError { A }
+";
+        assert_eq!(error_types(source), vec!["RealError"]);
     }
 
     #[test]

@@ -5,23 +5,32 @@
 //! *derives* its answer from [`Classify`] instead of deciding it: the status
 //! is `category().http_status()`, the `type` is `category().stripe_type()`,
 //! the `code` and the message are the error's own. A handler therefore
-//! returns `Result<_, ApiError>` and uses `?`; it never picks a status,
-//! never formats a merchant-facing sentence, and never calls
-//! [`crate::error_envelope`]. That function has exactly one production
-//! caller — [`ApiError::into_response`] below — which is what makes "two
-//! handlers answer the same `DbError` differently" impossible rather than
-//! merely discouraged.
+//! returns `Result<_, ApiError>` and uses `?`; it never picks a status and
+//! never formats a merchant-facing sentence.
+//!
+//! Precisely: [`ApiError::into_response`] below calls
+//! `crate::error_envelope_with_param`, and that is the only production call
+//! to it. `crate::error_envelope` is a thin three-argument wrapper around
+//! the same function, kept because `lib.rs`'s test pins the envelope shape
+//! through it; nothing in production calls it, so it is `#[cfg(test)]`. Both
+//! are `pub(crate)` — no intra-doc link above for exactly that reason —
+//! which is what makes "two handlers answer the same `DbError` differently"
+//! *impossible* rather than merely discouraged: a handler outside this crate
+//! cannot reach either function, and one inside it would have to add a
+//! `pub(crate)` call that review would see.
 //!
 //! **A composite never re-classifies.** Every `Classify` method delegates
 //! wholesale for the wrapped variants — not just `category()`. Forwarding
 //! the category alone would silently discard a leaf's deliberate override:
-//! `ProviderError::Rejected` overrides `code()` to the merchant-facing
-//! [`vpay_core::FailureCode`] and `retry()` to `Retry::NewAttempt`, while
-//! its category (`Conflict`) defaults to `invalid_state`/`Retry::Never`. A
-//! category-only delegation would answer a declined charge with the wrong
-//! code, and `vpay_worker::JobError` (the sibling composite, same shape)
-//! would answer the identical error differently — the exact drift the ADR
-//! exists to stop.
+//! `ProviderError::Rejected` overrides `code()` to `charge_declined`,
+//! `retry()` to `Retry::NewAttempt` and `severity()` to whatever the
+//! [`vpay_core::FailureCode`] deserves (a blocked *partner* account pages),
+//! while its category (`Conflict`) defaults to
+//! `invalid_state`/`Retry::Never`/`Info`. A category-only delegation would
+//! answer a declined charge with the wrong code and log a blocked partner
+//! account as one more merchant typo, and `vpay_worker::JobError` (the
+//! sibling composite, same shape) would answer the identical error
+//! differently — the exact drift the ADR exists to stop.
 //!
 //! ## What goes to the merchant, and what goes to the log
 //!
@@ -61,9 +70,11 @@
 use std::error::Error as StdError;
 
 use axum::Json;
+use axum::extract::rejection::{FormRejection, JsonRejection, PathRejection, QueryRejection};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use vpay_core::{Category, Classify, Retry, Severity};
+use vpay_ledger::LedgerError;
 
 use crate::error_envelope_with_param;
 use crate::resource_auth::AuthRejection;
@@ -76,14 +87,45 @@ use crate::resource_auth::AuthRejection;
 /// of their own keys apart when debugging and not enough to reconstruct one.
 const KEY_HINT_CHARS: usize = 8;
 
+/// The longest `param` this crate will put in an envelope, and the only
+/// characters allowed in one.
+///
+/// Stripe's `param` names a field of the request (`amount`,
+/// `payment_method_types[0]`), and an SDK uses it to point at a form input.
+/// It is therefore *ours* — a name from the API's own vocabulary — never a
+/// value the caller sent. [`ApiError::invalid_param`] takes an
+/// `impl Into<String>`, though, so nothing in the type system stops a future
+/// handler from passing a header, a path segment or a whole request body
+/// through it. This bound is what makes that mistake harmless: anything that
+/// is not a plausible field name renders as [`FALLBACK_PARAM`] instead, so
+/// the envelope cannot become a reflection channel and stays small.
+const PARAM_MAX_CHARS: usize = 64;
+
+/// What an unusable `param` renders as. Deliberately a real, if unhelpful,
+/// field name rather than an empty string or a dropped key: an SDK reading
+/// `error.param` gets something well-formed, and "the request" is the honest
+/// answer when the name we were handed is not one.
+const FALLBACK_PARAM: &str = "request";
+
+/// The longest `message` an envelope carries.
+///
+/// `InvalidParam`'s message is the *only* public message a call site writes
+/// freehand — every other one is a fixed sentence from `vpay-core` or a leaf.
+/// A handler that interpolates something caller-supplied into it (a rejected
+/// value, a header) would otherwise reflect it back at whatever length it
+/// arrived, and axum's default body limit is 2 MB. 200 characters is more
+/// than any sentence in `docs/api/README.md` and small enough that the
+/// envelope stays an envelope.
+const MESSAGE_MAX_CHARS: usize = 200;
+
 /// Everything the HTTP boundary can fail with: the leaves it calls into, plus
 /// the failures that belong to the request itself.
 ///
 /// Not `#[non_exhaustive]`: this is workspace-internal, and the SDKs model
 /// the *wire* (the envelope below), not this type — ADR-0011. The wrapped
 /// variants are wider than what exists today on purpose: `Db` and `Auth` are
-/// reachable now, and `Provider`, `Money`, `Currency` and `Config` become
-/// reachable the moment a `/v1` handler exists (Phase 3). Adding them now
+/// reachable now, and `Provider`, `Money`, `Currency`, `Ledger` and `Config`
+/// become reachable the moment a `/v1` handler exists (Phase 3). Adding them now
 /// costs one line each and means the first real handler cannot be tempted to
 /// hand-roll an envelope because the composite "does not cover" its error.
 #[derive(Debug, thiserror::Error)]
@@ -111,6 +153,19 @@ pub enum ApiError {
     /// A currency code the system does not know.
     #[error(transparent)]
     Currency(#[from] vpay_core::money::UnknownCurrency),
+
+    /// A ledger transaction this layer built did not balance.
+    ///
+    /// `Internal`, and it pages: no caller builds a ledger transaction, so
+    /// an unbalanced one is this code's own invariant failing in the money
+    /// path. Carried here rather than left to a future handler to convert by
+    /// hand — a composite that does not cover a leaf its layer can meet is
+    /// exactly the invitation to hand-roll an envelope that ADR-0011 exists
+    /// to remove. `LedgerError::Money(..)` delegates onward to `MoneyError`,
+    /// so a caller's bad amount reaching the ledger still answers 400 rather
+    /// than paging.
+    #[error(transparent)]
+    Ledger(#[from] LedgerError),
 
     /// The deployment is misconfigured for what this request needs — a rail
     /// with no host, a client with no keys. Reachable from a request path
@@ -189,12 +244,42 @@ impl ApiError {
     /// Builds an [`ApiError::InvalidParam`]. `param` is a field name and
     /// `message` is shown to the merchant verbatim, so neither may carry a
     /// value the caller sent us for anything else.
+    ///
+    /// Both are bounded on the way *out* rather than here (see this module's
+    /// `PARAM_MAX_CHARS` and `MESSAGE_MAX_CHARS`): the render path is the
+    /// last place a hand-built variant can still be caught, and a
+    /// constructor-only bound would be a bound a `Self::InvalidParam { .. }`
+    /// literal skips.
     #[must_use]
     pub fn invalid_param(param: impl Into<String>, message: impl Into<String>) -> Self {
         Self::InvalidParam {
             param: param.into(),
             message: message.into(),
         }
+    }
+
+    /// Classifies a [`serde_json::Error`] raised while **we** were producing
+    /// JSON — serialising a response body, re-encoding a stored payload — as
+    /// the internal error it is.
+    ///
+    /// Spelled out at the call site instead of being a
+    /// `impl From<serde_json::Error> for ApiError`, and that is the whole
+    /// point. One type means two opposite things here: deserialising a
+    /// request body, where the caller sent bad JSON and the answer is 400;
+    /// and serialising something this crate built, where the answer is 500
+    /// and someone should look. A blanket `From` has to pick one, and `?`
+    /// would then silently apply it to both — answering 500 for a merchant's
+    /// malformed body, or (worse, because it hides a bug) 400 for our own
+    /// broken response. The caller-input direction already has its own typed
+    /// conversions ([`JsonRejection`] below), so every remaining bare
+    /// `serde_json::Error` in this crate is ours, and naming it is cheap.
+    ///
+    /// The library's text goes into the `Internal` payload, which is logged
+    /// and never rendered — `Internal`'s public message is the category's
+    /// generic sentence.
+    #[must_use]
+    pub fn internal_serialization(error: serde_json::Error) -> Self {
+        Self::Internal(format!("serialising a response body: {error}"))
     }
 
     /// The envelope's `param` field, if this error is about one named
@@ -204,7 +289,10 @@ impl ApiError {
     #[must_use]
     pub fn param(&self) -> Option<&str> {
         match self {
-            Self::InvalidParam { param, .. } => Some(param),
+            // Bounded here, on the render path, rather than in the
+            // constructor: this is the last point at which a variant built
+            // as a struct literal can still be caught. See `bounded_param`.
+            Self::InvalidParam { param, .. } => Some(bounded_param(param)),
             _ => None,
         }
     }
@@ -287,6 +375,38 @@ fn key_hint(key: &str) -> String {
     hint
 }
 
+/// `param` if it is a plausible field name, [`FALLBACK_PARAM`] otherwise.
+///
+/// The shape a name must have: one to [`PARAM_MAX_CHARS`] characters drawn
+/// from `a-z`, `0-9`, `_`, `.`, `[` and `]` — enough for every name
+/// `docs/api/README.md` uses, including Stripe's nested form spelling
+/// (`payment_method_types[0]`, `metadata.order_id`), and not enough for a
+/// sentence, a URL, a header value or a JSON document. Rejecting rather than
+/// truncating is deliberate: a truncated wrong name still points an SDK at a
+/// field that does not exist, whereas `request` is at least true.
+fn bounded_param(param: &str) -> &str {
+    let shaped = !param.is_empty()
+        && param.chars().count() <= PARAM_MAX_CHARS
+        && param.chars().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '.' | '[' | ']')
+        });
+    if shaped { param } else { FALLBACK_PARAM }
+}
+
+/// The first [`MESSAGE_MAX_CHARS`] characters of `message`, with an ellipsis
+/// iff anything was dropped.
+///
+/// Character-wise for the same reason as [`key_hint`]: the text may be
+/// merchant-derived and slicing at byte 200 would panic on a multi-byte
+/// boundary, which ADR-0007 denies on a request path.
+fn bounded_message(message: &str) -> String {
+    let mut out: String = message.chars().take(MESSAGE_MAX_CHARS).collect();
+    if message.chars().nth(MESSAGE_MAX_CHARS).is_some() {
+        out.push('…');
+    }
+    out
+}
+
 impl Classify for ApiError {
     fn category(&self) -> Category {
         match self {
@@ -294,6 +414,7 @@ impl Classify for ApiError {
             Self::Provider(e) => e.category(),
             Self::Money(e) => e.category(),
             Self::Currency(e) => e.category(),
+            Self::Ledger(e) => e.category(),
             Self::Config(e) => e.category(),
             Self::Auth(e) => e.category(),
             // 404, and `invalid_request_error` on the wire — the same shape
@@ -314,6 +435,7 @@ impl Classify for ApiError {
             Self::Provider(e) => e.code(),
             Self::Money(e) => e.code(),
             Self::Currency(e) => e.code(),
+            Self::Ledger(e) => e.code(),
             Self::Config(e) => e.code(),
             Self::Auth(e) => e.code(),
             // Overrides `NotFound`'s `resource_missing`: an unrecognised URL
@@ -338,6 +460,7 @@ impl Classify for ApiError {
             Self::Provider(e) => e.retry(),
             Self::Money(e) => e.retry(),
             Self::Currency(e) => e.retry(),
+            Self::Ledger(e) => e.retry(),
             Self::Config(e) => e.retry(),
             Self::Auth(e) => e.retry(),
             // No overrides: none of this layer's own failures heals on its
@@ -356,6 +479,7 @@ impl Classify for ApiError {
             Self::Provider(e) => e.severity(),
             Self::Money(e) => e.severity(),
             Self::Currency(e) => e.severity(),
+            Self::Ledger(e) => e.severity(),
             Self::Config(e) => e.severity(),
             Self::Auth(e) => e.severity(),
             // No overrides. A 404 and a bad parameter are `Info` because a
@@ -374,6 +498,7 @@ impl Classify for ApiError {
             Self::Provider(e) => e.public_message(),
             Self::Money(e) => e.public_message(),
             Self::Currency(e) => e.public_message(),
+            Self::Ledger(e) => e.public_message(),
             Self::Config(e) => e.public_message(),
             Self::Auth(e) => e.public_message(),
             // Deliberately does *not* echo the method or path back. The
@@ -385,9 +510,11 @@ impl Classify for ApiError {
                 "Unrecognized request URL. vpay implements a subset of the Stripe API; see docs/api."
                     .to_owned()
             }
-            // The whole point of the variant: the caller's own words about
-            // the caller's own field.
-            Self::InvalidParam { message, .. } => message.clone(),
+            // The whole point of the variant: our own words about the
+            // caller's own field — bounded, because this is the one public
+            // message a call site writes freehand and the render path is the
+            // last place an over-long one can be stopped.
+            Self::InvalidParam { message, .. } => bounded_message(message),
             // Truncated a second time on the way out. The constructor
             // already did it, but a variant built by hand would otherwise
             // put a merchant's whole key in a response body, and the render
@@ -403,6 +530,60 @@ impl Classify for ApiError {
         }
     }
 }
+
+/// Converts one of axum's extractor rejections into an
+/// [`ApiError::InvalidParam`] with a sentence of our own.
+///
+/// Without these, a handler taking `Form<T>` or `Json<T>` answers axum's
+/// default rejection response: `400` with a **plain-text** body ("Failed to
+/// deserialize form body: missing field `amount`") and no
+/// `Content-Type: application/json`. An SDK that reads `error.message` finds
+/// nothing at all, which breaks the promise `docs/api/README.md` makes that
+/// *every* failure is the Stripe envelope. With them,
+/// `async fn handler(Form(f): Form<T>) -> Result<_, ApiError>` is enough —
+/// axum applies `From` to the rejection for us.
+///
+/// **The library's own text is deliberately dropped.** It names serde
+/// internals and the field names of our own structs, it changes between axum
+/// patch releases (pinning it in a test would pin someone else's string), and
+/// for `Json` it can echo the caller's bytes back. The curated sentence says
+/// what to fix without any of that. The cost is real and worth naming: the
+/// rejection is consumed here, so serde's diagnosis does not reach the log
+/// either. If an operator ever needs it, the fix is a `#[source]` on the
+/// variant — not the library's words in a response body.
+macro_rules! extractor_rejection {
+    ($rejection:ty, $param:literal, $message:literal) => {
+        impl From<$rejection> for ApiError {
+            fn from(_rejection: $rejection) -> Self {
+                Self::InvalidParam {
+                    param: $param.to_owned(),
+                    message: $message.to_owned(),
+                }
+            }
+        }
+    };
+}
+
+extractor_rejection!(
+    FormRejection,
+    "body",
+    "The request body could not be read as a form. Send it as `application/x-www-form-urlencoded` with the fields this endpoint documents."
+);
+extractor_rejection!(
+    JsonRejection,
+    "body",
+    "The request body could not be read as JSON. Send a JSON object with `Content-Type: application/json` and the fields this endpoint documents."
+);
+extractor_rejection!(
+    PathRejection,
+    "path",
+    "A path segment of the request URL was missing or was not of the expected type."
+);
+extractor_rejection!(
+    QueryRejection,
+    "query",
+    "The query string could not be read. Check the parameters this endpoint documents and their types."
+);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -449,8 +630,10 @@ mod tests {
 
     use axum::Router;
     use axum::body::Body;
+    use axum::extract::{Form, Path, Query};
     use axum::http::Request;
     use axum::routing::get;
+    use axum::routing::post;
     use serde_json::Value;
     use tower::ServiceExt as _;
     use tracing_subscriber::fmt::MakeWriter;
@@ -530,7 +713,11 @@ mod tests {
                 },
                 409,
                 "invalid_request_error",
-                "insufficient_funds",
+                // One code for every decline, not the `FailureCode`'s own
+                // string: `provider_unavailable` already means "502, being
+                // retried" when `Transport` emits it. The specific taxonomy
+                // code reaches the merchant in the message and on the charge.
+                "charge_declined",
             ),
             (
                 || ApiError::Provider(ProviderError::Unsupported),
@@ -558,6 +745,28 @@ mod tests {
                 400,
                 "invalid_request_error",
                 "currency_unknown",
+            ),
+            // vpay-ledger: our own invariant, in the money path — 500 and it
+            // pages. Nothing about the ledger reaches the merchant.
+            (
+                || {
+                    ApiError::Ledger(LedgerError::Unbalanced {
+                        debits: 5_000,
+                        credits: 4_900,
+                    })
+                },
+                500,
+                "api_error",
+                "ledger_unbalanced",
+            ),
+            // ... and the same enum delegating onward to `MoneyError`, which
+            // is a *caller's* mistake: 400, not 500. A composite that
+            // flattened `LedgerError` to one category would get this wrong.
+            (
+                || ApiError::Ledger(LedgerError::Money(MoneyError::Negative(-5))),
+                400,
+                "invalid_request_error",
+                "amount_negative",
             ),
             // vpay-config: Configuration → 500, never retried.
             (
@@ -897,6 +1106,348 @@ mod tests {
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{label}");
             assert_eq!(body_string(response).await, pinned, "{label}");
         }
+    }
+
+    /// Wrapping must not change the answer — ADR-0011's "composites do not
+    /// re-classify", as an executable assertion, and the twin of
+    /// `vpay_worker::error`'s test of the same name. It fails if any of the
+    /// five `Classify` methods here stops delegating: forwarding
+    /// `category()` alone and letting the trait defaults fill in the rest
+    /// looks correct and silently discards every override a leaf made.
+    ///
+    /// One leaf per interesting override: `Rejected` overrides code, retry
+    /// *and* severity; `Negative` overrides code and message; `UnknownCurrency`
+    /// overrides both and bounds the message; `DbError::Connect` overrides
+    /// the code; `LedgerError::Unbalanced` overrides code and severity;
+    /// `AuthRejection::InvalidToken` is the one that must stay a 401 with
+    /// nothing said about why.
+    #[test]
+    fn wrapping_a_leaf_preserves_every_classification_the_leaf_chose() {
+        macro_rules! assert_delegates {
+            ($wrapped:expr, $leaf:expr) => {{
+                let wrapped: ApiError = $wrapped;
+                let leaf = $leaf;
+                let label = format!("{leaf:?}");
+                assert_eq!(wrapped.category(), leaf.category(), "{label}: category");
+                assert_eq!(wrapped.code(), leaf.code(), "{label}: code");
+                assert_eq!(wrapped.retry(), leaf.retry(), "{label}: retry");
+                assert_eq!(wrapped.severity(), leaf.severity(), "{label}: severity");
+                assert_eq!(
+                    wrapped.public_message(),
+                    leaf.public_message(),
+                    "{label}: public message"
+                );
+            }};
+        }
+
+        assert_delegates!(
+            ApiError::Provider(ProviderError::Rejected {
+                code: vpay_core::FailureCode::ProviderAccountBlocked,
+                message: "partner account suspended".into(),
+            }),
+            ProviderError::Rejected {
+                code: vpay_core::FailureCode::ProviderAccountBlocked,
+                message: "partner account suspended".into(),
+            }
+        );
+        assert_delegates!(
+            ApiError::Money(MoneyError::Negative(-1)),
+            MoneyError::Negative(-1)
+        );
+        assert_delegates!(
+            ApiError::Currency(UnknownCurrency("XYZ".into())),
+            UnknownCurrency("XYZ".into())
+        );
+        assert_delegates!(ApiError::Db(leaky_db_error()), leaky_db_error());
+        assert_delegates!(
+            ApiError::Ledger(LedgerError::Unbalanced {
+                debits: 5_000,
+                credits: 4_900,
+            }),
+            LedgerError::Unbalanced {
+                debits: 5_000,
+                credits: 4_900,
+            }
+        );
+        assert_delegates!(
+            ApiError::Auth(AuthRejection::InvalidToken),
+            AuthRejection::InvalidToken
+        );
+
+        // The assertions above are only worth anything if at least one leaf
+        // actually disagrees with its category's defaults — otherwise a
+        // category-only delegation would pass them all.
+        let declined = ProviderError::Rejected {
+            code: vpay_core::FailureCode::ProviderAccountBlocked,
+            message: "partner account suspended".into(),
+        };
+        assert_ne!(declined.code(), Category::Conflict.default_code());
+        assert_ne!(declined.retry(), Category::Conflict.default_retry());
+        assert_ne!(declined.severity(), Category::Conflict.default_severity());
+    }
+
+    // --- extractor rejections: axum's, rendered as ours ---
+
+    #[derive(Debug, serde::Deserialize)]
+    struct Payload {
+        #[allow(
+            dead_code,
+            reason = "the field exists so deserialisation can fail without it"
+        )]
+        amount: i64,
+    }
+
+    /// The pattern a real handler uses to route an extractor rejection
+    /// through the composite: take `Result<Form<T>, FormRejection>` and `?`
+    /// it, which applies `From<FormRejection> for ApiError`. Without the
+    /// conversion this handler would not compile; without the extractor
+    /// being a *real* `Form<T>`, the test would prove nothing about axum.
+    async fn form_handler(
+        form: Result<Form<Payload>, FormRejection>,
+    ) -> Result<&'static str, ApiError> {
+        let Form(_payload) = form?;
+        Ok("accepted")
+    }
+
+    async fn json_handler(
+        json: Result<axum::Json<Payload>, JsonRejection>,
+    ) -> Result<&'static str, ApiError> {
+        let axum::Json(_payload) = json?;
+        Ok("accepted")
+    }
+
+    async fn query_handler(
+        query: Result<Query<Payload>, QueryRejection>,
+    ) -> Result<&'static str, ApiError> {
+        let Query(_payload) = query?;
+        Ok("accepted")
+    }
+
+    async fn path_handler(
+        path: Result<Path<u32>, PathRejection>,
+    ) -> Result<&'static str, ApiError> {
+        let Path(_id) = path?;
+        Ok("accepted")
+    }
+
+    /// The failure this conversion exists to prevent: axum's own
+    /// `FormRejection` response is `text/plain` with a serde sentence in it,
+    /// so an SDK reading `error.message` from a 400 would find nothing.
+    #[tokio::test]
+    async fn a_form_rejection_is_answered_with_the_envelope_not_axums_plain_text() {
+        let app = Router::new().route("/f", post(form_handler));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/f")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from("not_the_field=1"))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router does not fail to serve");
+
+        assert_eq!(response.status().as_u16(), 400);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json"),
+            "axum's own rejection would answer text/plain"
+        );
+        let body = body_json(response).await;
+        assert_eq!(error_field(&body, "type"), Some("invalid_request_error"));
+        assert_eq!(error_field(&body, "code"), Some("invalid_request"));
+        assert_eq!(error_field(&body, "param"), Some("body"));
+        let message = error_field(&body, "message").expect("every envelope carries a message");
+        assert!(
+            message.contains("form"),
+            "the message must say what to fix: {message}"
+        );
+        assert!(
+            !message.to_ascii_lowercase().contains("deserialize"),
+            "axum's own text must not be echoed: {message}"
+        );
+    }
+
+    /// `Form` is the one the reviewers asked for; the other three are the
+    /// same conversion and would otherwise be untested. Each names the part
+    /// of the request it came from, because that is what an SDK points at.
+    #[tokio::test]
+    async fn every_extractor_rejection_names_the_part_of_the_request_it_came_from() {
+        struct Case {
+            name: &'static str,
+            app: Router,
+            request: Request<Body>,
+            param: &'static str,
+        }
+
+        let cases = vec![
+            Case {
+                name: "Json — no content-type at all",
+                app: Router::new().route("/j", post(json_handler)),
+                request: Request::builder()
+                    .method("POST")
+                    .uri("/j")
+                    .body(Body::from("{}"))
+                    .expect("valid request"),
+                param: "body",
+            },
+            Case {
+                name: "Query — the required field is missing",
+                app: Router::new().route("/q", post(query_handler)),
+                request: Request::builder()
+                    .method("POST")
+                    .uri("/q?something_else=1")
+                    .body(Body::empty())
+                    .expect("valid request"),
+                param: "query",
+            },
+            Case {
+                name: "Path — the segment is not a u32",
+                app: Router::new().route("/p/{id}", post(path_handler)),
+                request: Request::builder()
+                    .method("POST")
+                    .uri("/p/not-a-number")
+                    .body(Body::empty())
+                    .expect("valid request"),
+                param: "path",
+            },
+        ];
+
+        for case in cases {
+            let response = case
+                .app
+                .oneshot(case.request)
+                .await
+                .expect("router does not fail to serve");
+            assert_eq!(response.status().as_u16(), 400, "{}", case.name);
+            let body = body_json(response).await;
+            assert_eq!(
+                error_field(&body, "type"),
+                Some("invalid_request_error"),
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                error_field(&body, "param"),
+                Some(case.param),
+                "{}",
+                case.name
+            );
+            assert!(
+                error_field(&body, "message").is_some_and(|m| !m.is_empty()),
+                "{}",
+                case.name
+            );
+        }
+    }
+
+    // --- bounds: a caller cannot reflect a megabyte into the envelope ---
+
+    /// `InvalidParam` is the one variant whose `param` and `message` are
+    /// written at a call site, so it is the one a future handler could point
+    /// at caller-supplied text. A megabyte in must not be a megabyte out.
+    #[tokio::test]
+    async fn a_megabyte_of_param_and_message_is_bounded_in_the_envelope() {
+        let huge = "x".repeat(1024 * 1024);
+        let error = ApiError::invalid_param(huge.clone(), huge);
+        let body = body_string(error.into_response()).await;
+
+        assert!(
+            body.len() < 1_024,
+            "the envelope must stay small, got {} bytes",
+            body.len()
+        );
+        let body: Value = serde_json::from_str(&body).expect("still valid JSON");
+        // 64 x's would be a *shaped* name, but a megabyte of them is not:
+        // it exceeds PARAM_MAX_CHARS, so it falls back rather than being
+        // truncated into a field name that does not exist.
+        assert_eq!(error_field(&body, "param"), Some(FALLBACK_PARAM));
+        let message = error_field(&body, "message").expect("message");
+        assert_eq!(message.chars().count(), MESSAGE_MAX_CHARS + 1);
+        assert!(message.ends_with('…'));
+    }
+
+    #[test]
+    fn only_something_shaped_like_a_field_name_reaches_the_param_field() {
+        for good in [
+            "amount",
+            "payment_method_types[0]",
+            "metadata.order_id",
+            "a",
+            &"n".repeat(PARAM_MAX_CHARS),
+        ] {
+            assert_eq!(
+                ApiError::invalid_param(good, "m").param(),
+                Some(good),
+                "{good} is a field name"
+            );
+        }
+        for bad in [
+            "",                               // no name at all
+            "Amount",                         // our vocabulary is snake_case
+            "amount; DROP TABLE charges",     // a sentence, not a name
+            "https://example.test/?a=b",      // a reflected URL
+            "{\"amount\":1}",                 // the caller's own body
+            "amount\n\nX-Injected: 1",        // a header-splitting attempt
+            &"n".repeat(PARAM_MAX_CHARS + 1), // one character too long
+        ] {
+            assert_eq!(
+                ApiError::invalid_param(bad, "m").param(),
+                Some(FALLBACK_PARAM),
+                "{bad:?} is not a field name"
+            );
+        }
+    }
+
+    /// The bound lives on the render path, not in the constructor, so a
+    /// variant built as a struct literal cannot skip it.
+    #[tokio::test]
+    async fn a_hand_built_invalid_param_is_bounded_too() {
+        let error = ApiError::InvalidParam {
+            param: "NOT A FIELD".to_owned(),
+            message: "y".repeat(10_000),
+        };
+        let body = body_json(error.into_response()).await;
+        assert_eq!(error_field(&body, "param"), Some(FALLBACK_PARAM));
+        assert_eq!(
+            error_field(&body, "message")
+                .expect("message")
+                .chars()
+                .count(),
+            MESSAGE_MAX_CHARS + 1
+        );
+    }
+
+    /// The reason there is no `impl From<serde_json::Error> for ApiError`:
+    /// the same type means "the caller sent bad JSON" on one path and "we
+    /// built a body we cannot serialise" on the other, and only the second
+    /// is a 500.
+    #[tokio::test]
+    async fn a_serialisation_failure_of_ours_is_internal_and_says_nothing() {
+        let json_error =
+            serde_json::from_str::<Payload>("{").expect_err("that is not a JSON object");
+        let text = json_error.to_string();
+        let error = ApiError::internal_serialization(json_error);
+
+        assert_eq!(error.category(), Category::Internal);
+        assert_eq!(error.severity(), Severity::Page);
+        assert!(
+            error.to_string().contains(&text),
+            "the library's text stays in the operator's half: {error}"
+        );
+
+        let response = error.into_response();
+        assert_eq!(response.status().as_u16(), 500);
+        let body = body_string(response).await;
+        assert!(
+            !body.contains(&text),
+            "the library's text must not reach the merchant: {body}"
+        );
+        assert!(body.contains("An internal error occurred"), "{body}");
     }
 
     #[test]

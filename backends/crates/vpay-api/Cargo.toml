@@ -14,12 +14,22 @@ workspace = true
 vpay-core.workspace = true
 vpay-provider.workspace = true
 vpay-db.workspace = true
+# `ApiError` wraps `LedgerError` too (ADR-0011: a composite `#[from]`s every
+# leaf its layer can meet). A ledger transaction built while serving a
+# request that does not balance is our bug and must answer 500 and page, not
+# whatever the nearest handler would have invented. This *does* add
+# `vpay-ledger` itself to both binaries' graphs — neither linked it before —
+# but no third-party package: `vpay-ledger` depends only on `vpay-core`,
+# serde, thiserror, tracing and uuid, all of which the binaries already link.
+vpay-ledger.workspace = true
 # `ApiError` wraps `ConfigError` (ADR-0011: a composite `#[from]`s every leaf
 # its layer can meet). Per-merchant, per-rail configuration is resolved when a
 # request is served, not only at boot, so a misconfiguration surfaces as a 500
-# on a request path. No cycle and no new package in the graph: `vpay-config`
-# depends on `vpay-core` and leaf crates only, never on `vpay-api`, and both
-# binaries already link it.
+# on a request path. No cycle: `vpay-config` depends on `vpay-core` and leaf
+# crates only, never on `vpay-api`. No new package in the *binaries'* graph
+# either — both already link `vpay-config`. `vpay-api`'s own graph does grow:
+# building or testing this crate alone now pulls clap, figment, garde and
+# serde_yaml_ng in through `vpay-config`.
 vpay-config.workspace = true
 axum.workspace = true
 tokio.workspace = true

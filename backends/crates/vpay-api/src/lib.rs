@@ -35,9 +35,23 @@ pub use error::ApiError;
 ///
 /// Kept as the three-argument form because that is what an envelope without
 /// a `param` is; see [`error_envelope_with_param`] for the fourth field and
-/// why it is `Option` rather than always present.
+/// why it is `Option` rather than always present. Nothing in production
+/// calls this one — [`ApiError`]'s `IntoResponse` calls
+/// [`error_envelope_with_param`] directly — and it stays because
+/// `the_error_envelope_matches_stripes_shape` below pins the envelope's
+/// shape through it, which is worth keeping independent of the classification
+/// machinery that now decides what goes *into* it.
+///
+/// `pub(crate)`, like its four-argument sibling: ADR-0011 wants one renderer,
+/// and visibility is what makes that structural instead of a convention a
+/// handler can quietly break. `#[cfg(test)]` on top of that because the test
+/// is now its only caller in any build — with no production caller left,
+/// compiling it into the binary would be dead code the workspace's
+/// `-D warnings` gate rightly refuses, and silencing that with an `allow`
+/// would hide the very fact this comment is recording.
+#[cfg(test)]
 #[must_use = "the envelope is the response body"]
-pub fn error_envelope(kind: &str, code: &str, message: &str) -> Value {
+pub(crate) fn error_envelope(kind: &str, code: &str, message: &str) -> Value {
     error_envelope_with_param(kind, code, message, None)
 }
 
@@ -49,8 +63,15 @@ pub fn error_envelope(kind: &str, code: &str, message: &str) -> Value {
 /// by a null, and every response this crate has emitted so far had no such
 /// key. Building the object by hand rather than mutating a `json!` literal
 /// keeps that decision in one visible place.
+///
+/// **The one production envelope renderer**, called from [`ApiError`]'s
+/// `IntoResponse` and nowhere else. `pub(crate)` on purpose: a handler in
+/// another crate cannot reach it at all, so "handlers do not build envelopes"
+/// is enforced by the module system rather than by review. The SDKs model
+/// this shape from the wire (`sdks/rust`, `sdks/nodejs`), not from this
+/// signature.
 #[must_use = "the envelope is the response body"]
-pub fn error_envelope_with_param(
+pub(crate) fn error_envelope_with_param(
     kind: &str,
     code: &str,
     message: &str,
@@ -104,8 +125,11 @@ async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
 /// to be Stripe.
 ///
 /// Returns an [`ApiError`] rather than building an envelope here: ADR-0011
-/// gives `error_envelope` exactly one production caller, and this handler
-/// was the second one. The response bytes are unchanged — pinned verbatim by
+/// wants one renderer, and this handler used to be a second caller of
+/// `error_envelope`. It is not one now, and since both envelope functions
+/// became `pub(crate)` it could not be — `ApiError`'s `IntoResponse` is the
+/// only production path to `error_envelope_with_param`. The response bytes
+/// are unchanged — pinned verbatim by
 /// `the_404_fallback_is_byte_for_byte_what_it_was_before_api_error`.
 ///
 /// The method and path are captured for the log line only; the body

@@ -53,12 +53,17 @@ fn main() -> ExitCode {
 
 /// The exit code for a failed startup, per ADR-0011's Tier 3 and the table in
 /// `docs/flows/errors.md`. Deliberately a near-copy of `vpay-server`'s
-/// function of the same name rather than a shared helper: the only crate both
-/// binaries share for CLI/signals is `vpay-config`, and ADR-0011 keeps
-/// `anyhow` out of every library crate's `[dependencies]` — a shared
-/// `exit_code_for(&anyhow::Error)` would have to live in one, and a version
-/// taking a bare error iterator still could not name `DbError` from
-/// `vpay-config` without inverting the dependency.
+/// function of the same name rather than a shared helper. A shared version
+/// has to name both leaf types it looks for, so it needs a home that depends
+/// on `vpay-config` **and** `vpay-db` — and that home would exist only to
+/// hold this function. "The set of leaf errors a binary knows how to
+/// classify" is not a library boundary this workspace wants: it is a
+/// property of the binary, and the two binaries are free to diverge as they
+/// grow (this one will learn about job-queue failures the server never
+/// meets). Two copies of eight lines, each pinned by its own CLI tests, cost
+/// less than a crate that exists to avoid them. ADR-0011 also keeps `anyhow`
+/// out of every library crate's `[dependencies]`, so the shared helper could
+/// not take an `&anyhow::Error` anyway.
 ///
 /// The order is load-bearing, not alphabetical: `ConfigError` is looked for
 /// **before** `DbError`, so a chain carrying both (a config that names an

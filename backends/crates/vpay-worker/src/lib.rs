@@ -26,9 +26,29 @@ pub fn poll_delay(attempt: u32) -> Duration {
     }
 }
 
+/// How often an `unresolved` charge is polled after the 24-hour ladder has
+/// run out — `docs/flows/reconciler.md`: "still polled, once an hour, and now
+/// raising an alert for a human".
+///
+/// Deliberately *not* the last rung of [`poll_delay`] (15 minutes). Once a
+/// human is reconciling the charge against the rail's settlement statement,
+/// four polls an hour buy nothing; one keeps the charge live — and it must
+/// stay live, because a late success at hour 30 is a normal transition, not
+/// an exception. This is the delay [`JobError::decision`] pairs with
+/// `alert: true` for [`JobError::Exhausted`].
+pub const UNRESOLVED_POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_unresolved_interval_is_the_documented_hour() {
+        assert_eq!(UNRESOLVED_POLL_INTERVAL, Duration::from_secs(3_600));
+        // Slower than every rung of the ladder, which is the point: the
+        // escalated charge stays live without being hammered.
+        assert!(UNRESOLVED_POLL_INTERVAL > poll_delay(1_000));
+    }
 
     #[test]
     fn the_ladder_starts_fast() {

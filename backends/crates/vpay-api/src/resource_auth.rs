@@ -162,7 +162,10 @@ impl From<RawClaims> for ResourceClaims {
 }
 
 /// Every way a bearer token can fail to authenticate a request, collapsed
-/// into the Stripe-shaped envelope [`crate::error_envelope`] already defines.
+/// into the Stripe-shaped envelope this crate renders in one place
+/// (`error_envelope_with_param`, `pub(crate)` and reached only through
+/// [`ApiError`]'s `IntoResponse` — hence no intra-doc link to it from a
+/// public item).
 /// Deliberately generic about *why* signature, expiry, audience, issuer or
 /// `kid` validation failed: this fails closed without becoming an oracle a
 /// caller could use to probe which specific check tripped.

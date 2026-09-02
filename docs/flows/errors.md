@@ -38,8 +38,8 @@ through.
  ┌──────────────────────────────────────────────────────────────┐
  │ TIER 3 — boundaries                                            │
  │  IntoResponse → Stripe envelope   (status, type, code, msg)   │
- │  JobError::decision → Retry now / poll ladder / dead-letter   │
- │  main(): anyhow::Result + .context(..) → exit code            │
+ │  JobError::decision → RetryAfter{alert} / Terminal / DeadLetter│
+ │  main(): ExitCode from the anyhow chain (.context at each step)│
  │  tracing level from Severity                                  │
  └──────────────────────────────────────────────────────────────┘
 ```
@@ -88,11 +88,11 @@ Exit codes follow `sysexits.h` where one fits (`EX_CONFIG` 78,
 | `DbError` | `Connect`, `Healthcheck`, `Query` | `Storage` | |
 | | `Migrate` | `Configuration` | a broken migration is a deploy problem, not a transient one |
 | `ProviderError` | `Transport`, `Malformed` | `Rail` | retried by the poll ladder |
-| | `Rejected { code, .. }` | `Conflict` with `Retry::NewAttempt` | a rail *decision*; `code` (the `FailureCode`) is the merchant-facing signal — see below |
+| | `Rejected { code, .. }` | `Conflict` with `Retry::NewAttempt`; envelope `code` is the constant `charge_declined`; severity from the `FailureCode`'s own policy (`provider_account_blocked` pages, `provider_unavailable`/`provider_error` warn, the rest info) | a rail *decision*, not a rail failure — see below. The `FailureCode` itself is in the public message, never reused as the envelope `code`, because `provider_unavailable` already means "502, retrying" when `Transport` emits it |
 | | `Config` | `Configuration` | |
-| | `Unsupported` | `Conflict` | capabilities said no; the core should have checked first |
+| | `Unsupported` | `Conflict`, severity `Error` | 409 because the request cannot proceed; logged at `Error` because reaching it means the core skipped the capability check it is supposed to branch on |
 | | `NotImplemented(..)` | `NotImplemented` | |
-| `AuthRejection` | all three | `Authentication` | one category, one message: never an oracle |
+| `AuthRejection` | all three | `Authentication` | one category, one status, one `type`; the three codes/messages say only whether a header was present and well-formed, never anything about the token — not an oracle |
 
 **`ProviderError::Rejected` is the seam between system errors and business
 outcomes.** A rail declining a charge is not a system failure: the worker
@@ -103,28 +103,43 @@ classified here only so that a path which *does* surface it as an error
 
 ## Composite errors
 
-**`vpay_api::ApiError`** wraps every leaf the HTTP layer can meet and adds
-its own variants (`UnknownRoute`, request-shape failures). `IntoResponse`
-does exactly this and nothing else:
+**`vpay_api::ApiError`** wraps every leaf the HTTP layer can meet
+(`DbError`, `ProviderError`, `MoneyError`, `UnknownCurrency`, `LedgerError`,
+`ConfigError`, `AuthRejection`) and adds its own variants (`UnknownRoute`,
+`InvalidParam`, `IdempotencyKeyReused`, `Internal`). axum's own extractor
+rejections (`Form`, `Json`, `Path`, `Query`) convert into `InvalidParam`
+with a curated sentence, so a malformed body gets the envelope rather than
+axum's plain-text 400. `IntoResponse` does exactly this and nothing else:
 
 ```
 status  = err.category().http_status()
-body    = error_envelope(err.category().stripe_type(), err.code(), err.public_message())
-log     = at err.severity(), with the full Display + source chain
+body    = { "error": { "type": category.stripe_type(), "code": err.code(),
+                       "message": err.public_message(), "param"?: <if the variant names one> } }
+log     = at err.severity() (alert=true when Page), with the full Display + source chain
 ```
 
 The full chain goes to the log; only `public_message()` goes to the
-merchant. `error_envelope` is called from here and from nowhere else in
-production code.
+merchant. The two envelope renderers are `pub(crate)`, so a handler
+*cannot* build one by hand — "one renderer" is structural, not a
+convention. `InvalidParam.message` and `UnknownCurrency`'s echoed code are
+length-bounded at render time so a caller cannot reflect a megabyte back
+into the envelope.
 
-**`vpay_worker::JobError`** wraps `DbError` and `ProviderError` and adds
-job-level variants. Its `decision()` is derived from `Classify::retry`:
+**`vpay_worker::JobError`** wraps `DbError`, `ProviderError`, `MoneyError`
+and `LedgerError` and adds job-level variants (`Poisoned`, `Exhausted`).
+Its `decision(attempt)` is derived from `Classify::retry` and
+`Classify::severity` alone:
 
 | `retry()` | Decision |
 |---|---|
-| `AfterBackoff` | re-run the job after `poll_delay(attempt)` ([reconciler.md](reconciler.md)) |
-| `NewAttempt` | terminal for this job; the intent's own state machine decides what a new attempt means |
-| `Never` | dead-letter, at `severity()` — a human looks |
+| `AfterBackoff` | `RetryAfter { delay, alert }`: re-run after `poll_delay(attempt)` ([reconciler.md](reconciler.md)) — or after `UNRESOLVED_POLL_INTERVAL` (one hour) for `Exhausted` — with `alert = true` when severity is `Error` or above, so a human is paged while the loop keeps going |
+| `NewAttempt` | `Terminal`: this job is over; the intent's own state machine decides what a new attempt means |
+| `Never` | `DeadLetter`: nothing the loop can do will change the outcome — park it for a human |
+
+`Exhausted` is the reconciler's `unresolved` state: the 24-hour horizon
+passed with no terminal answer. Per [reconciler.md](reconciler.md) that is
+**alert and keep polling hourly**, never a silent failure and never a
+dead-letter — a late success at hour 30 is a normal transition.
 
 ## Boundaries
 
@@ -134,17 +149,20 @@ construct an envelope, choose a status, or format a message for a merchant.
 **Worker.** Jobs return `Result<_, JobError>`; the loop calls `decision()`
 and logs at `severity()`. The loop does not inspect variants.
 
-**Binaries.** `main` returns `anyhow::Result<()>`; every fallible startup
-step gets `.context("what we were doing")`. On `Err`, `main` finds the
-first classifiable leaf in the chain (`find_in_chain::<ConfigError>`, then
-`DbError`), logs the full chain, and exits with `category().exit_code()` —
-`Internal`/`1` if nothing matched.
+**Binaries.** `main` returns `ExitCode` and wraps an `async fn run() ->
+anyhow::Result<()>` in which every fallible startup step gets
+`.context("what we were doing")`. On `Err`, `main` prints the full chain to
+stderr (`eprintln!("{e:#}")` — `tracing` may not be initialised yet when
+configuration fails), finds the first classifiable leaf in the chain
+(`find_in_chain::<ConfigError>` first, then `DbError` — a config naming a
+dead database is still a config problem), and exits with
+`category().exit_code()`, `Internal`/`1` if nothing matched.
 
 ## What can go wrong
 
 | Failure | Where it surfaces | What holds |
 |---|---|---|
-| A new error enum forgets `impl Classify` | `cargo xtask verify-errors` fails `just verify` | nothing unclassified reaches a boundary |
+| A new error type forgets `impl Classify` | `cargo xtask verify-errors` fails `just verify`: it finds every `pub` type in `backends/crates` that derives `thiserror::Error` **or** is named `*Error`/`*Rejection`, outside `#[cfg(test)]` blocks and `tests/` directories, and requires an impl in the same crate that is itself outside test code | nothing unclassified reaches a boundary — within that scan; the SDKs and `backends/apps` are outside it by design |
 | A library crate adds `anyhow` to `[dependencies]` | same check | `anyhow` stays at the edge |
 | A handler hand-builds an envelope with the wrong status | review — `error_envelope` has one production caller and grep finds a second | one status per category |
 | A leaf's `Display` includes a secret | the existing redaction tests (`Debug` on `ProviderHost`, `CommonArgs`, SDK `Credentials`) — extend them when adding a payload that could carry one | secrets never reach a log |
@@ -168,16 +186,21 @@ first classifiable leaf in the chain (`find_in_chain::<ConfigError>`, then
 ## Status
 
 **Implemented:** `vpay_core::error` (`Category`, `Retry`, `Severity`,
-`Classify`, `find_in_chain`) with exhaustive tests of the policy table;
-`impl Classify` on every leaf listed above; `vpay_api::ApiError` with
-`IntoResponse` deriving the envelope, and the existing 404 fallback and
-`AuthRejection` routed through it; `vpay_worker::JobError` with
-`decision()`; both binaries exiting with `Category::exit_code()`;
-`cargo xtask verify-errors` in `just verify` and CI. See
-[../status.md](../status.md) for the row-by-row proof, including which of
-these are proven by a test that would fail if they broke.
+`Classify`, `find_in_chain`), with invariant tests over every category
+*and* a literal transcription of the table above as a test, so this
+document and the code fail together; `impl Classify` on every leaf listed
+above; `vpay_api::ApiError` with `IntoResponse` deriving the envelope, the
+existing 404 fallback routed through it, and `AuthRejection` classified
+and rendered through it; `vpay_worker::JobError` with `decision()`; both
+binaries exiting with `Category::exit_code()`; `cargo xtask verify-errors`
+in `just verify` and CI. See [../status.md](../status.md) for the
+row-by-row proof, including which of these are proven by a test that would
+fail if they broke.
 
 **Not implemented, and not implied by anything above:** no `/v1` handler
-exists to return an `ApiError` from, and no job loop exists to call
-`JobError::decision()`. The types are the contract Phase 3 and Phase 5
-build against; they move no money and serve no request today.
+exists to return an `ApiError` from — in a running `vpay-server` the only
+reachable `ApiError` is the 404 fallback, and since the bearer-token
+extractor is mounted on no route, no 401 envelope can occur in production
+yet. No job loop exists to call `JobError::decision()`. The types are the
+contract Phase 3 and Phase 5 build against; they move no money and serve
+no request today.

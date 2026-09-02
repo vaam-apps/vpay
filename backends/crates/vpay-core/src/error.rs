@@ -350,6 +350,7 @@ pub trait Classify: StdError {
 /// falls back to [`Category::Internal`] for anything else. That fallback is
 /// the honest answer for an error nothing classified — it pages, which is
 /// what an unclassified startup failure in a payment binary deserves.
+#[must_use]
 pub fn find_in_chain<'a, T: Classify + 'static>(
     chain: impl IntoIterator<Item = &'a (dyn StdError + 'static)>,
 ) -> Option<&'a T> {
@@ -463,6 +464,237 @@ mod tests {
         for c in Category::ALL {
             assert!((1..=78).contains(&c.exit_code()), "{c:?}");
         }
+    }
+
+    /// The policy table of `docs/flows/errors.md`, transcribed by hand.
+    ///
+    /// Every other test in this module asserts an *invariant* ("caller
+    /// categories are 4xx", "only `Internal` pages") — which is worth more
+    /// per line, but which a wrong-but-self-consistent table would satisfy.
+    /// This one is the literal row-for-row transcription, so the document
+    /// and the code fail together: if a column here disagrees with the
+    /// document, one of the two is wrong and someone has to decide which.
+    ///
+    /// Columns are exactly the document's, in its order, with one addition:
+    /// the document's table has no message column, so `generic_message` is
+    /// pinned from the implementation instead. That is still worth pinning
+    /// — these sentences cross the wire to merchants — but it is a
+    /// regression test rather than a transcription, and a deliberate
+    /// re-wording updates it.
+    /// One row of the document's table. A struct rather than a tuple so the
+    /// columns are named where they are written, and so a reordering of two
+    /// same-typed columns cannot go unnoticed.
+    struct PolicyRow {
+        category: Category,
+        http: u16,
+        stripe_type: &'static str,
+        default_code: &'static str,
+        retry: Retry,
+        severity: Severity,
+        exit: i32,
+        message: &'static str,
+    }
+
+    const POLICY_TABLE: [PolicyRow; 12] = [
+        PolicyRow {
+            category: Category::InvalidRequest,
+            http: 400,
+            stripe_type: "invalid_request_error",
+            default_code: "invalid_request",
+            retry: Retry::Never,
+            severity: Severity::Info,
+            exit: 64,
+            message: "The request was malformed or a parameter was invalid.",
+        },
+        PolicyRow {
+            category: Category::Authentication,
+            http: 401,
+            stripe_type: "authentication_error",
+            default_code: "invalid_token",
+            retry: Retry::Never,
+            severity: Severity::Info,
+            exit: 77,
+            message: "The bearer token is invalid, expired, or was not issued for this endpoint.",
+        },
+        PolicyRow {
+            category: Category::Forbidden,
+            http: 403,
+            stripe_type: "invalid_request_error",
+            default_code: "forbidden",
+            retry: Retry::Never,
+            severity: Severity::Info,
+            exit: 77,
+            message: "This client is not permitted to perform that action.",
+        },
+        PolicyRow {
+            category: Category::NotFound,
+            http: 404,
+            stripe_type: "invalid_request_error",
+            default_code: "resource_missing",
+            retry: Retry::Never,
+            severity: Severity::Info,
+            exit: 1,
+            message: "No such object exists for this client.",
+        },
+        PolicyRow {
+            category: Category::Conflict,
+            http: 409,
+            stripe_type: "invalid_request_error",
+            default_code: "invalid_state",
+            retry: Retry::Never,
+            severity: Severity::Info,
+            exit: 1,
+            message: "The object is in a state that does not allow this action.",
+        },
+        PolicyRow {
+            category: Category::Idempotency,
+            http: 400,
+            stripe_type: "idempotency_error",
+            default_code: "idempotency_key_in_use",
+            retry: Retry::Never,
+            severity: Severity::Info,
+            exit: 64,
+            message: "This Idempotency-Key was already used with a different request body.",
+        },
+        PolicyRow {
+            category: Category::RateLimited,
+            http: 429,
+            stripe_type: "rate_limit_error",
+            default_code: "rate_limit",
+            retry: Retry::AfterBackoff,
+            severity: Severity::Warn,
+            exit: 1,
+            message: "Too many requests. Retry after a short delay.",
+        },
+        PolicyRow {
+            category: Category::Rail,
+            http: 502,
+            stripe_type: "api_error",
+            default_code: "provider_unavailable",
+            retry: Retry::AfterBackoff,
+            severity: Severity::Warn,
+            exit: 69,
+            message: "The payment rail is temporarily unavailable. The charge will be retried.",
+        },
+        PolicyRow {
+            category: Category::Storage,
+            http: 503,
+            stripe_type: "api_error",
+            default_code: "service_unavailable",
+            retry: Retry::AfterBackoff,
+            severity: Severity::Error,
+            exit: 69,
+            message: "vpay is temporarily unavailable. Retry after a short delay.",
+        },
+        PolicyRow {
+            category: Category::Configuration,
+            http: 500,
+            stripe_type: "api_error",
+            default_code: "misconfigured",
+            retry: Retry::Never,
+            severity: Severity::Error,
+            exit: 78,
+            message: "vpay is misconfigured for this operation. Contact support.",
+        },
+        PolicyRow {
+            category: Category::NotImplemented,
+            http: 501,
+            stripe_type: "api_error",
+            default_code: "not_implemented",
+            retry: Retry::Never,
+            severity: Severity::Error,
+            exit: 1,
+            message: "This operation is not implemented yet.",
+        },
+        PolicyRow {
+            category: Category::Internal,
+            http: 500,
+            stripe_type: "api_error",
+            default_code: "internal_error",
+            retry: Retry::Never,
+            severity: Severity::Page,
+            exit: 1,
+            message: "An internal error occurred. Contact support with the request id.",
+        },
+    ];
+
+    #[test]
+    fn every_category_matches_the_policy_table_in_docs_flows_errors_md() {
+        for row in POLICY_TABLE {
+            let c = row.category;
+            assert_eq!(c.http_status(), row.http, "{c:?}: HTTP");
+            assert_eq!(c.stripe_type(), row.stripe_type, "{c:?}: stripe type");
+            assert_eq!(c.default_code(), row.default_code, "{c:?}: default code");
+            assert_eq!(c.default_retry(), row.retry, "{c:?}: retry");
+            assert_eq!(c.default_severity(), row.severity, "{c:?}: severity");
+            assert_eq!(c.exit_code(), row.exit, "{c:?}: exit code");
+            assert_eq!(c.generic_message(), row.message, "{c:?}: message");
+        }
+    }
+
+    /// A row per category is only a full transcription if the table has a
+    /// row for *every* category, and `ALL` is only usable as "every
+    /// category" if it actually is.
+    #[test]
+    fn the_policy_table_covers_every_category_exactly_once() {
+        assert_eq!(POLICY_TABLE.len(), Category::ALL.len());
+        for c in Category::ALL {
+            assert_eq!(
+                POLICY_TABLE.iter().filter(|row| row.category == c).count(),
+                1,
+                "{c:?} is not in the transcribed table exactly once"
+            );
+        }
+    }
+
+    /// A dense index over [`Category`], deliberately without a wildcard arm.
+    ///
+    /// This is the half of the completeness check the compiler enforces: a
+    /// thirteenth variant fails to compile *here*, before any test runs. The
+    /// test below is the other half — it catches a thirteenth variant that
+    /// was given an index but left out of [`Category::ALL`], which nothing
+    /// else in this crate would notice, since every other test iterates
+    /// `ALL` and would simply never see it.
+    const fn index(c: Category) -> usize {
+        match c {
+            Category::InvalidRequest => 0,
+            Category::Authentication => 1,
+            Category::Forbidden => 2,
+            Category::NotFound => 3,
+            Category::Conflict => 4,
+            Category::Idempotency => 5,
+            Category::RateLimited => 6,
+            Category::Rail => 7,
+            Category::Storage => 8,
+            Category::Configuration => 9,
+            Category::NotImplemented => 10,
+            Category::Internal => 11,
+        }
+    }
+
+    /// The highest index [`index`] can return, plus one. Bumped in the same
+    /// edit that adds a variant to `index`, and the test fails loudly if the
+    /// two disagree.
+    const CATEGORY_COUNT: usize = 12;
+
+    #[test]
+    fn all_contains_every_category_exactly_once() {
+        let mut hits = [0usize; CATEGORY_COUNT];
+        for c in Category::ALL {
+            let i = index(c);
+            assert!(i < CATEGORY_COUNT, "{c:?} indexes past the count");
+            match hits.get_mut(i) {
+                Some(slot) => *slot += 1,
+                None => unreachable!(),
+            }
+        }
+        for (i, hits) in hits.iter().enumerate() {
+            assert_eq!(
+                *hits, 1,
+                "index {i} appears {hits} time(s) in Category::ALL; every category must appear exactly once"
+            );
+        }
+        assert_eq!(Category::ALL.len(), CATEGORY_COUNT);
     }
 
     #[test]

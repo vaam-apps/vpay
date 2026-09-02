@@ -58,3 +58,13 @@ The `dedupe_key` is what stops duplicate callbacks becoming a job storm.
 
 `poll_delay` is implemented and tested. The job loop, the escalation and the
 callback endpoint are **not started** — see [../status.md](../status.md).
+
+The loop's *error contract* now exists ahead of the loop:
+`vpay_worker::JobError::decision(attempt)` turns any job failure into
+`RetryAfter { delay, alert }`, `Terminal`, or `DeadLetter`, derived only from
+the error's classification ([errors.md](errors.md)). The 24-hour `unresolved`
+escalation above is `JobError::Exhausted` → `RetryAfter { delay: 1 h, alert:
+true }`: exactly this document's "still polled, once an hour, and now
+raising an alert" — never a silent failure, and never a dead-letter, because
+the late success at hour 30 is a normal transition. Nothing calls
+`decision()` yet.

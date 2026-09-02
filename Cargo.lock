@@ -4079,6 +4079,7 @@ dependencies = [
  "vpay-config",
  "vpay-core",
  "vpay-db",
+ "vpay-ledger",
  "vpay-provider",
  "wiremock",
 ]
@@ -4261,6 +4262,7 @@ dependencies = [
  "uuid",
  "vpay-core",
  "vpay-db",
+ "vpay-ledger",
  "vpay-provider",
 ]
 

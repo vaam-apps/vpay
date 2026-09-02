@@ -19,6 +19,16 @@ vpay-provider.workspace = true
 # pool or run a query yet (there is no job loop — docs/status.md); the
 # dependency is for the error type alone.
 vpay-db.workspace = true
+# `JobError` also wraps `LedgerError` (ADR-0011: a composite `#[from]`s every
+# leaf its layer can meet). The job loop is what will write ledger
+# transactions — a capture, a refund — so an unbalanced one surfaces as a job
+# failure, and `LedgerError::Unbalanced` pages while an ordinary job failure
+# does not. No cycle: `vpay-ledger` depends on `vpay-core` only, never on
+# this crate. It is new to both binaries' graphs (nothing linked it before)
+# but adds no third-party package — its own dependencies are all already
+# there. Like `vpay-db` above, this is for the error type alone; nothing here
+# builds a transaction yet (docs/status.md).
+vpay-ledger.workspace = true
 # `JobError::Poisoned`/`Exhausted` name the `jobs` row they refer to, and
 # that primary key is a UUID everywhere else in the schema
 # (backends/migrations/).

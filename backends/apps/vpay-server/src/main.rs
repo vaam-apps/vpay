@@ -59,6 +59,14 @@ fn main() -> ExitCode {
 /// The exit code for a failed startup, per ADR-0011's Tier 3 and the table in
 /// `docs/flows/errors.md`.
 ///
+/// `vpay-worker-bin` has a near-copy of this function, deliberately. A shared
+/// helper has to name both leaf types it looks for, so it would need a home
+/// that depends on `vpay-config` **and** `vpay-db` and exists only to hold
+/// it. "Which leaf errors this binary knows how to classify" is a property of
+/// the binary rather than a library boundary — the two are free to diverge as
+/// they grow — so this is two copies of eight lines, each pinned by its own
+/// CLI tests, rather than a crate created to avoid them.
+///
 /// The order is load-bearing, not alphabetical: `ConfigError` is looked for
 /// **before** `DbError` because a chain can plausibly contain both (a config
 /// that names an unreachable database), and in that case the operator's
