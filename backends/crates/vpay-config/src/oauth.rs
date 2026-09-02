@@ -48,7 +48,7 @@
 //!
 //! Both types carry a `client_secret: Option<String>` field whose only
 //! legitimate value is `None`. It exists so a config that accidentally
-//! carries a secret is refused at boot ([`ConfigError::ClientSecretPresent`],
+//! carries a secret is refused at boot ([`crate::ConfigError::ClientSecretPresent`],
 //! checked in `Config::validate_all`) rather than silently ignored — the
 //! field would otherwise just vanish into "unknown YAML key" territory,
 //! which is not the fail-fast story ADR-0003 promises. Never populate it in
@@ -59,6 +59,22 @@ use std::fmt;
 use garde::Validate;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+
+/// The `aud` value every `/v1` access token must carry, and therefore the one
+/// value every merchant registration must list in
+/// [`MerchantClient::allowed_audiences`].
+///
+/// **This lives here, in config, because it has to be one string in one
+/// place.** Three parties have to agree on it or `/v1` silently stops
+/// working: the merchant's token request (`audience=vpay:v1` — the SDKs send
+/// it by default, `docs/flows/merchant-auth.md`), the OP's own
+/// `allowed_audiences` gate on `handle_client_credentials`, and vpay's
+/// resource-server validator (`vpay_api::resource_auth::Surface::Merchant::audience`,
+/// which returns this constant rather than spelling it a second time). Two of
+/// the three disagreeing produces no error message anywhere near the cause —
+/// see [`crate::ConfigError::MerchantMissingV1Audience`] for the two concrete
+/// shapes that failure takes and why it is fatal at boot instead.
+pub const MERCHANT_AUDIENCE: &str = "vpay:v1";
 
 /// OAuth2 grant types this workspace's clients can be registered for.
 ///

@@ -13,6 +13,13 @@ workspace = true
 
 [dev-dependencies]
 vpay-core.workspace = true
+# For `tests/client_store.rs`: the `ClientStore` under test
+# (`vpay_api::op::clients::YamlClientStore`) and the `MerchantClient` config
+# shape it is built from. Both are ordinary workspace crates, not test
+# doubles — this suite exercises the real registry against a real Postgres.
+vpay-api.workspace = true
+vpay-config.workspace = true
+vpay-db.workspace = true
 vpay-provider.workspace = true
 vpay-adapter-mtn-momo.workspace = true
 vpay-adapter-orange-money.workspace = true
@@ -38,3 +45,38 @@ authkestra-op = { workspace = true, features = ["sqlx-postgres"] }
 # RefreshToken embed — needed to construct one in the acceptance test.
 authkestra-engine.workspace = true
 chrono.workspace = true
+# `tests/client_store.rs` builds a `MerchantClient`'s public JWK Set, which is
+# a raw `serde_json::Value` on both sides of that type (see its own doc
+# comment for why it is not a typed key structure).
+serde_json.workspace = true
+# `tests/merchant_token_flow.rs`: the shipping merchant SDK drives the token
+# flow. **Not a test double** — `vpay-sdk` is the artefact a merchant
+# integrates (`sdks/rust`), and hand-rolling a second token client here would
+# prove only that vpay agrees with itself. Declared by path rather than
+# `.workspace = true` because the root `[workspace.dependencies]` does not
+# list it; `version` is required alongside `path` because `deny.toml` sets
+# `wildcards = "deny"` and a path-only dependency is a wildcard requirement to
+# `cargo deny check bans`. Same declaration `vpay-api` already uses.
+vpay-sdk = { path = "../../../sdks/rust", version = "0.1.0" }
+# `tests/merchant_token_flow.rs`: runs the real `vpay_api::router` on a real
+# socket (`axum::serve`) rather than through `tower::ServiceExt::oneshot`,
+# because the resource-server validator fetches the JWKS over HTTP from the
+# same process — a round trip a `oneshot` harness has no socket for.
+axum.workspace = true
+# The client for the three requests the SDK deliberately cannot make: one
+# with no bearer token, one with a bearer token it did not mint, and the same
+# `client_assertion` sent twice.
+reqwest.workspace = true
+# Mints the RSA keypairs those tests sign with — the merchant's and the
+# server's — so nothing is verified against hard-coded material. Pinned
+# directly at the same "0.9" `vpay-api` uses (neither is a workspace
+# dependency); already in the resolved graph via `authkestra-engine`.
+rsa = "0.9"
+rand.workspace = true
+# `rsa`'s modulus/exponent are base64url in a JWK.
+base64 = "0.22"
+# `authkestra_resource`'s JWKS fetch builds a reqwest client eagerly and the
+# workspace pins reqwest `rustls-no-provider`, which panics without a
+# process-wide default `CryptoProvider`. This test binary installs one, the
+# same call `vpay-server`'s `main` makes.
+rustls.workspace = true

@@ -1,0 +1,43 @@
+[package]
+name = "merchant-demo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Runnable walk-through of everything vpay's /v1 surface actually answers today"
+# Never published. This is a demonstration of a *local* stack, hard-wired to
+# `.e2e/` throwaway keys and `localhost:8080`; on crates.io it would read as a
+# supported integration path, which is the opposite of what it is. The merchant
+# SDK it drives (`sdks/rust`) is unpublished for its own reason — see that
+# crate's manifest.
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# The shipping merchant SDK, not a copy of its handshake. If this demo passed
+# while a merchant using `vpay-sdk` failed, the demo would be worthless — so it
+# uses the same artefact a merchant does, for both the assertion it mints and
+# the resource call in step 4.
+vpay-sdk.workspace = true
+# A binary at the process edge, which is where ADR-0011 puts `anyhow`: every
+# step here reports to a human on a terminal, and none of its failures is
+# something a caller matches on.
+anyhow.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+serde_json.workspace = true
+# Used for the three requests the SDK deliberately cannot make: unauthenticated
+# discovery/JWKS reads, and the `/v1` request with no bearer token that step 3
+# depends on (the SDK always attaches one).
+reqwest.workspace = true
+# Not a transport choice — a panic-avoidance one. The workspace pins reqwest
+# 0.13 with `rustls-no-provider` (root `Cargo.toml`'s long note), under which
+# `reqwest::ClientBuilder::build()` panics unless a process-wide
+# `CryptoProvider` was installed first. An application may install one; a
+# library may not. `main()` does it here, exactly as `vpay-server`'s does.
+rustls.workspace = true
+# Step 2 shows the access token's claims without verifying them. Same pin as
+# the rest of the workspace's base64 users (`sdks/rust`, `.xtask`).
+base64 = "0.22"

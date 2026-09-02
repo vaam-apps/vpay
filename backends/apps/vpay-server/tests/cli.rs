@@ -22,26 +22,24 @@
 
 use std::io::{BufRead as _, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::LazyLock;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, ImageExt};
+use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 
 /// Starts a fresh Postgres 16 container and returns its connection URL. Must
 /// be called from, and the returned container kept alive inside, the same
 /// tokio runtime for its entire lifetime — see [`with_live_postgres`] for
-/// why. `testcontainers-modules` 0.15 defaults to image `postgres:11-alpine`,
-/// which is not cached on this machine and this machine cannot reach Docker
-/// Hub to pull it; `16-alpine` IS cached locally and matches `compose.yml`,
-/// hence the explicit `.with_tag(...)` (mirrors `vpay-db`'s and
-/// `vpay-tests-integration`'s identical helpers).
+/// why. The container comes from
+/// `vpay_testkit::containers::start_postgres_with_retry`, the one helper
+/// `vpay-db` and `vpay-tests-integration` also call — it is where the pinned
+/// `16-alpine` tag and the host-port-collision retry are documented.
 async fn start_postgres() -> (ContainerAsync<PostgresImage>, String) {
-    let container = PostgresImage::default()
-        .with_tag("16-alpine")
-        .start()
+    let container = vpay_testkit::containers::start_postgres_with_retry()
         .await
         .expect("postgres:16-alpine container starts (it is cached locally on this machine)");
     let host = container.get_host().await.expect("container host");
@@ -131,6 +129,70 @@ fn valid_config_path() -> &'static str {
     )
 }
 
+/// A real RSA private key on disk, generated once per run of this test
+/// binary, standing in for the Kubernetes Secret mount `vpay-server` reads
+/// at boot.
+///
+/// **Generated, never checked in.** A PEM committed to the repository is a
+/// private key in version control — even a test one, and even one nothing
+/// signs anything real with; and it is the kind of file that gets copied.
+/// Generation costs about a second, once, amortised across every test in
+/// this file.
+///
+/// 2048 bits, the floor `vpay_api::op::keys` enforces: this fixture exists
+/// to let the server boot, not to exercise the key-strength check (that has
+/// its own unit test, against material this file never has to hold).
+///
+/// `CARGO_TARGET_TMPDIR` rather than `std::env::temp_dir`: cargo gives an
+/// integration-test binary a scratch directory inside `target/`, which is
+/// already git-ignored and already cleaned by `cargo clean`, so a generated
+/// key never lands in `/tmp` where it would outlive the run. The file name
+/// carries this process's pid so two concurrently-running test binaries
+/// cannot write over each other.
+static SIGNING_KEY_FILE: LazyLock<PathBuf> = LazyLock::new(|| {
+    use rsa::pkcs1::{EncodeRsaPrivateKey as _, LineEnding};
+
+    let mut rng = rand::rngs::OsRng;
+    let key = rsa::RsaPrivateKey::new(&mut rng, 2048).expect("rsa key generation succeeds");
+    let path =
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("oauth-signing-key-{}.pem", pid()));
+    key.write_pkcs1_pem_file(&path, LineEnding::LF)
+        .expect("the generated key is written to the cargo target tmpdir");
+    path
+});
+
+/// This process's id, for a unique fixture file name. `std::process::id`
+/// returns a `u32` on every platform.
+fn pid() -> u32 {
+    std::process::id()
+}
+
+/// [`SIGNING_KEY_FILE`] as the `&str` `Command::env` wants.
+fn generated_key_path() -> &'static str {
+    SIGNING_KEY_FILE
+        .to_str()
+        .expect("the cargo target tmpdir path is valid utf-8")
+}
+
+/// A file that exists and is readable but is not a private key of any kind.
+///
+/// Written next to the real one, and deliberately *not* "an RSA key with a
+/// corrupted body": the interesting boundary is "the Secret was mounted but
+/// holds the wrong thing", which is what a mis-keyed Kubernetes Secret or a
+/// mounted ConfigMap actually looks like.
+static NOT_A_KEY_FILE: LazyLock<PathBuf> = LazyLock::new(|| {
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("not-a-key-{}.pem", pid()));
+    std::fs::write(&path, b"this is not a PEM-encoded RSA private key\n")
+        .expect("the fixture is written to the cargo target tmpdir");
+    path
+});
+
+fn not_a_key_path() -> &'static str {
+    NOT_A_KEY_FILE
+        .to_str()
+        .expect("the cargo target tmpdir path is valid utf-8")
+}
+
 /// A `vpay_config::Config` YAML file that fails validation
 /// (`ConfigError::InsecureHost`: an `http://` host under `livemode: true`).
 fn invalid_config_path() -> &'static str {
@@ -167,6 +229,28 @@ fn poll_healthz(addr: SocketAddr, timeout: Duration) -> Option<u16> {
         std::thread::sleep(Duration::from_millis(25));
     }
     None
+}
+
+/// Sends one HTTP/1.1 request over a fresh connection and returns
+/// `(status, whole response text)`. The body is returned unparsed, and the
+/// caller matches on a substring, so a response framed with
+/// `Transfer-Encoding: chunked` reads the same as one with a
+/// `Content-Length` — this file has no HTTP client and does not want one.
+///
+/// Unlike [`poll_healthz`] this does **not** retry: it is for asserting on
+/// one specific response from a server already known to be up.
+fn http_request(addr: SocketAddr, request: &str) -> Option<(u16, String)> {
+    let mut stream = TcpStream::connect(addr).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+    let status = response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())?;
+    Some((status, response))
 }
 
 /// Sends SIGTERM to `child` via the `kill` utility rather than a raw libc
@@ -353,6 +437,7 @@ fn a_bad_config_is_exit_78_naming_the_problem() {
 fn an_unreachable_database_is_exit_69_naming_postgres() {
     let output = bin()
         .env("VPAY_CONFIG", valid_config_path())
+        .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
         .env("DATABASE_URL", UNREACHABLE_DATABASE_URL)
         .output()
         .expect("spawn vpay-server");
@@ -371,6 +456,117 @@ fn an_unreachable_database_is_exit_69_naming_postgres() {
     );
 }
 
+/// `--oauth-signing-key-file` / `VPAY_OAUTH_SIGNING_KEY_FILE` is required,
+/// and its absence is a *configuration* failure — exit `78`, naming the
+/// flag.
+///
+/// **Needs no Docker, and that is the point of where the check sits.** A
+/// valid `VPAY_CONFIG` is supplied and no `DATABASE_URL` at all: `main.rs`
+/// requires the key between loading the config and looking at
+/// `--database-url`, so if this test ever starts needing a container it
+/// means the key check has drifted below the database connection — at which
+/// point a deployment with an unmounted Secret would pay for a Postgres
+/// connection and a migration run before failing, and would fail with the
+/// wrong diagnosis if Postgres happened to be down too.
+///
+/// The exit code is asserted exactly, for the reason
+/// `a_missing_config_is_exit_78_naming_the_problem` gives: `78` is what
+/// tells a supervisor "fix the deploy" rather than "wait for a dependency",
+/// and a bare `!success()` would pass against exit `1`.
+#[test]
+fn a_missing_signing_key_flag_is_exit_78_naming_the_problem() {
+    let output = bin()
+        .env("VPAY_CONFIG", valid_config_path())
+        .output()
+        .expect("spawn vpay-server");
+
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "expected EX_CONFIG (78) with no --oauth-signing-key-file/VPAY_OAUTH_SIGNING_KEY_FILE, \
+         got {:?}; stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--oauth-signing-key-file")
+            || stderr.contains("VPAY_OAUTH_SIGNING_KEY_FILE"),
+        "stderr should name the missing signing key flag, got: {stderr}"
+    );
+}
+
+/// A path that does not exist — the single most likely production failure,
+/// an unmounted or mis-pathed Kubernetes Secret. `SigningKeyError::Read`,
+/// which classifies as `Category::Configuration`, so `78`.
+///
+/// The path is asserted to appear on stderr: "which file did it try" is the
+/// whole diagnosis, and `SigningKeyError::Read` carries it deliberately (a
+/// path is not a secret). Needs no Docker, same ordering argument as above.
+#[test]
+fn a_signing_key_file_that_does_not_exist_is_exit_78_naming_the_path() {
+    let missing = concat!(env!("CARGO_TARGET_TMPDIR"), "/no-such-signing-key.pem");
+    let output = bin()
+        .env("VPAY_CONFIG", valid_config_path())
+        .env("VPAY_OAUTH_SIGNING_KEY_FILE", missing)
+        .output()
+        .expect("spawn vpay-server");
+
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "expected EX_CONFIG (78) for a signing key file that does not exist, got {:?}; stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no-such-signing-key.pem"),
+        "stderr should name the file it could not read, got: {stderr}"
+    );
+}
+
+/// A file that *is* readable but is not a private key —
+/// `SigningKeyError::NotAnRsaPrivateKey`, also `Category::Configuration`,
+/// also `78`.
+///
+/// Distinct from the missing-file case above on purpose: the two have
+/// different fixes (mount the Secret vs. put the right thing in it) and this
+/// is the assertion that would fail if the key were only *stat*ed rather
+/// than parsed at boot — a server that deferred parsing to the first token
+/// request would boot happily here and 500 on every merchant.
+///
+/// stderr must **not** contain the file's contents. That is a real property
+/// of `SigningKeyError` (`no_error_echoes_the_key_material`, in
+/// `vpay_api::op::keys`) and this asserts it survives the trip through
+/// `anyhow`'s context chain and out to a process's standard error, where an
+/// operator's log shipper would pick it up.
+#[test]
+fn a_signing_key_file_that_is_not_a_key_is_exit_78_without_echoing_its_contents() {
+    let output = bin()
+        .env("VPAY_CONFIG", valid_config_path())
+        .env("VPAY_OAUTH_SIGNING_KEY_FILE", not_a_key_path())
+        .output()
+        .expect("spawn vpay-server");
+
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "expected EX_CONFIG (78) for a signing key file that is not a key, got {:?}; stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("signing key"),
+        "stderr should say the signing key is what failed to load, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("this is not a PEM-encoded"),
+        "the file's contents must never be echoed — a real one would be a private key: {stderr}"
+    );
+}
+
 /// The positive counterpart to the two tests above: a config file that
 /// exists and passes validation lets this binary boot all the way to
 /// serving a real `200` from `/healthz` — proving `main.rs` actually calls
@@ -386,6 +582,7 @@ fn a_valid_config_lets_the_server_boot_and_serve_healthz() {
                 .env("VPAY_BIND", addr.to_string())
                 .env("DATABASE_URL", &database_url)
                 .env("VPAY_CONFIG", valid_config_path())
+                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
@@ -397,6 +594,124 @@ fn a_valid_config_lets_the_server_boot_and_serve_healthz() {
             status,
             Some(200),
             "server never became healthy on {addr} with a valid config"
+        );
+
+        #[cfg(unix)]
+        {
+            send_sigterm(&guard.0);
+            let exit = guard.0.wait().expect("wait for graceful shutdown");
+            assert!(
+                exit.success(),
+                "expected exit 0 after SIGTERM, got {exit:?}"
+            );
+        }
+    });
+}
+
+/// A syntactically well-formed RS256 JWT carrying a `kid` this deployment
+/// has never published, an unrelated `iss`/`aud`, and a signature that is
+/// not one.
+///
+/// The `kid` is the load-bearing part. `JwtValidator::validate`
+/// (`backends/crates/vpay-api/src/resource_auth.rs`) short-circuits a token
+/// with *no* `kid` before it touches the JWKS cache at all, so a garbage
+/// string such as `"nope"` would answer 401 without any HTTP client ever
+/// being used. A token with an unrecognised `kid` is the cheapest input
+/// that forces the cold cache to actually fetch the JWKS over loopback —
+/// which is the code path this file's trust-store test exists to exercise.
+const BOGUS_TOKEN_WITH_UNKNOWN_KID: &str = concat!(
+    "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImEta2lkLXRoaXMtZGVwbG95bWVudC1uZXZlci1wdWJsaXNoZWQifQ",
+    ".eyJpc3MiOiJodHRwczovL2V4YW1wbGUuaW52YWxpZCIsImF1ZCI6InZwYXkiLCJzdWIiOiJtX3Rlc3QiLCJleHAiOjQxMDI0NDQ4MDB9",
+    ".bm90LWEtcmVhbC1zaWduYXR1cmU",
+);
+
+/// The exact 401 envelope an unrecognised token gets, copied from
+/// `vpay_api::error`'s own pinned constant (`PINNED_INVALID_TOKEN`). Kept
+/// here as a literal rather than imported so this test asserts on the bytes
+/// a merchant's HTTP client receives, not on a constant the code under test
+/// could change in step with it.
+const PINNED_INVALID_TOKEN: &str = concat!(
+    r#"{"error":{"code":"invalid_token","#,
+    r#""message":"The bearer token is invalid, expired, or was not issued for this endpoint.","#,
+    r#""type":"authentication_error"}}"#,
+);
+
+/// The shipped runtime image is `FROM scratch` (`docs/adr/0004-musl-mimalloc.md`):
+/// no glibc, no shell, and — the part that matters here — **no OS
+/// certificate store**. This test reproduces that condition on a normal
+/// developer/CI machine by pointing the two variables
+/// `rustls-native-certs` reads (`SSL_CERT_FILE`, `SSL_CERT_DIR`, see its
+/// `lib.rs`) at paths that do not exist, so the platform verifier finds an
+/// empty root store exactly as it does inside the image.
+///
+/// It pins two things, both of which failed before
+/// `vpay_api::http_client` existed:
+///
+/// 1. **The process boots.** `JwtValidator::new` used to call
+///    `JwksCache::new`, which calls `reqwest::Client::new()`, which under
+///    this workspace's reqwest 0.13 pin builds a
+///    `rustls_platform_verifier::Verifier` eagerly and returns
+///    `General("No CA certificates were loaded from the system")` when the
+///    store is empty — and `Client::new()` turns that into a **panic**. The
+///    server died at startup inside its own image while passing every test
+///    on a machine that has a trust store.
+/// 2. **The JWKS client actually works.** A boot-only assertion would still
+///    pass if the eager client build were merely deferred to first use, so
+///    the second half sends a `/v1` request with
+///    [`BOGUS_TOKEN_WITH_UNKNOWN_KID`] — the input that forces the cold
+///    `JwksCache` to fetch this process's own `/v1/oauth/jwks.json` over
+///    loopback — and requires the **401** `invalid_token` envelope. A
+///    failed fetch would answer `503 service_unavailable` instead (see
+///    `vpay_api::error`'s `PINNED_KEYS_UNAVAILABLE`), so 401 is the
+///    assertion that distinguishes "the JWKS was read" from "the JWKS could
+///    not be read".
+///
+/// The JWKS URL is plain `http://` over loopback and no TLS is ever
+/// negotiated — which is precisely why the old failure was so easy to miss.
+/// The trust store was consulted at *client construction*, not at connect.
+#[test]
+fn a_server_with_no_os_trust_store_boots_and_still_validates_tokens() {
+    with_live_postgres(|database_url| {
+        let addr = free_addr();
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut guard = ChildGuard(
+            bin()
+                .env("VPAY_BIND", addr.to_string())
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_CONFIG", valid_config_path())
+                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+                // The whole point of the test: no readable trust store.
+                .env("SSL_CERT_FILE", "/nonexistent/certs.pem")
+                .env("SSL_CERT_DIR", "/nonexistent")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn vpay-server"),
+        );
+
+        let status = poll_healthz(addr, Duration::from_secs(5));
+        assert_eq!(
+            status,
+            Some(200),
+            "server never became healthy on {addr} with no OS trust store — it is expected to \
+             boot, because it never speaks TLS to reach its own loopback JWKS"
+        );
+
+        let request = format!(
+            "GET /v1/payment_intents/pi_does_not_exist HTTP/1.1\r\nHost: localhost\r\n\
+             Authorization: Bearer {BOGUS_TOKEN_WITH_UNKNOWN_KID}\r\nConnection: close\r\n\r\n"
+        );
+        let (code, response) =
+            http_request(addr, &request).expect("the authenticated /v1 surface answers");
+
+        assert_eq!(
+            code, 401,
+            "expected the invalid-token 401 after a real JWKS fetch; a 503 here means the fetch \
+             itself failed. Response was:\n{response}"
+        );
+        assert!(
+            response.contains(PINNED_INVALID_TOKEN),
+            "expected the pinned invalid_token envelope, got:\n{response}"
         );
 
         #[cfg(unix)]
@@ -443,6 +758,7 @@ fn bind_and_log_format_env_vars_are_actually_applied() {
                 .env("VPAY_LOG_FORMAT", "text")
                 .env("DATABASE_URL", &database_url)
                 .env("VPAY_CONFIG", valid_config_path())
+                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -479,6 +795,7 @@ fn an_explicit_flag_wins_over_a_conflicting_env_var() {
                 .env("VPAY_BIND", env_addr.to_string())
                 .env("DATABASE_URL", &database_url)
                 .env("VPAY_CONFIG", valid_config_path())
+                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
                 .args(["--bind", &flag_addr.to_string()])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -534,6 +851,7 @@ fn shutdown_grace_period_flag_still_allows_a_prompt_clean_exit_with_no_in_flight
             .env("VPAY_LOG_FORMAT", "text")
             .env("DATABASE_URL", &database_url)
             .env("VPAY_CONFIG", valid_config_path())
+            .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
             .args(["--shutdown-grace-seconds", "2"]);
         #[cfg_attr(not(unix), allow(unused_mut))]
         let (mut guard, rx) = spawn_and_capture_stdout(cmd);
@@ -695,7 +1013,8 @@ fn sigterm_immediately_after_startup_still_triggers_graceful_shutdown() {
             cmd.env("VPAY_BIND", addr.to_string())
                 .env("VPAY_LOG_FORMAT", "text")
                 .env("DATABASE_URL", &database_url)
-                .env("VPAY_CONFIG", valid_config_path());
+                .env("VPAY_CONFIG", valid_config_path())
+                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path());
             let (mut guard, rx) = spawn_and_capture_stdout(cmd);
 
             std::thread::sleep(DELAY);

@@ -31,9 +31,33 @@ category → status/type/code table is in
 public message and never contains hosts, tables, library text or
 credentials; the full chain goes to the server log.
 
-**Status: not implemented server-side.** Only `/healthz` and a Stripe-shaped
-404 exist — that includes the OAuth2 token endpoint this auth model needs,
-which also does not exist yet. See [../status.md](../status.md).
+**Status: the OAuth2 endpoints are served; no resource is.** As of
+2026-09-02, `vpay-server` serves three unauthenticated OP endpoints — and
+they are unauthenticated by necessity, not omission: requiring a bearer
+token to obtain a bearer token is circular, and a client that has never
+spoken to vpay has to be able to find the token endpoint and the keys.
+
+| Method | Path | Auth | What it does |
+|---|---|---|---|
+| POST | `/v1/oauth/token` | none | `client_credentials` + `private_key_jwt` only. RFC 6749 error JSON; `invalid_client` is 401, every other error 400. |
+| GET | `/v1/oauth/.well-known/openid-configuration` | none | Hand-built, so it advertises only what this deployment serves — no `/authorize`, no `/userinfo`, no device or refresh grant, `private_key_jwt` as the only client-auth method. |
+| GET | `/v1/oauth/jwks.json` | none | Every publishable signing key (the active one plus any retired-but-unexpired key inside the rotation window), `Cache-Control: public, max-age=300`. |
+
+The issuer is `{deployment.public_base_url}/v1/oauth` and is a deployment
+setting, not a per-client one. `GET /v1/oauth/token` — the right path with
+the wrong method — returns axum's bare `405` with an empty body rather than
+the Stripe envelope; the status is correct and a `method_not_allowed`
+renderer for the whole surface is the fix, not a special case here.
+
+**Every other `/v1` path requires a merchant access token, and there is
+nothing behind it.** An unauthenticated request gets `401`
+`authentication_error`/`missing_bearer_token`; an authenticated one gets
+`404 unknown_route`. **None of the resources in the table below is
+implemented** — that 404 is the honest answer and a `200` would mean someone
+invented a resource. See [../status.md](../status.md) for the tests behind
+each of those claims, and for the state of the evidence: the integration
+suite covering this flow has run once, manually, against a scratch database,
+and never under Docker or in CI.
 
 **Client-side, two SDKs implement this surface** — [`sdks/rust`](../../sdks/rust)
 (`vpay-sdk`) and [`sdks/nodejs`](../../sdks/nodejs) (`@vpay/sdk`). They do
@@ -42,10 +66,14 @@ calls in the table below and webhook verification. The exact wire contract
 they implement, and the server must serve, is
 [../flows/merchant-auth.md](../flows/merchant-auth.md). They are tested
 against HTTP stubs of that contract and against the real Authkestra
-assertion verifier; they have never completed a request against a running
-vpay, because none serves `/v1`.
+assertion verifier. Since 2026-09-02 the **Rust** SDK completes the whole
+handshake against a real `vpay_api::router` in
+`backends/tests/integration/tests/merchant_token_flow.rs` — and then gets
+the honest 404, because no resource exists. The **Node** SDK has still never
+spoken to a vpay of any kind.
 
-Planned subset:
+Planned subset — **none of these is implemented; each returns the 404
+envelope to an authenticated caller:**
 
 | Method | Path |
 |---|---|
@@ -76,7 +104,14 @@ integration reach staff-only state. See
 [ADR-0008](../adr/0008-dashboard-scope.md) and
 [ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md).
 
-**Status: not implemented.**
+**Status: not implemented.** No `/dash/v1` route, no `/login`, no
+`/authorize`, no session store — `authkestra-engine` is pinned without its
+`sql-postgres` feature, so none is compiled in. The signing keys and the
+JWKS endpoint that landed on 2026-09-02 serve `/v1` and are not a step
+toward this surface being reachable; there is also an unresolved audience
+problem in the authorization-code grant that must be settled first. Tracked
+as Phase 2b in [../roadmap.md](../roadmap.md); see
+[../flows/dashboard-auth.md](../flows/dashboard-auth.md).
 
 ## `/provider/{code}/callback` — rail callbacks
 

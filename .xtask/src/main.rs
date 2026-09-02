@@ -7,17 +7,38 @@
 //! * `verify-status`    — every `NotImplemented` is declared in `docs/status.md`.
 //! * `verify-errors`    — every error type classifies itself, and `anyhow`
 //!   stays at the process edge (`docs/adr/0011-error-modelling.md`).
+//!
+//! One does real work rather than checking:
+//!
+//! * `gen-signing-key`  — generates the RS256 key the OP signs with, offline,
+//!   for an operator to load into a Kubernetes Secret.
+//!
+//! # Dependencies
+//!
+//! The three `verify-*` commands take no dependencies at all and match on
+//! text rather than on types — see [`has_classify_impl`] for what that costs.
+//! That is still true of them. `gen-signing-key` is what put four crates
+//! (`rsa`, `rand`, `sha2`, `base64`) in this crate's manifest: generating an
+//! RSA key and computing an RFC 7638 thumbprint cannot be done by string
+//! matching. They are all already in the workspace lockfile, so nothing new
+//! is *fetched*; the verify gates simply compile a little more before they
+//! run. What was deliberately *not* done is taking a dependency on
+//! `vpay-api` to share its thumbprint code — that would drag axum, sqlx and
+//! the whole authkestra stack into every CI convention check. See
+//! [`rfc7638_thumbprint`] for how the resulting duplication is kept honest.
 
 // This is a CLI; stdout is its output medium, not stray debugging.
 #![allow(clippy::print_stdout)]
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let cmd = std::env::args().nth(1).unwrap_or_else(|| "help".into());
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cmd = args.first().cloned().unwrap_or_else(|| "help".into());
     let root = repo_root();
 
     let result = match cmd.as_str() {
@@ -27,8 +48,12 @@ fn main() -> ExitCode {
         "verify-all" => verify_no_mocks(&root)
             .and_then(|()| verify_status(&root))
             .and_then(|()| verify_errors(&root)),
+        "gen-signing-key" => gen_signing_key(&args),
         "help" | "--help" | "-h" => {
-            println!("usage: cargo xtask <verify-no-mocks|verify-status|verify-errors|verify-all>");
+            println!(
+                "usage: cargo xtask <verify-no-mocks|verify-status|verify-errors|verify-all>\n\
+                 \x20      cargo xtask gen-signing-key --out <dir>"
+            );
             Ok(())
         }
         other => Err(format!("unknown command: {other}")),
@@ -721,6 +746,330 @@ fn rust_sources(dir: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// gen-signing-key
+// ---------------------------------------------------------------------------
+
+/// The file name written under `--out`. Fixed rather than a flag: this is
+/// the name the Kubernetes Secret key and the `--oauth-signing-key-file`
+/// path in every deployment manifest are expected to agree on, and one
+/// spelling in one place is what keeps them agreeing.
+const SIGNING_KEY_FILE: &str = "oauth-signing-key.pem";
+
+/// Modulus size of a generated key.
+///
+/// 3072, not the 2048 `vpay_api::op::keys` accepts as its floor. The floor is
+/// what vpay refuses to go below for a key it is *handed*; this is what vpay
+/// generates when the choice is its own, and there is no reason to generate
+/// at the minimum. 3072 is NIST SP 800-57's 128-bit-security RSA size, still
+/// universally supported by JWT verifiers, and the extra signing cost is
+/// irrelevant at token-issuance rates.
+const GENERATED_KEY_BITS: usize = 3072;
+
+/// A freshly generated signing key: where it was written, and the public
+/// half an operator has to be able to see.
+/// `Debug` is safe to derive: every field is public information — a path, a
+/// thumbprint and a public key. The private key is deliberately not a field
+/// here at all, so it cannot reach a log through this type even by accident.
+#[derive(Debug)]
+struct GeneratedSigningKey {
+    path: PathBuf,
+    kid: String,
+    public_jwk: String,
+}
+
+/// `cargo xtask gen-signing-key --out <dir>` — writes a new RS256 signing
+/// key and prints its `kid` and public JWK.
+///
+/// The private key never leaves the file: nothing here writes it to stdout,
+/// to a log, or to the database. `docs/flows/dashboard-auth.md` describes the
+/// intended handling — the file's contents become a Kubernetes Secret, the
+/// pod mounts it, and `--oauth-signing-key-file` points at the mount.
+fn gen_signing_key(args: &[String]) -> Result<(), String> {
+    let out =
+        flag_value(args, "--out").ok_or_else(|| "gen-signing-key needs --out <dir>".to_string())?;
+
+    let generated = generate_signing_key(Path::new(&out))?;
+
+    println!("wrote {}", generated.path.display());
+    println!("  {GENERATED_KEY_BITS}-bit RSA, PKCS#8 PEM, mode 0600");
+    println!("kid: {}", generated.kid);
+    println!("public JWK:");
+    println!("{}", generated.public_jwk);
+    println!();
+    println!(
+        "The private key is in that file and nowhere else. Put it in a Secret, mount it, and \
+         point --oauth-signing-key-file / VPAY_OAUTH_SIGNING_KEY_FILE at the mount. vpay derives \
+         the kid above from the key itself (RFC 7638), so it needs no separate configuration and \
+         every replica computes the same one."
+    );
+
+    Ok(())
+}
+
+/// The half of [`gen_signing_key`] with no printing in it, so a test can
+/// assert on the result rather than on stdout.
+///
+/// Refuses to overwrite: the file is created with `create_new`, which fails
+/// if anything is already there. That is a single atomic syscall rather than
+/// an "exists?" check followed by a write — the check-then-write version has
+/// a window in which a second invocation can clobber the first one's key,
+/// and a clobbered signing key is unrecoverable (every token it signed stops
+/// verifying, and the PEM is not stored anywhere else by design).
+fn generate_signing_key(out_dir: &Path) -> Result<GeneratedSigningKey, String> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use rsa::pkcs8::{EncodePrivateKey as _, LineEnding};
+    use rsa::traits::PublicKeyParts as _;
+
+    fs::create_dir_all(out_dir).map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
+    let path = out_dir.join(SIGNING_KEY_FILE);
+
+    let mut rng = rand::rngs::OsRng;
+    let key = rsa::RsaPrivateKey::new(&mut rng, GENERATED_KEY_BITS)
+        .map_err(|e| format!("RSA key generation failed: {e}"))?;
+    let pem = key
+        .to_pkcs8_pem(LineEnding::LF)
+        .map_err(|e| format!("PKCS#8 encoding failed: {e}"))?;
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        // Set at creation, not with a later `set_permissions`: between the
+        // two there would be a moment in which a private key is readable by
+        // everyone with access to the directory.
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            format!(
+                "{} already exists; refusing to overwrite a signing key (every token it signed \
+                 would stop verifying). Move it aside first if you really mean to replace it.",
+                path.display()
+            )
+        } else {
+            format!("cannot write {}: {e}", path.display())
+        }
+    })?;
+    io::Write::write_all(&mut file, pem.as_bytes())
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+
+    #[cfg(not(unix))]
+    println!(
+        "warning: file modes are only set on unix; check the permissions on {} yourself",
+        path.display()
+    );
+
+    let n = URL_SAFE_NO_PAD.encode(key.n().to_bytes_be());
+    let e = URL_SAFE_NO_PAD.encode(key.e().to_bytes_be());
+    let kid = rfc7638_thumbprint(&n, &e);
+
+    Ok(GeneratedSigningKey {
+        public_jwk: format!(
+            r#"{{"kty":"RSA","n":"{n}","e":"{e}","alg":"RS256","use":"sig","kid":"{kid}"}}"#
+        ),
+        kid,
+        path,
+    })
+}
+
+/// The RFC 7638 §3 JWK thumbprint of an RSA public key: SHA-256 over
+/// `{"e":..,"kty":"RSA","n":..}` — those three members only, no whitespace,
+/// lexicographic order — base64url encoded without padding.
+///
+/// **This is a second implementation of
+/// `vpay_api::op::keys::rfc7638_thumbprint`, deliberately.** xtask has no
+/// dependency on any workspace crate and gains nothing from acquiring one:
+/// `verify-errors`/`verify-status`/`verify-no-mocks` are CI gates that run on
+/// every change, and making them link `vpay-api` would mean compiling axum,
+/// sqlx and the whole authkestra stack before the workspace can check its own
+/// conventions. The cost of the duplication is the risk that the two drift,
+/// so both are pinned to RFC 7638's own worked example by a test with the
+/// same name in both crates: a drift in either one fails there, not silently
+/// at the first token a merchant cannot verify.
+fn rfc7638_thumbprint(n: &str, e: &str) -> String {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use sha2::Digest as _;
+
+    let canonical = format!(r#"{{"e":"{e}","kty":"RSA","n":"{n}"}}"#);
+    URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(canonical.as_bytes()))
+}
+
+/// Reads `--flag value` out of an argument list. Deliberately tiny: xtask
+/// takes no dependency on an argument parser, and one flag on one command
+/// does not justify the first.
+fn flag_value(args: &[String], flag: &str) -> Option<String> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return iter.next().cloned();
+        }
+        if let Some(inline) = arg.strip_prefix(&format!("{flag}=")) {
+            return Some(inline.to_string());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod signing_key_tests {
+    use super::*;
+
+    /// A directory under the system temp dir, unique per test, removed on
+    /// drop. xtask has no `tempfile` dependency and one small guard is
+    /// cheaper than acquiring one.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock is after the unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir()
+                .join(format!("vpay-xtask-{label}-{}-{nanos}", std::process::id()));
+            fs::create_dir_all(&path).expect("temp dir is creatable");
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The cross-crate drift guard described on [`rfc7638_thumbprint`]: the
+    /// identical test, with the identical vector from RFC 7638 §3.1, exists
+    /// in `vpay-api`'s `op::keys`. If these two implementations ever
+    /// disagree, at least one of them fails here.
+    #[test]
+    fn the_thumbprint_matches_rfc_7638s_own_worked_example() {
+        let n = "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4\
+                 cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiF\
+                 V4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6C\
+                 f0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9\
+                 c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTW\
+                 hAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1\
+                 jF44-csFCur-kEgU8awapJzKnqDKgw"
+            .replace([' ', '\n'], "");
+
+        assert_eq!(
+            rfc7638_thumbprint(&n, "AQAB"),
+            "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"
+        );
+    }
+
+    /// The round trip that matters: what is written to disk must parse back
+    /// as the same key, and re-deriving the thumbprint from the *file*
+    /// (rather than from the in-memory key) must give the `kid` that was
+    /// printed — otherwise an operator would deploy a Secret under a `kid`
+    /// vpay will never compute for it.
+    #[test]
+    fn a_generated_key_parses_back_off_disk_with_the_same_kid() {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use rsa::pkcs8::DecodePrivateKey as _;
+        use rsa::traits::PublicKeyParts as _;
+
+        let dir = TempDir::new("roundtrip");
+        let generated = generate_signing_key(&dir.0).expect("key generation succeeds");
+
+        let pem = fs::read_to_string(&generated.path).expect("the key file is readable");
+        assert!(pem.starts_with("-----BEGIN PRIVATE KEY-----"), "PKCS#8 PEM");
+
+        let reparsed = rsa::RsaPrivateKey::from_pkcs8_pem(&pem).expect("the file is a PKCS#8 key");
+        assert_eq!(
+            reparsed.n().bits(),
+            GENERATED_KEY_BITS,
+            "the generated key must be the advertised size"
+        );
+
+        let kid = rfc7638_thumbprint(
+            &URL_SAFE_NO_PAD.encode(reparsed.n().to_bytes_be()),
+            &URL_SAFE_NO_PAD.encode(reparsed.e().to_bytes_be()),
+        );
+        assert_eq!(
+            kid, generated.kid,
+            "the kid printed for an operator must be the kid the key itself yields"
+        );
+        assert!(
+            generated.public_jwk.contains(&format!(r#""kid":"{kid}""#)),
+            "the printed JWK carries the same kid: {}",
+            generated.public_jwk
+        );
+        for private_member in [r#""d":"#, r#""p":"#, r#""q":"#, r#""dp":"#, r#""dq":"#] {
+            assert!(
+                !generated.public_jwk.contains(private_member),
+                "the printed JWK must carry no private member ({private_member}): {}",
+                generated.public_jwk
+            );
+        }
+    }
+
+    /// A signing key is unrecoverable once overwritten, so a second run must
+    /// fail rather than clobber — and must leave the original file exactly
+    /// as it was.
+    #[test]
+    fn it_refuses_to_overwrite_an_existing_key_file() {
+        let dir = TempDir::new("no-clobber");
+        let first = generate_signing_key(&dir.0).expect("the first generation succeeds");
+        let original = fs::read_to_string(&first.path).expect("the key file is readable");
+
+        let error = generate_signing_key(&dir.0).expect_err("a second generation must refuse");
+        assert!(error.contains("refusing to overwrite"), "{error}");
+
+        assert_eq!(
+            fs::read_to_string(&first.path).expect("the key file is still readable"),
+            original,
+            "the existing key must be untouched by a refused generation"
+        );
+    }
+
+    /// A private key must not be world- or group-readable. Unix-only because
+    /// that is the only place a mode means anything; `generate_signing_key`
+    /// prints a warning instead on other platforms.
+    #[cfg(unix)]
+    #[test]
+    fn the_key_file_is_only_readable_by_its_owner() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = TempDir::new("mode");
+        let generated = generate_signing_key(&dir.0).expect("key generation succeeds");
+
+        let mode = fs::metadata(&generated.path)
+            .expect("the key file exists")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "expected mode 0600, found {:o}",
+            mode & 0o777
+        );
+    }
+
+    #[test]
+    fn the_out_flag_is_read_in_both_spellings_and_required() {
+        let spaced = [
+            "gen-signing-key".to_string(),
+            "--out".to_string(),
+            "/tmp/x".to_string(),
+        ];
+        assert_eq!(flag_value(&spaced, "--out"), Some("/tmp/x".to_string()));
+
+        let inline = ["gen-signing-key".to_string(), "--out=/tmp/y".to_string()];
+        assert_eq!(flag_value(&inline, "--out"), Some("/tmp/y".to_string()));
+
+        let missing = ["gen-signing-key".to_string()];
+        assert_eq!(flag_value(&missing, "--out"), None);
+        assert!(gen_signing_key(&missing).is_err(), "--out is required");
+    }
 }
 
 #[cfg(test)]

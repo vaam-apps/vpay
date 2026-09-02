@@ -56,7 +56,7 @@ use garde::Validate;
 use serde::{Deserialize, Serialize};
 use vpay_core::Currency;
 
-use crate::oauth::{DashboardClient, MerchantClient, jwks_has_at_least_one_key};
+use crate::oauth::{DashboardClient, MERCHANT_AUDIENCE, MerchantClient, jwks_has_at_least_one_key};
 use crate::{ConfigError, Deployment, GrantType, HostEntry, validate_host, validate_secret};
 
 /// One rail's connection details for this deployment.
@@ -79,7 +79,7 @@ pub struct ProviderHost {
     /// Secret material (mirrors `vpay_provider::ProviderConfig::credentials`).
     /// Every value must be a `${VAR}` placeholder in a livemode deployment —
     /// enforced by [`validate_secret`] over every entry, driven by
-    /// `deployment.livemode` (see [`Config::validate_all`]), not by `garde`:
+    /// `deployment.livemode` (see `Config::validate_all`), not by `garde`:
     /// `garde` has no way to see a sibling field's value from a plain
     /// per-field rule without a custom context, and this rule already has
     /// its own tested implementation.
@@ -133,7 +133,7 @@ pub struct CurrencyEntry {
     pub code: String,
     /// Minor units per major unit, as a power of ten. Checked against
     /// [`vpay_core::Currency::exponent`] — the canonical table — by
-    /// [`Config::validate_all`], not just range-checked here: the exponent
+    /// `Config::validate_all`, not just range-checked here: the exponent
     /// is a property of the currency itself, never a per-deployment choice.
     #[garde(range(min = 0, max = 4))]
     pub exponent: u32,
@@ -302,7 +302,15 @@ impl Config {
 
 /// ADR-0010's merchant-client rules: no client secret, ever; a non-empty,
 /// non-degenerate JWK set (`private_key_jwt` with no key can never
-/// authenticate); and `client_credentials` as the only permitted grant.
+/// authenticate); `client_credentials` as the only permitted grant; and
+/// [`MERCHANT_AUDIENCE`] present in `allowed_audiences`, without which the
+/// client's `/v1` tokens are unusable in a way nothing downstream can
+/// diagnose (see [`ConfigError::MerchantMissingV1Audience`]).
+///
+/// The audience rule is checked last on purpose: it is the only one of the
+/// four that is about what a *correctly shaped* registration would go on to
+/// do at runtime, so a config that is malformed in a more basic way should
+/// be reported as that instead.
 fn validate_merchant_client(merchant: &MerchantClient) -> Result<(), ConfigError> {
     if merchant.client_secret.is_some() {
         return Err(ConfigError::ClientSecretPresent(merchant.client_id.clone()));
@@ -317,6 +325,15 @@ fn validate_merchant_client(merchant: &MerchantClient) -> Result<(), ConfigError
                 grant: *grant,
             });
         }
+    }
+    if !merchant
+        .allowed_audiences
+        .iter()
+        .any(|audience| audience == MERCHANT_AUDIENCE)
+    {
+        return Err(ConfigError::MerchantMissingV1Audience {
+            client_id: merchant.client_id.clone(),
+        });
     }
     Ok(())
 }
@@ -828,6 +845,51 @@ mod tests {
                 client_id: "acme-cameroon".to_owned(),
                 grant: GrantType::AuthorizationCode,
             }
+        );
+    }
+
+    /// The rule that keeps the three parties named on [`MERCHANT_AUDIENCE`]
+    /// in agreement. The fixture's `allowed_audiences: [vpay]` is not a
+    /// strawman — it is verbatim what `config/application.yml` shipped until
+    /// this rule landed, and it would have booted happily.
+    #[test]
+    fn a_merchant_client_that_cannot_target_the_v1_audience_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/oauth-merchant-missing-v1-audience.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env).expect_err(
+            "a merchant whose allowed_audiences omits the /v1 audience must be rejected",
+        );
+        assert_eq!(
+            err,
+            ConfigError::MerchantMissingV1Audience {
+                client_id: "acme-cameroon".to_owned(),
+            }
+        );
+    }
+
+    /// The real `config/application.yml` must satisfy the rule above, and
+    /// must satisfy it by carrying the *constant* — not a second copy of the
+    /// same spelling that could drift from it.
+    #[test]
+    fn the_example_config_registers_its_merchant_for_the_v1_audience() {
+        let env = example_env(BTreeMap::new());
+        let config = Config::load_with_env(Some(Path::new(EXAMPLE_BASE)), "does-not-exist", &env)
+            .expect("example config should load");
+
+        let merchant = config
+            .merchant_clients
+            .first()
+            .expect("the example config registers one merchant client");
+        assert!(
+            merchant
+                .allowed_audiences
+                .iter()
+                .any(|audience| audience == MERCHANT_AUDIENCE),
+            "{:?}",
+            merchant.allowed_audiences
         );
     }
 

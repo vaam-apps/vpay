@@ -13,10 +13,57 @@
 //! about public keys" and "atomically swap the active one."
 
 use serde_json::Value;
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 use time::OffsetDateTime;
 
 use crate::error::DbError;
+
+/// The transaction-scoped advisory-lock key every write in this module takes
+/// before it reads or changes which key is active.
+///
+/// The value is arbitrary but must never change: it is the ASCII bytes of
+/// `vpaykey` read as a big-endian integer (`0x76_70_61_79_6b_65_79`, seven
+/// bytes, comfortably inside `bigint`), chosen so an operator who finds it in
+/// `pg_locks` can tell what it belongs to. Postgres advisory locks share one
+/// global namespace across the database, so a *distinct* constant per subject
+/// is what keeps this from serialising against unrelated work; nothing else
+/// in this repository takes an advisory lock today.
+///
+/// Why a lock at all, when [`rotate_signing_key`]'s two statements are
+/// already one transaction: [`ensure_active_signing_key`] has to *read*
+/// which key is active and then decide whether to write, and a read-then-
+/// write cannot be expressed as a single compare-and-swap `UPDATE` here —
+/// the operation is "retire the old row **and** insert a new one", guarded on
+/// a row that may not exist at all on the very first boot. Two replicas
+/// booting simultaneously with the same PEM would both read "not active" and
+/// both try to insert the same `kid`; one would take a duplicate-key error on
+/// what is supposed to be a no-op. Serialising the whole read-decide-write
+/// under `pg_advisory_xact_lock` makes the second replica observe the first
+/// one's committed row and answer [`ActivationOutcome::AlreadyActive`], which
+/// is the honest result. The lock is released by `COMMIT`/`ROLLBACK` — there
+/// is no unlock path to leak.
+const ROTATION_LOCK_KEY: i64 = 0x0076_7061_796b_6579;
+
+/// What [`ensure_active_signing_key`] found, and therefore whether it wrote.
+///
+/// Returned rather than logged-and-discarded so a caller (a binary's
+/// `main()`, at boot) can decide what a rotation means for it — page, emit a
+/// metric, or simply carry on — without re-querying the table to find out
+/// what just happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActivationOutcome {
+    /// The `kid` handed in was already the active one. **No row was written**
+    /// — not an idempotent re-write, no write at all — which is what makes
+    /// every replica after the first one free of side effects at boot.
+    AlreadyActive,
+    /// A rotation happened: the given `kid` is now the sole active key.
+    Rotated {
+        /// The `kid` that was active immediately before, if any. `None` is
+        /// the first key this database has ever held (a bootstrap), not an
+        /// error.
+        previous: Option<String>,
+    },
+}
 
 /// One row of `oauth_signing_keys`, as needed to publish `/jwks.json` or to
 /// answer "which key is active."
@@ -104,9 +151,18 @@ pub async fn active_signing_key_kid(pool: &PgPool) -> Result<Option<String>, DbE
 /// previous key should stop being published — typically "now plus an
 /// overlap window," never computed in here.
 ///
+/// The transaction also takes `ROTATION_LOCK_KEY` before its first write,
+/// so it queues behind any concurrent [`ensure_active_signing_key`] rather
+/// than interleaving with that function's read-then-write. This changes
+/// nothing about the statements below or their order; it only means two
+/// rotations in flight at once resolve one after the other.
+///
 /// # Errors
 ///
-/// Returns [`DbError::Query`] if either statement, or the commit, fails.
+/// Returns [`DbError::SigningKeyRetired`] if `new_kid` names a row that is
+/// present but retired (see `refuse_retired_kid`, which both writers share
+/// so they cannot drift on it), and [`DbError::Query`] if either statement,
+/// or the commit, fails.
 pub async fn rotate_signing_key(
     pool: &PgPool,
     new_kid: &str,
@@ -114,6 +170,126 @@ pub async fn rotate_signing_key(
     retire_previous_at: OffsetDateTime,
 ) -> Result<(), DbError> {
     let mut tx = pool.begin().await.map_err(DbError::Query)?;
+
+    lock_rotation(&mut tx).await?;
+    retire_then_insert(&mut tx, new_kid, new_public_jwk, retire_previous_at).await?;
+
+    tx.commit().await.map_err(DbError::Query)?;
+
+    Ok(())
+}
+
+/// Makes `new_kid` the active signing key **only if it is not already**, and
+/// reports which of the two happened.
+///
+/// This is what every replica calls at boot with the key it just loaded from
+/// its Secret mount, so it has to be safe to call from N processes at once
+/// with the *same* `kid`: exactly one of them may write, and the rest must
+/// come back [`ActivationOutcome::AlreadyActive`] without touching the table.
+/// The read and the write therefore happen inside one transaction that first
+/// takes `ROTATION_LOCK_KEY` — see that constant's own comment for why the
+/// obvious single-statement compare-and-swap does not cover this case.
+///
+/// `retire_previous_at` is the caller's rotation-overlap policy, exactly as
+/// in [`rotate_signing_key`]: this layer never invents a window.
+///
+/// # Rolling *back* to a previously retired key is refused by name
+///
+/// If `new_kid` exists in the table but is retired — the shape a deploy
+/// rollback to an older Secret takes — this returns
+/// [`DbError::SigningKeyRetired`], naming the `kid` and when it was retired,
+/// and writes nothing. It does **not** re-activate the old row: that needs a
+/// policy decision about `expires_at` and about whether publishing a key
+/// that was deliberately retired is ever right, and the rotation policy as a
+/// whole is still an open maintainer question (`docs/roadmap.md`, "Open —
+/// signing-key rotation overlap window"). Failing loudly at boot is the
+/// honest behaviour until that is decided; an operator's way out is to roll
+/// forward to a new key, or to restore the Secret holding the current one.
+///
+/// It used to fail as [`DbError::Query`] wrapping a duplicate-key violation
+/// on `oauth_signing_keys.kid`, which is the same refusal with two costs:
+/// `Category::Storage` told a supervisor to exit `69` and keep restarting
+/// (waiting for a database that was never unwell), and the only text an
+/// operator got was Postgres's constraint name. See `refuse_retired_kid`,
+/// which is where the check now lives, and `DbError::SigningKeyRetired`.
+///
+/// # Errors
+///
+/// Returns [`DbError::SigningKeyRetired`] for the rollback case above, and
+/// [`DbError::Query`] if the lock, the read, either write, or the commit
+/// fails.
+pub async fn ensure_active_signing_key(
+    pool: &PgPool,
+    new_kid: &str,
+    new_public_jwk: &Value,
+    retire_previous_at: OffsetDateTime,
+) -> Result<ActivationOutcome, DbError> {
+    let mut tx = pool.begin().await.map_err(DbError::Query)?;
+
+    lock_rotation(&mut tx).await?;
+
+    // Deliberately not a call to `active_signing_key_kid`: that one takes a
+    // `&PgPool` and would run on a *different* connection, outside this
+    // transaction and outside the lock — which is precisely the race this
+    // function exists to close.
+    let previous =
+        sqlx::query_scalar::<_, String>("SELECT kid FROM oauth_signing_keys WHERE active LIMIT 1")
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(DbError::Query)?;
+
+    if previous.as_deref() == Some(new_kid) {
+        // Commit rather than roll back: the transaction wrote nothing, and
+        // committing releases the advisory lock the same way, without
+        // making a routine no-op look like a failed transaction in
+        // `pg_stat_database`'s rollback counter.
+        tx.commit().await.map_err(DbError::Query)?;
+        tracing::info!(
+            kid = new_kid,
+            "signing key is already the active one; no rotation"
+        );
+        return Ok(ActivationOutcome::AlreadyActive);
+    }
+
+    retire_then_insert(&mut tx, new_kid, new_public_jwk, retire_previous_at).await?;
+    tx.commit().await.map_err(DbError::Query)?;
+
+    tracing::info!(
+        kid = new_kid,
+        previous_kid = previous.as_deref().unwrap_or("<none>"),
+        retire_previous_at = %retire_previous_at,
+        "rotated the active signing key"
+    );
+
+    Ok(ActivationOutcome::Rotated { previous })
+}
+
+/// Takes the transaction-scoped rotation lock. Every writer in this module
+/// calls this first, so "who may change the active key" is one queue rather
+/// than a race — see `ROTATION_LOCK_KEY`.
+async fn lock_rotation(tx: &mut PgConnection) -> Result<(), DbError> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(ROTATION_LOCK_KEY)
+        .execute(tx)
+        .await
+        .map_err(DbError::Query)?;
+    Ok(())
+}
+
+/// The ordering-sensitive half of a rotation, factored out so
+/// [`rotate_signing_key`] and [`ensure_active_signing_key`] cannot drift on
+/// it. Retire first, then insert — [`rotate_signing_key`]'s doc comment
+/// explains why that order is the only one `one_active_signing_key` permits.
+///
+/// Takes a connection rather than a pool precisely so both callers run it
+/// inside *their* transaction, holding *their* lock.
+async fn retire_then_insert(
+    tx: &mut PgConnection,
+    new_kid: &str,
+    new_public_jwk: &Value,
+    retire_previous_at: OffsetDateTime,
+) -> Result<(), DbError> {
+    refuse_retired_kid(&mut *tx, new_kid).await?;
 
     sqlx::query(
         "UPDATE oauth_signing_keys \
@@ -132,7 +308,53 @@ pub async fn rotate_signing_key(
         .await
         .map_err(DbError::Query)?;
 
-    tx.commit().await.map_err(DbError::Query)?;
-
     Ok(())
+}
+
+/// Refuses, by name, the one duplicate-`kid` case that is an *operator*
+/// mistake rather than a database failure: `new_kid` is already in the table
+/// and has been retired.
+///
+/// Runs inside the caller's transaction, so it reads under the same
+/// `ROTATION_LOCK_KEY` the caller took and cannot race a concurrent
+/// rotation committing the row between this `SELECT` and the `INSERT` below
+/// it.
+///
+/// # Why a read, not the duplicate-key error
+///
+/// The `INSERT` that follows would fail anyway — `kid` is the primary key —
+/// with SQLSTATE `23505`. Catching *that* would mean matching on a
+/// constraint name (`oauth_signing_keys_pkey`) carried inside a
+/// `sqlx::Error`, which is a string this code does not own and which a
+/// future migration renaming the constraint would silently change; the
+/// symptom would be the crash loop coming back, in the one place nobody is
+/// watching for it. Reading the row first is one extra `SELECT` on a boot
+/// path that already takes an advisory lock and writes twice, and it also
+/// yields the `retired_at` the message needs — which the duplicate-key
+/// error does not carry at all.
+///
+/// `AND NOT active` scopes this deliberately narrowly. A `kid` that is
+/// *currently active* is not this error: [`ensure_active_signing_key`]
+/// answers [`ActivationOutcome::AlreadyActive`] before it ever gets here,
+/// and [`rotate_signing_key`] asked to re-insert the live key is a caller
+/// bug that keeps its existing duplicate-key [`DbError::Query`] rather than
+/// borrowing a message about retirement that would not be true.
+async fn refuse_retired_kid(tx: &mut PgConnection, new_kid: &str) -> Result<(), DbError> {
+    // `updated_at`, not `expires_at`: see `DbError::SigningKeyRetired`'s own
+    // field comment for why the retirement instant is the useful one.
+    let retired_at = sqlx::query_scalar::<_, OffsetDateTime>(
+        "SELECT updated_at FROM oauth_signing_keys WHERE kid = $1 AND NOT active",
+    )
+    .bind(new_kid)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(DbError::Query)?;
+
+    match retired_at {
+        Some(retired_at) => Err(DbError::SigningKeyRetired {
+            kid: new_kid.to_owned(),
+            retired_at,
+        }),
+        None => Ok(()),
+    }
 }

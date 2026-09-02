@@ -55,6 +55,43 @@ tracing.workspace = true
 # workspace dependency (root Cargo.toml pins it for exactly this); added
 # here at the member level only, per docs/api/README.md's OP-3 scope.
 authkestra-resource.workspace = true
+# `src/http_client.rs`: naming `reqwest::Client` in a public signature needs a
+# direct dependency, and handing reqwest a finished `rustls::ClientConfig`
+# needs its `tls_backend_preconfigured`. Already in this crate's resolved
+# graph via authkestra-resource/-engine/-op, at the same 0.13 pin and with
+# every feature the workspace pin asks for (`json`, `charset`, `http2`,
+# `rustls-no-provider`) already enabled there — so this is a new edge, not a
+# new package and not a new feature.
+reqwest.workspace = true
+# `src/http_client.rs` builds the `ClientConfig` itself rather than letting
+# reqwest 0.13 reach for `rustls-platform-verifier` (the OS trust store),
+# which the `FROM scratch` runtime image does not have — see that module's
+# doc for the boot panic this removes. Was a `[dev-dependency]` of this crate
+# (tests install a process-wide `CryptoProvider`); it is production code now
+# because the client the server validates tokens with is production output.
+rustls.workspace = true
+# Mozilla's CA bundle, vendored, for the same reason. Pinned to "1" — the
+# same requirement `sdks/rust` uses — which resolves to the 1.0.x already in
+# `Cargo.lock` via sqlx's `tls-rustls-ring` feature (sqlx-core depends on
+# webpki-roots 0.26, which is itself a shim over 1.0). No new `[[package]]`.
+# `CDLA-Permissive-2.0` is already allowed in `deny.toml` with its own
+# justification.
+webpki-roots = "1"
+# The merchant OP itself (`/v1/oauth`, ADR-0010): the `ClientStore` trait,
+# `CompositeOpStore`, the token handler, and `SqlxOpStore` for the three
+# grant stores no `/v1` grant uses but the `OpStore` supertrait demands
+# (hence `sqlx-postgres`, which also unifies sqlx's `chrono` feature into the
+# graph — harmless to vpay-db, which converts at its boundary explicitly).
+# In both binaries' graphs, not just the server's: `vpay-worker-bin` links
+# `vpay-api` (and, independently, `vpay-db`, which implements
+# `ClientAssertionStore`), so it compiles the OP although it serves no HTTP
+# — `cargo tree -p vpay-worker-bin -i authkestra-op` shows both paths. No
+# third-party package enters `Cargo.lock` because of this crate's OP work:
+# diffed against `master`, the lockfile gains 34 lines and zero new
+# `[[package]]` entries — only new edges onto already-resolved crates.
+authkestra-op = { workspace = true, features = ["sqlx-postgres"] }
+# `TokenManager::new_asymmetric` — the RS256 signer the OP mints with.
+authkestra-engine.workspace = true
 # `authkestra-resource` depends on jsonwebtoken with the `rust_crypto`
 # backend (pure-Rust RSA/EC/Ed25519, no `ring`/`aws-lc-rs` — unrelated to
 # rustls's TLS crypto provider, see deny.toml). Not itself a workspace
@@ -62,37 +99,73 @@ authkestra-resource.workspace = true
 # resource already resolves, so this adds no new package to the graph, only
 # makes an already-resolved one directly importable here.
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
+# `authkestra_op::client::ClientStore` is declared `#[async_trait]`;
+# implementing it (`op::clients::YamlClientStore`) requires the same expansion
+# pattern. Not in [workspace.dependencies] (root Cargo.toml, not owned by this
+# change) — a plain member-level dependency pinned to the same "0.1"
+# authkestra-op itself depends on, exactly as vpay-db already does for
+# `ClientAssertionStore`. No new package in any graph: `async-trait` is
+# already resolved via authkestra-op and vpay-db.
+async-trait = "0.1"
+# `op::keys`: SHA-256 for the RFC 7638 JWK thumbprint that becomes every
+# signing key's `kid`. Workspace pin, unused until now — the root
+# `Cargo.toml` has carried it as an "unused version pin" that
+# docs/flows/dashboard-auth.md explicitly called out; this is its first real
+# consumer.
+sha2.workspace = true
+# `op::keys`: base64url (unpadded) for the thumbprint digest and for reading
+# the modulus back out of authkestra's JWK to check its bit length. Not in
+# `[workspace.dependencies]` (root Cargo.toml, not owned by this change);
+# pinned here at the same "0.22" this crate already used as a dev-dependency
+# for exactly the same encoding, so the resolved graph is unchanged — the
+# dependency simply moved from test-only to production, because the JWKS a
+# merchant verifies against is production output.
+base64 = "0.22"
+# `op::keys`: `oauth_signing_keys.expires_at` is a `TIMESTAMPTZ` bound as a
+# `time::OffsetDateTime` by vpay-db, so the rotation-overlap policy this
+# crate owns (`ROTATION_OVERLAP`) has to be expressed in the same units to
+# reach it. Workspace pin; already in both binaries' graphs via vpay-db.
+time.workspace = true
+# `op::MerchantOp` names `SqlxOpStore<sqlx::Postgres>` — the three grant
+# stores the `OpStore` supertrait demands and no `/v1` grant reaches (see
+# that type's docs). Naming the backend requires the `sqlx` crate itself, so
+# this moved from `[dev-dependencies]` (where it was for a `sqlx::Error` in a
+# test) up to a real dependency. No new package and no new feature in any
+# graph: `vpay-db` already depends on the same workspace pin, and both
+# binaries already link it. Tests in this crate keep using it for the same
+# `sqlx::Error` construction as before — a `[dependencies]` entry is visible
+# to them too.
+sqlx.workspace = true
 
 [dev-dependencies]
+# Test-only: the merchant SDK, used by `op::clients`'s conformance tests to
+# mint a real `private_key_jwt` assertion and prove the registration this
+# crate builds from YAML is one the real OP verifier accepts. **Not a test
+# double** — `vpay-sdk` is the shipping merchant SDK (sdks/rust), the same
+# artefact a merchant integrates; the alternative would be hand-rolling a
+# second assertion minter here, which would then be a stub of the SDK and
+# would prove nothing about the contract the SDKs actually implement.
+# Declared by path rather than `.workspace = true` because the root
+# `[workspace.dependencies]` does not list it (this is its first consumer
+# inside `backends/`) and adding it there is outside this change's scope.
+# `version` is required alongside `path`: `deny.toml` sets `wildcards =
+# "deny"`, and a path-only dependency is a wildcard requirement as far as
+# `cargo deny check bans` is concerned — it fails the supply-chain gate.
+vpay-sdk = { path = "../../../sdks/rust", version = "0.1.0" }
 # Test-only: the request-id tests parse the generated header value as a UUID
 # rather than asserting it is merely non-empty, so a `MakeRequestId` that
 # handed back a constant would fail. Already resolved in the graph via
 # tower-http's `request-id` feature; the workspace pin is reused verbatim.
 uuid.workspace = true
-# Test-only: `DbError`'s variants all wrap a `sqlx::Error`, and the test that
-# proves a leaf's text reaches the log and not the response body has to build
-# one with a recognisable string inside it. `vpay-db` re-exports `PgPool` but
-# not `sqlx::Error`, and the workspace pin is reused verbatim so this adds no
-# package and no feature to the resolved graph.
-sqlx.workspace = true
 # Test-only: captures `tracing` output into a buffer so the log/body split
 # above is asserted on what an operator would actually see, rather than on the
 # arguments this crate passed to a macro.
 tracing-subscriber.workspace = true
 wiremock.workspace = true
 rand.workspace = true
-# Test-only: `authkestra_resource::jwt::JwksCache` fetches over `reqwest`,
-# which eagerly builds a rustls TLS config even for a plain-HTTP wiremock
-# target and panics without a process-default `CryptoProvider` installed
-# (root Cargo.toml's own comment on the authkestra-* pins names this exact
-# prerequisite). Installing it is test setup here, not production code —
-# whichever agent wires this module into a real binary must make the same
-# call once in `main()`, before the first JWKS fetch.
-rustls.workspace = true
 # Test-only: mints RSA keypairs to sign JWTs against, so validation is
 # exercised against real cryptographic material rather than a stub. Already
 # in the resolved graph via authkestra-engine (see deny.toml's RUSTSEC-2023-
 # 0071 note); not a workspace dependency, so pinned directly here the same
 # way jsonwebtoken is above.
 rsa = "0.9"
-base64 = "0.22"

@@ -4,12 +4,18 @@
 //! worker's job, and it is what makes the system crash-safe.
 
 use std::future::IntoFuture as _;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
 use clap::Parser as _;
 use mimalloc::MiMalloc;
+use vpay_api::RouterDeps;
+use vpay_api::op::MerchantOp;
+use vpay_api::op::keys::{LoadedSigningKey, SigningKeyError};
+use vpay_api::resource_auth::{JwtValidator, MerchantJwtValidator, Surface};
 use vpay_config::{ConfigError, LogFormat, ServerArgs, ShutdownSignals};
 use vpay_core::error::{Category, Classify as _, find_in_chain};
 use vpay_db::DbError;
@@ -56,6 +62,51 @@ fn main() -> ExitCode {
     }
 }
 
+/// A required startup input this binary was not given.
+///
+/// It exists so that "you forgot a flag" reaches an operator as exit `78`
+/// ("fix the deploy") rather than `1` ("this is a vpay bug"). Without a
+/// typed leaf in the chain, `.context("...is required")` on an `Option`
+/// produces a bare `anyhow` error, [`exit_code_for`] finds nothing to
+/// classify, and the honest-but-unhelpful [`Category::Internal`] fallback
+/// applies. `--config`'s equivalent already gets `78` because
+/// `vpay_config::Config::load` returns a typed `ConfigError::MissingPath`;
+/// this is the same idea for the inputs that are checked here rather than
+/// inside a library.
+///
+/// **Defined in the binary, not in `vpay-config`, deliberately.** Which
+/// inputs a process requires is a property of *that process*, not of the
+/// crate that declares the flags: `vpay-worker-bin` takes no
+/// `--oauth-signing-key-file` at all (it issues no tokens, so mounting the
+/// signing key into it would widen the Secret's blast radius for no
+/// capability), so a `ConfigError` variant about a missing signing key would
+/// be a requirement one binary has, spelled in a crate both link. ADR-0011
+/// allows this: a closed `thiserror` enum with one `Classify` impl,
+/// classified once and never re-decided at a call site. It is the same
+/// reasoning [`exit_code_for`]'s own doc comment gives for why that function
+/// is a deliberate near-copy rather than a shared helper.
+#[derive(Debug, thiserror::Error)]
+enum StartupError {
+    /// `--oauth-signing-key-file` / `VPAY_OAUTH_SIGNING_KEY_FILE` was not
+    /// supplied. Named in full, both spellings, because the message is the
+    /// entire fix.
+    #[error(
+        "--oauth-signing-key-file / VPAY_OAUTH_SIGNING_KEY_FILE is required: vpay-server signs \
+         every /v1 access token with it and cannot serve the merchant API without one (ADR-0010)"
+    )]
+    MissingSigningKeyFile,
+}
+
+impl vpay_core::error::Classify for StartupError {
+    /// A deploy that must be fixed — never retried, never the caller's
+    /// fault. [`Category::Configuration`] is what makes that exit `78`,
+    /// the same number a malformed YAML file produces, because it is the
+    /// same kind of operator problem.
+    fn category(&self) -> Category {
+        Category::Configuration
+    }
+}
+
 /// The exit code for a failed startup, per ADR-0011's Tier 3 and the table in
 /// `docs/flows/errors.md`.
 ///
@@ -67,20 +118,42 @@ fn main() -> ExitCode {
 /// they grow — so this is two copies of eight lines, each pinned by its own
 /// CLI tests, rather than a crate created to avoid them.
 ///
-/// The order is load-bearing, not alphabetical: `ConfigError` is looked for
-/// **before** `DbError` because a chain can plausibly contain both (a config
-/// that names an unreachable database), and in that case the operator's
-/// actual problem is the configuration — `78` ("fix the deploy") is more
-/// useful than `69` ("wait for Postgres"). `find_in_chain` is typed, so this
-/// function is also the exhaustive list of leaf errors this binary knows how
-/// to classify; anything else — a `clap` failure that got this far, a bind
-/// error, a panic-free `anyhow!` from somewhere new — falls through to
-/// [`Category::Internal`], i.e. exit `1`. That fallback is deliberately the
-/// pessimistic one: an unclassified startup failure in a payment binary
-/// should look like a bug, not like a known condition.
+/// The order is load-bearing, not alphabetical: `ConfigError` and
+/// `SigningKeyError` are looked for **before** `DbError` because a chain can
+/// plausibly contain both (a config that names an unreachable database), and
+/// in that case the operator's actual problem is the configuration — `78`
+/// ("fix the deploy") is more useful than `69` ("wait for Postgres").
+///
+/// Note that `DbError` being last does **not** mean it always means `69`:
+/// the arm asks the leaf for its own category, and
+/// `DbError::SigningKeyRetired` (a deployed Secret naming a key this
+/// database has already retired — see `vpay_db::ensure_active_signing_key`)
+/// classifies as `Category::Configuration`, so it exits `78` from this same
+/// arm. That is the point of deriving the code from `Classify` rather than
+/// from which `find_in_chain` matched: a leaf that knows it is a deploy
+/// problem says so, and no ordering change was needed to let it.
+/// `find_in_chain` is typed, so this function is also the exhaustive list of
+/// leaf errors this binary knows how to classify; anything else — a `clap`
+/// failure that got this far, a bind error, a panic-free `anyhow!` from
+/// somewhere new — falls through to [`Category::Internal`], i.e. exit `1`.
+/// That fallback is deliberately the pessimistic one: an unclassified
+/// startup failure in a payment binary should look like a bug, not like a
+/// known condition.
+///
+/// `SigningKeyError` joined the list when this binary started loading the
+/// OAuth signing key: every one of its variants classifies as
+/// `Category::Configuration`, so a missing Secret mount, a key that is not
+/// RSA, and a key below the 2048-bit floor all exit `78` — the same number
+/// as a broken YAML file, because they are the same kind of operator
+/// problem. Without an arm here it would have fallen through to `1` and
+/// looked like a vpay bug. Its position relative to `ConfigError` is
+/// arbitrary in outcome (both are `78`) and deliberate in intent: config is
+/// loaded first, so it is listed first.
 fn exit_code_for(error: &anyhow::Error) -> u8 {
-    let category = find_in_chain::<ConfigError>(error.chain())
+    let category = find_in_chain::<StartupError>(error.chain())
         .map(|e| e.category())
+        .or_else(|| find_in_chain::<ConfigError>(error.chain()).map(|e| e.category()))
+        .or_else(|| find_in_chain::<SigningKeyError>(error.chain()).map(|e| e.category()))
         .or_else(|| find_in_chain::<DbError>(error.chain()).map(|e| e.category()))
         .unwrap_or(Category::Internal);
     // Every `Category::exit_code()` is in `1..=78` (pinned by a test in
@@ -144,6 +217,52 @@ async fn run() -> anyhow::Result<()> {
         "configuration loaded and validated"
     );
 
+    // The RS256 signing key, loaded *before* the database and before the
+    // listener — the same "cheapest hard failure first" ordering the config
+    // load above follows, and for a sharper reason: reading a file needs no
+    // network round trip, so a Secret that was not mounted fails in
+    // milliseconds instead of after a Postgres connection and a migration
+    // run this process is about to throw away. It also means the negative
+    // path is testable without Docker (`tests/cli.rs`).
+    //
+    // `--oauth-signing-key-file` / `VPAY_OAUTH_SIGNING_KEY_FILE` stays
+    // `Option<PathBuf>` at the clap level for the same reason `--config`
+    // does (see `vpay_config::cli::ServerArgs`), and is required here: this
+    // binary serves `/v1/oauth/token`, and a server that cannot sign cannot
+    // mint a single merchant token — it would bind a port, answer
+    // `/healthz` with a cheerful 200, and refuse every real request. That is
+    // precisely the half-configured process ADR-0003 says must never serve
+    // traffic.
+    let signing_key_file = args
+        .oauth_signing_key_file
+        .as_deref()
+        .ok_or(StartupError::MissingSigningKeyFile)?;
+
+    // The issuer string every token carries and every validator pins. Asked
+    // for rather than formatted here: `vpay_api::op::issuer_for` is the one
+    // derivation in the workspace, and `MerchantOp::new` calls the same
+    // function, so the `iss` this key stamps and the `iss` the OP advertises
+    // cannot drift. See that function for what a mismatch would look like
+    // (a bare 401 on every /v1 call, with no diagnostic anywhere).
+    let issuer = vpay_api::op::issuer_for(&config);
+
+    let signing_key =
+        LoadedSigningKey::from_file(signing_key_file, &issuer).with_context(|| {
+            format!(
+                "loading the OAuth signing key from {} (--oauth-signing-key-file / \
+             VPAY_OAUTH_SIGNING_KEY_FILE)",
+                signing_key_file.display()
+            )
+        })?;
+    // The `kid` is public (it is in every token header and in
+    // `/jwks.json`); the key itself never reaches a log line, a database
+    // column or an error message — see `vpay_api::op::keys`.
+    tracing::info!(
+        kid = signing_key.kid(),
+        %issuer,
+        "OAuth signing key loaded"
+    );
+
     // `--database-url` / `DATABASE_URL` stays `Option<String>` at the clap
     // level (`vpay_config::CommonArgs`) for the same reason `--config` does
     // above, but is treated as required *here*: a payment server that binds
@@ -168,18 +287,101 @@ async fn run() -> anyhow::Result<()> {
         .context("running database migrations")?;
     tracing::info!("database connected and migrations applied");
 
+    // Announce this key as the active one, so `/jwks.json` publishes it and
+    // every replica agrees on which `kid` is current. Fatal on failure: a
+    // process whose key is not in `oauth_signing_keys` mints tokens that no
+    // verifier — including its own `/v1` — can check, so serving traffic
+    // would be worse than not starting. Runs inside one locked transaction
+    // in `vpay_db`, so N replicas booting at once produce one rotation
+    // between them.
+    let activation = signing_key
+        .ensure_active_in_database(&pool)
+        .await
+        .context("recording the OAuth signing key as active in oauth_signing_keys")?;
+    match &activation {
+        vpay_db::ActivationOutcome::AlreadyActive => {
+            tracing::info!(
+                kid = signing_key.kid(),
+                "OAuth signing key was already the active one; no rotation"
+            );
+        }
+        vpay_db::ActivationOutcome::Rotated { previous } => {
+            tracing::warn!(
+                kid = signing_key.kid(),
+                previous_kid = previous.as_deref().unwrap_or("<none>"),
+                "OAuth signing key rotated; the previous key stays publishable in /jwks.json for \
+                 its overlap window"
+            );
+        }
+    }
+
+    // A boot-time stopgap, not the cleanup job this table needs: vpay has no
+    // worker job loop yet (`docs/status.md`), so nothing runs scheduled work.
+    // Sweeping once per process start bounds `client_assertion_jtis` at
+    // roughly "assertions since the last restart" instead of "assertions
+    // forever". When the job loop lands, it should call this on a timer —
+    // this call is meant to be *scheduled* properly then, not replaced.
+    //
+    // Non-fatal, deliberately: failing to prune is not a reason to refuse to
+    // serve payments, and the rows it would have deleted are already expired
+    // and therefore already unusable for a replay (see
+    // `vpay_db::delete_expired_client_assertion_jtis`).
+    match vpay_db::delete_expired_client_assertion_jtis(&pool).await {
+        Ok(deleted) => tracing::info!(
+            deleted,
+            "swept expired client-assertion jtis (boot-time stopgap; there is no cleanup job yet)"
+        ),
+        Err(error) => tracing::warn!(
+            %error,
+            "could not sweep expired client-assertion jtis; continuing — replay protection is \
+             unaffected, only table growth"
+        ),
+    }
+
+    let merchant_op = Arc::new(MerchantOp::new(&config, signing_key, pool.clone()));
+
+    // Bind *before* building the validator, because the validator needs the
+    // port this listener actually got — `--bind 127.0.0.1:0` is a real
+    // configuration (every test in tests/cli.rs uses an ephemeral port) and
+    // `args.bind` would still say `:0`.
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await
         .with_context(|| format!("binding {}", args.bind))?;
+    let bound = listener
+        .local_addr()
+        .context("reading the bound address back off the listener")?;
+
+    let jwks_url = loopback_jwks_url(bound);
+    tracing::info!(
+        %jwks_url,
+        public_jwks_url = %merchant_op.jwks_url(),
+        "validating /v1 tokens against this process's own JWKS over loopback"
+    );
+    let merchant_validator = MerchantJwtValidator(
+        JwtValidator::new(
+            jwks_url,
+            JWKS_REFRESH_INTERVAL,
+            merchant_op.issuer(),
+            Surface::Merchant,
+        )
+        .context("building the JWKS client the /v1 token validator fetches with")?,
+    );
 
     tracing::warn!(
-        "vpay-server is a scaffold: only /healthz and the database connection are implemented. \
-         See docs/status.md"
+        "vpay-server implements /healthz, /v1/oauth (token, discovery, jwks) and the /v1 \
+         authentication boundary. No /v1 business resource exists: an authenticated /v1 request \
+         answers the honest 404. See docs/status.md"
     );
-    tracing::info!(addr = %args.bind, "listening");
+    tracing::info!(addr = %bound, "listening");
+
+    let deps = RouterDeps {
+        pool,
+        merchant_op,
+        merchant_validator,
+    };
 
     let shutdown_grace = Duration::from_secs(args.common.shutdown_grace_seconds);
-    match serve_with_bounded_drain(listener, pool, shutdown_grace, shutdown_signals).await? {
+    match serve_with_bounded_drain(listener, deps, shutdown_grace, shutdown_signals).await? {
         DrainOutcome::Clean => {
             tracing::info!("graceful shutdown complete, exiting");
             Ok(())
@@ -211,6 +413,68 @@ async fn run() -> anyhow::Result<()> {
     }
 }
 
+/// How often the `/v1` validator re-fetches the JWKS.
+///
+/// 300 s, matching [`vpay_api::op::jwks::JWKS_CACHE_MAX_AGE`] — the
+/// `Cache-Control: max-age` the document is served with. Two different
+/// numbers here would mean this process either re-fetched a document it was
+/// told was still fresh, or held a copy past the freshness it advertised to
+/// everyone else. It is not a correctness bound in either direction: the
+/// cache also refetches immediately on an unrecognised `kid`, so a rotation
+/// reaches this validator without waiting for the interval to lapse
+/// (`vpay_api::resource_auth`), and the 24 h publication overlap
+/// (`vpay_api::op::keys::ROTATION_OVERLAP`) means a stale copy is still a
+/// usable one.
+const JWKS_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
+
+/// The URL this process's own `/v1` validator fetches the JWKS from: always
+/// loopback, on the port actually bound.
+///
+/// **Deliberately not `public_base_url`.** The public URL is what a
+/// *merchant* uses and what the discovery document advertises
+/// (`MerchantOp::jwks_url`), but a pod is not guaranteed to be able to reach
+/// its own public hostname: split-horizon DNS may not resolve it inside the
+/// cluster, an ingress may terminate somewhere this process cannot route
+/// back through, an egress `NetworkPolicy` may forbid the hairpin, and a
+/// deployment behind a not-yet-warm DNS record would fail its first
+/// validation. All of those turn "verify a token" into a network dependency
+/// on infrastructure that exists to serve *inbound* traffic. Loopback has
+/// none of those failure modes and reaches the same handler, backed by the
+/// same database rows, that a merchant's fetch would.
+///
+/// The port comes from `TcpListener::local_addr`, not from `--bind`,
+/// because `:0` is a real configuration.
+///
+/// An unspecified bind address (`0.0.0.0`, `[::]`) is mapped to the
+/// corresponding loopback address rather than used as-is: `0.0.0.0` means
+/// "listen on every interface" and is not a *destination* — connecting to it
+/// is platform-dependent (Linux happens to route it to loopback; it is not
+/// something to rely on in a payment binary). The address family is
+/// preserved, so an IPv6-only deployment dials `[::1]` and not `127.0.0.1`.
+/// A specific bind address is used verbatim: an operator who bound one
+/// interface on purpose gets a URL on that interface.
+///
+/// This whole round trip is an HTTP call to ourselves and could later be
+/// replaced by an in-process key source, which would remove a socket from
+/// the path entirely. It is not done here because the alternative —
+/// publishing the one key *this* process holds — is exactly the mistake
+/// `vpay_api::op::jwks`'s module docs reject: during a rotation the JWKS
+/// must carry every key still inside its overlap window, which is a property
+/// of the database and not of this process's memory. An in-process source
+/// would have to read the same rows and cache them, which is a real design
+/// with its own invalidation question, not a simplification.
+fn loopback_jwks_url(bound: SocketAddr) -> String {
+    let host = match bound.ip() {
+        IpAddr::V4(v4) if v4.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(v6) if v6.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        specific => specific,
+    };
+    // `SocketAddr`'s own `Display` puts the brackets around an IPv6 literal,
+    // which a URL authority requires and a bare `Ipv6Addr` does not produce.
+    let authority = SocketAddr::new(host, bound.port());
+    format!("http://{authority}/v1/oauth/jwks.json")
+}
+
 /// Serves `listener` until the shutdown signal fires, then waits at most
 /// `shutdown_grace` for in-flight connections to drain.
 ///
@@ -223,7 +487,7 @@ async fn run() -> anyhow::Result<()> {
 /// decides the [`DrainOutcome`].
 async fn serve_with_bounded_drain(
     listener: tokio::net::TcpListener,
-    pool: vpay_db::PgPool,
+    deps: RouterDeps,
     shutdown_grace: Duration,
     mut shutdown_signals: ShutdownSignals,
 ) -> anyhow::Result<DrainOutcome> {
@@ -232,7 +496,7 @@ async fn serve_with_bounded_drain(
     // `axum::serve(..).with_graceful_shutdown(..)` returns a builder that
     // implements `IntoFuture`, not `Future` directly — `tokio::select!`
     // needs the latter, hence the explicit `.into_future()`.
-    let serve_fut = axum::serve(listener, vpay_api::router(pool))
+    let serve_fut = axum::serve(listener, vpay_api::router(deps))
         .with_graceful_shutdown(async move {
             shutdown_signals.wait().await;
             // A closed receiver just means the grace-period clock below
@@ -288,16 +552,35 @@ async fn grace_clock(drain_started_rx: tokio::sync::oneshot::Receiver<()>, grace
 /// helper in `vpay_api::resource_auth`.
 ///
 /// **Why here.** The one ordering constraint is "before the first
-/// `reqwest::Client` is built" — today that is
-/// `authkestra_resource::jwt::Jwks::fetch`'s JWKS client (`/v1` and
-/// `/dash/v1` are not mounted yet, so nothing has built one so far), and
-/// tomorrow it is every rail adapter that talks HTTPS. Putting it at the top
-/// of `run`, right after the signal handlers and above `init_tracing`, means
-/// no future edit can slip a client construction in ahead of it. It is
-/// deliberately *not* done in a library: installing a process-wide default
-/// from a library takes a decision out of the application's hands (the
-/// reasoning `sdks/rust` records for why it hands reqwest a pre-built
-/// `ClientConfig` instead).
+/// `reqwest::Client` is built", so this sits at the top of `run`, right
+/// after the signal handlers and above `init_tracing`, where no future edit
+/// can slip a client construction in ahead of it. It is deliberately *not*
+/// done in a library: installing a process-wide default from a library takes
+/// a decision out of the application's hands (the reasoning `sdks/rust`
+/// records for why it hands reqwest a pre-built `ClientConfig` instead).
+///
+/// **What it does *not* cover, and why it stays anyway.** This used to be
+/// the thing standing between `run` and a panic: the [`MerchantJwtValidator`]
+/// that guards `/v1` was built from `authkestra_resource::jwt::JwksCache`,
+/// whose `new` calls `reqwest::Client::new()` eagerly. That is no longer
+/// true — `vpay_api::http_client` hands reqwest a finished
+/// `rustls::ClientConfig`, which takes a branch that consults neither the
+/// process default nor the OS trust store, and `vpay_api::jwks_cache` is
+/// what lets the validator be given that client at all. `sqlx` never needed
+/// it either (`vpay_db`'s module doc reads `sqlx-core`'s TLS setup and shows
+/// it passes its own provider explicitly). So no path this binary reaches
+/// today depends on this call.
+///
+/// It stays because the hazard it guards is one `use` away, not gone:
+/// `authkestra-engine` still writes `reqwest::Client::new()` in its captcha
+/// and device/client-credentials flows (`authkestra-engine-0.7.1/src/flow/`),
+/// and tomorrow's first HTTPS-speaking rail adapter is another candidate.
+/// Note that this call is **not** sufficient protection for either: inside
+/// the `FROM scratch` runtime image a bare `reqwest::Client::new()` panics
+/// on the *trust store* (`"No CA certificates were loaded from the system"`)
+/// whether or not a provider is installed. `vpay_api::http_client::client`
+/// is the only client constructor that works there, and any new outbound
+/// HTTP in this binary should use it.
 ///
 /// **Why the result is dropped.** `install_default()` returns
 /// `Err(Arc<CryptoProvider>)` for exactly one reason: a default was already
@@ -363,7 +646,9 @@ fn env_filter(directive: &str) -> tracing_subscriber::EnvFilter {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{grace_clock, install_crypto_provider};
+    use std::net::SocketAddr;
+
+    use super::{grace_clock, install_crypto_provider, loopback_jwks_url};
 
     #[tokio::test]
     async fn grace_clock_waits_at_least_the_full_grace_period_once_the_signal_fires() {
@@ -404,6 +689,54 @@ mod tests {
         );
     }
 
+    /// The decisive property of `loopback_jwks_url`: the host is always a
+    /// loopback address and the port is always the one that was *bound*.
+    ///
+    /// Each case is a bind address an operator actually writes.
+    /// `--bind 0.0.0.0:8080` is `vpay_config::cli::ServerArgs`'s own default
+    /// and is the case that matters most: a URL of
+    /// `http://0.0.0.0:8080/...` is not a destination, and this process
+    /// would be dialling it on every JWKS refresh. The `:0` cases are what
+    /// every subprocess test in `tests/cli.rs` binds, which is why the port
+    /// has to come from `TcpListener::local_addr` rather than from `--bind`.
+    #[test]
+    fn the_validators_jwks_url_is_always_loopback_on_the_bound_port() {
+        for (bound, expected) in [
+            ("0.0.0.0:8080", "http://127.0.0.1:8080/v1/oauth/jwks.json"),
+            (
+                "127.0.0.1:34567",
+                "http://127.0.0.1:34567/v1/oauth/jwks.json",
+            ),
+            // A specific, non-loopback interface an operator bound on
+            // purpose is used verbatim — this function does not second-guess
+            // an explicit choice, it only refuses to treat "every interface"
+            // as an address.
+            ("10.1.2.3:8080", "http://10.1.2.3:8080/v1/oauth/jwks.json"),
+            // IPv6: the family is preserved (an IPv6-only pod cannot dial
+            // 127.0.0.1) and the literal is bracketed, which a URL authority
+            // requires.
+            ("[::]:8080", "http://[::1]:8080/v1/oauth/jwks.json"),
+            ("[::1]:9090", "http://[::1]:9090/v1/oauth/jwks.json"),
+        ] {
+            let bound: SocketAddr = bound.parse().expect("a valid socket address");
+            assert_eq!(loopback_jwks_url(bound), expected);
+        }
+    }
+
+    /// The path half, pinned separately against the route `vpay_api::router`
+    /// actually mounts. If the OP were ever remounted somewhere else, this
+    /// URL would 404 and every `/v1` request would fail authentication with
+    /// no clue why — so the two are asserted to agree rather than left to a
+    /// reader to notice.
+    #[test]
+    fn the_validators_jwks_url_ends_at_the_route_the_router_mounts() {
+        let url = loopback_jwks_url("127.0.0.1:8080".parse().expect("a valid socket address"));
+        assert!(
+            url.ends_with("/v1/oauth/jwks.json"),
+            "the loopback URL must point at the route vpay_api::router mounts; got {url}"
+        );
+    }
+
     /// The provider install is idempotent and leaves a process default
     /// behind.
     ///
@@ -412,14 +745,16 @@ mod tests {
     /// time does not panic — which is the whole contract the `.ok()` on the
     /// `Err(Arc<CryptoProvider>)` relies on.
     ///
-    /// What it deliberately does **not** prove: that a `reqwest::Client`
-    /// built later in this binary succeeds. No shipping code in either
-    /// binary builds one yet (the JWKS validator is mounted on no route,
-    /// `docs/status.md`), so there is nothing honest to assert about that
-    /// here — inventing a reqwest consumer purely to observe the provider
-    /// would be a test double in a shipping process. The reqwest-side
-    /// behaviour is documented on the root `Cargo.toml`'s pins and stays
-    /// unproven until a real caller exists.
+    /// What it deliberately does **not** prove: that the `reqwest::Client`
+    /// this binary's real consumer builds succeeds. That consumer is the
+    /// merchant validator's `JwksCache`, which builds its client lazily
+    /// inside `Jwks::fetch` on the first `/v1` token validation — i.e. only
+    /// once `run` has bound a port, mounted the router and served a request,
+    /// none of which this unit test does. Reaching it here would mean
+    /// standing up a JWKS server and a full `run`, which is an integration
+    /// test (`backends/tests/integration`), not this one. The reqwest-side
+    /// behaviour is documented on the root `Cargo.toml`'s pins; what is
+    /// asserted here is only the precondition that call site relies on.
     #[test]
     fn installing_the_crypto_provider_leaves_a_process_default_and_is_idempotent() {
         install_crypto_provider();
@@ -434,5 +769,40 @@ mod tests {
         // happens when some other component installed one first.
         install_crypto_provider();
         assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+    }
+
+    /// A rollback to a retired signing key exits `78`, not `69`.
+    ///
+    /// This is the whole reason `vpay_db::DbError::SigningKeyRetired` is its
+    /// own variant. The failure is a deployed Secret naming a key this
+    /// database has already retired: restarting cannot fix it, so a
+    /// supervisor that reads `69` ("wait for Postgres") sits in a crash loop
+    /// forever, while `78` ("fix the deploy") is actionable. The error is
+    /// wrapped in the same `.context(..)` `run` applies, so this exercises
+    /// the chain walk and not just the leaf.
+    ///
+    /// The `Query` case below is the control: without it, an
+    /// `exit_code_for` that returned 78 for *every* `DbError` — or one that
+    /// stopped looking at categories at all — would still pass.
+    #[test]
+    fn a_rollback_to_a_retired_signing_key_exits_78_and_a_dead_database_still_exits_69() {
+        let retired = anyhow::Error::new(vpay_db::DbError::SigningKeyRetired {
+            kid: "kid_old".to_owned(),
+            retired_at: time::OffsetDateTime::UNIX_EPOCH,
+        })
+        .context("recording the OAuth signing key as active in oauth_signing_keys");
+        assert_eq!(
+            super::exit_code_for(&retired),
+            78,
+            "a retired-key rollback is a deploy to fix, not a database to wait for"
+        );
+
+        let unreachable = anyhow::Error::new(vpay_db::DbError::Connect(sqlx::Error::PoolTimedOut))
+            .context("connecting to Postgres");
+        assert_eq!(
+            super::exit_code_for(&unreachable),
+            69,
+            "an unreachable database is still the transient case"
+        );
     }
 }

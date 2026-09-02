@@ -1,0 +1,516 @@
+//! The merchant-facing OAuth2 provider behind `/v1/oauth` (ADR-0010,
+//! [docs/flows/merchant-auth.md](../../../../../docs/flows/merchant-auth.md)).
+//!
+//! Four pieces, each its own module so it can be tested on its own:
+//!
+//! - [`clients`] — the `ClientStore` the OP looks merchants up in: the
+//!   statically registered `merchant_clients` from YAML, minus anything in
+//!   the `disabled_clients` kill switch.
+//! - [`keys`] — the RS256 signing key: loaded from a file at boot, never
+//!   persisted; its `kid` and public JWK are what `oauth_signing_keys`
+//!   records and `/jwks.json` publishes.
+//! - [`jwks`] — the vpay-owned `/jwks.json`, publishing every key in its
+//!   rotation window from the database rather than the one key this
+//!   process holds.
+//! - [`token`] — the two HTTP handlers this crate writes itself: the RFC
+//!   6749 token endpoint and the discovery document.
+//!
+//! [`MerchantOp`], below, is the assembly: it holds the one [`OpConfig`],
+//! the one [`OpStore`] and the one [`TokenManager`] that
+//! [`token::token_handler`] needs, built once at boot from a validated
+//! [`Config`], a [`keys::LoadedSigningKey`] and a pool.
+//!
+//! Nothing in this module serves the dashboard surface: `/dash/v1` login is
+//! a separate, later step, and this OP is deliberately pinned to the one
+//! grant `/v1` uses.
+//!
+//! # Why vpay writes its own handlers instead of mounting `authkestra-axum`
+//!
+//! `authkestra-axum` ships `axum_token_handler`/`axum_discovery_handler`
+//! and vpay does not use them, for three reasons that are all about *not*
+//! serving surface this deployment does not implement:
+//!
+//! 1. Its router helpers mount the authorization-code, device and userinfo
+//!    endpoints alongside the token endpoint. vpay serves none of those (see
+//!    [`OP_GRANT_TYPES`]), and a route that exists only to answer an error
+//!    is a route an integrator can find and misread.
+//! 2. `axum_authorize_handler` needs `tower_cookies::Cookies` in the request
+//!    extensions, so mounting that crate's OP routes drags a cookie layer
+//!    into a router whose entire `/v1` surface is cookie-free bearer auth.
+//! 3. Its handlers reach their state through `FromRef<AppState>` for
+//!    `Result<Arc<dyn OpStore>, AxumError>` and render their own errors,
+//!    which would put a second error-rendering path next to
+//!    [`crate::ApiError`] (ADR-0011 wants one).
+//!
+//! What vpay does *not* re-implement is the protocol itself:
+//! [`token::token_handler`] calls `authkestra_op`'s own
+//! [`handle_token`](authkestra_op::handlers::token::handle_token) directly,
+//! and the status mapping it applies is copied from
+//! `authkestra-axum-0.7.1/src/op.rs::axum_token_handler` — see that
+//! function's own doc comment for the one deliberate deviation (no DPoP
+//! header handling, because no DPoP replay store is wired).
+//!
+//! That file is a *reference*, not a dependency: `authkestra-axum` is
+//! deliberately absent from this workspace (the three reasons above), so it
+//! is in neither `Cargo.lock` nor any local registry checkout. The six
+//! ported lines are inlined verbatim in [`token`]'s module docs so a reader
+//! can compare without fetching anything, and that section says where to
+//! fetch the real copy from crates.io when an `authkestra-op` bump makes it
+//! worth re-diffing.
+
+use std::sync::Arc;
+
+use authkestra_engine::token::TokenManager;
+use authkestra_op::OpStore;
+use authkestra_op::config::OpConfig;
+use authkestra_op::sqlx_store::SqlxOpStore;
+use authkestra_op::store::CompositeOpStore;
+use vpay_config::Config;
+use vpay_db::{PgPool, SqlClientAssertionStore};
+
+use crate::op::clients::YamlClientStore;
+use crate::op::keys::LoadedSigningKey;
+
+pub mod clients;
+pub mod jwks;
+pub mod keys;
+pub mod token;
+
+/// The access-token lifetime `/v1` mints, in seconds.
+///
+/// **15 minutes is the plan's default, not a decision that has been made.**
+/// `docs/roadmap.md` lists the merchant access-token TTL as an open
+/// question; no ADR or flow doc fixes a number, and this constant does not
+/// close that question — it is the value this code uses until a maintainer
+/// settles it.
+///
+/// The two constraints it does have to satisfy, both of which 900 s meets
+/// comfortably:
+///
+/// - It must be shorter than [`keys::ROTATION_OVERLAP`] (24 h) by a wide
+///   margin, or a token signed just before a rotation could outlive the
+///   window in which its key is still published. That constant's own doc
+///   comment does this arithmetic against this number.
+/// - It must be long enough that a merchant is not spending a
+///   `client_assertion` `jti` on every request. `sdks/rust` caches the token
+///   until `expires_in` minus a 30 s margin, so at 900 s a busy client mints
+///   roughly four assertions an hour.
+///
+/// Not configurable per deployment on purpose: a TTL that varies by YAML is
+/// one more thing that can differ between the sandbox a merchant integrates
+/// against and the production they go live on.
+pub const ACCESS_TOKEN_TTL_SECS: u64 = 900;
+
+/// The one grant `/v1` offers.
+///
+/// `client_credentials` and nothing else, matching ADR-0010 and
+/// `vpay_config::ConfigError::DisallowedMerchantGrant`, which refuses to
+/// boot a merchant registration declaring anything else. Machine-to-machine
+/// only: there is no browser leg, no user consent, no refresh token and no
+/// device flow on this surface.
+///
+/// This list is what the discovery document advertises. It is *not* what
+/// enforces the restriction at runtime — `authkestra_op`'s `handle_token`
+/// dispatches on `grant_type` without consulting
+/// `OpConfig::grant_types_supported` at all (read
+/// `authkestra-op-0.7.1/src/handlers/token.rs`, the `match
+/// req.grant_type.as_str()` block). What actually refuses every other grant
+/// is each grant handler's own `client.allows_grant_type(..)` check against
+/// the registration [`clients::registration_for`] built from YAML, which
+/// for a merchant can only ever contain `client_credentials`. The two agree
+/// because config validation makes them agree, not because this constant is
+/// consulted.
+pub const OP_GRANT_TYPES: [&str; 1] = ["client_credentials"];
+
+/// The client-authentication method `/v1` accepts, and the only one.
+///
+/// `private_key_jwt` (RFC 7523 §2.2). vpay stores no merchant secret in any
+/// form (`vpay_config::ConfigError::ClientSecretPresent` refuses to boot a
+/// config that supplies one), and every merchant registration carries
+/// `token_endpoint_auth_method: Some(PrivateKeyJwt)`, which
+/// `authkestra_op::handlers::token::authenticate_client` treats as an
+/// exclusive binding rather than a preference — a `client_secret_basic`
+/// credential presented by such a client is a failure, never a fallback.
+pub const OP_TOKEN_ENDPOINT_AUTH_METHOD: &str = "private_key_jwt";
+
+/// The JWS algorithms a `client_assertion` may be signed with.
+///
+/// Transcribed from `authkestra-op-0.7.1/src/client_assertion.rs`'s private
+/// `assertion_algorithms`, which derives the accepted set **from the
+/// registered JWK's key type**, not from any configuration vpay controls:
+/// an RSA key admits `RS*`/`PS*`, a P-256 key `ES256`, a P-384 key `ES384`,
+/// an OKP key `EdDSA`. So this is the union across key types — the honest
+/// answer to "what could this endpoint accept", not a promise that any one
+/// client may use any one of them.
+///
+/// RFC 8414 §2 makes `token_endpoint_auth_signing_alg_values_supported`
+/// REQUIRED once `private_key_jwt` is advertised, which is why the list is
+/// published rather than omitted. It is a transcription and can drift: any
+/// `authkestra-op` bump must re-diff it against that function (the same
+/// re-diff discipline the root `Cargo.toml` already demands for
+/// `SqlxOpStore::migrate`).
+pub const OP_ASSERTION_SIGNING_ALGS: [&str; 9] = [
+    "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "EdDSA",
+];
+
+/// The assembled `/v1` OAuth2 provider: one config, one store, one signer.
+///
+/// Built once in `main` and shared by every request through an `Arc` in
+/// router state. Holds no per-request state of its own, so nothing here
+/// needs a lock.
+///
+/// Deliberately not `Clone`: the store is a trait object behind an `Arc`
+/// already, and handing out clones of the whole struct would make it easy
+/// to end up with two `OpConfig`s that could disagree about the issuer.
+/// Callers share it as `Arc<MerchantOp>`.
+pub struct MerchantOp {
+    config: OpConfig,
+    store: Arc<dyn OpStore>,
+    tokens: Arc<TokenManager>,
+}
+
+/// Shows the configuration (public metadata, all of it published at
+/// `/.well-known/openid-configuration`) and nothing else. The store holds a
+/// database pool and the `TokenManager` holds the private signing key;
+/// neither belongs in a `{:?}`, and neither has a `Debug` impl of its own.
+impl std::fmt::Debug for MerchantOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MerchantOp")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
+}
+
+impl MerchantOp {
+    /// Assembles the OP from a validated [`Config`], the signing key this
+    /// process loaded, and the database pool.
+    ///
+    /// `key` is taken by value: the caller has no further use for it after
+    /// [`keys::LoadedSigningKey::ensure_active_in_database`] has run, and
+    /// moving it makes "the OP signs with the key this process announced"
+    /// hard to get wrong.
+    ///
+    /// # The issuer
+    ///
+    /// `{public_base_url}/v1/oauth`, with any trailing slash on
+    /// `public_base_url` removed first — [`OpConfig::issuer`]'s own contract
+    /// is "no trailing slash", and a `public_base_url` of
+    /// `https://api.example/` would otherwise produce
+    /// `https://api.example//v1/oauth`, which is a *different string* to
+    /// every consumer that compares it: the `iss` claim the resource
+    /// validator pins, the `aud` a merchant's `client_assertion` must
+    /// carry, and the `issuer` in the discovery document the SDK reads.
+    ///
+    /// This value has to be the same string in three places or `/v1` fails
+    /// closed with no diagnostic: here, in
+    /// [`keys::LoadedSigningKey::from_file`]'s `issuer` argument (what gets
+    /// stamped into every token), and in
+    /// [`crate::resource_auth::JwtValidator::new`]'s `issuer` (what every
+    /// token is checked against). `main` derives all three from
+    /// [`Self::issuer`] for exactly that reason.
+    ///
+    /// # The store
+    ///
+    /// Clients come from [`YamlClientStore`] (YAML for identity, the
+    /// `disabled_clients` table for revocation). Spent `client_assertion`
+    /// `jti`s go to [`SqlClientAssertionStore`], which is what turns a
+    /// captured assertion from a replayable bearer credential into a
+    /// single-use one — `authkestra_op`'s `OpStore` refuses every assertion
+    /// unless one is wired (`NoClientAssertionStore` fails closed).
+    ///
+    /// **The three `SqlxOpStore` slots serve no `/v1` grant.** They exist
+    /// because `OpStore` is a supertrait of `AuthorizationCodeStore`,
+    /// `RefreshTokenStore` and `DeviceCodeStore`, so a value implementing it
+    /// must supply all three whether or not any grant reaches them — and
+    /// none does here: every grant handler other than `client_credentials`
+    /// refuses the request at its own `client.allows_grant_type(..)` check,
+    /// before it touches a store, because a merchant registration can only
+    /// ever declare `client_credentials`
+    /// (`vpay_config::ConfigError::DisallowedMerchantGrant`). They are the
+    /// real Postgres-backed stores rather than a no-op stub for two
+    /// reasons: AGENTS.md rule 1 forbids a test double reachable from a
+    /// shipping binary, and a hand-written "always empty" store would be a
+    /// silent lie the moment a future step *does* mount another grant.
+    /// `SqlxOpStore::new` opens no connection and runs no migration (read
+    /// `authkestra-op-0.7.1/src/sqlx_store.rs`: it stores the pool and
+    /// nothing else — `migrate()` is a separate method vpay never calls,
+    /// because `backends/migrations/0006` + `0013` own that schema), so
+    /// three unused slots cost three cloned `Arc` handles.
+    #[must_use]
+    pub fn new(config: &Config, key: LoadedSigningKey, pool: PgPool) -> Self {
+        let store = CompositeOpStore::new(
+            YamlClientStore::new(&config.merchant_clients, pool.clone()),
+            SqlxOpStore::<sqlx::Postgres>::new(pool.clone()),
+            SqlxOpStore::<sqlx::Postgres>::new(pool.clone()),
+            SqlxOpStore::<sqlx::Postgres>::new(pool.clone()),
+        )
+        .with_client_assertion_store(SqlClientAssertionStore::new(pool));
+
+        Self {
+            config: OpConfig {
+                issuer: issuer_for(config),
+                scopes_supported: scopes_supported(config),
+                // Empty, and that is the accurate answer rather than a
+                // placeholder: `response_types_supported` describes what
+                // `/authorize` will return, and this OP has no
+                // authorization endpoint at all. RFC 8414 §2 lists the
+                // field as REQUIRED, so it is published as an empty array
+                // instead of omitted.
+                response_types_supported: Vec::new(),
+                grant_types_supported: OP_GRANT_TYPES.map(str::to_owned).to_vec(),
+                // The algorithm an ID token would be signed with. `/v1`
+                // issues none — `client_credentials` has no end user to
+                // describe, and `handle_client_credentials` hardcodes
+                // `id_token: None` — but the field is not optional on
+                // `OpConfig`, and "RS256" is at least the truth about what
+                // this deployment's key can sign (`LoadedSigningKey` refuses
+                // anything that is not RSA). Not advertised in the discovery
+                // document; see `token::discovery_document`.
+                id_token_signing_alg: "RS256".to_owned(),
+                // Inert: reached only by `default_handle_authorization_code`,
+                // which no merchant client can ever get to (see "The store"
+                // above). 60 s is RFC-003 §7's recommendation, so if a
+                // future step does mount the grant the starting value is the
+                // conservative one rather than something that had to be
+                // noticed first.
+                authorization_code_ttl_secs: 60,
+                access_token_ttl_secs: ACCESS_TOKEN_TTL_SECS,
+                // Inert for the same reason: there is no device
+                // authorization endpoint on this surface. 600 s is the value
+                // authkestra's own examples use.
+                device_code_ttl_secs: 600,
+                // RFC 8693 delegation, off. Nothing in vpay exchanges one
+                // token for another, and `default_handle_token_exchange`
+                // checks this flag *before* the per-client grant check — so
+                // this is one of the few `OpConfig` fields that does gate
+                // behaviour at runtime, and it gates it closed.
+                token_exchange_enabled: false,
+            },
+            tokens: key.token_manager(),
+            store: Arc::new(store),
+        }
+    }
+
+    /// The `iss` claim of every token this OP mints, and the base for every
+    /// endpoint URL below. See [`Self::new`] for why the same string has to
+    /// reach the signer and the validator.
+    #[must_use]
+    pub fn issuer(&self) -> &str {
+        &self.config.issuer
+    }
+
+    /// `{issuer}/token` — where a merchant exchanges a `client_assertion`
+    /// for an access token.
+    ///
+    /// Also the `aud` a merchant's assertion may carry:
+    /// `authkestra_op::handlers::token::authenticate_client` accepts either
+    /// this or [`Self::issuer`] (RFC 7523 §3 allows the token endpoint URL,
+    /// OIDC Core §9 the issuer identifier). `sdks/rust` signs with this one.
+    #[must_use]
+    pub fn token_endpoint(&self) -> String {
+        self.config.token_endpoint()
+    }
+
+    /// `{issuer}/jwks.json` — the **public** URL of the key set, as
+    /// published in the discovery document.
+    ///
+    /// Not what this process's own resource-server validator fetches: a pod
+    /// is not guaranteed to be able to reach its own public hostname (split
+    /// DNS, an ingress that terminates elsewhere, an egress policy that
+    /// forbids hairpinning), so `main` points the validator at a loopback
+    /// URL on the port it actually bound. See `vpay-server`'s
+    /// `loopback_jwks_url`.
+    #[must_use]
+    pub fn jwks_url(&self) -> String {
+        self.config.jwks_url()
+    }
+
+    /// The OP configuration `handle_token` reads. `pub(crate)` because the
+    /// only legitimate consumer is [`token`]'s handlers in this crate —
+    /// exposing it publicly would let a caller build a *second* `OpConfig`
+    /// and serve a token endpoint whose issuer disagrees with this one.
+    pub(crate) fn config(&self) -> &OpConfig {
+        &self.config
+    }
+
+    /// The store `handle_token` resolves clients and spends `jti`s through.
+    /// `pub(crate)` for the reason given on [`Self::config`].
+    pub(crate) fn store(&self) -> &dyn OpStore {
+        self.store.as_ref()
+    }
+
+    /// The signer `handle_token` mints with. `pub(crate)` for the reason
+    /// given on [`Self::config`] — and additionally because this is the
+    /// private key: a public accessor would let any crate in the workspace
+    /// sign a token that `/v1` would then accept.
+    pub(crate) fn tokens(&self) -> &TokenManager {
+        self.tokens.as_ref()
+    }
+}
+
+/// The `/v1` OP's issuer identifier, derived from a validated [`Config`].
+///
+/// **The one derivation of this string in the workspace**, and it is a free
+/// function rather than a method because `vpay-server` needs it *before* a
+/// [`MerchantOp`] can exist: the signing key is loaded — and stamped with
+/// this `iss` — ahead of the database connection, so there is no OP to ask
+/// yet. Every other consumer goes through [`MerchantOp::issuer`], which
+/// returns what this produced.
+///
+/// Three parties compare this string byte for byte, and a mismatch between
+/// any two of them has no symptom other than a bare 401 on every `/v1` call:
+/// the signer (stamps `iss` on every token), the resource validator (pins
+/// `iss`), and a merchant's SDK (signs its `client_assertion` with either
+/// this or `{issuer}/token` as `aud` — `authkestra_op`'s
+/// `authenticate_client` accepts both). Duplicating the `format!` in a
+/// caller is exactly how those three drift apart, so callers do not get to.
+///
+/// The trailing slash is trimmed because [`OpConfig::issuer`]'s own contract
+/// is "no trailing slash", and `https://api.example/` would otherwise yield
+/// `https://api.example//v1/oauth` — a different string to every one of
+/// those comparisons.
+///
+/// `/v1/oauth` and not something configurable: it is what `sdks/rust`
+/// defaults to (`{base_url}/v1/oauth`), what `sdks/nodejs` defaults to, and
+/// what `docs/flows/merchant-auth.md`'s endpoint table documents. A
+/// deployment that moved it would silently break every merchant who took the
+/// default.
+#[must_use]
+pub fn issuer_for(config: &Config) -> String {
+    format!(
+        "{}/v1/oauth",
+        config.deployment.public_base_url.trim_end_matches('/')
+    )
+}
+
+/// Every scope any configured merchant may request, deduplicated and sorted.
+///
+/// A union, because `OpConfig::scopes_supported` is a property of the
+/// *provider* — "what could this server ever grant" — while what any one
+/// caller may actually ask for is `ClientRegistration::scopes`, which
+/// `handle_client_credentials` checks per request against the merchant's own
+/// list. Publishing the union therefore grants nothing: a merchant asking
+/// for a scope that appears here but not in their own registration is
+/// refused with `invalid_scope`.
+///
+/// Sorted and deduplicated so the discovery document is stable across
+/// restarts and across the order merchants happen to appear in YAML — a diff
+/// between two fetches should mean the configuration changed, not that a
+/// `HashMap` iterated differently.
+fn scopes_supported(config: &Config) -> Vec<String> {
+    let mut scopes: Vec<String> = config
+        .merchant_clients
+        .iter()
+        .flat_map(|client| client.scopes.iter().cloned())
+        .collect();
+    scopes.sort();
+    scopes.dedup();
+    scopes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_fixtures::{config_with, lazy_pool, merchant, signing_key};
+
+    #[tokio::test]
+    async fn the_issuer_and_endpoints_are_what_the_sdk_derives_from_a_base_url() {
+        // Pinned against `sdks/rust/src/client.rs`'s own defaults —
+        // `issuer = {base_url}/v1/oauth`, `token_endpoint = {issuer}/token`
+        // — because a merchant that cannot guess these has to be told them
+        // out of band, and a mismatch shows up only as an unexplained 401.
+        let op = MerchantOp::new(
+            &config_with("https://api.vpay.test", vec![]),
+            signing_key(),
+            lazy_pool(),
+        );
+
+        assert_eq!(op.issuer(), "https://api.vpay.test/v1/oauth");
+        assert_eq!(op.token_endpoint(), "https://api.vpay.test/v1/oauth/token");
+        assert_eq!(op.jwks_url(), "https://api.vpay.test/v1/oauth/jwks.json");
+    }
+
+    /// A trailing slash on `public_base_url` must not produce a *different*
+    /// issuer string — the `iss` claim, the assertion `aud` and the
+    /// validator's expected issuer are compared byte for byte, so
+    /// `https://x//v1/oauth` fails closed everywhere with no diagnostic.
+    #[tokio::test]
+    async fn a_trailing_slash_on_the_public_base_url_does_not_change_the_issuer() {
+        let op = MerchantOp::new(
+            &config_with("https://api.vpay.test/", vec![]),
+            signing_key(),
+            lazy_pool(),
+        );
+
+        assert_eq!(op.issuer(), "https://api.vpay.test/v1/oauth");
+    }
+
+    /// `scopes_supported` needs no pool, but every other test in this module
+    /// builds a `MerchantOp`, and `PgPool::connect_lazy` spawns sqlx's
+    /// connection reaper — which requires a Tokio context even though it
+    /// opens nothing. Kept a plain `#[test]` because this one genuinely does
+    /// not need a runtime.
+    #[test]
+    fn scopes_supported_is_the_deduplicated_sorted_union_of_every_merchant() {
+        let config = config_with(
+            "https://api.vpay.test",
+            vec![
+                merchant("a", &["payments:write", "refunds:write"]),
+                merchant("b", &["payments:write", "balance:read"]),
+            ],
+        );
+
+        assert_eq!(
+            scopes_supported(&config),
+            vec![
+                "balance:read".to_owned(),
+                "payments:write".to_owned(),
+                "refunds:write".to_owned()
+            ]
+        );
+    }
+
+    /// The TTL is the one number every other timing decision in this module
+    /// is stated relative to. Asserted as a literal so that changing it is a
+    /// deliberate edit to this test too — and against
+    /// `keys::ROTATION_OVERLAP`, so a token can never outlive the window in
+    /// which its signing key is still published.
+    #[tokio::test]
+    async fn the_access_token_ttl_fits_inside_the_key_rotation_overlap() {
+        let op = MerchantOp::new(
+            &config_with("https://api.vpay.test", vec![]),
+            signing_key(),
+            lazy_pool(),
+        );
+
+        assert_eq!(op.config().access_token_ttl_secs, 900);
+        assert!(
+            i64::try_from(ACCESS_TOKEN_TTL_SECS).expect("900 fits in an i64")
+                < keys::ROTATION_OVERLAP.whole_seconds(),
+            "an access token must expire long before the key that signed it stops being published"
+        );
+    }
+
+    /// `/v1` offers one grant and one client-authentication method. Written
+    /// as literals rather than derived from the constants, so widening
+    /// either is a deliberate change to this test.
+    #[tokio::test]
+    async fn the_advertised_grant_and_auth_method_are_the_two_adr_0010_names() {
+        let op = MerchantOp::new(
+            &config_with("https://api.vpay.test", vec![]),
+            signing_key(),
+            lazy_pool(),
+        );
+
+        assert_eq!(
+            op.config().grant_types_supported,
+            vec!["client_credentials".to_owned()]
+        );
+        assert_eq!(OP_TOKEN_ENDPOINT_AUTH_METHOD, "private_key_jwt");
+        assert!(op.config().response_types_supported.is_empty());
+        assert!(
+            !op.config().token_exchange_enabled,
+            "token exchange gates closed at runtime, not merely in the discovery document"
+        );
+    }
+}

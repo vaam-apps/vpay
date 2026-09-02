@@ -136,6 +136,9 @@ jobs:
         with: { node-version-file: .nvmrc, cache: pnpm }
       # The Cypress binary lives outside node_modules (~/.cache/Cypress) and
       # is not covered by setup-node's pnpm-store cache.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
       - uses: actions/cache@v4
         with:
           path: ~/.cache/Cypress
@@ -151,6 +154,12 @@ jobs:
       # step is idempotent — a no-op when the binary is already there.
       - run: pnpm --filter @vpay/e2e exec cypress install
       - run: pnpm --filter @vpay/e2e exec cypress verify
+      # A throwaway RS256 signing key for the merchant OP: `vpay-server` will
+      # not start without one (compose.e2e.yml explains the mount). Generated
+      # per run, world-readable so UID 65532 inside the scratch image can
+      # read the bind mount, discarded with the runner.
+      - name: generate a throwaway OAuth signing key for the stack
+        run: just gen-e2e-signing-key
       - name: build both images and bring up the real stack (rails stubbed by WireMock, not in-process)
         run: docker compose -f compose.yml -f compose.e2e.yml up -d --build
       # `vpay-server`'s image is `FROM scratch` and carries no HEALTHCHECK

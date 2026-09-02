@@ -159,6 +159,37 @@ pub struct ServerArgs {
     #[arg(long, env = "VPAY_PUBLIC_BASE_URL")]
     pub public_base_url: Option<String>,
 
+    /// Path to the file holding this deployment's RS256 signing key, as a
+    /// PEM-encoded RSA private key (PKCS#8 or PKCS#1).
+    ///
+    /// In a real deployment this is a Kubernetes Secret mounted into the
+    /// pod's filesystem — never an environment variable holding the key
+    /// itself, and never a value in the YAML config. The process reads it
+    /// once at boot (`vpay_api::op::keys::LoadedSigningKey::from_file`),
+    /// derives the `kid` from it, and never writes it anywhere: migration
+    /// `0010_reshape-oauth-signing-keys.sql` dropped the column that used to
+    /// hold private key material precisely so that this file is the only
+    /// place it exists.
+    ///
+    /// `Option<PathBuf>` at the clap level only, for the same reason
+    /// [`CommonArgs::database_url`] and [`CommonArgs::config`] are — the
+    /// "what does this process need to run" decision belongs to `main.rs`,
+    /// not to the parser. `vpay-server` treats it as required at runtime,
+    /// because a server that boots without a signing key can serve no
+    /// authenticated surface at all. `vpay-worker-bin` deliberately does not
+    /// take this flag: the worker issues no tokens, so mounting the signing
+    /// key into it would widen the Secret's blast radius for no capability.
+    ///
+    /// **The path is not redacted from `Debug`, deliberately**: a filesystem
+    /// path is not secret, and "which file did it try" is the first thing an
+    /// operator needs when a Secret is misconfigured — the same reasoning as
+    /// [`CommonArgs`]'s `Debug`, which prints `config`'s path in full and
+    /// redacts only `database_url`, whose *value* embeds a password. Nothing
+    /// in this crate ever reads the file, so no key material passes through
+    /// `ServerArgs` at all.
+    #[arg(long, env = "VPAY_OAUTH_SIGNING_KEY_FILE")]
+    pub oauth_signing_key_file: Option<PathBuf>,
+
     #[command(flatten)]
     pub common: CommonArgs,
 }
@@ -228,9 +259,16 @@ mod tests {
     ];
 
     /// `(arg id, expected env var)` for options unique to `vpay-server`.
-    const SERVER_ONLY_ENV_VARS: [(&str, &str); 2] = [
+    ///
+    /// `oauth_signing_key_file` is here and not in `COMMON_ENV_VARS` on
+    /// purpose: only the server issues tokens, so only the server is handed
+    /// the Secret. `worker_command_declares_the_documented_env_vars` below
+    /// would start passing if it were ever flattened into `CommonArgs`, but
+    /// `the_worker_is_not_handed_the_signing_key` fails first.
+    const SERVER_ONLY_ENV_VARS: [(&str, &str); 3] = [
         ("bind", "VPAY_BIND"),
         ("public_base_url", "VPAY_PUBLIC_BASE_URL"),
+        ("oauth_signing_key_file", "VPAY_OAUTH_SIGNING_KEY_FILE"),
     ];
 
     /// Asserts a single arg on a built [`clap::Command`] declares exactly
@@ -318,6 +356,7 @@ mod tests {
 
         assert_eq!(args.bind, "0.0.0.0:8080".parse().expect("valid addr"));
         assert_eq!(args.public_base_url, None);
+        assert_eq!(args.oauth_signing_key_file, None);
         assert_eq!(args.common.database_url, None);
         assert_eq!(args.common.profile, "sandbox");
         assert_eq!(args.common.config, None);
@@ -336,6 +375,70 @@ mod tests {
         assert_eq!(args.common.log_filter, "info");
         assert_eq!(args.common.log_format, LogFormat::Json);
         assert_eq!(args.common.shutdown_grace_seconds, 25);
+    }
+
+    /// The signing-key path parses as a path and reaches the field the
+    /// server reads it from. `--oauth-signing-key-file` is the kebab-case
+    /// spelling clap derives from the field name; pinning it here means a
+    /// rename cannot silently change the flag a Helm chart passes.
+    #[test]
+    fn the_signing_key_file_flag_parses_to_the_path_it_was_given() {
+        let args = ServerArgs::parse_from([
+            "vpay-server",
+            "--oauth-signing-key-file",
+            "/etc/vpay/secrets/oauth-signing-key.pem",
+        ]);
+
+        assert_eq!(
+            args.oauth_signing_key_file,
+            Some(std::path::PathBuf::from(
+                "/etc/vpay/secrets/oauth-signing-key.pem"
+            ))
+        );
+    }
+
+    /// The worker mints no tokens, so it must not accept — and a deployment
+    /// must not be able to mount — the signing key against it. This fails if
+    /// the flag is ever moved into `CommonArgs` for symmetry.
+    #[test]
+    fn the_worker_is_not_handed_the_signing_key() {
+        let worker = <WorkerArgs as CommandFactory>::command();
+        assert!(
+            !worker
+                .get_arguments()
+                .any(|arg| arg.get_id().as_str() == "oauth_signing_key_file"),
+            "the worker issues no tokens; giving it the signing key widens the Secret's blast \
+             radius for no capability"
+        );
+
+        assert!(
+            WorkerArgs::try_parse_from([
+                "vpay-worker-bin",
+                "--oauth-signing-key-file",
+                "/etc/vpay/secrets/oauth-signing-key.pem",
+            ])
+            .is_err(),
+            "the worker must reject the flag outright, not ignore it"
+        );
+    }
+
+    /// A path is not a secret and stays visible in `Debug` — the flip side
+    /// of the `database_url` redaction above, and stated as a test so that
+    /// "should this be redacted too?" has a recorded answer rather than
+    /// being re-litigated by whoever reads the `Debug` impl next.
+    #[test]
+    fn the_signing_key_path_stays_visible_in_debug_output() {
+        let args = ServerArgs::parse_from([
+            "vpay-server",
+            "--oauth-signing-key-file",
+            "/etc/vpay/secrets/oauth-signing-key.pem",
+        ]);
+
+        let formatted = format!("{args:?}");
+        assert!(
+            formatted.contains("/etc/vpay/secrets/oauth-signing-key.pem"),
+            "an operator diagnosing a missing Secret mount needs the path: {formatted}"
+        );
     }
 
     #[test]

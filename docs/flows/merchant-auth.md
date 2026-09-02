@@ -77,16 +77,24 @@ No `client_secret`, ever — the OP rejects a request presenting more than one
 client-authentication method (`extract_credential`), and a merchant
 registration has no secret to present.
 
-**`audience=vpay:v1` is provisional and load-bearing.** Without a requested
-audience the OP mints the access token with `aud = client_id`
+**`audience=vpay:v1` is load-bearing, and no longer provisional.** Without a
+requested audience the OP mints the access token with `aud = client_id`
 (`handle_client_credentials`), and vpay's resource-server validator
 (`vpay_api::resource_auth::Surface::Merchant.audience()`) requires
 `aud = "vpay:v1"`, so a token minted without this field would be rejected by
 every `/v1` route the moment one exists. Both SDKs therefore send it by
-default and make it configurable. The string itself is marked provisional in
-`resource_auth.rs`; whoever wires token issuance must register `vpay:v1` in
-each merchant client's `allowed_audiences` (the OP checks that list) and keep
-the two constants equal.
+default and make it configurable.
+
+The string is now defined once, as `vpay_config::MERCHANT_AUDIENCE`, and
+`Surface::Merchant.audience()` returns that constant rather than a second
+copy of the spelling — the "keep the two constants equal" instruction this
+paragraph used to give is now structurally unnecessary. The third party to
+the agreement, each merchant's `allowed_audiences`, is checked at boot:
+`vpay_config::ConfigError::MerchantMissingV1Audience` refuses to start a
+deployment whose merchant registration cannot target it, because neither
+runtime symptom names the cause (`invalid_target` from the token endpoint if
+the client requests the audience; a `200` carrying `aud = client_id` followed
+by a bare `401` on every `/v1` call if it does not).
 
 **Success response** (`authkestra_op::handlers::token::TokenResponse`):
 
@@ -123,10 +131,10 @@ steps 1–2 once more, and retries the request **once**. A second `401` is
 returned to the caller. A `401` from the token endpoint itself is never
 retried.
 
-## Endpoint locations — not yet decided server-side
+## Endpoint locations — decided server-side on 2026-09-02
 
-The token endpoint's path has not been fixed by any ADR or by code (the
-router serves only `/healthz`). `authkestra-op` derives every OP endpoint from
+Until 2026-09-02 no ADR or code fixed the token endpoint's path; the
+paragraph after the table records what fixed it. `authkestra-op` derives every OP endpoint from
 one `issuer` string: token endpoint = `{issuer}/token`, JWKS =
 `{issuer}/jwks.json`, discovery = `{issuer}/.well-known/openid-configuration`
 (`OpConfig` in `config.rs`). The SDKs' **default** follows the existing
@@ -138,9 +146,18 @@ one `issuer` string: token endpoint = `{issuer}/token`, JWKS =
 | Token endpoint (and assertion `aud`) | `{issuer}/token` → `{base_url}/v1/oauth/token` | configurable |
 | Resource base | `{base_url}/v1` | configurable |
 
-This is a maintainer decision the SDKs deliberately do not make: a different
-issuer is a one-line configuration change on the SDK side. It is listed under
-open decisions in [`docs/status.md`](../status.md).
+**Decided by the server on 2026-09-02, and the SDK defaults were already
+right.** `vpay_api::op::issuer_for` derives the issuer as
+`{deployment.public_base_url}/v1/oauth` (trailing slash trimmed) and it is
+the single derivation in the workspace — `MerchantOp::new` and
+`vpay-server`'s `main` both call it, so the `iss` a token is stamped with,
+the `iss` the validator pins and the `issuer` in the discovery document
+cannot drift apart. `the_issuer_and_endpoints_are_what_the_sdk_derives_from_a_base_url`
+pins the values; `the_jwks_and_discovery_documents_describe_this_process`
+compares the served discovery document against what the SDK derived on its
+own, over a booted server. It is a *deployment* setting, not a per-SDK one:
+`/v1/oauth` is not configurable, because a deployment that moved it would
+silently break every merchant who took the default.
 
 ## The `/v1` resource contract the SDKs implement
 
@@ -268,25 +285,118 @@ that is the merchant's job, and the docs say so where the verifier is used.
 | Token endpoint path differs from the SDK default | `404` with the Stripe-shaped `unknown_route` envelope | Returned as an unexpected-response error; the fix is the `issuer`/`token_endpoint` setting |
 | Merchant's PR merged but a pod not yet restarted | `invalid_client` from one replica, success from another (ADR-0010's rolling-deploy window) | Returned; the merchant's own retry policy decides |
 
+## Known limitations (security review, 2026-09-02)
+
+Two findings from the review of the first server-side implementation are
+recorded here rather than fixed, because each needs a decision a maintainer
+has not made:
+
+- **The `jti` replay namespace is global, not per merchant.**
+  `oauth_client_assertion_jtis.jti` is the primary key on its own, and
+  `authkestra_op::client_assertion::ClientAssertionStore::record_jti` hands
+  the store no `client_id` to scope by. RFC 7523 only requires uniqueness
+  per issuer, so a merchant whose library used a counter or a timestamp as
+  `jti` would collide with — and could deliberately pre-spend — another
+  merchant's values. **Onboarding requirement until this changes: `jti`
+  MUST be a UUID v4** (both vpay SDKs do this). Scoping the key to
+  `(client_id, jti)` needs a new migration and either an upstream seam or a
+  per-client store instance; that is the decision left open.
+- **No rate limit in front of `/v1/oauth/token` or `/v1`.** A known
+  `client_id` (they are public) costs one `disabled_clients` `SELECT` per
+  token request before any signature check, and ADR-0009 leaves `/token`
+  rate limiting to the ingress. Confirm the ingress does it before relying
+  on that; nothing in this repository enforces it.
+
 ## Status
 
-**The SDKs exist and are tested against a stub of this contract; the server
-side of this contract does not exist.** No `/v1` route, no token endpoint,
-no OP for merchants is mounted — `vpay-server` serves `/healthz` and a 404.
-Neither SDK has ever completed step 2 against a real vpay, because there is
-no real vpay to complete it against. What *is* proven:
+**The server half of this contract now exists, and the SDKs have a real OP
+to talk to.** `vpay-server` serves `POST /v1/oauth/token`,
+`GET /v1/oauth/.well-known/openid-configuration` and
+`GET /v1/oauth/jwks.json`, and every other `/v1` path sits behind the
+`AuthenticatedMerchant` extractor. **What is still missing is the other end
+of the journey: `/v1` implements no business resource**, so a merchant who
+authenticates successfully gets an honest `404 unknown_route` from every
+resource call in the table above. That is the intended answer, not a
+placeholder.
+
+**Read the evidence before the claim.** `backends/tests/integration/tests/merchant_token_flow.rs`
+boots a real router against a real Postgres and covers six things:
+
+- `an_sdk_client_authenticates_and_reaches_the_honest_404` — the Rust SDK
+  mints an assertion, exchanges it for a token, and reaches `/v1` past the
+  authentication boundary. The 404 *is* the assertion: it is only reachable
+  with a valid token.
+- `a_v1_request_with_no_bearer_token_is_the_401_envelope` — the other side
+  of the boundary, over a raw client the SDK cannot impersonate.
+- `a_disabled_client_is_refused_with_invalid_client_and_401` — the kill
+  switch, with no restart in between.
+- `a_dashboard_audience_token_is_refused_on_v1` — a token this same server
+  signed, with a correct `kid` and a valid signature, refused for its `aud`
+  alone.
+- `the_jwks_and_discovery_documents_describe_this_process` — `/jwks.json`
+  lists exactly the `kid` this process signs with, and discovery's `issuer`
+  and `token_endpoint` equal what the SDK derived from the base URL on its
+  own.
+- `the_same_client_assertion_cannot_be_spent_twice` — one assertion, sent
+  twice by hand; the second is `invalid_client`/401 while still inside its
+  own lifetime.
+
+**Those six tests have been run once: by the implementer, against a scratch
+database on an already-running Postgres, because the testcontainers
+bootstrap could not run on that machine. All six passed. The Docker-backed
+form has not run in CI.** Nothing else has observed this flow working. Treat
+"it works" as unverified until a CI run says otherwise;
+[`docs/status.md`](../status.md) records the state of that evidence and is
+the page to check.
+
+**Two constants in the flow above are defaults this code chose, not
+decisions anyone recorded:** the access token's 900 s lifetime
+(`vpay_api::op::ACCESS_TOKEN_TTL_SECS`) and the 24 h window a retired
+signing key stays publishable (`vpay_api::op::keys::ROTATION_OVERLAP`).
+[`docs/roadmap.md`](../roadmap.md) lists both as open questions and this
+work does not close them.
+
+**Not done, and not hidden by any of the above:**
+
+- **No `/v1` resource route.** Create, retrieve, confirm, cancel, list,
+  refund, events, balance — the SDKs implement all eight; the server
+  implements none.
+- **No rate limit on `/token`.** [ADR-0009](../adr/0009-dashboard-oidc-provider.md)
+  leaves it to Kubernetes ingress. The endpoint is public and
+  unauthenticated by necessity (the credential is the request body), and
+  nothing in this repository verifies that ingress actually limits it.
+- **No cleanup job for spent `jti`s.** `vpay-server` sweeps expired rows
+  once at boot (`vpay_db::delete_expired_client_assertion_jtis`), which is a
+  stopgap and labelled one; there is no timer, because the worker's job loop
+  does not exist. A long-lived process grows that table monotonically.
+- **No runtime key rotation.** One key per process; rotating means
+  restarting with a new Secret. A rollback to a retired `kid` is refused
+  rather than silently accepted.
+- **The signing-key PEM is not zeroized.** Key bytes may linger in freed
+  heap; `vpay_api::op::keys`'s module docs state this deliberately.
+- **`sdks/nodejs` has still never spoken to a vpay.** All 126 of its tests
+  run against its own `node:http` stub, and the integration suite above uses
+  the Rust SDK. `just sdk-conformance-node` remains a manual recipe outside
+  `just ci`.
+
+What the SDKs themselves prove is unchanged by any of this:
 
 - **Rust SDK** (`sdks/rust`, crate `vpay-sdk`): the assertion it mints is
   accepted by the real verifier, `authkestra_op::client_assertion::
   verify_client_assertion` at the pinned 0.7.1, against a `ClientRegistration`
   holding the corresponding public JWK — with and without a `kid` — and an
   assertion signed by a different key, or for a different audience, is
-  refused by that same verifier (`tests/op_conformance.rs`). The token
-  exchange, token caching, single-flight refresh, the 401 re-auth, every
-  resource's exact form-encoded body and path, and the error envelope
-  mapping are each exercised against a `wiremock` HTTP stub, asserting the
-  bytes on the wire. The webhook verifier never touches the network; its
-  cases are unit tests in `src/webhooks.rs`.
+  refused by that same verifier (`tests/op_conformance.rs`). Since
+  2026-09-02 the same check runs against the registration the *server*
+  builds from YAML, in `vpay-api`'s own tests
+  (`an_sdk_minted_assertion_verifies_against_the_registration_this_module_builds`,
+  with `an_assertion_signed_by_a_key_this_merchant_did_not_register_is_refused`
+  as the negative control). The token exchange, token caching, single-flight
+  refresh, the 401 re-auth, every resource's exact form-encoded body and
+  path, and the error envelope mapping are each exercised against a
+  `wiremock` HTTP stub, asserting the bytes on the wire. The webhook
+  verifier never touches the network; its cases are unit tests in
+  `src/webhooks.rs`.
 - **Node SDK** (`sdks/nodejs`, package `@vpay/sdk`): the same set, against a
   real `node:http` server started by the test, with the assertion's
   signature verified by `node:crypto` against the public key and its claims
@@ -300,5 +410,4 @@ no real vpay to complete it against. What *is* proven:
   `sdks/rust/src/form.rs` that carry the exact string the Node encoder
   emitted for the same parameters.
 
-See [`docs/status.md`](../status.md) for the row-by-row account and for the
-open decisions this contract leaves to a maintainer.
+See [`docs/status.md`](../status.md) for the row-by-row account.

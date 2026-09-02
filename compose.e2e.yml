@@ -43,6 +43,18 @@ services:
       MTN_SUBSCRIPTION_KEY: wiremock-stub-subscription-key
       MTN_API_KEY: wiremock-stub-api-key
       ORANGE_MERCHANT_KEY: wiremock-stub-merchant-key
+      # The RS256 private key the merchant OP signs `/v1` access tokens with
+      # (docs/flows/merchant-auth.md). `vpay-server` refuses to start without
+      # it (exit 78). It is a *file*, never an env value, because that is how
+      # a Kubernetes Secret reaches a pod; here it is bind-mounted from
+      # `.e2e/`, which `just gen-e2e-signing-key` (or CI's openssl step)
+      # fills with a throwaway key that is git-ignored and never reused.
+      VPAY_OAUTH_SIGNING_KEY_FILE: /secrets/oauth-signing-key.pem
+    volumes:
+      # Read-only bind mount of the throwaway key. The image runs as UID
+      # 65532, so the host file must be world-readable (0644) — acceptable
+      # only because this key is generated per stack and thrown away.
+      - ./.e2e/oauth-signing-key.pem:/secrets/oauth-signing-key.pem:ro
     depends_on:
       postgres: { condition: service_healthy }
       wiremock-mtn: { condition: service_started }

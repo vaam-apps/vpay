@@ -1,0 +1,98 @@
+# The e2e stack, plus one registered merchant the local demo can authenticate as.
+#
+#   docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml up -d --build
+#
+# `just demo` is the supported entry point; this file is never used alone. It
+# layers on top of compose.e2e.yml and changes exactly two things per service:
+# which profile the process loads, and one extra read-only bind mount.
+#
+# # Why a profile overlay and not an edit to config/application.yml
+#
+# ADR-0003: a profile selects a *config file*, never a code path. The demo
+# merchant's key pair is generated per checkout by `just gen-demo-keys` and
+# lives in `.e2e/`, which is git-ignored — so its public JWK cannot be
+# committed to `config/application.yml`, and the base file's
+# `merchant_clients` entry is a placeholder modulus that could never verify an
+# assertion. `VPAY_PROFILE: demo` makes vpay-config look for
+# `application-demo.yml` beside the base file (its
+# `profile_overlay_path`: `<dir>/<stem>-<profile>.<ext>`), which is what the
+# bind mount below puts there. The image bakes the base file at
+# `/config/application.yml` (backends/Dockerfile), so `/config/` is the
+# directory that has to receive it.
+#
+# **A missing overlay is not an error.** `Config::load_with_env` merges the
+# overlay only `if overlay_path.is_file()`, so a stack brought up with
+# `VPAY_PROFILE: demo` and no `application-demo.yml` boots happily on the base
+# file alone — with `acme-cameroon`'s placeholder modulus as the entire
+# merchant registry, and therefore an `invalid_client` at the first token
+# request and no hint as to why. That is what makes the bind mount below
+# load-bearing rather than convenient, and why `just demo` runs
+# `gen-demo-keys` before it runs `docker compose up`.
+#
+# # What the overlay replaces, and what it keeps
+#
+# figment deep-merges maps but a *list* in an overlay replaces the base list
+# wholesale (docs/flows/configuration.md). `merchant_clients` is a list, so
+# the demo profile's single `demo-merchant` entry is the entire registry while
+# this stack is up — `acme-cameroon` from the base file is gone, which is
+# correct: nobody holds its private key. Everything the overlay does not
+# mention (`providers`, `currencies`, `deployment.public_base_url`,
+# `dashboard_client`) still comes from the base file.
+#
+# Note this stack loads `application-demo.yml` *instead of*
+# `application-sandbox.yml`, not in addition to it — vpay-config loads one
+# overlay, the one named by the profile. The only thing sandbox changed that
+# this does not is the dashboard's redirect URI, which nothing in the demo
+# exercises.
+
+name: vpay
+
+services:
+  postgres:
+    # `!reset`, i.e. publish nothing on the host — NOT a remap.
+    #
+    # This is the one thing compose.demo.yml changes that is not about the
+    # demo merchant, and it is deliberate. Nothing in the demo talks to
+    # Postgres from the host: `vpay-server` reaches it over the compose
+    # network, and `examples/merchant-demo` only ever speaks HTTP to :8080.
+    # What the `5432:5432` publication in compose.yml *does* buy is a hard
+    # prerequisite that the single most commonly occupied port on a
+    # developer's machine be free — a local Postgres, or any other project's
+    # compose stack, and `just demo` dies on "port is already allocated"
+    # before a single line of the demo runs. That happened on the machine
+    # this was written on. :3000 and :8080 stay published because the README
+    # promises those URLs; :5432 buys the demo nothing.
+    #
+    # `docker compose exec postgres psql -U vpay vpay` still gets you a shell
+    # on it. Use `just up` (compose.yml alone) if you want the port published.
+    ports: !reset []
+
+  vpay-server:
+    environment:
+      VPAY_PROFILE: demo
+    volumes:
+      # `docker compose` merges `volumes:` across files by target path, so the
+      # `/secrets/oauth-signing-key.pem` mount from compose.e2e.yml survives —
+      # verify with `docker compose -f compose.yml -f compose.e2e.yml -f
+      # compose.demo.yml config` before trusting that sentence again after a
+      # Compose upgrade.
+      #
+      # Read-only, and world-readable on the host (`just gen-demo-keys` chmods
+      # it 0644) because the scratch image runs as UID 65532. That is safe
+      # here in a way the *signing* key's 0644 is not quite: this file holds
+      # only the merchant's PUBLIC JWK. The merchant's private key stays on
+      # the host in `.e2e/demo-merchant/`, mode 0600, and is never mounted
+      # into any container — the demo binary runs outside the stack, exactly
+      # as a merchant's own process would.
+      - ./.e2e/application-demo.yml:/config/application-demo.yml:ro
+
+  vpay-worker:
+    environment:
+      VPAY_PROFILE: demo
+    volumes:
+      # The worker has no use for a merchant registry. It gets the same mount
+      # so that both processes in the stack resolve `demo` to the *same*
+      # document: a profile that exists for one process and silently does not
+      # for the other is a divergence nothing would report, because a missing
+      # overlay is not an error (see the note above).
+      - ./.e2e/application-demo.yml:/config/application-demo.yml:ro

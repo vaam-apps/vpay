@@ -1,0 +1,28 @@
+# Fixture for `a_merchant_client_that_cannot_target_the_v1_audience_is_rejected`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# `allowed_audiences` here holds a plausible-looking but wrong value —
+# `vpay`, which is what this repo's own example config said until the
+# audience rule landed. Everything else about this client is valid, which is
+# the point: nothing downstream of boot can tell an operator what went
+# wrong. The client either gets `invalid_target` from the token endpoint (if
+# it requests `audience=vpay:v1`) or a token with `aud = acme-cameroon` that
+# every `/v1` route answers 401 to (if it requests no audience at all).
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    jwks:
+      keys:
+        - kty: RSA
+          use: sig
+          kid: acme-cameroon-2026-08
+          alg: RS256
+          n: placeholder-rsa-modulus-not-a-real-key
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: [vpay]

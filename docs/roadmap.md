@@ -17,7 +17,8 @@ that no longer being true.
 | # | Phase | Status |
 |---|---|---|
 | 1 | Foundations | ✅ Complete |
-| 2 | Authentication | 🟡 In progress — **the repo is here now** |
+| 2 | Authentication — merchant (`/v1`) | 🟡 In progress — **the repo is here now**; the merchant OP is built, the evidence is one manual run (see the 2026-09-02 addendum) |
+| 2b | Authentication — dashboard login (`/dash/v1`) | ⛔ Not started — split out of Phase 2 on 2026-09-02 |
 | 3 | Payment API (`/v1`) | ⛔ Not started |
 | 4 | The rails | ⛔ Not started |
 | 5 | The worker | ⛔ Not started |
@@ -106,11 +107,70 @@ validation") landed every prerequisite below in isolation, each with its own
 tests, but wired nothing together. The router still serves only `/healthz`
 plus the Stripe-shaped 404.
 
+> **Addendum, 2026-09-02 (Step 1) — the merchant half is built; the
+> dashboard half is split out.** The paragraph above and the scope list
+> below describe this phase as it was *planned*, and are left standing
+> rather than rewritten. What actually happened is that this phase turned
+> out to contain two deliverables with almost no shared remaining work
+> beyond the signing key, and only one of them was built.
+>
+> **Built (merchant, `/v1`):** steps 1, 2, 4, 5 and 6 below are done, and
+> step 3 is done except for runtime rotation. `vpay_api::op` now serves
+> `POST /v1/oauth/token`, discovery and `/v1/oauth/jwks.json`; every other
+> `/v1` path sits behind `AuthenticatedMerchant`; a merchant exchanges a
+> `private_key_jwt` assertion for a `vpay:v1`-audienced access token and
+> reaches the honest 404 behind the boundary. Signing keys are generated
+> (`cargo xtask gen-signing-key`), loaded from a file at boot, announced in
+> `oauth_signing_keys` under an advisory lock so replicas rotate once
+> between them, and published across a 24 h overlap window.
+>
+> **Not built (dashboard, `/dash/v1`):** no `/login`, no `/authorize`, no
+> session store — `authkestra-engine` is pinned without its `sql-postgres`
+> feature — and no dashboard route of any kind. This is now its own later
+> phase; see "Phase 2b" immediately after this one. It was always a
+> parallel deliverable rather than a prerequisite for Phases 3–6 (see
+> **Unblocks** below), so splitting it changes sequencing on paper, not in
+> fact.
+>
+> **Step 5's scope shrank on purpose.** The plan said "mounting discovery,
+> `/jwks.json`, `/authorize`, `/token`, `/userinfo`". What is mounted is
+> discovery, `/jwks.json` and `/token`. `/authorize` and `/userinfo` belong
+> to the authorization-code grant, which no merchant client can use;
+> `authkestra-axum` is deliberately **not** a dependency for exactly that
+> reason — its bundled router would mount them, and its JWKS handler
+> publishes one key rather than a rotation window.
+>
+> **Of this phase's Definition of done, two of the four bullets are met and
+> two are not.** Met: the `private_key_jwt` → `client_credentials` →
+> authenticated `/v1` call round trip, and the disabled-client refusal
+> (`an_sdk_client_authenticates_and_reaches_the_honest_404`,
+> `a_disabled_client_is_refused_with_invalid_client_and_401`). Half-met: a
+> dashboard-audience token is rejected on `/v1` over a real router
+> (`a_dashboard_audience_token_is_refused_on_v1`), but the other direction
+> — a merchant token rejected on `/dash/v1` — cannot be tested, because
+> `/dash/v1` does not exist. Unmet: the authorization-code + PKCE round
+> trip. **And the evidence for the met ones is thinner than "done" usually
+> implies:** those integration tests have run once, manually, against a
+> scratch database, and never under Docker or in CI. `docs/status.md`'s
+> header paragraph states it exactly; read that before treating this
+> addendum as a completion notice.
+>
+> Two of this phase's open questions below were given **defaults, not
+> answers**, by the code: the access-token TTL is 900 s and the
+> rotation-overlap window is 24 h. Both are constants a maintainer should
+> still decide; neither is recorded in an ADR or configurable.
+
 **Scope, in dependency order.**
-1. `YamlClientStore`: convert configured `vpay_config::oauth::MerchantClient`
+1. ~~`YamlClientStore`: convert configured `vpay_config::oauth::MerchantClient`
    / `DashboardClient` into `authkestra_op::client::ClientRegistration` so
-   the OP can look a configured client up at all. Nothing does this yet.
-2. `CompositeOpStore<C, A, R, D, J, P>` filling all **six** type slots
+   the OP can look a configured client up at all.~~ **Done 2026-09-02 for
+   `MerchantClient`** (`vpay_api::op::clients`); `DashboardClient` has no
+   conversion, and will not need one until Phase 2b.
+2. ~~`CompositeOpStore<C, A, R, D, J, P>` filling all six type slots.~~
+   **Done 2026-09-02** — `MerchantOp::new` builds exactly this, with the
+   three `SqlxOpStore` slots serving no `/v1` grant (they exist because
+   `OpStore` is a supertrait) and `SqlClientAssertionStore` wired in for
+   replay. Original text, for the record: `CompositeOpStore<C, A, R, D, J, P>` filling all **six** type slots
    (*corrected 2026-09-02 against the pinned `=0.7.1` `store.rs`; the
    original text said five, from `0.3.4`* — `P` is the DPoP replay store,
    `NoDpopReplayStore` for vpay, which then fails closed): the new
@@ -119,16 +179,33 @@ plus the Stripe-shaped 404.
    `with_client_assertion_store` for `J`.
 3. Signing-key loading from a Kubernetes Secret / env at boot, with
    `/jwks.json` reading `oauth_signing_keys` so every replica publishes an
-   identical set. **No key-generation code exists anywhere yet** —
-   `vpay_db::signing_keys::rotate_signing_key` rotates the database's record
-   to a `kid`/`public_jwk` its caller already computed; nothing derives one
-   from a keypair.
+   identical set. **Partially done 2026-09-02.** Generation exists
+   (`cargo xtask gen-signing-key --out <dir>`, 3072-bit PKCS#8, mode 0600),
+   loading exists (`vpay_api::op::keys::LoadedSigningKey::from_file`, RFC
+   7638 thumbprint `kid`, public JWK cross-checked against
+   `TokenManager::public_jwk`), boot-time activation exists
+   (`vpay_db::ensure_active_signing_key`, one advisory-locked transaction so
+   N replicas rotate once between them), and `/v1/oauth/jwks.json` publishes
+   `publishable_signing_keys` across the overlap window. **Runtime rotation
+   does not exist:** `TokenManager` holds one key for the life of the
+   process, so rotating means restarting with a new Secret, nothing re-reads
+   the file, a rollback to a retired `kid` is refused, and no runbook
+   describes the sequence.
 4. ~~`rustls::crypto::CryptoProvider::install_default()` in both binaries'
    `main()`, before the first JWKS fetch~~ — **done 2026-09-02**, see
    `docs/status.md`'s "rustls `CryptoProvider` process default" row.
 5. Mounting discovery, `/jwks.json`, `/authorize`, `/token`, `/userinfo` —
-   explicitly **not** device or refresh handlers (see Decisions).
-6. The `disabled_clients` kill-switch check on the token-issuance path.
+   explicitly **not** device or refresh handlers (see Decisions). **Done
+   2026-09-02 for the merchant subset only**: discovery, `/jwks.json` and
+   `/token` are mounted under `/v1/oauth`. `/authorize` and `/userinfo`
+   serve the authorization-code grant, which no merchant client can use;
+   they move to Phase 2b.
+6. ~~The `disabled_clients` kill-switch check on the token-issuance path.~~
+   **Done 2026-09-02**, inside `YamlClientStore::find_client` — the single
+   point every token request passes through for every grant, and therefore
+   the only place a kill switch on `client_credentials` can be enforced at
+   all. A failed lookup fails closed (`OpError::Storage` → `server_error`),
+   never open.
 
 **Definition of done.**
 - An integration test drives a real authorization-code + PKCE round trip
@@ -206,11 +283,12 @@ imply dashboard login blocks the payment path, which it does not.
   Secret at boot and never be persisted.
 
 **Risks and open questions carried by this phase.**
-- **`CryptoProvider::install_default()` missing is a live landmine once this
-  phase mounts anything.** `authkestra_resource::jwt::Jwks::fetch` **will
-  panic** on the first JWKS fetch without a process-wide default installed.
-  Today it is installed only in `vpay-api`'s own test module. Step 4 above
-  exists specifically to close this before it becomes a first-request outage.
+- ~~**`CryptoProvider::install_default()` missing is a live landmine once
+  this phase mounts anything.**~~ **Closed** — both binaries install it at
+  the top of `run()` (step 4). And it stopped being hypothetical on
+  2026-09-02: `vpay-server` now builds a `JwtValidator` at boot and the
+  first authenticated `/v1` request makes a real `Jwks::fetch`, over
+  loopback to this same process's own `/v1/oauth/jwks.json`.
 - **RUSTSEC-2023-0071** (Marvin Attack timing side-channel in `rsa`) is
   accepted deliberately in `deny.toml`, and became a **non-dev** dependency
   of every shipping binary the moment commit `#7` made `authkestra-op` a
@@ -220,9 +298,14 @@ imply dashboard login blocks the payment path, which it does not.
   path (confirmed by running the command against this tree). `cargo deny
   check` still exits 0; nothing here is a CI regression, but "no shipping
   binary pulls it in" is no longer accurate.
-- `oauth_client_assertion_jtis` has no cleanup job once this phase starts
-  writing to it — the worker's job loop (Phase 5) doesn't exist yet, so the
-  table grows unbounded until that phase lands.
+- `oauth_client_assertion_jtis` **is now being written to** (every `/v1`
+  token request records a `jti`), and still has no cleanup *job*. The
+  stopgap that landed instead is `vpay_db::delete_expired_client_assertion_jtis`,
+  called **once at `vpay-server` boot**, non-fatally: it bounds the table at
+  "assertions since the last restart" rather than "assertions forever". A
+  long-lived process still grows it monotonically. The worker's job loop
+  (Phase 5) should call this on a timer — schedule this function, do not
+  replace it.
 - No config hot-reload ([ADR-0003](adr/0003-yaml-configuration.md)): merchant
   onboarding stays a PR-then-deploy, and a rolling deploy has a real window
   where old and new pods disagree about the client list.
@@ -232,10 +315,20 @@ imply dashboard login blocks the payment path, which it does not.
 - **Open — access-token TTL and the revocation mitigation.** ADR-0009: "the
   mitigation this decision implies is short access-token TTLs... and/or a
   server-side deny-list. Which of these vpay will actually build is not
-  decided." No TTL constant is defined in the codebase today.
-- **Open — signing-key rotation overlap window.** No document states how
-  long a retired key stays publishable after rotation, and no
-  key-generation code exists yet to make the question concrete.
+  decided." **Still open.** A constant now exists —
+  `vpay_api::op::ACCESS_TOKEN_TTL_SECS = 900` — but it is a default this
+  code picked, not an answer: no ADR states it, it is not configurable, and
+  no deny-list exists. The disabled-clients kill switch acts on *issuance*
+  only, so a stolen token stays valid for its remaining 900 s.
+- **Open — signing-key rotation overlap window.** **Still open, and now
+  concrete.** Key generation and rotation-on-boot exist, and
+  `vpay_api::op::keys::ROTATION_OVERLAP` is 24 h — again a default this code
+  picked, recorded in no ADR and not configurable. The only property under
+  test is that it comfortably exceeds the access-token TTL
+  (`the_rotation_overlap_dwarfs_the_access_token_ttl_it_has_to_cover`,
+  `the_access_token_ttl_fits_inside_the_key_rotation_overlap`), not that 24 h
+  is the right length. A maintainer should settle it together with the TTL
+  above, since the two are related by that constraint.
 - **Open — the `disabled_clients` + YAML dual-authority runbook.** ADR-0010
   says a future revocation runbook must check both explicitly. None exists
   in `docs/runbooks/` yet.
@@ -246,7 +339,104 @@ imply dashboard login blocks the payment path, which it does not.
 - `authkestra-op` has no `/token` rate limiting, deliberately left to
   Kubernetes ingress (ADR-0009 Consequences) — not this phase's problem to
   solve, but worth confirming ingress config actually does it before relying
-  on the assumption.
+  on the assumption. **`/v1/oauth/token` is now publicly reachable and
+  unauthenticated by necessity (the credential is the request body), so this
+  moved from theoretical to live on 2026-09-02.** Nothing in this repository
+  rate-limits it or verifies that anything else does.
+- **New, 2026-09-02 — the resource validator fetches its JWKS over loopback
+  HTTP from its own process.** `vpay-server` binds first, then builds the
+  validator against `http://127.0.0.1:{bound_port}/v1/oauth/jwks.json`. It is
+  always loopback, never the public URL (unit-tested:
+  `the_validators_jwks_url_is_always_loopback_on_the_bound_port`), so no
+  external dependency is added — but a process validating its own tokens by
+  asking itself over TCP exists because `authkestra_resource` offers no
+  in-process key source, not because anyone wanted it. Worth revisiting if
+  upstream grows one.
+- **New, 2026-09-02 — the signing-key PEM is not zeroized.** It is read into
+  a `String` and dropped normally, so key bytes may linger in freed heap.
+  `vpay_api::op::keys`'s module docs state this deliberately rather than
+  implying the handling is airtight; closing it means a `zeroize`-backed
+  secret-string type, which is its own change.
+
+---
+
+## Phase 2b — Dashboard login (`/dash/v1`)
+
+**Open — build the dashboard on CrateStack's refine integration?** (noted
+2026-09-02.) `@cratestack/refine` ships a tested refine.dev `DataProvider`
+over a CrateStack-generated REST/RPC client, and `cratestack
+generate-typescript --refine` emits the resource manifest from a `.cstack`
+schema — so most of an operator admin panel would be generated rather than
+hand-written in the Next.js scaffold. The price is that `schemas/vpay.cstack`
+would have to become an authoritative *service* model for the staff surface
+(it is a design sketch today, excluded from the build graph and already
+diverged from the migrations on two `CHECK` constraints), served by a
+CrateStack service beside the hand-written Stripe-shaped `/v1`, which stays
+as it is. That is an ADR-level decision (it touches ADR-0008 and the
+migrations' status as the schema of record) and is not made here.
+
+**Split out of Phase 2 on 2026-09-02**, when the merchant half of that phase
+landed and the dashboard half did not. This is a bookkeeping change, not a
+re-plan: Phase 2's own **Unblocks** paragraph already said `/dash/v1` login
+is a parallel deliverable and not a prerequisite for Phases 3–6. Giving it
+its own heading stops "Phase 2 is done" from ever being read as "login
+works". Nothing below is new scope; it is Phase 2's dashboard scope, moved.
+
+**Goal.** A staff member completes an authorization-code + PKCE login
+against `/dash/v1` and a subsequent authenticated call accepts the token; a
+merchant-audience token is rejected on `/dash/v1`.
+
+**Status.** Not started. **No login has ever been performed and no
+`/dash/v1` route exists.** What Phase 2 left behind for it: the schema
+(migrations `0006`/`0013`, proven compatible with the real
+`SqlxOpStore<Postgres>`), the dashboard client modelled and validated in
+config (`vpay_config::oauth::DashboardClient`), signing keys and a JWKS
+endpoint, and `JwtValidator`/`AuthenticatedDashboard` pinned to
+`Surface::Dashboard` and unit-proven to reject a merchant-audience token.
+None of that is login.
+
+**Scope.**
+1. A `SessionStore`. `authkestra-engine` is pinned
+   `features = ["rustls-no-provider", "token", "session"]` — **without
+   `sql-postgres`** — so no SQL-backed session store is compiled into the
+   workspace today. Enabling that feature is a supply-chain change
+   (`sqlx/chrono`, `sqlx/json`) and needs `cargo deny` re-run.
+2. `/login`, `/authorize` and `/userinfo`, plus the callback the dashboard
+   needs. Phase 2 mounted none of them, deliberately: no merchant client can
+   use the authorization-code grant, and `authkestra-axum` is not a
+   dependency (its bundled router would mount them and would publish a
+   one-key JWKS instead of the rotation window vpay serves).
+3. **Resolve the audience problem first.** `authkestra-op`'s
+   `default_handle_authorization_code` mints the access token with
+   `Some(client_id)` as the audience and has **no requested-audience path at
+   all** (`authkestra-op-0.7.1/src/handlers/token.rs`, step 7). A token from
+   that grant would carry `aud = <client_id>`, and
+   `Surface::Dashboard.audience()` (`vpay:dash/v1`) rejects every one of
+   them. `handle_client_credentials` *does* honour a requested audience,
+   which is why `/v1` does not hit this. Options — a custom grant handler, a
+   different `Surface::Dashboard` audience rule, or an upstream change —
+   are a maintainer's call, not a default to pick in passing.
+4. The dashboard's own server-side session handling ([ADR-0008](adr/0008-dashboard-scope.md):
+   the dashboard never holds a merchant API key and calls `/dash/v1`
+   server-side under an OIDC session).
+
+**Definition of done.**
+- An integration test drives a real authorization-code + PKCE round trip
+  against `/dash/v1` and receives a token a subsequent authenticated call
+  accepts.
+- A merchant-audience token is rejected on `/dash/v1`, over a real mounted
+  router — the missing half of the pair Phase 2 could only prove in one
+  direction.
+- A signing key is rotated at least once and a token minted under the old
+  key still verifies for the whole of its lifetime. **Runtime rotation does
+  not exist** (Phase 2, scope item 3): rotation is restart-based today, so
+  this bullet needs either a rotation mechanism or an explicit decision that
+  restart-based rotation is the answer, written down.
+
+**Decisions and open questions.** Every one Phase 2 lists still applies here
+— the dashboard scope ([ADR-0008](adr/0008-dashboard-scope.md)), no refresh
+tokens, the Keycloak/ZITADEL comparison ADR-0009 asked for and nobody has
+done, and the revocation-endpoint gap.
 
 ---
 
@@ -264,7 +454,11 @@ request through them.
   `vpay-core` types. **Has no rail dependency**; it can be built and tested
   before Phase 4 lands.
 - Idempotency-key handling on create.
-- Request-auth middleware consuming Phase 2's merchant token validation.
+- ~~Request-auth middleware consuming Phase 2's merchant token validation.~~
+  **Done ahead of this phase, 2026-09-02**: `AuthenticatedMerchant` is
+  mounted in front of the whole `/v1` nest, so a route added here is
+  authenticated by construction rather than by remembering to add a layer.
+  What that nest currently holds is one honest 404.
 - `POST /v1/payment_intents/{id}/confirm` — submits to the adapter. **This
   one genuinely depends on Phase 4**: [`docs/flows/payment-lifecycle.md`](flows/payment-lifecycle.md)
   and [`docs/flows/crash-safety.md`](flows/crash-safety.md) both describe
@@ -383,6 +577,13 @@ green suite with weak assertions.
 
 ## Phase 6 — Webhooks
 
+**Candidate, not decided (2026-09-02):** `cratestack-outbox` implements
+exactly this shape — `OutboxClient::persist_in_tx` inside the caller's
+transaction, `drain` in insertion order, an axum drain/gc handler pair — and
+carries no schema macro. Whether to take the dependency or write the
+~200-line outbox by hand is for whoever builds this phase; ADR-0006's
+"no in-process fake receiver" rule applies either way.
+
 **Goal.** Merchants receive signed webhook notifications for intent/charge
 state changes, delivered at-least-once via a durable outbox.
 
@@ -477,5 +678,14 @@ place in a phase: the merchant SDKs (`sdks/rust`, `sdks/nodejs`) implement the
 [`docs/flows/merchant-auth.md`](flows/merchant-auth.md) — ahead of any server
 route existing, so Phase 3 now has a consumer to build against; and the
 dependency floor moved (`authkestra-*` 0.5.4 → 0.7.1 with migration `0013`,
-CrateStack re-verified at 0.10.1). Phase 2's "assembled but not mounted"
-status is unchanged. See `docs/status.md` for the row-by-row account.
+CrateStack re-verified at 0.10.1). See `docs/status.md` for the row-by-row
+account.
+
+**Second addendum, 2026-09-02 (Step 1).** Phase 2's "assembled but not
+mounted" status is no longer accurate for the merchant half: the OP is
+mounted at `/v1/oauth` and `/v1` has an authentication boundary in front of
+it. The dashboard half is unbuilt and is now Phase 2b. The phase's own
+Status block carries the detail, including the one thing that matters most
+about the evidence — the six integration tests that cover the flow have run
+once, manually, against a scratch database, and never under Docker or in
+CI. Phases 3–7 are untouched.

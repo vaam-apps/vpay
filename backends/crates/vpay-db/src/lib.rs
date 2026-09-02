@@ -40,7 +40,7 @@
 //!
 //! # Pool sizing
 //!
-//! See the constants and their doc comments in [`pool`] for the numbers and
+//! See the constants and their doc comments in `pool` for the numbers and
 //! the reasoning behind each one.
 
 mod client_assertion;
@@ -51,14 +51,15 @@ mod migrations;
 mod pool;
 mod signing_keys;
 
-pub use client_assertion::SqlClientAssertionStore;
+pub use client_assertion::{SqlClientAssertionStore, delete_expired_client_assertion_jtis};
 pub use disabled_clients::{disable_client, enable_client, is_client_disabled};
 pub use error::DbError;
 pub use health::check_connection;
 pub use migrations::run_migrations;
 pub use pool::connect;
 pub use signing_keys::{
-    SigningKey, active_signing_key_kid, publishable_signing_keys, rotate_signing_key,
+    ActivationOutcome, SigningKey, active_signing_key_kid, ensure_active_signing_key,
+    publishable_signing_keys, rotate_signing_key,
 };
 
 // Re-exported so callers (both binaries' `main.rs`, `vpay-api`'s router

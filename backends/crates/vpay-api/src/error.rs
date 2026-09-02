@@ -798,6 +798,17 @@ mod tests {
                 "authentication_error",
                 "invalid_token",
             ),
+            // The one auth rejection that is *not* about the credential: a
+            // JWKS this process could not fetch is our outage, and it has to
+            // answer 503/`api_error` so an SDK backs off instead of
+            // re-authenticating. A 401 here would send every client back to
+            // the (database-backed) token endpoint during an outage.
+            (
+                || ApiError::Auth(AuthRejection::KeysUnavailable),
+                503,
+                "api_error",
+                "service_unavailable",
+            ),
             // This layer's own variants.
             (
                 || ApiError::UnknownRoute {
@@ -1018,15 +1029,21 @@ mod tests {
 
     const PINNED_INVALID_TOKEN: &str = r#"{"error":{"code":"invalid_token","message":"The bearer token is invalid, expired, or was not issued for this endpoint.","type":"authentication_error"}}"#;
 
+    /// The 404 path, driven through the real router.
+    ///
+    /// The URI is deliberately outside `/v1`: since the merchant
+    /// authentication layer went in front of that nest, a `/v1/...` request
+    /// with no bearer token is a 401 and never reaches the fallback. The
+    /// *bytes* asserted below are unchanged — the envelope never echoed the
+    /// path back (see `ApiError::public_message`) — so this still pins
+    /// exactly what it pinned before.
     #[tokio::test]
     async fn the_404_fallback_is_byte_for_byte_what_it_was_before_api_error() {
-        let pool = vpay_db::PgPool::connect_lazy("postgres://vpay:vpay@localhost:5432/vpay")
-            .expect("connect_lazy performs no I/O and only fails on a malformed URL");
-        let response = crate::router(pool)
+        let response = crate::router(crate::test_fixtures::deps())
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/v1/payment_intents")
+                    .uri("/not_a_vpay_route")
                     .body(Body::empty())
                     .expect("valid request"),
             )
@@ -1066,6 +1083,27 @@ mod tests {
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{label}");
             assert_eq!(body_string(response).await, pinned, "{label}");
         }
+    }
+
+    /// `KeysUnavailable` is deliberately **not** in the list above: it is the
+    /// one [`AuthRejection`] that does not answer 401, so pinning it there
+    /// would have meant weakening that test's status assertion for every
+    /// variant. It gets the same both-paths treatment separately.
+    ///
+    /// The bytes are the `Category::Storage` policy row verbatim — 503,
+    /// `api_error`, `service_unavailable`, and the sentence that tells a
+    /// caller to retry rather than to re-authenticate.
+    #[tokio::test]
+    async fn a_jwks_outage_renders_as_503_through_both_paths() {
+        const PINNED_KEYS_UNAVAILABLE: &str = r#"{"error":{"code":"service_unavailable","message":"vpay is temporarily unavailable. Retry after a short delay.","type":"api_error"}}"#;
+
+        let response = AuthRejection::KeysUnavailable.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body_string(response).await, PINNED_KEYS_UNAVAILABLE);
+
+        let response = ApiError::from(AuthRejection::KeysUnavailable).into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body_string(response).await, PINNED_KEYS_UNAVAILABLE);
     }
 
     /// Wrapping must not change the answer — ADR-0011's "composites do not
@@ -1132,6 +1170,15 @@ mod tests {
         assert_delegates!(
             ApiError::Auth(AuthRejection::InvalidToken),
             AuthRejection::InvalidToken
+        );
+        // The leaf that overrides its *sibling variants'* category rather
+        // than its own category's defaults: a composite that mapped
+        // `Self::Auth(_)` to `Category::Authentication` wholesale — the
+        // obvious shortcut, and what this arm looked like before
+        // `KeysUnavailable` existed — would answer 401 here and fail.
+        assert_delegates!(
+            ApiError::Auth(AuthRejection::KeysUnavailable),
+            AuthRejection::KeysUnavailable
         );
 
         // The assertions above are only worth anything if at least one leaf

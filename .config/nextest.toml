@@ -51,5 +51,17 @@ nextest-version = { required = "0.9.59" }
 postgres-containers = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'package(vpay-tests-integration)'
+# Every package whose tests start a container, not only the integration
+# crate: `vpay-db`'s repository tests and both binaries' `tests/cli.rs`
+# spawn their own `postgres:16-alpine` too. Widened on 2026-09-02 after a
+# full-workspace run on rootless Docker (`DOCKER_HOST=unix:///run/user/1000/
+# docker.sock`, ~24 unrelated containers on the same host) failed one
+# integration test in 0.4 s — a container-start failure, the shape of
+# `RootlessKit PortManager.AddPort(): bind: address already in use`, which
+# is testcontainers' random host-port mapping racing another container start
+# under rootlesskit's port manager. Serialising all container starts costs
+# wall-clock (each test's own container still starts and stops) and removes
+# the race entirely; the test passed alone on the next run, which is the
+# signature of exactly that flake.
+filter = 'package(vpay-tests-integration) | package(vpay-db) | package(vpay-server) | package(vpay-worker-bin)'
 test-group = 'postgres-containers'

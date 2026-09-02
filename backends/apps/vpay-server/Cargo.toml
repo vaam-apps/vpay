@@ -24,6 +24,13 @@ axum.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+# `StartupError` (src/main.rs): the one typed leaf this binary defines, so a
+# required flag that was not supplied exits 78 rather than falling through
+# `exit_code_for`'s unclassified-is-a-bug fallback to 1. ADR-0011 puts
+# `anyhow` at the boundary and `thiserror` at the leaves; this binary now has
+# one leaf of its own, for a requirement that belongs to this process and not
+# to `vpay-config` (see the type's doc comment).
+thiserror.workspace = true
 mimalloc.workspace = true
 clap.workspace = true
 # Installs the process-wide rustls `CryptoProvider` in `main` (see
@@ -43,3 +50,22 @@ vpay-testkit.workspace = true
 # container is shared per test function rather than per SIGTERM-race attempt.
 testcontainers.workspace = true
 testcontainers-modules.workspace = true
+# Test-only: `tests/cli.rs` generates a real RSA private key per run and
+# writes it to `CARGO_TARGET_TMPDIR`, because `vpay-server` now requires
+# `--oauth-signing-key-file` at boot and a PEM committed to the repository
+# would be a private key in version control. Already in the resolved graph
+# via `authkestra-engine`; pinned directly at the same "0.9" `vpay-api` uses
+# for the same purpose (neither is a workspace dependency).
+rsa = "0.9"
+# Test-only: `rsa`'s key generation takes an `OsRng` from `rand` 0.8, which
+# is the workspace pin and is what `vpay-api`'s own key fixtures use.
+rand.workspace = true
+# Test-only, both of them: `exit_code_for`'s unit test constructs the two
+# `vpay_db::DbError` leaves whose exit codes must differ (a rollback to a
+# retired signing key -> 78, an unreachable database -> 69), and those
+# variants carry a `time::OffsetDateTime` and a `sqlx::Error` respectively.
+# Neither adds a package to any graph — `vpay-db`, which this binary already
+# links, depends on both at these same workspace pins; they are named here
+# only so the test can spell the types.
+time.workspace = true
+sqlx.workspace = true

@@ -26,11 +26,15 @@ use crate::resources::{
     BalanceResource, EventsResource, PaymentIntentsResource, RefundsResource, RequestOptions,
 };
 
-/// The `aud` value `/v1` access tokens must carry
-/// (`vpay_api::resource_auth::Surface::Merchant::audience()`, currently
-/// `"vpay:v1"`). Requested by default on every token exchange — see
-/// `docs/flows/merchant-auth.md`: "`audience=vpay:v1` is provisional and
-/// load-bearing".
+/// The `aud` value `/v1` access tokens must carry. Requested by default on
+/// every token exchange — `docs/flows/merchant-auth.md`:
+/// "`audience=vpay:v1` is load-bearing, and no longer provisional".
+///
+/// Server-side the same string is `vpay_config::MERCHANT_AUDIENCE`, which
+/// `vpay_api::resource_auth::Surface::Merchant::audience()` returns. This is
+/// a deliberate second copy, not an oversight: this crate is what a merchant
+/// depends on, and it must not drag vpay's server crates in to learn one
+/// string. Changing the audience therefore means changing it in both places.
 pub const DEFAULT_AUDIENCE: &str = "vpay:v1";
 
 /// How much a cached token's usable lifetime is shortened by, so a request

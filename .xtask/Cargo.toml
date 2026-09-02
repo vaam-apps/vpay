@@ -12,3 +12,25 @@ workspace = true
 [[bin]]
 name = "xtask"
 path = "src/main.rs"
+
+[dependencies]
+# `gen-signing-key` only — see the module docs in src/main.rs for why xtask,
+# which had no dependencies at all, has four now, and why none of them is a
+# workspace crate. All four are already in the lockfile via vpay-api and the
+# authkestra stack, so this adds no new package to the workspace.
+#
+# `rsa` is not in [workspace.dependencies] (vpay-api pins it the same way, as
+# a dev-dependency); pinned here to the same 0.9 that authkestra-engine
+# resolves, so there is one `rsa` in the graph. deny.toml's RUSTSEC-2023-0071
+# entry already covers it, and this use — offline key *generation*, never
+# PKCS#1 v1.5 decryption — is outside that advisory's attack entirely.
+rsa = "0.9"
+# The RNG `rsa::RsaPrivateKey::new` takes: `rsa` 0.9 speaks `rand_core` 0.6,
+# which is what the workspace's `rand` 0.8 pin implements. A newer `rand`
+# would not compile against it.
+rand.workspace = true
+# SHA-256 for the RFC 7638 thumbprint, and base64url to encode it. Same
+# encoding, same digest, same result as vpay-api's — pinned to the RFC's own
+# test vector in both crates rather than to each other.
+sha2.workspace = true
+base64 = "0.22"

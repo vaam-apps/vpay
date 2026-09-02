@@ -77,7 +77,15 @@ merchant_clients:
           e: AQAB
     grant_types: [client_credentials]
     scopes: [payments:write]
-    allowed_audiences: [vpay]
+    # Must contain "vpay:v1" — `vpay_config::MERCHANT_AUDIENCE`, the `aud`
+    # `vpay_api::resource_auth::Surface::Merchant` requires on every `/v1`
+    # token. This said `vpay` until 2026-09-02, which would have booted fine
+    # and then failed at runtime with no diagnostic: the OP answers
+    # `invalid_target` to a client that asks for `vpay:v1`, and mints
+    # `aud = <client_id>` for one that asks for nothing, which every `/v1`
+    # route then rejects as a bare 401. `Config::validate_all` now refuses to
+    # boot without it (ConfigError::MerchantMissingV1Audience).
+    allowed_audiences: ["vpay:v1"]
 
 # The dashboard's single OAuth2 client (docs/flows/dashboard-auth.md):
 # authorization-code + PKCE, a public client with no secret, requesting

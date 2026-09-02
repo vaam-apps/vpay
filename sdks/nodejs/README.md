@@ -108,9 +108,9 @@ await vpay.balance.retrieve();
 | `clientId`                 | —                     | Required. Your registered OAuth2 `client_id`.                                                                                                                                                                               |
 | `privateKey`               | —                     | Required. PEM text or a `crypto.KeyObject`. Never logged, never serialized.                                                                                                                                                 |
 | `kid`                      | —                     | Required only if you registered more than one JWK.                                                                                                                                                                          |
-| `issuer`                   | `${baseUrl}/v1/oauth` | **Endpoint paths are provisional** — the token endpoint's path has not been fixed by any ADR or by server code yet (see docs/flows/merchant-auth.md's "Endpoint locations" section). Override if vpay's deployment differs. |
-| `tokenEndpoint`            | `${issuer}/token`     | Also the assertion's `aud` claim.                                                                                                                                                                                           |
-| `audience`                 | `vpay:v1`             | The OAuth2 `audience` request parameter. Load-bearing: without it the OP mints a token whose `aud` the resource server will reject.                                                                                         |
+| `issuer`                   | `${baseUrl}/v1/oauth` | This default is what the server does: `vpay_api::op::issuer_for` builds the issuer as `{public_base_url}/v1/oauth` from the deployment YAML, and `vpay_api::router` mounts the OP there. Override only for a deployment behind a path prefix. |
+| `tokenEndpoint`            | `${issuer}/token`     | The server's token route, and also the assertion's `aud` claim.                                                                                                                                                             |
+| `audience`                 | `vpay:v1`             | The OAuth2 `audience` request parameter. Load-bearing: without it the OP mints a token whose `aud` is the `client_id`, which the resource server rejects. Server-side the same string is `vpay_config::MERCHANT_AUDIENCE`; this package keeps its own copy, so the two must change together. |
 | `scope`                    | —                     | Omitted from the token request unless set.                                                                                                                                                                                  |
 | `assertionLifetimeSeconds` | `60`                  | Must be an integer in `1..=300`; anything else throws `VpayConfigError` at construction, not at request time. Keep the default — see the note below the table.                                                              |
 | `timeoutMs`                | `30000`               | Applies to both the token exchange and every resource call.                                                                                                                                                                 |
@@ -230,12 +230,17 @@ VPAY_AUDIENCE=https://api.vpay.example/v1/oauth/token \
 
 ## Status
 
-**The server side of this contract does not exist.** No `/v1` route, no
-OAuth2 token endpoint, and no OP for merchants is mounted anywhere in this
-repository — `vpay-server` serves `/healthz` and a Stripe-shaped 404. This SDK
-has never completed a request against a real vpay, because there is no real
-vpay to complete one against. See
-[`docs/status.md`](../../docs/status.md) and
+**Half of the server side of this contract exists.** `vpay-server` mounts the
+merchant OP — `POST /v1/oauth/token`, `GET /v1/oauth/jwks.json`,
+`GET /v1/oauth/.well-known/openid-configuration` — and puts a bearer-token
+boundary in front of every other `/v1` path. What it does **not** have is a
+single `/v1` resource route: past the boundary, `payment_intents`, `refunds`,
+`events` and `balance` all answer a Stripe-shaped `404 unknown_route`. So the
+authentication half of this SDK has a real server to talk to and the resource
+half does not, and no test in this package has ever talked to either — the
+end-to-end proof that exists is the Rust SDK's
+(`backends/tests/integration/tests/merchant_token_flow.rs`), not this one's.
+See [`docs/status.md`](../../docs/status.md) and
 [`docs/flows/merchant-auth.md`](../../docs/flows/merchant-auth.md).
 
 What the tests in this package **do** prove. Everything that touches HTTP
@@ -282,8 +287,8 @@ manual check, run on demand — it needs a Rust toolchain, it is not part of
 it having been run.
 
 What this does **not** prove: that any of this works against a real vpay
-deployment, that the server's token endpoint or resource routes exist or
-behave as documented (they don't exist), or that the endpoint-path defaults
-(`issuer`/`tokenEndpoint`) match whatever a real deployment eventually
-chooses — see the "Endpoint locations" note in
-[`docs/flows/merchant-auth.md`](../../docs/flows/merchant-auth.md).
+deployment. Nothing in this package has been run against `vpay-server`; the
+`issuer`/`tokenEndpoint` defaults agree with `vpay_api::op::issuer_for` by
+inspection, not by a test in this repository that exercises them together,
+and the resource routes every method here calls do not exist server-side at
+all — see [`docs/status.md`](../../docs/status.md).

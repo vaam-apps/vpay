@@ -17,6 +17,7 @@ on a flag's name, env var, or default.
 | `--profile` | `VPAY_PROFILE` | `sandbox` |
 | `--config` | `VPAY_CONFIG` | none |
 | `--public-base-url` (`vpay-server` only) | `VPAY_PUBLIC_BASE_URL` | none |
+| `--oauth-signing-key-file` (`vpay-server` only) | `VPAY_OAUTH_SIGNING_KEY_FILE` | none |
 | `--log-filter` | `RUST_LOG` | `info` |
 | `--log-format` (`json`\|`text`) | `VPAY_LOG_FORMAT` | `json` |
 | `--shutdown-grace-seconds` | `VPAY_SHUTDOWN_GRACE_SECONDS` | `25` |
@@ -25,10 +26,25 @@ on a flag's name, env var, or default.
 `cargo run -p vpay-server -- --help` to see the live flag set — that is more
 trustworthy than this table if the two ever disagree.
 
-**This is CLI/env plumbing, not the boot sequence below.** `--database-url`,
-`--config` and `--public-base-url` are accepted and parsed, but nothing reads
-them yet: no database connection is opened, no YAML file is loaded, no
-redirect/webhook URL is constructed from the base URL. `--profile` only ever
+`--oauth-signing-key-file` names the RS256 private key (PKCS#8 PEM) the
+merchant OP signs `/v1` access tokens with. It is `vpay-server` only — the
+worker issues no tokens, so mounting the Secret into it would widen its
+blast radius for no capability, and `the_worker_is_not_handed_the_signing_key`
+pins that. It is a **file**, never an env value, because that is how a
+Kubernetes Secret reaches a pod; `cargo xtask gen-signing-key --out <dir>`
+generates one, and `just gen-e2e-signing-key` does the openssl equivalent
+for the compose stack. The *path* is deliberately visible in `Debug` output
+(`the_signing_key_path_stays_visible_in_debug_output`) — a path is not a
+secret, and "which file did it try" is the first thing an operator needs —
+while the file's contents never enter the CLI types at all.
+
+**This is CLI/env plumbing, not the boot sequence below**, and one flag is
+still pure plumbing: **`--public-base-url` is accepted and parsed and read
+by nothing.** This is easy to get wrong now that `/v1/oauth` publishes an
+issuer, so to be exact — the issuer is
+`vpay_api::op::issuer_for(&config)`, which reads
+**`deployment.public_base_url` from the YAML config file**, not this flag.
+Two spellings of the same idea, one of them inert. `--profile` only ever
 selects a config *file name*, per the "no environment branching" rule; it is
 never matched on to change behaviour.
 
@@ -75,10 +91,45 @@ and `compose.e2e.yml` supplies every `${VAR}` the file names, because a
 process without them does not start.
 Step 4 has no implementation at all: nothing reconciles configuration into
 the database or records a config hash, even though a database layer now
-exists (`vpay-db`). Today `vpay-server` parses its CLI, connects to Postgres,
-runs migrations, binds the port and serves `/healthz`. Two of the validation
-rules below are also unimplemented for a structural reason — see the table.
-See `docs/status.md` for the authoritative state.
+exists (`vpay-db`). Two of the validation rules below are also unimplemented
+for a structural reason — see the table. See `docs/status.md` for the
+authoritative state.
+
+**`vpay-server`'s actual startup order, as of 2026-09-02**, which is the
+"cheapest hard failure first" ordering this document's own steps imply:
+
+1. Install the SIGINT/SIGTERM handlers and the rustls crypto provider.
+2. Load and validate the YAML config (steps 1–3 above). Missing or invalid
+   → exit `78`, before any network round trip.
+3. **Load the RS256 signing key** from `--oauth-signing-key-file` /
+   `VPAY_OAUTH_SIGNING_KEY_FILE`, and derive the issuer from
+   `deployment.public_base_url` so the key stamps the same `iss` the OP
+   advertises. A missing flag, a missing file, a file that is not an RSA
+   private key, or a key under 2048 bits each exit `78` — **before the
+   database connection**, which is why all three cases are covered by
+   subprocess tests that need no Docker
+   (`a_missing_signing_key_flag_is_exit_78_naming_the_problem`,
+   `a_signing_key_file_that_does_not_exist_is_exit_78_naming_the_path`,
+   `a_signing_key_file_that_is_not_a_key_is_exit_78_without_echoing_its_contents`).
+   A server that cannot sign can mint no merchant token; it would bind a
+   port, answer `/healthz` with a cheerful 200, and refuse every real
+   request.
+4. Connect to Postgres and run migrations. Unreachable → exit `69`.
+5. Announce the key as active in `oauth_signing_keys`
+   (`ensure_active_signing_key`, advisory-locked). Fatal on failure: a
+   process whose key is not published mints tokens nothing can verify.
+6. Sweep expired client-assertion `jti`s once — a boot-time stopgap,
+   non-fatal, because there is no worker job loop to schedule it properly.
+7. Bind the listener, **then** build the token validator, because it needs
+   the port actually bound (`--bind 127.0.0.1:0` is a real configuration)
+   and validates over loopback against this process's own
+   `/v1/oauth/jwks.json`.
+8. Serve.
+
+**A pre-existing gap this ordering does not fix:** a missing
+`--database-url` still exits `1`, not `78`, because `main` produces a bare
+`anyhow` error there with nothing for the exit-code classifier to read. The
+`StartupError` added for the signing key covers only the signing key.
 
 1. Load `application.yml`, overlay `application-{profile}.yml`.
 2. Resolve `${}` placeholders. **An unresolved placeholder is fatal**, never an
@@ -168,13 +219,31 @@ accepted but inert on `vpay-worker-bin`.
 
 YAML loading, `${}` placeholder resolution and validation are implemented
 (`vpay_config::Config::load`) and wired into both binaries' boot as a hard
-requirement (steps 1–3 above; 48 tests in `vpay-config`, 23 of them in its `config`
-module, plus subprocess tests in each binary). `--database-url` is likewise required at runtime and opens
+requirement (steps 1–3 above; **53 tests in `vpay-config`** as of 2026-09-02
+— 25 in `config`, 18 in `cli`, 5 in `oauth`, 5 crate-level — plus subprocess
+tests in each binary). `--database-url` is likewise required at runtime and opens
 a real pool. *Updated 2026-09-02 — this section had said all of that was
 "not started".*
+
+**New 2026-09-02:** `--oauth-signing-key-file` / `VPAY_OAUTH_SIGNING_KEY_FILE`
+on `vpay-server`, required at runtime and checked *before* the database
+connection, so its three failure modes exit `78` and are covered by
+subprocess tests that need no Docker (named in the boot sequence above).
+Eighteen of `vpay-config`'s 53 tests are in its `cli` module.
+
+**Also new 2026-09-02, and a boot rule rather than a flag:**
+`ConfigError::MerchantMissingV1Audience` refuses to start a deployment whose
+merchant registration cannot target `vpay_config::MERCHANT_AUDIENCE`
+(`vpay:v1`) — because neither runtime symptom names the cause. The fixture
+that proves it (`a_merchant_client_that_cannot_target_the_v1_audience_is_rejected`)
+is verbatim what `config/application.yml` shipped until that day, and
+`the_example_config_registers_its_merchant_for_the_v1_audience` asserts the
+real file satisfies the rule by carrying the *constant*, not a second copy
+of the spelling.
 
 **Not started:** step 4 — reconciling configuration into the database in one
 transaction and recording a config hash — and the two boot-guard rules that
 need a payment-routing `merchants` concept ("every merchant's rail host is in
-the allowlist", "every referenced provider exists and is enabled"). See
+the allowlist", "every referenced provider exists and is enabled").
+`--public-base-url` remains accepted, parsed and read by nothing. See
 [../status.md](../status.md).

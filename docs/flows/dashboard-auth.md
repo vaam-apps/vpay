@@ -117,49 +117,79 @@ and/or a deny-list; **which one vpay implements is not yet decided.**
 
 ## Status
 
-**No login has ever been performed, no token has ever been issued, and no
-signing key has ever been rotated.** There is still no dashboard-auth *code*
-in this repository, and no `/dash/v1` route exists at all — the HTTP surface
-today is `/healthz` plus a Stripe-shaped 404 fallback
-(`backends/crates/vpay-api/src/lib.rs`). `hmac`, `sha2`, `subtle` and
-`aes-gcm` still exist only as unused version pins in the workspace
-`Cargo.toml`.
+**No login has ever been performed. There is no `/dash/v1` route of any
+kind.** That has not changed, and the merchant work of 2026-09-02 makes it
+*more* important to say plainly, because several pieces this flow needs now
+exist and serve a different surface.
 
-What has changed since this section last said "no crate depends on
-`authkestra`": that is no longer accurate, and restating it here would be the
-exact kind of stale claim this repository's rules exist to prevent.
+**What exists now and belongs to `/v1`, not here:**
 
-- The schema this flow needs exists and is tested against real Postgres:
+- **Signing keys and a JWKS endpoint are real.** A key is generated
+  (`cargo xtask gen-signing-key --out <dir>`, 3072-bit PKCS#8, mode 0600),
+  loaded at boot from `--oauth-signing-key-file` / `VPAY_OAUTH_SIGNING_KEY_FILE`
+  with an RFC 7638 thumbprint as its `kid`, announced in `oauth_signing_keys`
+  through `vpay_db::ensure_active_signing_key` (one advisory-locked
+  transaction, so replicas booting together rotate once between them), and
+  published at **`/v1/oauth/jwks.json`** across a 24 h overlap window.
+  `vpay-server` refuses to start without a key (exit 78). This is the
+  signing-key half of what this flow needs — but the endpoint is on the
+  merchant surface, and nothing here consumes it.
+- **A shipping binary now constructs `SqlxOpStore<Postgres>`** — as three
+  slots the `OpStore` supertrait demands and **no grant reaches**, not as
+  anything serving `/dash/v1`. Do not read it as the OP this flow describes
+  being wired up.
+- The schema is unchanged and still tested against real Postgres:
   `authkestra.oauth_clients`/`oauth_codes`/`oauth_refresh_tokens`/`oauth_device_codes`
-  (`backends/migrations/0006_create-authkestra-op-tables.sql`, a byte-faithful
-  transcription of `authkestra-op` `=0.3.4`'s own hardcoded DDL), the additive
-  delta `authkestra-op` `=0.7.1` — the current pin — introduced on top of it
-  (`0013_add-authkestra-op-0-7-columns.sql`: the `oauth_dpop_jti` table and
-  the `jkt`, `token_endpoint_auth_method` and `jwks` columns), and
-  `oauth_signing_keys` (`0007`, reshaped by `0010`, vpay's own — Authkestra
-  still ships no signing-key type at 0.7.1). See [../status.md](../status.md)
-  for the constraint-by-constraint test list.
-- `authkestra-op`, `authkestra-engine` and `authkestra-resource` are now
-  **production** dependencies of shipping code — `vpay-db` (for
-  `SqlClientAssertionStore`) and `vpay-api` (for `JwtValidator`) — so both
-  `vpay-server` and `vpay-worker-bin` link them. The one acceptance test in
-  `backends/tests/integration/tests/authkestra_op_smoke.rs` (now three tests)
-  proves the real `SqlxOpStore<Postgres>` reads and writes this schema:
-  `find_client`, `store_code`/`consume_code` single-use, `store_token`/
-  `get_token` with `jkt`, and `check_and_record_dpop_jti`. A reader must not
-  infer from any of that that a shipping binary can issue a token — it
-  cannot; nothing constructs a `SqlxOpStore` outside that test.
-- Two things the 0.7.1 upgrade changed about the design above: PKCE is now
-  enforced unconditionally by the OP for every authorization-code client
-  (`ClientRegistration::require_pkce` is deprecated and unread), which only
-  strengthens the "PKCE is mandatory" line in the login-flow section; and
-  `find_client` now persists `token_endpoint_auth_method`/`jwks`, which is
-  irrelevant to *this* public PKCE client but matters for
-  [merchant-auth.md](merchant-auth.md).
+  (`0006`, a byte-faithful transcription of `authkestra-op` `=0.3.4`'s own
+  DDL), the `=0.7.1` additive delta (`0013`: `oauth_dpop_jti`, and the `jkt`,
+  `token_endpoint_auth_method` and `jwks` columns), and `oauth_signing_keys`
+  (`0007`, reshaped by `0010`). `authkestra_op_smoke.rs`'s three tests prove
+  the real `SqlxOpStore<Postgres>` reads and writes it: `find_client`,
+  single-use `store_code`/`consume_code`, `store_token`/`get_token` with
+  `jkt`, and `check_and_record_dpop_jti`. **A reader must not infer from any
+  of that that a shipping binary can issue a dashboard token.**
 
-What still blocks this flow: no shipping binary constructs a `SqlxOpStore`,
-mounts `/dash/v1`, registers the dashboard client with the OP, or loads a
-signing key — `vpay-db` now provides the connection pool and a tested
-signing-key repository, but nothing generates a key and nothing calls either
-from `main()`. See [../status.md](../status.md) for the full, row-by-row
-picture of what is and is not built.
+**What blocks this flow, specifically:**
+
+1. **No route.** No `/login`, no `/authorize`, no `/userinfo`, no
+   `/dash/v1`. `authkestra-axum` is deliberately not a dependency (its
+   bundled router mounts endpoints this deployment must not serve and
+   publishes a one-key JWKS instead of the rotation window vpay serves), so
+   these have to be written, not enabled.
+2. **No session store.** `authkestra-engine` is pinned
+   `features = ["rustls-no-provider", "token", "session"]` — **without
+   `sql-postgres`** — so no SQL-backed session store is compiled into the
+   workspace at all. Enabling it pulls `sqlx/chrono` and `sqlx/json` and
+   needs `cargo deny` re-run.
+3. **An audience problem that must be solved before any of the above.**
+   `authkestra-op`'s `default_handle_authorization_code` mints the access
+   token with `Some(client_id)` as the audience and has **no
+   requested-audience path at all** (`authkestra-op-0.7.1/src/handlers/token.rs`,
+   step 7). A token from that grant would carry `aud = <client_id>`, and
+   `vpay_api::resource_auth::Surface::Dashboard.audience()` — `vpay:dash/v1`
+   — rejects every one of them. `/v1` does not hit this because
+   `handle_client_credentials` *does* honour a requested audience. Resolving
+   it (a custom grant handler, a different dashboard audience rule, or an
+   upstream change) is a maintainer decision, not a default to pick in
+   passing.
+4. **Key rotation has still never happened.** This flow's own definition of
+   done includes rotating a signing key at least once. `TokenManager` holds
+   one key for the life of the process; rotation is restart-based, nothing
+   re-reads the key file, and a rollback to a retired `kid` is refused.
+
+What is proven about the dashboard *validator*, and no more than that:
+`JwtValidator`/`AuthenticatedDashboard` pinned to `Surface::Dashboard`
+accepts a correctly-audienced token and rejects a merchant-audienced one
+(`a_dashboard_audience_token_is_accepted_by_the_dashboard_validator`,
+`a_merchant_audience_token_is_rejected_by_the_dashboard_validator`, unit
+tests in `resource_auth.rs`), and the merchant surface rejects a
+dashboard-audienced token over a real booted server
+(`a_dashboard_audience_token_is_refused_on_v1`). `AuthenticatedDashboard` is
+mounted on nothing. `hmac`, `sha2`, `subtle` and `aes-gcm` were listed here
+as unused workspace pins; `sha2` gained its first real consumer on
+2026-09-02 (the RFC 7638 thumbprint in `vpay_api::op::keys`), and the other
+three are still unused.
+
+This flow is now tracked as **Phase 2b** in [`docs/roadmap.md`](../roadmap.md),
+split out of Phase 2 when the merchant half landed and this one did not. See
+[../status.md](../status.md) for the full, row-by-row picture.
