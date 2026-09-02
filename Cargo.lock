@@ -213,13 +213,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "authkestra-engine"
-version = "0.5.4"
+name = "authkestra-crypto-util"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b72d1e2a8f90ebb6403a26b937e6f253774dc68052f71fdc1dfa8d6efe784282"
+checksum = "2cefd1c6589795e71e9f773fb616eba7029f6547c62a3b1a4905b7ee8b3408f9"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "authkestra-engine"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e9b8041b3314ba012d156328885643fd9d0735e292b9da92af967c0fb6a1697"
 dependencies = [
  "aes-gcm",
  "async-trait",
+ "authkestra-crypto-util",
  "base64 0.22.1",
  "chrono",
  "ed25519-dalek",
@@ -240,16 +253,18 @@ dependencies = [
 
 [[package]]
 name = "authkestra-op"
-version = "0.5.4"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "370a8a23c98b688d76005482f8c6305f744d6ae021c4bcccf3a05686b852e7c3"
+checksum = "94728078ec11531474e706c04c808a313e3dbbb4d58cb57f2c7ffe05d446cae9"
 dependencies = [
  "argon2",
  "async-trait",
+ "authkestra-crypto-util",
  "authkestra-engine",
  "authkestra-resource",
  "base64 0.22.1",
  "chrono",
+ "ed25519-dalek",
  "jsonwebtoken",
  "rand 0.9.5",
  "serde",
@@ -264,13 +279,14 @@ dependencies = [
 
 [[package]]
 name = "authkestra-resource"
-version = "0.5.4"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eeeeca2810e3f3507d2a4ed8a6eba5288e425ac49d5c8a985ca8c671cc04af0b"
+checksum = "28965829977a62ac7e8301128f442ae672c9c0ff61553c3f69ba5026e4b88bed"
 dependencies = [
  "async-trait",
  "authkestra-engine",
  "base64 0.22.1",
+ "chrono",
  "http",
  "jsonwebtoken",
  "reqwest",
@@ -279,6 +295,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -513,9 +530,9 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "chacha20"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
@@ -1281,9 +1298,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.15"
+version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cb093c84e8bd9b188d4c4a8cb6579fc016968d14c99882163cd3ff402a4f155"
+checksum = "ef8e5e5a340588f4452631496976cf8636d4a7ecf600239fdc27615d2530bc16"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -4127,6 +4144,31 @@ dependencies = [
  "thiserror",
  "uuid",
  "vpay-core",
+]
+
+[[package]]
+name = "vpay-sdk"
+version = "0.1.0"
+dependencies = [
+ "authkestra-op",
+ "base64 0.22.1",
+ "hex",
+ "hmac",
+ "jsonwebtoken",
+ "rand 0.8.7",
+ "reqwest",
+ "rsa",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+ "webpki-roots 1.0.9",
+ "wiremock",
 ]
 
 [[package]]

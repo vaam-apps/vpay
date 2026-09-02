@@ -37,7 +37,12 @@ key, configured directly in vpay's YAML — vpay stores only the public half.
 No Stripe SDK can authenticate against vpay as a result. See
 [ADR-0010](docs/adr/0010-merchant-auth-private-key-jwt.md) for why, and
 [`examples/merchant-curl`](examples/merchant-curl/) for the resulting
-two-step flow.
+two-step flow. vpay ships its own merchant SDKs that do that handshake —
+[`sdks/rust`](sdks/rust/) (`vpay-sdk`) and [`sdks/nodejs`](sdks/nodejs/)
+(`@vpay/sdk`) — implementing the wire contract in
+[`docs/flows/merchant-auth.md`](docs/flows/merchant-auth.md). They are
+tested against stubs of that contract; **no server serves `/v1` yet**, so
+neither has ever completed a request against a real vpay.
 
 Two rails ship in the MVP, and they have genuinely different payer journeys:
 
@@ -78,6 +83,9 @@ frontends/
   packages/     @vpay/tokens · @vpay/ui (design system) · @vpay/api-client · @vpay/config
   apps/         dashboard (Next.js)
   tests/        e2e (Cypress)
+sdks/
+  rust/         vpay-sdk   — merchant SDK (workspace crate; private_key_jwt handshake, /v1 resources, webhooks)
+  nodejs/       @vpay/sdk  — the same, zero-dependency Node ≥ 22 ESM
 examples/       merchant-curl · merchant-node · webhook-receiver
 docs/           adr/ · rfc/ · flows/ · runbooks/ · api/ · status.md
 schemas/        *.cstack   (syntax verified, design sketch, excluded from the build — see docs/status.md)
@@ -127,11 +135,12 @@ cargo run -p vpay-server -- --bind 127.0.0.1:8080 --log-format text
 VPAY_BIND=127.0.0.1:8080 VPAY_LOG_FORMAT=text cargo run -p vpay-server
 ```
 
-Neither binary calls a payment rail. `vpay-server` writes rows and serves only
-`/healthz` today; `vpay-worker-bin` stays up answering shutdown signals but
-its job loop is not implemented, and it says so in a startup banner and a
-repeating heartbeat log line. `--database-url`, `--config` and
-`--public-base-url` are accepted but not yet consumed by anything — see
+Neither binary calls a payment rail. `vpay-server` connects to Postgres, runs
+migrations and serves only `/healthz` today; `vpay-worker-bin` stays up
+answering shutdown signals but its job loop is not implemented, and it says
+so in a startup banner and a repeating heartbeat log line. `--database-url`
+and `--config` are required at startup and genuinely consumed;
+`--public-base-url` is accepted but not yet consumed by anything — see
 [`docs/status.md`](docs/status.md) and
 [`docs/flows/configuration.md`](docs/flows/configuration.md).
 
@@ -145,6 +154,10 @@ repeating heartbeat log line. `--database-url`, `--config` and
   install proceed without it. `pnpm -r test` no longer touches Cypress at all
   (`@vpay/e2e`'s own test script is `e2e`, not `test`), so the ordinary unit
   test sweep works regardless of whether the binary is installed.
+- **Rootless Docker.** `testcontainers` talks to `/var/run/docker.sock` by
+  default. If your `docker` CLI uses a rootless context, point the tests at
+  it: `DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock cargo nextest run
+  --workspace`. The Postgres-backed suites need `postgres:16-alpine` pulled.
 - **musl target.** `rustup target add x86_64-unknown-linux-musl` before
   `just build-dist`. `backends/Dockerfile` now builds the host's *implicit*
   musl target rather than hardcoding the x86_64 triple, but the Dockerfiles

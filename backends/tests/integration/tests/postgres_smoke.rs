@@ -138,10 +138,11 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 12,
-        "all twelve migrations under backends/migrations should be recorded as applied \
+        applied, 13,
+        "all thirteen migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
-         0011 oauth_client_assertion_jtis, 0012 disabled_clients)"
+         0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
+         0013 add-authkestra-op-0-7-columns)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys

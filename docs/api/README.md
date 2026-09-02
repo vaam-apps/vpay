@@ -20,9 +20,19 @@ Everything else about `/v1` is still Stripe-shaped: form-encoded bodies,
 Stripe's object model, Stripe's error envelope, Stripe's idempotency
 semantics.
 
-**Status: not implemented.** Only `/healthz` and a Stripe-shaped 404 exist —
-that includes the OAuth2 token endpoint this auth model needs, which also
-does not exist yet. See [../status.md](../status.md).
+**Status: not implemented server-side.** Only `/healthz` and a Stripe-shaped
+404 exist — that includes the OAuth2 token endpoint this auth model needs,
+which also does not exist yet. See [../status.md](../status.md).
+
+**Client-side, two SDKs implement this surface** — [`sdks/rust`](../../sdks/rust)
+(`vpay-sdk`) and [`sdks/nodejs`](../../sdks/nodejs) (`@vpay/sdk`). They do
+the `private_key_jwt` handshake, token caching, the form-encoded resource
+calls in the table below and webhook verification. The exact wire contract
+they implement, and the server must serve, is
+[../flows/merchant-auth.md](../flows/merchant-auth.md). They are tested
+against HTTP stubs of that contract and against the real Authkestra
+assertion verifier; they have never completed a request against a running
+vpay, because none serves `/v1`.
 
 Planned subset:
 

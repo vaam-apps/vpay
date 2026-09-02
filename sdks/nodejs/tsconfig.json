@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    // Node-only package: no DOM. `fetch`, `Response`, `AbortSignal` and
+    // friends come from @types/node's own globals, so pulling in `DOM` (as
+    // tsconfig.base.json does for the browser packages) would only risk
+    // typechecking against a lib this package can never run against.
+    "lib": ["ES2023"],
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}

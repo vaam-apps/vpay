@@ -16,6 +16,7 @@ members = [
     "backends/tests/integration",
     "backends/tests/conformance",
     ".xtask",
+    "sdks/rust",
 ]
 
 [workspace.package]
@@ -60,7 +61,39 @@ hyper = "1"
 
 # --- tls: rustls everywhere, never native-tls (docs/adr/0005) ---
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2"] }
+# 0.13, matching what the pinned authkestra-* crates already depend on — this
+# workspace compiled two reqwest majors from the moment `sdks/rust` became the
+# first consumer of this pin, for no benefit (`cargo tree -d`).
+#
+# `rustls-no-provider`, not `rustls`: 0.13's `rustls` feature is
+# `__rustls-aws-lc-rs`, i.e. it *selects* the `aws-lc-rs` CryptoProvider, which
+# `deny.toml` bans outright (two providers in one process make
+# `CryptoProvider::install_default()` panic — docs/adr/0005, docs/adr/0007).
+# There is no `ring` flavour in 0.13: reqwest either picks aws-lc-rs for you or
+# picks nothing.
+#
+# Picking nothing has its own hazard, and it is a real one: with
+# `rustls-no-provider`, `reqwest::ClientBuilder::build()` **panics** ("No rustls
+# crypto provider is configured", `async_impl/client.rs`'s
+# `default_rustls_crypto_provider`) unless a process-wide default was installed
+# first. A library cannot assume its caller did that, and installing one from a
+# library would silently take a decision out of the application's hands. So
+# `vpay-sdk` hands reqwest an already-built `rustls::ClientConfig`
+# (`ClientBuilder::tls_backend_preconfigured`), which takes the `BuiltRustls`
+# branch and never reaches that panic — see `sdks/rust/src/client.rs`'s
+# `rustls_client_config`, and the test that builds a client in a fresh process
+# with no `install_default()` call anywhere.
+#
+# Any *other* crate that takes this pin must do the same, or install
+# `rustls::crypto::ring::default_provider()` in `main()` before building a
+# client. The same prerequisite the authkestra note below records, for the
+# same reason.
+#
+# 0.13 also drops reqwest's own webpki-roots feature in favour of
+# `rustls-platform-verifier` (an OS trust store, which a `FROM scratch` image
+# does not have — docs/adr/0004). vpay-sdk therefore supplies Mozilla's
+# vendored bundle itself, via a direct `webpki-roots` dependency.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "charset", "http2"] }
 
 # --- data ---
 # `tls-rustls-ring` (= `tls-rustls-ring-webpki`), which vendors Mozilla's CA
@@ -118,11 +151,16 @@ anyhow = "1"
 # --- cli ---
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 
-# --- auth (dependency spike only — not yet used by any member crate) ---
-# Authkestra will run as vpay's own OIDC Provider for /dash/v1 (see the ADR
-# under docs/adr/ for the decision). Pinned exactly per Authkestra's own
-# convention (pre-1.0, fast-moving; see vsms's Cargo.toml, which hit the same
-# rustls-provider collision first) — the whole family must move in lockstep.
+# --- auth ---
+# Authkestra runs as vpay's own OIDC Provider for /dash/v1 (ADR-0009) and
+# verifies merchants' private_key_jwt assertions on /v1 (ADR-0010). Used in
+# production code by vpay-db (`SqlClientAssertionStore`) and vpay-api
+# (`JwtValidator`), and by the merchant SDK's conformance tests (sdks/rust,
+# dev-only). Pinned exactly per Authkestra's own convention (pre-1.0,
+# fast-moving; see vsms's Cargo.toml, which hit the same rustls-provider
+# collision first) — the whole family must move in lockstep, and every bump
+# must re-diff `SqlxOpStore::migrate()` against backends/migrations/0006 +
+# 0013 (see those files' headers; 0.5.4 -> 0.7.1 needed 0013).
 #
 # The collision: vpay pins rustls to the `ring` CryptoProvider (below), but
 # every authkestra-* crate defaults to `reqwest`'s `rustls-tls` behaviour via
@@ -146,17 +184,19 @@ clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 # authkestra HTTP client (JWKS fetch, engine's own reqwest calls) MUST call
 # `rustls::crypto::ring::default_provider().install_default().ok();` — ignore
 # the Err, it only means something already installed one — once, in `main()`,
-# before that. Nothing in the workspace does this yet (grep confirms no
-# `install_default` call anywhere in backends/); this is a hard prerequisite
-# for the implementation step, not an optional hardening.
-authkestra-op = { version = "=0.5.4", default-features = false, features = ["rustls-no-provider"] }
-authkestra-engine = { version = "=0.5.4", default-features = false, features = ["rustls-no-provider", "token", "session"] }
+# before that. No shipping binary does this yet — the only call in the
+# workspace is test-only, in vpay-api/src/resource_auth.rs's #[cfg(test)]
+# module; this is a hard prerequisite for the implementation step, not an
+# optional hardening. (sdks/rust sidesteps it entirely by handing reqwest a
+# pre-built ring `ClientConfig` — see the reqwest pin's comment above.)
+authkestra-op = { version = "=0.7.1", default-features = false, features = ["rustls-no-provider"] }
+authkestra-engine = { version = "=0.7.1", default-features = false, features = ["rustls-no-provider", "token", "session"] }
 # `op` pulls in authkestra-op + implies `session`/`token`; this is how OP
 # routes get mounted onto an axum Router (crates/authkestra-axum's own
 # feature graph: op = ["dep:authkestra-op", "session", "token"]).
-authkestra-axum = { version = "=0.5.4", default-features = false, features = ["rustls-no-provider", "op"] }
+authkestra-axum = { version = "=0.7.1", default-features = false, features = ["rustls-no-provider", "op"] }
 # JWKS-backed token validation for /dash/v1 request guards.
-authkestra-resource = { version = "=0.5.4", default-features = false, features = ["rustls-no-provider"] }
+authkestra-resource = { version = "=0.7.1", default-features = false, features = ["rustls-no-provider"] }
 
 # --- crypto ---
 sha2 = "0.10"

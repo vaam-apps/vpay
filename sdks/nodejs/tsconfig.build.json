@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // `src` is not in `files`, so a published .map would point at nothing.
+    "sourceMap": false,
+    "declarationMap": false
+  },
+  "exclude": ["src/**/*.test.ts", "src/testing/**"]
+}

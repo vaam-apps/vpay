@@ -1,0 +1,86 @@
+[package]
+name = "vpay-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Merchant SDK for vpay's /v1 API (client_credentials + private_key_jwt)"
+# The wire contract this crate implements (docs/flows/merchant-auth.md) has no
+# server to talk to yet — vpay-server serves only /healthz (see docs/status.md).
+# Publishing a client for an API nobody can reach would be actively
+# misleading, not merely premature; flip this once /v1 exists.
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+tokio.workspace = true
+reqwest.workspace = true
+# TLS is assembled here rather than left to reqwest. See the reqwest note in
+# the root Cargo.toml: on 0.13 the only feature that keeps `aws-lc-rs` out of
+# the graph is `rustls-no-provider`, and a client built under it panics unless
+# a process-wide `CryptoProvider` was installed first. A merchant SDK is a
+# library inside someone else's process; it may neither panic there nor
+# install a process-wide default behind that process's back. Handing reqwest a
+# finished `ClientConfig` avoids both.
+rustls.workspace = true
+# Mozilla's CA bundle, vendored. reqwest 0.13 no longer offers a roots feature
+# — it defaults to `rustls-platform-verifier`, i.e. the OS trust store, which
+# is exactly the dependency docs/adr/0004's `FROM scratch` runtime does not
+# have. Vendored roots are also what the Node SDK effectively uses (Node ships
+# its own CA bundle rather than reading the OS store), so the two SDKs trust
+# the same set. The trade-off, stated plainly: a merchant behind a
+# TLS-intercepting proxy with a private CA cannot be served by these roots.
+webpki-roots = "1"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+tracing.workspace = true
+# `authkestra-op`'s own verifier derives the assertion's permitted algorithm
+# set from the *key* (never the header) and only ever accepts RSA/EC/EdDSA —
+# never HMAC — so `rust_crypto` (pure-Rust RSA/EC/EdDSA, no `ring`/`aws-lc-rs`
+# in the signing path) is both sufficient and the same backend `vpay-api`
+# already pins for the verifying side (see its Cargo.toml comment). Default
+# features stay on for `use_pem`, needed by `EncodingKey::from_rsa_pem`.
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
+# Hex encoding and decoding for the webhook signature comparison
+# (`Vpay-Signature: …,v1=<hex>`): the candidate is decoded to bytes before the
+# constant-time compare, so a same-length mismatch takes the same time
+# wherever it differs.
+hex = "0.4"
+
+# Deliberately absent: `form_urlencoded`. Its `Serializer` implements the
+# WHATWG form serializer, which emits `+` for a space and escapes `!*'()` —
+# a different body from the one this wire contract and every Stripe SDK send.
+# `src/form.rs` reproduces JavaScript's `encodeURIComponent` instead, and its
+# module doc says why byte-parity with `sdks/nodejs` is the requirement.
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+# Dev-only, for `tests/tls.rs`: asserts that no process-wide `CryptoProvider`
+# is installed — the precondition under which reqwest 0.13's own client
+# builder would panic, and the one this crate's preconfigured `ClientConfig`
+# sidesteps. `rustls` is already a real dependency; this line is only here to
+# say the tests read it too.
+rustls.workspace = true
+wiremock.workspace = true
+# Dev-only: generates the RSA keypair the OP-conformance test signs with and
+# derives its public JWK from — never used by shipping SDK code, which only
+# ever *consumes* a merchant-supplied PEM (`Credentials::rsa_pem`).
+rsa = "0.9"
+base64 = "0.22"
+# Dev-only: the CSPRNG `rsa`'s key generation draws from. Same pin and same
+# role as `vpay-api`'s own test keypair helper.
+rand.workspace = true
+# The real Authkestra OP verifier: proves the assertion this crate mints is
+# actually accepted by `authkestra_op::client_assertion::verify_client_assertion`
+# at the pinned version, not merely "looks right by inspection". Dev-only —
+# see docs/flows/merchant-auth.md's Status section for exactly what this does
+# and does not prove.
+authkestra-op.workspace = true

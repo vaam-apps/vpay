@@ -3,3 +3,4 @@ packages:
   - "frontends/apps/*"
   - "frontends/tests/*"
   - "examples/*"
+  - "sdks/*"

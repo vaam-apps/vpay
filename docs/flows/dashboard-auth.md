@@ -125,34 +125,41 @@ today is `/healthz` plus a Stripe-shaped 404 fallback
 `aes-gcm` still exist only as unused version pins in the workspace
 `Cargo.toml`.
 
-What changed since this line last said "no crate depends on `authkestra` or
-`authkestra-op`": that is no longer accurate, and restating it here would be
-the exact kind of stale claim this repository's rules exist to prevent.
+What has changed since this section last said "no crate depends on
+`authkestra`": that is no longer accurate, and restating it here would be the
+exact kind of stale claim this repository's rules exist to prevent.
 
-- The schema this flow needs now exists and is tested against real Postgres:
+- The schema this flow needs exists and is tested against real Postgres:
   `authkestra.oauth_clients`/`oauth_codes`/`oauth_refresh_tokens`/`oauth_device_codes`
   (`backends/migrations/0006_create-authkestra-op-tables.sql`, a byte-faithful
-  transcription of `authkestra-op` `=0.3.4`'s own hardcoded DDL) and
-  `oauth_signing_keys` (`backends/migrations/0007_create-oauth-signing-keys.sql`,
-  vpay's own — Authkestra ships no signing-key type at all). See
-  [../status.md](../status.md) for the constraint-by-constraint test list.
-- `authkestra-op` and `authkestra-engine` are now real dependencies —
-  **but only as `[dev-dependencies]` of `vpay-tests-integration`**
-  (`backends/tests/integration/Cargo.toml`), used solely by one acceptance
-  test, `backends/tests/integration/tests/authkestra_op_smoke.rs`, which
-  proves migration `0006`'s schema is genuinely readable/writable by the real
-  `SqlxOpStore<Postgres>` (insert a client, `find_client`, `store_code`,
-  `consume_code` twice and observe single-use enforcement fire). **Neither
-  `vpay-server` nor `vpay-worker-bin` depends on `authkestra` in any form.**
-  A reader must not infer from the presence of these crates in `Cargo.lock`
-  that any shipping binary can issue a token — it cannot; nothing constructs
-  a `SqlxOpStore` outside that one test.
+  transcription of `authkestra-op` `=0.3.4`'s own hardcoded DDL), the additive
+  delta `authkestra-op` `=0.7.1` — the current pin — introduced on top of it
+  (`0013_add-authkestra-op-0-7-columns.sql`: the `oauth_dpop_jti` table and
+  the `jkt`, `token_endpoint_auth_method` and `jwks` columns), and
+  `oauth_signing_keys` (`0007`, reshaped by `0010`, vpay's own — Authkestra
+  still ships no signing-key type at 0.7.1). See [../status.md](../status.md)
+  for the constraint-by-constraint test list.
+- `authkestra-op`, `authkestra-engine` and `authkestra-resource` are now
+  **production** dependencies of shipping code — `vpay-db` (for
+  `SqlClientAssertionStore`) and `vpay-api` (for `JwtValidator`) — so both
+  `vpay-server` and `vpay-worker-bin` link them. The one acceptance test in
+  `backends/tests/integration/tests/authkestra_op_smoke.rs` (now three tests)
+  proves the real `SqlxOpStore<Postgres>` reads and writes this schema:
+  `find_client`, `store_code`/`consume_code` single-use, `store_token`/
+  `get_token` with `jkt`, and `check_and_record_dpop_jti`. A reader must not
+  infer from any of that that a shipping binary can issue a token — it
+  cannot; nothing constructs a `SqlxOpStore` outside that test.
+- Two things the 0.7.1 upgrade changed about the design above: PKCE is now
+  enforced unconditionally by the OP for every authorization-code client
+  (`ClientRegistration::require_pkce` is deprecated and unread), which only
+  strengthens the "PKCE is mandatory" line in the login-flow section; and
+  `find_client` now persists `token_endpoint_auth_method`/`jwks`, which is
+  irrelevant to *this* public PKCE client but matters for
+  [merchant-auth.md](merchant-auth.md).
 
-This flow is still blocked on the same prerequisite as before, unchanged by
-the new migrations: the database *schema* exists, but there is still no
-database *connectivity* layer anywhere in this workspace — no connection
-pool, no query/repository code reachable from `vpay-server` — and
-`authkestra_op::sqlx_store::SqlxOpStore` needs one to persist anything from a
-real request. Key generation and rotation logic also does not exist; only
-its storage table does. See [../status.md](../status.md) for the full,
-row-by-row picture of what is and is not built.
+What still blocks this flow: no shipping binary constructs a `SqlxOpStore`,
+mounts `/dash/v1`, registers the dashboard client with the OP, or loads a
+signing key — `vpay-db` now provides the connection pool and a tested
+signing-key repository, but nothing generates a key and nothing calls either
+from `main()`. See [../status.md](../status.md) for the full, row-by-row
+picture of what is and is not built.

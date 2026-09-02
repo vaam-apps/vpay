@@ -12,6 +12,8 @@ go wrong, and what invariant holds throughout.
 | [failures.md](failures.md) | The canonical taxonomy and how adapters map into it |
 | [provider-port.md](provider-port.md) | The adapter interface and the checklist for adding a rail |
 | [configuration.md](configuration.md) | Boot sequence, validation rules, what refuses to start |
+| [merchant-auth.md](merchant-auth.md) | The `client_credentials` + `private_key_jwt` handshake and the `/v1` wire contract the Rust and Node SDKs implement |
+| [dashboard-auth.md](dashboard-auth.md) | Staff login: vpay as its own OpenID Provider for `/dash/v1` |
 | [webhooks.md](webhooks.md) | The two-step outbox and the signature scheme |
 | [ledger.md](ledger.md) | Double-entry postings and the four invariants |
 | [adapter-mtn-momo.md](adapter-mtn-momo.md) | MTN specifics — push flow |
