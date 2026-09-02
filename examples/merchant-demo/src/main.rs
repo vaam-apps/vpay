@@ -1,7 +1,7 @@
 //! `merchant-demo` — a runnable walk through **everything vpay's `/v1`
 //! surface answers today**, and a deliberate demonstration of where it stops.
 //!
-//! Four steps, one line each:
+//! Five steps:
 //!
 //! 1. Read the OP's discovery document and JWKS, and show the issuer and the
 //!    `kid` the server signs `/v1` access tokens with.
@@ -10,16 +10,21 @@
 //!    itself.
 //! 3. Show that the same `/v1` path with no bearer token is a `401` carrying
 //!    vpay's error envelope, so the authentication boundary is real.
-//! 4. Call `payment_intents().retrieve` through the merchant SDK and print
-//!    the typed `404 unknown_route` that comes back.
+//! 4. Create a PaymentIntent through the merchant SDK and read it back,
+//!    printing its id, status, amount and currency.
+//! 5. Confirm it — and print the `501 not_implemented` that comes back,
+//!    because no rail adapter implements `submit` yet.
 //!
-//! Step 4 succeeding *as a 404* is the point of this program. Past the
-//! bearer-token boundary vpay has no `/v1` resource route at all yet, so a
-//! `200` there would mean someone had fabricated one — which is why this
-//! demo treats a `200` as a hard failure rather than a pleasant surprise
-//! (`CLAUDE.md`, "the failure mode to avoid"). When payment intents land,
-//! step 4 becomes the first step of a real charge and this file changes with
-//! it.
+//! **Step 5 is the honest half, and it is not a bug.** The rail adapters are
+//! Step 3 of the production-readiness plan (`docs/status.md`); until they
+//! exist, a confirm reaches the rail, records the charge and the attempt, and
+//! is refused. This demo therefore treats a *successful* confirm as a hard
+//! failure: a `200` there would mean someone had fabricated a payment
+//! (`CLAUDE.md`, "the failure mode to avoid"). When a rail lands, step 5
+//! becomes a real charge and this file changes with it.
+//!
+//! Nothing here prints a secret: not the access token, not the private key,
+//! not a rail credential. Step 4 prints the intent's own public fields.
 //!
 //! # Why the token exchange in step 2 is not `Client`'s
 //!
@@ -37,6 +42,7 @@
 // debugging. Same allow, for the same reason, as `.xtask/src/main.rs`.
 #![allow(clippy::print_stdout)]
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -45,7 +51,10 @@ use anyhow::{Context as _, anyhow, bail};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
-use vpay_sdk::{Client, Credentials};
+use vpay_sdk::{
+    Client, ConfirmPaymentIntentParams, CreatePaymentIntentParams, Credentials, IntentStatus,
+    PaymentMethodType, RequestOptions,
+};
 
 /// Where `just demo` publishes the stack, and what `config/application.yml`'s
 /// `deployment.public_base_url` says — the two must agree or the OP's issuer
@@ -61,12 +70,23 @@ const DEFAULT_CLIENT_ID: &str = "demo-merchant";
 /// a demo artefact and must never be reused for anything.
 const DEFAULT_PRIVATE_KEY_FILE: &str = ".e2e/demo-merchant/oauth-signing-key.pem";
 
-/// An id chosen to look like a real one and resolve to nothing, because
-/// nothing is what `/v1/payment_intents/{id}` resolves to today.
+/// The id step 3 asks for without a token. Deliberately one no merchant
+/// holds: step 3 is about the `401`, which is decided before any handler
+/// looks anything up.
 const DEMO_INTENT_ID: &str = "pi_demo";
 
 /// The one sentence this demo exists to put on a terminal.
-const NOT_BUILT_YET: &str = "payment intents are not built yet — this is where the next step lands";
+const NOT_BUILT_YET: &str =
+    "the rail adapters are Step 3 — no rail can take a payment yet (docs/status.md)";
+
+/// The intent step 4 creates: 5,000 FCFA on the push rail. XAF is
+/// zero-decimal, so `5000` is five thousand francs and not fifty
+/// (`docs/flows/money.md`).
+const DEMO_AMOUNT: i64 = 5000;
+const DEMO_CURRENCY: &str = "xaf";
+
+/// The MSISDN step 5 would prompt. A documentation number, not anyone's.
+const DEMO_MSISDN: &str = "237670000000";
 
 /// How long the demo waits on any single HTTP request. Short on purpose: a
 /// stack that has not finished booting should fail this demo in seconds with
@@ -91,7 +111,7 @@ async fn main() -> ExitCode {
     match run().await {
         Ok(()) => {
             println!();
-            println!("✔ all four steps behaved as expected.");
+            println!("✔ all five steps behaved as expected.");
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -128,7 +148,20 @@ async fn run() -> anyhow::Result<()> {
     let endpoints = step_1_discovery(&http, &base_url).await?;
     step_2_access_token(&http, &client_id, &pem, &endpoints).await?;
     step_3_unauthenticated(&http, &base_url).await?;
-    step_4_payment_intents(&base_url, &client_id, &pem).await?;
+
+    // One SDK client for both of the remaining steps, configured the way
+    // `docs/flows/merchant-auth.md` tells a merchant to configure one: a base
+    // URL and a credential. The issuer, the token endpoint and the `vpay:v1`
+    // audience are the SDK's own derivations, not values handed to it here —
+    // which is what makes this a test of that derivation.
+    let client = Client::builder(&base_url)
+        .credentials(credentials(&client_id, &pem).context("step 4 (create + retrieve)")?)
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .context("step 4 (create + retrieve): building the SDK client")?;
+
+    let intent_id = step_4_create_and_retrieve(&client).await?;
+    step_5_confirm(&client, &intent_id).await?;
 
     Ok(())
 }
@@ -151,7 +184,7 @@ struct Endpoints {
 async fn step_1_discovery(http: &reqwest::Client, base_url: &str) -> anyhow::Result<Endpoints> {
     const STEP: &str = "step 1 (discovery + JWKS)";
 
-    println!("[1/4] discovery + JWKS");
+    println!("[1/5] discovery + JWKS");
 
     let discovery_url = format!("{base_url}/v1/oauth/.well-known/openid-configuration");
     let discovery = get_json(http, &discovery_url)
@@ -232,7 +265,7 @@ async fn step_2_access_token(
     const STEP: &str = "step 2 (access token)";
 
     println!();
-    println!("[2/4] access token (client_credentials + private_key_jwt)");
+    println!("[2/5] access token (client_credentials + private_key_jwt)");
 
     let credentials = credentials(client_id, pem).with_context(|| STEP)?;
     let assertion = vpay_sdk::auth::mint_client_assertion(
@@ -333,7 +366,7 @@ async fn step_3_unauthenticated(http: &reqwest::Client, base_url: &str) -> anyho
     const STEP: &str = "step 3 (unauthenticated /v1 is 401)";
 
     println!();
-    println!("[3/4] the same path with no bearer token");
+    println!("[3/5] the same path with no bearer token");
 
     let url = format!("{base_url}/v1/payment_intents/{DEMO_INTENT_ID}");
     let response = http
@@ -389,68 +422,200 @@ async fn step_3_unauthenticated(http: &reqwest::Client, base_url: &str) -> anyho
 
 // ------------------------------------------------------------------ step 4
 
-/// The authenticated call, through the SDK, and the honest answer it gets.
+/// Creates a PaymentIntent through the SDK and reads it back.
 ///
-/// A `404 unknown_route` here is the success condition, and it proves more
-/// than it looks: that envelope is only reachable *past* the bearer-token
-/// boundary, so receiving it means the SDK minted an assertion, the OP
-/// resolved this merchant out of the YAML registry, signed a token, and the
-/// resource server fetched the JWKS and validated it. A `401` would mean the
-/// token was refused; a `200` would mean a route was invented.
-async fn step_4_payment_intents(base_url: &str, client_id: &str, pem: &str) -> anyhow::Result<()> {
-    const STEP: &str = "step 4 (authenticated /v1 is the honest 404)";
+/// This is a real write to a real database: the row exists after this step,
+/// filed under the demo merchant's tenant, and `just demo-down` is what
+/// throws it away. The retrieve is not decoration — it is what proves the
+/// create *persisted* rather than merely rendered an object, and comparing
+/// the two is what would catch a retrieve that answered from somewhere else.
+///
+/// The `Idempotency-Key` is fixed rather than random on purpose: run this
+/// demo twice against the same stack and the second run replays the first
+/// run's stored answer instead of creating a second intent, which is the
+/// property `docs/flows/merchant-auth.md` promises and the reason the header
+/// is required at all. (`just demo-down` deletes the volumes, so a fresh
+/// stack starts over.)
+async fn step_4_create_and_retrieve(client: &Client) -> anyhow::Result<String> {
+    const STEP: &str = "step 4 (create + retrieve a payment intent)";
 
     println!();
-    println!("[4/4] payment_intents().retrieve(\"{DEMO_INTENT_ID}\") through vpay-sdk");
+    println!("[4/5] payment_intents().create(…) then .retrieve(…) through vpay-sdk");
 
-    // Configured the way `docs/flows/merchant-auth.md` tells a merchant to
-    // configure it: a base URL and a credential. The issuer, the token
-    // endpoint and the `vpay:v1` audience are the SDK's own derivations, not
-    // values handed to it here — which is what makes this a test of that
-    // derivation.
-    let client = Client::builder(base_url)
-        .credentials(credentials(client_id, pem).with_context(|| STEP)?)
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .with_context(|| format!("{STEP}: building the SDK client"))?;
+    let params = CreatePaymentIntentParams {
+        amount: DEMO_AMOUNT,
+        currency: DEMO_CURRENCY.to_owned(),
+        payment_method_types: vec![PaymentMethodType::MtnMomo],
+        metadata: BTreeMap::from([("order_id".to_owned(), "demo-1234".to_owned())]),
+        description: Some("merchant-demo order".to_owned()),
+    };
 
-    match client.payment_intents().retrieve(DEMO_INTENT_ID).await {
+    let created = client
+        .payment_intents()
+        .create(
+            params,
+            RequestOptions::new().with_idempotency_key("merchant-demo-order-1234"),
+        )
+        .await
+        .map_err(|error| describe(STEP, "creating a payment intent", &error))?;
+
+    println!("  ✔ POST /v1/payment_intents — HTTP 200");
+    println!("      id        {}", created.id);
+    println!("      status    {}", status_label(created.status));
+    println!(
+        "      amount    {} {}   ({} is zero-decimal, so this is {} FCFA)",
+        created.amount, created.currency, created.currency, created.amount
+    );
+    println!(
+        "      rails     {}",
+        created.payment_method_types.join(", ")
+    );
+    println!("      livemode  {}", created.livemode);
+
+    let retrieved = client
+        .payment_intents()
+        .retrieve(&created.id)
+        .await
+        .map_err(|error| describe(STEP, "retrieving the intent just created", &error))?;
+
+    if retrieved != created {
+        bail!(
+            "{STEP}: the retrieve returned a different object than the create did. The create's \
+             response and the stored row disagree, which means one of them is not what it says \
+             it is."
+        );
+    }
+    println!(
+        "  ✔ GET /v1/payment_intents/{} — identical object",
+        created.id
+    );
+
+    Ok(created.id)
+}
+
+// ------------------------------------------------------------------ step 5
+
+/// Confirms the intent, and shows the `501` that comes back.
+///
+/// A `501 not_implemented` is this step's success condition. The request is
+/// real and gets all the way to the rail: vpay resolves the adapter, commits
+/// the charge row with the reference it would submit under, records the
+/// attempt, and *then* calls `submit` — which is not written for either rail
+/// (`docs/status.md`). What comes back is the adapter's own refusal, rendered
+/// as the documented envelope, and the intent is left exactly where it was.
+///
+/// A `200` here would be a fabricated payment, and this function fails the
+/// demo over it. That is the whole reason this step exists rather than being
+/// left out until a rail lands: an operator running `just demo` should be
+/// able to see, on a terminal, precisely how far vpay gets today.
+async fn step_5_confirm(client: &Client, intent_id: &str) -> anyhow::Result<()> {
+    const STEP: &str = "step 5 (confirm reaches the rail and is refused)";
+
+    println!();
+    println!("[5/5] payment_intents().confirm(\"{intent_id}\") through vpay-sdk");
+
+    let outcome = client
+        .payment_intents()
+        .confirm(
+            intent_id,
+            ConfirmPaymentIntentParams::mtn_momo(DEMO_MSISDN),
+            RequestOptions::new().with_idempotency_key("merchant-demo-order-1234-confirm"),
+        )
+        .await;
+
+    match outcome {
         Ok(intent) => bail!(
-            "{STEP}: the server returned a payment intent ({}) — vpay implements no `/v1` \
-             resource route, so this response cannot be real. Do not trust anything else this \
-             stack reports until you know where it came from.",
-            intent.id,
+            "{STEP}: the confirm SUCCEEDED and returned status `{}`. No rail adapter implements \
+             `submit` (docs/status.md), so vpay cannot have taken a payment — this response is \
+             fabricated. Do not trust anything else this stack reports until you know where it \
+             came from.",
+            status_label(intent.status),
         ),
         Err(vpay_sdk::Error::Api {
-            status: 404,
+            status: 501,
             ref kind,
             ref code,
             ref message,
             ..
-        }) if code.as_deref() == Some("unknown_route") => {
-            println!("  ✔ HTTP 404 — authenticated, and then nothing to authenticate *for*");
+        }) if code.as_deref() == Some("not_implemented") => {
+            println!("  ✔ HTTP 501 — the rail was reached, and answered honestly");
             println!("      error.type     {kind}");
-            println!("      error.code     unknown_route");
+            println!("      error.code     not_implemented");
             println!("      error.message  {message}");
-            println!();
-            println!("      {NOT_BUILT_YET}");
         }
-        Err(vpay_sdk::Error::Api { status: 401, .. }) => bail!(
-            "{STEP}: the SDK obtained a token in step 2 but `/v1` refused it with 401. The token \
-             is signed for `aud = {}`; check the demo merchant's `allowed_audiences` in \
-             .e2e/application-demo.yml and the server's own resource-server audience.",
-            vpay_sdk::DEFAULT_AUDIENCE,
-        ),
         Err(other) => bail!(
-            "{STEP}: expected the 404 `unknown_route` envelope past the authentication boundary, \
-             got: {other}"
+            "{STEP}: expected the 501 `not_implemented` envelope from the rail adapter, got: \
+             {other}"
         ),
     }
+
+    // The intent did not move: nothing was submitted, so nothing about the
+    // payer's world changed. Said out loud because "the confirm failed" and
+    // "the intent is still confirmable" are different claims, and only the
+    // second one makes a retry safe.
+    let after = client
+        .payment_intents()
+        .retrieve(intent_id)
+        .await
+        .map_err(|error| describe(STEP, "re-reading the intent after the confirm", &error))?;
+    if after.status != IntentStatus::RequiresPaymentMethod {
+        bail!(
+            "{STEP}: the intent moved to `{}` even though nothing was submitted",
+            status_label(after.status),
+        );
+    }
+    println!(
+        "  ✔ the intent is still `{}` — nothing was submitted, so nothing moved",
+        status_label(after.status)
+    );
+    println!();
+    println!("      {NOT_BUILT_YET}");
 
     Ok(())
 }
 
 // ------------------------------------------------------------------ helpers
+
+/// One `IntentStatus` as its wire label.
+///
+/// Written out rather than `{:?}`-formatted: the wire spelling is
+/// `requires_payment_method`, and a demo that printed `RequiresPaymentMethod`
+/// would be showing a Rust identifier where a reader is trying to match the
+/// value they will see in a webhook.
+fn status_label(status: IntentStatus) -> &'static str {
+    match status {
+        IntentStatus::RequiresPaymentMethod => "requires_payment_method",
+        IntentStatus::RequiresAction => "requires_action",
+        IntentStatus::Processing => "processing",
+        IntentStatus::Succeeded => "succeeded",
+        IntentStatus::Canceled => "canceled",
+    }
+}
+
+/// Turns an SDK error into a message that names the step and, for the two
+/// failures an operator actually meets, what to go and look at.
+///
+/// A `401` past step 2 means the token was minted and then refused, which is
+/// an audience mismatch nine times out of ten; a transport error means the
+/// stack is not up. Neither is obvious from the SDK's own `Display`.
+fn describe(step: &str, doing: &str, error: &vpay_sdk::Error) -> anyhow::Error {
+    match error {
+        vpay_sdk::Error::Api { status: 401, .. } => anyhow!(
+            "{step}: {doing}: the SDK obtained a token and `/v1` refused it with 401. The token \
+             is signed for `aud = {}`; check the demo merchant's `allowed_audiences` in \
+             .e2e/application-demo.yml and the server's own resource-server audience.",
+            vpay_sdk::DEFAULT_AUDIENCE,
+        ),
+        vpay_sdk::Error::Api {
+            status: 404, code, ..
+        } if code.as_deref() == Some("unknown_route") => anyhow!(
+            "{step}: {doing}: the server answered `unknown_route`, so this deployment does not \
+             route /v1/payment_intents at all. It is older than this demo — rebuild the stack \
+             (`just demo-down && just demo`)."
+        ),
+        other => anyhow!("{step}: {doing}: {other}"),
+    }
+}
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_owned())

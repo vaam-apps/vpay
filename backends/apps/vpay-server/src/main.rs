@@ -12,10 +12,10 @@ use std::time::Duration;
 use anyhow::Context as _;
 use clap::Parser as _;
 use mimalloc::MiMalloc;
-use vpay_api::RouterDeps;
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::{LoadedSigningKey, SigningKeyError};
 use vpay_api::resource_auth::{JwtValidator, MerchantJwtValidator, Surface};
+use vpay_api::{ResourceConfig, RouterDeps};
 use vpay_config::{ConfigError, LogFormat, ServerArgs, ShutdownSignals};
 use vpay_core::error::{Category, Classify as _, find_in_chain};
 use vpay_db::DbError;
@@ -181,8 +181,14 @@ async fn run() -> anyhow::Result<()> {
 
     init_tracing(&args.common.log_filter, args.common.log_format);
 
-    let registry = vpay_server::adapter_registry();
-    tracing::info!(rails = ?registry, "provider adapters linked");
+    // Built once and used twice: the boot-step-4 join below, and
+    // `RouterDeps::adapters`, which is how a `/v1/payment_intents/{id}/confirm`
+    // reaches a rail at all.
+    let adapters = vpay_api::v1::boot::adapters_by_code(vpay_server::adapters());
+    tracing::info!(
+        rails = ?adapters.keys().collect::<Vec<_>>(),
+        "provider adapters linked"
+    );
     // `profile` names a YAML config file, never a code path — see
     // vpay_config::cli and docs/adr/0003-yaml-configuration.md.
     tracing::info!(profile = %args.common.profile, "deployment profile (selects a config file only)");
@@ -216,6 +222,15 @@ async fn run() -> anyhow::Result<()> {
         dashboard_client_configured = config.dashboard_client.is_some(),
         "configuration loaded and validated"
     );
+
+    // Boot step 4's *inputs*, resolved here rather than beside the
+    // `reconcile` call below: joining the YAML's rails against this binary's
+    // adapters is pure CPU, so a `providers[]` entry naming a rail nothing
+    // implements fails in milliseconds and — as
+    // `a_provider_code_with_no_linked_adapter_is_exit_78` in `tests/cli.rs`
+    // relies on — without a database. The write itself still happens at step
+    // 4's documented position, after the migrations.
+    let (currency_seeds, provider_seeds) = vpay_api::v1::boot::boot_seeds(&config, &adapters)?;
 
     // The RS256 signing key, loaded *before* the database and before the
     // listener — the same "cheapest hard failure first" ordering the config
@@ -287,6 +302,23 @@ async fn run() -> anyhow::Result<()> {
         .context("running database migrations")?;
     tracing::info!("database connected and migrations applied");
 
+    // Boot step 4 (`docs/flows/configuration.md`): make `currencies` and
+    // `providers` match this deployment's configuration, in one transaction.
+    // After the migrations because the tables have to exist, and before the
+    // signing key is announced because everything past this point assumes a
+    // database that agrees with the config file this process just validated.
+    // Fatal on failure: a `providers` table that still enables a rail an
+    // operator removed is a deployment that would keep taking charges on it.
+    vpay_db::config_reconcile::reconcile(&pool, &currency_seeds, &provider_seeds)
+        .await
+        .context("reconciling currencies and providers from configuration (boot step 4)")?;
+    tracing::info!(
+        currencies = currency_seeds.len(),
+        providers = provider_seeds.len(),
+        enabled_providers = provider_seeds.iter().filter(|seed| seed.enabled).count(),
+        "reference tables reconciled from configuration"
+    );
+
     // Announce this key as the active one, so `/jwks.json` publishes it and
     // every replica agrees on which `kid` is current. Fatal on failure: a
     // process whose key is not in `oauth_signing_keys` mints tokens that no
@@ -338,6 +370,28 @@ async fn run() -> anyhow::Result<()> {
         ),
     }
 
+    // The same stopgap, for the same reason, on `idempotency_keys`: no job
+    // loop exists to schedule it, so once per process start is what there
+    // is. When the loop lands, this call is the one to move onto a timer.
+    //
+    // Purely about table size, and deliberately so — no idempotency
+    // guarantee depends on it running. A key past its 24-hour window is
+    // reclaimed by `vpay_db::idempotency::claim` itself if a merchant
+    // presents it again, so a deployment that never swept would still hand
+    // every expired key back; it would simply keep the rows. Non-fatal for
+    // that reason.
+    match vpay_db::idempotency::sweep_expired(&pool).await {
+        Ok(deleted) => tracing::info!(
+            deleted,
+            "swept expired idempotency keys (boot-time stopgap; there is no cleanup job yet)"
+        ),
+        Err(error) => tracing::warn!(
+            %error,
+            "could not sweep expired idempotency keys; continuing — an expired key is still \
+             reclaimable on its next use, only the rows remain"
+        ),
+    }
+
     let merchant_op = Arc::new(MerchantOp::new(&config, signing_key, pool.clone()));
 
     // Bind *before* building the validator, because the validator needs the
@@ -368,9 +422,11 @@ async fn run() -> anyhow::Result<()> {
     );
 
     tracing::warn!(
-        "vpay-server implements /healthz, /v1/oauth (token, discovery, jwks) and the /v1 \
-         authentication boundary. No /v1 business resource exists: an authenticated /v1 request \
-         answers the honest 404. See docs/status.md"
+        "vpay-server implements /healthz, /v1/oauth (token, discovery, jwks), the /v1 \
+         authentication boundary and /v1/payment_intents (create, retrieve, list, confirm, \
+         cancel). No rail adapter implements `submit`, so a confirm reaches the rail and \
+         answers 501 not_implemented; every other /v1 resource answers the honest 404. See \
+         docs/status.md"
     );
     tracing::info!(addr = %bound, "listening");
 
@@ -378,6 +434,10 @@ async fn run() -> anyhow::Result<()> {
         pool,
         merchant_op,
         merchant_validator,
+        adapters: Arc::new(adapters),
+        // The projection, not the whole `Config` — see `ResourceConfig`, and
+        // note this is the only way `deployment.livemode` reaches a handler.
+        resource_config: Arc::new(ResourceConfig::from_config(&config)),
     };
 
     let shutdown_grace = Duration::from_secs(args.common.shutdown_grace_seconds);

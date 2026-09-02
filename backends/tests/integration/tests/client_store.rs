@@ -12,54 +12,30 @@
 //! immediately, no deploy required"). That is a claim about two crates and a
 //! table agreeing, so it is asserted against the real table.
 //!
-//! Repeats the small pool-and-migrate helper from `tests/postgres_smoke.rs`
-//! for the reason `tests/authkestra_op_smoke.rs` states: each `tests/*.rs`
-//! compiles to its own test binary, so there is no `pub` item to import
-//! without introducing a shared module for a handful of lines. The container
-//! start underneath it is *not* duplicated — that is
+//! The pool-and-migrate helper is `tests/support/mod.rs`'s — Step 2
+//! introduced the shared module the older comment here said was not worth
+//! introducing, because `RouterDeps` and boot step 4 made the shared surface
+//! more than a handful of lines. The container start underneath it is
 //! `vpay_testkit::containers::start_postgres_with_retry`.
 
 use anyhow::Context;
 use authkestra_op::client::ClientStore;
 use authkestra_op::client_assertion::ClientAssertionStore;
 use chrono::{Duration as ChronoDuration, Utc};
-use sqlx::PgPool;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_api::op::clients::YamlClientStore;
 use vpay_config::MERCHANT_AUDIENCE;
 use vpay_config::oauth::{GrantType, MerchantClient};
 use vpay_db::SqlClientAssertionStore;
 
+mod support;
+
+use support::migrated_postgres;
+
 const CLIENT_ID: &str = "acme-cameroon";
 
-/// Same as `tests/postgres_smoke.rs`'s: the container itself comes from
-/// `vpay_testkit::containers::start_postgres_with_retry` (why the tag is
-/// pinned, and which start errors are retried, are documented there); what
-/// stays per-file is the pool and the migration run.
-async fn migrated_postgres() -> anyhow::Result<(ContainerAsync<PostgresImage>, PgPool)> {
-    let container = vpay_testkit::containers::start_postgres_with_retry()
-        .await
-        .context("postgres:16-alpine container starts (it is cached locally on this machine)")?;
-
-    let host = container.get_host().await.context("container host")?;
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .context("container port")?;
-    let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
-
-    let pool = PgPool::connect(&url)
-        .await
-        .context("connects to the freshly started container")?;
-
-    sqlx::migrate!("../../migrations")
-        .run(&pool)
-        .await
-        .context("every migration under backends/migrations applies cleanly")?;
-
-    Ok((container, pool))
-}
+/// The tenant `CLIENT_ID` acts for. Deliberately not equal to the
+/// `client_id` — see `MerchantClient::merchant_id`.
+const MERCHANT_ID: &str = "acme-cameroon-tenant";
 
 /// A merchant registration shaped exactly as `config/application.yml`'s is,
 /// including the `vpay:v1` audience `Config::validate_all` now requires — a
@@ -70,6 +46,7 @@ async fn migrated_postgres() -> anyhow::Result<(ContainerAsync<PostgresImage>, P
 fn configured_merchant() -> MerchantClient {
     MerchantClient {
         client_id: CLIENT_ID.to_owned(),
+        merchant_id: MERCHANT_ID.to_owned(),
         jwks: Some(serde_json::json!({
             "keys": [{
                 "kty": "RSA",

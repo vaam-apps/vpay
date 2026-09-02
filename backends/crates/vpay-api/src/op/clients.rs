@@ -244,6 +244,11 @@ mod tests {
     fn merchant(jwks: Value) -> MerchantClient {
         MerchantClient {
             client_id: CLIENT_ID.to_owned(),
+            // The OP resolves a *credential*; the tenant it maps to is the
+            // `/v1` boundary's business, not this store's. Deliberately not
+            // equal to `client_id`, so a conversion that confused the two
+            // would fail rather than pass by coincidence.
+            merchant_id: format!("{CLIENT_ID}-tenant"),
             jwks: Some(jwks),
             grant_types: vec![ConfigGrantType::ClientCredentials],
             scopes: vec!["payments:write".to_owned()],

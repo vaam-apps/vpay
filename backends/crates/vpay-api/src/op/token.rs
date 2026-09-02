@@ -93,6 +93,8 @@ use axum::Json;
 use axum::extract::{Form, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
 
 use crate::op::{
@@ -132,16 +134,80 @@ use crate::op::{
 pub async fn token_handler(
     State(op): State<Arc<MerchantOp>>,
     headers: HeaderMap,
-    Form(request): Form<TokenRequest>,
+    Form(mut request): Form<TokenRequest>,
 ) -> Response {
     let auth_header = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
 
+    // RFC 6749 §3.3: a request that names no scope is granted this
+    // deployment's "locally defined default", which is the client's own
+    // registered `scopes:` — see `MerchantOp::default_scope_for`. Applied
+    // here, before `handle_token`, because `handle_client_credentials`
+    // treats an absent `scope` as "grant none" and there is no seam inside
+    // it to hook.
+    //
+    // This only ever *fills in* an omitted value. A request that names a
+    // scope keeps it verbatim, including a deliberately narrower one, and
+    // `handle_client_credentials` still refuses anything outside the
+    // registration with `invalid_scope`.
+    if request.scope.is_none()
+        && let Some(client_id) = default_scope_client_id(&request)
+        && let Some(default) = op.default_scope_for(&client_id)
+    {
+        request.scope = Some(default.to_owned());
+    }
+
     match handle_token(request, auth_header, op.config(), op.store(), op.tokens()).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(error) => (token_error_status(&error.error), Json(error)).into_response(),
     }
+}
+
+/// Which client's registered scopes to use as this request's default scope.
+///
+/// The `client_id` form field when there is one. When there is not, the
+/// `sub` of the `client_assertion`, **read without verifying anything** —
+/// and that needs saying, because it looks exactly like the mistake it is
+/// not.
+///
+/// # Why the unverified read is safe here, and nowhere else
+///
+/// RFC 7523 §3 lets a `private_key_jwt` client authenticate with the
+/// assertion alone: `client_id` is redundant with the assertion's `sub`, and
+/// a conformant client may omit it. `authkestra_op::handlers::token`
+/// resolves such a request from the assertion perfectly well — but
+/// `token_handler` ran first and, keyed on the form field alone, handed it
+/// no default scope. The result was a token with no `scope` claim, an
+/// authenticated client, and a `403` on every `/v1` call, for a client whose
+/// registration lists exactly the scope it was refused for. That is a real
+/// integration this deployment accepts, so the default has to be found for
+/// it too.
+///
+/// What comes back is used for **one** thing: choosing which registration's
+/// `scopes:` to copy into an omitted `scope` parameter. It authenticates
+/// nothing and authorises nothing. `handle_token` then verifies the
+/// assertion's signature, issuer, audience, expiry and `jti` against the
+/// registration it resolves for itself, and `handle_client_credentials`
+/// checks the resulting scope against *that* client's registration — so a
+/// forged `sub` naming a better-privileged client selects a default for a
+/// request that is then refused `invalid_client`, and cannot select a scope
+/// the authenticated client is not registered for. Never widen this: the
+/// moment an unverified claim decides anything else, it is a credential.
+fn default_scope_client_id(request: &TokenRequest) -> Option<String> {
+    if let Some(client_id) = request.client_id.as_deref() {
+        return Some(client_id.to_owned());
+    }
+
+    // Deliberately not `jsonwebtoken::decode` with
+    // `insecure_disable_signature_validation()`: a decode call configured to
+    // skip its checks reads, at a glance, like a decode call that performed
+    // them. Splitting the payload segment out by hand cannot be mistaken for
+    // verification by anybody.
+    let payload = request.client_assertion.as_deref()?.split('.').nth(1)?;
+    let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let claims: Value = serde_json::from_slice(&bytes).ok()?;
+    claims.get("sub").and_then(Value::as_str).map(str::to_owned)
 }
 
 /// RFC 6749 §5.2's status mapping, as `authkestra-axum` implements it:

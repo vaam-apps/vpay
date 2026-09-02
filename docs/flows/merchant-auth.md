@@ -124,6 +124,30 @@ callers share one in-flight token request rather than each minting their
 own; two assertions minted in the same second would spend two `jti`s for no
 reason.
 
+**Scopes, and what an omitted `scope` means.** The vocabulary is two
+strings, defined once in `vpay_api::v1`: `payments:write`
+(`SCOPE_PAYMENTS_WRITE`) and `payments:read` (`SCOPE_PAYMENTS_READ`). The
+`/v1` boundary requires `payments:write` for any method that is not a read
+and either scope for `GET`/`HEAD` — write implies read, and an unknown verb
+requires write, which is fail-closed
+(`only_a_write_scope_authorises_a_method_that_is_not_a_read`,
+`the_scope_names_are_the_ones_registrations_are_written_against`, both in
+`backends/crates/vpay-api/src/v1/mod.rs`). A token carrying neither is
+`403 forbidden` — not `401`, because the credential is valid
+(`a_token_without_the_required_scope_is_403_not_401`,
+`a_client_registered_for_no_scopes_is_forbidden_while_a_scoped_one_is_not`).
+
+**A token request that names no `scope` is granted the client's registered
+`scopes:` from the YAML** — RFC 6749 §3.3's "locally defined default",
+defined here as the registration itself. Both SDKs omit `scope`, so this is
+the path every SDK call takes. Applied in `vpay_api::op::token::token_handler`
+before the grant runs, and it only ever *fills in* an omitted value: a
+request naming a narrower scope keeps it, and anything outside the
+registration is still `invalid_scope`
+(`the_default_scope_is_the_clients_own_registration_and_nothing_wider`).
+An empty `scopes:` list is legal and means the client can mint a token and
+be `403`ed by every `/v1` call it makes.
+
 ### 4. Re-authentication
 
 On a `401` from any `/v1` route the SDK discards its cached token, performs
@@ -194,18 +218,80 @@ JSON.
 | `Accept` | always | `application/json` |
 | `User-Agent` | always | `vpay-sdk-rust/<version>` / `vpay-sdk-node/<version>` |
 
+### Idempotency
+
+**`Idempotency-Key` is required on every `POST`**, which is stricter than
+Stripe, where it is optional. Both SDKs already send one on every call (a
+caller-supplied value, else a per-call UUIDv4), so the requirement costs a
+correct client nothing and stops a hand-rolled client from double-creating.
+A `POST` without the header is `400`
+`invalid_request_error`/`invalid_request` naming `idempotency_key`
+(`a_post_without_an_idempotency_key_is_the_documented_400`).
+
+The key is 1–255 printable-ASCII bytes
+(`a_key_at_the_bound_is_accepted_and_one_byte_over_is_not`,
+`only_printable_ascii_is_a_key`), scoped to the merchant, and stored for
+**24 hours** (`idempotency_keys.expires_at`, migration `0015`). A request is
+identified by a SHA-256 over method, path and raw body, framed so the three
+fields cannot be shifted across each other
+(`the_method_path_and_body_cannot_be_shifted_across_each_other`,
+`the_digest_is_thirty_two_bytes_of_sha256_over_the_framed_fields`), and the
+stored digest is compared in constant time (`subtle::ConstantTimeEq`) so the
+response cannot be used as a hash oracle.
+
+| What the caller did | What they get |
+|---|---|
+| Replayed a key whose first request finished | the **stored response body, byte for byte**, with its original status — `a_replayed_idempotency_key_returns_the_same_object_and_no_second_row` |
+| Replayed a key with a different body | `400` `idempotency_error`/`idempotency_key_in_use` — `a_reused_key_with_a_different_body_is_the_400_envelope` |
+| Sent a key whose first request is still running | `400` `idempotency_error`/`idempotency_key_in_flight` — `a_key_whose_first_request_is_still_running_is_answered_with_its_own_code` |
+| Retried after a `5xx` | the key was **released**; the retry re-executes — `a_5xx_releases_its_idempotency_key_so_the_retry_re_executes` |
+| Replayed after the deployment changed underneath | the original answer, unchanged — `a_replay_survives_the_rail_being_disabled` |
+
+Two orderings matter and are deliberate. The key is claimed **before** a
+create body is validated, so a replay short-circuits before a rule that has
+since changed can be re-evaluated; and a *validation* failure **releases**
+the key rather than storing the `400`, so a merchant who fixes the
+deployment and retries under the same key gets the intent rather than a
+day-old refusal. The claim itself is one `INSERT … ON CONFLICT`, never
+check-then-insert, whose `DO UPDATE` arm is guarded so it can only ever
+reclaim a row whose 24 hours have passed
+(`concurrent_claims_of_one_idempotency_key_yield_exactly_one_fresh`,
+`an_expired_in_flight_key_is_reclaimable_and_a_live_one_is_not`,
+`backends/crates/vpay-db/tests/repositories.rs`). Each claim carries a
+database-minted `claim_id`, and `store` and `release` both match on it, so a
+request whose expired claim was taken over by a later one can neither
+overwrite the new response nor delete the new claim
+(`a_reclaimed_key_is_not_writable_by_the_claim_it_replaced`) — an ABA whose
+payload would have been a payment response handed to a merchant for a request
+they did not make.
+
+**vpay answers `400` where Stripe answers `409` for a key still in flight.**
+[ADR-0011](../adr/0011-error-modelling.md) derives the status from the
+error's `Category` and `Category::Idempotency` is `400`; splitting one
+Stripe `type` across two statuses is an ADR-level change, left as a
+maintainer decision. Branch on `code`, which is distinct either way.
+
+**Not built:** nothing sweeps the table on a schedule.
+`vpay_db::idempotency::sweep_expired` exists and `vpay-server` calls it once
+at boot as a stopgap; there is no worker job loop, so a long-lived
+deployment grows `idempotency_keys` monotonically between restarts.
+
 ### Resources
 
-| Method | Path | Request fields | Returns |
-|---|---|---|---|
-| `POST` | `/v1/payment_intents` | `amount`, `currency`, `payment_method_types[]`, `metadata[…]`, `description` | `payment_intent` |
-| `GET` | `/v1/payment_intents/{id}` | | `payment_intent` |
-| `POST` | `/v1/payment_intents/{id}/confirm` | `payment_method_data[type]`, `payment_method_data[mtn_momo][msisdn]` (push), `return_url` (redirect) | `payment_intent` |
-| `POST` | `/v1/payment_intents/{id}/cancel` | | `payment_intent` |
-| `GET` | `/v1/payment_intents` | `limit`, `starting_after`, `ending_before` | `list` of `payment_intent` |
-| `POST` | `/v1/refunds` | `payment_intent`, `amount` (omit for full), `reason`, `metadata[…]` | `refund` |
-| `GET` | `/v1/events` | `limit`, `starting_after`, `ending_before`, `type` | `list` of `event` |
-| `GET` | `/v1/balance` | | `balance` |
+**Served** marks what a running `vpay-server` actually answers as of
+2026-09-03. Everything else in this table is implemented by both SDKs and by
+neither server route: an authenticated call gets the honest `404`.
+
+| Method | Path | Request fields | Returns | Served |
+|---|---|---|---|---|
+| `POST` | `/v1/payment_intents` | `amount`, `currency`, `payment_method_types[]`, `metadata[…]`, `description` | `payment_intent` | ✅ |
+| `GET` | `/v1/payment_intents/{id}` | | `payment_intent` | ✅ |
+| `POST` | `/v1/payment_intents/{id}/confirm` | `payment_method_data[type]`, `payment_method_data[mtn_momo][msisdn]` (push), `return_url` (redirect) | `payment_intent` | 🟡 routed; answers `501 not_implemented` at the rail |
+| `POST` | `/v1/payment_intents/{id}/cancel` | | `payment_intent` | ✅ |
+| `GET` | `/v1/payment_intents` | `limit`, `starting_after`, `ending_before` | `list` of `payment_intent` | ✅ |
+| `POST` | `/v1/refunds` | `payment_intent`, `amount` (omit for full), `reason`, `metadata[…]` | `refund` | ⛔ 404 |
+| `GET` | `/v1/events` | `limit`, `starting_after`, `ending_before`, `type` | `list` of `event` | ⛔ 404 |
+| `GET` | `/v1/balance` | | `balance` | ⛔ 404 |
 
 ### Objects
 
@@ -309,18 +395,41 @@ has not made:
 
 ## Status
 
-**The server half of this contract now exists, and the SDKs have a real OP
-to talk to.** `vpay-server` serves `POST /v1/oauth/token`,
+**Updated 2026-09-03 (Step 2): the journey now has a far end.**
+`vpay-server` serves `POST /v1/oauth/token`,
 `GET /v1/oauth/.well-known/openid-configuration` and
-`GET /v1/oauth/jwks.json`, and every other `/v1` path sits behind the
-`AuthenticatedMerchant` extractor. **What is still missing is the other end
-of the journey: `/v1` implements no business resource**, so a merchant who
-authenticates successfully gets an honest `404 unknown_route` from every
-resource call in the table above. That is the intended answer, not a
+`GET /v1/oauth/jwks.json`, every other `/v1` path sits behind the
+`AuthenticatedMerchant` boundary, **and five of that boundary's routes now
+answer with a payment intent rather than a 404**: create, retrieve, list and
+cancel return the object; confirm reaches the rail adapter and returns
+`501 not_implemented`. `/v1/refunds`, `/v1/events` and `/v1/balance` are
+still the honest 404, and that is the intended answer rather than a
 placeholder.
 
+**Evidence for the Step 2 half, run on this machine on 2026-09-03 with a
+working rootless Docker daemon:** `cargo nextest run -p vpay-db -p
+vpay-tests-integration` — **74 passed, 0 failed, 0 skipped**, of which 16 are
+the new `backends/tests/integration/tests/payment_intents.rs` suite (its test
+names are cited throughout this document and in
+[`docs/status.md`](../status.md)) and 7 are `merchant_token_flow`, one more
+than the six listed below. This is the first time the Docker-backed form of
+the merchant-token tests has been observed passing here rather than against a
+hand-rolled scratch database.
+
+**The wire object is pinned against the Rust SDK's own type**, not a copy:
+`the_merchant_sdk_deserialises_what_this_renders` decodes what
+`vpay_api::model` renders into `vpay_sdk::PaymentIntent`, and
+`the_wire_object_is_the_sdk_fixture` / `every_documented_key_is_present_including_the_null_ones`
+pin all twelve keys including the three that must be present-and-null.
+**The Node SDK's model is not exercised against this renderer by anything** —
+its parity rests on the SDK-to-SDK form-body tests described below.
+
 **Read the evidence before the claim.** `backends/tests/integration/tests/merchant_token_flow.rs`
-boots a real router against a real Postgres and covers six things:
+boots a real router against a real Postgres and covers seven things (the
+seventh, `a_token_minted_with_no_audience_is_addressed_to_the_client_and_refused_on_v1`,
+was added after this list was first written: a token this server signed with
+no requested audience carries the `client_id` as `aud` and is refused on
+`/v1` for that alone):
 
 - `an_sdk_client_authenticates_and_reaches_the_honest_404` — the Rust SDK
   mints an assertion, exchanges it for a token, and reaches `/v1` past the
@@ -341,11 +450,14 @@ boots a real router against a real Postgres and covers six things:
   twice by hand; the second is `invalid_client`/401 while still inside its
   own lifetime.
 
-**Those six tests have been run once: by the implementer, against a scratch
-database on an already-running Postgres, because the testcontainers
-bootstrap could not run on that machine. All six passed. The Docker-backed
-form has not run in CI.** Nothing else has observed this flow working. Treat
-"it works" as unverified until a CI run says otherwise;
+**Evidence, corrected 2026-09-03.** The previous version of this paragraph
+said these tests had run once, by hand, against a scratch database, because
+testcontainers could not start on the authoring machine. That is no longer
+the state: on 2026-09-03 all seven ran under testcontainers on this machine
+as part of `cargo nextest run -p vpay-db -p vpay-tests-integration`
+(**74 passed, 0 failed, 0 skipped**), against a real `postgres:16-alpine`
+container. **They have still never run in CI**, and no vpay outside a test
+process has ever completed this handshake for a real merchant.
 [`docs/status.md`](../status.md) records the state of that evidence and is
 the page to check.
 
@@ -358,9 +470,20 @@ work does not close them.
 
 **Not done, and not hidden by any of the above:**
 
-- **No `/v1` resource route.** Create, retrieve, confirm, cancel, list,
-  refund, events, balance — the SDKs implement all eight; the server
-  implements none.
+- **No rail call, so no payment.** The SDKs implement eight resource
+  endpoints; the server now routes five of them (create, retrieve, list,
+  cancel, confirm) and none of the other three. **`confirm` stops at the
+  adapter's `NotImplemented` and answers `501`** — no HTTP request has ever
+  been made to a rail by this code, and no payment intent has ever left
+  `requires_payment_method` except into `canceled`.
+- **`next_action` is never populated and `return_url` is dropped.** A
+  redirect confirm validates `return_url` and discards it; `charges` has no
+  column for it, and the `next_action` it would feed can only come from a
+  successful `submit`.
+- **No `/v1/refunds`, `/v1/events` or `/v1/balance`.** Migrations `0017` and
+  `0018` add the `refunds` and `events` schemas and nothing reads or writes
+  either table.
+- **No scheduled idempotency sweep.** See the Idempotency section above.
 - **No rate limit on `/token`.** [ADR-0009](../adr/0009-dashboard-oidc-provider.md)
   leaves it to Kubernetes ingress. The endpoint is public and
   unauthenticated by necessity (the credential is the request body), and

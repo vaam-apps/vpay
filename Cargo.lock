@@ -4132,6 +4132,7 @@ name = "vpay-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "thiserror",
  "time",
  "uuid",
@@ -4147,12 +4148,14 @@ dependencies = [
  "chrono",
  "serde_json",
  "sqlx",
+ "subtle",
  "testcontainers",
  "testcontainers-modules",
  "thiserror",
  "time",
  "tokio",
  "tracing",
+ "uuid",
  "vpay-core",
  "vpay-testkit",
 ]

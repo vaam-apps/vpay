@@ -43,6 +43,27 @@
 //! See the constants and their doc comments in `pool` for the numbers and
 //! the reasoning behind each one.
 
+// The repository modules are `pub` rather than flattened into re-exported
+// free functions, unlike the three older ones below. Their names carry the
+// meaning: `payment_intents::insert` says what a bare `insert` would not,
+// and `charges::insert_for_intent` and `idempotency::claim` would collide
+// or read as nonsense at the crate root. The row and seed *types* are
+// re-exported below anyway, so a caller spells a type once and reaches a
+// function through the table it belongs to.
+pub mod charges;
+pub mod config_reconcile;
+pub mod idempotency;
+// `pub` for the same reason the repository modules are, plus one of its own:
+// a test that wants to prove a writer actually takes its lock has to be able
+// to *hold* that lock from outside (see
+// `reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_released` in
+// `tests/repositories.rs`), and an operator reading `pg_locks` needs the
+// values to be findable from a crate doc rather than by grepping for a hex
+// literal.
+pub mod lock_keys;
+pub mod payment_intents;
+pub mod provider_requests;
+
 mod client_assertion;
 mod disabled_clients;
 mod error;
@@ -51,11 +72,15 @@ mod migrations;
 mod pool;
 mod signing_keys;
 
+pub use charges::{ChargeRow, NewCharge};
 pub use client_assertion::{SqlClientAssertionStore, delete_expired_client_assertion_jtis};
+pub use config_reconcile::{CurrencySeed, ProviderSeed};
 pub use disabled_clients::{disable_client, enable_client, is_client_disabled};
 pub use error::DbError;
 pub use health::check_connection;
+pub use idempotency::{IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome};
 pub use migrations::run_migrations;
+pub use payment_intents::{ListPage, NewPaymentIntent, PaymentIntentRow};
 pub use pool::connect;
 pub use signing_keys::{
     ActivationOutcome, SigningKey, active_signing_key_kid, ensure_active_signing_key,

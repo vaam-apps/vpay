@@ -1,14 +1,17 @@
 //! The Stripe-shaped HTTP surface.
 //!
 //! STATUS: `/healthz`, the `/v1/oauth` merchant OP ([`op`]), the
-//! authentication boundary in front of `/v1`, and the Stripe-shaped 404
-//! envelope are implemented. **No `/v1` business resource exists yet**: the
-//! authenticated `/v1` nest's only route is the honest 404 fallback, so a
-//! merchant who authenticates successfully and asks for
-//! `/v1/payment_intents/pi_x` is told plainly that vpay does not implement
-//! it. See `docs/status.md`. This file must never grow a route that returns
-//! fabricated data; a real database check (below) and a real 404 are the
-//! opposite of fabricated data, so they stay.
+//! authentication boundary in front of `/v1`, `/v1/payment_intents`
+//! ([`v1::payment_intents`]) and the Stripe-shaped 404 envelope are
+//! implemented. What is *not*: no rail adapter implements `submit`, so a
+//! `confirm` reaches the rail, records the attempt, and answers the
+//! documented `501 not_implemented` — a real answer, not a fabricated
+//! success. Every other `/v1` resource an SDK can name (`/v1/refunds`,
+//! `/v1/balance`, `/v1/events`) is routed nowhere and answers the honest
+//! 404 from the nest's fallback. See `docs/status.md`. This file must never
+//! grow a route that returns fabricated data; a real database check (below),
+//! a real 404 and a real 501 are the opposite of fabricated data, so they
+//! stay.
 //!
 //! [`resource_auth`] supplies the bearer-token validation now mounted in
 //! front of `/v1` — see [`router`]'s "Route tree" section for exactly which
@@ -32,33 +35,46 @@
 
 use std::borrow::Cow;
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use axum::body::Body;
 use axum::extract::{FromRef, State};
 use axum::http::{Method, Request, Uri};
-use axum::middleware::{Next, from_extractor_with_state, from_fn};
+use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::{Router, http::StatusCode, routing::get, routing::post};
 use serde_json::{Map, Value, json};
 use tower::ServiceBuilder;
+use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
 use tracing::Span;
 use vpay_db::PgPool;
+use vpay_provider::ProviderAdapter;
 
 pub mod error;
+pub mod form;
 pub mod http_client;
+pub mod idempotency;
 mod jwks_cache;
+pub mod model;
 pub mod op;
 pub mod resource_auth;
 #[cfg(test)]
 mod test_fixtures;
 #[cfg(test)]
 mod test_log;
+pub mod v1;
 
 pub use error::ApiError;
 pub use resource_auth::MerchantJwtValidator;
+pub use v1::{
+    MerchantScope, ResourceConfig, SCOPE_PAYMENTS_READ, SCOPE_PAYMENTS_WRITE, V1_ROUTES, V1Route,
+    required_scopes,
+};
 
-use resource_auth::AuthenticatedMerchant;
+use resource_auth::extract_bearer_token;
 
 /// The header carrying the request id, in and out.
 ///
@@ -166,6 +182,32 @@ pub struct RouterDeps {
     /// loopback on the port it bound) and not something derivable from the
     /// OP's public issuer. See [`op::MerchantOp::jwks_url`].
     pub merchant_validator: MerchantJwtValidator,
+    /// Every payment rail this process can reach, by `providers.code`.
+    ///
+    /// **Built by the binary, not by this crate.** `vpay-api` links no
+    /// adapter crate and must not: `if provider == "mtn_momo"` outside an
+    /// adapter is a defect (ADR-0002), and the way to make that structural
+    /// rather than a review rule is for the HTTP layer to hold nothing but
+    /// trait objects it cannot name the concrete types of. Each binary owns
+    /// its own `adapters()` and hands the map in here.
+    ///
+    /// A `BTreeMap` rather than a `Vec` scanned per request: a confirm
+    /// resolves a rail by the `payment_method_data[type]` a caller sent, and
+    /// that is a lookup. Ordered rather than hashed so a log line or a test
+    /// that iterates it is deterministic; the map holds two entries, so the
+    /// lookup cost is irrelevant either way.
+    ///
+    /// `Arc` because axum clones router state per request and an adapter may
+    /// hold a connection pool of its own.
+    pub adapters: Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>,
+    /// The slice of the YAML deployment configuration a request path needs —
+    /// see [`ResourceConfig`], which is also where `livemode` reaches a
+    /// handler from.
+    ///
+    /// Passed in rather than loaded here so that both binaries project the
+    /// same `Config` the same way, and so this crate never learns how to
+    /// find a config file.
+    pub resource_config: Arc<ResourceConfig>,
 }
 
 /// Shared state for every route in this router.
@@ -175,10 +217,12 @@ pub struct RouterDeps {
 /// function of a `PgPool` and could be mounted by a different assembler
 /// entirely.
 #[derive(Clone)]
-struct AppState {
+pub(crate) struct AppState {
     pool: PgPool,
     merchant_op: std::sync::Arc<op::MerchantOp>,
     merchant_validator: MerchantJwtValidator,
+    adapters: Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>,
+    resource_config: Arc<ResourceConfig>,
 }
 
 /// So [`op::jwks::jwks_handler`] can take `State<PgPool>` and stay
@@ -197,11 +241,28 @@ impl FromRef<AppState> for std::sync::Arc<op::MerchantOp> {
     }
 }
 
-/// So [`AuthenticatedMerchant`] resolves its validator out of router state
-/// — the bound its `FromRequestParts` impl requires.
+/// So [`require_merchant_token`] resolves its validator out of router state
+/// — the bound that middleware requires.
 impl FromRef<AppState> for MerchantJwtValidator {
     fn from_ref(state: &AppState) -> Self {
         state.merchant_validator.clone()
+    }
+}
+
+/// So [`require_merchant_token`] can map a token's `client_id` to a tenant,
+/// and so a `/v1` handler can take `State<Arc<ResourceConfig>>` and stay
+/// independent of how this router is assembled.
+impl FromRef<AppState> for Arc<ResourceConfig> {
+    fn from_ref(state: &AppState) -> Self {
+        Arc::clone(&state.resource_config)
+    }
+}
+
+/// So a `/v1` handler can resolve a rail by code without this crate knowing
+/// which adapters exist — see [`RouterDeps::adapters`].
+impl FromRef<AppState> for Arc<BTreeMap<String, Box<dyn ProviderAdapter>>> {
+    fn from_ref(state: &AppState) -> Self {
+        Arc::clone(&state.adapters)
     }
 }
 
@@ -359,6 +420,133 @@ async fn discard_unusable_request_id(mut request: Request<Body>, next: Next) -> 
     next.run(request).await
 }
 
+/// The `/v1` authentication **and authorisation** boundary: validates the
+/// bearer token once, checks it carries a scope for what is being asked, and
+/// puts what it learned on the request.
+///
+/// Two things go into the request's extensions, and both are read back by
+/// extractors that fail closed if they are missing
+/// ([`resource_auth::AuthenticatedMerchant`], [`MerchantScope`]):
+///
+/// - the validated [`ResourceClaims`](resource_auth::ResourceClaims) —
+///   `client_id` and `scope`;
+/// - the [`MerchantScope`] those claims resolve to, which is the tenant
+///   every `/v1` query is filtered by.
+///
+/// # Why the scope check is here and not in a handler
+///
+/// [`v1::required_scopes`] decides what the request's method needs, and a
+/// token carrying none of those scopes is [`ApiError::Forbidden`] — 403,
+/// not 404: this is a statement about the *credential*, which the caller can
+/// inspect for itself, so there is nothing to leak by saying so plainly.
+/// (Object-level tenancy is the opposite case and answers
+/// [`ApiError::NotFound`]; see that variant.)
+///
+/// It runs before the router matches a route, which is what makes it
+/// impossible for a new `/v1` handler to be added without it — the failure
+/// mode of a per-handler check is a handler that simply does not have one,
+/// and nothing in the type system notices. The cost is that the rule can
+/// only see the method, which is why it is expressed per-method.
+///
+/// # Why a middleware and not `from_extractor_with_state`
+///
+/// axum 0.8's `from_extractor_with_state::<AuthenticatedMerchant, _>`
+/// *discards* the value it extracted. It is a fine gate and a poor
+/// hand-off: every handler that then asked for the claims validated the
+/// same token a second time — a second JWKS cache consultation, which can
+/// legitimately return a different key set than the first one did if a
+/// refresh landed in between. One validation per request is both cheaper
+/// and the only way the boundary and the handler cannot disagree.
+///
+/// # Why an unknown `client_id` is 403 and not 401
+///
+/// The token is genuine: this process signed it, and it validates. What is
+/// missing is a *registration* — the deployment's YAML no longer maps this
+/// client to a tenant, which is what happens for the remaining TTL of a
+/// token minted before a config change that removed the client. 401 would
+/// tell the caller to present a credential, and it already has a valid one;
+/// 403 says the credential is not permitted to act here, which is the truth.
+/// (It is also what would happen if a token minted by a *different* vpay
+/// deployment sharing this issuer arrived, which is worth failing closed on
+/// rather than falling back to any tenant.)
+///
+/// Generic over the state so that `resource_auth`'s own tests mount this
+/// exact function rather than a copy of it — a middleware reimplemented in a
+/// test harness proves nothing about the one that ships.
+pub async fn require_merchant_token<S>(
+    State(state): State<S>,
+    request: Request<Body>,
+    next: Next,
+) -> Response
+where
+    S: Send + Sync + Clone + 'static,
+    MerchantJwtValidator: FromRef<S>,
+    Arc<ResourceConfig>: FromRef<S>,
+{
+    let (mut parts, body) = request.into_parts();
+
+    let claims = {
+        let token = match extract_bearer_token(&parts) {
+            Ok(token) => token,
+            Err(rejection) => return ApiError::from(rejection).into_response(),
+        };
+        match MerchantJwtValidator::from_ref(&state)
+            .0
+            .validate(token)
+            .await
+        {
+            Ok(claims) => claims,
+            Err(rejection) => return ApiError::from(rejection).into_response(),
+        }
+    };
+
+    let resource_config = Arc::<ResourceConfig>::from_ref(&state);
+    let Some(merchant_id) = resource_config.merchant_id_for(&claims.client_id) else {
+        tracing::warn!(
+            client_id = %claims.client_id,
+            "a validly signed /v1 token names a client this deployment has no registration for; \
+             refusing rather than guessing a tenant"
+        );
+        return ApiError::Forbidden.into_response();
+    };
+    let scope = MerchantScope {
+        merchant_id: merchant_id.to_owned(),
+    };
+
+    // The token says which client, and it also says what that client was
+    // authorised to do. Checked here rather than in each handler for the
+    // same reason the tenant is resolved here: a handler that forgot would
+    // be a silent hole, and there is nothing in a `pub(crate) async fn`'s
+    // signature to notice it is missing.
+    let required = v1::required_scopes(&parts.method);
+    if !required.iter().any(|scope| claims.has_scope(scope)) {
+        tracing::warn!(
+            client_id = %claims.client_id,
+            method = %parts.method,
+            granted = ?claims.scope,
+            required = ?required,
+            "a /v1 token carries none of the scopes this request needs; refusing"
+        );
+        return ApiError::Forbidden.into_response();
+    }
+
+    parts.extensions.insert(claims);
+    parts.extensions.insert(scope);
+
+    next.run(Request::from_parts(parts, body)).await
+}
+
+/// The largest `/v1` request body this router will read, in bytes.
+///
+/// 64 KiB. Every documented `/v1` body is a handful of form fields
+/// (`examples/merchant-curl/README.md`); the biggest legitimate one is a
+/// create with 50 metadata entries, which the validation bounds cap at
+/// roughly 27 KB of keys and values. 64 KiB leaves room for percent-encoding
+/// and still refuses a body an unauthenticated caller could use to make this
+/// process buffer megabytes — the limit layer is mounted *outside* the token
+/// check for exactly that reason.
+const V1_BODY_LIMIT_BYTES: usize = 64 * 1024;
+
 /// Builds the application router from [`RouterDeps`].
 ///
 /// # Route tree
@@ -376,30 +564,36 @@ async fn discard_unusable_request_id(mut request: Request<Body>, next: Next) -> 
 /// | **everything else under `/v1`** | `AuthenticatedMerchant` | The merchant API. |
 /// | anything else | none | The honest 404. |
 ///
-/// The `/v1` nest's *only* route is the 404 fallback, and that is the
-/// production behaviour, not a placeholder: vpay implements no `/v1`
-/// business resource yet (`docs/status.md`). The consequence is a boundary
-/// that is observable today —
+/// The `/v1` nest mounts [`v1::V1_ROUTES`] and a 404 fallback for
+/// everything else, which is the production behaviour and not a
+/// placeholder: `/v1/payment_intents` is real, and `/v1/refunds`,
+/// `/v1/balance` and `/v1/events` are not implemented and are therefore not
+/// routed (`docs/status.md`). The boundary is observable in three answers —
 ///
 /// - `GET /v1/payment_intents/pi_x` with no bearer token → **401**, the
 ///   [`ApiError::Auth`] envelope;
-/// - the same request with a valid merchant token → **404**, the
-///   `unknown_route` envelope.
+/// - the same request with a valid merchant token, for an id this merchant
+///   has no intent under → **404**, the `resource_missing` envelope;
+/// - `GET /v1/balance` with a valid token → **404**, the `unknown_route`
+///   envelope.
 ///
-/// — which is exactly the pair of answers a merchant integrating against
-/// this deployment should get. Inventing a resource so that the second
-/// answer could be a `200` is the failure mode `CLAUDE.md` names first.
+/// — which is exactly what a merchant integrating against this deployment
+/// should get. Inventing a `/v1/balance` so the third answer could be a
+/// `200` is the failure mode `CLAUDE.md` names first.
 ///
-/// The authentication layer is
-/// [`from_extractor_with_state::<AuthenticatedMerchant, _>`], mounted with
-/// `Router::layer` on the nested router so that it wraps that router's
-/// fallback too. `route_layer` is the wrong tool and axum says so: it does
-/// not apply to a fallback by design, and since this nest's only route *is*
-/// its fallback, axum refuses the build outright — "Adding a route_layer
-/// before any routes is a no-op" (verified by making the swap and watching
-/// every router test panic). Once a real `/v1` resource lands, that panic
-/// stops happening and the swap becomes silently wrong instead, which is why
-/// the choice is written down here rather than left to the compiler.
+/// The authentication layer is [`require_merchant_token`] via
+/// [`from_fn_with_state`] (Step 2's D3 — that function's docs say why it is
+/// not `from_extractor_with_state`), mounted with `Router::layer` on the
+/// nested router so that it wraps that router's fallback too. `route_layer`
+/// is the wrong tool and axum says so: it does not apply to a fallback by
+/// design, so an unmatched `/v1/...` path would answer an *unauthenticated*
+/// 404 and tell an anonymous caller which `/v1` resources exist. When this
+/// nest had no routes at all, axum refused that spelling outright ("Adding a
+/// route_layer before any routes is a no-op"); now that it has routes, the
+/// swap would compile and be silently wrong, which is why the choice is
+/// written down here rather than left to the compiler —
+/// `an_unauthenticated_v1_request_is_401_not_404` is what actually catches
+/// it.
 ///
 /// A path under `/v1/oauth` that matches no OP route (say
 /// `/v1/oauth/authorize`, which vpay does not serve) answers an
@@ -480,6 +674,8 @@ pub fn router(deps: RouterDeps) -> Router {
         pool: deps.pool,
         merchant_op: deps.merchant_op,
         merchant_validator: deps.merchant_validator,
+        adapters: deps.adapters,
+        resource_config: deps.resource_config,
     };
 
     // Unauthenticated by necessity, not by omission — see the table above.
@@ -494,12 +690,22 @@ pub fn router(deps: RouterDeps) -> Router {
         // paragraph under it.
         .fallback(not_found);
 
-    // No `.route(..)` call here on purpose: there is no `/v1` resource to
-    // mount. `Router::layer` (not `route_layer`) is what puts the
-    // authentication extractor in front of the fallback below.
-    let v1 = Router::new()
-        .fallback(not_found)
-        .layer(from_extractor_with_state::<AuthenticatedMerchant, AppState>(state.clone()));
+    // Every route is mounted from `v1::V1_ROUTES` — see that constant, and
+    // `v1::routes`, which also carries the fallback. `Router::layer` (not
+    // `route_layer`) is what puts the two layers below in front of that
+    // fallback as well as in front of the routes.
+    let v1 = v1::routes()
+        .layer(from_fn_with_state(
+            state.clone(),
+            require_merchant_token::<AppState>,
+        ))
+        // Outside the token check, deliberately: a body limit that only
+        // applied to authenticated callers would let an anonymous one make
+        // this process buffer a body before the 401. `RequestBodyLimitLayer`
+        // rather than axum's `DefaultBodyLimit` because the latter is
+        // applied per-handler through extractors and would not cover a body
+        // read by middleware.
+        .layer(RequestBodyLimitLayer::new(V1_BODY_LIMIT_BYTES));
 
     Router::new()
         .route("/healthz", get(healthz))

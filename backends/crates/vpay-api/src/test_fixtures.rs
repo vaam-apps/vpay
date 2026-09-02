@@ -109,6 +109,11 @@ pub(crate) fn signing_key() -> LoadedSigningKey {
 pub(crate) fn merchant(client_id: &str, scopes: &[&str]) -> MerchantClient {
     MerchantClient {
         client_id: client_id.to_owned(),
+        // Deliberately *not* the `client_id`: the tenant and the credential
+        // are different values (`MerchantClient::merchant_id`), and a
+        // fixture that made them equal would let a handler that queried by
+        // the wrong one pass every test in this crate.
+        merchant_id: format!("{client_id}-tenant"),
         jwks: Some(serde_json::json!({ "keys": [] })),
         grant_types: vec![GrantType::ClientCredentials],
         scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
@@ -149,7 +154,7 @@ pub(crate) fn merchant_op() -> Arc<MerchantOp> {
     Arc::new(MerchantOp::new(&config(), signing_key(), lazy_pool()))
 }
 
-/// The same three-field [`RouterDeps`] `vpay-server`'s `main` builds, with a
+/// The same [`RouterDeps`] `vpay-server`'s `main` builds, with a
 /// generated key instead of a Secret mount and a deliberately unreachable
 /// JWKS URL.
 ///
@@ -165,6 +170,12 @@ pub(crate) fn deps() -> RouterDeps {
     RouterDeps {
         pool: lazy_pool(),
         merchant_op: merchant_op(),
+        // Empty, and correct: `vpay-api` links no adapter crate at all
+        // (ADR-0002) — the map is built by each binary from its own
+        // `adapters()`. A test in this crate that needed a rail would be a
+        // test that belongs in `backends/tests/integration`.
+        adapters: Arc::new(std::collections::BTreeMap::new()),
+        resource_config: Arc::new(crate::ResourceConfig::from_config(&config())),
         merchant_validator: MerchantJwtValidator(
             JwtValidator::new(
                 "http://127.0.0.1:1/v1/oauth/jwks.json",

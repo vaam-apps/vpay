@@ -10,9 +10,9 @@
 //! this file can make are the ones that span all of them:
 //!
 //! - **(a)** the SDK, configured exactly as a merchant would configure it,
-//!   obtains a token and reaches an authenticated `/v1` route — which today
-//!   answers the honest 404, because vpay implements no `/v1` resource yet;
-//!   and the same route with no bearer token answers the 401 envelope.
+//!   obtains a token and reaches an authenticated `/v1` route — which
+//!   answers the honest 404 for an id no intent exists under; and the same
+//!   route with no bearer token answers the 401 envelope.
 //! - **(b)** `vpay_db::disable_client` takes effect on the *next token
 //!   request*, with no restart: `invalid_client`, HTTP 401.
 //! - **(c)** a token this server itself minted, but for the dashboard
@@ -32,13 +32,22 @@
 //!   it: the claim is about what `authkestra_op` actually mints, so a unit
 //!   test would have to assert it against a token the test itself
 //!   constructed, which proves nothing about the OP.
+//! - **(g)** a token request that omits the `client_id` form field — which
+//!   RFC 7523 §3 permits, since the assertion's `sub` names the client —
+//!   still receives its registration's default scope, and the token it gets
+//!   authorises a `/v1` call.
+//! - **(h)** that default widens nothing: a request naming a *narrower*
+//!   scope gets exactly that, one naming a scope the registration does not
+//!   hold is `invalid_scope`, and one naming none gets the registration.
 //!
 //! # What has actually been run
 //!
-//! All seven tests below **have been executed and pass through
+//! Every test below **has been executed and passes through
 //! [`migrated_postgres`] itself** — a real `postgres:16-alpine` container
-//! started by `testcontainers`, the same path CI takes. 7/7, alongside the
-//! rest of this crate's suite (26/26).
+//! started by `testcontainers`, the same path CI takes. The counts as of the
+//! last run are in this crate's summary, not repeated here: a number quoted
+//! in prose goes stale the moment a case is added, which is how a doc
+//! comment starts overstating what was run.
 //!
 //! This paragraph previously said the container bootstrap was *not*
 //! verified, because the Docker daemon on the machine this was written on
@@ -65,115 +74,50 @@
 //! deliberately cannot express it (a request with no bearer token; the same
 //! assertion sent twice).
 //!
-//! Repeats the small pool-and-migrate helper from `tests/postgres_smoke.rs`
-//! for the reason `tests/authkestra_op_smoke.rs` states: each `tests/*.rs`
-//! compiles to its own test binary, so there is no `pub` item to import
-//! without introducing a shared module for a handful of lines. The container
-//! start underneath it is shared:
-//! `vpay_testkit::containers::start_postgres_with_retry`.
+//! The pool-and-migrate helper, the key generator, the crypto-provider
+//! install and the `RouterDeps` assembly all live in `tests/support/mod.rs`
+//! now. Step 2 is what tipped that balance: `RouterDeps` grew the adapter map
+//! and the configuration projection, and a per-suite copy of *that* would let
+//! one suite's router quietly stop resembling `vpay-server`'s.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Once};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use rsa::pkcs1::{EncodeRsaPrivateKey as _, LineEnding};
-use rsa::traits::PublicKeyParts as _;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
-use vpay_api::RouterDeps;
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::LoadedSigningKey;
 use vpay_api::resource_auth::{JwtValidator, MerchantJwtValidator, Surface};
-use vpay_config::oauth::{GrantType, MerchantClient};
 use vpay_config::{Config, Deployment, MERCHANT_AUDIENCE};
 use vpay_sdk::Credentials;
 
+mod support;
+
+use support::{
+    ensure_crypto_provider_installed, generate_key, merchant_client_with_scopes, migrated_postgres,
+    router_deps,
+};
+
 const CLIENT_ID: &str = "acme-cameroon";
+
+/// The tenant `CLIENT_ID` acts for — never equal to the `client_id`, so a
+/// query filtered by the wrong one cannot pass.
+const MERCHANT_ID: &str = "acme-cameroon-tenant";
 
 /// The `aud` a `/dash/v1` token would carry —
 /// `vpay_api::resource_auth::Surface::Dashboard::audience()`, which is not
 /// `pub`-reachable as a value, so it is spelled here. Case (c) exists
 /// precisely because these two strings must never be interchangeable.
 const DASHBOARD_AUDIENCE: &str = "vpay:dash/v1";
-
-/// Same as `tests/postgres_smoke.rs`'s: the container itself comes from
-/// `vpay_testkit::containers::start_postgres_with_retry` (why the tag is
-/// pinned, and which start errors are retried, are documented there); what
-/// stays per-file is the pool and the migration run.
-async fn migrated_postgres() -> anyhow::Result<(ContainerAsync<PostgresImage>, PgPool)> {
-    let container = vpay_testkit::containers::start_postgres_with_retry()
-        .await
-        .context("postgres:16-alpine container starts (it is cached locally on this machine)")?;
-
-    let host = container.get_host().await.context("container host")?;
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .context("container port")?;
-    let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
-
-    let pool = PgPool::connect(&url)
-        .await
-        .context("connects to the freshly started container")?;
-
-    sqlx::migrate!("../../migrations")
-        .run(&pool)
-        .await
-        .context("every migration under backends/migrations applies cleanly")?;
-
-    Ok((container, pool))
-}
-
-/// `authkestra_resource::jwt::JwksCache::new` builds a `reqwest::Client`
-/// eagerly, and the workspace pins reqwest with `rustls-no-provider`, which
-/// panics without a process-wide default. `vpay-server`'s `main` installs
-/// one at the top of startup for exactly this reason; this test binary is
-/// its own process, so it has to do the same.
-fn ensure_crypto_provider_installed() {
-    static INSTALLED: Once = Once::new();
-    INSTALLED.call_once(|| {
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .ok();
-    });
-}
-
-/// An RSA keypair in the two shapes this file needs: the private half as a
-/// PKCS#1 PEM (what a merchant hands `vpay_sdk::Credentials::rsa_pem`, and
-/// what a Secret mount holds for the server's own key) and the public half
-/// as a JWK Set (what vpay holds in YAML for a merchant).
-///
-/// Generated per call, never hard-coded. 2048 bits is the floor
-/// `vpay_api::op::keys` enforces and is what keeps these tests to about a
-/// second of key generation each.
-fn generate_key() -> (String, Value) {
-    let mut rng = rand::rngs::OsRng;
-    let private_key = rsa::RsaPrivateKey::new(&mut rng, 2048).expect("rsa key generation succeeds");
-    let public_key = private_key.to_public_key();
-    let pem = private_key
-        .to_pkcs1_pem(LineEnding::LF)
-        .expect("pkcs1 pem encoding succeeds")
-        .to_string();
-
-    let jwks = json!({
-        "keys": [{
-            "kty": "RSA",
-            "use": "sig",
-            "alg": "RS256",
-            "n": URL_SAFE_NO_PAD.encode(public_key.n().to_bytes_be()),
-            "e": URL_SAFE_NO_PAD.encode(public_key.e().to_bytes_be()),
-        }]
-    });
-    (pem, jwks)
-}
 
 /// A running vpay server and everything a test needs to talk to it.
 ///
@@ -238,6 +182,18 @@ impl Harness {
 /// was actually bound — because a harness that assembled things in a
 /// different order would be testing a different program.
 async fn harness() -> anyhow::Result<Harness> {
+    harness_with_scopes(&[vpay_api::SCOPE_PAYMENTS_WRITE]).await
+}
+
+/// [`harness`] with the merchant's registered `scopes:` spelled out.
+///
+/// The registration is not decoration for cases (g) and (h): it *is* the
+/// default scope the OP applies (`vpay_api::op::default_scopes`) and the set
+/// a requested scope is checked against, so those two cases need a
+/// registration with more than one scope in it — with a single one, "the
+/// request's narrower scope won" and "the default was applied" produce
+/// identical tokens and neither claim would be tested.
+async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
     ensure_crypto_provider_installed();
 
     let (container, pool) = migrated_postgres().await?;
@@ -269,17 +225,16 @@ async fn harness() -> anyhow::Result<Harness> {
         },
         providers: Vec::new(),
         currencies: Vec::new(),
-        merchant_clients: vec![MerchantClient {
-            client_id: CLIENT_ID.to_owned(),
-            jwks: Some(merchant_jwks),
-            grant_types: vec![GrantType::ClientCredentials],
-            scopes: vec!["payments:write".to_owned()],
-            // `vpay:v1` is what both SDKs request by default and what
-            // `Config::validate_all` requires a merchant to be able to
-            // target; without it the token endpoint answers `invalid_target`.
-            allowed_audiences: vec![MERCHANT_AUDIENCE.to_owned()],
-            client_secret: None,
-        }],
+        // `support::merchant_client` sets `vpay:v1` as the allowed audience,
+        // which is what both SDKs request by default and what
+        // `Config::validate_all` requires a merchant to be able to target;
+        // without it the token endpoint answers `invalid_target`.
+        merchant_clients: vec![merchant_client_with_scopes(
+            CLIENT_ID,
+            MERCHANT_ID,
+            merchant_jwks,
+            scopes,
+        )],
         dashboard_client: None,
     };
 
@@ -294,11 +249,7 @@ async fn harness() -> anyhow::Result<Harness> {
         .expect("the vendored-roots JWKS client builds"),
     );
 
-    let deps = RouterDeps {
-        pool: pool.clone(),
-        merchant_op,
-        merchant_validator,
-    };
+    let deps = router_deps(pool.clone(), merchant_op, merchant_validator, &config);
     let server = tokio::spawn(async move {
         // A serve error here is not something a test can assert on
         // meaningfully — the assertions below fail on a refused connection
@@ -342,6 +293,33 @@ fn token_request_form(assertion: &str) -> Vec<(&'static str, String)> {
     ]
 }
 
+/// [`token_request_form`] with the `client_id` field removed — the request
+/// RFC 7523 §3 explicitly permits, since the assertion's `sub` already names
+/// the client.
+///
+/// Derived from `token_request_form` for the same reason
+/// [`token_request_form_without_audience`] is: a case that failed because it
+/// had also dropped `client_assertion_type` would prove nothing about
+/// `client_id`.
+fn token_request_form_without_client_id(assertion: &str) -> Vec<(&'static str, String)> {
+    let mut form = token_request_form(assertion);
+    form.retain(|(field, _)| *field != "client_id");
+    assert_eq!(
+        form.len(),
+        4,
+        "exactly one field must have been removed from the token request"
+    );
+    form
+}
+
+/// [`token_request_form`] with an explicit `scope` — the request a client
+/// that wants *less* than its registration makes.
+fn token_request_form_with_scope(assertion: &str, scope: &str) -> Vec<(&'static str, String)> {
+    let mut form = token_request_form(assertion);
+    form.push(("scope", scope.to_owned()));
+    form
+}
+
 /// [`token_request_form`] with the `audience` field removed — the request a
 /// client that has simply never heard of RFC 8707 resource indicators sends,
 /// which both vpay SDKs avoid by always setting it.
@@ -370,6 +348,14 @@ fn token_request_form_without_audience(assertion: &str) -> Vec<(&'static str, St
 /// checked in this file — by the server, over HTTP, which is the only place
 /// it counts.
 fn unverified_aud(token: &str) -> String {
+    unverified_claim(token, "aud").expect("every token this OP mints carries a string aud")
+}
+
+/// One string claim of a token, read the same way and with the same caveat
+/// as [`unverified_aud`]. `None` when the claim is absent — which for
+/// `scope` is a real and important outcome, not a failure: it is what a
+/// token carries when no default was applied.
+fn unverified_claim(token: &str, name: &str) -> Option<String> {
     let payload = token
         .split('.')
         .nth(1)
@@ -378,11 +364,48 @@ fn unverified_aud(token: &str) -> String {
         .decode(payload)
         .expect("the payload segment is base64url");
     let claims: Value = serde_json::from_slice(&bytes).expect("the payload is JSON");
-    claims
-        .get("aud")
+    claims.get(name).and_then(Value::as_str).map(str::to_owned)
+}
+
+/// A token's `scope` claim as a *set*, which is what RFC 6749 §3.3 says a
+/// scope is: a space-delimited list whose order carries no meaning. Asserted
+/// as a set so these cases pin what was granted rather than the order
+/// `default_scopes` happened to join a registration in.
+fn granted_scopes(token: &str) -> Vec<String> {
+    let mut scopes: Vec<String> = unverified_claim(token, "scope")
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    scopes.sort();
+    scopes
+}
+
+/// Posts a token request and returns its status and body.
+async fn post_token(
+    harness: &Harness,
+    form: &[(&'static str, String)],
+) -> anyhow::Result<(u16, Value)> {
+    let response = raw_client()
+        .post(harness.token_endpoint())
+        .form(form)
+        .send()
+        .await
+        .context("the token endpoint answers")?;
+    let status = response.status().as_u16();
+    let body: Value = response.json().await.context("the body is JSON")?;
+    Ok((status, body))
+}
+
+/// The `access_token` of a successful token response, or a failure quoting
+/// the body that came back instead.
+fn access_token(status: u16, body: &Value) -> anyhow::Result<String> {
+    anyhow::ensure!(status == 200, "expected a token, got {status}: {body:#}");
+    Ok(body
+        .get("access_token")
         .and_then(Value::as_str)
-        .expect("every token this OP mints carries a string aud")
-        .to_owned()
+        .context("the token response carries an access_token")?
+        .to_owned())
 }
 
 // --------------------------------------------------------------- case (a)
@@ -392,13 +415,18 @@ fn unverified_aud(token: &str) -> String {
 /// The SDK obtains a token (proving: assertion minted, client resolved from
 /// YAML, `jti` recorded, token signed by the key announced in
 /// `oauth_signing_keys`) and reaches `/v1/payment_intents/pi_x` — which
-/// answers `404 unknown_route`, because vpay implements no payment-intent
-/// route yet. That 404 **is** the assertion: it is only reachable past the
-/// authentication boundary, so getting it proves the token was minted,
-/// fetched back over loopback JWKS, and validated.
+/// answers `404 resource_missing`, because this merchant has no intent under
+/// that id. That 404 **is** the assertion: the route is behind the
+/// authentication boundary and the query is filtered by the tenant the
+/// middleware resolved, so getting *this* 404 proves the token was minted,
+/// fetched back over loopback JWKS, validated, and mapped to a merchant.
 ///
-/// A 200 here would mean someone had invented a resource, which is the
-/// failure mode `CLAUDE.md` names first.
+/// The code matters, not just the status. Before Step 2 this answered
+/// `unknown_route` — the nest's fallback, from a route that did not exist.
+/// `resource_missing` is what says the route now exists and looked.
+/// `backends/tests/integration/tests/payment_intents.rs` is where the
+/// resource itself is proved; this file's claim is only that a token reaches
+/// it.
 #[tokio::test]
 async fn an_sdk_client_authenticates_and_reaches_the_honest_404() -> anyhow::Result<()> {
     let harness = harness().await?;
@@ -408,7 +436,7 @@ async fn an_sdk_client_authenticates_and_reaches_the_honest_404() -> anyhow::Res
         .payment_intents()
         .retrieve("pi_x")
         .await
-        .expect_err("vpay implements no payment-intent route yet; a 200 would be fabricated");
+        .expect_err("no intent exists under `pi_x`; a 200 would be fabricated");
 
     match error {
         vpay_sdk::Error::Api {
@@ -417,9 +445,9 @@ async fn an_sdk_client_authenticates_and_reaches_the_honest_404() -> anyhow::Res
             ref code,
             ..
         } => {
-            assert_eq!(status, 404, "authenticated, then unimplemented: {error:?}");
+            assert_eq!(status, 404, "authenticated, then no such object: {error:?}");
             assert_eq!(kind, "invalid_request_error");
-            assert_eq!(code.as_deref(), Some("unknown_route"));
+            assert_eq!(code.as_deref(), Some("resource_missing"));
         }
         other => panic!(
             "expected the vpay 404 envelope after a successful token exchange, got {other:?}"
@@ -493,7 +521,7 @@ async fn a_disabled_client_is_refused_with_invalid_client_and_401() -> anyhow::R
         .payment_intents()
         .retrieve("pi_x")
         .await
-        .expect_err("the honest 404 — see the case (a) test");
+        .expect_err("the honest 404 for a missing id — see the case (a) test");
 
     vpay_db::disable_client(&harness.pool, CLIENT_ID, Some("integration test"))
         .await
@@ -605,7 +633,13 @@ async fn a_dashboard_audience_token_is_refused_on_v1() -> anyhow::Result<()> {
         .issue_client_token_with_extra(
             CLIENT_ID,
             900,
-            None,
+            // The scope has to be named because this token is minted
+            // directly rather than obtained from the OP, which is where the
+            // registration's scopes are applied to a request that asks for
+            // none. Without it the control would be a `403` about
+            // authorisation, and this test's whole claim is that the *only*
+            // difference between the two tokens is the audience.
+            Some(vpay_api::SCOPE_PAYMENTS_READ.to_owned()),
             Some(MERCHANT_AUDIENCE.to_owned()),
             HashMap::new(),
         )
@@ -896,6 +930,195 @@ async fn the_same_client_assertion_cannot_be_spent_twice() -> anyhow::Result<()>
         body.get("error").and_then(Value::as_str),
         Some("invalid_client"),
         "a replayed assertion is a client-authentication failure: {body:#}"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+// --------------------------------------------------------------- case (g)
+
+/// The default scope is found for a `private_key_jwt` request that omits
+/// `client_id`, which RFC 7523 §3 explicitly permits.
+///
+/// `token_handler` keyed its RFC 6749 §3.3 default on the `client_id` **form
+/// field** alone. `handle_token` does not need that field — it identifies
+/// the client from the assertion — so such a request authenticated
+/// perfectly, was handed no default, and came back with a token carrying no
+/// `scope` claim at all. The merchant then got a `403` on every `/v1` call
+/// while their registration plainly listed the scope they were refused for.
+///
+/// Only this file can show it: the claim is about what the OP *mints* for a
+/// request it also authenticates, and the assertion has to be a real one
+/// signed by the registered key. `vpay-api`'s own `op::token` tests
+/// deliberately do not exercise the token endpoint at all (see their module
+/// comment) — every path through it reads `disabled_clients` and spends a
+/// `jti`.
+///
+/// The control at the end is what makes this a test of the *lookup* rather
+/// than of a hardcoded string: the identical request *with* `client_id`
+/// yields the same scopes, so the two paths agree.
+///
+/// Decisive: revert `default_scope_client_id` to `request.client_id` only
+/// and the first assertion sees no `scope` claim.
+#[tokio::test]
+async fn a_token_request_with_no_client_id_still_gets_its_registered_default_scope()
+-> anyhow::Result<()> {
+    let harness = harness_with_scopes(&[
+        vpay_api::SCOPE_PAYMENTS_WRITE,
+        vpay_api::SCOPE_PAYMENTS_READ,
+    ])
+    .await?;
+
+    let assertion = vpay_sdk::auth::mint_client_assertion(
+        &harness.credentials(),
+        &harness.token_endpoint(),
+        Duration::from_secs(60),
+    )
+    .context("minting an assertion for a request that names no client_id")?;
+
+    let (status, body) =
+        post_token(&harness, &token_request_form_without_client_id(&assertion)).await?;
+    let token = access_token(status, &body)?;
+    assert_eq!(
+        granted_scopes(&token),
+        vec![
+            vpay_api::SCOPE_PAYMENTS_READ.to_owned(),
+            vpay_api::SCOPE_PAYMENTS_WRITE.to_owned()
+        ],
+        "a client identified only by its assertion must still get its registration's scopes; \
+         without them every /v1 call is a 403 the merchant cannot explain"
+    );
+
+    // And the token works, which is the thing the merchant actually
+    // noticed: a 404 for a missing id rather than a 403 about scope.
+    let response = raw_client()
+        .get(format!("{}/v1/payment_intents/pi_x", harness.base_url))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .context("the server answers")?;
+    assert_eq!(
+        response.status().as_u16(),
+        404,
+        "the token must authorise a read; a 403 here is the bug this case exists for"
+    );
+
+    // The control: the same request *with* `client_id` grants the same set.
+    let assertion = vpay_sdk::auth::mint_client_assertion(
+        &harness.credentials(),
+        &harness.token_endpoint(),
+        Duration::from_secs(60),
+    )
+    .context("minting a second assertion (the first is spent)")?;
+    let (status, body) = post_token(&harness, &token_request_form(&assertion)).await?;
+    let with_client_id = access_token(status, &body)?;
+    assert_eq!(
+        granted_scopes(&with_client_id),
+        granted_scopes(&token),
+        "the two ways of naming the same client must grant the same scopes"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// --------------------------------------------------------------- case (h)
+
+/// The default widens nothing: a narrower request wins, an unregistered
+/// scope is refused, and an omitted one yields the registration.
+///
+/// `MerchantOp::default_scopes`' doc claims all three. Two of them were
+/// claims about `authkestra_op`'s behaviour that nothing here measured, and
+/// the third is the property that makes filling in an omitted `scope` safe
+/// at all — so it is worth being unable to break silently. A change that
+/// made the default *replace* a named scope, or that stopped the
+/// registration check applying to a request the default touched, would leave
+/// every other test in this file green.
+///
+/// The registration deliberately holds two scopes: with one, "the request's
+/// narrower scope was honoured" and "the default was applied" mint identical
+/// tokens.
+#[tokio::test]
+async fn a_named_scope_narrows_and_an_unregistered_one_is_refused() -> anyhow::Result<()> {
+    let harness = harness_with_scopes(&[
+        vpay_api::SCOPE_PAYMENTS_WRITE,
+        vpay_api::SCOPE_PAYMENTS_READ,
+    ])
+    .await?;
+
+    let mint = || {
+        vpay_sdk::auth::mint_client_assertion(
+            &harness.credentials(),
+            &harness.token_endpoint(),
+            Duration::from_secs(60),
+        )
+    };
+
+    // 1. Narrower wins. The client is registered to write; it asks only to
+    //    read, and gets only read — the default must not put `payments:write`
+    //    back.
+    let (status, body) = post_token(
+        &harness,
+        &token_request_form_with_scope(&mint()?, vpay_api::SCOPE_PAYMENTS_READ),
+    )
+    .await?;
+    let narrowed = access_token(status, &body)?;
+    assert_eq!(
+        granted_scopes(&narrowed),
+        vec![vpay_api::SCOPE_PAYMENTS_READ.to_owned()],
+        "a client that asks for less must get exactly what it asked for"
+    );
+
+    // ...and the narrowed token really is narrower at the boundary, not
+    // merely in its claim: a read passes, a write does not.
+    let response = raw_client()
+        .get(format!("{}/v1/payment_intents/pi_x", harness.base_url))
+        .bearer_auth(&narrowed)
+        .send()
+        .await
+        .context("the server answers a read")?;
+    assert_eq!(response.status().as_u16(), 404, "a read scope reads");
+    let response = raw_client()
+        .post(format!("{}/v1/payment_intents", harness.base_url))
+        .bearer_auth(&narrowed)
+        .header("Idempotency-Key", "narrowed-tries-to-write")
+        .form(&[("amount", "5000"), ("currency", "xaf")])
+        .send()
+        .await
+        .context("the server answers a write")?;
+    assert_eq!(
+        response.status().as_u16(),
+        403,
+        "a token narrowed to `payments:read` must not be able to take a payment"
+    );
+
+    // 2. An unregistered scope is `invalid_scope`, not silently dropped and
+    //    not silently replaced by the default.
+    let (status, body) = post_token(
+        &harness,
+        &token_request_form_with_scope(&mint()?, "refunds:write"),
+    )
+    .await?;
+    assert_eq!(
+        status, 400,
+        "an unregistered scope is a request problem, not a credential one: {body:#}"
+    );
+    assert_eq!(
+        body.get("error").and_then(Value::as_str),
+        Some("invalid_scope"),
+        "got {body:#}"
+    );
+
+    // 3. An omitted scope yields the registration — both of it.
+    let (status, body) = post_token(&harness, &token_request_form(&mint()?)).await?;
+    let defaulted = access_token(status, &body)?;
+    assert_eq!(
+        granted_scopes(&defaulted),
+        vec![
+            vpay_api::SCOPE_PAYMENTS_READ.to_owned(),
+            vpay_api::SCOPE_PAYMENTS_WRITE.to_owned()
+        ],
+        "a request that names no scope is granted the registration, and nothing beyond it"
     );
 
     harness.shutdown().await;

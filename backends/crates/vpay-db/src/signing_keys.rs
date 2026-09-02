@@ -21,28 +21,15 @@ use crate::error::DbError;
 /// The transaction-scoped advisory-lock key every write in this module takes
 /// before it reads or changes which key is active.
 ///
-/// The value is arbitrary but must never change: it is the ASCII bytes of
-/// `vpaykey` read as a big-endian integer (`0x76_70_61_79_6b_65_79`, seven
-/// bytes, comfortably inside `bigint`), chosen so an operator who finds it in
-/// `pg_locks` can tell what it belongs to. Postgres advisory locks share one
-/// global namespace across the database, so a *distinct* constant per subject
-/// is what keeps this from serialising against unrelated work; nothing else
-/// in this repository takes an advisory lock today.
-///
-/// Why a lock at all, when [`rotate_signing_key`]'s two statements are
-/// already one transaction: [`ensure_active_signing_key`] has to *read*
-/// which key is active and then decide whether to write, and a read-then-
-/// write cannot be expressed as a single compare-and-swap `UPDATE` here —
-/// the operation is "retire the old row **and** insert a new one", guarded on
-/// a row that may not exist at all on the very first boot. Two replicas
-/// booting simultaneously with the same PEM would both read "not active" and
-/// both try to insert the same `kid`; one would take a duplicate-key error on
-/// what is supposed to be a no-op. Serialising the whole read-decide-write
-/// under `pg_advisory_xact_lock` makes the second replica observe the first
-/// one's committed row and answer [`ActivationOutcome::AlreadyActive`], which
-/// is the honest result. The lock is released by `COMMIT`/`ROLLBACK` — there
-/// is no unlock path to leak.
-const ROTATION_LOCK_KEY: i64 = 0x0076_7061_796b_6579;
+/// Aliased from [`crate::lock_keys`] rather than spelled here: advisory locks
+/// share one namespace per database, so the values have to be readable side
+/// by side to be checkably distinct — that module owns the value, the reason
+/// it exists and the proof that no two subjects share one. Serialising the
+/// whole read-decide-write under `pg_advisory_xact_lock` makes the second
+/// replica observe the first one's committed row and answer
+/// [`ActivationOutcome::AlreadyActive`], which is the honest result. The lock
+/// is released by `COMMIT`/`ROLLBACK` — there is no unlock path to leak.
+const ROTATION_LOCK_KEY: i64 = crate::lock_keys::SIGNING_KEY_ROTATION;
 
 /// What [`ensure_active_signing_key`] found, and therefore whether it wrote.
 ///

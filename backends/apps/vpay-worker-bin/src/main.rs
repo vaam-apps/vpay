@@ -20,6 +20,7 @@ use mimalloc::MiMalloc;
 use vpay_config::{ConfigError, LogFormat, ShutdownSignals, WorkerArgs};
 use vpay_core::error::{Category, Classify as _, find_in_chain};
 use vpay_db::DbError;
+use vpay_provider::ProviderAdapter;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -85,6 +86,30 @@ fn exit_code_for(error: &anyhow::Error) -> u8 {
     u8::try_from(category.exit_code()).unwrap_or(1)
 }
 
+/// Every adapter linked into this binary.
+///
+/// **A deliberate duplicate of `vpay_server::adapters`** (Step 2's D6), not
+/// an import of it: `vpay-worker-bin` depending on `vpay-server` to learn
+/// which rails exist would make the worker's capabilities a function of the
+/// API server's crate, and the two processes deploy independently. The list
+/// is four lines and each binary's own; the thing that must not diverge is
+/// the *port*, and that is `vpay-provider`, which both link.
+///
+/// This is now the *only* thing duplicated between the two binaries' boot
+/// paths. Everything downstream of the list — keying it by code, joining it
+/// against the YAML, deriving each rail's row — is
+/// `vpay_api::v1::boot`, one implementation both call, because both write
+/// the same `providers` table and a divergence there would be silent.
+///
+/// Note what is absent here too: no stub, no fake. A stub rail is a WireMock
+/// host in configuration (`docs/adr/0006-no-mocks-in-main-processes.md`).
+fn adapters() -> Vec<Box<dyn ProviderAdapter>> {
+    vec![
+        Box::new(vpay_adapter_mtn_momo::Adapter::new()),
+        Box::new(vpay_adapter_orange_money::Adapter::new()),
+    ]
+}
+
 #[tokio::main]
 async fn run() -> anyhow::Result<()> {
     let args = WorkerArgs::parse();
@@ -131,6 +156,21 @@ async fn run() -> anyhow::Result<()> {
         "configuration loaded and validated"
     );
 
+    // Boot step 4's inputs, before the database is touched — see
+    // `vpay_api::v1::boot::boot_seeds`, which is the *same function*
+    // `vpay-server` calls, over this binary's own `adapters()`. Both
+    // binaries reconcile, so both have to agree about which rails exist and
+    // what each one's row should say; a worker that skipped this could be
+    // started against a config the server would have refused, and a worker
+    // with its own copy of the derivation could write a row the server would
+    // immediately overwrite.
+    let adapters = vpay_api::v1::boot::adapters_by_code(adapters());
+    tracing::info!(
+        rails = ?adapters.keys().collect::<Vec<_>>(),
+        "provider adapters linked"
+    );
+    let (currency_seeds, provider_seeds) = vpay_api::v1::boot::boot_seeds(&config, &adapters)?;
+
     // `--database-url` / `DATABASE_URL` stays `Option<String>` at the clap
     // level (`vpay_config::CommonArgs`) but is treated as required *here*,
     // matching `vpay-server`'s decision (see that binary's `main.rs` for the
@@ -146,11 +186,11 @@ async fn run() -> anyhow::Result<()> {
 
     // Connect and migrate at startup, same as `vpay-server` — "database
     // connectivity and migrations at boot" applies to both binaries, not
-    // just the one with an HTTP listener. The pool itself has no consumer
-    // yet (the job loop is not implemented, docs/status.md) so it is not
-    // held past this point; the goal here is only the loud, fail-fast proof
-    // that the database is reachable and up to date before this process
-    // claims to be running.
+    // just the one with an HTTP listener. The pool's only consumer is boot
+    // step 4 below (the job loop is not implemented, docs/status.md), so it
+    // is dropped once that has run; the goal here is the loud, fail-fast
+    // proof that the database is reachable, migrated and agreeing with this
+    // deployment's configuration before this process claims to be running.
     let pool = vpay_db::connect(database_url)
         .await
         .context("connecting to Postgres")?;
@@ -158,6 +198,38 @@ async fn run() -> anyhow::Result<()> {
         .await
         .context("running database migrations")?;
     tracing::info!("database connected and migrations applied");
+
+    // Boot step 4 (`docs/flows/configuration.md`), the same call
+    // `vpay-server` makes and in the same position: after the migrations, in
+    // one transaction.
+    //
+    // Two things make it safe to run this from both binaries rather than
+    // nominating one of them as the writer, and neither is "idempotence".
+    // Idempotence covers *repeating* a reconcile, which is not what happens
+    // during a rollout — there, two of them *overlap*:
+    //
+    // * they cannot interleave, because `reconcile`'s transaction opens by
+    //   taking `vpay_db::lock_keys::CONFIG_RECONCILE` (proven taken by
+    //   `reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_released`);
+    // * they cannot disagree about *what* to write, because the seeds come
+    //   from one shared derivation — `vpay_api::v1::boot::boot_seeds`, the
+    //   same function `vpay-server` calls, over this binary's own linked
+    //   rails.
+    //
+    // What is still true and worth stating plainly: two processes configured
+    // with *different* YAML will each write their own view, last commit
+    // winning. Nothing here detects that, and nothing should — the lock
+    // makes the outcome one of the two inputs rather than a mixture of both.
+    vpay_db::config_reconcile::reconcile(&pool, &currency_seeds, &provider_seeds)
+        .await
+        .context("reconciling currencies and providers from configuration (boot step 4)")?;
+    tracing::info!(
+        currencies = currency_seeds.len(),
+        providers = provider_seeds.len(),
+        enabled_providers = provider_seeds.iter().filter(|seed| seed.enabled).count(),
+        "reference tables reconciled from configuration"
+    );
+
     drop(pool);
 
     tracing::warn!(

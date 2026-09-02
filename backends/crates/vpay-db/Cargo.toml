@@ -39,6 +39,19 @@ time.workspace = true
 # oauth_signing_keys.public_jwk is JSONB; sqlx's "json" feature (already
 # enabled workspace-wide) decodes/encodes it as serde_json::Value directly.
 serde_json.workspace = true
+# `charges.provider_reference_id` and `provider_requests.provider_reference_id`
+# are `UUID` columns mirroring `vpay_provider::ChargeRef::reference_id: Uuid`.
+# sqlx's "uuid" feature (already enabled workspace-wide) decodes them, but the
+# type still has to be nameable in this crate's own row structs and function
+# signatures — vpay-db generates no uuids, it only carries them.
+uuid.workspace = true
+# Constant-time byte comparison for the stored `Idempotency-Key` request hash
+# (`idempotency::claim`). A `==` on the digest exits at the first differing
+# byte, which turns "is this the same request" into a timing oracle for
+# attacker-adjacent data; `ConstantTimeEq` compares all 32 bytes. Already in
+# the workspace graph and in Cargo.lock (BSD-3-Clause, on deny.toml's allow
+# list), so this adds no new crate to the build.
+subtle.workspace = true
 # `authkestra_op::client_assertion::ClientAssertionStore` is declared
 # `#[async_trait]`; implementing it requires the same expansion pattern.
 # Not in [workspace.dependencies] (root Cargo.toml, not owned here) — added

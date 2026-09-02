@@ -69,6 +69,32 @@ pub struct ProviderHost {
     /// Stable rail code, e.g. `mtn_momo`. Matches `providers.code`.
     #[garde(length(min = 1, max = 64))]
     pub code: String,
+    /// Whether this rail may be named in a `payment_method_types` on a new
+    /// payment intent, and whether `providers.enabled` is `true` after boot
+    /// step 4 reconciles this list into the database.
+    ///
+    /// Defaults to `true`, so an existing config keeps working and the
+    /// *only* reason a rail is off is that someone wrote it down. The
+    /// opposite default would mean a config that predates this field
+    /// silently loses every rail — a deployment that boots, looks healthy,
+    /// and refuses every charge.
+    ///
+    /// Turning a rail off here is deliberately **not** the same as deleting
+    /// its block: the host and credentials stay loaded, so an operator can
+    /// stop new charges from being routed to a rail without discarding the
+    /// configuration needed to reconcile the charges already on it. A rail
+    /// removed from the list entirely is disabled too (boot step 4 flips
+    /// `enabled = false` for any code no longer present), but its
+    /// configuration is then gone.
+    ///
+    /// No capability fields live here on purpose: `flow`,
+    /// `supports_refunds` and the rest are properties of the *adapter*
+    /// (`vpay_provider::Capabilities`), not of a deployment, and letting
+    /// YAML state them would let a deployment claim a rail can do something
+    /// its code cannot (ADR-0002).
+    #[garde(skip)]
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     #[garde(dive)]
     pub host: HostEntry,
     /// Non-secret, adapter-defined settings (mirrors
@@ -89,6 +115,13 @@ pub struct ProviderHost {
     #[garde(skip)]
     #[serde(default)]
     pub credentials: BTreeMap<String, String>,
+}
+
+/// `#[serde(default)]` for a `bool` yields `false`; [`ProviderHost::enabled`]
+/// needs the other one. A named function rather than a literal because serde
+/// only accepts a path here.
+const fn default_true() -> bool {
+    true
 }
 
 /// Redacts `credentials` (rail secrets: MTN subscription keys, Orange client
@@ -117,6 +150,7 @@ impl fmt::Debug for ProviderHost {
             .collect();
         f.debug_struct("ProviderHost")
             .field("code", &self.code)
+            .field("enabled", &self.enabled)
             .field("host", &self.host)
             .field("settings", &self.settings)
             .field("credentials", &redacted_credentials)
@@ -281,6 +315,21 @@ impl Config {
         for merchant in &self.merchant_clients {
             if !seen_client_ids.insert(merchant.client_id.as_str()) {
                 return Err(ConfigError::DuplicateClientId(merchant.client_id.clone()));
+            }
+        }
+
+        // Tenancy, not identity: two credentials mapping to one
+        // `merchant_id` would be two clients that can read and cancel each
+        // other's payment intents, and `/v1` has no second check that would
+        // notice (see `MerchantClient::merchant_id`). Checked over merchants
+        // only — the dashboard client has no `merchant_id` and is not a
+        // tenant.
+        let mut seen_merchant_ids = BTreeSet::new();
+        for merchant in &self.merchant_clients {
+            if !seen_merchant_ids.insert(merchant.merchant_id.as_str()) {
+                return Err(ConfigError::DuplicateMerchantId(
+                    merchant.merchant_id.clone(),
+                ));
             }
         }
         if let Some(dashboard) = &self.dashboard_client
@@ -520,6 +569,10 @@ mod tests {
             .find(|m| m.client_id == "acme-cameroon")
             .expect("acme-cameroon merchant client present");
         assert_eq!(merchant.grant_types, vec![GrantType::ClientCredentials]);
+        // The tenant, not the credential: `/v1` filters every query by this
+        // value, so a config whose merchant lost it would boot with no
+        // tenancy boundary at all.
+        assert_eq!(merchant.merchant_id, "acme-cameroon");
         assert!(
             jwks_has_at_least_one_key(&merchant.jwks),
             "example merchant jwks should be non-empty"
@@ -718,6 +771,7 @@ mod tests {
     fn provider_host_debug_output_never_contains_a_credential_value() {
         let host = ProviderHost {
             code: "mtn_momo".to_owned(),
+            enabled: true,
             host: HostEntry {
                 url: "https://proxy.momoapi.mtn.com".to_owned(),
                 label: "mtn-cm-prod".to_owned(),
@@ -748,6 +802,7 @@ mod tests {
     fn provider_host_debug_output_still_contains_the_non_secret_fields() {
         let host = ProviderHost {
             code: "mtn_momo".to_owned(),
+            enabled: true,
             host: HostEntry {
                 url: "https://proxy.momoapi.mtn.com".to_owned(),
                 label: "mtn-cm-prod".to_owned(),
@@ -813,6 +868,93 @@ mod tests {
         let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
             .expect_err("a client_id shared by a merchant and the dashboard must be rejected");
         assert_eq!(err, ConfigError::DuplicateClientId("shared-id".to_owned()));
+    }
+
+    /// Two credentials, one tenant. Everything else about both clients is
+    /// valid — only the shared `merchant_id` is wrong — so this fires on the
+    /// rule under test rather than on whichever check runs first.
+    #[test]
+    fn two_merchant_clients_sharing_a_merchant_id_are_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/oauth-duplicate-merchant-id.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("two clients naming the same tenant must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::DuplicateMerchantId("shared-tenant".to_owned())
+        );
+    }
+
+    /// `merchant_id` is required, not defaulted from `client_id`: a config
+    /// that omits it must fail to load rather than silently invent a tenant.
+    ///
+    /// Written against an in-memory document rather than a fixture file
+    /// because the *absence* of a line is what is under test, and a fixture
+    /// that merely forgot it would look like an oversight to the next reader.
+    #[test]
+    fn a_merchant_client_without_a_merchant_id_does_not_load() {
+        let yaml = "\
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: [\"vpay:v1\"]
+";
+        let err = serde_yaml_ng::from_str::<Config>(yaml)
+            .expect_err("a merchant client with no merchant_id must not deserialize");
+        assert!(
+            err.to_string().contains("merchant_id"),
+            "the error must name the missing field, got: {err}"
+        );
+    }
+
+    /// A provider with no `enabled:` line is enabled. The opposite default
+    /// would silently disable every rail in every config written before the
+    /// field existed.
+    #[test]
+    fn a_provider_with_no_enabled_line_is_enabled() {
+        let env = example_env(BTreeMap::new());
+        let config = Config::load_with_env(Some(Path::new(EXAMPLE_BASE)), "does-not-exist", &env)
+            .expect("example config should load");
+        assert!(
+            config.providers.iter().all(|p| p.enabled),
+            "config/application.yml names no `enabled:`, so every rail must default to enabled"
+        );
+    }
+
+    /// And an explicit `enabled: false` survives the load — otherwise the
+    /// default above would be indistinguishable from ignoring the field.
+    #[test]
+    fn an_explicitly_disabled_provider_stays_disabled() {
+        let yaml = "\
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+providers:
+  - code: mtn_momo
+    enabled: false
+    host:
+      url: http://wiremock-mtn:8080
+      label: mtn-sandbox-wiremock
+";
+        let config: Config =
+            serde_yaml_ng::from_str(yaml).expect("an explicit `enabled: false` deserializes");
+        assert_eq!(config.providers.first().map(|p| p.enabled), Some(false));
     }
 
     #[test]

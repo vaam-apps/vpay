@@ -1,0 +1,36 @@
+# Fixture for `two_merchant_clients_sharing_a_merchant_id_are_rejected`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# Both clients are individually valid and their `client_id`s differ, so every
+# other rule passes — the only thing wrong here is that they name the same
+# tenant. `/v1` resolves a token's `client_id` to exactly one `merchant_id`
+# and filters every query by it, so booting this config would give two
+# credentials read/cancel access to each other's payment intents with nothing
+# downstream able to tell that from the intended shape.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: shared-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+  - client_id: acme-cameroon-second-key
+    merchant_id: shared-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k2
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
