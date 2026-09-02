@@ -8,11 +8,22 @@
 # variant's default (host) target is `x86_64-unknown-linux-musl` on an amd64
 # host and `aarch64-unknown-linux-musl` on an arm64 host. That already
 # satisfies ADR-0004's static-musl goal, so this Dockerfile deliberately does
-# NOT `rustup target add x86_64-unknown-linux-musl` or pass `--target`: doing
-# so on an arm64 host would force a cross-compile that needs a GNU-compatible
-# cross-linker no `rust:*-alpine` image ships, and fails outright. Building
-# for the implicit host target avoids the cross-compile entirely, on both
-# architectures, with no emulation and no extra linker.
+# NOT hardcode `x86_64-unknown-linux-musl`: doing so on an arm64 host would
+# force a cross-compile that needs a GNU-compatible cross-linker no
+# `rust:*-alpine` image ships, and fails outright.
+#
+# It DOES pass `--target`, set to the builder's *own* host triple (read from
+# `rustc -vV` at build time, so it is never a cross-compile). The first CI
+# build of this file (run 33646048616, 2026-09-02) failed without it:
+# `.cargo/config.toml` sets `-C target-feature=+crt-static` for
+# `x86_64-unknown-linux-musl`, and when host and target are the same triple
+# and no `--target` is given, cargo applies target rustflags to *host*
+# artifacts too — build scripts and proc-macros — and a proc-macro cannot be
+# a static executable ("cannot produce proc-macro for `async-trait` as the
+# target `x86_64-unknown-linux-musl` does not support these crate types").
+# With an explicit `--target`, cargo keeps host artifacts free of target
+# rustflags, which is the same reason `just build-dist` passes one. Output
+# then lands under `target/<triple>/dist/`, hence the copy to `/out`.
 #
 # Version pin: authored and verified against rustc 1.95.0. Since 2026-09-02
 # rust-toolchain.toml pins `channel = "1.95.0"` too (it used to say `stable`,
@@ -55,13 +66,17 @@ COPY sdks/rust ./sdks/rust
 # no such requirement.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build --profile dist -p vpay-server -p vpay-worker-bin
+    set -eu; \
+    target="$(rustc -vV | sed -n 's/^host: //p')"; \
+    cargo build --profile dist --target "$target" -p vpay-server -p vpay-worker-bin; \
+    mkdir -p /out; \
+    cp "target/$target/dist/vpay-server" "target/$target/dist/vpay-worker-bin" /out/
 
 # No shell in `scratch` to run a `HEALTHCHECK CMD`, so none is declared here.
 # See compose.e2e.yml for how `vpay-server`'s readiness is (and isn't)
 # accounted for downstream.
 FROM scratch AS server
-COPY --from=builder /build/target/dist/vpay-server /vpay-server
+COPY --from=builder /out/vpay-server /vpay-server
 # The deployment configuration is baked into the image (ADR-0003: a profile
 # selects a *file*, and `--config` / `VPAY_CONFIG` is required — both
 # binaries exit 78 without it). Secrets never live in these files: every
@@ -81,7 +96,7 @@ EXPOSE 8080
 ENTRYPOINT ["/vpay-server"]
 
 FROM scratch AS worker
-COPY --from=builder /build/target/dist/vpay-worker-bin /vpay-worker
+COPY --from=builder /out/vpay-worker-bin /vpay-worker
 # Same config layer as `server` above, for the same reasons.
 COPY config /config
 ENV VPAY_CONFIG=/config/application.yml
