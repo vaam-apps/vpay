@@ -10,19 +10,60 @@
 //! JWKS server, but **not mounted onto any route here**. Nothing in this
 //! file's `router()` changes as part of that: mounting `/v1`/`/dash/v1` is
 //! later work that needs the OP assembled first.
+//!
+//! [`ApiError`] is this layer's Tier-2 composite error
+//! ([ADR-0011](../../../docs/adr/0011-error-modelling.md)). Every failure
+//! response in this crate is rendered by its `IntoResponse` — including the
+//! 404 fallback below — so a handler returns `Result<_, ApiError>` and never
+//! picks a status or writes a merchant-facing sentence. The one deliberate
+//! exception is `/healthz`, which answers plain text for the reasons given
+//! in [`error`]'s module docs.
 
 use axum::extract::State;
+use axum::http::{Method, Uri};
 use axum::response::IntoResponse;
-use axum::{Json, Router, http::StatusCode, routing::get};
-use serde_json::{Value, json};
+use axum::{Router, http::StatusCode, routing::get};
+use serde_json::{Map, Value, json};
 use vpay_db::PgPool;
 
+pub mod error;
 pub mod resource_auth;
 
+pub use error::ApiError;
+
 /// Stripe's error envelope, so SDK clients surface `.message` correctly.
+///
+/// Kept as the three-argument form because that is what an envelope without
+/// a `param` is; see [`error_envelope_with_param`] for the fourth field and
+/// why it is `Option` rather than always present.
 #[must_use = "the envelope is the response body"]
 pub fn error_envelope(kind: &str, code: &str, message: &str) -> Value {
-    json!({ "error": { "type": kind, "code": code, "message": message } })
+    error_envelope_with_param(kind, code, message, None)
+}
+
+/// [`error_envelope`] plus Stripe's optional `param`, naming the request
+/// field a caller has to fix.
+///
+/// `param` is **omitted** rather than serialised as `null` when there is
+/// none: Stripe omits it, an SDK testing `"param" in error` would be misled
+/// by a null, and every response this crate has emitted so far had no such
+/// key. Building the object by hand rather than mutating a `json!` literal
+/// keeps that decision in one visible place.
+#[must_use = "the envelope is the response body"]
+pub fn error_envelope_with_param(
+    kind: &str,
+    code: &str,
+    message: &str,
+    param: Option<&str>,
+) -> Value {
+    let mut error = Map::new();
+    error.insert("type".to_owned(), Value::String(kind.to_owned()));
+    error.insert("code".to_owned(), Value::String(code.to_owned()));
+    error.insert("message".to_owned(), Value::String(message.to_owned()));
+    if let Some(param) = param {
+        error.insert("param".to_owned(), Value::String(param.to_owned()));
+    }
+    json!({ "error": Value::Object(error) })
 }
 
 /// Shared state for every route in this router. Just the pool today; grows
@@ -61,15 +102,20 @@ async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
 
 /// Honest 404 for every unimplemented route, naming vpay rather than pretending
 /// to be Stripe.
-async fn not_found() -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::NOT_FOUND,
-        Json(error_envelope(
-            "invalid_request_error",
-            "unknown_route",
-            "Unrecognized request URL. vpay implements a subset of the Stripe API; see docs/api.",
-        )),
-    )
+///
+/// Returns an [`ApiError`] rather than building an envelope here: ADR-0011
+/// gives `error_envelope` exactly one production caller, and this handler
+/// was the second one. The response bytes are unchanged — pinned verbatim by
+/// `the_404_fallback_is_byte_for_byte_what_it_was_before_api_error`.
+///
+/// The method and path are captured for the log line only; the body
+/// deliberately does not echo them back (see
+/// [`ApiError::public_message`](vpay_core::Classify::public_message)).
+async fn not_found(method: Method, uri: Uri) -> ApiError {
+    ApiError::UnknownRoute {
+        method: method.to_string(),
+        path: uri.path().to_owned(),
+    }
 }
 
 /// Builds the router. `pool` is required, not optional: every route this

@@ -2,10 +2,15 @@
 //!
 //! Everything that touches the network happens here, never in the API process.
 //!
-//! STATUS: only the poll ladder is implemented and tested. Job dequeue,
-//! submission and delivery are NOT implemented — see `docs/status.md`.
+//! STATUS: only the poll ladder and the job loop's *error contract*
+//! ([`JobError`]) are implemented and tested. Job dequeue, submission,
+//! polling and delivery are NOT implemented — see `docs/status.md`. Nothing
+//! here calls [`JobError::decision`]; it is the type Phase 5 consumes.
 
 use std::time::Duration;
+
+pub mod error;
+pub use error::{Decision, JobError, tracing_level};
 
 /// Delay before poll number `n` (0-indexed), per `docs/flows/reconciler.md`.
 ///

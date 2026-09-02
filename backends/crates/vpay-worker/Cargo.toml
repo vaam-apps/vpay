@@ -13,9 +13,26 @@ workspace = true
 [dependencies]
 vpay-core.workspace = true
 vpay-provider.workspace = true
+# `JobError` (ADR-0011 Tier 2) wraps `DbError` directly, so the job loop and
+# the API can never disagree about whether a Postgres failure is transient —
+# both read `Classify::retry` off the same leaf. This crate does not open a
+# pool or run a query yet (there is no job loop — docs/status.md); the
+# dependency is for the error type alone.
+vpay-db.workspace = true
+# `JobError::Poisoned`/`Exhausted` name the `jobs` row they refer to, and
+# that primary key is a UUID everywhere else in the schema
+# (backends/migrations/).
+uuid.workspace = true
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# Constructing a real `DbError::Connect(sqlx::Error::PoolTimedOut)` in the
+# `JobError` classification tests, rather than inventing a stand-in error:
+# the decision table is only worth anything if the leaf it classifies is the
+# same type `vpay_db::connect` actually returns.
+sqlx.workspace = true

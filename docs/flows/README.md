@@ -16,6 +16,7 @@ go wrong, and what invariant holds throughout.
 | [dashboard-auth.md](dashboard-auth.md) | Staff login: vpay as its own OpenID Provider for `/dash/v1` |
 | [webhooks.md](webhooks.md) | The two-step outbox and the signature scheme |
 | [ledger.md](ledger.md) | Double-entry postings and the four invariants |
+| [errors.md](errors.md) | How an error travels from where it happens to where it is acted on: leaf/composite/boundary tiers, the `Classify` policy table, `anyhow` at the edge only |
 | [adapter-mtn-momo.md](adapter-mtn-momo.md) | MTN specifics — push flow |
 | [adapter-orange-money.md](adapter-orange-money.md) | Orange specifics — redirect flow |
 

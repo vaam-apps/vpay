@@ -1,8 +1,9 @@
 # vpay task runner. `just` with no argument lists everything.
 #
-# Two invariants this repo enforces on itself, both wired into `just verify`:
+# Three invariants this repo enforces on itself, all wired into `just verify`:
 #   * no test double is reachable from a shipping binary
 #   * every unimplemented item is declared in docs/status.md
+#   * every error type is classified (ADR-0011) and anyhow stays in the binaries
 
 set shell := ["bash", "-uc"]
 
@@ -111,7 +112,7 @@ deny:
 # ---------------------------------------------------- self-verification ----
 
 # The checks that keep this repository honest. CI runs exactly this.
-verify: verify-no-mocks verify-status
+verify: verify-no-mocks verify-status verify-errors
     @echo "verify: ok"
 
 verify-no-mocks:
@@ -119,6 +120,11 @@ verify-no-mocks:
 
 verify-status:
     cargo xtask verify-status
+
+# ADR-0011: every pub error type in backends/crates implements
+# vpay_core::error::Classify, and anyhow stays in backends/apps.
+verify-errors:
+    cargo xtask verify-errors
 
 # Everything CI runs, in CI's order.
 ci: fmt-check clippy verify test-rust lint-web test-web deny

@@ -245,19 +245,39 @@ fn an_invalid_log_format_env_var_is_read_and_rejected() {
     );
 }
 
+/// A `postgres://` URL pointing at a port nothing listens on. Port 1
+/// (`tcpmux`) is reserved and never bound on a developer or CI machine, and
+/// `127.0.0.1` keeps the attempt on loopback — so this needs **no Docker and
+/// no network**, unlike the `with_live_postgres` tests in this file.
+/// `vpay_db::connect` gives up only after its 5s `ACQUIRE_TIMEOUT`
+/// (`backends/crates/vpay-db/src/pool.rs`); sqlx retries inside that window
+/// rather than failing instantly on `ECONNREFUSED`, so a test using this URL
+/// takes a little over five seconds by design.
+const UNREACHABLE_DATABASE_URL: &str = "postgres://vpay:vpay@127.0.0.1:1/vpay";
+
 /// `--config` / `VPAY_CONFIG` stays `Option<PathBuf>` at the `clap` level
 /// (`vpay_config::CommonArgs::config`) but `main.rs` now treats it as
 /// required — mirrors `backends/apps/vpay-server/tests/cli.rs`'s test of the
 /// same name. No `DATABASE_URL` is supplied either: config loading happens
 /// before this binary ever tries to connect to a database, so a missing
 /// config must fail first.
+///
+/// The exit code is asserted **exactly**: `78` (`EX_CONFIG`) is
+/// `Category::Configuration::exit_code()` per ADR-0011, and both binaries
+/// must answer with the same number for the same kind of failure — an
+/// operator reading `docker compose ps` should not have to remember which
+/// process they are looking at. A `!success()` assertion would pass just as
+/// happily against `main`'s old blanket exit `1`.
 #[test]
-fn a_missing_config_is_a_non_zero_exit_naming_the_problem() {
+fn a_missing_config_is_exit_78_naming_the_problem() {
     let output = bin().output().expect("spawn vpay-worker-bin");
 
-    assert!(
-        !output.status.success(),
-        "expected a non-zero exit with no --config/VPAY_CONFIG at all"
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "expected EX_CONFIG (78) with no --config/VPAY_CONFIG at all, got {:?}; stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -268,22 +288,63 @@ fn a_missing_config_is_a_non_zero_exit_naming_the_problem() {
 
 /// A config file that exists but fails validation
 /// (`ConfigError::InsecureHost`, `tests/fixtures/invalid-config.yml`) must
-/// also fail clearly and before any database connection is attempted.
+/// also exit `78`, and before any database connection is attempted.
+///
+/// Same category, same code as the missing-config case above: `ConfigError`
+/// classifies as one `Category::Configuration` for every variant, so the
+/// difference between "you forgot the flag" and "the file is wrong" is
+/// carried by the message on stderr, not by the number.
 #[test]
-fn a_bad_config_causes_a_non_zero_exit_naming_the_problem() {
+fn a_bad_config_is_exit_78_naming_the_problem() {
     let output = bin()
         .env("VPAY_CONFIG", invalid_config_path())
         .output()
         .expect("spawn vpay-worker-bin");
 
-    assert!(
-        !output.status.success(),
-        "expected a non-zero exit for a config that fails validation"
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "expected EX_CONFIG (78) for a config that fails validation, got {:?}; stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("livemode requires https"),
         "stderr should name the specific validation failure, got: {stderr}"
+    );
+}
+
+/// The other half of ADR-0011's exit-code contract: a valid config pointing
+/// at a database that is not there exits `69` (`EX_UNAVAILABLE`) —
+/// `Category::Storage`'s code — and not `78`.
+///
+/// This is what proves `exit_code_for` really walks the `anyhow` chain and
+/// classifies what it finds rather than returning a constant: the only
+/// difference from the test above is which leaf error ends up in the chain.
+///
+/// Needs no container (see [`UNREACHABLE_DATABASE_URL`]), so it runs
+/// anywhere. It does take ~5s, which is `vpay-db`'s acquire timeout, not
+/// this test waiting on anything of its own.
+#[test]
+fn an_unreachable_database_is_exit_69_naming_postgres() {
+    let output = bin()
+        .env("VPAY_CONFIG", valid_config_path())
+        .env("DATABASE_URL", UNREACHABLE_DATABASE_URL)
+        .output()
+        .expect("spawn vpay-worker-bin");
+
+    assert_eq!(
+        output.status.code(),
+        Some(69),
+        "expected EX_UNAVAILABLE (69) for an unreachable database, got {:?}; stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Postgres"),
+        "stderr should name Postgres as what could not be reached, got: {stderr}"
     );
 }
 

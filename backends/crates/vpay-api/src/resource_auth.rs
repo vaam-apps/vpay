@@ -74,15 +74,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use authkestra_resource::jwt::{JwksCache, ValidationError, validate_jwt_generic};
-use axum::Json;
 use axum::extract::{FromRef, FromRequestParts};
+use axum::http::header;
 use axum::http::request::Parts;
-use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use jsonwebtoken::{Algorithm, Validation};
 use serde::Deserialize;
+use vpay_core::{Category, Classify};
 
-use crate::error_envelope;
+use crate::ApiError;
 
 /// Which of vpay's two protected surfaces a token was minted for. vpay runs
 /// one OP ([ADR-0009]) issuing tokens for both off one JWKS, so the audience
@@ -162,20 +162,79 @@ impl From<RawClaims> for ResourceClaims {
 }
 
 /// Every way a bearer token can fail to authenticate a request, collapsed
-/// into the Stripe-shaped envelope [`error_envelope`] already defines.
+/// into the Stripe-shaped envelope [`crate::error_envelope`] already defines.
 /// Deliberately generic about *why* signature, expiry, audience, issuer or
 /// `kid` validation failed: this fails closed without becoming an oracle a
 /// caller could use to probe which specific check tripped.
-#[derive(Debug)]
+///
+/// A leaf error in ADR-0011's sense: it classifies itself once (below) and
+/// the HTTP boundary derives status, `type`, `code` and message from that.
+/// The `Display` texts are the operator-facing half and are what reaches a
+/// log; the merchant-facing half is [`Classify::public_message`], and the
+/// two are deliberately not the same strings.
+#[derive(Debug, thiserror::Error)]
 pub enum AuthRejection {
     /// No `Authorization` header at all.
+    #[error("no Authorization header was presented")]
     MissingHeader,
     /// Present but not a well-formed `Bearer <token>` value.
+    #[error("the Authorization header was not a well-formed `Bearer <token>` value")]
     MalformedHeader,
     /// Present and well-formed, but the token itself does not validate: bad
     /// signature, wrong or missing audience, wrong issuer, expired,
     /// not-yet-valid, or an unrecognized `kid`.
+    ///
+    /// The `Display` says no more than that on purpose. The underlying
+    /// `ValidationError` is dropped at the `From` impl above rather than
+    /// kept as a `#[source]`: keeping it would put "invalid audience" vs.
+    /// "expired" into a log the same request could provoke at will, which is
+    /// the oracle this type exists to avoid — and unlike a database error,
+    /// the detail is not something an operator needs to fix anything.
+    #[error("the bearer token did not validate")]
     InvalidToken,
+}
+
+impl Classify for AuthRejection {
+    /// One category for all three. Which check tripped is not the caller's
+    /// business (see the type's own doc comment), and
+    /// [`Category::Authentication`] is what turns that into 401 +
+    /// `authentication_error` at every boundary at once.
+    fn category(&self) -> Category {
+        Category::Authentication
+    }
+
+    /// Per-variant, unlike the message. A code is a stable identifier an SDK
+    /// branches on, and these three are actionable in different ways by the
+    /// *legitimate* caller — "you sent no header" and "your token expired"
+    /// need different fixes. They reveal nothing about the token's contents,
+    /// which is where the oracle risk actually lives; `InvalidToken` is the
+    /// single code behind which every validation failure hides.
+    fn code(&self) -> &'static str {
+        match self {
+            Self::MissingHeader => "missing_bearer_token",
+            Self::MalformedHeader => "malformed_authorization_header",
+            Self::InvalidToken => "invalid_token",
+        }
+    }
+
+    /// The exact sentences this endpoint has answered since OP-3, kept
+    /// verbatim (pinned byte-for-byte in `error.rs`'s tests) rather than
+    /// collapsed into `Category::Authentication`'s generic message: the
+    /// first two tell a caller how to fix a request that never carried a
+    /// token, which the generic sentence — written for a token that failed
+    /// validation — does not.
+    fn public_message(&self) -> String {
+        match self {
+            Self::MissingHeader => {
+                "No Authorization header was provided. Send an OAuth2 access token as 'Authorization: Bearer <token>'."
+            }
+            Self::MalformedHeader => {
+                "The Authorization header was present but was not a well-formed 'Bearer <token>' value."
+            }
+            Self::InvalidToken => Category::Authentication.generic_message(),
+        }
+        .to_owned()
+    }
 }
 
 impl From<ValidationError> for AuthRejection {
@@ -187,29 +246,13 @@ impl From<ValidationError> for AuthRejection {
 }
 
 impl IntoResponse for AuthRejection {
+    /// Delegates to [`ApiError`], which is the crate's only envelope
+    /// renderer (ADR-0011). An extractor rejection therefore cannot drift
+    /// from what a handler returning `Err(ApiError::Auth(..))` produces —
+    /// they are the same code path, and the identical bytes are pinned by
+    /// `every_auth_rejection_is_byte_for_byte_what_it_was_before_api_error`.
     fn into_response(self) -> Response {
-        let (status, code, message) = match self {
-            AuthRejection::MissingHeader => (
-                StatusCode::UNAUTHORIZED,
-                "missing_bearer_token",
-                "No Authorization header was provided. Send an OAuth2 access token as 'Authorization: Bearer <token>'.",
-            ),
-            AuthRejection::MalformedHeader => (
-                StatusCode::UNAUTHORIZED,
-                "malformed_authorization_header",
-                "The Authorization header was present but was not a well-formed 'Bearer <token>' value.",
-            ),
-            AuthRejection::InvalidToken => (
-                StatusCode::UNAUTHORIZED,
-                "invalid_token",
-                "The bearer token is invalid, expired, or was not issued for this endpoint.",
-            ),
-        };
-        (
-            status,
-            Json(error_envelope("authentication_error", code, message)),
-        )
-            .into_response()
+        ApiError::from(self).into_response()
     }
 }
 
@@ -366,10 +409,11 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use authkestra_resource::jwt::Jwk;
-    use axum::Router;
     use axum::body::Body;
     use axum::http::Request;
+    use axum::http::StatusCode;
     use axum::routing::get;
+    use axum::{Json, Router};
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use jsonwebtoken::{EncodingKey, Header};

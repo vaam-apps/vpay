@@ -4,12 +4,15 @@
 //! worker's job, and it is what makes the system crash-safe.
 
 use std::future::IntoFuture as _;
+use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::Context as _;
 use clap::Parser as _;
 use mimalloc::MiMalloc;
-use vpay_config::{LogFormat, ServerArgs, ShutdownSignals};
+use vpay_config::{ConfigError, LogFormat, ServerArgs, ShutdownSignals};
+use vpay_core::error::{Category, Classify as _, find_in_chain};
+use vpay_db::DbError;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -26,8 +29,61 @@ enum DrainOutcome {
     TimedOut,
 }
 
+/// Runs [`run`] and turns its failure into a *classified* exit code.
+///
+/// `main` is deliberately synchronous and returns [`ExitCode`] rather than
+/// `anyhow::Result<()>`: the `Termination` impl for `Result` prints the error
+/// with `Debug` and always exits `1`, which is exactly the "a supervisor
+/// cannot tell 'fix the YAML' from 'Postgres is down'" problem ADR-0011 was
+/// written to fix.
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            // `eprintln!`, not `tracing::error!`: the earliest failures this
+            // handles (a missing `--config`, a YAML file that does not
+            // validate) happen *before* `init_tracing` has installed a
+            // subscriber, so a `tracing` event would be dropped on the floor
+            // and the process would exit silently with only a number. stderr
+            // is the one sink that is guaranteed to exist at every point in
+            // startup. `{error:#}` renders the whole `anyhow` context chain
+            // on one line — "connecting to Postgres: failed to connect to
+            // Postgres: ..." — so the `.context(..)` calls below actually
+            // reach an operator.
+            eprintln!("vpay-server: {error:#}");
+            ExitCode::from(exit_code_for(&error))
+        }
+    }
+}
+
+/// The exit code for a failed startup, per ADR-0011's Tier 3 and the table in
+/// `docs/flows/errors.md`.
+///
+/// The order is load-bearing, not alphabetical: `ConfigError` is looked for
+/// **before** `DbError` because a chain can plausibly contain both (a config
+/// that names an unreachable database), and in that case the operator's
+/// actual problem is the configuration — `78` ("fix the deploy") is more
+/// useful than `69` ("wait for Postgres"). `find_in_chain` is typed, so this
+/// function is also the exhaustive list of leaf errors this binary knows how
+/// to classify; anything else — a `clap` failure that got this far, a bind
+/// error, a panic-free `anyhow!` from somewhere new — falls through to
+/// [`Category::Internal`], i.e. exit `1`. That fallback is deliberately the
+/// pessimistic one: an unclassified startup failure in a payment binary
+/// should look like a bug, not like a known condition.
+fn exit_code_for(error: &anyhow::Error) -> u8 {
+    let category = find_in_chain::<ConfigError>(error.chain())
+        .map(|e| e.category())
+        .or_else(|| find_in_chain::<DbError>(error.chain()).map(|e| e.category()))
+        .unwrap_or(Category::Internal);
+    // Every `Category::exit_code()` is in `1..=78` (pinned by a test in
+    // `vpay_core::error`), so this conversion cannot actually fail; `1` is
+    // the same honest fallback as an unclassified error rather than a
+    // truncating cast that could turn 78 into something meaningless.
+    u8::try_from(category.exit_code()).unwrap_or(1)
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn run() -> anyhow::Result<()> {
     let args = ServerArgs::parse();
 
     // Installed before anything else — including tracing init — so the

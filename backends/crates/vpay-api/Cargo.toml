@@ -14,6 +14,13 @@ workspace = true
 vpay-core.workspace = true
 vpay-provider.workspace = true
 vpay-db.workspace = true
+# `ApiError` wraps `ConfigError` (ADR-0011: a composite `#[from]`s every leaf
+# its layer can meet). Per-merchant, per-rail configuration is resolved when a
+# request is served, not only at boot, so a misconfiguration surfaces as a 500
+# on a request path. No cycle and no new package in the graph: `vpay-config`
+# depends on `vpay-core` and leaf crates only, never on `vpay-api`, and both
+# binaries already link it.
+vpay-config.workspace = true
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true
@@ -35,6 +42,16 @@ jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 
 [dev-dependencies]
 tower.workspace = true
+# Test-only: `DbError`'s variants all wrap a `sqlx::Error`, and the test that
+# proves a leaf's text reaches the log and not the response body has to build
+# one with a recognisable string inside it. `vpay-db` re-exports `PgPool` but
+# not `sqlx::Error`, and the workspace pin is reused verbatim so this adds no
+# package and no feature to the resolved graph.
+sqlx.workspace = true
+# Test-only: captures `tracing` output into a buffer so the log/body split
+# above is asserted on what an operator would actually see, rather than on the
+# arguments this crate passed to a macro.
+tracing-subscriber.workspace = true
 wiremock.workspace = true
 rand.workspace = true
 # Test-only: `authkestra_resource::jwt::JwksCache` fetches over `reqwest`,
