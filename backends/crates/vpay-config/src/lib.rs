@@ -142,6 +142,18 @@ pub enum ConfigError {
     ClientSecretPresent(String),
 }
 
+impl vpay_core::Classify for ConfigError {
+    fn category(&self) -> vpay_core::Category {
+        // Every variant is something an operator fixes with a deploy: a
+        // missing flag, a file that does not parse, a rule the YAML broke.
+        // None is a caller's request and none heals on retry, so the whole
+        // enum is one category and the defaults (500 / never / error / exit
+        // 78) all apply. The variant still reaches the log in full via
+        // `Display`; only the category is coarse.
+        vpay_core::Category::Configuration
+    }
+}
+
 /// Substrings that mark a host as a stub. A live deployment must refuse them.
 ///
 /// This is the guardrail that makes "the code cannot tell a stub from a real

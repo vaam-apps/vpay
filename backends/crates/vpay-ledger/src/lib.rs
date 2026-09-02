@@ -44,6 +44,49 @@ pub enum LedgerError {
     Money(#[from] MoneyError),
 }
 
+impl vpay_core::Classify for LedgerError {
+    fn category(&self) -> vpay_core::Category {
+        match self {
+            // No caller builds a ledger transaction; the core does, from
+            // amounts it already validated. An unbalanced or degenerate one
+            // is therefore this code's own invariant failing — the most
+            // expensive kind of bug this system can have (ADR-0007).
+            Self::Unbalanced { .. } | Self::TooFewEntries => vpay_core::Category::Internal,
+            Self::Money(inner) => inner.category(),
+        }
+    }
+
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Unbalanced { .. } => "ledger_unbalanced",
+            Self::TooFewEntries => "ledger_degenerate",
+            Self::Money(inner) => inner.code(),
+        }
+    }
+
+    fn retry(&self) -> vpay_core::Retry {
+        match self {
+            Self::Money(inner) => inner.retry(),
+            _ => vpay_core::Retry::Never,
+        }
+    }
+
+    fn severity(&self) -> vpay_core::Severity {
+        match self {
+            Self::Money(inner) => inner.severity(),
+            _ => vpay_core::Severity::Page,
+        }
+    }
+
+    fn public_message(&self) -> String {
+        match self {
+            // Internal: the merchant learns nothing about the ledger.
+            Self::Money(inner) => inner.public_message(),
+            _ => self.category().generic_message().to_owned(),
+        }
+    }
+}
+
 impl Transaction {
     /// # Errors
     /// [`LedgerError::Unbalanced`] unless debits equal credits.

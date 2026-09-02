@@ -152,6 +152,54 @@ pub enum MoneyError {
     Overflow,
 }
 
+impl crate::error::Classify for MoneyError {
+    fn category(&self) -> crate::error::Category {
+        use crate::error::Category;
+        match self {
+            // An amount or a currency pair came from a caller's request.
+            Self::Negative(_) | Self::CurrencyMismatch { .. } => Category::InvalidRequest,
+            // `i64` minor units overflowing is not a request a merchant can
+            // make; it is arithmetic this crate performed on values it had
+            // already accepted — a bug, and one in the money path.
+            Self::Overflow => Category::Internal,
+        }
+    }
+
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Negative(_) => "amount_negative",
+            Self::CurrencyMismatch { .. } => "currency_mismatch",
+            Self::Overflow => "internal_error",
+        }
+    }
+
+    fn public_message(&self) -> String {
+        match self {
+            // Caller-category errors say exactly what to fix; the value is
+            // the caller's own, so echoing it leaks nothing.
+            Self::Negative(n) => format!("amount must not be negative, got {n}"),
+            Self::CurrencyMismatch { left, right } => {
+                format!("currency mismatch: {} vs {}", left.code(), right.code())
+            }
+            Self::Overflow => self.category().generic_message().to_owned(),
+        }
+    }
+}
+
+impl crate::error::Classify for UnknownCurrency {
+    fn category(&self) -> crate::error::Category {
+        crate::error::Category::InvalidRequest
+    }
+
+    fn code(&self) -> &'static str {
+        "currency_unknown"
+    }
+
+    fn public_message(&self) -> String {
+        format!("unknown currency: {}", self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

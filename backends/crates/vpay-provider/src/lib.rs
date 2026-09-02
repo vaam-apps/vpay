@@ -110,6 +110,66 @@ pub enum ProviderError {
     NotImplemented(&'static str),
 }
 
+impl vpay_core::Classify for ProviderError {
+    fn category(&self) -> vpay_core::Category {
+        use vpay_core::Category;
+        match self {
+            // The rail could not be reached or spoke gibberish. The worker's
+            // poll ladder retries these (docs/flows/reconciler.md); nobody
+            // else should, and a merchant re-submitting would risk a double
+            // charge on a push rail (docs/flows/crash-safety.md).
+            Self::Transport(_) | Self::Malformed(_) => Category::Rail,
+            // A rail *decision*, not a rail *failure*: the charge is
+            // declined, the intent goes back to requires_payment_method with
+            // `last_payment_error`, and the merchant starts a new intent.
+            // Classified as Conflict (the charge's state now forbids
+            // retrying it) with `Retry::NewAttempt` below.
+            Self::Rejected { .. } => Category::Conflict,
+            Self::Config(_) => Category::Configuration,
+            // Capabilities said no and the core asked anyway — the core
+            // should have branched on the capability value first
+            // (docs/adr/0002-provider-port.md), so reaching this is our bug,
+            // but the *request* is what cannot proceed.
+            Self::Unsupported => Category::Conflict,
+            Self::NotImplemented(_) => Category::NotImplemented,
+        }
+    }
+
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Transport(_) => "provider_unavailable",
+            Self::Malformed(_) => "provider_error",
+            // The merchant-facing signal for a declined charge is the
+            // failure taxonomy itself (docs/flows/failures.md): the same
+            // string the charge's `failure_code` column carries, so a
+            // merchant sees one vocabulary whether they read the intent or
+            // catch the error.
+            Self::Rejected { code, .. } => code.as_str(),
+            Self::Config(_) => "misconfigured",
+            Self::Unsupported => "operation_unsupported_by_rail",
+            Self::NotImplemented(_) => "not_implemented",
+        }
+    }
+
+    fn retry(&self) -> vpay_core::Retry {
+        match self {
+            // "Retry means a new PaymentIntent" (docs/flows/payment-lifecycle.md).
+            Self::Rejected { .. } => vpay_core::Retry::NewAttempt,
+            _ => self.category().default_retry(),
+        }
+    }
+
+    fn public_message(&self) -> String {
+        match self {
+            // The taxonomy's meaning is public by design; the rail's raw
+            // reason string is not — it is logged via Display, never sent.
+            Self::Rejected { code, .. } => format!("The payment was declined: {code}."),
+            Self::Unsupported => "This rail does not support the requested operation.".to_owned(),
+            _ => self.category().generic_message().to_owned(),
+        }
+    }
+}
+
 /// Opaque per-merchant, per-rail configuration handed to the adapter.
 #[derive(Debug, Clone)]
 pub struct ProviderConfig {
