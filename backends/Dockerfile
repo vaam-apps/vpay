@@ -14,8 +14,11 @@
 # for the implicit host target avoids the cross-compile entirely, on both
 # architectures, with no emulation and no extra linker.
 #
-# Version pin: authored and verified against rustc 1.95.0 (rust-toolchain.toml
-# `channel = "stable"`, resolved to 1.95.0 in the authoring environment).
+# Version pin: authored and verified against rustc 1.95.0. Since 2026-09-02
+# rust-toolchain.toml pins `channel = "1.95.0"` too (it used to say `stable`,
+# which merely *resolved* to 1.95.0 at the time) and CI reads that pin; this
+# `FROM` line is the one place that cannot read the file, so bump both
+# together.
 # Cargo.toml's `rust-version = "1.88"` is NOT that: it is `cargo metadata`'s
 # max `rust_version` across the resolved dependency graph (currently driven
 # by `time` 0.3.47 and `testcontainers`/`testcontainers-modules` 0.27/0.15) —
@@ -35,6 +38,16 @@ COPY Cargo.toml Cargo.lock clippy.toml ./
 COPY .cargo ./.cargo
 COPY .xtask ./.xtask
 COPY backends ./backends
+# Every `[workspace] members` entry in Cargo.toml must be present or cargo
+# refuses to load the manifest at all ("failed to load manifest for
+# workspace member `sdks/rust`") — a workspace member list is a hard list,
+# not a glob that tolerates zero matches the way pnpm-workspace.yaml does
+# in frontends/Dockerfile. `sdks/rust` is a member (the Rust merchant SDK,
+# `publish = false`), so it ships in the build context even though neither
+# binary depends on it. Reconstructing this exact context and running the
+# build command below is how the omission was found, on 2026-09-02, before
+# this Dockerfile had ever been built.
+COPY sdks/rust ./sdks/rust
 # Cache the crates.io index/tarball downloads across builds (keyed by content,
 # not by layer) without caching `target/` itself: a cache mount's contents are
 # not part of the final layer, so building the binary straight into a cached
@@ -49,6 +62,17 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # accounted for downstream.
 FROM scratch AS server
 COPY --from=builder /build/target/dist/vpay-server /vpay-server
+# The deployment configuration is baked into the image (ADR-0003: a profile
+# selects a *file*, and `--config` / `VPAY_CONFIG` is required — both
+# binaries exit 78 without it). Secrets never live in these files: every
+# credential is a `${VAR}` placeholder resolved from the environment at
+# boot, so an image layer containing `config/` contains no secret. A
+# config change is therefore a rebuild, not a restart; that is the trade
+# accepted for an immutable, self-contained `scratch` image. Until
+# 2026-09-02 nothing put a config file in this image at all, so the image
+# could never have booted.
+COPY config /config
+ENV VPAY_CONFIG=/config/application.yml
 # Numeric, non-root UID. `scratch` has no /etc/passwd, so a named USER is not
 # possible, but a raw UID needs no passwd entry — the kernel only ever sees
 # the number.
@@ -58,5 +82,8 @@ ENTRYPOINT ["/vpay-server"]
 
 FROM scratch AS worker
 COPY --from=builder /build/target/dist/vpay-worker-bin /vpay-worker
+# Same config layer as `server` above, for the same reasons.
+COPY config /config
+ENV VPAY_CONFIG=/config/application.yml
 USER 65532:65532
 ENTRYPOINT ["/vpay-worker"]

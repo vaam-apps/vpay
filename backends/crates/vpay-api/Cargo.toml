@@ -33,6 +33,19 @@ vpay-ledger.workspace = true
 vpay-config.workspace = true
 axum.workspace = true
 tokio.workspace = true
+# `ServiceBuilder`, so `router()`'s middleware order is written top-down in
+# the order a request traverses it rather than inferred from nested
+# `.layer()` calls — the order is load-bearing here (id, then span, then
+# propagate) and worth being unable to misread. Was a dev-dependency until
+# the layers below became production middleware.
+tower.workspace = true
+# `SetRequestIdLayer`/`PropagateRequestIdLayer` (feature `request-id`, which
+# enables tower-http's own `uuid` dependency, so `MakeRequestUuid` needs no
+# extra feature at the workspace pin) and `TraceLayer` (feature `trace`).
+# Both features are already on the root `Cargo.toml`'s pin; this crate is
+# the first member to use them. No new package in either binary's resolved
+# graph — `reqwest` already pulls tower-http in (`cargo tree -i tower-http`).
+tower-http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -51,7 +64,11 @@ authkestra-resource.workspace = true
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 
 [dev-dependencies]
-tower.workspace = true
+# Test-only: the request-id tests parse the generated header value as a UUID
+# rather than asserting it is merely non-empty, so a `MakeRequestId` that
+# handed back a constant would fail. Already resolved in the graph via
+# tower-http's `request-id` feature; the workspace pin is reused verbatim.
+uuid.workspace = true
 # Test-only: `DbError`'s variants all wrap a `sqlx::Error`, and the test that
 # proves a leaf's text reaches the log and not the response body has to build
 # one with a recognisable string inside it. `vpay-db` re-exports `PgPool` but

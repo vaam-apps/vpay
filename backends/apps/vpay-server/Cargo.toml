@@ -26,6 +26,13 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 mimalloc.workspace = true
 clap.workspace = true
+# Installs the process-wide rustls `CryptoProvider` in `main` (see
+# `install_crypto_provider` in src/main.rs). The workspace pin already
+# selects `ring`, the only provider `deny.toml` permits; this binary needs
+# the crate directly because `reqwest` is pinned `rustls-no-provider` and
+# panics when it builds a client with no process default installed (root
+# Cargo.toml's comments on the `reqwest` and `authkestra-*` pins).
+rustls.workspace = true
 
 [dev-dependencies]
 vpay-testkit.workspace = true

@@ -44,18 +44,25 @@
 //! ## No `request_id` field here, deliberately
 //!
 //! Correlating a merchant's "I got a 500" with a log line needs a request
-//! id, and this module does not invent one. `tower-http`'s
-//! `SetRequestIdLayer`/`PropagateRequestIdLayer` (already a workspace
-//! dependency, with the `request-id` feature enabled in the root
-//! `Cargo.toml`) is the mechanism, and `tower_http::trace::TraceLayer` puts
-//! the id on the span that encloses the handler — so every event this module
-//! emits inherits it automatically once those layers are mounted in
-//! `router()`. Generating a second id here would produce an id that appears
-//! in the log and in no response header, which is worse than none.
-//! `Category::Internal`'s generic message already promises the merchant a
-//! request id ("Contact support with the request id"); honouring that
-//! promise is the job of whoever mounts the layer, and it is not mounted
-//! today.
+//! id, and this module still does not invent one — because it no longer has
+//! to. [`crate::router`] mounts `tower-http`'s `SetRequestIdLayer`
+//! (`MakeRequestUuid`, honouring a client-supplied `x-request-id`),
+//! `TraceLayer` with a `make_span_with` that records the id on the span
+//! enclosing every handler, and `PropagateRequestIdLayer`, which copies it
+//! onto the response — in that order, so the id exists before the span is
+//! built and reaches the caller afterwards. Every event this module emits
+//! therefore inherits `request_id` from that span automatically, with no
+//! field of its own.
+//!
+//! Generating a second id *here* would produce an id that appears in the log
+//! and in no response header, which is worse than none — which is why the
+//! answer is a layer rather than a variant field.
+//! `Category::Internal`'s generic message promises the merchant a request id
+//! ("Contact support with the request id"); the header
+//! `PropagateRequestIdLayer` sets is what that promise now points at.
+//! `crate`'s own tests pin all three halves: a generated id is a UUID, a
+//! supplied id comes back unchanged, and the id appears in the log line this
+//! module writes while serving that request.
 //!
 //! ## The one response that is not an envelope
 //!
@@ -625,9 +632,6 @@ const _: () = assert_send_sync::<ApiError>();
 
 #[cfg(test)]
 mod tests {
-    use std::io;
-    use std::sync::{Arc, Mutex};
-
     use axum::Router;
     use axum::body::Body;
     use axum::extract::{Form, Path, Query};
@@ -636,13 +640,13 @@ mod tests {
     use axum::routing::post;
     use serde_json::Value;
     use tower::ServiceExt as _;
-    use tracing_subscriber::fmt::MakeWriter;
     use vpay_core::MoneyError;
     use vpay_core::money::UnknownCurrency;
     use vpay_db::DbError;
     use vpay_provider::ProviderError;
 
     use super::*;
+    use crate::test_log::with_captured_log;
 
     /// A string that could only have come from inside a `sqlx::Error` — the
     /// stand-in for the host, credential or table name a real driver error
@@ -868,50 +872,6 @@ mod tests {
                 "{label}: every envelope carries a message"
             );
         }
-    }
-
-    /// Captures `tracing` output for the duration of one closure, so a test
-    /// can assert on what an operator would see. Scoped with `with_default`
-    /// (thread-local) rather than a global subscriber, so it holds whether
-    /// the suite runs process-per-test under nextest or threaded under
-    /// `cargo test`.
-    #[derive(Clone, Default)]
-    struct CapturedLog(Arc<Mutex<Vec<u8>>>);
-
-    impl io::Write for CapturedLog {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            match self.0.lock() {
-                Ok(mut sink) => sink.write(buf),
-                Err(poisoned) => poisoned.into_inner().write(buf),
-            }
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> MakeWriter<'a> for CapturedLog {
-        type Writer = Self;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
-    fn with_captured_log<T>(f: impl FnOnce() -> T) -> (T, String) {
-        let sink = CapturedLog::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(sink.clone())
-            .with_ansi(false)
-            .with_max_level(tracing::Level::TRACE)
-            .finish();
-        let out = tracing::subscriber::with_default(subscriber, f);
-        let captured = sink.0.lock().map_or_else(
-            |poisoned| String::from_utf8_lossy(&poisoned.into_inner()).into_owned(),
-            |bytes| String::from_utf8_lossy(&bytes).into_owned(),
-        );
-        (out, captured)
     }
 
     #[tokio::test]

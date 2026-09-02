@@ -104,6 +104,8 @@ async fn run() -> anyhow::Result<()> {
     let shutdown_signals =
         ShutdownSignals::install().context("installing SIGINT/SIGTERM handlers")?;
 
+    install_crypto_provider();
+
     init_tracing(&args.common.log_filter, args.common.log_format);
 
     let registry = vpay_server::adapter_registry();
@@ -266,6 +268,54 @@ async fn grace_clock(drain_started_rx: tokio::sync::oneshot::Receiver<()>, grace
     }
 }
 
+/// Installs the process-wide rustls [`CryptoProvider`] this binary's HTTP
+/// clients need, before anything can build one.
+///
+/// [`CryptoProvider`]: rustls::crypto::CryptoProvider
+///
+/// **Why it exists at all.** The root `Cargo.toml` pins `reqwest` with
+/// `rustls-no-provider` (see the long comment on that pin, and the one on
+/// the `authkestra-*` pins below it): the alternative selects `aws-lc-rs`,
+/// which `deny.toml` bans outright because two providers in one process are
+/// exactly what makes `install_default()` panic. The cost of picking nothing
+/// is that reqwest 0.13's `ClientBuilder::build()` calls
+/// `CryptoProvider::get_default()` and **panics** — "No rustls crypto
+/// provider is configured" — when there is no process default. That is a
+/// panic in a shipping payment binary, i.e. a defect under ADR-0007, on a
+/// path no unit test reaches. `docs/status.md`'s "rustls `CryptoProvider`
+/// process default" row tracks it as a documented landmine, and until this
+/// call landed the workspace's only `install_default()` was a `#[cfg(test)]`
+/// helper in `vpay_api::resource_auth`.
+///
+/// **Why here.** The one ordering constraint is "before the first
+/// `reqwest::Client` is built" — today that is
+/// `authkestra_resource::jwt::Jwks::fetch`'s JWKS client (`/v1` and
+/// `/dash/v1` are not mounted yet, so nothing has built one so far), and
+/// tomorrow it is every rail adapter that talks HTTPS. Putting it at the top
+/// of `run`, right after the signal handlers and above `init_tracing`, means
+/// no future edit can slip a client construction in ahead of it. It is
+/// deliberately *not* done in a library: installing a process-wide default
+/// from a library takes a decision out of the application's hands (the
+/// reasoning `sdks/rust` records for why it hands reqwest a pre-built
+/// `ClientConfig` instead).
+///
+/// **Why the result is dropped.** `install_default()` returns
+/// `Err(Arc<CryptoProvider>)` for exactly one reason: a default was already
+/// installed. In a binary that means some other code got there first, which
+/// is the state this call wanted anyway — so `.ok()`, which is what the root
+/// `Cargo.toml`'s own note on the `authkestra-*` pins recommends verbatim.
+/// `unwrap`/`expect` are denied here (ADR-0007) and would turn a harmless
+/// double install into a startup crash.
+///
+/// `vpay-worker-bin` has a byte-identical copy, for the same reason its
+/// `exit_code_for` and `init_tracing` are copies: this is a property of the
+/// binary, not a library boundary.
+fn install_crypto_provider() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+}
+
 /// Initialises the global tracing subscriber per `--log-format`.
 ///
 /// The two formats produce differently-typed subscriber builders, so this is
@@ -313,7 +363,7 @@ fn env_filter(directive: &str) -> tracing_subscriber::EnvFilter {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::grace_clock;
+    use super::{grace_clock, install_crypto_provider};
 
     #[tokio::test]
     async fn grace_clock_waits_at_least_the_full_grace_period_once_the_signal_fires() {
@@ -352,5 +402,37 @@ mod tests {
             result.is_err(),
             "grace_clock should never resolve when its sender is dropped without sending"
         );
+    }
+
+    /// The provider install is idempotent and leaves a process default
+    /// behind.
+    ///
+    /// What this proves: after `install_crypto_provider()` returns,
+    /// `CryptoProvider::get_default()` is `Some`, and calling it a second
+    /// time does not panic — which is the whole contract the `.ok()` on the
+    /// `Err(Arc<CryptoProvider>)` relies on.
+    ///
+    /// What it deliberately does **not** prove: that a `reqwest::Client`
+    /// built later in this binary succeeds. No shipping code in either
+    /// binary builds one yet (the JWKS validator is mounted on no route,
+    /// `docs/status.md`), so there is nothing honest to assert about that
+    /// here — inventing a reqwest consumer purely to observe the provider
+    /// would be a test double in a shipping process. The reqwest-side
+    /// behaviour is documented on the root `Cargo.toml`'s pins and stays
+    /// unproven until a real caller exists.
+    #[test]
+    fn installing_the_crypto_provider_leaves_a_process_default_and_is_idempotent() {
+        install_crypto_provider();
+        assert!(
+            rustls::crypto::CryptoProvider::get_default().is_some(),
+            "no process-wide CryptoProvider after install_crypto_provider(); \
+             reqwest would panic on its first client"
+        );
+
+        // The second call takes the `Err(_)` branch by construction. It must
+        // stay silent rather than panic: in a real process this is what
+        // happens when some other component installed one first.
+        install_crypto_provider();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
     }
 }

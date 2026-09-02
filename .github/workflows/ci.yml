@@ -1,12 +1,20 @@
 name: ci
 
 on:
-  push: { branches: [main] }
+  # The default branch is `master` (see `git remote show origin`). This used
+  # to say `main`, which meant the workflow never ran on a merge — only on
+  # pull requests — and nothing ever verified what actually landed.
+  push: { branches: [master] }
   pull_request:
 
 env:
   CARGO_TERM_COLOR: always
-  CYPRESS_INSTALL_BINARY: 0
+  # NOT set here: `CYPRESS_INSTALL_BINARY`. It used to be `0` at workflow
+  # level, which also applied to the `e2e` job below — whose whole point is
+  # to run Cypress. Once `bf9811d` fixed the `pnpm/action-setup` failure
+  # that had stopped every earlier run before this point, that single line
+  # is what failed the two runs after it ("Command 'cypress' not found").
+  # The jobs that do not need the binary opt out individually instead.
 
 jobs:
   # The promises this repo makes about itself. Fast, and first — if these
@@ -19,7 +27,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # One source of truth for the compiler version: `rust-toolchain.toml`.
+      # `dtolnay/rust-toolchain@stable` would install *today's* stable and let
+      # rustup silently download the pinned one on the first `cargo` call —
+      # or, on a rustup with auto-install disabled, fail. Reading the pin
+      # here keeps CI, developers and `backends/Dockerfile` on one number.
+      - id: toolchain
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      # Pinned to a commit of `master` (the ref the `toolchain:` input is
+      # documented for) rather than the mutable branch, for the same reason
+      # `cargo deny` runs at all. Bump deliberately.
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master, 2026-08-05
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo xtask verify-no-mocks
       - run: cargo xtask verify-status
@@ -31,29 +51,62 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: rustfmt, clippy }
+      - id: toolchain
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      # Pinned to a commit of `master` (the ref the `toolchain:` input is
+      # documented for) rather than the mutable branch, for the same reason
+      # `cargo deny` runs at all. Bump deliberately.
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master, 2026-08-05
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          # Block style on purpose. The previous flow-style
+          # `{ components: rustfmt, clippy }` parsed `clippy` as a *second
+          # key* with no value — GitHub annotated every run with
+          # "Unexpected input(s) 'clippy'" and clippy only worked because the
+          # runner image happens to preinstall it.
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@v2
+        with:
+          # Comma-separated in one string; a flow-style `{ tool: nextest, just }`
+          # would repeat the `components:` mistake noted above.
+          tool: nextest,just
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Runs the container-backed suites too (vpay-db, vpay-tests-integration,
+      # both binaries' tests/cli.rs) — ubuntu-latest has a working Docker
+      # daemon and testcontainers fails hard without one, so these cannot
+      # silently skip. This job is the evidence for those suites; see
+      # docs/status.md, "Last verified".
       - run: cargo nextest run --workspace
-      # Surfaces how much is NOT covered. Informational, never blocking.
-      - name: report ignored tests
-        run: cargo nextest list --workspace --run-ignored ignored-only || true
+      # A new `#[ignore]` must not quietly shrink coverage, and a whole test
+      # binary dropping out of the workspace must not read as "fewer tests,
+      # still green". The recipe pins both numbers; bump them in the same
+      # commit that legitimately changes them.
+      - run: just verify-ignored
 
   deny:
     name: supply chain
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - id: toolchain
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      # Pinned to a commit of `master` (the ref the `toolchain:` input is
+      # documented for) rather than the mutable branch, for the same reason
+      # `cargo deny` runs at all. Bump deliberately.
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master, 2026-08-05
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
       - uses: EmbarkStudios/cargo-deny-action@v2
         with: { command: check }
 
   web:
     name: web
     runs-on: ubuntu-latest
+    env:
+      # This job never runs Cypress; skip the ~200 MB binary download.
+      CYPRESS_INSTALL_BINARY: 0
     steps:
       - uses: actions/checkout@v4
       # No `version:` here on purpose: pnpm/action-setup@v4 refuses to run
@@ -78,18 +131,61 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # No `version:` here on purpose: pnpm/action-setup@v4 refuses to run
-      # when both it and package.json's `packageManager` name a version
-      # ("Multiple versions of pnpm specified"). package.json is the single
-      # source of truth (pnpm@9.15.0). This was the workflow's first-ever
-      # run and it failed on exactly that, 2026-09-02.
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with: { node-version-file: .nvmrc, cache: pnpm }
+      # The Cypress binary lives outside node_modules (~/.cache/Cypress) and
+      # is not covered by setup-node's pnpm-store cache.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/Cypress
+          key: cypress-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      # With `CYPRESS_INSTALL_BINARY` unset, the `cypress` package's own
+      # postinstall downloads the binary during `pnpm install`. `verify` then
+      # proves it is actually runnable before a stack is built for it.
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec cypress install
-      - name: bring up the real stack (rails stubbed by WireMock, not in-process)
+      # Kept even though `pnpm install` normally downloads the binary: the
+      # `web` job shares this runner's pnpm store (same `cache: pnpm` key)
+      # with `CYPRESS_INSTALL_BINARY: 0`, and pnpm's side-effects cache can
+      # then let a later install skip cypress's postinstall entirely. This
+      # step is idempotent — a no-op when the binary is already there.
+      - run: pnpm --filter @vpay/e2e exec cypress install
+      - run: pnpm --filter @vpay/e2e exec cypress verify
+      - name: build both images and bring up the real stack (rails stubbed by WireMock, not in-process)
         run: docker compose -f compose.yml -f compose.e2e.yml up -d --build
+      # `vpay-server`'s image is `FROM scratch` and carries no HEALTHCHECK
+      # (see compose.e2e.yml for why), so readiness is observed from the
+      # runner instead. This is also the first place in this repository's
+      # history that proves the image boots at all: a 200 here means the
+      # binary started, found its config, connected to Postgres and ran
+      # the migrations — /healthz is a real `SELECT 1`, not a static "ok".
+      - name: wait for vpay-server to answer 200 on /healthz
+        run: |
+          for i in $(seq 1 90); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/healthz || true)
+            if [ "$code" = "200" ]; then
+              echo "vpay-server: /healthz answered 200 after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::vpay-server never answered 200 on /healthz (last status: '$code')"
+          docker compose -f compose.yml -f compose.e2e.yml ps
+          docker compose -f compose.yml -f compose.e2e.yml logs --no-color vpay-server
+          exit 1
+      - name: wait for the dashboard to answer on :3000
+        run: |
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/ || true)
+            if [ "$code" = "200" ]; then
+              echo "dashboard: / answered 200 after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::dashboard never answered 200 on / (last status: '$code')"
+          docker compose -f compose.yml -f compose.e2e.yml logs --no-color dashboard
+          exit 1
       - run: pnpm --filter @vpay/e2e e2e
       - if: always()
         run: docker compose -f compose.yml -f compose.e2e.yml logs --no-color > compose.log
