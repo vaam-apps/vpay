@@ -1,17 +1,29 @@
 //! vpay worker: submit, poll, reconcile, deliver.
 //!
-//! The job loop itself is not implemented (`docs/status.md`) — this process
-//! supervises nothing yet. It used to exit immediately on start, on the
-//! theory that idling in a loop that did nothing would look like a running
-//! worker in `docker compose ps`. In practice that made the compose stack
-//! unstable: an orchestrator (compose, k8s) that expects a long-running
-//! process treats an immediate clean exit as a crash loop. So instead it
-//! stays up and answers the same shutdown signals `vpay-server` does, while
-//! shouting — loudly and repeatedly — that it is doing no real work. That
-//! makes shutdown/orchestration behaviour real and testable today, without
-//! pretending the job loop exists.
+//! Boots exactly as `vpay-server` does — signal handlers, crypto provider,
+//! tracing, YAML configuration, pool, migrations, boot step 4 — and then runs
+//! [`vpay_worker::run_loop()`] instead of binding a listener. Everything the
+//! loop does is in that module; this file's job is to assemble its four
+//! inputs (the pool, the adapters, each rail's configuration, the recovery
+//! policy) and to bound its drain.
+//!
+//! Webhook delivery is **not** implemented (`docs/status.md`).
+//!
+//! # Why this process links `vpay-api`
+//!
+//! For `vpay_api::v1::boot` and `vpay_api::ResourceConfig`, and nothing else
+//! — no router is mounted here. Both binaries must reconcile the same
+//! `providers`/`currencies` rows from the same YAML and derive each rail's
+//! `ProviderConfig` the same way; a worker with its own copy of that
+//! derivation could poll a rail at a host the server never charges. The
+//! alternative (moving the projection into `vpay-config`) was considered and
+//! declined in the Step 4 design: the edge already exists, and
+//! `ResourceConfig::from_config`'s own doc comment says both binaries
+//! building it identically is the point.
 
+use std::collections::BTreeMap;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -21,12 +33,10 @@ use vpay_config::{ConfigError, LogFormat, ShutdownSignals, WorkerArgs};
 use vpay_core::error::{Category, Classify as _, find_in_chain};
 use vpay_db::DbError;
 use vpay_provider::ProviderAdapter;
+use vpay_worker::{Drain, RecoveryPolicy};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
-
-/// How often the "not implemented" banner repeats while the process is up.
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Runs [`run`] and turns its failure into a *classified* exit code.
 ///
@@ -77,6 +87,7 @@ fn main() -> ExitCode {
 fn exit_code_for(error: &anyhow::Error) -> u8 {
     let category = find_in_chain::<ConfigError>(error.chain())
         .map(|e| e.category())
+        .or_else(|| find_in_chain::<StartupError>(error.chain()).map(|e| e.category()))
         .or_else(|| find_in_chain::<DbError>(error.chain()).map(|e| e.category()))
         .unwrap_or(Category::Internal);
     // Every `Category::exit_code()` is in `1..=78` (pinned by a test in
@@ -84,6 +95,39 @@ fn exit_code_for(error: &anyhow::Error) -> u8 {
     // is the same honest fallback as an unclassified error, rather than a
     // truncating cast.
     u8::try_from(category.exit_code()).unwrap_or(1)
+}
+
+/// A startup input this binary was given but cannot use.
+///
+/// It exists so "you set the knob to a value that means nothing" reaches an
+/// operator as exit `78` ("fix the deploy") rather than `1` ("this is a vpay
+/// bug"). Without a typed leaf in the chain, an `anyhow!("…")` gives
+/// [`exit_code_for`] nothing to classify and the honest-but-unhelpful
+/// [`Category::Internal`] fallback applies.
+///
+/// The twin of `vpay-server`'s `StartupError`, and defined in the binary for
+/// the same reason: which inputs a process requires, and which values it can
+/// make sense of, are properties of *that process*. `vpay-server` takes no
+/// `--worker-concurrency` at all (it claims no jobs), so a `ConfigError`
+/// variant about one would be a requirement one binary has, spelled in a
+/// crate both link.
+#[derive(Debug, thiserror::Error)]
+enum StartupError {
+    /// `--worker-concurrency` / `VPAY_WORKER_CONCURRENCY` was zero. The
+    /// message is `vpay_config::WorkerArgs::concurrency`'s, which names both
+    /// spellings, because the message is the entire fix.
+    #[error("{0}")]
+    UnusableConcurrency(String),
+}
+
+impl vpay_core::error::Classify for StartupError {
+    /// A deploy that must be fixed — never retried, never the caller's fault.
+    /// [`Category::Configuration`] is what makes that exit `78`, the same
+    /// number a malformed YAML file produces, because it is the same kind of
+    /// operator problem.
+    fn category(&self) -> Category {
+        Category::Configuration
+    }
 }
 
 /// Every adapter linked into this binary.
@@ -167,6 +211,15 @@ async fn run() -> anyhow::Result<()> {
         "configuration loaded and validated"
     );
 
+    // Validated here, beside the YAML and *before* the database, for the same
+    // reason the YAML is loaded before the database: a knob set to a value
+    // this process cannot use should fail in milliseconds, not after paying
+    // for a Postgres connection and a migration run it is about to discard.
+    let concurrency = args
+        .concurrency()
+        .map_err(StartupError::UnusableConcurrency)?;
+    tracing::info!(concurrency, "job loop concurrency");
+
     // Boot step 4's inputs, before the database is touched — see
     // `vpay_api::v1::boot::boot_seeds`, which is the *same function*
     // `vpay-server` calls, over this binary's own `adapters()`. Both
@@ -248,55 +301,83 @@ async fn run() -> anyhow::Result<()> {
         "reference tables reconciled from configuration"
     );
 
-    drop(pool);
-
-    tracing::warn!(
-        "vpay-worker-bin is a scaffold: the job loop is NOT implemented. No jobs \
-         are being dequeued, polled, or delivered. This process stays up only to \
-         answer shutdown signals correctly. See docs/status.md."
+    // Each rail's `ProviderConfig`, keyed the same way the adapters are.
+    //
+    // Projected through `vpay_api::ResourceConfig` — the *same* projection
+    // `vpay-server` hands its router — rather than read out of the `Config`
+    // here, so the host, credentials, timeouts and callback URL a worker
+    // polls with are byte-identical to the ones the server submitted with. A
+    // second derivation would be a rail that can be charged and not queried.
+    //
+    // Only the rails this binary actually links are kept: a `providers:`
+    // entry with no adapter is a configuration error `boot_seeds` above has
+    // already refused, so this filter drops nothing in a booting deployment
+    // and keeps the map's meaning exact ("what this process can talk to").
+    let resource_config = vpay_api::ResourceConfig::from_config(&config)
+        .context("projecting the deployment configuration onto the provider port")?;
+    let rails: BTreeMap<String, vpay_provider::ProviderConfig> = adapters
+        .keys()
+        .filter_map(|code| {
+            resource_config
+                .rail(code)
+                .map(|rail| (code.clone(), rail.provider_config()))
+        })
+        .collect();
+    tracing::info!(
+        rails = rails.len(),
+        "rail configurations projected for the job loop"
     );
 
-    // `--shutdown-grace-seconds` / `VPAY_SHUTDOWN_GRACE_SECONDS` is parsed
-    // and validated here (it is shared with `vpay-server` via
-    // `CommonArgs`), but intentionally not consumed below: there is no
-    // in-flight work for it to bound yet, because the job loop it is meant
-    // to bound the drain of does not exist (docs/status.md). Once that loop
-    // is implemented, this value should bound how long it waits for an
-    // in-flight job to finish after a shutdown signal, the same way
-    // `vpay-server`'s `main.rs` bounds its HTTP request drain. Wiring it in
-    // now, ahead of the loop it is meant to bound, would be exactly the
-    // "dormant behind a flag" anti-pattern this repo forbids — so it stays
-    // unused here until there is real work to bound.
-    tracing::debug!(
-        shutdown_grace_seconds = args.common.shutdown_grace_seconds,
-        "shutdown grace period accepted for CLI parity with vpay-server; has no effect yet, \
-         there is no job loop for it to bound (see docs/status.md)"
-    );
+    // The documented numbers (`docs/flows/{crash-safety,reconciler}.md`),
+    // constructed here and passed down rather than read from a
+    // `#[cfg(test)]` seam — AGENTS.md rule 1. The integration suite overrides
+    // this same struct, so it exercises the identical code path a deployment
+    // runs.
+    let policy = RecoveryPolicy::default();
+    let grace = Duration::from_secs(args.common.shutdown_grace_seconds);
+    let worker_id = vpay_worker::worker_id();
 
-    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
-    // The first tick fires immediately; skip it, the startup banner above
-    // already said this once.
-    heartbeat.tick().await;
+    let report = vpay_worker::run_loop(
+        &pool,
+        Arc::new(adapters),
+        Arc::new(rails),
+        policy,
+        concurrency,
+        grace,
+        worker_id,
+        async move { shutdown_signals.wait().await },
+    )
+    .await;
 
-    let shutdown = shutdown_signals.wait();
-    tokio::pin!(shutdown);
-
-    loop {
-        tokio::select! {
-            () = &mut shutdown => {
-                tracing::info!("graceful shutdown complete, exiting");
-                break;
-            }
-            _ = heartbeat.tick() => {
-                tracing::warn!(
-                    "vpay-worker-bin heartbeat: job loop still not implemented, no jobs \
-                     are being processed. See docs/status.md."
-                );
-            }
+    match report.drain {
+        Drain::Clean => {
+            tracing::info!("graceful shutdown complete, exiting");
+            Ok(())
+        }
+        Drain::TimedOut => {
+            // Exit non-zero, for the reason `vpay-server`'s twin of this
+            // branch gives at length: an orchestrator treats the container as
+            // stopped either way, but a supervisor or a `docker inspect` that
+            // *does* read the code should be able to tell "in-flight work was
+            // cut off" from "everything finished" without parsing logs.
+            //
+            // The worker's version of "cut off" is materially worse than the
+            // server's, which is why it is worth the number: a job aborted
+            // mid-flight has already had its `attempts` incremented and may
+            // have called a rail. Its lease has been handed back
+            // (`report.released`) so another worker re-runs it at once, and
+            // every handler is a compare-and-swap so the re-run is a no-op if
+            // the first pass committed — but repeated timeouts here mean the
+            // grace period is below what a poll actually takes.
+            tracing::warn!(
+                shutdown_grace_seconds = args.common.shutdown_grace_seconds,
+                released = report.released,
+                "the shutdown grace period elapsed before in-flight jobs finished; their \
+                 leases were handed back and the process is exiting anyway"
+            );
+            std::process::exit(1);
         }
     }
-
-    Ok(())
 }
 
 /// Installs the process-wide rustls [`CryptoProvider`] this binary's HTTP
@@ -319,15 +400,18 @@ async fn run() -> anyhow::Result<()> {
 /// helper in `vpay_api::resource_auth`.
 ///
 /// **Why here.** The one ordering constraint is "before the first
-/// `reqwest::Client` is built". This process builds none today — the job
-/// loop that will call rails over HTTPS is not implemented
-/// (`docs/status.md`) — so this is a prerequisite put in place ahead of the
-/// first caller, not a fix for a panic anyone has seen here. It is
-/// nevertheless not speculative wiring: it is the same one-line startup
-/// invariant `vpay-server` needs, and having the two binaries diverge on it
-/// is how the worker would acquire the panic silently the day the job loop
-/// lands. Right after the signal handlers and above `init_tracing` means no
-/// future edit can slip a client construction in ahead of it.
+/// `reqwest::Client` is built", and this process builds one on every start:
+/// [`adapters`] hands `vpay_provider::http`'s client to both rail adapters,
+/// and the job loop then calls those rails over HTTPS on each poll that
+/// reaches the rail and on every `resubmit_charge`. ("Each poll that reaches
+/// the rail" and not "every `poll_charge`": a poll of an already-terminal
+/// charge, one the recovery table answers `FailDeadOrder` to, and one it
+/// answers `Resubmit` to all return before the status query.) Without this
+/// line that construction is the
+/// panic described above, on the startup path of a shipping binary. Right
+/// after the signal handlers and above `init_tracing` puts it ahead of
+/// [`adapters`] with room to spare, so no future edit can slip a client
+/// construction in front of it either.
 ///
 /// **Why the result is dropped.** `install_default()` returns
 /// `Err(Arc<CryptoProvider>)` for exactly one reason: a default was already

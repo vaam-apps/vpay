@@ -8,9 +8,14 @@ pub mod error;
 pub mod failure;
 pub mod ids;
 pub mod money;
+// The reconciler's half of the state machine, kept apart from `state` on
+// purpose: `state::Transition` is the merchant's three verbs and must stay
+// unreachable from a rail answer. See the module header.
+pub mod settlement;
 pub mod state;
 
 pub use error::{Category, Classify, Retry, Severity};
 pub use failure::FailureCode;
 pub use money::{Currency, Money, MoneyError};
+pub use settlement::{Settlement, StatusKind, contradiction, settle};
 pub use state::{ChargeState, IntentStatus, ProviderFlow, Transition, next_status};

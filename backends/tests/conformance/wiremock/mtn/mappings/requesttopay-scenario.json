@@ -12,7 +12,9 @@
       },
       "response": {
         "status": 200,
-        "jsonBody": { "status": "PENDING" }
+        "jsonBody": {
+          "status": "PENDING"
+        }
       },
       "metadata": {
         "why": "`pending_then_successful_walks_the_scenario`: query_status must report what the rail says *now*, not a cached first answer — the poll ladder in docs/flows/reconciler.md is built entirely on that. Each conformance case starts its own container, so the scenario always begins in `Started`."
@@ -35,6 +37,135 @@
           "amount": "50.00",
           "currency": "EUR"
         }
+      }
+    },
+    {
+      "name": "e2e: a confirm that will settle, selected by MSISDN rather than by reference",
+      "scenarioName": "mtn-e2e-poll",
+      "requiredScenarioState": "Started",
+      "newScenarioState": "e2e-submitted",
+      "priority": 5,
+      "request": {
+        "method": "POST",
+        "urlPath": "/collection/v1_0/requesttopay",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.payer.partyId",
+              "equalTo": "237600000ce0"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 202
+      },
+      "metadata": {
+        "why": [
+          "THE ENTRY POINT of the only PENDING->SUCCESSFUL walk an end-to-end confirm can",
+          "reach. The two priority-1 mappings above are keyed on the fixed reference",
+          "...0ce0, and a confirm cannot choose its reference: the handler mints",
+          "provider_reference_id with Uuid::new_v4() before committing the charge, and a",
+          "seam to fix it from a test would be a code path that exists only outside",
+          "production (AGENTS.md's first rule). MTN's status query is a GET carrying no",
+          "body, so it cannot be steered by a payer either -- which is why the steering",
+          "happens HERE, on the POST, and is carried forward by scenario state rather than",
+          "by anything in the status request itself.",
+          "",
+          "The same technique and the same justification as requesttopay.json's",
+          "'a payer the rail does not know' mapping, and the same documentation-MSISDN",
+          "block: 237600000ce0 borrows the 0ce0 suffix from the reference-keyed scenario",
+          "it mirrors.",
+          "",
+          "Answers 202 -- the ordinary accepted submit -- because this mapping exists to",
+          "MOVE THE SCENARIO, not to change what a confirm sees. worker_e2e.rs asserts a",
+          "confirm here is indistinguishable from any other accepted confirm right up to",
+          "the point the worker starts polling."
+        ]
+      }
+    },
+    {
+      "name": "e2e: pending on the first status query, whatever the reference",
+      "scenarioName": "mtn-e2e-poll",
+      "requiredScenarioState": "e2e-submitted",
+      "newScenarioState": "e2e-settled",
+      "priority": 5,
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/collection/v1_0/requesttopay/.*"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "PENDING"
+        }
+      },
+      "metadata": {
+        "why": [
+          "Matches ANY reference, which is what makes it usable from a real confirm, and",
+          "is therefore the mapping in this tree with the widest reach. Three things keep",
+          "it from swallowing a conformance case:",
+          "",
+          "1. requiredScenarioState. A container starts every scenario in `Started`, and",
+          "   only the POST above moves this one out of it. No conformance case sends that",
+          "   MSISDN (they all use 237600000000, adapter_conformance.rs), so in a",
+          "   conformance run this mapping is unreachable and every status query falls",
+          "   through to requesttopay-status.json's priority-10 catch-all exactly as before.",
+          "2. priority 5, below the reference-keyed status mappings (priority 1), so",
+          "   ...0404, ...0f01, ...05aa and the rest keep winning even inside this",
+          "   scenario -- which is what lets worker_e2e.rs drive a DECLINE through the same",
+          "   walk by giving the charge one of those references.",
+          "3. priority 5 is still above requesttopay-status.json's catch-all SUCCESSFUL",
+          "   (priority 10), so once the scenario IS entered this mapping is the one that",
+          "   answers.",
+          "4. THIS TREE IS ALSO WHAT `just demo` RUNS. compose.yml:31-32 mounts",
+          "   backends/tests/conformance/wiremock/mtn into the stub container, so these three",
+          "   mappings are live for the demo as well as for the integration suite -- one stub",
+          "   definition, not a test-only copy (the step 4 design's decision 7). The demo",
+          "   confirms with 237600000ce0 (examples/merchant-demo/src/main.rs, DEMO_MSISDN), so",
+          "   the POST above moves the scenario to `e2e-submitted`, this mapping answers the",
+          "   worker's first status query PENDING and moves it to `e2e-settled`, and the",
+          "   mapping below answers every later one SUCCESSFUL. A demo therefore LEAVES the",
+          "   container resting in `e2e-settled`: a second `just demo` against the SAME",
+          "   container settles on its first poll instead of after a PENDING -- that is the",
+          "   scenario's state, not a change in behaviour. `just demo-down` removes the",
+          "   container, which is what returns it to `Started`.",
+          "",
+          "Verified by running the conformance suite (26 cases) against this tree after",
+          "adding these three mappings."
+        ]
+      }
+    },
+    {
+      "name": "e2e: successful on the second status query, whatever the reference",
+      "scenarioName": "mtn-e2e-poll",
+      "requiredScenarioState": "e2e-settled",
+      "priority": 5,
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/collection/v1_0/requesttopay/.*"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "SUCCESSFUL",
+          "financialTransactionId": "e2e-1234567892",
+          "amount": "50.00",
+          "currency": "EUR"
+        }
+      },
+      "metadata": {
+        "why": [
+          "No newScenarioState, so the scenario rests here: every later poll of the same",
+          "charge answers SUCCESSFUL too. That matters because settlement is a",
+          "compare-and-swap -- a second poll of a charge already moved to `succeeded` must",
+          "be a harmless no-op, and the stub has to keep saying the same thing for that to",
+          "be what is actually tested.",
+          "",
+          "financialTransactionId is distinct from the reference-keyed scenario's",
+          "1234567891 so a test asserting charges.provider_txn_id cannot pass by reading",
+          "the wrong stub's answer."
+        ]
       }
     }
   ]

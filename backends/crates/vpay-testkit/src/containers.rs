@@ -78,8 +78,8 @@ const PORT_COLLISION: &str = "address already in use";
 /// Starts a fresh, unmigrated `postgres:16-alpine` container, retrying only a
 /// host-port collision.
 ///
-/// Retries up to [`MAX_ATTEMPTS`] times, and **only** when the error chain
-/// mentions [`PORT_COLLISION`]. Any other failure — daemon unreachable, image
+/// Retries up to `MAX_ATTEMPTS` times, and **only** when the error chain
+/// mentions `PORT_COLLISION`. Any other failure — daemon unreachable, image
 /// missing, out of memory, wait strategy timed out — is returned immediately
 /// and unwrapped, because a genuinely broken Docker daemon that is retried
 /// four times still fails, just four times more slowly and with the original
@@ -155,7 +155,7 @@ const WIREMOCK_ROOT: &str = "/home/wiremock";
 /// The WireMock *root* directory — the one that contains `mappings/`, e.g.
 /// `backends/tests/conformance/wiremock/mtn`, not that directory's
 /// `mappings` child. It is bind-mounted read-only at
-/// [`WIREMOCK_ROOT`]: read-only because a container that could rewrite the
+/// `WIREMOCK_ROOT`: read-only because a container that could rewrite the
 /// suite's own mappings is a test that can change its own expectations, and
 /// WireMock only writes there when asked to record, which this never does.
 ///

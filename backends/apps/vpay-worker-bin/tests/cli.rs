@@ -243,6 +243,46 @@ fn an_invalid_log_format_env_var_is_read_and_rejected() {
     );
 }
 
+/// The end-to-end half of `vpay_config::cli`'s `--worker-concurrency` tests.
+///
+/// That module can only read clap's metadata: `std::env::set_var` is `unsafe`
+/// in edition 2024 and this workspace `forbid`s `unsafe` with no test
+/// carve-out, so it cannot prove that a real environment variable reaches a
+/// real process. `std::process::Command::env` sets only the *child's*
+/// environment, which is safe and is what this file is for.
+///
+/// Two things at once, and both matter. The value is read from the
+/// environment with no flag passed, so a `0` exit would mean
+/// `VPAY_WORKER_CONCURRENCY` was never consulted. And the exit code is `78`
+/// — `Category::Configuration`, "fix the deploy" — rather than the `1` an
+/// unclassified `anyhow` error would produce: an operator whose Helm values
+/// carry a typo must not be told this is a vpay bug.
+///
+/// No database is needed: the refusal happens before the pool is opened.
+#[test]
+fn a_zero_worker_concurrency_from_the_environment_is_refused_by_name_as_exit_78() {
+    let output = bin()
+        .env("VPAY_WORKER_CONCURRENCY", "0")
+        .env("VPAY_LOG_FORMAT", "text")
+        .env("DATABASE_URL", UNREACHABLE_DATABASE_URL)
+        .env("VPAY_CONFIG", valid_config_path())
+        .output()
+        .expect("spawn vpay-worker-bin");
+
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "a knob set to a value that means nothing is a deploy to fix (exit 78), not a vpay \
+         bug (exit 1); stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--worker-concurrency") && stderr.contains("VPAY_WORKER_CONCURRENCY"),
+        "the refusal must name both spellings of the knob to turn, got: {stderr}"
+    );
+}
+
 /// A `postgres://` URL pointing at a port nothing listens on. Port 1
 /// (`tcpmux`) is reserved and never bound on a developer or CI machine, and
 /// `127.0.0.1` keeps the attempt on loopback — so this needs **no Docker and
@@ -457,7 +497,7 @@ fn an_explicit_profile_flag_wins_over_a_conflicting_env_var() {
 /// used to construct its shutdown-signal future right before entering its
 /// select loop, so the OS-level SIGTERM handler was only installed once that
 /// future was first polled — after CLI parsing, tracing init, the startup log
-/// lines, and the first heartbeat tick. A SIGTERM delivered before that point
+/// lines, and the first claim. A SIGTERM delivered before that point
 /// kept its default disposition (immediate termination) and bypassed graceful
 /// shutdown entirely.
 ///

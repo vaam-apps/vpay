@@ -24,6 +24,14 @@ axum.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+# `StartupError` (src/main.rs): the one typed leaf this binary defines, so a
+# `--worker-concurrency` of 0 exits 78 ("fix the deploy") rather than falling
+# through `exit_code_for`'s unclassified-is-a-bug fallback to 1. The twin of
+# `vpay-server`'s dependency of the same name and for the same reason —
+# ADR-0011 puts `anyhow` at the boundary and `thiserror` at the leaves, and
+# which values a process can make sense of is a property of that process, not
+# of `vpay-config`.
+thiserror.workspace = true
 mimalloc.workspace = true
 clap.workspace = true
 # Installs the process-wide rustls `CryptoProvider` in `main` (see

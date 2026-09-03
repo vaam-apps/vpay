@@ -254,7 +254,7 @@ impl vpay_core::Classify for ProviderError {
 /// onto the port as one value rather than field by field — a per-field
 /// comparison silently stops covering a field the moment one is added, which
 /// is exactly how `connect_timeout` would have gone unasserted.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProviderConfig {
     pub base_url: String,
     pub callback_url: String,
@@ -292,6 +292,30 @@ pub struct ProviderConfig {
     /// exactly the ambiguity `docs/flows/crash-safety.md` says the status
     /// query, never a retry, must resolve.
     pub request_timeout: Duration,
+}
+
+/// Hand-written so a `{:?}` of a config — or of anything that embeds one,
+/// such as `vpay_api`'s `RailConfig`/`ResourceConfig` — can never print a
+/// rail credential. Keys stay visible (an operator needs to see which key is
+/// missing), values are replaced, exactly as `vpay_config::ProviderHost` does
+/// on the way in. Pinned by `debug_output_never_contains_a_credential_value`.
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redacted: BTreeMap<&str, &str> = self
+            .credentials
+            .keys()
+            .map(|key| (key.as_str(), "[redacted]"))
+            .collect();
+        f.debug_struct("ProviderConfig")
+            .field("base_url", &self.base_url)
+            .field("callback_url", &self.callback_url)
+            .field("currency", &self.currency)
+            .field("settings", &self.settings)
+            .field("credentials", &redacted)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("request_timeout", &self.request_timeout)
+            .finish()
+    }
 }
 
 /// The handshake budget every deployment gets; see
@@ -510,5 +534,38 @@ mod tests {
             requires_ip_allowlist: false,
         };
         assert!(!bad.is_coherent());
+    }
+}
+
+#[cfg(test)]
+mod provider_config_debug_tests {
+    use super::*;
+
+    #[test]
+    fn debug_output_never_contains_a_credential_value() {
+        let mut credentials = BTreeMap::new();
+        credentials.insert("api_key".to_owned(), "hunter2-secret-value".to_owned());
+        let mut settings = BTreeMap::new();
+        settings.insert("target_environment".to_owned(), "sandbox".to_owned());
+        let config = ProviderConfig {
+            base_url: "http://rail.example".to_owned(),
+            callback_url: "http://vpay.example/cb".to_owned(),
+            currency: vpay_core::Currency::Eur,
+            settings,
+            credentials,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+        };
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("hunter2-secret-value"), "{rendered}");
+        assert!(
+            rendered.contains("api_key"),
+            "keys stay visible: {rendered}"
+        );
+        assert!(rendered.contains("[redacted]"), "{rendered}");
+        assert!(
+            rendered.contains("sandbox"),
+            "settings are not secrets: {rendered}"
+        );
     }
 }

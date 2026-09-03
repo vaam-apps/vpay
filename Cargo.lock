@@ -4307,6 +4307,7 @@ dependencies = [
  "vpay-provider",
  "vpay-sdk",
  "vpay-testkit",
+ "vpay-worker",
 ]
 
 [[package]]
@@ -4318,9 +4319,11 @@ dependencies = [
  "serde_json",
  "sqlx",
  "thiserror",
+ "time",
  "tokio",
  "tracing",
  "uuid",
+ "vpay-api",
  "vpay-core",
  "vpay-db",
  "vpay-ledger",
@@ -4339,6 +4342,7 @@ dependencies = [
  "rustls",
  "testcontainers",
  "testcontainers-modules",
+ "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",

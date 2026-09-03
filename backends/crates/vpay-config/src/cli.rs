@@ -97,13 +97,20 @@ pub struct CommonArgs {
 
     /// Seconds to wait for in-flight work to finish before a forced shutdown.
     ///
-    /// `vpay-server` bounds by this: once the shutdown signal fires,
-    /// in-flight HTTP requests get at most this many seconds to finish
-    /// before the process stops waiting and exits (see `main.rs`).
-    /// `vpay-worker-bin` accepts and validates this same flag for parity
-    /// across binaries, but has no in-flight work to bound yet — the job
-    /// loop is not implemented (`docs/status.md`) — so today it has no
-    /// effect there.
+    /// Both binaries bound by this, and both exit non-zero when it elapses
+    /// rather than when it does not: `vpay-server` gives in-flight HTTP
+    /// requests at most this many seconds to finish, and `vpay-worker-bin`
+    /// gives in-flight *jobs* the same (`vpay_worker::run_loop`'s drain).
+    ///
+    /// The worker's cutoff is not free, which is why the number matters more
+    /// there. A job cut off mid-flight has already had its `attempts`
+    /// incremented and may have called a rail; the drain hands its lease
+    /// back (`vpay_db::jobs::release_all`) so another worker re-runs it
+    /// immediately rather than after the lease interval, and every handler
+    /// is written as a compare-and-swap so the re-run is a no-op if the
+    /// first pass committed. Set this comfortably above
+    /// `vpay_provider::DEFAULT_REQUEST_TIMEOUT` (20 s) so an ordinary poll
+    /// waiting on a rail is not the thing that gets cut off.
     #[arg(long, env = "VPAY_SHUTDOWN_GRACE_SECONDS", default_value_t = 25)]
     pub shutdown_grace_seconds: u64,
 }
@@ -203,14 +210,64 @@ pub struct ServerArgs {
     name = "vpay-worker-bin",
     version,
     about = "vpay background worker",
-    long_about = "vpay background worker: submit, poll, reconcile, deliver.\n\nThe job \
-                  loop is not implemented yet (docs/status.md) — this process stays up \
-                  and answers shutdown signals so orchestration (docker compose, k8s) \
-                  behaves correctly around it, but it processes no jobs."
+    long_about = "vpay background worker: submit, poll, reconcile, deliver.\n\nClaims jobs \
+                  from the `jobs` table, drives live charges to a terminal state against \
+                  the configured rails, and sweeps what has expired. Webhook delivery is \
+                  not implemented (docs/status.md)."
 )]
 pub struct WorkerArgs {
+    /// How many jobs this worker runs at once.
+    ///
+    /// One `tokio` task per unit, each claiming, running and settling one job
+    /// at a time (`vpay_worker::run_loop`). Four by default, because the
+    /// number that matters is not CPU: every job is dominated by one
+    /// authenticated rail request, so this is really "how many rail requests
+    /// in flight per worker", and it is bounded from both ends. Below it, a
+    /// deployment adds workers rather than raising this — horizontal scaling
+    /// is what the `FOR UPDATE SKIP LOCKED` claim is for. Above it, the
+    /// binding constraint is the *rail's* tolerance, not ours: mobile-money
+    /// APIs rate-limit per partner account, and a worker that opens fifty
+    /// concurrent status queries gets throttled into a retry storm that looks
+    /// like an outage.
+    ///
+    /// It is also bounded by the Postgres pool (`vpay_db::connect`): each
+    /// task holds a connection for the duration of a claim and of each write,
+    /// so a concurrency far above the pool size turns rail latency into pool
+    /// contention.
+    ///
+    /// Zero is refused by [`WorkerArgs::concurrency`] rather than silently
+    /// treated as one — a worker configured to run no jobs is a deployment
+    /// mistake that would otherwise look like a healthy, permanently idle
+    /// process.
+    #[arg(long, env = "VPAY_WORKER_CONCURRENCY", default_value_t = 4)]
+    pub worker_concurrency: usize,
+
     #[command(flatten)]
     pub common: CommonArgs,
+}
+
+impl WorkerArgs {
+    /// [`Self::worker_concurrency`], refusing zero.
+    ///
+    /// Returns the flag's spelling in the error rather than a bare number,
+    /// because the whole content of this failure is which knob to turn. It is
+    /// checked here rather than with a `clap` `value_parser` range so the
+    /// message names both the flag and its environment variable — the
+    /// container case, where nobody typed a flag at all.
+    ///
+    /// # Errors
+    ///
+    /// A message naming the flag if the value is zero.
+    pub fn concurrency(&self) -> Result<usize, String> {
+        if self.worker_concurrency == 0 {
+            return Err(
+                "--worker-concurrency / VPAY_WORKER_CONCURRENCY is 0: this worker would claim \
+                 no jobs at all and would look healthy while every live charge went undriven"
+                    .to_owned(),
+            );
+        }
+        Ok(self.worker_concurrency)
+    }
 }
 
 // NOTE on what is and is not tested in *this* module: clap's `env`
@@ -257,6 +314,15 @@ mod tests {
         ("log_format", "VPAY_LOG_FORMAT"),
         ("shutdown_grace_seconds", "VPAY_SHUTDOWN_GRACE_SECONDS"),
     ];
+
+    /// `(arg id, expected env var)` for options unique to `vpay-worker-bin`.
+    ///
+    /// Its own table rather than an entry in [`COMMON_ENV_VARS`]: concurrency
+    /// is a property of a process that *claims jobs*, and the server claims
+    /// none. `the_server_is_not_given_a_worker_concurrency` below fails if it
+    /// is ever flattened into `CommonArgs` for symmetry.
+    const WORKER_ONLY_ENV_VARS: [(&str, &str); 1] =
+        [("worker_concurrency", "VPAY_WORKER_CONCURRENCY")];
 
     /// `(arg id, expected env var)` for options unique to `vpay-server`.
     ///
@@ -308,9 +374,57 @@ mod tests {
     #[test]
     fn worker_command_declares_the_documented_env_vars() {
         let cmd = <WorkerArgs as CommandFactory>::command();
-        for (id, env) in COMMON_ENV_VARS {
+        for (id, env) in COMMON_ENV_VARS.iter().chain(WORKER_ONLY_ENV_VARS.iter()) {
             assert_env_var(&cmd, id, env);
         }
+    }
+
+    /// The server runs no job loop, so a `--worker-concurrency` on it would
+    /// be a knob that changes nothing — the shape of dormant configuration
+    /// this repository refuses.
+    #[test]
+    fn the_server_is_not_given_a_worker_concurrency() {
+        let server = <ServerArgs as CommandFactory>::command();
+        assert!(
+            !server
+                .get_arguments()
+                .any(|arg| arg.get_id().as_str() == "worker_concurrency"),
+            "vpay-server claims no jobs; a concurrency flag there would configure nothing"
+        );
+        assert!(
+            ServerArgs::try_parse_from(["vpay-server", "--worker-concurrency", "8"]).is_err(),
+            "vpay-server accepted --worker-concurrency"
+        );
+    }
+
+    /// The default is the documented four, and it reaches the field the
+    /// binary reads. Pinned as a literal so a change to it is a change to
+    /// this test — the number is a rail-politeness decision (see the field's
+    /// doc comment), not an implementation detail.
+    #[test]
+    fn the_worker_concurrency_defaults_to_four_and_parses_what_it_is_given() {
+        assert_eq!(
+            WorkerArgs::parse_from(["vpay-worker-bin"]).worker_concurrency,
+            4
+        );
+        let args = WorkerArgs::parse_from(["vpay-worker-bin", "--worker-concurrency", "16"]);
+        assert_eq!(args.worker_concurrency, 16);
+        assert_eq!(args.concurrency(), Ok(16));
+    }
+
+    /// Zero is a deployment mistake that would otherwise present as a
+    /// permanently idle, permanently healthy worker. It parses (so the
+    /// message can name the flag) and is refused by `concurrency()`.
+    #[test]
+    fn a_worker_concurrency_of_zero_is_refused_by_name() {
+        let args = WorkerArgs::parse_from(["vpay-worker-bin", "--worker-concurrency", "0"]);
+        let error = args
+            .concurrency()
+            .expect_err("0 must not be accepted as a concurrency");
+        assert!(
+            error.contains("--worker-concurrency") && error.contains("VPAY_WORKER_CONCURRENCY"),
+            "the refusal must name both spellings of the knob to turn; got: {error}"
+        );
     }
 
     /// Every option in this CLI is meant to auto-resolve from the
@@ -375,6 +489,7 @@ mod tests {
         assert_eq!(args.common.log_filter, "info");
         assert_eq!(args.common.log_format, LogFormat::Json);
         assert_eq!(args.common.shutdown_grace_seconds, 25);
+        assert_eq!(args.worker_concurrency, 4);
     }
 
     /// The signing-key path parses as a path and reaches the field the

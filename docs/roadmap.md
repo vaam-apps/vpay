@@ -10,9 +10,13 @@ immutable sources of truth respectively. This page does not restate
 `docs/status.md`'s per-feature rows; if you're here to check whether some
 specific thing works, go there instead.
 
-**vpay still cannot take a payment.** No HTTP call to any rail has ever been
-made by this code. Everything below explains what stands between here and
-that no longer being true.
+**vpay still cannot take a payment.** *That sentence used to continue "no HTTP
+call to any rail has ever been made by this code", which stopped being true on
+2026-09-03: both adapters call rails, and since Step 4 the worker drives a
+confirmed intent all the way to `succeeded`. **Every one of those calls went to
+a WireMock host — no real rail has ever been called, and no money has ever
+moved.*** Everything below explains what stands between here and that no longer
+being true.
 
 | # | Phase | Status |
 |---|---|---|
@@ -20,9 +24,9 @@ that no longer being true.
 | 2 | Authentication — merchant (`/v1`) | 🟡 In progress — **the repo is here now**; the merchant OP is built, the evidence is one manual run (see the 2026-09-02 addendum) |
 | 2b | Authentication — dashboard login (`/dash/v1`) | ⛔ Not started — split out of Phase 2 on 2026-09-02 |
 | 3 | Payment API (`/v1`) | ⛔ Not started |
-| 4 | The rails | ⛔ Not started |
-| 5 | The worker | ⛔ Not started |
-| 6 | Webhooks | ⛔ Not started |
+| 4 | The rails | ⛔ Not started — *split on 2026-09-03 into 4a (the adapters, done) and 4b (push-rail recovery, absorbed into Phase 5 and delivered there); this row is the pre-split one and the two headings below are current* |
+| 5 | The worker | 🟡 In progress — the job loop, the poll ladder, recovery and settlement landed 2026-09-03 (Step 4) against WireMock rails; the callback route and prompt expiry did not |
+| 6 | Webhooks | ⛔ Not started — the `events` rows exist, the fan-out does not |
 | 7 | Operability | ⛔ Blocked by environment, not by unwritten code |
 
 Phases 3 and 4 are listed in build order but genuinely interleave — see
@@ -665,11 +669,15 @@ about).
 
 ---
 
-## Phase 4b — Push-rail recovery *(moved into Phase 5)*
+## Phase 4b — Push-rail recovery *(moved into Phase 5, and delivered there)*
 
-**Not started.** This is the half of the old Phase 4 that Step 3 deliberately
-did not ship, and it is listed separately so no one reads Phase 4a's green
-and concludes recovery landed.
+**Done 2026-09-03 (Step 4), as part of Phase 5.** This was the half of the old
+Phase 4 that Step 3 deliberately did not ship. Its scope below is now
+implemented by `vpay_worker::recovery::recovery_step` and proven by
+`backends/tests/integration/tests/worker_recovery.rs` — with one item
+outstanding and named at the end of this section. The heading stays because
+Phase 4a's Definition of Done never covered recovery, and deleting the split
+would make that look retroactively fine.
 
 **Scope.**
 - The push-rail recovery table
@@ -680,12 +688,20 @@ and concludes recovery landed.
 - Crash tests that kill the process at each of the three documented points
   and assert no double charge.
 
-**What Step 3 supplied towards it, and nothing more:** the adapter API it
-needs — `query_status` returning a canonical `ChargeStatus::NotFound` rather
-than a failure, proven on both rails by
-`not_found_is_never_on_its_own_a_failure`. The `submitting` charges and
-status-less `provider_requests` rows a lost submit leaves behind are written
-correctly and **read by nothing**.
+**What Step 4 delivered against that scope.** The `submitting` charges and
+status-less `provider_requests` rows a lost submit leaves behind are now
+*read*: no row → resubmit under the same reference; row with
+`status_code IS NULL` → poll, and 3 consecutive `NotFound` over ≥60 s before
+treating the request as never received; row with a status → advance the
+bookkeeping. A redirect charge stuck in `submitting` is failed instead, keyed
+on `Capabilities::flow`. Each has a test named in
+[`docs/flows/crash-safety.md`](flows/crash-safety.md).
+
+**What is still outstanding from this phase's scope:** the crash tests do not
+kill a process. They write the state each kill point leaves and run the real
+handlers against it, which proves the recovery table but not the process's
+behaviour under a signal. That distinction is stated in
+[`crash-safety.md`](flows/crash-safety.md) rather than smoothed over.
 
 *The redirect-rail half of the old scope — "`ref_extra` must commit before
 `redirect_to_url` is ever emitted" — **did** land in Phase 4a: the commit and
@@ -706,34 +722,61 @@ this branch.
 intervention, and a crash at any of three documented points resolves
 without double-charging.
 
-**Status.** Not started. `poll_delay` ladder logic is implemented and
-tested in isolation; the job loop, the reconciler, and the crash-injection
-tests are all ⛔. `vpay-worker-bin` currently stays up answering shutdown
-signals and logs a heartbeat stating the loop is not implemented.
+**Status. 🟡 In progress — the loop landed 2026-09-03 (Step 4).**
+`vpay-worker-bin` no longer logs a heartbeat saying the loop is not
+implemented: it boots, reconciles configuration under the same advisory lock
+`vpay-server` uses, reaps stranded job leases, seeds its two singleton jobs and
+runs `vpay_worker::run_loop` — N claim/settle tasks over a `jobs` table
+(migration `0021`, `FOR UPDATE SKIP LOCKED`, leases guarded on `locked_by`,
+dead letters parked at `run_at = 'infinity'`), a 60-second gauge line, and a
+bounded drain on SIGTERM. A confirmed payment reaches `succeeded` without
+anyone touching it, and `just demo`'s sixth step is exactly that, end to end
+through the containerised stack.
 
-**Scope.**
-- The job loop consuming charges needing action.
-- The poll ladder (already implemented) wired to that loop.
-- The reconciler (a distinct MVP item, not [RFC-0001](rfc/0001-settlement-and-payouts.md)'s
-  settlement/payouts scope — that RFC is explicitly parked pending a
-  licensing conversation and is not part of this roadmap).
-- The three crash-test injection points from
-  [`docs/flows/crash-safety.md`](flows/crash-safety.md): after the charge
-  insert and before any `provider_requests` row; after that row and before
-  the rail's response; after the response and before the state update.
+**Every settlement observed so far came from a WireMock rail.** No real rail
+has been called, and the loop has never run anywhere but a developer machine
+and CI.
 
-**Definition of done.** The crash tests described above all pass, proving
-the documented recovery table resolves every injection point without a
-double charge — currently a `#[ignore]`d, unwritten test class, not a
-green suite with weak assertions.
+**Scope, and what became of each item.**
+- ✅ The job loop consuming charges needing action — `vpay_worker::run_loop`,
+  driven by the same function the integration suite runs (there is no
+  `#[cfg(test)]` variant and no injected clock).
+- ✅ The poll ladder wired to that loop, indexed by `jobs.attempts - 1`.
+- ✅ The reconciler: the settlement table (`vpay_core::settlement::settle`),
+  the 24-hour `unresolved` escalation with its hourly re-poll and alert, and
+  the one transaction that moves charge + intent + `events` row together.
+  (Still not [RFC-0001](rfc/0001-settlement-and-payouts.md)'s settlement/payouts
+  scope, which stays parked pending a licensing conversation.)
+- 🟡 The three crash-test injection points from
+  [`docs/flows/crash-safety.md`](flows/crash-safety.md) — all three are
+  exercised, by *writing the state each one leaves* and running the real
+  handlers against it. **No process is killed.**
+- ⛔ Absorbed from Phase 4b but **not** delivered: nothing else. Not in this
+  phase's original scope and still unbuilt: the callback route
+  (`POST /provider/{code}/callback`) and `prompt_ttl_seconds` /
+  `prompt_expired_at` / `payment_intent.processing` — both named in
+  [`docs/flows/reconciler.md`](flows/reconciler.md)'s Status.
+
+**Definition of done — met in substance, with one honest gap.** The recovery
+table resolves every injection point without a double charge, asserted by a
+single distinct `provider_reference_id` across every `provider_requests` row
+for the charge. What is *not* met is the literal wording: these are not
+kill-the-process tests, and calling them that would be the overstatement this
+repository exists to avoid.
 
 **Unblocks.** Reliable terminal states for Phase 6 to notify on.
 
 **Risks carried by this phase.**
-- `--shutdown-grace-seconds` is accepted and logged on `vpay-worker-bin`
-  today but does nothing — there is no drain to bound because there is no
-  job loop yet. This phase is where that flag needs to start doing real
-  work, or be reconsidered.
+- ~~`--shutdown-grace-seconds` does nothing on `vpay-worker-bin`.~~ Closed:
+  the flag now bounds a real drain — tasks stop claiming, in-flight jobs
+  finish, and on timeout the remaining tasks are aborted, every lease this
+  worker holds is handed back and the process exits non-zero
+  (`a_drain_that_runs_out_of_grace_releases_every_lease_it_still_holds`).
+- **Open: a rail answer that contradicts a settled charge is detected and
+  logged, and neither call site is covered by a test.** The classifier is
+  table-tested; the wiring is not. See `docs/status.md`.
+- **Open: no real rail.** Everything above is proven against WireMock hosts,
+  so what is proven is that vpay executes its own documents correctly.
 
 ---
 

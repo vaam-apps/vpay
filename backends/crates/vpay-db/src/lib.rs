@@ -52,7 +52,9 @@
 // function through the table it belongs to.
 pub mod charges;
 pub mod config_reconcile;
+pub mod events;
 pub mod idempotency;
+pub mod jobs;
 // `pub` for the same reason the repository modules are, plus one of its own:
 // a test that wants to prove a writer actually takes its lock has to be able
 // to *hold* that lock from outside (see
@@ -63,6 +65,12 @@ pub mod idempotency;
 pub mod lock_keys;
 pub mod payment_intents;
 pub mod provider_requests;
+// The settlement transaction is its own module rather than a function on
+// `charges` or on `payment_intents`, because it is the one write that
+// belongs to *neither* table on its own: it moves both and emits the event
+// that tells a merchant about them. A home inside either table's module
+// would have made "settle the charge" reachable without the rest.
+pub mod settlement;
 
 mod client_assertion;
 mod disabled_clients;
@@ -77,11 +85,14 @@ pub use client_assertion::{SqlClientAssertionStore, delete_expired_client_assert
 pub use config_reconcile::{CurrencySeed, ProviderSeed};
 pub use disabled_clients::{disable_client, enable_client, is_client_disabled};
 pub use error::DbError;
+pub use events::{EventRow, NewEvent};
 pub use health::check_connection;
 pub use idempotency::{IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome};
+pub use jobs::JobRow;
 pub use migrations::run_migrations;
 pub use payment_intents::{ListPage, NewPaymentIntent, PaymentIntentRow};
 pub use pool::connect;
+pub use settlement::AttemptRow;
 pub use signing_keys::{
     ActivationOutcome, SigningKey, active_signing_key_kid, ensure_active_signing_key,
     publishable_signing_keys, rotate_signing_key,
