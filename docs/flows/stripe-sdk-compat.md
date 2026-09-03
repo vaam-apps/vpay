@@ -198,11 +198,19 @@ predictable consequence of the header, not because anything observed it.
 - **`expand` is ignored**, not refused. Nothing is expandable, so the response
   simply has no expanded field — an absence visible in the response itself,
   which is the line between this list's two halves.
-- **`client_secret` is absent**, as are `amount_received`, `capture_method`
-  and `confirmation_method`, although stripe-node's types declare them
-  present. A type-level lie with no runtime effect —
-  `StripeResource._makeRequest` casts and never validates. There is no
-  client-side confirmation flow to hold a secret for.
+- **`client_secret` is present on `create` and `retrieve` only, as of Step
+  5c** (`PaymentIntentWithSecret`, decision D2,
+  [browser-checkout.md](browser-checkout.md)) — this line used to say it was
+  absent everywhere, which was true before that step and is no longer true
+  for these two methods. It stays absent from `confirm`, `cancel`, `list`
+  and every webhook body, which render the same 12-key object every other
+  reader sees. `amount_received`, `capture_method` and `confirmation_method`
+  remain genuinely absent, although stripe-node's types declare them
+  present — a type-level lie with no runtime effect,
+  `StripeResource._makeRequest` casts and never validates. `client_secret`
+  now exists for a real reason: `@vpay/stripe-js`'s payer-facing
+  confirmation flow, not stripe-node's (which has no client-side
+  confirmation step of its own and never reads this field).
 - **`next_action` is only ever `redirect_to_url`**, and only on a redirect
   rail. A push rail leaves it `null`.
 - **Currencies are XAF and EUR**, integer minor units, and a confirm whose

@@ -23,6 +23,13 @@
 //! paths sit inside and outside it. `/dash/v1` is still mounted nowhere:
 //! that surface needs the dashboard OIDC login flow, which is later work.
 //!
+//! Since Step 5c there is a **third** surface, [`browser`]: two routes under
+//! `/v1/browser` that a payer's own page calls with a publishable key and the
+//! payment intent's `client_secret` instead of a bearer token. It is
+//! deliberately not part of [`V1_ROUTES`] (its table is [`BROWSER_ROUTES`]),
+//! because the boundary test that walks that constant asserts every entry
+//! answers `401` without a token — which these two must not.
+//!
 //! [`ApiError`] is this layer's Tier-2 composite error
 //! ([ADR-0011](../../../docs/adr/0011-error-modelling.md)). Every failure
 //! response in this crate is rendered by its `IntoResponse` — including the
@@ -43,16 +50,18 @@ use std::borrow::Cow;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::{FromRef, MatchedPath, State};
+use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderName, Method, Request, Uri};
 use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::{Router, http::StatusCode, routing::get, routing::post};
 use serde_json::{Map, Value, json};
 use tower::ServiceBuilder;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
@@ -61,6 +70,7 @@ use vpay_core::metrics::{HTTP_REQUEST_DURATION_SECONDS, HTTP_REQUESTS_TOTAL};
 use vpay_db::PgPool;
 use vpay_provider::ProviderAdapter;
 
+pub mod browser;
 pub mod error;
 pub mod form;
 pub mod idempotency;
@@ -91,6 +101,7 @@ pub mod v1;
 /// rename across them would have buried the one-line move in noise.
 pub use vpay_provider::http as http_client;
 
+pub use browser::{BROWSER_ROUTES, PayerScope};
 pub use error::ApiError;
 pub use resource_auth::MerchantJwtValidator;
 pub use v1::{
@@ -808,6 +819,9 @@ const V1_BODY_LIMIT_BYTES: usize = 64 * 1024;
 /// | `GET /v1/oauth/.well-known/openid-configuration` | none | How a client that has never spoken to vpay finds the token endpoint. |
 /// | `GET /v1/oauth/jwks.json` | none | How a verifier that has never spoken to vpay learns the public keys. Same circularity. |
 /// | **anything else under `/v1/oauth`** | none | The OP subtree is public by design; its own `.fallback(not_found)` answers the honest 404 rather than letting the path escape to the outer router. |
+/// | `GET /v1/browser/payment_intents/{id}` | none | A payer's browser has no merchant credential. The payment intent's own `client_secret` is what authorises it — see [`browser`]. |
+/// | `POST /v1/browser/payment_intents/{id}/confirm` | none | The same. |
+/// | **anything else under `/v1/browser`** | none | Its own `.fallback(not_found)`, for the OP nest's reason: without one the path would match `/v1/{*rest}` and answer 401 to a caller that can never hold a token. |
 /// | **everything else under `/v1`** | `AuthenticatedMerchant` | The merchant API. |
 /// | anything else | none | The honest 404. |
 ///
@@ -818,6 +832,9 @@ const V1_BODY_LIMIT_BYTES: usize = 64 * 1024;
 /// be reachable from whatever fronts the traffic port. The chart's
 /// NetworkPolicy encodes that, and it can only do so because the two are
 /// different ports.
+///
+/// `/v1/browser` is the only nest carrying a [`CorsLayer`], and the merchant
+/// `/v1` nest deliberately carries none — see the mount below.
 ///
 /// The `/v1` nest mounts [`v1::V1_ROUTES`] and a 404 fallback for
 /// everything else, which is the production behaviour and not a
@@ -980,6 +997,53 @@ pub fn router(deps: RouterDeps) -> Router {
         // `track_http_metrics`.
         .layer(from_fn(track_http_metrics));
 
+    // Unauthenticated by necessity too, and for a different reason from the
+    // OP's: the caller is a payer's browser, which has no merchant
+    // credential and must never be given one. What authorises a request here
+    // is the payment intent's own `client_secret` — see `browser`.
+    //
+    // Mounted *before* `/v1`, though axum's router is order-independent for
+    // distinct prefixes: `Router::nest` registers `/v1/browser` and
+    // `/v1/browser/{*rest}` as their own entries, which match more
+    // specifically than `/v1/{*rest}`, so a browser path never reaches the
+    // authenticated nest. The nest's own `.fallback` is what makes that true
+    // for an *unmatched* browser path as well — see `browser::routes`.
+    let browser = browser::routes()
+        // On this nest only. A payer's page is served from the merchant's own
+        // origin, so every call it makes here is cross-origin and would
+        // otherwise be blocked by the browser before it left. The merchant
+        // `/v1` nest gets no `CorsLayer` at all: nothing legitimate calls it
+        // from a browser, and a permissive header there would invite a
+        // merchant to put a bearer token in a page.
+        .layer(
+            CorsLayer::new()
+                // `Any`, with credentials OFF (the default, and asserted by
+                // `a_browser_preflight_allows_any_origin_without_credentials`).
+                // A merchant's checkout can be on any domain they own, vpay
+                // has no list of them, and the browser's own rules forbid
+                // `Access-Control-Allow-Origin: *` together with credentials
+                // — which is exactly the combination that would make a
+                // wildcard dangerous. Nothing here reads a cookie, so there
+                // is no ambient authority for an origin to borrow.
+                .allow_origin(Any)
+                // Exactly what `BROWSER_ROUTES` answers, plus the preflight
+                // itself.
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                // The only header `@vpay/stripe-js` sets. Notably **not**
+                // `Idempotency-Key` or `Authorization`: allowing either would
+                // invite a browser to send one, and sending one is what turns
+                // a simple request into a preflighted one (§0 S4).
+                .allow_headers([CONTENT_TYPE])
+                .max_age(Duration::from_secs(600)),
+        )
+        // Inside the nest, for the same reason as the other two: a browser
+        // path's route pattern (`/v1/browser/payment_intents/{id}`, not the
+        // raw id) only exists once this nest has matched, and mounting the
+        // layer here rather than on the outer router is what keeps a browser
+        // request from being double-counted or labelled `unmatched`. See
+        // `track_http_metrics` and the ordering guard below.
+        .layer(from_fn(track_http_metrics));
+
     Router::new()
         .route("/healthz", get(healthz))
         .fallback(not_found)
@@ -991,6 +1055,7 @@ pub fn router(deps: RouterDeps) -> Router {
         // double every `/v1` count and label half of them `unmatched`.
         .layer(from_fn(track_http_metrics))
         .nest("/v1/oauth", oauth)
+        .nest("/v1/browser", browser)
         .nest("/v1", v1)
         .with_state(state)
         .layer(
@@ -1249,15 +1314,15 @@ mod tests {
         assert_eq!(bounded_method(&extension), OTHER_METHOD);
     }
 
-    /// **The ordering guard.** `track_http_metrics` is mounted three times,
-    /// and the outer mount is applied before the two nests are added
-    /// precisely so a `/v1` request is not wrapped twice. Move that
-    /// `.layer(...)` line below the `.nest(...)` calls and every count here
-    /// becomes `2`.
+    /// **The ordering guard.** `track_http_metrics` is mounted four times —
+    /// once on the outer router, and once inside each of the three nests
+    /// (`oauth`, `browser`, `v1`) — and the outer mount is applied before any
+    /// `.nest(...)` call precisely so a request handled by a nest is not
+    /// wrapped twice. Move that `.layer(...)` line below the `.nest(...)`
+    /// calls and every count here becomes `2`.
     ///
     /// One request per group, all in one recorder, so this also proves the
-    /// three groups produce three distinct series rather than one shared
-    /// one.
+    /// four groups produce four distinct series rather than one shared one.
     #[test]
     fn every_mounted_group_is_counted_exactly_once() {
         let scrape = scrape_of(|| {
@@ -1270,6 +1335,11 @@ mod tests {
                 UNROUTED_PATH,
                 "/v1/payment_intents",
                 "/v1/oauth/jwks.json",
+                // The browser nest's own mount of `track_http_metrics`: no
+                // `key`/`client_secret` query is supplied, so this answers a
+                // 4xx from `authenticate` — but it is still counted, and
+                // under the *pattern*, exactly like the `/v1` case above.
+                "/v1/browser/payment_intents/pi_3NkExAmPlE",
             ] {
                 runtime.block_on(async {
                     router(deps())
@@ -1291,8 +1361,8 @@ mod tests {
             .collect();
         assert_eq!(
             counted.len(),
-            4,
-            "four requests must produce four distinct series, once each:\n{scrape}"
+            5,
+            "five requests must produce five distinct series, once each:\n{scrape}"
         );
         for line in counted {
             assert!(
@@ -1476,6 +1546,107 @@ mod tests {
                 error.get("type").and_then(Value::as_str),
                 Some("invalid_request_error"),
                 "{path}: got {envelope:#}"
+            );
+        }
+    }
+
+    /// The browser surface is outside the merchant boundary, and its
+    /// unmatched paths are answered by its *own* fallback.
+    ///
+    /// Decisive twice over. Delete `.fallback(not_found)` from
+    /// `browser::routes` and the first path answers **401** — axum flattens
+    /// the nest and `/v1/{*rest}` catches it — which would tell a payer's
+    /// browser to present a bearer token it can never hold. Move
+    /// `.nest("/v1/browser", …)` after `.nest("/v1", …)` and nothing changes,
+    /// which is why the ordering comment in [`router`] says the specificity
+    /// is what does the work rather than the order.
+    ///
+    /// The two *real* browser paths are asserted as "not 401" rather than as
+    /// a status: against the fixture's lazy pool a `GET` with no credential
+    /// is the uniform 404 decided before any read, and the property under
+    /// test is that the request reached the handler at all.
+    #[tokio::test]
+    async fn the_browser_nest_is_outside_the_merchant_boundary_and_answers_its_own_404() {
+        for path in [
+            "/v1/browser/not_a_route",
+            // The two writes this surface must never offer, spelled the way
+            // a Stripe integration would reach for them.
+            "/v1/browser/payment_intents",
+            "/v1/browser/payment_intents/pi_x/cancel",
+        ] {
+            let response = get(path).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "{path} must answer the browser nest's own honest 404"
+            );
+        }
+
+        for route in BROWSER_ROUTES {
+            let path = format!("/v1/browser{}", route.path.replace("{id}", "pi_x"));
+            let response = get(&path).await;
+            assert_ne!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{path} must not require a merchant token a payer cannot have"
+            );
+        }
+    }
+
+    /// CORS is on the browser nest and **only** there.
+    ///
+    /// A preflight for the merchant `/v1` answering with an
+    /// `access-control-allow-origin` would invite a merchant to call it from
+    /// a page — which means putting a bearer token in one. The absence is the
+    /// assertion that matters here; the browser half's real proof (a live
+    /// `OPTIONS` reaching a mounted server) is in
+    /// `backends/tests/integration/tests/browser_checkout.rs`.
+    #[tokio::test]
+    async fn cors_is_mounted_on_the_browser_nest_and_on_no_other() {
+        async fn preflight(uri: &str) -> Response {
+            let request = Request::builder()
+                .method("OPTIONS")
+                .uri(uri)
+                .header("origin", "https://shop.example")
+                .header("access-control-request-method", "POST")
+                .body(Body::empty())
+                .expect("valid request");
+            router(deps())
+                .oneshot(request)
+                .await
+                .expect("router does not fail to serve")
+        }
+
+        let browser = preflight("/v1/browser/payment_intents/pi_x/confirm").await;
+        assert_eq!(
+            browser
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("*"),
+            "a payer's page is on the merchant's origin; without this the request never leaves"
+        );
+        assert!(
+            browser
+                .headers()
+                .get("access-control-allow-credentials")
+                .is_none(),
+            "`allow_origin(Any)` is only safe with credentials off"
+        );
+
+        for uri in [
+            "/v1/payment_intents",
+            "/v1/payment_intents/pi_x/confirm",
+            "/v1/oauth/token",
+            "/healthz",
+        ] {
+            let response = preflight(uri).await;
+            assert!(
+                response
+                    .headers()
+                    .get("access-control-allow-origin")
+                    .is_none(),
+                "{uri} must carry no CORS header: nothing legitimate calls it from a browser"
             );
         }
     }

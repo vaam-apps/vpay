@@ -1,9 +1,11 @@
-//! The private key and the live access token must never reach a `{:?}`.
+//! The private key, the live access token, and a `PaymentIntent`'s
+//! `client_secret` must never reach a `{:?}`.
 //!
 //! This file is named by the `Debug` implementations of
-//! [`vpay_sdk::Credentials`] and `Client` themselves: they are hand-written
-//! rather than derived *because* of these tests, and replacing either with
-//! `#[derive(Debug)]` must fail here. A merchant's private key in a log line
+//! [`vpay_sdk::Credentials`], `Client`, and `PaymentIntent` themselves: they
+//! are hand-written rather than derived *because* of these tests, and
+//! replacing any of them with `#[derive(Debug)]` must fail here. A
+//! merchant's private key, bearer token, or payer credential in a log line
 //! is not a formatting nit — it is the whole credential, and structured
 //! loggers print `{:?}` of whatever they are handed.
 
@@ -18,7 +20,7 @@
 
 use std::sync::LazyLock;
 
-use vpay_sdk::{Client, Credentials};
+use vpay_sdk::{Client, Credentials, PaymentIntent};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -103,6 +105,29 @@ async fn a_cached_access_token_never_appears_in_the_clients_debug_output() {
     );
     assert!(rendered.contains("[redacted]"));
     assert_no_key_material(&rendered);
+}
+
+#[test]
+fn a_payment_intents_debug_output_never_contains_its_client_secret() {
+    let secret = "pi_1_secret_super_secret_value";
+    let rendered = format!(
+        "{:?}",
+        serde_json::from_str::<PaymentIntent>(&format!(
+            r#"{{"id":"pi_1","object":"payment_intent","amount":5000,"currency":"xaf",
+                "status":"requires_payment_method","payment_method_types":["mtn_momo"],
+                "next_action":null,"last_payment_error":null,"metadata":{{}},
+                "description":null,"created":1,"livemode":false,
+                "client_secret":"{secret}"}}"#
+        ))
+        .unwrap()
+    );
+    assert!(
+        !rendered.contains(secret),
+        "Debug output must not contain the client_secret"
+    );
+    assert!(rendered.contains("[redacted]") || rendered.contains("chars redacted"));
+    // The rest of the object is still useful for debugging.
+    assert!(rendered.contains("pi_1"));
 }
 
 #[test]

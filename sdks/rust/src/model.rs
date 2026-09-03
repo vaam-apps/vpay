@@ -116,7 +116,13 @@ pub struct LastPaymentError {
 }
 
 /// A payment attempt against `/v1/payment_intents`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `Debug` is **hand-written** below rather than derived, because
+/// [`Self::client_secret`] — when present — is a live payer credential.
+/// Mirrors `vpay_api::model::PaymentIntentWithSecret`'s own hand-written
+/// impl in shape and in what it redacts, and `Credentials`'/`Client`'s impls
+/// in this crate for the same reason — see `tests/debug_redaction.rs`.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaymentIntent {
     /// `pi_…`.
     pub id: String,
@@ -154,6 +160,51 @@ pub struct PaymentIntent {
     pub created: i64,
     /// `false` for a sandbox deployment's objects.
     pub livemode: bool,
+    /// `pi_…_secret_…` — the payer credential `/v1/browser` accepts to
+    /// confirm this intent from a browser (`@vpay/stripe-js`).
+    ///
+    /// Present only on `POST /v1/payment_intents` and
+    /// `GET /v1/payment_intents/{id}` responses (Step 5c's D2,
+    /// `vpay_api::model::PaymentIntentWithSecret`) — **never** on a
+    /// `list()` item or an [`Event`]'s `data.object`, because either would
+    /// hand a merchant's own integration (or a webhook body, signed and
+    /// stored forever) a live credential for every intent in view. Those
+    /// two responses render the plain `PaymentIntentObject`, which never
+    /// carries the key at all, so `#[serde(default)]` is what makes this
+    /// field decode to `None` there rather than failing.
+    ///
+    /// Never log this value: see this type's hand-written `impl Debug`.
+    #[serde(default)]
+    pub client_secret: Option<String>,
+}
+
+/// Redacts [`PaymentIntent::client_secret`] — the one field on this type
+/// that is a live credential rather than public state — leaving every other
+/// field visible exactly as a derived `Debug` would render it.
+impl std::fmt::Debug for PaymentIntent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PaymentIntent")
+            .field("id", &self.id)
+            .field("object", &self.object)
+            .field("amount", &self.amount)
+            .field("currency", &self.currency)
+            .field("status", &self.status)
+            .field("payment_method_types", &self.payment_method_types)
+            .field("next_action", &self.next_action)
+            .field("last_payment_error", &self.last_payment_error)
+            .field("metadata", &self.metadata)
+            .field("description", &self.description)
+            .field("created", &self.created)
+            .field("livemode", &self.livemode)
+            .field(
+                "client_secret",
+                &self
+                    .client_secret
+                    .as_ref()
+                    .map(|s| format!("[{} chars redacted]", s.len())),
+            )
+            .finish()
+    }
 }
 
 /// A refund's lifecycle state. Independent of [`IntentStatus`] — a refund
@@ -344,5 +395,63 @@ mod tests {
         )
         .expect("an unmodelled rail code still decodes");
         assert_eq!(intent.payment_method_types, vec!["some_future_rail"]);
+        // Same JSON also has no `client_secret` key at all — the shape a
+        // `list()` item or an event's `data.object` actually sends
+        // (`vpay_api::model::PaymentIntentObject` never renders the field).
+        // `#[serde(default)]` is what makes a missing key decode to `None`
+        // instead of a decode failure.
+        assert_eq!(intent.client_secret, None);
+    }
+
+    #[test]
+    fn a_create_or_retrieve_response_carrying_client_secret_decodes_it() {
+        // The shape `POST /v1/payment_intents` and `GET
+        // /v1/payment_intents/{id}` actually send
+        // (`vpay_api::model::PaymentIntentWithSecret`, Step 5c's D2):
+        // the twelve documented keys, flattened, plus `client_secret`.
+        let intent: PaymentIntent = serde_json::from_str(
+            r#"{"id":"pi_1","object":"payment_intent","amount":5000,"currency":"xaf",
+                "status":"requires_payment_method","payment_method_types":["mtn_momo"],
+                "next_action":null,"last_payment_error":null,"metadata":{},
+                "description":null,"created":1,"livemode":false,
+                "client_secret":"pi_1_secret_abc123"}"#,
+        )
+        .expect("a create/retrieve response with client_secret decodes");
+        assert_eq!(intent.client_secret.as_deref(), Some("pi_1_secret_abc123"));
+    }
+
+    #[test]
+    fn client_secret_never_appears_in_debug_output_but_its_absence_or_length_does() {
+        let with_secret: PaymentIntent = serde_json::from_str(
+            r#"{"id":"pi_1","object":"payment_intent","amount":5000,"currency":"xaf",
+                "status":"requires_payment_method","payment_method_types":["mtn_momo"],
+                "next_action":null,"last_payment_error":null,"metadata":{},
+                "description":null,"created":1,"livemode":false,
+                "client_secret":"pi_1_secret_abc123"}"#,
+        )
+        .expect("decodes");
+        let rendered = format!("{with_secret:?}");
+        assert!(
+            !rendered.contains("pi_1_secret_abc123"),
+            "Debug output must not contain the client_secret"
+        );
+        assert!(
+            rendered.contains("chars redacted"),
+            "Debug output must contain the redaction marker"
+        );
+        // Every other field is still visible — this is a redaction, not a
+        // blackout.
+        assert!(rendered.contains("pi_1"));
+
+        let without_secret: PaymentIntent = serde_json::from_str(
+            r#"{"id":"pi_2","object":"payment_intent","amount":5000,"currency":"xaf",
+                "status":"requires_payment_method","payment_method_types":["mtn_momo"],
+                "next_action":null,"last_payment_error":null,"metadata":{},
+                "description":null,"created":1,"livemode":false}"#,
+        )
+        .expect("decodes");
+        assert_eq!(without_secret.client_secret, None);
+        let rendered_none = format!("{without_secret:?}");
+        assert!(rendered_none.contains("client_secret: None"));
     }
 }

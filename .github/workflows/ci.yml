@@ -213,6 +213,14 @@ jobs:
       # `@vpay/sdk/stripe`, which resolves to `dist/stripe-auth.js`. The `web`
       # job builds it too; this job cannot borrow that job's artefacts.
       - run: pnpm --filter @vpay/sdk build
+      # `@vpay/stripe-js`'s built ESM, vendored into
+      # `examples/checkout-browser/dist/stripe-js/` — what `checkout.js`
+      # imports and what `checkout.cy.ts` (below) actually drives in a real
+      # browser. Both this build and `mint.mjs`'s `@vpay/sdk` dependency need
+      # `pnpm install` above; `@vpay/sdk`'s own `dist/` was just built by the
+      # step above this one, and pnpm's workspace symlink resolves
+      # `examples/checkout-browser`'s dependency to it directly.
+      - run: just build-checkout-browser
       # Two throwaway RS256 key pairs, not one. `gen-demo-keys` depends on
       # `gen-e2e-signing-key`, so it still produces the merchant OP's own
       # signing key (`vpay-server` will not start without it —
@@ -287,7 +295,19 @@ jobs:
           echo "::error::dashboard never answered 200 on / (last status: '$code')"
           docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml logs --no-color dashboard
           exit 1
+      # VPAY_BASE_URL/VPAY_MERCHANT_CLIENT_ID/VPAY_MERCHANT_PRIVATE_KEY_PATH
+      # are read by `checkout.cy.ts`'s `cy.task('mintCheckoutPaymentIntent')`
+      # (`frontends/tests/e2e/cypress/tasks/checkoutTasks.ts`) to mint a real
+      # PaymentIntent through `@vpay/sdk` before the spec visits the page —
+      # the same three variables the "stripe-node conformance" step below
+      # sets for the same demo-merchant keypair. 8080, not 18080: this job
+      # never sets VPAY_DEMO_PORT, so compose.demo.yml's default stands (see
+      # that file's own comment on why 8080 here is not a coincidence).
       - run: pnpm --filter @vpay/e2e e2e
+        env:
+          VPAY_BASE_URL: http://localhost:8080
+          VPAY_MERCHANT_CLIENT_ID: demo-merchant
+          VPAY_MERCHANT_PRIVATE_KEY_PATH: ${{ github.workspace }}/.e2e/demo-merchant/oauth-signing-key.pem
       # The official `stripe` package, driven against this same running stack
       # through `createStripeAuthenticator` (docs/flows/stripe-sdk-compat.md).
       # Out of process on purpose: half of what it proves is header behaviour

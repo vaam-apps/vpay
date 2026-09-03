@@ -190,6 +190,108 @@ impl PaymentIntentObject {
     }
 }
 
+/// A `payment_intent` **plus the payer credential that addresses it** —
+/// what `POST /v1/payment_intents`, `GET /v1/payment_intents/{id}` and the
+/// two `/v1/browser` routes answer with (Step 5c's D2).
+///
+/// # Why a wrapper, and not a field on [`PaymentIntentObject`]
+///
+/// Because the field must reach exactly four responses and no others, and a
+/// field on `PaymentIntentObject` would reach *every* response that type can
+/// render — which includes two a payer credential must never appear in:
+///
+/// * `GET /v1/payment_intents`, the list. One page would hand a merchant's
+///   integration the live browser credential for every intent on it, and a
+///   list page is the response most likely to be logged wholesale.
+/// * `events.data.object` — `vpay_worker::handlers`' `intent_snapshot`
+///   renders through the same type, so the credential would be in every
+///   webhook body, signed, delivered at-least-once, and stored in `events`
+///   forever.
+///
+/// Neither of those is a hypothetical: both are the *current* callers of
+/// `PaymentIntentObject::try_from`. `every_documented_key_is_present_including_the_null_ones`
+/// below asserts that object has exactly twelve keys, and that assertion is
+/// the tripwire this type exists to leave standing.
+///
+/// # `#[serde(flatten)]`, so the wire shape is the twelve keys plus one
+///
+/// A payer's client decodes one object, not a nested one:
+/// `sdks/stripe-js/src/types.ts`'s `PaymentIntent` is
+/// `PaymentIntentObject`'s twelve fields with `client_secret` beside them.
+/// Flattening is what makes that true *by construction* rather than by two
+/// structs agreeing — and it is why `client_secret` is declared after the
+/// flattened field: `serde_json::Map` sorts keys on serialisation in this
+/// workspace (no `preserve_order`), so declaration order does not affect the
+/// bytes, but reading order should still match the shape.
+///
+/// No `Deserialize`: nothing decodes this. A merchant's SDK models the wire,
+/// and `vpay_api` only ever writes it.
+///
+/// `Debug` is **hand-written** below rather than derived, because
+/// [`Self::client_secret`] is a live credential — see that impl. Mirrors
+/// `vpay_db::PaymentIntentRow`'s impl in shape and in what it redacts: this
+/// is the one place in `vpay-api` a full, joined `client_secret` exists in
+/// memory (every other type here carries either no secret or, on
+/// [`PaymentIntentRow`](vpay_db::PaymentIntentRow), only the stored suffix).
+#[derive(Clone, Serialize)]
+pub struct PaymentIntentWithSecret {
+    /// The twelve documented keys, unchanged and rendered by the same code
+    /// every other surface uses.
+    #[serde(flatten)]
+    pub intent: PaymentIntentObject,
+    /// `pi_…_secret_…` — `vpay_core::ids::client_secret` of the row's `id`
+    /// and its `client_secret_suffix`.
+    ///
+    /// Not `Option<String>` although Stripe's is nullable: every route that
+    /// renders this type has the row in hand, and the row's suffix is `NOT
+    /// NULL` (migration `0026`). A nullable field would model a state the
+    /// schema forbids and would let a future caller ship `null` to a browser
+    /// that has nothing to do with it.
+    pub client_secret: String,
+}
+
+/// Redacts [`PaymentIntentWithSecret::client_secret`], leaving the rendered
+/// intent (already the public wire shape) visible.
+///
+/// This struct is `{:?}`-ed wherever a handler logs "what would have been
+/// sent" or a test failure prints an assertion's left-hand side, and unlike
+/// `vpay_db::PaymentIntentRow::client_secret_suffix` — half a credential,
+/// useless without the row's `id` — `client_secret` here is the **whole**
+/// bearer token `/v1/browser` accepts. A derived `Debug` would put it in a
+/// log line as readily as `println!("{secret}")` would.
+///
+/// The length stays, matching `PaymentIntentRow`'s impl, because "is this
+/// the right shape?" is a legitimate debugging question that needs no
+/// secret to answer.
+impl std::fmt::Debug for PaymentIntentWithSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PaymentIntentWithSecret")
+            .field("intent", &self.intent)
+            .field(
+                "client_secret",
+                &format_args!("[{} chars redacted]", self.client_secret.len()),
+            )
+            .finish()
+    }
+}
+
+impl PaymentIntentWithSecret {
+    /// Pairs a rendered object with the secret derived from the row it came
+    /// from.
+    ///
+    /// Takes the already-rendered object rather than the row, because two
+    /// of the four callers have adjusted `next_action` first
+    /// ([`PaymentIntentObject::with_next_action`]) and a constructor that
+    /// re-derived from the row would silently drop that.
+    #[must_use]
+    pub fn new(intent: PaymentIntentObject, client_secret: String) -> Self {
+        Self {
+            intent,
+            client_secret,
+        }
+    }
+}
+
 /// Stripe's `list` envelope.
 ///
 /// Generic over the element type although only `payment_intent` is listed
@@ -552,6 +654,97 @@ mod tests {
                 "`{null_key}` must be present and null, not absent"
             );
         }
+    }
+
+    /// The browser wrapper is the twelve keys **plus one**, at the top level
+    /// — not a nested object.
+    ///
+    /// `sdks/stripe-js/src/types.ts`'s `PaymentIntent` is written against
+    /// exactly this shape, and its `testing/browser-stub.ts` builds it key by
+    /// key. A missing `#[serde(flatten)]` would nest the intent under
+    /// `intent` and every browser call would decode to something with no
+    /// `status` on it.
+    #[test]
+    fn the_browser_wrapper_is_the_twelve_keys_plus_the_client_secret() {
+        let rendered = serde_json::to_value(PaymentIntentWithSecret::new(
+            sample("pi_1"),
+            "pi_1_secret_abc".to_owned(),
+        ))
+        .expect("serialises");
+        let object = rendered.as_object().expect("an object");
+
+        assert_eq!(
+            object.len(),
+            13,
+            "the browser object must be exactly the twelve documented keys plus \
+             `client_secret` — got a different key count"
+        );
+        assert_eq!(
+            object.get("client_secret").and_then(Value::as_str),
+            Some("pi_1_secret_abc")
+        );
+        // Every one of the twelve is still there, at the top level, byte for
+        // byte what the merchant surface renders.
+        let plain = serde_json::to_value(sample("pi_1")).expect("serialises");
+        let plain = plain.as_object().expect("an object");
+        for (key, value) in plain {
+            assert_eq!(object.get(key), Some(value), "`{key}` changed shape");
+        }
+    }
+
+    /// `client_secret` here is the whole bearer token `/v1/browser` accepts
+    /// — not the stored suffix `vpay_db::PaymentIntentRow` redacts, the
+    /// already-joined value. A derived `Debug` would put it in a `tracing`
+    /// field or a test failure message as readily as `println!` would.
+    ///
+    /// Decisive: replacing the hand-written impl with `#[derive(Debug)]`
+    /// fails this test on its first assertion.
+    #[test]
+    fn a_payment_intent_with_secrets_debug_output_never_contains_the_client_secret() {
+        let secret = "pi_1_secret_neverlogthispayercredential00000".to_owned();
+        let with_secret = PaymentIntentWithSecret::new(sample("pi_1"), secret.clone());
+
+        let formatted = format!("{with_secret:?}");
+
+        assert!(
+            !formatted.contains(&secret),
+            "Debug output must not contain the client_secret"
+        );
+        // Not even a prefix of it: a redaction that truncated rather than
+        // replaced would still hand a guesser most of the credential.
+        assert!(
+            !formatted.contains("neverlog"),
+            "Debug output must not contain even a prefix of the client_secret"
+        );
+        assert!(
+            formatted.contains(&format!("[{} chars redacted]", secret.len())),
+            "Debug output must contain the redaction marker"
+        );
+        // The rendered intent itself carries no secret, so it stays visible
+        // — an operator's `{:?}` still shows the status and amount.
+        assert!(
+            formatted.contains("pi_1"),
+            "Debug output must still show the non-secret intent fields"
+        );
+    }
+
+    /// The tripwire, restated from the other side: adding the credential to
+    /// the *wrapper* must not add it to the type the list and every webhook
+    /// body render through.
+    ///
+    /// `every_documented_key_is_present_including_the_null_ones` already
+    /// pins `len() == 12`; this says out loud what that number is protecting,
+    /// so a future reader tempted to "just add the field" finds the reason
+    /// rather than only the assertion.
+    #[test]
+    fn the_plain_payment_intent_object_still_carries_no_client_secret() {
+        let rendered = serde_json::to_value(sample("pi_1")).expect("serialises");
+        let object = rendered.as_object().expect("an object");
+        assert!(
+            !object.contains_key("client_secret"),
+            "a payer credential must not reach the /v1 list or events.data: {object:?}"
+        );
+        assert_eq!(object.len(), 12);
     }
 
     /// The contract's whole point: a merchant's own client decodes what this

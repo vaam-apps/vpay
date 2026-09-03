@@ -10,19 +10,22 @@ Runnable merchant-side integrations.
 | [merchant-stripe-node](merchant-stripe-node/) | **The second one that runs against a real vpay.** The same payment through the *official* `stripe` package, authenticated by `@vpay/sdk/stripe` — create, confirm, poll to `succeeded` ([stripe-sdk-compat.md](../docs/flows/stripe-sdk-compat.md)) |
 | [`sdks/rust/examples`](../sdks/rust/examples/) | The same flow through the Rust SDK, `vpay-sdk` |
 | [webhook-receiver](webhook-receiver/) | Verifying the `Vpay-Signature` header correctly |
+| [checkout-browser](checkout-browser/) | **The third one that runs against a real vpay, and the only PAYER-facing one.** Plain HTML + JS on [`@vpay/stripe-js`](../sdks/stripe-js/): confirms an MTN MoMo push and polls to `succeeded`, with no merchant credential ever in the browser ([browser-checkout.md](../docs/flows/browser-checkout.md)) |
 
 **Status, corrected 2026-09-03.** This section used to say "**no `/v1`
 business resource exists**", which was true when it was written on
 2026-09-02 and false the next day. `/v1/payment_intents` — create, retrieve,
 list, confirm, cancel — is served, and a confirm reaches a rail.
 
-`merchant-demo` and `merchant-stripe-node` are the two examples written
-against what vpay actually serves, and both are run end to end against the
-compose stack. `merchant-curl` and `merchant-node` still describe the
-*intended* API as pinned down by
-[`docs/flows/merchant-auth.md`](../docs/flows/merchant-auth.md), and their
-refund, event and balance calls still reach a `404 unknown_route`, because
-those routes are deliberately not mounted — `/v1/events`, though, **is**
+`merchant-demo`, `merchant-stripe-node` and `checkout-browser` are the three
+examples written against what vpay actually serves, and all three are run
+end to end against the compose stack — the first two by a human or CI running
+them directly, `checkout-browser` additionally by
+[`frontends/tests/e2e/cypress/e2e/checkout.cy.ts`](../frontends/tests/e2e/cypress/e2e/checkout.cy.ts).
+`merchant-curl` and `merchant-node` still describe the *intended* API as
+pinned down by [`docs/flows/merchant-auth.md`](../docs/flows/merchant-auth.md),
+and their refund, event and balance calls still reach a `404 unknown_route`,
+because those routes are deliberately not mounted — `/v1/events`, though, **is**
 served as of Step 5. `webhook-receiver` describes a delivery vpay now really
 sends: the worker signs and POSTs it, and a delivered one has been verified
 both with `@vpay/sdk` and with the official `stripe` package's

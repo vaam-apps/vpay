@@ -567,8 +567,29 @@ impl Config {
             return Err(ConfigError::DuplicateClientId(dashboard.client_id.clone()));
         }
 
+        // Uniqueness across *every* merchant, before any single key's own
+        // shape is checked, for the reason the provider-code walk above runs
+        // in that order: otherwise the first duplicate's own malformation
+        // would be reported instead of the collision, and an operator would
+        // fix the named problem and hit the real one on the next boot.
+        let mut seen_publishable_keys: BTreeMap<&str, &str> = BTreeMap::new();
+        for merchant in &self.merchant_clients {
+            for key in &merchant.publishable_keys {
+                if let Some(first) =
+                    seen_publishable_keys.insert(key.as_str(), merchant.client_id.as_str())
+                {
+                    return Err(ConfigError::DuplicatePublishableKey {
+                        key: key.clone(),
+                        first: first.to_owned(),
+                        second: merchant.client_id.clone(),
+                    });
+                }
+            }
+        }
+
         for merchant in &self.merchant_clients {
             validate_merchant_client(merchant)?;
+            validate_publishable_keys(merchant, livemode)?;
             validate_webhook_endpoints(merchant, livemode, raw_secrets)?;
         }
         if let Some(dashboard) = &self.dashboard_client {
@@ -871,6 +892,80 @@ fn validate_merchant_client(merchant: &MerchantClient) -> Result<(), ConfigError
         return Err(ConfigError::MerchantMissingV1Audience {
             client_id: merchant.client_id.clone(),
         });
+    }
+    Ok(())
+}
+
+/// The two prefixes a publishable key may carry, paired with the
+/// `deployment.livemode` each one belongs to.
+///
+/// A table rather than two `if`s so that the shape rule and the livemode rule
+/// read the same value: a third prefix added here is refused by
+/// [`validate_publishable_keys`] until this table names which deployment it
+/// belongs to, rather than silently passing the shape check and failing the
+/// livemode one for a reason nobody wrote down.
+const PUBLISHABLE_KEY_PREFIXES: [(&str, bool); 2] = [("pk_test_", false), ("pk_live_", true)];
+
+/// How many `[A-Za-z0-9]` characters must follow a publishable key's prefix.
+///
+/// Stripe's own keys sit comfortably inside this range, and so does anything
+/// an operator would generate with `openssl rand -hex 16`. The floor is not a
+/// security bound — the key authorises nothing on its own
+/// ([`MerchantClient::publishable_keys`]) — it is a *typo* bound: `pk_test_x`
+/// is a truncated paste, and refusing it at boot is cheaper than a merchant
+/// discovering it as a uniform 404 on their checkout page.
+const PUBLISHABLE_KEY_BODY_CHARS: std::ops::RangeInclusive<usize> = 16..=64;
+
+/// One merchant's publishable keys (D1 of
+/// `docs/plans/2026-09-03-step5c-stripejs.md`): each shaped
+/// `pk_(test|live)_[A-Za-z0-9]{16,64}`, and each agreeing with
+/// `deployment.livemode`.
+///
+/// Uniqueness is **not** here: it is a property of the whole
+/// `merchant_clients` list and is checked in `Config::validate_all`, for the
+/// same reason `client_id` uniqueness is.
+///
+/// # Why the shape is hand-checked rather than a regex
+///
+/// The pattern is a fixed prefix plus a bounded run of ASCII alphanumerics,
+/// which is three lines of `char` predicates. Taking the `regex` crate as a
+/// dependency of `vpay-config` — which has none today, and whose whole job is
+/// to run once at boot — to express that would be a compile-time and
+/// supply-chain cost for a pattern with no alternation, no backtracking and
+/// no Unicode classes in it. The escape hatch matters too: this way the
+/// message can name *which* half is wrong.
+///
+/// # Errors
+///
+/// [`ConfigError::MalformedPublishableKey`] for a key that is not shaped like
+/// one, and [`ConfigError::PublishableKeyLivemodeMismatch`] for a well-shaped
+/// key whose marker contradicts the deployment.
+fn validate_publishable_keys(merchant: &MerchantClient, livemode: bool) -> Result<(), ConfigError> {
+    for key in &merchant.publishable_keys {
+        // Shape first, then the label: a value that is not a publishable key
+        // at all has no marker to contradict anything, and reporting the
+        // livemode rule for `pk_tset_…` would send an operator looking at
+        // `deployment.livemode` instead of at their typo.
+        let Some((_, key_is_live)) = PUBLISHABLE_KEY_PREFIXES
+            .iter()
+            .find_map(|(prefix, is_live)| key.strip_prefix(prefix).map(|body| (body, *is_live)))
+            .filter(|(body, _)| {
+                PUBLISHABLE_KEY_BODY_CHARS.contains(&body.chars().count())
+                    && body.chars().all(|c| c.is_ascii_alphanumeric())
+            })
+        else {
+            return Err(ConfigError::MalformedPublishableKey {
+                client_id: merchant.client_id.clone(),
+                key: key.clone(),
+            });
+        };
+        if key_is_live != livemode {
+            return Err(ConfigError::PublishableKeyLivemodeMismatch {
+                client_id: merchant.client_id.clone(),
+                key: key.clone(),
+                livemode,
+            });
+        }
     }
     Ok(())
 }
@@ -1454,6 +1549,39 @@ mod tests {
     }
 
     // ------------------------------------------------- webhook endpoints ---
+
+    /// The smallest `Config` that passes every rule: one merchant, no rails,
+    /// no currencies, `livemode: false`.
+    ///
+    /// A struct literal rather than a file because the cases that use it vary
+    /// **one field** and assert on the variant that names it — a fixture per
+    /// variation would be a directory of files differing by one line, and the
+    /// thing under test would be harder to see, not easier. The rules that
+    /// need a real file to prove anything (that a YAML key reaches the
+    /// struct at all) use [`load_fixture`] instead, and say so.
+    fn valid_config() -> Config {
+        Config {
+            deployment: Deployment {
+                name: "test".to_owned(),
+                livemode: false,
+                public_base_url: "https://api.vpay.test".to_owned(),
+            },
+            providers: Vec::new(),
+            currencies: Vec::new(),
+            merchant_clients: vec![MerchantClient {
+                client_id: "acme-cameroon".to_owned(),
+                merchant_id: "acme-cameroon-tenant".to_owned(),
+                jwks: Some(serde_json::json!({ "keys": [{ "kty": "RSA", "kid": "k1" }] })),
+                grant_types: vec![crate::oauth::GrantType::ClientCredentials],
+                scopes: vec!["payments:write".to_owned()],
+                allowed_audiences: vec![MERCHANT_AUDIENCE.to_owned()],
+                client_secret: None,
+                webhooks: Vec::new(),
+                publishable_keys: Vec::new(),
+            }],
+            dashboard_client: None,
+        }
+    }
 
     /// Loads a fixture under `tests/fixtures/` with the shared example
     /// environment, and returns whatever `Config::load_with_env` answered.
@@ -2441,6 +2569,255 @@ mod tests {
         assert_eq!(
             err,
             ConfigError::DuplicateMerchantId("shared-tenant".to_owned())
+        );
+    }
+
+    // --- publishable keys (Step 5c D1) ---
+
+    /// One key, two tenants. Every other rule passes, so this fires on the
+    /// collision rather than on whichever check runs first.
+    ///
+    /// Decisive: deleting the uniqueness walk from `validate_all` makes this
+    /// config boot, and `merchant_id_for_publishable_key` then answers with
+    /// whichever merchant `BTreeMap::insert` saw last.
+    #[test]
+    fn two_merchant_clients_sharing_a_publishable_key_are_rejected() {
+        let err = load_fixture("publishable-key-duplicate.yml")
+            .expect_err("one publishable key naming two tenants must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::DuplicatePublishableKey {
+                key: "pk_test_sharedbetweentwotenants".to_owned(),
+                first: "acme-cameroon".to_owned(),
+                second: "beta-douala".to_owned(),
+            }
+        );
+    }
+
+    /// A registration that lists the same key twice is the same defect and
+    /// the same refusal — it is one merchant, but it is also a file whose
+    /// author believes something that is not true about it.
+    ///
+    /// Written in memory rather than as a fixture because the shape under
+    /// test is a repeated list item, which reads as a copy/paste slip in a
+    /// file and as a deliberate case here.
+    #[test]
+    fn one_merchant_listing_a_publishable_key_twice_is_rejected() {
+        let mut config = valid_config();
+        config
+            .merchant_clients
+            .first_mut()
+            .expect("the fixture registers one merchant")
+            .publishable_keys = vec![
+            "pk_test_listedtwicebyoneclient".to_owned(),
+            "pk_test_listedtwicebyoneclient".to_owned(),
+        ];
+
+        let err = config
+            .validate_all(&RawSecrets::default())
+            .expect_err("a key listed twice must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::DuplicatePublishableKey {
+                key: "pk_test_listedtwicebyoneclient".to_owned(),
+                first: "acme-cameroon".to_owned(),
+                second: "acme-cameroon".to_owned(),
+            }
+        );
+    }
+
+    /// The fixture's key is a truncated paste. The table below then walks
+    /// every *other* way the shape can be wrong against the same rule, in
+    /// memory, because one file per near-miss would be twelve files saying
+    /// the same thing.
+    #[test]
+    fn a_malformed_publishable_key_is_rejected() {
+        let err = load_fixture("publishable-key-malformed.yml")
+            .expect_err("a publishable key with a nine-character body must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::MalformedPublishableKey {
+                client_id: "acme-cameroon".to_owned(),
+                key: "pk_test_short".to_owned(),
+            }
+        );
+    }
+
+    /// Every near-miss an operator actually produces, and the two values at
+    /// the length bound that must be *accepted*.
+    ///
+    /// The bounds are written as literals rather than derived from
+    /// `PUBLISHABLE_KEY_BODY_CHARS`, so widening the constant is a deliberate
+    /// change to this test too.
+    #[test]
+    fn the_publishable_key_shape_admits_exactly_what_it_documents() {
+        let sixteen = "a".repeat(16);
+        let sixty_four = "b".repeat(64);
+        for accepted in [
+            format!("pk_test_{sixteen}"),
+            format!("pk_test_{sixty_four}"),
+        ] {
+            let mut config = valid_config();
+            config
+                .merchant_clients
+                .first_mut()
+                .expect("one merchant")
+                .publishable_keys = vec![accepted.clone()];
+            config
+                .validate_all(&RawSecrets::default())
+                .unwrap_or_else(|e| panic!("{accepted} is inside the documented shape: {e}"));
+        }
+
+        for refused in [
+            // A body one character short of the floor, and one past the
+            // ceiling: the two inputs an off-by-one would let through.
+            format!("pk_test_{}", "a".repeat(15)),
+            format!("pk_test_{}", "b".repeat(65)),
+            // No prefix at all, and the two prefixes a merchant confuses it
+            // with — a secret key's, and Stripe's older restricted-key form.
+            sixteen.clone(),
+            format!("sk_test_{sixteen}"),
+            format!("rk_test_{sixteen}"),
+            // A transposed prefix, which is what a hand-typed key looks like.
+            format!("pk_tset_{sixteen}"),
+            // Uppercase prefix: the prefix is matched literally, and a key
+            // that differed from the one on the merchant's page by case would
+            // resolve to no tenant at request time anyway.
+            format!("PK_TEST_{sixteen}"),
+            // Characters outside `[A-Za-z0-9]` — the ones a base64 or a
+            // hyphenated UUID would bring, and which would then have to
+            // survive a query string unchanged.
+            format!("pk_test_{}-{}", "a".repeat(8), "b".repeat(8)),
+            format!("pk_test_{}+{}", "a".repeat(8), "b".repeat(8)),
+            format!("pk_test_{}/{}", "a".repeat(8), "b".repeat(8)),
+            // Empty, which is what a `publishable_keys: [""]` list item is.
+            String::new(),
+        ] {
+            let mut config = valid_config();
+            config
+                .merchant_clients
+                .first_mut()
+                .expect("one merchant")
+                .publishable_keys = vec![refused.clone()];
+            let err = config
+                .validate_all(&RawSecrets::default())
+                .expect_err(&format!("{refused} is not a publishable key"));
+            assert_eq!(
+                err,
+                ConfigError::MalformedPublishableKey {
+                    client_id: "acme-cameroon".to_owned(),
+                    key: refused.clone(),
+                },
+                "{refused}"
+            );
+        }
+    }
+
+    /// A `pk_live_` key under `livemode: false` — a merchant pasting what
+    /// they believe is a production credential into a sandbox page, or the
+    /// reverse, which is the one that takes real money.
+    #[test]
+    fn a_publishable_key_whose_marker_contradicts_livemode_is_rejected() {
+        let err = load_fixture("publishable-key-livemode-mismatch.yml")
+            .expect_err("a pk_live_ key under livemode: false must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::PublishableKeyLivemodeMismatch {
+                key: "pk_live_wronglabelforasandbox".to_owned(),
+                client_id: "acme-cameroon".to_owned(),
+                livemode: false,
+            }
+        );
+    }
+
+    /// The other direction, which the fixture above cannot express: a
+    /// `pk_test_` key served by a **livemode** deployment. Built in memory
+    /// because a livemode fixture would have to satisfy every other livemode
+    /// rule (https hosts, `${VAR}` secrets) to reach this one, and would then
+    /// be a fixture about those rules.
+    #[test]
+    fn a_test_publishable_key_is_refused_by_a_livemode_deployment() {
+        let mut config = valid_config();
+        config.deployment.livemode = true;
+        config
+            .merchant_clients
+            .first_mut()
+            .expect("one merchant")
+            .publishable_keys = vec!["pk_test_sandboxkeyinproduction".to_owned()];
+
+        let err = config
+            .validate_all(&RawSecrets::default())
+            .expect_err("a pk_test_ key under livemode: true must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::PublishableKeyLivemodeMismatch {
+                key: "pk_test_sandboxkeyinproduction".to_owned(),
+                client_id: "acme-cameroon".to_owned(),
+                livemode: true,
+            }
+        );
+    }
+
+    /// A merchant with no `publishable_keys:` key at all is a complete,
+    /// valid registration — and the one most merchants should have.
+    ///
+    /// The empty list is the fail-closed default (D1): such a merchant has
+    /// no browser surface, and every `/v1/browser` request naming a key this
+    /// deployment does not know is the uniform 404. A rule that required one
+    /// would make the payer-facing checkout mandatory for every merchant vpay
+    /// has.
+    #[test]
+    fn a_merchant_with_no_publishable_keys_is_valid() {
+        // A real file that omits the key entirely, refused for its *own*
+        // reason and never for the absent list.
+        assert_eq!(
+            load_fixture("oauth-duplicate-merchant-id.yml")
+                .expect_err("the fixture has its own defect"),
+            ConfigError::DuplicateMerchantId("shared-tenant".to_owned())
+        );
+
+        let config = valid_config();
+        assert!(
+            config
+                .merchant_clients
+                .first()
+                .expect("one merchant")
+                .publishable_keys
+                .is_empty()
+        );
+        config
+            .validate_all(&RawSecrets::default())
+            .expect("a merchant with no browser surface is a valid registration");
+    }
+
+    /// The other half: a spelled `publishable_keys:` actually reaches the
+    /// struct.
+    ///
+    /// `#[serde(default)]` means a typo in the field name is *also* an empty
+    /// list, so "no key was refused" proves nothing on its own — this reads
+    /// the value back out of the example file every deployment starts from.
+    #[test]
+    fn the_example_config_registers_a_publishable_key() {
+        let example = Config::load_with_env(
+            Some(Path::new(EXAMPLE_BASE)),
+            "does-not-exist",
+            &example_env(BTreeMap::new()),
+        )
+        .expect("the example config loads");
+        let acme = example
+            .merchant_clients
+            .iter()
+            .find(|client| client.client_id == "acme-cameroon")
+            .expect("the example merchant is registered");
+        assert_eq!(
+            acme.publishable_keys.len(),
+            1,
+            "config/application.yml's example merchant carries one browser key"
+        );
+        let key = acme.publishable_keys.first().expect("one key");
+        assert!(
+            key.starts_with("pk_test_"),
+            "the example deployment is livemode: false, so its key must say so: {key}"
         );
     }
 

@@ -244,3 +244,94 @@ model, alongside 5b's amendment.
 3. `redirect_status` / return-URL params — **vpay appends nothing** (D3).
 4. Bounce endpoint now or later — **deferred, push-only** (D4).
 5. Rate limiting — **ingress, documented** (D5).
+
+## 8. Outcome (block C, 2026-09-03)
+
+**Landed.** All three blocks: the server surface (A), `@vpay/stripe-js` (B),
+and — this pass — `examples/checkout-browser`, `checkout.cy.ts`, and the
+docs listed in §6's "C" split. Verified rather than assumed: `just
+demo_port=18084 demo` (all 7 steps), `mint.mjs` against that stack, a real
+browser session driven through confirm → processing → waiting → succeeded
+(screenshotted), then `pnpm --filter @vpay/e2e e2e` against the same stack —
+`checkout.cy.ts` passing (`2914ms`) alongside `dashboard.cy.ts`'s existing 3
+tests, 4/4. `sdks/stripe-js` grew from 82 tests (as this plan's §5 was
+written) to **87** during this pass, from a security-hardening commit
+landing concurrently in the same shared worktree (redirect scheme allowlist,
+`secrets_match` wiring test, a second redacting `Debug` impl on
+`PaymentIntentWithSecret`) — not this block's own work, but its numbers are
+now what `docs/status.md` cites.
+
+**Deviations and things found, not in the original design:**
+
+- **A real currency mismatch, not a documentation slip.** `examples/checkout-browser/mint.mjs`
+  originally minted in `xaf`, matching this document's §2 example. The demo
+  overlay's `mtn_momo` rail settles in **EUR** (matching
+  `examples/merchant-demo`'s own `DEMO_CURRENCY`), and confirming an XAF
+  intent against it produced a real, correctly-rendered error —
+  `invalid_request_error/invalid_request: rail 'mtn_momo' settles in EUR;
+  this PaymentIntent is XAF` — caught by actually running the example
+  against `just demo`, not by inspection. Fixed in `mint.mjs` and
+  `checkoutTasks.ts`; both now mint in EUR with a comment explaining why.
+- **A path-traversal guard bug in `serve.mjs` that 403'd every request**,
+  including `index.html` itself. `new URL(".", import.meta.url)` already
+  yields a directory path ending in the OS separator; the original code
+  appended a second one before `startsWith`, so nothing ever matched. Found
+  the same way — running the server for real and getting 403 on `/index.html`
+  — not from reading the code. Fixed by re-normalising with `join(ROOT, "")`
+  instead of concatenating a separator, with the failure mode recorded in a
+  comment at the fix site.
+- **Neither merchant SDK's `PaymentIntent` type had exposed `client_secret`**,
+  even though `/v1`'s own `create`/`retrieve` render one via this step's own
+  `PaymentIntentWithSecret` (D2). `sdks/nodejs` hid it only at the type
+  level (`http.ts`'s `JSON.parse(text) as T` is a cast, not a filter, so
+  plain JavaScript still read it — which is why `mint.mjs` and
+  `checkoutTasks.ts` were written the way they were). `sdks/rust` was worse:
+  serde silently dropped the field with no workaround from inside that type,
+  so `examples/merchant-demo` could not recover a `client_secret` at all.
+  **Resolved in this same step, once the worktree constraint lifted**
+  (`c40a137`, same day): `sdks/nodejs/src/types.ts` now declares
+  `client_secret?: string` and `sdks/rust/src/model.rs` declares
+  `client_secret: Option<String>` with `#[serde(default)]` and a
+  hand-written redacting `Debug`; `checkoutTasks.ts`'s cast is removed. See
+  `docs/flows/browser-checkout.md` and `docs/status.md` for the closed gap.
+- **`sdks/stripe-js/README.md`'s "Type compatibility, precisely" section is
+  accurate and was written by block B, not amended here**: Stripe's
+  `PaymentIntentResult`/`StripeError` are assignable to ours (a widening);
+  ours is *not* assignable to Stripe's in either direction for the object
+  types themselves (`PaymentIntent`, and our `StripeError` is intentionally
+  wider) — see that section for the precise, compile-time-pinned claims
+  rather than restating them loosely here.
+- **`waitForPaymentIntent` ends the poll on the very first `api_connection_error`
+  (or any `{error}`), rather than retrying transient network failures until
+  the timeout.** This is `client.ts`'s own documented choice (`an
+  api_connection_error is something the caller must decide about —
+  swallowing three minutes of connection failures and then reporting
+  polling_timeout would describe the wrong fault`), not an oversight this
+  pass found — but it is worth stating plainly here because it means a
+  single dropped packet during a payer's wait aborts the whole poll instead
+  of riding it out. A caller wanting resilience has to retry
+  `waitForPaymentIntent` itself; nothing in `@vpay/stripe-js` does that for
+  it. `examples/checkout-browser/checkout.js` does not retry either — a
+  network blip during the wait shows the payer an error with no retry
+  button, which is an honest gap in the example, not a hidden one.
+- **The stale claim "`client_secret` is absent" in
+  `docs/flows/stripe-sdk-compat.md`** (written before this step, when it was
+  true) and the matching line in `docs/adr/0010-merchant-auth-private-key-jwt.md`'s
+  earlier amendment were found while cross-checking D2 against the rest of
+  the docs tree and corrected in this pass, not left for a future reader to
+  trip over.
+
+**Not done / explicitly out of scope for block C:**
+
+- The `/provider/{code}/callback` route (D4's gap) — owned by a later step.
+- Rate limiting at the ingress (D5) — an operational requirement, not code;
+  nothing in this repository enforces or checks it.
+- This pass's Cypress run is **local only** (`just demo_port=18084 demo` +
+  `pnpm --filter @vpay/e2e e2e` on the authoring machine), with the new
+  step and env vars added to `.github/workflows/ci.yml`'s `e2e` job. It has
+  not yet been observed green in an actual CI run — `docs/status.md` says so
+  explicitly rather than implying CI proof from a local one.
+- ~~Fixing `sdks/nodejs`/`sdks/rust`'s `client_secret` typing gap~~ — resolved
+  the same day, `c40a137` (see the deviation above).
+- Retry-on-transient-failure for `waitForPaymentIntent`/the example page
+  (see above).

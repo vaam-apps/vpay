@@ -1,0 +1,25 @@
+# Fixture for `a_malformed_publishable_key_is_rejected`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# One client, otherwise valid. The key carries the right prefix and a body of
+# only nine characters — the shape a truncated copy/paste has. Refusing it at
+# boot is the whole point: a key nothing resolves is a uniform 404 on the
+# merchant's checkout page with no log line connecting it to this line.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    publishable_keys: ["pk_test_short"]

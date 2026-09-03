@@ -8,5 +8,9 @@
     "open": "cypress open",
     "typecheck": "tsc --noEmit"
   },
-  "devDependencies": { "cypress": "^13.17.0", "typescript": "^5.7.0" }
+  "devDependencies": {
+    "@vpay/sdk": "workspace:*",
+    "cypress": "^13.17.0",
+    "typescript": "^5.7.0"
+  }
 }

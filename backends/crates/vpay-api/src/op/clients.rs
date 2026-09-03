@@ -259,6 +259,11 @@ mod tests {
             // conversion and must never become part of it — they are a
             // delivery destination, not an authentication fact.
             webhooks: Vec::new(),
+            // Same argument: a publishable key names a tenant on the browser
+            // surface and is not an OAuth fact at all. A conversion that
+            // started reading it would be putting a payer-facing label into
+            // a `ClientRegistration`.
+            publishable_keys: Vec::new(),
         }
     }
 

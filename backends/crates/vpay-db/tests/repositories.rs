@@ -670,6 +670,10 @@ fn fixture_intent(id: &str, currency_code: &str) -> vpay_db::NewPaymentIntent {
         payment_method_types: json!(["mtn_momo"]),
         metadata: json!({}),
         description: None,
+        // Through the real generator, so these rows satisfy migration
+        // `0026`'s `client_secret_suffix_length` CHECK the same way a
+        // `/v1`-created intent does.
+        client_secret_suffix: vpay_core::ids::client_secret_suffix(),
         created_at: time::OffsetDateTime::now_utc(),
     }
 }

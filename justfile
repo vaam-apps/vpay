@@ -71,6 +71,38 @@ test-sdk-node:
 build-sdk-node:
     pnpm --filter @vpay/sdk build
 
+test-sdk-browser:
+    pnpm --filter @vpay/stripe-js test
+
+# `@vpay/stripe-js` is browser ESM: nothing in the workspace imports it as a
+# TypeScript source, so `lint-web` does not need it built the way it needs
+# `build-sdk-node`. The static checkout example loads `dist/index.js`
+# directly, which is what this recipe is for.
+build-sdk-browser:
+    pnpm --filter @vpay/stripe-js build
+
+# Vendors `@vpay/stripe-js`'s build output into
+# `examples/checkout-browser/dist/stripe-js/`, which its `index.html` imports
+# as a plain relative ESM path (no bundler, no import map). A COPY rather
+# than a symlink: the compose/CI environment that eventually serves this
+# directory should not need `sdks/` on the same filesystem, and a symlink
+# would silently stop working the day that stops being true. The whole
+# `dist/index.js` module graph is needed, not just that one file — it
+# imports `./client.js`, `./errors.js` and `./types.js` by relative
+# specifier, so copying only `index.js` (as this recipe used to be
+# documented as doing) would 404 in the browser on the first import.
+#
+# `examples/checkout-browser/dist/` is covered by the repo-wide `dist/`
+# .gitignore entry, same as every other package's build output — nothing new
+# to ignore.
+build-checkout-browser: build-sdk-browser
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf examples/checkout-browser/dist/stripe-js
+    mkdir -p examples/checkout-browser/dist/stripe-js
+    cp sdks/stripe-js/dist/*.js sdks/stripe-js/dist/*.d.ts examples/checkout-browser/dist/stripe-js/
+    echo "build-checkout-browser: vendored sdks/stripe-js/dist/ into examples/checkout-browser/dist/stripe-js/"
+
 # Cross-language conformance: mint a private_key_jwt assertion with the Node
 # SDK and verify it with the REAL OP verifier vpay will run
 # (authkestra_op::client_assertion::verify_client_assertion at the pinned
@@ -159,6 +191,12 @@ verify-errors:
 # total — it is set a little under the measured count rather than to it, so it
 # is not a number people bump reflexively.
 #
+# 38 -> 39 (Step 5c) for
+# `backends/tests/integration/tests/browser_checkout.rs`, which is the only
+# proof the payer-facing `/v1/browser` surface exists at all — and, more to
+# the point, the only place the uniform-404 property can be asserted, since
+# it is a property of rendered response *bodies* rather than of a function.
+#
 # Measured 2026-09-03 after Step 5b was rebased onto Steps 4 and 5:
 # `886 tests run: 886 passed, 0 skipped`, 38 binaries.
 #
@@ -169,9 +207,20 @@ verify-errors:
 # then_succeeds`, `a_delivery_past_the_last_rung_is_exhausted_and_not_
 # rescheduled`) extend existing tests in `webhooks.rs` rather than adding
 # one.
+#
+# Re-measured again 2026-09-03 after Step 5c (`browser_checkout.rs`, the
+# `@vpay/stripe-js` unit suite which cargo does not run and this count does
+# not cover, and the `track_http_metrics`-on-the-browser-nest test added
+# while rebasing 5c onto Step 6) was rebased onto that tree:
+# `cargo nextest list --workspace` lists **969 total, 39 test binaries, 0
+# ignored** — 39 binaries because `browser_checkout.rs` is a new binary
+# (38 -> 39, as the paragraph above already anticipated); 969 rather than
+# 927 for the sum of Step 5c's own new tests (including
+# `a_browser_get_is_counted_under_its_own_route_pattern`, added while
+# resolving this rebase) landing on top of Step 6's 927.
 expected_ignored := "0"
-expected_suites := "38"
-# A floor, not a target — set a little under the measured 927 rather than to
+expected_suites := "39"
+# A floor, not a target — set a little under the measured 969 rather than to
 # it, so it is not a number people bump reflexively. Bump it in the same
 # commit that legitimately adds tests, never to make a red run green.
 min_tests := "900"
@@ -533,6 +582,7 @@ gen-demo-keys: gen-e2e-signing-key
         # rather than patched.
         if grep -q '^\s*merchant_id:' "$overlay" \
             && grep -q '^\s*webhooks:' "$overlay" \
+            && grep -q '^\s*publishable_keys:' "$overlay" \
             && grep -q "^\s*public_base_url: http://localhost:{{demo_port}}$" "$overlay"; then
             echo "gen-demo-keys: $key and $overlay already exist, keeping them"
             exit 0
@@ -546,6 +596,14 @@ gen-demo-keys: gen-e2e-signing-key
             # fail for a reason that has nothing to do with the worker. Same
             # class of stale-generated-file failure, so the same shape check.
             echo "gen-demo-keys: $overlay predates the \`webhooks\` block — regenerating the pair"
+        elif ! grep -q '^\s*publishable_keys:' "$overlay"; then
+            # Added 2026-09-03 (Step 5c). Same class again: the overlay still
+            # loads without it, but `examples/checkout-browser` and the
+            # Cypress spec would then present a key `merchant_id_for_publishable_key`
+            # resolves to nothing, and every browser call would be the
+            # surface's uniform 404 — a refusal that deliberately names
+            # neither the key nor the reason.
+            echo "gen-demo-keys: $overlay predates the \`publishable_keys\` block — regenerating the pair"
         else
             echo "gen-demo-keys: $overlay was generated for a different demo_port than {{demo_port}} — regenerating the pair"
         fi
@@ -617,6 +675,21 @@ gen-demo-keys: gen-e2e-signing-key
         # Must contain vpay:v1 — vpay_config::MERCHANT_AUDIENCE. Without it the
         # OP answers invalid_target, and the server refuses to boot.
         allowed_audiences: ["vpay:v1"]
+        # What a payer's browser presents on /v1/browser alongside the payment
+        # intent's own client_secret (Step 5c, @vpay/stripe-js). Not secret:
+        # it is rendered into the checkout page, it names this tenant, and it
+        # authorises nothing on its own.
+        #
+        # A FIXED value, not generated like the key pair above, and
+        # deliberately so: examples/checkout-browser and the Cypress spec
+        # both hardcode it, and a per-run value would mean a demo page that
+        # has to be regenerated with the overlay. It is a sandbox label for a
+        # throwaway stack; there is nothing here to keep secret.
+        #
+        # `pk_test_` because this overlay does not set livemode, so the base
+        # config's `false` stands — Config::validate_all refuses a `pk_live_`
+        # key under it (ConfigError::PublishableKeyLivemodeMismatch).
+        publishable_keys: ["pk_test_demomerchantsandbox01"]
         # Where this merchant's events are POSTed once the worker's job loop
         # delivers them (docs/flows/webhooks.md). \`wiremock-webhook\` is the
         # compose service compose.e2e.yml adds, on its port as seen INSIDE

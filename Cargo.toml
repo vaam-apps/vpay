@@ -65,7 +65,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "syn
 # the router put an `Arc<str>` into each request's extensions.
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "form", "matched-path"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "request-id", "timeout", "limit"] }
+# `cors` is Step 5c's addition: the `/v1/browser` nest — and only that
+# nest — carries a `CorsLayer`, because a payer's page is served from the
+# merchant's own origin and every call it makes to vpay is cross-origin.
+# The merchant `/v1` nest deliberately gets none (see `vpay_api::router`).
+tower-http = { version = "0.6", features = ["trace", "request-id", "timeout", "limit", "cors"] }
 hyper = "1"
 # `vpay_provider::ProviderAdapter` is an async trait, and a trait with async
 # methods is not dyn-safe in Rust 1.95 — the port is held as

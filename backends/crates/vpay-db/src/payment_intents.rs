@@ -19,6 +19,8 @@
 //! is not part of the write statement enforces nothing under concurrency;
 //! this one is the write statement.
 
+use std::fmt;
+
 use sqlx::PgPool;
 use time::OffsetDateTime;
 
@@ -37,7 +39,7 @@ const COLUMNS: &str = "id, seq, merchant_id, livemode, amount, amount_received, 
                        amount_refund_pending, currency_code, status::TEXT AS status, \
                        last_payment_error_code::TEXT AS last_payment_error_code, \
                        last_payment_error_message, payment_method_types, metadata, description, \
-                       created_at, updated_at";
+                       client_secret_suffix, created_at, updated_at";
 
 /// One `payment_intents` row, exactly as stored.
 ///
@@ -45,7 +47,10 @@ const COLUMNS: &str = "id, seq, merchant_id, livemode, amount, amount_received, 
 /// unix-seconds `created`, the nested `last_payment_error` object). This
 /// struct is deliberately one-to-one with the table so a change to either
 /// is a compile error rather than a silently dropped column.
-#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
+///
+/// `Debug` is **hand-written** below rather than derived, because
+/// [`Self::client_secret_suffix`] is a live credential — see that impl.
+#[derive(Clone, PartialEq, sqlx::FromRow)]
 pub struct PaymentIntentRow {
     /// Public `pi_…` id, supplied by the caller before the insert.
     pub id: String,
@@ -83,11 +88,71 @@ pub struct PaymentIntentRow {
     pub metadata: serde_json::Value,
     /// Merchant description, at most 1000 characters.
     pub description: Option<String>,
+    /// The stored half of this intent's payer-facing `client_secret`
+    /// (migration `0026`). Join it to [`Self::id`] with
+    /// `vpay_core::ids::client_secret` — never by hand.
+    ///
+    /// **A credential, not an identifier.** Whoever holds the joined value
+    /// can retrieve and *confirm* this intent through `/v1/browser` without
+    /// any merchant token, so it is redacted in this struct's `Debug` and
+    /// must never be rendered on the `/v1` list or into `events.data`
+    /// (`vpay_api::model::PaymentIntentWithSecret`).
+    pub client_secret_suffix: String,
     /// When the intent was created, as supplied to [`insert`].
     pub created_at: OffsetDateTime,
     /// When the row last changed. Maintained by [`transition`], not by a
     /// trigger — see migration 0014's closing note.
     pub updated_at: OffsetDateTime,
+}
+
+/// Redacts [`PaymentIntentRow::client_secret_suffix`], leaving every other
+/// column visible.
+///
+/// A row is `{:?}`-ed in more places than anyone tracks: a `tracing` field on
+/// a settlement, a `Result` unwrapped in a test failure message, a
+/// `#[derive(Debug)]` on some future struct that happens to hold one. Every
+/// one of those is a place a payer credential would otherwise be written to a
+/// log an operator can read — and unlike a webhook secret, this one is
+/// directly actionable: it confirms a payment, on a live intent, with no
+/// merchant token in the picture.
+///
+/// The *length* stays, because "is this row's suffix the right shape?" is a
+/// question an operator debugging migration `0026`'s CHECK actually asks and
+/// answering it needs no secret. Mirrors `vpay_config::oauth::WebhookEndpoint`'s
+/// impl in shape and in what it keeps.
+///
+/// Nothing else is hidden. `merchant_id`, the amounts and the status are what
+/// every operator investigation starts from, and hiding them to be thorough
+/// would make this impl worse at the job it exists for.
+impl fmt::Debug for PaymentIntentRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PaymentIntentRow")
+            .field("id", &self.id)
+            .field("seq", &self.seq)
+            .field("merchant_id", &self.merchant_id)
+            .field("livemode", &self.livemode)
+            .field("amount", &self.amount)
+            .field("amount_received", &self.amount_received)
+            .field("amount_refunded", &self.amount_refunded)
+            .field("amount_refund_pending", &self.amount_refund_pending)
+            .field("currency_code", &self.currency_code)
+            .field("status", &self.status)
+            .field("last_payment_error_code", &self.last_payment_error_code)
+            .field(
+                "last_payment_error_message",
+                &self.last_payment_error_message,
+            )
+            .field("payment_method_types", &self.payment_method_types)
+            .field("metadata", &self.metadata)
+            .field("description", &self.description)
+            .field(
+                "client_secret_suffix",
+                &format_args!("[{} chars redacted]", self.client_secret_suffix.len()),
+            )
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
 }
 
 /// The columns a caller supplies when creating an intent: [`PaymentIntentRow`]
@@ -134,6 +199,16 @@ pub struct NewPaymentIntent {
     pub metadata: serde_json::Value,
     /// Merchant description.
     pub description: Option<String>,
+    /// The payer credential's stored half, from
+    /// `vpay_core::ids::client_secret_suffix` — generated by the caller
+    /// before the insert, exactly as [`Self::id`] is.
+    ///
+    /// A field rather than a column default for [`Self::id`]'s reason and
+    /// one more: migration `0026`'s backfill shows why a `DEFAULT` is the
+    /// wrong tool here (Postgres evaluates an `ADD COLUMN` default once for
+    /// the whole table), and a writer that could omit this would be a writer
+    /// that can create an intent no browser can ever reach.
+    pub client_secret_suffix: String,
     /// Creation instant — see the struct's own comment for why the caller
     /// supplies it.
     pub created_at: OffsetDateTime,
@@ -177,8 +252,9 @@ pub async fn insert(pool: &PgPool, new: &NewPaymentIntent) -> Result<PaymentInte
     let sql = format!(
         "INSERT INTO payment_intents (id, merchant_id, livemode, amount, currency_code, status, \
          last_payment_error_code, last_payment_error_message, payment_method_types, metadata, \
-         description, created_at) \
-         VALUES ($1, $2, $3, $4, $5, $6::intent_status, $7::failure_code, $8, $9, $10, $11, $12) \
+         description, client_secret_suffix, created_at) \
+         VALUES ($1, $2, $3, $4, $5, $6::intent_status, $7::failure_code, $8, $9, $10, $11, $12, \
+         $13) \
          RETURNING {COLUMNS}"
     );
 
@@ -194,6 +270,7 @@ pub async fn insert(pool: &PgPool, new: &NewPaymentIntent) -> Result<PaymentInte
         .bind(&new.payment_method_types)
         .bind(&new.metadata)
         .bind(new.description.as_deref())
+        .bind(&new.client_secret_suffix)
         .bind(new.created_at)
         .fetch_one(pool)
         .await
@@ -766,4 +843,84 @@ pub async fn cancel(
         .fetch_optional(pool)
         .await
         .map_err(classify_write)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A row whose secret suffix is a value no other test could produce, so
+    /// the assertion below cannot pass by the string simply being absent.
+    fn row() -> PaymentIntentRow {
+        PaymentIntentRow {
+            id: "pi_00000000000000000000000x".to_owned(),
+            seq: 1,
+            merchant_id: "acme-cameroon-tenant".to_owned(),
+            livemode: false,
+            amount: 5000,
+            amount_received: 0,
+            amount_refunded: 0,
+            amount_refund_pending: 0,
+            currency_code: "XAF".to_owned(),
+            status: "requires_payment_method".to_owned(),
+            last_payment_error_code: None,
+            last_payment_error_message: None,
+            payment_method_types: serde_json::json!(["mtn_momo"]),
+            metadata: serde_json::json!({}),
+            description: None,
+            client_secret_suffix: "neverlogthispayercredential00000".to_owned(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    /// The suffix is a live payer credential: whoever reads it out of a log
+    /// can confirm the payment through `/v1/browser` with no merchant token.
+    /// A derived `Debug` would put it in every `tracing` field, every test
+    /// failure message and every future struct that happens to hold a row.
+    ///
+    /// Decisive: replacing the hand-written impl with `#[derive(Debug)]`
+    /// fails this test on its first assertion.
+    #[test]
+    fn a_payment_intent_rows_debug_output_never_contains_the_client_secret_suffix() {
+        let row = row();
+        let formatted = format!("{row:?}");
+
+        assert!(
+            !formatted.contains("neverlogthispayercredential00000"),
+            "Debug output must not contain the client_secret_suffix"
+        );
+        // Not even a prefix of it: a redaction that truncated rather than
+        // replaced would still hand a guesser most of the credential.
+        assert!(
+            !formatted.contains("neverlog"),
+            "Debug output must not contain even a prefix of the client_secret_suffix"
+        );
+        assert!(
+            formatted.contains("[32 chars redacted]"),
+            "Debug output must contain the redaction marker"
+        );
+    }
+
+    /// Everything an operator investigating a payment starts from stays
+    /// visible — a `Debug` that redacted the whole row to be thorough would
+    /// be worse at the job it exists for.
+    #[test]
+    fn a_payment_intent_rows_debug_output_still_names_the_row() {
+        let formatted = format!("{:?}", row());
+
+        for expected in [
+            "pi_00000000000000000000000x",
+            "acme-cameroon-tenant",
+            "requires_payment_method",
+            "5000",
+            "XAF",
+            "mtn_momo",
+        ] {
+            assert!(
+                formatted.contains(expected),
+                "{expected:?} is missing from Debug output"
+            );
+        }
+    }
 }

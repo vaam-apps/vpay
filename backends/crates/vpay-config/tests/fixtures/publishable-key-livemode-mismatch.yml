@@ -1,0 +1,29 @@
+# Fixture for `a_publishable_key_whose_marker_contradicts_livemode_is_rejected`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# `livemode: false` with a `pk_live_` key: a well-shaped, unique key whose
+# only defect is that its label lies about the deployment serving it. Nothing
+# in vpay behaves differently because of the marker (ADR-0003 forbids an
+# environment branch) — the marker is a label a human reads, and its whole
+# value is that it is never wrong.
+#
+# The rail host below is the sandbox WireMock one, so the `livemode: false`
+# guard rules pass and this fixture fails on exactly one rule.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    publishable_keys: ["pk_live_wronglabelforasandbox"]

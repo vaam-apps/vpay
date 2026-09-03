@@ -93,9 +93,18 @@ async fn insert_payment_intent(
     amount_refund_pending: i64,
 ) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
     sqlx::query(
+        // `client_secret_suffix` is NOT NULL as of migration 0026 and has no
+        // default, deliberately (see that file): a writer that can omit it is
+        // a writer that can create an intent no browser can ever address. It
+        // is spelled here as a literal rather than through
+        // `vpay_core::ids::client_secret_suffix` because this suite's subject
+        // is what *the database* enforces — the constraint under test in each
+        // case below is a different one, and a generated value would make
+        // these inserts depend on a Rust function agreeing with a CHECK.
         "INSERT INTO payment_intents \
-            (id, merchant_id, livemode, amount, amount_refunded, amount_refund_pending, currency_code, status, payment_method_types) \
-         VALUES ($1, 'merchant_1', false, $2, $3, $4, 'XAF', 'requires_payment_method'::intent_status, '[]'::jsonb)",
+            (id, merchant_id, livemode, amount, amount_refunded, amount_refund_pending, currency_code, status, payment_method_types, client_secret_suffix) \
+         VALUES ($1, 'merchant_1', false, $2, $3, $4, 'XAF', 'requires_payment_method'::intent_status, '[]'::jsonb, \
+                 replace(gen_random_uuid()::text, '-', ''))",
     )
     .bind(id)
     .bind(amount)
@@ -139,8 +148,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 25,
-        "all twenty-five migrations under backends/migrations should be recorded as applied \
+        applied, 26,
+        "all twenty-six migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -150,8 +159,10 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          and Step 5's 0022 webhook_deliveries + the reopened jobs.kind_is_known, \
          0023 jobs.kind_is_known reopened again for scan_deliveries, \
          0024 events.fanout_attempts + the 'failed' fanout_state, \
-         and Step 5b's 0025 idempotency_keys.response_retry, the column that lets a \
-         replayed response re-emit the stripe-should-retry the original carried)"
+         Step 5b's 0025 idempotency_keys.response_retry, the column that lets a \
+         replayed response re-emit the stripe-should-retry the original carried, \
+         and Step 5c's 0026 payment_intents.client_secret_suffix, the payer credential \
+         /v1/browser authenticates with)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys

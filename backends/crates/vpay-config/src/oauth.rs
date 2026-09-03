@@ -326,6 +326,39 @@ pub struct MerchantClient {
     #[garde(skip)]
     #[serde(default)]
     pub webhooks: Vec<WebhookEndpoint>,
+    /// The `pk_test_…`/`pk_live_…` keys a payer's browser presents on
+    /// `/v1/browser` (Step 5c, `docs/plans/2026-09-03-step5c-stripejs.md`
+    /// D1), alongside the intent's own `client_secret`.
+    ///
+    /// **Not secret, and on the same footing as [`Self::jwks`]** — it is
+    /// rendered into a merchant's own public checkout page by construction,
+    /// so a literal here is correct and it prints in `Debug`. It authorises
+    /// nothing on its own: it names a *tenant*, and the credential that
+    /// authorises the request is the per-intent `client_secret`. A publishable
+    /// key with the wrong `client_secret` is the same uniform 404 as no key
+    /// at all (`vpay_api::browser::authenticate`).
+    ///
+    /// **An explicit list, never derived from [`Self::merchant_id`]** (D1).
+    /// Derivation would make a key unretirable — the tenant id cannot change
+    /// — and would let anyone who has ever seen an object's owner reconstruct
+    /// it. A list also matches what merchants already expect from Stripe: a
+    /// key can be rolled by adding the new one, deploying, then removing the
+    /// old.
+    ///
+    /// **An empty list is the fail-closed default and is what most
+    /// registrations should have.** A merchant with no `publishable_keys` has
+    /// no browser surface at all: every `/v1/browser` request naming a key
+    /// this deployment does not know is a 404, and that is the correct answer
+    /// for a merchant who never asked for one.
+    ///
+    /// Validated in `Config::validate_all`, not here, for
+    /// [`Self::webhooks`]'s reason — the rules (a shape, uniqueness across
+    /// *all* merchants, agreement with `deployment.livemode`) either name
+    /// which merchant is wrong or cannot be seen from one registration at
+    /// all.
+    #[garde(skip)]
+    #[serde(default)]
+    pub publishable_keys: Vec<String>,
 }
 
 /// Redacts [`MerchantClient::client_secret`] (which must always be `None` —
@@ -351,6 +384,11 @@ impl fmt::Debug for MerchantClient {
             // Its own `Debug` redacts the secrets and keeps the ids and URLs
             // — see [`WebhookEndpoint`]'s impl for why that split.
             .field("webhooks", &self.webhooks)
+            // Printed in full, deliberately: a publishable key is public by
+            // design (see the field), and "which keys did this deployment
+            // actually load?" is the first question asked when a merchant's
+            // checkout page answers 404 for every payer.
+            .field("publishable_keys", &self.publishable_keys)
             .finish()
     }
 }
@@ -470,6 +508,7 @@ mod tests {
                 url: "https://acme.example/hooks".to_owned(),
                 secrets: vec!["whsec_never_log_me".to_owned()],
             }],
+            publishable_keys: vec!["pk_test_visibleonpurpose01".to_owned()],
         };
 
         let formatted = format!("{client:?}");
@@ -490,6 +529,13 @@ mod tests {
         assert!(
             formatted.contains("https://acme.example/hooks"),
             "{formatted}"
+        );
+        // A publishable key is public by design and must stay legible: it is
+        // what an operator compares against the merchant's own checkout page
+        // when every payer is getting a 404.
+        assert!(
+            formatted.contains("pk_test_visibleonpurpose01"),
+            "Debug output must still show the (public) publishable key"
         );
     }
 

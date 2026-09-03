@@ -166,3 +166,48 @@ as a follow-up; `sdks/rust` remains the Rust path.
 the wrong claim is. A new ADR would be more visible in a list, and a reader
 of 0010 alone would still be told something false — which is the failure
 mode worth avoiding here.
+
+## Amendment, 2026-09-03 (Step 5c): a second, deliberately different credential model for `/v1/browser`
+
+**What this amendment does not change.** Every decision above still governs
+`/v1` — the merchant surface. No API key of any shape is accepted there;
+`client_credentials` + `private_key_jwt` remains the only grant; there is
+still no refresh token; `disabled_clients` is still the revocation seam. The
+status stays **Accepted**.
+
+**What is new.** `/v1/browser` — two routes, `GET
+/v1/browser/payment_intents/{id}` and `POST
+/v1/browser/payment_intents/{id}/confirm` — authenticates a **payer's
+browser**, which cannot hold a merchant credential of any kind and is not
+this ADR's caller. It uses neither an API key nor `private_key_jwt`: a
+**publishable key** (`pk_test_…`/`pk_live_…`,
+`vpay_config::MerchantClient::publishable_keys`, D1 of
+[`docs/plans/2026-09-03-step5c-stripejs.md`](../plans/2026-09-03-step5c-stripejs.md))
+names the tenant and authorises nothing on its own, and a per-PaymentIntent
+**`client_secret`** (160 bits from the OS CSPRNG, minted once at `create`)
+authorises exactly that one intent, once. Full design, the credential model,
+what proves it, and a real gap this step found and left unfixed (neither
+merchant SDK's `PaymentIntent` type exposes `client_secret`, even though
+`/v1`'s own `create`/`retrieve` now render one — see the next paragraph):
+[`docs/flows/browser-checkout.md`](../flows/browser-checkout.md).
+
+**A narrow retraction of the previous amendment's own list.** "Scope of the
+correction" above still lists `client_secret` among the divergences from
+Stripe that remain — that was accurate on 2026-09-02 and is no longer
+accurate for two of `/v1`'s own methods: `create` and `retrieve` now render
+`client_secret` (`vpay_api::model::PaymentIntentWithSecret`), because a
+merchant's page needs it to hand to the payer's browser. It remains genuinely
+absent from `confirm`, `cancel`, `list`, and every webhook body — see
+[`docs/flows/stripe-sdk-compat.md`](../flows/stripe-sdk-compat.md), corrected
+in the same commit as this amendment.
+
+**Why not a merchant credential of any kind, not even a scoped-down one.** A
+browser cannot keep a secret — anything sent to it is visible to the page's
+own JavaScript, an extension, or the network tab. Handing a browser even a
+narrowly-scoped OAuth token would mean vpay minting and then trusting a
+credential it knows will sit in a context it does not control. The
+publishable-key + `client_secret` pair sidesteps the problem instead of
+scoping around it: neither value is a bearer credential, so there is nothing
+to protect once it reaches the page — see "Every failure is the same 404" in
+`docs/flows/browser-checkout.md` for the confidentiality property this
+actually rests on.

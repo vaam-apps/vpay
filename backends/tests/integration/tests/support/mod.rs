@@ -159,7 +159,34 @@ pub(crate) fn merchant_client_with_scopes(
     jwks: Value,
     scopes: &[&str],
 ) -> MerchantClient {
-    merchant_client_with(client_id, merchant_id, jwks, scopes, Vec::new())
+    merchant_client_with(client_id, merchant_id, jwks, scopes, Vec::new(), Vec::new())
+}
+
+/// The same, with this merchant's `/v1/browser` publishable keys spelled out.
+///
+/// Its own helper rather than a sixth argument everywhere for
+/// [`merchant_client_with`]'s reason: exactly one suite
+/// (`tests/browser_checkout.rs`) registers a key, and the fail-closed empty
+/// list is what every other registration should carry — a default that a
+/// call site has to opt out of is the wrong way round for a credential
+/// namespace.
+pub(crate) fn merchant_client_with_publishable_keys(
+    client_id: &str,
+    merchant_id: &str,
+    jwks: Value,
+    publishable_keys: &[&str],
+) -> MerchantClient {
+    merchant_client_with(
+        client_id,
+        merchant_id,
+        jwks,
+        &[vpay_api::SCOPE_PAYMENTS_WRITE],
+        Vec::new(),
+        publishable_keys
+            .iter()
+            .map(|key| (*key).to_owned())
+            .collect(),
+    )
 }
 
 /// The same, with this merchant's webhook endpoints spelled out.
@@ -174,6 +201,7 @@ pub(crate) fn merchant_client_with(
     jwks: Value,
     scopes: &[&str],
     webhooks: Vec<WebhookEndpoint>,
+    publishable_keys: Vec<String>,
 ) -> MerchantClient {
     MerchantClient {
         client_id: client_id.to_owned(),
@@ -184,6 +212,7 @@ pub(crate) fn merchant_client_with(
         allowed_audiences: vec![MERCHANT_AUDIENCE.to_owned()],
         client_secret: None,
         webhooks,
+        publishable_keys,
     }
 }
 
@@ -381,6 +410,10 @@ pub(crate) async fn confirmed_intent(
             payment_method_types: json!([rail]),
             metadata: json!({}),
             description: None,
+            // The same generator `vpay_api`'s `create` uses, not a literal: a
+            // fixture with a hand-written suffix would be a fixture whose
+            // intents are addressable by a value no real intent ever carries.
+            client_secret_suffix: vpay_core::ids::client_secret_suffix(),
             // Supplied by the caller, as the real create path supplies it.
             // It is also the instant `keep_polling` measures the 24-hour
             // horizon from — the age of the payer's exposure, not of our
