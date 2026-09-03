@@ -2,16 +2,15 @@
 //!
 //! STATUS: `/healthz`, the `/v1/oauth` merchant OP ([`op`]), the
 //! authentication boundary in front of `/v1`, `/v1/payment_intents`
-//! ([`v1::payment_intents`]) and the Stripe-shaped 404 envelope are
-//! implemented. What is *not*: no rail adapter implements `submit`, so a
-//! `confirm` reaches the rail, records the attempt, and answers the
-//! documented `501 not_implemented` — a real answer, not a fabricated
-//! success. Every other `/v1` resource an SDK can name (`/v1/refunds`,
-//! `/v1/balance`, `/v1/events`) is routed nowhere and answers the honest
-//! 404 from the nest's fallback. See `docs/status.md`. This file must never
-//! grow a route that returns fabricated data; a real database check (below),
-//! a real 404 and a real 501 are the opposite of fabricated data, so they
-//! stay.
+//! ([`v1::payment_intents`]), `/v1/events` ([`v1::events`], read-only, since
+//! Step 5) and the Stripe-shaped 404 envelope are implemented. The two
+//! `/v1` resources an SDK can name and vpay does not serve — `/v1/refunds`
+//! and `/v1/balance` — are routed nowhere and answer the honest 404 from the
+//! nest's fallback. `GET /v1/events`'s documented `?type=` filter is
+//! deliberately not implemented and is ignored rather than refused; see that
+//! module. This file must never grow a route that returns fabricated data;
+//! a real database check (below) and a real 404 are the opposite of
+//! fabricated data, so they stay. See `docs/status.md`.
 //!
 //! [`resource_auth`] supplies the bearer-token validation now mounted in
 //! front of `/v1` — see [`router`]'s "Route tree" section for exactly which
@@ -81,7 +80,7 @@ pub use error::ApiError;
 pub use resource_auth::MerchantJwtValidator;
 pub use v1::{
     MerchantScope, ResourceConfig, SCOPE_PAYMENTS_READ, SCOPE_PAYMENTS_WRITE, V1_ROUTES, V1Route,
-    required_scopes,
+    WebhookEndpointConfig, required_scopes,
 };
 
 use resource_auth::extract_bearer_token;
@@ -576,8 +575,8 @@ const V1_BODY_LIMIT_BYTES: usize = 64 * 1024;
 ///
 /// The `/v1` nest mounts [`v1::V1_ROUTES`] and a 404 fallback for
 /// everything else, which is the production behaviour and not a
-/// placeholder: `/v1/payment_intents` is real, and `/v1/refunds`,
-/// `/v1/balance` and `/v1/events` are not implemented and are therefore not
+/// placeholder: `/v1/payment_intents` and `/v1/events` are real, and
+/// `/v1/refunds` and `/v1/balance` are not implemented and are therefore not
 /// routed (`docs/status.md`). The boundary is observable in three answers —
 ///
 /// - `GET /v1/payment_intents/pi_x` with no bearer token → **401**, the

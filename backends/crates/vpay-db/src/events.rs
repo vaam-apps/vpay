@@ -30,12 +30,29 @@
 //! claim — "a terminal transition leaves exactly one deliverable event" — is
 //! only checkable by reading the backlog the way the deliverer will. Nothing
 //! in a shipping binary calls it yet, and nothing marks an event `done`:
-//! that writer belongs to the step that can also deliver it.
+//! that writer belongs to the step that can also deliver it
+//! ([`crate::webhook_deliveries::mark_fanned_out_in_tx`], which commits it
+//! beside the delivery rows it creates).
+//!
+//! # The merchant's own read
+//!
+//! [`list_page`] and [`get_by_id`] are `GET /v1/events` and
+//! `GET /v1/events/{id}` — the documented fallback for a webhook a merchant
+//! missed. They are merchant-scoped in SQL and page exactly as
+//! [`crate::payment_intents::list_page`] does. **Neither route is mounted by
+//! this block**: the two handlers, and the `EventObject` renderer they and
+//! the deliverer must share, live in `vpay-api`. `docs/status.md` is the
+//! record of what is actually reachable over HTTP.
 
 use sqlx::{PgConnection, PgPool};
 use time::OffsetDateTime;
 
 use crate::error::{DbError, classify_write};
+// `GET /v1/events` pages exactly as `GET /v1/payment_intents` does, so it
+// takes that module's cursor type rather than declaring a second one — see
+// [`list_page`] for why a divergence here would be a merchant's bug, not a
+// cosmetic inconsistency.
+use crate::payment_intents::ListPage;
 
 /// The `evt_…` id minter, re-exported from `vpay_core::ids`.
 ///
@@ -78,8 +95,14 @@ pub struct EventRow {
     /// delivery that succeeds an hour later still describes the transition
     /// it is reporting rather than whatever is true by then.
     pub data: serde_json::Value,
-    /// `pending` until fan-out completes. Step 5 owns the writer that moves
-    /// it; nothing does today.
+    /// `pending` until fan-out completes, then `done` — or `failed` when the
+    /// drain has abandoned it (migration 0024; see [`record_fanout_failure`]).
+    /// `vpay_worker::webhooks` owns both writers.
+    ///
+    /// `fanout_attempts` is deliberately **not** on this struct: no reader of
+    /// an event branches on it, and the one writer that cares gets the new
+    /// value back from its own `RETURNING`. Selecting a column nothing uses
+    /// is how a row struct starts mirroring the table instead of its callers.
     pub fanout_state: String,
     /// When the event was emitted.
     pub created_at: OffsetDateTime,
@@ -154,6 +177,12 @@ pub async fn insert_in_tx(tx: &mut PgConnection, new: &NewEvent) -> Result<Event
 /// would deliver in merchant order rather than in the order things happened.
 /// `GET /v1/events` is a different query, and it will be merchant-scoped.
 ///
+/// `fanout_state = 'pending'` also excludes `'failed'` (migration 0024) —
+/// which is the whole point of that state existing. An event the drain has
+/// abandoned after [`record_fanout_failure`]'s ceiling would otherwise sit at
+/// the head of every page forever, holding one of the caller's `limit` slots
+/// and re-raising its alert on every pass.
+///
 /// # Errors
 ///
 /// Returns [`DbError::Query`] if the read fails.
@@ -168,6 +197,191 @@ pub async fn pending_page(pool: &PgPool, limit: i64) -> Result<Vec<EventRow>, Db
     sqlx::query_as::<_, EventRow>(&sql)
         .bind(limit)
         .fetch_all(pool)
+        .await
+        .map_err(DbError::Query)
+}
+
+/// What one recorded fan-out failure left behind: the new attempt count, and
+/// the state the event is now in.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct FanoutFailure {
+    /// `events.fanout_attempts` **after** the increment.
+    pub attempts: i32,
+    /// `events.fanout_state` after it: `pending` if attempts remain,
+    /// `failed` if this failure was the one that spent them.
+    ///
+    /// Carried as a `String` for the reason every other closed vocabulary in
+    /// this crate is: the vocabulary belongs above the persistence layer, and
+    /// the database (`fanout_state_is_known`) is what actually closes it.
+    pub state: String,
+}
+
+/// Counts one failed fan-out pass against an event, abandoning it once
+/// `max_attempts` of them have failed.
+///
+/// # Why this is a separate statement and not part of the caller's
+/// transaction
+///
+/// It is the *failure* of that transaction that it counts, and that
+/// transaction has rolled back. A counter incremented inside it would roll
+/// back with it, so the event would be retried forever at zero attempts,
+/// which is exactly the state this column exists to end. One statement on
+/// the pool is its own transaction, and it is the whole of the write: the
+/// increment and the terminal flip are one `UPDATE`, so two workers racing on
+/// the same event cannot both observe the transition (the `fanout_state =
+/// 'pending'` guard admits one of them) and the alert is therefore raised
+/// once.
+///
+/// `max_attempts` is the caller's — `vpay_worker::webhooks::FANOUT_MAX_ATTEMPTS`
+/// — rather than a constant here, so the ceiling lives with the handler that
+/// spends it and there is one spelling of it.
+///
+/// `Ok(None)` means the event was not `pending`: another drain fanned it out
+/// while this one was failing on it, or it has already been abandoned. There
+/// is nothing to count and — importantly — nothing to alert about.
+///
+/// # Errors
+///
+/// Returns [`DbError::Query`] if the write fails.
+pub async fn record_fanout_failure(
+    pool: &PgPool,
+    event_id: &str,
+    max_attempts: i32,
+) -> Result<Option<FanoutFailure>, DbError> {
+    sqlx::query_as::<_, FanoutFailure>(
+        "UPDATE events \
+         SET fanout_attempts = fanout_attempts + 1, \
+             fanout_state = CASE WHEN fanout_attempts + 1 >= $2 THEN 'failed' ELSE 'pending' END \
+         WHERE id = $1 AND fanout_state = 'pending' \
+         RETURNING fanout_attempts AS attempts, fanout_state AS state",
+    )
+    .bind(event_id)
+    .bind(max_attempts)
+    .fetch_optional(pool)
+    .await
+    .map_err(classify_write)
+}
+
+/// One merchant's page of events, newest first — `GET /v1/events`.
+///
+/// The cursor semantics are [`crate::payment_intents::list_page`]'s,
+/// deliberately to the letter, and [`ListPage`] is that module's type rather
+/// than a second copy of it: two list endpoints whose paging disagrees about
+/// what `starting_after` means, or about whether `has_more` looks forwards
+/// or backwards, is a difference a merchant discovers by writing a loop that
+/// silently skips objects. See that function's doc comment for the full
+/// argument — in particular why an unknown, deleted or *foreign* cursor id
+/// yields an empty page rather than falling back to the newest rows, and why
+/// both cursor subqueries are merchant-scoped.
+///
+/// `events_merchant_seq_idx` (migration 0018) is exactly this query's scope
+/// and order.
+///
+/// Merchant-scoped in SQL, unlike [`pending_page`]: that one is the worker's
+/// queue over every merchant's backlog, and this is an API surface where the
+/// scope is the authorisation. There is no unscoped variant, and no
+/// `merchant_id` defaulting — an event belongs to exactly one merchant, so a
+/// read that could omit the scope is a read that could leak one merchant's
+/// payment history to another.
+///
+/// # Errors
+///
+/// Returns [`DbError::Query`] if the read fails.
+pub async fn list_page(
+    pool: &PgPool,
+    merchant_id: &str,
+    page: &ListPage,
+) -> Result<(Vec<EventRow>, bool), DbError> {
+    // Postgres rejects a negative LIMIT outright, and a zero-row page is
+    // never what a caller means. `vpay-api` owns the real ceiling.
+    let limit = page.limit.max(1);
+    let backwards = page.ending_before.is_some();
+    let direction = if backwards { "ASC" } else { "DESC" };
+
+    let sql = format!(
+        "SELECT {COLUMNS} FROM events \
+         WHERE merchant_id = $1 \
+           AND ($2::TEXT IS NULL \
+                OR seq < (SELECT seq FROM events WHERE id = $2 AND merchant_id = $1)) \
+           AND ($3::TEXT IS NULL \
+                OR seq > (SELECT seq FROM events WHERE id = $3 AND merchant_id = $1)) \
+         ORDER BY seq {direction} \
+         LIMIT $4"
+    );
+
+    let mut rows = sqlx::query_as::<_, EventRow>(&sql)
+        .bind(merchant_id)
+        .bind(page.starting_after.as_deref())
+        .bind(page.ending_before.as_deref())
+        .bind(limit.saturating_add(1))
+        .fetch_all(pool)
+        .await
+        .map_err(DbError::Query)?;
+
+    let has_more = i64::try_from(rows.len()).unwrap_or(i64::MAX) > limit;
+    if has_more {
+        rows.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+    }
+    if backwards {
+        rows.reverse();
+    }
+
+    Ok((rows, has_more))
+}
+
+/// Reads one event by id, with **no merchant scope** — the webhook
+/// deliverer's read, and nothing else's.
+///
+/// # Why this exists beside [`get_by_id`], which is scoped
+///
+/// `vpay_worker::webhooks::handle_deliver` reaches an event from a
+/// `webhook_deliveries` row it got from a job it just claimed. It has no
+/// merchant to scope by: the merchant is a *property of the event*, and it is
+/// the value the deliverer needs in order to resolve the endpoint's secrets
+/// from configuration. Passing a merchant id in would mean inventing one, and
+/// the only place to invent it from is this row.
+///
+/// **Not reachable from any `/v1` handler, and it must stay that way.** The
+/// scope on [`get_by_id`] is the authorisation — an unscoped read on a
+/// merchant surface is one merchant's payment history served to another. The
+/// same distinction [`pending_page`] makes against [`list_page`]: a worker's
+/// queue is not an API surface.
+///
+/// # Errors
+///
+/// Returns [`DbError::Query`] if the read fails.
+pub async fn get_unscoped(pool: &PgPool, id: &str) -> Result<Option<EventRow>, DbError> {
+    let sql = format!("SELECT {COLUMNS} FROM events WHERE id = $1");
+
+    sqlx::query_as::<_, EventRow>(&sql)
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(DbError::Query)
+}
+
+/// Reads one event *for this merchant* — `GET /v1/events/{id}`.
+///
+/// `None` means "no such event for you", covering both a missing id and
+/// another merchant's id. The two are one answer for the same reason
+/// [`crate::payment_intents::get_for_merchant`] makes them one: a `404` that
+/// could be told apart from a `403` lets anyone enumerate which `evt_…` ids
+/// exist across the whole deployment.
+///
+/// # Errors
+///
+/// Returns [`DbError::Query`] if the read fails.
+pub async fn get_by_id(
+    pool: &PgPool,
+    merchant_id: &str,
+    id: &str,
+) -> Result<Option<EventRow>, DbError> {
+    let sql = format!("SELECT {COLUMNS} FROM events WHERE merchant_id = $1 AND id = $2");
+
+    sqlx::query_as::<_, EventRow>(&sql)
+        .bind(merchant_id)
+        .bind(id)
+        .fetch_optional(pool)
         .await
         .map_err(DbError::Query)
 }

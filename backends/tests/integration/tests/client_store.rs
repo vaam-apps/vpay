@@ -61,6 +61,10 @@ fn configured_merchant() -> MerchantClient {
         scopes: vec!["payments:write".to_owned()],
         allowed_audiences: vec![MERCHANT_AUDIENCE.to_owned()],
         client_secret: None,
+        // The client store answers authentication questions; a delivery
+        // destination is not one, and nothing in the conversion to
+        // `ClientRegistration` may ever read this.
+        webhooks: Vec::new(),
     }
 }
 

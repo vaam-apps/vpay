@@ -1,0 +1,28 @@
+# Fixture for `every_webhook_endpoint_rule_refuses_its_own_fixture`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# A scheme that parses cleanly and names no host. Checked before
+# `validate_host` so the refusal says what is actually wrong — there is
+# nowhere to POST to — instead of the `InsecureHost` the https-prefix rule
+# would answer with a line later.
+
+deployment:
+  name: vpay-prod
+  livemode: true
+  public_base_url: https://api.vpay.example
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    webhooks:
+      - id: primary
+        url: "file:///var/spool/webhooks"
+        secrets: ["${MERCHANT_WEBHOOK_SECRET}"]

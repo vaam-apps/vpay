@@ -1,0 +1,29 @@
+# Fixture for `a_livemode_webhook_endpoint_over_http_is_rejected`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# A signed event body carries a merchant's payment details and travels to
+# whatever this URL names. Over http it is readable by anything on the path,
+# and the signature proves only that vpay sent it — not that nobody else read
+# it. Reuses `validate_host`, the same rule a rail host and a dashboard
+# redirect URI already answer to.
+
+deployment:
+  name: vpay-prod
+  livemode: true
+  public_base_url: https://api.vpay.example
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    webhooks:
+      - id: primary
+        url: http://hooks.acme.example/vpay
+        secrets: ["${MERCHANT_WEBHOOK_SECRET}"]

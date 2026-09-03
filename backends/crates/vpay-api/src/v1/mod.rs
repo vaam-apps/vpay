@@ -32,6 +32,7 @@
 //! merchant's rows.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 use axum::Router;
 use axum::extract::FromRequestParts;
@@ -48,6 +49,15 @@ use crate::error::ApiError;
 /// rather than in either `main.rs` because both binaries need the identical
 /// answer; see the module's own doc comment.
 pub mod boot;
+pub mod events;
+/// Cursor paging, shared by [`events`] and [`payment_intents`].
+///
+/// `pub(crate)` unlike its two neighbours: every item in it is an
+/// implementation detail of a handler, and there is no `ListPage` a caller
+/// outside this crate could usefully build (the repositories take
+/// `vpay_db::ListPage` directly). Keeping it crate-private is also what lets
+/// its module docs link to the private functions they are about.
+pub(crate) mod paging;
 pub mod payment_intents;
 
 /// The scope a token must carry to *change* anything under `/v1`.
@@ -120,10 +130,18 @@ pub struct V1Route {
 
 /// Every route mounted under `/v1`, and the only place they are listed.
 ///
-/// Deliberately **not** including `/v1/balance` or `/v1/events`: both SDKs
-/// can call them and vpay implements neither, so they answer the honest 404
-/// from the nest's fallback rather than a route that would have to invent a
-/// body. See `docs/status.md`.
+/// Deliberately **not** including `/v1/balance`: an SDK can call it and vpay
+/// has no ledger read path, so it answers the honest 404 from the nest's
+/// fallback rather than a route that would have to invent a body. See
+/// `docs/status.md`.
+///
+/// `/v1/events` **was** on that list until 2026-09-03 and is now served
+/// (Step 5): the same renderer the webhook deliverer signs is what it
+/// returns, because a merchant who missed a webhook is told to re-read the
+/// event here, and two renderers would let the fallback answer a different
+/// question from the one the webhook asked. `?type=` is documented in
+/// `docs/api/README.md` and deliberately **not** implemented — see
+/// [`events`]'s module docs.
 pub const V1_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/payment_intents",
@@ -144,6 +162,16 @@ pub const V1_ROUTES: &[V1Route] = &[
         path: "/payment_intents/{id}/cancel",
         methods: &["POST"],
         mount: || post(payment_intents::cancel),
+    },
+    V1Route {
+        path: "/events",
+        methods: &["GET"],
+        mount: || get(events::list),
+    },
+    V1Route {
+        path: "/events/{id}",
+        methods: &["GET"],
+        mount: || get(events::retrieve),
     },
 ];
 
@@ -285,6 +313,76 @@ impl RailConfig {
     }
 }
 
+/// One merchant webhook endpoint, projected out of
+/// `vpay_config::oauth::WebhookEndpoint` at boot.
+///
+/// # Why this type exists at all, rather than re-exporting the config type
+///
+/// [`ResourceConfig`] is a *projection*: what is in it is exactly what a
+/// request path — and, since Step 5, the worker's binary — is allowed to
+/// depend on. Carrying the YAML type would carry whatever else that type
+/// grows next, and the whole point of the projection is that a handler which
+/// could see `merchant_clients` could see a JWK set.
+///
+/// # Why the worker does not get `vpay_worker::webhooks::Endpoint` from here
+///
+/// It cannot: `vpay-worker` depends on `vpay-api` (it renders the delivered
+/// body through [`crate::model::EventObject`]), so an edge back would be a
+/// cycle. The worker **binary** — which links both — converts these into
+/// `vpay_worker::webhooks::Endpoint` and calls `EndpointRegistry::from_pairs`
+/// on the result of [`ResourceConfig::webhook_endpoints`]. That is the one
+/// place the two shapes meet, and it is a binary, where linking everything is
+/// the job.
+#[derive(Clone, PartialEq, Eq)]
+pub struct WebhookEndpointConfig {
+    id: String,
+    url: String,
+    secrets: Vec<String>,
+}
+
+/// Redacts [`WebhookEndpointConfig::secrets`] down to a count.
+///
+/// [`ResourceConfig`] derives `Debug` and lives in the server's `AppState`
+/// for the whole life of the process, so anything it holds is one `{:?}`
+/// away from a log. A webhook secret in a log is a forged webhook: whoever
+/// holds it can sign a `payment_intent.succeeded` the merchant's handler
+/// will believe. Mirrors `vpay_config::oauth::WebhookEndpoint`'s own impl —
+/// see that one for why the count, the id and the URL stay visible.
+impl fmt::Debug for WebhookEndpointConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebhookEndpointConfig")
+            .field("id", &self.id)
+            .field("url", &self.url)
+            .field(
+                "secrets",
+                &format_args!("[{} redacted]", self.secrets.len()),
+            )
+            .finish()
+    }
+}
+
+impl WebhookEndpointConfig {
+    /// The operator-authored id, stored verbatim on every
+    /// `webhook_deliveries` row (migration 0022).
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Where the signed event body is POSTed. Validated at **boot** by
+    /// `vpay_config`'s `validate_host`, never at delivery time.
+    #[must_use]
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// The signing secrets, in configuration order — one `v1=` each.
+    #[must_use]
+    pub fn secrets(&self) -> &[String] {
+        &self.secrets
+    }
+}
+
 /// The parts of the validated YAML configuration a `/v1` request needs.
 ///
 /// Built once at boot from a [`Config`] and shared by `Arc`. It is a
@@ -299,6 +397,16 @@ pub struct ResourceConfig {
     merchant_id_by_client_id: BTreeMap<String, String>,
     currency_codes: BTreeSet<String>,
     rails: BTreeMap<String, RailConfig>,
+    /// Keyed on `events.merchant_id`, **not** on `client_id` like
+    /// [`Self::merchant_id_by_client_id`]: the fan-out key is the event's
+    /// merchant, one merchant may hold several credentials, and a map keyed
+    /// the other way would fan out to the endpoints of whichever client
+    /// happened to be looked up (`docs/plans/2026-09-03-step5-webhooks.md`,
+    /// S5). Two clients naming one tenant is refused at boot today
+    /// (`ConfigError::DuplicateMerchantId`), so the merge below cannot
+    /// currently lose an endpoint — it is written to merge anyway, because
+    /// the day that rule is relaxed the failure would be silent.
+    endpoints_by_merchant_id: BTreeMap<String, Vec<WebhookEndpointConfig>>,
 }
 
 impl ResourceConfig {
@@ -346,11 +454,30 @@ impl ResourceConfig {
             })
             .collect::<Result<BTreeMap<_, _>, vpay_config::ConfigError>>()?;
 
+        let mut endpoints_by_merchant_id: BTreeMap<String, Vec<WebhookEndpointConfig>> =
+            BTreeMap::new();
+        for client in &config.merchant_clients {
+            endpoints_by_merchant_id
+                .entry(client.merchant_id.clone())
+                .or_default()
+                .extend(
+                    client
+                        .webhooks
+                        .iter()
+                        .map(|endpoint| WebhookEndpointConfig {
+                            id: endpoint.id.clone(),
+                            url: endpoint.url.clone(),
+                            secrets: endpoint.secrets.clone(),
+                        }),
+                );
+        }
+
         Ok(Self {
             livemode: config.deployment.livemode,
             merchant_id_by_client_id,
             currency_codes,
             rails,
+            endpoints_by_merchant_id,
         })
     }
 
@@ -396,6 +523,34 @@ impl ResourceConfig {
     #[must_use]
     pub fn enabled_rail(&self, code: &str) -> Option<&RailConfig> {
         self.rails.get(code).filter(|rail| rail.enabled)
+    }
+
+    /// This merchant's webhook endpoints, or an empty slice.
+    ///
+    /// An empty slice is a *complete* answer and not a missing entry: a
+    /// merchant who has configured none still has their events fanned out
+    /// (to nothing) and marked `done`, because the alternative is a backlog
+    /// index that grows forever (`vpay_worker::webhooks::handle_fan_out`).
+    #[must_use]
+    pub fn endpoints_for(&self, merchant_id: &str) -> &[WebhookEndpointConfig] {
+        self.endpoints_by_merchant_id
+            .get(merchant_id)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Every merchant's endpoints, as `(merchant_id, endpoints)` pairs —
+    /// what the **worker binary** feeds `EndpointRegistry::from_pairs`.
+    ///
+    /// Pairs rather than the map itself because that is the shape
+    /// `vpay_worker::webhooks::EndpointRegistry::from_pairs` takes, and
+    /// because it is the shape that stays correct if a merchant ever ends up
+    /// described by two entries. This crate cannot build the registry itself
+    /// — see [`WebhookEndpointConfig`] for the dependency direction that
+    /// forbids it.
+    pub fn webhook_endpoints(&self) -> impl Iterator<Item = (&str, &[WebhookEndpointConfig])> + '_ {
+        self.endpoints_by_merchant_id
+            .iter()
+            .map(|(merchant_id, endpoints)| (merchant_id.as_str(), endpoints.as_slice()))
     }
 }
 
@@ -543,6 +698,83 @@ mod tests {
                 .map(String::as_str),
             Some("secret")
         );
+    }
+
+    /// The endpoint table is keyed on the **tenant**, not the credential.
+    ///
+    /// This is `docs/plans/2026-09-03-step5-webhooks.md`'s S5 in one
+    /// assertion: `events.merchant_id` is the fan-out key, and a table keyed
+    /// on `client_id` — which is what the projection beside it uses — would
+    /// look up the endpoints of whichever credential happened to be asked
+    /// about. The fixture's client id and merchant id deliberately differ,
+    /// so a projection that confused the two fails here rather than
+    /// delivering a merchant's events to nobody.
+    #[test]
+    fn webhook_endpoints_are_keyed_on_the_tenant_and_not_on_the_credential() {
+        let mut config = config();
+        let client = config
+            .merchant_clients
+            .first_mut()
+            .expect("the fixture registers one merchant");
+        client.webhooks = vec![vpay_config::WebhookEndpoint {
+            id: "primary".to_owned(),
+            url: "https://hooks.acme.example/vpay".to_owned(),
+            secrets: vec!["whsec-never-log-me".to_owned()],
+        }];
+
+        let resource_config = ResourceConfig::from_config(&config)
+            .expect("the fixture's rails project onto the port");
+
+        let endpoints = resource_config.endpoints_for("acme-cameroon-tenant");
+        assert_eq!(endpoints.len(), 1, "the tenant has one endpoint");
+        let endpoint = endpoints.first().expect("one endpoint");
+        assert_eq!(endpoint.id(), "primary");
+        assert_eq!(endpoint.url(), "https://hooks.acme.example/vpay");
+        assert_eq!(endpoint.secrets(), ["whsec-never-log-me".to_owned()]);
+
+        // The credential's own id is not a tenant and resolves to nothing.
+        assert!(resource_config.endpoints_for("acme-cameroon").is_empty());
+        // A merchant nobody registered gets an empty slice, not a panic and
+        // not a `None` a caller could mistake for "not configured yet".
+        assert!(resource_config.endpoints_for("someone-else").is_empty());
+
+        // The pairs the worker binary feeds `EndpointRegistry::from_pairs`.
+        let pairs: Vec<&str> = resource_config
+            .webhook_endpoints()
+            .map(|(merchant_id, _)| merchant_id)
+            .collect();
+        assert_eq!(pairs, ["acme-cameroon-tenant"]);
+    }
+
+    /// `ResourceConfig` lives in the server's `AppState` for the life of the
+    /// process, so anything it holds is one `{:?}` away from a log — and a
+    /// webhook secret in a log is a forged webhook.
+    ///
+    /// The endpoint id and URL stay visible on purpose: they are already in
+    /// the delivery rows and in the merchant's own configuration, and an
+    /// operator asking "why did this merchant get no webhook?" needs to see
+    /// what was actually loaded.
+    #[test]
+    fn a_resource_configs_debug_output_never_contains_a_webhook_secret() {
+        let mut config = config();
+        config
+            .merchant_clients
+            .first_mut()
+            .expect("the fixture registers one merchant")
+            .webhooks = vec![vpay_config::WebhookEndpoint {
+            id: "primary".to_owned(),
+            url: "https://hooks.acme.example/vpay".to_owned(),
+            secrets: vec!["whsec-never-log-me".to_owned()],
+        }];
+
+        let formatted = format!(
+            "{:?}",
+            ResourceConfig::from_config(&config).expect("the fixture projects onto the port")
+        );
+
+        assert!(!formatted.contains("whsec-never-log-me"), "{formatted}");
+        assert!(formatted.contains("[1 redacted]"), "{formatted}");
+        assert!(formatted.contains("hooks.acme.example"), "{formatted}");
     }
 
     #[test]

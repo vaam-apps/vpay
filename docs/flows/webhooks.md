@@ -37,40 +37,281 @@ transaction depend on reading the endpoint table. Fan-out without a
 `fanout_state` column would leave no way to *find* events never fanned out.
 Either mistake produces a succeeded payment with no webhook.
 
-Delivery is at-least-once; merchants must dedupe by `event.id`.
+That ladder is **8 POSTs over about 31 hours** — the first attempt plus seven
+retries, 112,360 seconds of waiting in total — and then the delivery is
+`exhausted`. Every non-2xx walks the whole of it, `4xx` included: a receiver
+answering `410 Gone` is retried for 31 hours exactly as a `500` is. That is
+Stripe's behaviour too, and it is deliberate — a `404` from a receiver that is
+mid-deploy is indistinguishable from one that means "stop", and stopping early
+on the wrong one loses the event.
+
+**Delivery is at-least-once, and its order is not guaranteed.** Merchants must
+dedupe by `event.id`, and must **not** assume that two events for one merchant
+arrive in the order they happened. The fan-out preserves `seq` order when it
+*creates* the jobs, and nothing preserves it afterwards: N claim tasks take N
+different jobs concurrently (`FOR UPDATE SKIP LOCKED`), and one delivery that
+fails drops to the next rung of the ladder while later ones go out immediately.
+A receiver that decides state from arrival order will settle a payment from a
+stale event. `event.created` and the object's own `status` are what to reason
+from.
 
 ## Status
 
-**TX 1 is real. Everything after it is not. Updated 2026-09-03 (Step 4).**
+**Both transactions are real, and a signed webhook has been delivered to a
+WireMock receiver and verified with both shipping SDKs. No merchant endpoint
+has ever been POSTed to.** Updated 2026-09-03 (Step 5). The receiver is a host
+in configuration, reached over HTTP exactly as a merchant's endpoint would be
+(ADR-0006) — which is the same limit the rails carry, and the reason
+[../status.md](../status.md)'s Webhooks row is 🟡.
 
-**What is built.** The worker writes the `events` row *inside* the business
-transaction, exactly as the sketch above requires: `vpay_db::settlement::`
-`apply_succeeded`/`apply_failed` move the charge, move the intent and insert one
-event in a single transaction, with `fanout_state = 'pending'`. Two types only,
-both from this document's list — `payment_intent.succeeded` and
+**TX 1 — the business transaction.** `vpay_db::settlement::apply_succeeded` /
+`apply_failed` move the charge, move the intent and insert one `events` row in
+a single transaction, with `fanout_state = 'pending'`. Two types only, both
+from this document's list — `payment_intent.succeeded` and
 `payment_intent.payment_failed` — and the CHECK `type_is_a_documented_event`
-(migration `0018`) refuses anything else at the database. `data` is the
-`payment_intent` **wire object**, rendered through the same
-`vpay_api::model::PaymentIntentObject` that `GET /v1/payment_intents/{id}`
-returns, so the body a merchant will eventually receive cannot disagree with the
-API's own about a field. `worker_e2e.rs` asserts the row: exactly one event for
-the settled intent, its type, its `fanout_state`, and the contents of its
-`data`.
+(migration `0018`) refuses anything else at the database.
 
-**What is not built — all of TX 2 and everything downstream.** No fan-out loop:
-the backlog query `vpay_db::events::pending_page` exists and is tested, and **no
-shipping code calls it**, so every event ever written is still `pending`. No
-endpoint registry, no `webhook_deliveries` table, no
-signing, no `Vpay-Signature` header, no retry schedule, no
-`GET /v1/events` route. `deliver_webhook` is deliberately **absent** from
-migration `0021`'s `kind_is_known` CHECK, so this build cannot enqueue a
-delivery by accident and then silently never run it; Step 5 adds the kind in
-its own migration. **No merchant has ever received a webhook from this code.**
+**TX 2 — the fan-out.** `vpay_worker::webhooks::handle_fan_out` is the
+`fan_out_events` job: a singleton (`fanout:events`) seeded beside
+`sweep:expired`, `scan:live` and `scan:deliveries` by
+`vpay_worker::run_loop::seed_singletons`,
+rescheduled every 5 s, or immediately when its page came back full. It reads
+`vpay_db::events::pending_page`, and per event, in **one transaction**, inserts
+a `webhook_deliveries` row per configured endpoint, enqueues one
+`deliver_webhook` job per row and flips `fanout_state` to `done`. Crash
+idempotency is the unique index `webhook_deliveries_event_endpoint` plus
+`jobs_dedupe_key`, absorbing the replay a crash produces
+(`fan_out_creates_one_delivery_and_one_job_per_endpoint_and_is_idempotent`). A
+merchant with **zero** endpoints still flips to `done`, or the partial index
+`events_pending_idx` grows without bound
+(`an_event_for_a_merchant_with_no_endpoints_is_still_fanned_out`). **One bad
+event does not stop the page:** a failure on a single event is logged at `WARN`
+— naming the event, its merchant, its type, its attempt count and no secret —
+and the pass moves on; the page ends with a `WARN` summarising how many drained
+and how many failed. The failing event keeps `fanout_state = 'pending'`, so the
+next pass retries it, and a pass that drained *nothing* waits the idle interval
+rather than rescheduling immediately — otherwise a page of failures would spin.
+Aborting the whole page instead — what an earlier shape did — let one merchant's
+unfannable event hold up every other merchant's webhooks behind it
+(`one_merchants_unfannable_event_does_not_block_another_merchants`). And
+`worker_e2e.rs`'s `wait_for_fanout` proves the loop that settles a charge is
+the loop that drains it.
 
-The three event types this document lists that nothing writes at all —
-`payment_intent.created`, `payment_intent.processing`,
-`payment_intent.canceled` — plus the two refund types, are unchanged: Step 4
-writes events for terminal transitions only (decision 4 of
-`docs/plans/2026-09-03-step4-worker.md`).
+**An event that can never be fanned out is abandoned after five passes, and
+alerts once.** Isolating the failure is not enough on its own: `pending_page`
+orders by `seq`, so a permanently unfannable event heads *every* subsequent
+page — re-alerting every five seconds and holding one of the page's hundred
+slots forever, and a hundred of them stop the drain for everyone. So each
+failure increments `events.fanout_attempts` (migration `0024`, in its own
+statement — the event's own transaction has rolled back), and the fifth
+(`vpay_worker::FANOUT_MAX_ATTEMPTS`) sets `fanout_state = 'failed'`. `failed`
+is not `pending`: the event leaves `events_pending_idx`, leaves
+`pending_page`, and stops being retried. Exactly **one**
+`ERROR … alert = true` is emitted, at the transition — so a page of 99
+poisoned events costs 99 alerts in total rather than 99 every pass
+(`a_permanently_unfannable_event_is_abandoned_after_five_passes_and_alerts_once`).
+The cost is the honest one: a `failed` event is a webhook the merchant will
+never receive, and **nothing resurrects it** — re-arming one is a deliberate
+`UPDATE` after the cause is fixed
+([../runbooks/webhook-delivery-failures.md](../runbooks/webhook-delivery-failures.md)).
+
+**Delivery.** `handle_deliver` renders the event through
+`vpay_api::model::EventObject` — the *same* renderer `GET /v1/events` returns,
+so the delivered body and the API's answer cannot disagree — signs those exact
+bytes and POSTs them with `Content-Type`, `Vpay-Signature`, `Stripe-Signature`
+and `Vpay-Event-Id`. **`Stripe-Signature` carries the same string as
+`Vpay-Signature`, byte for byte, in Stripe's documented `t=…,v1=…` grammar** —
+an integration test asserts both, that the two headers are equal and that the
+value parses as that grammar. What is **not** done in this step is verifying it
+with the real `stripe` package: that is Step 5b, and until then "a Stripe-shaped
+handler works unmodified" is an argument from the scheme being identical, not an
+observation. The body is not stored; `payload_sha256` is written on the
+first attempt and compared on every later one, and a mismatch is
+`JobError::Poisoned`. Non-2xx and transport failures walk
+`vpay_worker::delivery_delay` — the seven rungs above, rung by rung — and the
+eighth failure is `state = 'exhausted'` with an `alert = true` log line, never
+another rung (`the_ladder_walks_delivery_delay_and_then_succeeds`,
+`a_delivery_past_the_last_rung_is_exhausted_and_not_rescheduled`).
+
+**Acknowledge first, then work.** The delivery client is
+`vpay_provider::http::client_with_timeouts(5s, 10s)` — 5 seconds to connect,
+**10 seconds for the whole request**, redirects refused and the proxy
+environment ignored — and it reads at most 8 KiB of the acknowledgement body,
+which nothing parses. A receiver that finishes its own processing before
+answering turns a slow database into a failed delivery. Any `2xx` is success;
+a `3xx` arrives as an ordinary non-2xx failed attempt, because following it
+would replay a signed event body at a host the operator never configured.
+
+**Signing, proven against the SDKs a merchant installs.** The header is fed
+straight to `vpay_sdk::webhooks::verify_at`
+(`the_delivered_signature_verifies_with_the_shipping_rust_sdk`, which also flips
+one byte of the recorded body and requires `SignatureMismatch`) and to the
+built `@vpay/sdk` in a `node` subprocess
+(`the_delivered_signature_verifies_with_the_shipping_node_sdk` — it **fails**
+rather than skips when `node` is missing; CI sets `VPAY_REQUIRE_NODE=1`). Two
+configured secrets produce exactly two `v1=` values and either one verifies
+(`a_rotation_signs_with_both_secrets_and_either_one_verifies`).
+
+**Endpoints are configuration, never a resource.** `merchant_clients[].webhooks[]`
+in YAML (ADR-0003), keyed for fan-out on `merchant_id` and not on `client_id`;
+each carries an operator-authored `id`, unique within a merchant and refused at
+boot, stored verbatim on every delivery row so a URL correction does not orphan
+the history. Secrets are covered by **two** livemode rules, and they are a
+pair: the literal-secret rule reads the file's *text* and says the value came
+from the environment, and a 32-byte floor reads the *resolved* value and says
+the environment holds something worth having — an HMAC-SHA256 key shorter than
+the hash's own output adds nothing over a 32-byte one and is what makes offline
+guessing cheap (`ConfigError::WeakWebhookSecret`,
+`a_livemode_webhook_secret_below_the_floor_is_refused`). Only the resolved value
+can answer the second, because `${MERCHANT_WEBHOOK_SECRET}` is a placeholder of
+fixed length whatever it holds. In sandbox neither applies and the rule is only
+"not blank". There is no `/v1/webhook_endpoints` and no `webhook_endpoints`
+table.
+
+**What boot-time URL validation actually checks — and what it does not.** Every
+endpoint URL is parsed once and then goes through
+`vpay_config::validate_webhook_url`, plus shape checks. The
+`id` is 1–64 characters and the `url` 1–2048, **in both modes**, counted in
+characters exactly as migration `0022`'s `endpoint_id_length` and `url_length`
+CHECKs count them — so a document the database would refuse is refused at boot
+instead, and the constants are pinned against the migration by
+`the_length_bounds_are_migration_0022s`. The URL must also parse, must not
+carry embedded credentials (`https://user:pw@…`) and **must name a host — in
+both modes**, so a `file:///var/spool/…` or a `mailto:ops@example` is refused
+at the boot that introduced it rather than discovered as a delivery walking the
+ladder to `exhausted` in a sandbox. `validate_webhook_url` itself is **two
+rules and only two**, both livemode-only: the scheme must be `https`
+(compared as a scheme, so `HTTPS://Hooks.Example/x` is fine), and the **host**
+must not contain any of four substrings — `wiremock`, `stub`, `mock`,
+`localhost`. The host and nothing else: `https://hooks.example/mockups` is a
+merchant's own path and is accepted, `https://mock.example/x` is not
+(`a_livemode_endpoint_may_be_uppercase_and_may_have_a_stub_word_in_its_path`,
+and the refusal table beside it). It is a sibling of the rails'
+`validate_host` rather than the same function, because that one's substring
+tests are right for a bare origin and wrong for a URL. **Neither ever inspects
+the destination address.** Under `livemode: false` neither rule applies.
+
+So `https://127.0.0.1/hook`, `https://10.0.0.5/hook` and
+`https://169.254.169.254/latest/meta-data/…` all boot cleanly in livemode and
+are all delivered to. **This is not SSRF protection and must not be described as
+any.** It is a guard against shipping a stub host into production, which is a
+different problem. The residual is stated in "What is not built" below and in
+[../status.md](../status.md)'s own row for it.
+
+**`GET /v1/events` and `GET /v1/events/{id}`** are mounted, merchant-scoped and
+cursor-paged, for the merchant who missed a delivery
+(`events_are_listed_newest_first_scoped_to_the_merchant`,
+`reading_events_requires_a_scope`). The filter is **`merchant_id` only** —
+`livemode` is not part of the query. One deployment is one `livemode` today
+(it is a deployment setting, not a per-request one), so there is nothing to
+separate; a deployment that ever served both would leak test events into a live
+listing, and this is the sentence that says so before it happens.
+
+**A lost job is recovered; an exhausted delivery is not.** The `scan:deliveries`
+singleton (`JobKind::ScanDeliveries`, migration `0023`) walks
+`vpay_db::webhook_deliveries::pending_due` every **10 minutes**, up to **500
+rows** a pass — the same interval and batch `scan:live` uses for charges — and
+re-enqueues a `deliver_webhook` job for each row it finds. Two arms, and the
+second is the one that took thought: a `pending` delivery whose
+`next_attempt_at` has passed, **or** one that has never been attempted
+(`next_attempt_at IS NULL`) and whose `created_at` is older than
+`RecoveryPolicy::lease`. The lease is what keeps the second arm from racing the
+queue on every freshly created delivery — the fan-out writes the row and its job
+in one transaction, so a row younger than a lease is simply one whose job has
+not been claimed yet. So a delivery whose job was **deleted**, or lost to a
+`jobs` truncation, is picked up again without anyone noticing
+(`the_backstop_re_enqueues_a_delivery_whose_job_vanished`,
+`pending_due_returns_the_deliveries_nothing_is_driving`).
+
+**It does not recover a delivery whose job was *dead-lettered*, and that is
+deliberate.** `vpay_db::jobs::dead_letter` parks the job at
+`run_at = 'infinity'` and keeps its `dedupe_key`, so the scan's
+`ON CONFLICT (dedupe_key) DO NOTHING` insert is a no-op for exactly those
+rows: the delivery stays `pending` and no attempt is ever made. A
+`deliver_webhook` job is parked only for a `Poisoned` reason — an event that
+will not render, a body whose digest no longer matches what was signed — and
+retrying fixes none of them, so a scan that un-parked it would re-run the same
+failure every ten minutes forever. What the scan does instead is emit one
+`WARN` per pass naming those deliveries, so the state has an observer; the
+un-park is a manual `UPDATE` in
+[../runbooks/webhook-delivery-failures.md](../runbooks/webhook-delivery-failures.md)
+(`a_dead_lettered_delivery_job_is_not_resurrected_by_the_scan`). A pass that
+*fails* logs `ERROR … alert = true` before rescheduling on the backoff — a
+backstop nobody notices has stopped is a backstop that is not there.
+
+It also does **not** touch an `exhausted` row — that state is not `pending` —
+which is why replaying one is still manual.
+
+**Replaying an exhausted delivery is two writes, by hand.** There is no replay
+endpoint and no CLI. An operator flips the row back to `pending` and re-enqueues
+the job that drives it, in one transaction — the row alone would wait up to ten
+minutes for the next `scan:deliveries` pass, and the job alone is refused by
+`record_*`'s `state = 'pending'` guard:
+
+```sql
+BEGIN;
+UPDATE webhook_deliveries
+SET state = 'pending', attempt = 0, next_attempt_at = now()
+WHERE id = '<delivery uuid>' AND state = 'exhausted';
+
+INSERT INTO jobs (kind, dedupe_key, payload, run_at)
+VALUES ('deliver_webhook', 'webhook:' || '<delivery uuid>',
+        jsonb_build_object('delivery_id', '<delivery uuid>'), now())
+ON CONFLICT (dedupe_key) DO NOTHING;
+COMMIT;
+```
+
+Both statements were run against a `postgres:16-alpine` with every migration
+through `0022` applied, and run twice: the `state = 'exhausted'` guard and the unique
+`jobs_dedupe_key` make the second run `UPDATE 0` / `INSERT 0`. `attempt = 0`
+restores the whole ladder; leaving `attempt` alone grants exactly one further
+attempt, because `delivery_delay(8)` is `None`. `payload_sha256` is left in
+place on purpose — it is the digest of the bytes the first signed attempt
+signed, and clearing
+it would silence the check that catches a renderer changing under a live
+delivery. The full procedure, the diagnosis queries and what *not* to do are in
+[../runbooks/webhook-delivery-failures.md](../runbooks/webhook-delivery-failures.md).
+**The transaction is proven to run and to leave the right rows; no replayed
+delivery has been observed reaching a receiver.**
+
+**What is not built.**
+
+- **No SSRF protection of any kind.** `validate_webhook_url` checks the scheme
+  and four host substrings and never looks at the destination address, so
+  `https://127.0.0.1/…`, `https://10.0.0.5/…` and
+  `https://169.254.169.254/latest/meta-data/…` are all valid livemode endpoints
+  and all delivered to, with the answer's first 512 characters stored in
+  `webhook_deliveries.response_excerpt`. A resolve-then-connect check is TOCTOU
+  without a custom reqwest connector, so the honest options were "nothing" or
+  "a connector", and the connector is out of scope (decision 4 of the Step 5
+  plan). Stated here rather than implied.
+- **No `?type=` filter** on `GET /v1/events`. Unknown query parameters are
+  ignored by every handler on this surface, so it is accepted and has no
+  effect; [../api/README.md](../api/README.md) says so where the route is
+  documented.
+- **No replay endpoint and no CLI.** `scan:deliveries` recovers a *deleted or
+  lost* job; it resurrects neither an `exhausted` delivery nor one whose job
+  was dead-lettered (its `dedupe_key` is still held by the parked row), and
+  nothing re-arms a `failed` event. All three are the manual `UPDATE`s in
+  [../runbooks/webhook-delivery-failures.md](../runbooks/webhook-delivery-failures.md),
+  and all three need a `psql` prompt.
+- **No ordering guarantee**, and nothing that could provide one. See above.
+- **vpay never tells the merchant a delivery failed.** There is no
+  `webhook.failed` event, no email and no dashboard view; `exhausted` is a log
+  line with `alert = true` and a row, and so is a `failed` fan-out.
+  `GET /v1/events` is the merchant's own fallback, and they have to poll it —
+  and an event abandoned at `fanout_state = 'failed'` is one they can still
+  read there, which is the only reason abandoning it is defensible at all.
+- **No deployment has ever produced a `failed` event or a parked delivery
+  job.** Both states are proven by integration tests against a real Postgres
+  (`a_permanently_unfannable_event_is_abandoned_after_five_passes_and_alerts_once`,
+  `a_dead_lettered_delivery_job_is_not_resurrected_by_the_scan`); the runbook
+  procedures for re-arming them have not been followed against a running
+  system.
+- The three event types this document lists that nothing writes at all —
+  `payment_intent.created`, `payment_intent.processing`,
+  `payment_intent.canceled` — plus the two refund types, are unchanged: events
+  are written for terminal transitions only (decision 4 of
+  `docs/plans/2026-09-03-step4-worker.md`).
 
 See [../status.md](../status.md).

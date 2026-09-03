@@ -56,7 +56,7 @@ use uuid::Uuid;
 use vpay_core::state::{IntentStatus, Transition, next_status};
 use vpay_core::{Currency, Money, ProviderFlow, ids};
 use vpay_db::{
-    ChargeRow, IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome, ListPage, NewCharge,
+    ChargeRow, IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome, NewCharge,
     NewPaymentIntent, PgPool, charges, idempotency, payment_intents, provider_requests,
 };
 use vpay_provider::{ChargeRef, ProviderAdapter, ProviderError, Submitted};
@@ -65,6 +65,7 @@ use crate::error::ApiError;
 use crate::form::{VpayForm, VpayQuery};
 use crate::idempotency::{IdempotencyKey, request_hash};
 use crate::model::{ListObject, NextAction, PaymentIntentObject, RedirectToUrl};
+use crate::v1::paging::{self, CursorKind};
 use crate::v1::{MerchantScope, RailConfig, ResourceConfig};
 
 /// The object type this module speaks about, in the API's own vocabulary.
@@ -96,9 +97,16 @@ const DESCRIPTION_MAX_CHARS: usize = 1000;
 /// column's full range for amounts no rail would accept anyway.
 const MAX_AMOUNT: i64 = (1_i64 << 53) - 1;
 
-/// Page size when a caller names none, and the ceiling it is capped to.
-const DEFAULT_LIMIT: i64 = 10;
-const MAX_LIMIT: i64 = 100;
+/// This resource's cursor vocabulary — `pi_…`, per `vpay_core::ids`.
+///
+/// `pub(crate)` so `crate::v1::paging`'s tests can prove that this list
+/// refuses an `evt_…` cursor and the event list refuses a `pi_…` one, which
+/// is the reason the prefix is a parameter of `validated_cursor` rather than
+/// a constant inside it.
+pub(crate) const CURSOR: CursorKind = CursorKind {
+    prefix: ids::PAYMENT_INTENT_PREFIX,
+    noun: "a payment intent id",
+};
 
 // ----------------------------------------------------------------- create
 
@@ -340,18 +348,12 @@ pub(crate) async fn list(
     scope: MerchantScope,
     VpayQuery(params): VpayQuery<ListParams>,
 ) -> Result<Response, ApiError> {
-    let page = ListPage {
-        limit: parse_limit(params.limit.as_deref())?,
-        starting_after: validated_cursor(STARTING_AFTER, params.starting_after)?,
-        ending_before: validated_cursor(ENDING_BEFORE, params.ending_before)?,
-    };
-    if page.starting_after.is_some() && page.ending_before.is_some() {
-        return Err(ApiError::invalid_param(
-            STARTING_AFTER,
-            "Use either `starting_after` or `ending_before`, not both: they name opposite \
-             directions through the list.",
-        ));
-    }
+    let page = paging::list_page(
+        params.limit.as_deref(),
+        params.starting_after,
+        params.ending_before,
+        CURSOR,
+    )?;
 
     let (rows, has_more) = payment_intents::list_page(&pool, scope.merchant_id(), &page).await?;
     let data = rows
@@ -1345,70 +1347,6 @@ fn validated_description(description: Option<String>) -> Result<Option<String>, 
     }
 }
 
-/// The two cursor parameters, named once so the `param` a caller is told to
-/// fix cannot drift from the field they sent.
-const STARTING_AFTER: &str = "starting_after";
-const ENDING_BEFORE: &str = "ending_before";
-
-/// Checks a cursor's *shape* — that it could be one of this merchant's
-/// `pi_…` ids — and nothing else.
-///
-/// The repository resolves a cursor id to a `seq` with a merchant-scoped
-/// subquery, so an id that matches nothing (a typo, another merchant's, a
-/// deleted one) yields `NULL`, every comparison against `NULL` is false, and
-/// the page comes back **empty**. That silence is the right answer for a
-/// *foreign* id — telling the caller apart from an empty page would make the
-/// list an existence oracle across tenants — and the wrong one for a
-/// mistyped id, where the merchant is left staring at an empty list with
-/// nothing to fix.
-///
-/// A shape check separates the two without leaking anything: it depends only
-/// on the bytes the caller sent, never on what is in the database. A
-/// well-formed id that names no row of theirs still returns the empty page,
-/// deliberately.
-///
-/// An empty value is treated as absent rather than as a malformed cursor:
-/// `?starting_after=` is what a client templating an optional field emits
-/// when it has none, and refusing it would break paging for a caller that is
-/// not paging.
-fn validated_cursor(param: &'static str, raw: Option<String>) -> Result<Option<String>, ApiError> {
-    let Some(cursor) = raw.map(|cursor| cursor.trim().to_owned()) else {
-        return Ok(None);
-    };
-    if cursor.is_empty() {
-        return Ok(None);
-    }
-    if !ids::is_well_formed(ids::PAYMENT_INTENT_PREFIX, &cursor) {
-        return Err(ApiError::invalid_param(
-            param,
-            "A cursor must be a payment intent id, as returned in a previous page's `data`.",
-        ));
-    }
-    Ok(Some(cursor))
-}
-
-/// The page size: absent means [`DEFAULT_LIMIT`], and anything above
-/// [`MAX_LIMIT`] is capped to it rather than refused — a ceiling, not a
-/// validation rule. A caller who asks for more gets a full page and
-/// `has_more: true`, which is a correct answer to their question; refusing
-/// would only make them ask again.
-fn parse_limit(raw: Option<&str>) -> Result<i64, ApiError> {
-    let Some(raw) = raw else {
-        return Ok(DEFAULT_LIMIT);
-    };
-    let limit: i64 = raw
-        .trim()
-        .parse()
-        .map_err(|_error| ApiError::invalid_param("limit", "`limit` must be a whole number."))?;
-    if limit < 1 {
-        return Err(ApiError::invalid_param(
-            "limit",
-            "`limit` must be at least 1.",
-        ));
-    }
-    Ok(limit.min(MAX_LIMIT))
-}
-
 // --------------------------------------------------------------- plumbing
 
 fn not_found(id: &str) -> ApiError {
@@ -1443,7 +1381,24 @@ fn object_response(row: &vpay_db::PaymentIntentRow) -> Result<Response, ApiError
 /// rendered — see `replay`. Serialising a struct straight to bytes would
 /// emit fields in declaration order and break the match immediately, which
 /// is the mistake this function exists to prevent.
-fn json_response<T: serde::Serialize>(status: StatusCode, body: &T) -> Result<Response, ApiError> {
+///
+/// `pub(crate)` since Step 5: `crate::v1::events` renders through it too, so
+/// both resources answer with the identical `Content-Type`, the identical
+/// key ordering and the identical error for a body that will not serialise.
+/// A second copy in the events module would be a second place for those
+/// three to drift — and the key ordering in particular is what makes an
+/// idempotent replay byte-for-byte identical, so a divergence would be
+/// invisible until a replay failed to match.
+///
+/// # Errors
+///
+/// [`ApiError::Internal`] if `body` will not serialise, which for the types
+/// this crate renders means a bug in a `Serialize` impl rather than anything
+/// a caller sent.
+pub(crate) fn json_response<T: serde::Serialize>(
+    status: StatusCode,
+    body: &T,
+) -> Result<Response, ApiError> {
     let value = serde_json::to_value(body).map_err(ApiError::internal_serialization)?;
     Ok(value_response(status, &value))
 }
@@ -1895,23 +1850,6 @@ mod tests {
         assert_eq!(param_of(&error), Some("amount"));
     }
 
-    /// A `limit` above the ceiling is *capped*, not refused — see
-    /// [`parse_limit`]'s doc for why that is the right answer to the
-    /// caller's question.
-    #[test]
-    fn the_page_limit_is_a_ceiling_and_not_a_validation_rule() {
-        assert_eq!(parse_limit(None).expect("the default"), DEFAULT_LIMIT);
-        assert_eq!(parse_limit(Some("7")).expect("a plain limit"), 7);
-        assert_eq!(
-            parse_limit(Some("1000")).expect("capped, not refused"),
-            MAX_LIMIT
-        );
-        for raw in ["0", "-3", "many"] {
-            let error = parse_limit(Some(raw)).expect_err("refused: {raw}");
-            assert_eq!(param_of(&error), Some("limit"), "for {raw:?}");
-        }
-    }
-
     #[test]
     fn metadata_and_description_bounds_name_their_own_parameter() {
         let ok = BTreeMap::from([("order_id".to_owned(), "1234".to_owned())]);
@@ -1952,67 +1890,6 @@ mod tests {
             Some("description")
         );
         assert_eq!(validated_description(None).expect("absent is fine"), None);
-    }
-
-    /// A cursor is checked for *shape* only, and the shapes it refuses are
-    /// the ones that would otherwise be answered with an empty page.
-    ///
-    /// The last assertion is the one that keeps this from becoming an
-    /// oracle: a well-formed id this merchant does not own is accepted here
-    /// and answered with an empty page by the query, exactly as a foreign
-    /// `pi_…` in a `GET /v1/payment_intents/{id}` is answered `404`.
-    #[test]
-    fn a_cursor_is_checked_for_shape_and_not_for_existence() {
-        let real = ids::payment_intent_id();
-        assert_eq!(
-            validated_cursor(STARTING_AFTER, Some(real.clone())).expect("a real id is accepted"),
-            Some(real.clone())
-        );
-        // Absent, and the empty string a client templating an optional
-        // field sends when it has no cursor.
-        assert_eq!(
-            validated_cursor(STARTING_AFTER, None).expect("absent"),
-            None
-        );
-        for blank in ["", "   "] {
-            assert_eq!(
-                validated_cursor(ENDING_BEFORE, Some(blank.to_owned()))
-                    .expect("blank is absent, not malformed"),
-                None
-            );
-        }
-        // Surrounding whitespace survives a copy/paste out of a terminal.
-        assert_eq!(
-            validated_cursor(STARTING_AFTER, Some(format!("  {real} ")))
-                .expect("trimmed, then accepted"),
-            Some(real)
-        );
-
-        for malformed in [
-            "pi_",
-            "pi_tooshort",
-            "ch_00000000000000000000000x",
-            "00000000000000000000000x",
-            "PI_00000000000000000000000X",
-            "pi_0000000000000000000000 x",
-            "1",
-        ] {
-            let error = validated_cursor(ENDING_BEFORE, Some(malformed.to_owned()))
-                .expect_err("a malformed cursor must be named, not answered with an empty page");
-            assert_eq!(param_of(&error), Some(ENDING_BEFORE), "for {malformed:?}");
-        }
-
-        // Well-formed, and no merchant has ever had it: accepted here on
-        // purpose — the query answers an empty page, which is what stops
-        // this endpoint from telling one merchant which ids another has.
-        assert!(
-            validated_cursor(
-                STARTING_AFTER,
-                Some("pi_00000000000000000000000x".to_owned())
-            )
-            .expect("shape is all that is checked")
-            .is_some()
-        );
     }
 
     /// The rails an intent was created with are the rails it may be

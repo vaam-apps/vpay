@@ -56,18 +56,13 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::{BTreeMap, HashMap};
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Context as _;
 use serde_json::Value;
 use sqlx::PgPool;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
-use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::LoadedSigningKey;
-use vpay_api::resource_auth::{JwtValidator, MerchantJwtValidator, Surface};
 use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost};
 use vpay_sdk::{
     ConfirmPaymentIntentParams, CreatePaymentIntentParams, Credentials, IntentStatus,
@@ -78,7 +73,7 @@ mod support;
 
 use support::{
     ensure_crypto_provider_installed, generate_key, merchant_client, merchant_client_with_scopes,
-    migrated_postgres, reconcile_from_config, router_deps,
+    migrated_postgres, serve,
 };
 
 /// The merchant every test acts as, and the tenant it acts for. Never the
@@ -324,73 +319,6 @@ async fn harness() -> anyhow::Result<Harness> {
         pem_b,
         pem_c,
         signing_key: served.signing_key,
-    })
-}
-
-/// One running server: the task serving it, where it is, and the key it
-/// signs tokens with.
-struct Served {
-    server: tokio::task::JoinHandle<()>,
-    base_url: String,
-    signing_key: LoadedSigningKey,
-}
-
-/// Stands a vpay server up on an ephemeral port over `pool`, in
-/// `vpay-server`'s own boot order: announce the signing key, run boot step 4,
-/// bind, serve.
-///
-/// `make_config` takes the base URL because the configuration cannot be
-/// built until the port is known — `public_base_url` is what the issuer, the
-/// assertion audience and every callback URL are derived from, and a
-/// placeholder would make the OP mint tokens no validator here would accept.
-///
-/// A function rather than inlined in [`harness`] because one test boots a
-/// *second* server over the same database, with a different configuration,
-/// which is exactly what an operator changing `application.yml` and
-/// redeploying does. Two hand-rolled copies of this would be two chances to
-/// boot it in an order the binary does not.
-async fn serve(
-    pool: &PgPool,
-    server_pem: &str,
-    make_config: impl FnOnce(&str) -> Config,
-) -> anyhow::Result<Served> {
-    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
-        .await
-        .context("binding an ephemeral loopback port")?;
-    let bound = listener.local_addr().context("reading the bound port")?;
-    let base_url = format!("http://{bound}");
-    let issuer = format!("{base_url}/v1/oauth");
-
-    let signing_key =
-        LoadedSigningKey::from_pem(server_pem, &issuer).context("loading the signing key")?;
-    signing_key
-        .ensure_active_in_database(pool)
-        .await
-        .context("announcing the signing key in oauth_signing_keys")?;
-
-    let config = make_config(&base_url);
-    reconcile_from_config(pool, &config).await?;
-
-    let merchant_op = Arc::new(MerchantOp::new(&config, signing_key.clone(), pool.clone()));
-    let merchant_validator = MerchantJwtValidator(
-        JwtValidator::new(
-            format!("{base_url}/v1/oauth/jwks.json"),
-            Duration::from_secs(300),
-            merchant_op.issuer(),
-            Surface::Merchant,
-        )
-        .expect("the vendored-roots JWKS client builds"),
-    );
-
-    let deps = router_deps(pool.clone(), merchant_op, merchant_validator, &config);
-    let server = tokio::spawn(async move {
-        let _ = axum::serve(listener, vpay_api::router(deps)).await;
-    });
-
-    Ok(Served {
-        server,
-        base_url,
-        signing_key,
     })
 }
 

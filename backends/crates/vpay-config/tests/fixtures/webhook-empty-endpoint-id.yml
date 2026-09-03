@@ -1,0 +1,28 @@
+# Fixture for `a_webhook_endpoint_with_no_id_is_rejected`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# The client is otherwise complete and the endpoint's URL and secret are both
+# fine; the only defect is the blank `id`. That value is what every
+# `webhook_deliveries` row stores (migration 0022) and what a runbook names,
+# so a delivery under it could not be attributed to an endpoint at all.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    webhooks:
+      - id: "   "
+        url: http://receiver.internal/webhooks
+        secrets: [whsec-sandbox-literal-is-fine-here]

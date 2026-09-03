@@ -71,6 +71,11 @@ pub mod provider_requests;
 // that tells a merchant about them. A home inside either table's module
 // would have made "settle the charge" reachable without the rest.
 pub mod settlement;
+// The delivery side of the outbox. Its own module rather than functions on
+// `events`, because the fan-out transaction spans both tables and the write
+// that closes it (`mark_fanned_out_in_tx`) must not be reachable without the
+// inserts it commits beside — see that module's own comment.
+pub mod webhook_deliveries;
 
 mod client_assertion;
 mod disabled_clients;
@@ -97,6 +102,7 @@ pub use signing_keys::{
     ActivationOutcome, SigningKey, active_signing_key_kid, ensure_active_signing_key,
     publishable_signing_keys, rotate_signing_key,
 };
+pub use webhook_deliveries::DeliveryRow;
 
 // Re-exported so callers (both binaries' `main.rs`, `vpay-api`'s router
 // state) can name the pool type without also depending on `sqlx` directly

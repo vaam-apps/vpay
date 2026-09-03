@@ -395,12 +395,22 @@ than a feature it added:**
   `to_provider_config_names_a_currency_it_cannot_parse`). The two timeouts
   are constants, not YAML knobs: no deployment has asked for a different
   budget and a knob nobody sets is a knob nobody has tested.
-- **Six rail environment variables** are now referenced by
-  `config/application.yml` and must be supplied by every deployment —
-  `MTN_SUBSCRIPTION_KEY`, `MTN_API_KEY`, `MTN_API_USER`,
-  `ORANGE_MERCHANT_KEY`, `ORANGE_CLIENT_ID`, `ORANGE_CLIENT_SECRET`. All six
-  are set on **both** services in `compose.e2e.yml` and listed in
-  `.env.example`; miss one and the process exits `78` at boot, by design.
-- `vpay-config` now runs **70 tests, 70 passed, 0 skipped**
-  (`cargo nextest run -p vpay-config`, measured 2026-09-03 on this branch;
-  it was 57 before this pass).
+- **Seven environment variables** are now referenced by
+  `config/application.yml` and must be supplied by every deployment. Six are
+  rail credentials — `MTN_SUBSCRIPTION_KEY`, `MTN_API_KEY`, `MTN_API_USER`,
+  `ORANGE_MERCHANT_KEY`, `ORANGE_CLIENT_ID`, `ORANGE_CLIENT_SECRET` — and the
+  seventh, added 2026-09-03 with Step 5, is **`MERCHANT_WEBHOOK_SECRET`**, the
+  `${VAR}` behind `merchant_clients[].webhooks[].secrets`. All seven are set on
+  **both** services in `compose.e2e.yml` (which `compose.demo.yml` layers on
+  top of, inheriting them) and listed in `.env.example`; miss one and the
+  process exits `78` at boot, by design — **including `vpay-server`**, which
+  never delivers a webhook but loads and validates the same document, which is
+  why `backends/apps/vpay-server/tests/cli.rs` had to start setting it.
+- `vpay-config` now runs **77 tests, 77 passed, 0 skipped**
+  (`cargo nextest run -p vpay-config`, re-measured 2026-09-03 on
+  `claude/step5-webhooks`; it was 57 before the Step 3 pass, and the "70" this
+  line claimed until Step 5 was Step 3's number left stale). Four of the 77 are
+  the webhook-endpoint cases — `every_webhook_endpoint_rule_refuses_its_own_fixture`
+  (one fixture per rule), `a_merchant_with_no_webhooks_configured_is_valid`,
+  `a_livemode_webhook_secret_written_as_a_placeholder_loads_and_carries_the_resolved_value`
+  and `a_webhook_endpoints_debug_output_never_contains_a_secret`.

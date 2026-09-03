@@ -150,6 +150,15 @@ serde_json = "1"
 serde_yaml_ng = "0.10"
 figment = { version = "0.10", features = ["yaml", "env"] }
 garde = { version = "0.22", features = ["derive"] }
+# The WHATWG URL parser, for the boot-time webhook-endpoint checks that
+# `validate_host`'s substring rules structurally cannot make: a URL that does
+# not parse at all, and one carrying `user:password@` userinfo (which reqwest
+# would turn into an `Authorization` header aimed at a merchant's receiver —
+# see `vpay_config::config::validate_webhook_endpoints`). Already in the
+# resolved graph via reqwest, so naming it here adds no package to any binary;
+# the pin exists so a crate that needs the parser spells the same version
+# reqwest already resolved.
+url = "2"
 
 # --- observability ---
 tracing = "0.1"
@@ -214,6 +223,15 @@ authkestra-resource = { version = "=0.7.1", default-features = false, features =
 sha2 = "0.10"
 hmac = "0.12"
 subtle = "2"
+# Lowercase hex for the `v1=` values of `Vpay-Signature` and for
+# `webhook_deliveries.payload_sha256` (Step 5). Promoted to a workspace pin
+# rather than declared per member: it was already in the lock as
+# `sdks/rust`'s own `hex = "0.4"` — the *verifier* side of the same header —
+# and a sender and a verifier that disagree about hex case or width is
+# precisely the drift a shared pin removes. `sdks/rust` keeps its own
+# member-level declaration on purpose, because a merchant's crate has to be
+# publishable without this workspace.
+hex = "0.4"
 aes-gcm = "0.10"
 rand = "0.8"
 

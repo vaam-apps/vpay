@@ -80,6 +80,22 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# Webhook delivery (Step 5). The client itself is built by the binary with
+# `vpay_provider::http::client_with_timeouts` and handed in, so nothing here
+# calls `reqwest::Client::new()` — see that module for why that call panics in
+# a `scratch` image. This crate names the type and issues the POST.
+reqwest.workspace = true
+# `Vpay-Signature`: HMAC-SHA256 over `"{t}.{body}"`, lowercase hex
+# (docs/flows/webhooks.md). The same three crates `sdks/rust`'s verifier uses,
+# at the same workspace pins, because the sender and the verifier computing
+# the header with different libraries is how a parity bug hides.
+#
+# `subtle` is deliberately *not* here: signing produces a value, it never
+# compares one, so there is nothing in this crate for a constant-time
+# comparison to protect. The verifier needs it; the sender does not.
+hmac.workspace = true
+sha2.workspace = true
+hex.workspace = true
 
 [dev-dependencies]
 # Constructing a real `DbError::Connect(sqlx::Error::PoolTimedOut)` in the
@@ -87,3 +103,17 @@ tracing.workspace = true
 # the decision table is only worth anything if the leaf it classifies is the
 # same type `vpay_db::connect` actually returns.
 sqlx.workspace = true
+# Signature parity: `crate::signing::signature_header` is fed straight to
+# `vpay_sdk::webhooks::verify_at`, so the header this crate emits is proven
+# against the verifier a merchant actually installs rather than against a
+# second copy of the same HMAC written here. **Not a test double** —
+# `vpay-sdk` is the shipping merchant SDK (sdks/rust); hand-rolling the
+# verification in this file would only prove that two functions in one commit
+# agree with each other.
+#
+# Declared by path rather than `.workspace = true` for the reason
+# `vpay-api`'s identical dev-dependency gives: the root
+# `[workspace.dependencies]` does not list it. `version` is required
+# alongside `path` because `deny.toml` sets `wildcards = "deny"` and a
+# path-only requirement fails that gate.
+vpay-sdk = { path = "../../../sdks/rust", version = "0.1.0" }

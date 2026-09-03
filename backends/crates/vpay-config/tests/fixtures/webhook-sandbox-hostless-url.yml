@@ -1,0 +1,29 @@
+# Fixture for `every_webhook_endpoint_rule_refuses_its_own_fixture`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# `webhook-livemode-hostless-url.yml`'s sandbox twin, and the reason the rule
+# is not a livemode one: `mailto:x` parses cleanly, names no host and has
+# nowhere to POST to in a sandbox exactly as in production. It used to boot
+# here, and the failure surfaced as a delivery walking the retry ladder to
+# `exhausted`.
+
+deployment:
+  name: vpay-sandbox
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    webhooks:
+      - id: primary
+        url: "mailto:x"
+        secrets: ["whsec-sandbox"]

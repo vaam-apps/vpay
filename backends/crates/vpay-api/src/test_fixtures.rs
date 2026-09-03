@@ -119,6 +119,12 @@ pub(crate) fn merchant(client_id: &str, scopes: &[&str]) -> MerchantClient {
         scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
         allowed_audiences: vec![MERCHANT_AUDIENCE.to_owned()],
         client_secret: None,
+        // Empty for the same reason `jwks` is: nothing in this crate
+        // delivers a webhook, and an endpoint here would be an endpoint no
+        // test in this binary could ever exercise. The suites that do —
+        // `backends/tests/integration/tests/webhooks.rs` — build their own
+        // registration with real secrets.
+        webhooks: Vec::new(),
     }
 }
 

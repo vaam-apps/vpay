@@ -1,0 +1,28 @@
+# Fixture for `every_webhook_endpoint_rule_refuses_its_own_fixture`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# `https://` and nothing else. This is the case that shows why parsing was
+# added: it satisfies `validate_host`'s https-prefix test and carries no stub
+# marker, so a livemode deployment booted on it and every delivery failed at
+# the client.
+
+deployment:
+  name: vpay-prod
+  livemode: true
+  public_base_url: https://api.vpay.example
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    webhooks:
+      - id: primary
+        url: "https://"
+        secrets: ["${MERCHANT_WEBHOOK_SECRET}"]

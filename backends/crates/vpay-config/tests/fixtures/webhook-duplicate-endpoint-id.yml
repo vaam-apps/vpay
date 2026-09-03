@@ -1,0 +1,32 @@
+# Fixture for `two_webhook_endpoints_of_one_merchant_sharing_an_id_are_rejected`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# Both endpoints are individually valid — different URLs, a secret each — and
+# the ONLY defect is the repeated `id`. `webhook_deliveries` is unique on
+# `(event_id, endpoint_id)` (migration 0022), so the second one's insert would
+# be swallowed by the fan-out's `ON CONFLICT DO NOTHING` and exactly one of
+# these two URLs would silently never receive anything.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    webhooks:
+      - id: primary
+        url: http://receiver.internal/webhooks
+        secrets: [whsec-one]
+      - id: primary
+        url: http://receiver.internal/other-webhooks
+        secrets: [whsec-two]

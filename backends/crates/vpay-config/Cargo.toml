@@ -27,5 +27,9 @@ tracing.workspace = true
 figment.workspace = true
 garde.workspace = true
 serde_yaml_ng.workspace = true
+# Only for `validate_webhook_endpoints`: the two questions about a webhook URL
+# that a substring rule cannot answer — does it parse, and does it carry
+# userinfo. Not used to *build* URLs anywhere in this crate.
+url.workspace = true
 clap.workspace = true
 tokio.workspace = true

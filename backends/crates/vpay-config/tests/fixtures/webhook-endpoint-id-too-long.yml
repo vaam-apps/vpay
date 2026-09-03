@@ -1,0 +1,32 @@
+# Fixture for `every_webhook_endpoint_rule_refuses_its_own_fixture`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# An `id` of 65 characters — one past `webhook_deliveries.endpoint_id`'s
+# `endpoint_id_length` CHECK (migration 0022, 1 to 64). Its only defect: the
+# secret, the URL and every other field are ordinary.
+#
+# Sandbox, deliberately. The bound mirrors a database constraint, not a
+# livemode policy, so it has to hold here too — and here is where it would
+# otherwise be found, hours later, by a fan-out transaction that fails on
+# every pass while the merchant's events stay `fanout_state = 'pending'`.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    webhooks:
+      - id: ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp
+        url: http://receiver.internal/webhooks
+        secrets: [whsec-sandbox-literal-is-fine-here]

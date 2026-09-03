@@ -140,13 +140,18 @@ verify-errors:
 # a failing spec ahead of the adapters; 0 since both adapters landed the same
 # day and all 26 cases run live against WireMock containers. A test is
 # ignored only while its behaviour is unbuilt (AGENTS.md rule 2).
+#
+# Binaries, all on 2026-09-03: 35 -> 37 (Step 4) for
+# `backends/tests/integration/tests/worker_{recovery,e2e}.rs`, the two suites
+# that are the *only* proof any job handler works (vpay_worker::handlers' own
+# module comment says why it has no unit tests); 37 -> 38 (Step 5) for
+# `backends/tests/integration/tests/webhooks.rs`. `min_tests` is a floor that
+# catches a binary vanishing, not a running total — it is set a little under
+# the measured count rather than to it, so it is not a number people bump
+# reflexively.
 expected_ignored := "0"
-# 37 since 2026-09-03: Step 4 added `worker_recovery` and `worker_e2e` under
-# backends/tests/integration/tests/, the two suites that are the *only* proof
-# any job handler works (vpay_worker::handlers' own module comment says why it
-# has no unit tests).
-expected_suites := "37"
-min_tests := "790"
+expected_suites := "38"
+min_tests := "840"
 
 verify-ignored:
     #!/usr/bin/env bash
@@ -241,6 +246,20 @@ demo_compose := "-f compose.yml -f compose.e2e.yml -f compose.demo.yml"
 # covers the URL), so switching ports needs no manual cleanup.
 demo_port := "8080"
 
+# The host port `just demo` publishes the merchant webhook receiver
+# (`wiremock-webhook`) on. Override it the same way when 8083 is taken:
+#
+#     just demo_receiver_port=18083 demo
+#
+# Only two things have to agree about this one, and neither is inside the
+# stack: the published port (`compose.demo.yml` reads `$VPAY_DEMO_RECEIVER_PORT`),
+# and `VPAY_RECEIVER_URL` for `examples/merchant-demo`'s step 7, which reads
+# the receiver's `/__admin/requests` journal from the host. The CONTAINER port
+# stays 8080 — that is what `.e2e/application-demo.yml`'s `webhooks[0].url`
+# names over the compose network — so unlike `demo_port` this one is not
+# baked into any generated file and changing it needs no regeneration.
+demo_receiver_port := "8083"
+
 # Everything `just demo` needs on disk before a container starts: the server's
 # own OP signing key (the `gen-e2e-signing-key` dependency above) and the demo
 # merchant's key pair plus the profile overlay that registers its PUBLIC half.
@@ -289,14 +308,22 @@ gen-demo-keys: gen-e2e-signing-key
         # port. The overlay is generated and git-ignored, so it is rebuilt
         # rather than patched.
         if grep -q '^\s*merchant_id:' "$overlay" \
+            && grep -q '^\s*webhooks:' "$overlay" \
             && grep -q "^\s*public_base_url: http://localhost:{{demo_port}}$" "$overlay"; then
             echo "gen-demo-keys: $key and $overlay already exist, keeping them"
             exit 0
         fi
-        if grep -q '^\s*merchant_id:' "$overlay"; then
-            echo "gen-demo-keys: $overlay was generated for a different demo_port than {{demo_port}} — regenerating the pair"
-        else
+        if ! grep -q '^\s*merchant_id:' "$overlay"; then
             echo "gen-demo-keys: $overlay predates the required \`merchant_id\` field — regenerating the pair"
+        elif ! grep -q '^\s*webhooks:' "$overlay"; then
+            # Added 2026-09-03 (Step 5). Not fatal the way a missing
+            # `merchant_id` is — the overlay still loads — but the demo's
+            # step 7 would then poll a receiver no endpoint points at and
+            # fail for a reason that has nothing to do with the worker. Same
+            # class of stale-generated-file failure, so the same shape check.
+            echo "gen-demo-keys: $overlay predates the \`webhooks\` block — regenerating the pair"
+        else
+            echo "gen-demo-keys: $overlay was generated for a different demo_port than {{demo_port}} — regenerating the pair"
         fi
     elif [ -e "$key" ] || [ -e "$overlay" ]; then
         echo "gen-demo-keys: $key and $overlay are out of sync — regenerating the pair"
@@ -366,6 +393,22 @@ gen-demo-keys: gen-e2e-signing-key
         # Must contain vpay:v1 — vpay_config::MERCHANT_AUDIENCE. Without it the
         # OP answers invalid_target, and the server refuses to boot.
         allowed_audiences: ["vpay:v1"]
+        # Where this merchant's events are POSTed once the worker's job loop
+        # delivers them (docs/flows/webhooks.md). \`wiremock-webhook\` is the
+        # compose service compose.e2e.yml adds, on its port as seen INSIDE
+        # the compose network — the demo binary reads the same container's
+        # request journal from the host on \${VPAY_DEMO_RECEIVER_PORT}.
+        #
+        # The secret is the placeholder both binaries already resolve from
+        # compose.e2e.yml's MERCHANT_WEBHOOK_SECRET. The \`\$\` escape is what
+        # keeps THIS heredoc from expanding it: the value has to stay a
+        # placeholder in the file, or the config would carry a literal and a
+        # livemode overlay copied from it would be refused at boot for a
+        # reason nobody would connect to this recipe.
+        webhooks:
+          - id: demo
+            url: http://wiremock-webhook:8080/webhooks
+            secrets: ["\${MERCHANT_WEBHOOK_SECRET}"]
     YAML
     # The scratch image runs as UID 65532 and must read the bind mount. This
     # file is a public key and a client id; there is nothing secret in it.
@@ -394,6 +437,7 @@ demo: gen-demo-keys
     # than passed per command, because `docker compose` interpolates each
     # file from its own environment.
     export VPAY_DEMO_PORT={{demo_port}}
+    export VPAY_DEMO_RECEIVER_PORT={{demo_receiver_port}}
     docker compose {{demo_compose}} up -d --build
 
     # `vpay-server` has no container healthcheck — its image is FROM scratch
@@ -419,7 +463,9 @@ demo: gen-demo-keys
     # The demo runs on the host, so it needs the *published* port — the same
     # one the overlay's `public_base_url` names, or step 2 is an
     # `invalid_client` (see `demo_port`).
-    VPAY_BASE_URL=http://localhost:{{demo_port}} cargo run -q -p merchant-demo
+    VPAY_BASE_URL=http://localhost:{{demo_port}} \
+      VPAY_RECEIVER_URL=http://localhost:{{demo_receiver_port}} \
+      cargo run -q -p merchant-demo
     status=$?
     set -e
 
@@ -427,6 +473,7 @@ demo: gen-demo-keys
     echo "  dashboard   http://localhost:3000"
     echo "  server      http://localhost:{{demo_port}}"
     echo "  discovery   http://localhost:{{demo_port}}/v1/oauth/.well-known/openid-configuration"
+    echo "  receiver    http://localhost:{{demo_receiver_port}}/__admin/requests"
     echo
     echo "  tear down with: just demo-down"
     exit $status

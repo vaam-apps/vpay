@@ -21,12 +21,17 @@ vpay-api.workspace = true
 vpay-config.workspace = true
 vpay-db.workspace = true
 vpay-provider.workspace = true
-# `tests/worker_{recovery,e2e}.rs`: the crate under test. These two suites are
-# the *only* proof that any handler works — `vpay_worker::handlers`' own module
-# comment says so and explains why it has no unit tests: every function there
-# is a sequence of writes against real Postgres and a real rail, and the only
-# way to test one in-process would be a fake pool or a fake `ProviderAdapter`,
-# which AGENTS.md's first rule forbids.
+# `tests/worker_{recovery,e2e}.rs` and `tests/webhooks.rs`: the crate under
+# test. These suites are the *only* proof that any handler works —
+# `vpay_worker::handlers`' own module comment says so and explains why it has
+# no unit tests: every function there is a sequence of writes against real
+# Postgres and a real rail, and the only way to test one in-process would be a
+# fake pool or a fake `ProviderAdapter`, which AGENTS.md's first rule forbids.
+# `tests/webhooks.rs` drives `vpay_worker::webhooks::{handle_fan_out,
+# handle_deliver}` the same way, against a real WireMock receiver. **Not a
+# test double**: these are the shipping handlers, and the only thing that
+# suite substitutes for the loop is the `jobs::claim` / `jobs::reschedule`
+# bookkeeping `run_loop` would do around them.
 vpay-worker.workspace = true
 vpay-adapter-mtn-momo.workspace = true
 vpay-adapter-orange-money.workspace = true
@@ -87,3 +92,11 @@ base64 = "0.22"
 # process-wide default `CryptoProvider`. This test binary installs one, the
 # same call `vpay-server`'s `main` makes.
 rustls.workspace = true
+# `tests/webhooks.rs`'s fan-out isolation case captures the worker's own
+# `tracing` output. The `alert = true` line is the *only* thing that will ever
+# tell an operator that one merchant's event could not be fanned out — the
+# drain returns `Ok` and the job reschedules normally, by design — so a test
+# that asserted only the database state would let that line be deleted
+# without a word.
+tracing.workspace = true
+tracing-subscriber.workspace = true

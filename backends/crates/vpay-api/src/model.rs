@@ -69,6 +69,11 @@ object_tag!(
     ListTag,
     "list"
 );
+object_tag!(
+    /// The `"event"` discriminator.
+    EventTag,
+    "event"
+);
 
 /// Where to send a payer on a redirect rail.
 ///
@@ -292,6 +297,115 @@ fn last_payment_error_of(
             "payment_intents.last_payment_error_{code,message} are not both set or both null"
                 .to_owned(),
         )),
+    }
+}
+
+/// The envelope around an event's payload: `data.object`, and nothing else.
+///
+/// A struct rather than an inline `Value` so the nesting is impossible to get
+/// wrong: `sdks/rust/src/model.rs`'s `EventData` and
+/// `sdks/nodejs/src/types.ts` both require the extra `object` level, and an
+/// event that put the payload directly under `data` would fail to decode in
+/// every merchant's client while still looking plausible in a log.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EventDataObject {
+    /// The object the event is about, verbatim from `events.data` — the
+    /// snapshot taken when the transition happened, never a re-read of
+    /// whatever is true now.
+    ///
+    /// A `Value` rather than a typed union because the payload is a
+    /// `payment_intent` today and a `refund` tomorrow, and because both SDKs
+    /// deliberately keep it as raw JSON with typed accessors
+    /// (`docs/flows/merchant-auth.md`): an event naming an object type a
+    /// merchant's SDK version predates must still be *deliverable*, not a
+    /// decode failure in their handler.
+    pub object: Value,
+}
+
+/// An `event`, as `GET /v1/events` serves it **and** as the webhook
+/// deliverer signs and sends it.
+///
+/// # One renderer, two surfaces, on purpose
+///
+/// `vpay_worker::webhooks::event_bytes` serialises this same type to get the
+/// bytes it signs. That is the whole reason it lives here rather than in the
+/// worker: a merchant who misses a webhook is told to re-read the event from
+/// `GET /v1/events` (`docs/api/README.md`), and if the two surfaces rendered
+/// an event differently, the fallback would answer a different question from
+/// the one the webhook asked. A second hand-written copy of these six keys is
+/// how `created` ends up in milliseconds on one of them.
+///
+/// # Why serialisation is deterministic, and why that matters here
+///
+/// The delivered bytes are signed, and `payload_sha256` on the delivery row
+/// asserts that attempt two renders exactly what attempt one signed. That
+/// holds because every key below is a fixed struct field in a fixed order and
+/// `serde_json::Map` is a `BTreeMap` in this workspace (no `preserve_order`
+/// feature anywhere in the graph), so `data.object`'s keys serialise in sorted
+/// order however the `Value` was built. Turning that feature on would make
+/// the digest depend on JSON parse order — see
+/// `the_rendered_bytes_are_stable_whatever_order_the_data_was_built_in`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EventObject {
+    /// `evt_…`. Delivery is at-least-once, so this is the id merchants
+    /// dedupe on (`docs/flows/webhooks.md`).
+    pub id: String,
+    /// Always `"event"`.
+    pub object: EventTag,
+    /// One of the real Stripe event types `docs/flows/webhooks.md` commits
+    /// to. The wire field is `type`, which is a Rust keyword.
+    ///
+    /// A `String` rather than a closed enum for the reason both SDKs give:
+    /// the vocabulary is closed by the database (`type_is_a_documented_event`,
+    /// migration 0018) where it is *written*, and a value that failed to parse
+    /// on the read path would turn a merchant's `GET /v1/events` into a 500
+    /// instead of showing them the event.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Unix **seconds**, like every other `created` on this API.
+    pub created: i64,
+    /// Taken from the row, not from configuration read at render time: an
+    /// event describes what was true when it happened, and a redeployment
+    /// must not change what a delivered webhook says about itself.
+    pub livemode: bool,
+    /// The payload.
+    pub data: EventDataObject,
+}
+
+impl TryFrom<&vpay_db::EventRow> for EventObject {
+    type Error = ApiError;
+
+    /// Renders a stored event as the object a merchant reads — over
+    /// `GET /v1/events` or in a webhook body.
+    ///
+    /// Fallible only for a state migration 0018's `data_is_object` CHECK
+    /// makes impossible: a `data` that is not a JSON object cannot be nested
+    /// under `data.object` without changing what the event *means*, so it is
+    /// `Internal` (500, pages) and never a `null` payload quietly delivered to
+    /// a merchant's handler. Nothing a caller can send reaches an `Err` here.
+    fn try_from(row: &vpay_db::EventRow) -> Result<Self, Self::Error> {
+        if !row.data.is_object() {
+            return Err(ApiError::Internal(format!(
+                "events.data is {} rather than an object",
+                kind_of(&row.data)
+            )));
+        }
+
+        Ok(Self {
+            id: row.id.clone(),
+            object: EventTag,
+            kind: row.event_type.clone(),
+            created: row.created_at.unix_timestamp(),
+            livemode: row.livemode,
+            data: EventDataObject {
+                // Verbatim. Not re-validated against a payment-intent shape:
+                // the snapshot was rendered by this same module when the
+                // transition happened, and re-deriving it now would deliver
+                // whatever is true today under a timestamp that says
+                // otherwise.
+                object: row.data.clone(),
+            },
+        })
     }
 }
 
@@ -615,5 +729,120 @@ mod tests {
         let rendered = serde_json::to_value(list).expect("serialises");
         assert_eq!(rendered.get("data"), Some(&json!([])));
         assert_eq!(rendered.get("has_more"), Some(&json!(false)));
+    }
+
+    // ---------------------------------------------------------- events ----
+
+    fn event_row(data: Value) -> vpay_db::EventRow {
+        vpay_db::EventRow {
+            id: "evt_1".to_owned(),
+            seq: 12,
+            // Never rendered: a merchant already knows who they are, and the
+            // scope is the authorisation, not a field on the object.
+            merchant_id: "merchant_a".to_owned(),
+            livemode: false,
+            event_type: "payment_intent.succeeded".to_owned(),
+            object_id: "pi_1".to_owned(),
+            data,
+            fanout_state: "pending".to_owned(),
+            created_at: time::OffsetDateTime::from_unix_timestamp(1_753_401_600)
+                .expect("a fixed, valid timestamp"),
+        }
+    }
+
+    /// The envelope `sdks/rust/src/model.rs`'s `Event` requires, key for key.
+    #[test]
+    fn an_event_renders_the_documented_envelope() {
+        let row = event_row(json!({ "id": "pi_1", "object": "payment_intent" }));
+        let object = EventObject::try_from(&row).expect("a well-formed row renders");
+        let rendered = serde_json::to_value(&object).expect("serialises");
+
+        assert_eq!(
+            rendered,
+            json!({
+                "id": "evt_1",
+                "object": "event",
+                "type": "payment_intent.succeeded",
+                "created": 1_753_401_600,
+                "livemode": false,
+                "data": { "object": { "id": "pi_1", "object": "payment_intent" } },
+            })
+        );
+        // The row's own bookkeeping stays on the row. `seq` is a fan-out
+        // cursor and `merchant_id` is the scope that authorised the read;
+        // neither is a merchant's business, and `fanout_state` would tell
+        // them about vpay's queue.
+        let keys: Vec<&String> = rendered
+            .as_object()
+            .expect("an object")
+            .keys()
+            .collect::<Vec<_>>();
+        for leaked in ["seq", "merchant_id", "fanout_state", "object_id"] {
+            assert!(
+                !keys.iter().any(|k| k.as_str() == leaked),
+                "{leaked} leaked"
+            );
+        }
+    }
+
+    /// The decisive one for the deliverer: the bytes vpay signs must decode
+    /// as `vpay_sdk::Event` in the SDK a merchant installs. Drop
+    /// `object: "event"` — or rename `type`, or send `created` as a string —
+    /// and this fails, which is the whole point of rendering the webhook body
+    /// through this type instead of a `json!` in the worker.
+    #[test]
+    fn the_rendered_event_decodes_through_the_shipping_sdk() {
+        let row = event_row(json!({ "id": "pi_1", "amount": 5000 }));
+        let object = EventObject::try_from(&row).expect("renders");
+        let bytes = serde_json::to_vec(&object).expect("serialises");
+
+        let decoded: vpay_sdk::Event =
+            serde_json::from_slice(&bytes).expect("the shipping SDK decodes the event envelope");
+        assert_eq!(decoded.id, "evt_1");
+        assert_eq!(decoded.object, "event");
+        assert_eq!(decoded.kind, "payment_intent.succeeded");
+        assert_eq!(decoded.created, 1_753_401_600);
+        assert!(!decoded.livemode);
+        assert_eq!(decoded.data.object.get("id"), Some(&json!("pi_1")));
+    }
+
+    /// The signature covers *bytes*, and `payload_sha256` asserts attempt two
+    /// produces the same ones as attempt one. That only holds if key order is
+    /// a function of the content and not of how the `Value` was built —
+    /// `serde_json::Map` is a `BTreeMap` here because nothing in the graph
+    /// enables `preserve_order`. If someone turns that feature on, this test
+    /// fails rather than deliveries silently becoming `Poisoned` on retry.
+    #[test]
+    fn the_rendered_bytes_are_stable_whatever_order_the_data_was_built_in() {
+        let one = serde_json::from_str::<Value>(r#"{"b":2,"a":1}"#).expect("valid JSON");
+        let two = serde_json::from_str::<Value>(r#"{"a":1,"b":2}"#).expect("valid JSON");
+
+        let first = serde_json::to_vec(&EventObject::try_from(&event_row(one)).expect("renders"))
+            .expect("serialises");
+        let second = serde_json::to_vec(&EventObject::try_from(&event_row(two)).expect("renders"))
+            .expect("serialises");
+
+        assert_eq!(first, second);
+        assert!(
+            String::from_utf8(first)
+                .expect("ASCII JSON")
+                .contains(r#""data":{"object":{"a":1,"b":2}}"#)
+        );
+    }
+
+    /// `data_is_object` (migration 0018) makes this unreachable from the
+    /// database. It is `Internal` rather than a rendered `null`, because a
+    /// delivered `data.object: null` is a webhook a merchant's handler
+    /// crashes on with no way to tell it apart from a real event.
+    #[test]
+    fn an_event_whose_data_is_not_an_object_is_internal_not_a_null_payload() {
+        for bad in [json!(null), json!([1, 2]), json!("pi_1"), json!(7)] {
+            let error = EventObject::try_from(&event_row(bad.clone()))
+                .expect_err("a non-object data must not render");
+            assert!(
+                matches!(error, ApiError::Internal(ref m) if m.contains("events.data")),
+                "{bad} gave {error:?}"
+            );
+        }
     }
 }

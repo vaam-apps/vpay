@@ -1,0 +1,20 @@
+{
+  "mappings": [
+    {
+      "name": "a merchant's webhook receiver: accept anything POSTed",
+      "priority": 10,
+      "request": {
+        "method": "POST",
+        "urlPattern": ".*"
+      },
+      "response": {
+        "status": 200,
+        "headers": { "Content-Type": "application/json" },
+        "jsonBody": { "received": true }
+      },
+      "metadata": {
+        "why": "This is a MERCHANT's receiver, not a rail stub: it stands in for the endpoint `merchant_clients[].webhooks[].url` names, reached over HTTP exactly as a real merchant's would be (ADR-0006 / AGENTS.md rule 1). It matches any path because the endpoint URL is configuration and a suite or a compose overlay may point at any of them, and any body because vpay decides what it signs — a mapping that matched a body shape would silently 404 the day the envelope changed, which is the one failure this receiver must not hide.\n\nPriority 10, the low end, so the `/flaky` scenario mappings (priority 1) win on their own path. WireMock's lowest number wins.\n\nThe 200 is the whole contract: `vpay_worker::webhooks::handle_deliver` treats any 2xx as delivered and everything else as one more rung of the ladder. Requests are read back from `GET /__admin/requests`, which is where the signature-parity tests get the exact bytes and the `Vpay-Signature` header from."
+      }
+    }
+  ]
+}

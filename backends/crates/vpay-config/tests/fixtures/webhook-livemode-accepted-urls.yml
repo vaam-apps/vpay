@@ -1,0 +1,39 @@
+# Fixture for
+# `a_livemode_endpoint_may_be_uppercase_and_may_have_a_stub_word_in_its_path`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# The only fixture in this set that must LOAD, and it carries the two URLs the
+# rail-host rules got wrong when webhook endpoints were routed through
+# `validate_host`:
+#
+#   * `HTTPS://…` — a URL scheme is case-insensitive, and
+#     `starts_with("https://")` is not, so this booted as `InsecureHost`;
+#   * `/mockups` — the stub-marker search ran over the whole URL, so a path on
+#     a merchant's own domain read as a stub host.
+#
+# Both are ordinary livemode endpoints. If either is ever refused again, a
+# real merchant cannot be configured.
+
+deployment:
+  name: vpay-prod
+  livemode: true
+  public_base_url: https://api.vpay.example
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    webhooks:
+      - id: uppercase-scheme
+        url: "HTTPS://Hooks.Example/x"
+        secrets: ["${MERCHANT_WEBHOOK_SECRET}"]
+      - id: stub-word-in-path
+        url: "https://hooks.example/mockups"
+        secrets: ["${MERCHANT_WEBHOOK_SECRET}"]

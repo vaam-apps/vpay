@@ -3,11 +3,14 @@
 //! Boots exactly as `vpay-server` does — signal handlers, crypto provider,
 //! tracing, YAML configuration, pool, migrations, boot step 4 — and then runs
 //! [`vpay_worker::run_loop()`] instead of binding a listener. Everything the
-//! loop does is in that module; this file's job is to assemble its four
-//! inputs (the pool, the adapters, each rail's configuration, the recovery
-//! policy) and to bound its drain.
+//! loop does is in that module; this file's job is to assemble its inputs
+//! (the pool, the adapters, each rail's configuration, the recovery policy,
+//! the merchant webhook endpoints and the client that delivers to them) and
+//! to bound its drain.
 //!
-//! Webhook delivery is **not** implemented (`docs/status.md`).
+//! Webhook delivery runs here: this process owns both halves of the outbox,
+//! the `fan_out_events` drain and the `deliver_webhook` sends. Nothing in
+//! `vpay-server` delivers a webhook (`docs/status.md`).
 //!
 //! # Why this process links `vpay-api`
 //!
@@ -33,7 +36,7 @@ use vpay_config::{ConfigError, LogFormat, ShutdownSignals, WorkerArgs};
 use vpay_core::error::{Category, Classify as _, find_in_chain};
 use vpay_db::DbError;
 use vpay_provider::ProviderAdapter;
-use vpay_worker::{Drain, RecoveryPolicy};
+use vpay_worker::{Drain, EndpointRegistry, RecoveryPolicy};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -328,6 +331,65 @@ async fn run() -> anyhow::Result<()> {
         "rail configurations projected for the job loop"
     );
 
+    // Every merchant's webhook endpoints, keyed on `events.merchant_id` —
+    // which is the fan-out key, and deliberately *not* `client_id`: one
+    // merchant may hold several credentials and all of them describe the same
+    // tenant, so keying on the credential would deliver an event once per key
+    // a merchant happens to have (`docs/plans/2026-09-03-step5-webhooks.md`,
+    // S5).
+    //
+    // This is the one place `vpay_api::WebhookEndpointConfig` and
+    // `vpay_worker::webhooks::Endpoint` meet, and it has to be a binary:
+    // `vpay-worker` already depends on `vpay-api` to render the delivered
+    // body, so the reverse edge that would let either crate do this
+    // conversion itself is a cycle. See `WebhookEndpointConfig`'s own doc
+    // comment.
+    let endpoints = EndpointRegistry::from_pairs(resource_config.webhook_endpoints().map(
+        |(merchant_id, endpoints)| {
+            (
+                merchant_id.to_owned(),
+                endpoints
+                    .iter()
+                    .map(|endpoint| vpay_worker::Endpoint {
+                        id: endpoint.id().to_owned(),
+                        url: endpoint.url().to_owned(),
+                        secrets: endpoint.secrets().to_vec(),
+                    })
+                    .collect(),
+            )
+        },
+    ));
+    tracing::info!(
+        merchants_with_endpoints = resource_config.webhook_endpoints().count(),
+        endpoints = resource_config
+            .webhook_endpoints()
+            .map(|(_, endpoints)| endpoints.len())
+            .sum::<usize>(),
+        "webhook endpoints projected for the fan-out"
+    );
+
+    // A *second* client, not the rails' one, and the difference is the
+    // timeouts. A rail's budget is the port's default and rides on
+    // `ProviderConfig`; a merchant's receiver is somebody else's server that
+    // this process must not be held open by, so it gets a short connect and a
+    // bounded read. The two budgets are
+    // `vpay_worker::webhooks`' own constants and not this binary's: the
+    // handler that spends them is there, and the integration suite reads the
+    // same pair, so a change cannot leave the tests exercising a client that
+    // no longer ships. Everything
+    // else is `client_with_timeouts`'s doing and is what makes it safe to
+    // POST a signed body at an operator-configured URL: vendored roots,
+    // `redirect::Policy::none()` so a receiver cannot bounce the delivery at
+    // a host nobody configured, and `no_proxy()`.
+    //
+    // Built once and cloned into every task — `reqwest::Client` is an `Arc`
+    // internally, so the clones share one connection pool.
+    let webhook_http = vpay_provider::http::client_with_timeouts(
+        vpay_worker::WEBHOOK_CONNECT_TIMEOUT,
+        vpay_worker::WEBHOOK_REQUEST_TIMEOUT,
+    )
+    .context("building the outbound HTTP client webhook delivery uses")?;
+
     // The documented numbers (`docs/flows/{crash-safety,reconciler}.md`),
     // constructed here and passed down rather than read from a
     // `#[cfg(test)]` seam — AGENTS.md rule 1. The integration suite overrides
@@ -342,6 +404,8 @@ async fn run() -> anyhow::Result<()> {
         Arc::new(adapters),
         Arc::new(rails),
         policy,
+        Arc::new(endpoints),
+        webhook_http,
         concurrency,
         grace,
         worker_id,

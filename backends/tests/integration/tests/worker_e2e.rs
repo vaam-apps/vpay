@@ -123,6 +123,14 @@ const SETTLED_TXN_ID: &str = "e2e-1234567892";
 /// well before it.
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long [`wait_for_fanout`] waits for the outbox drain.
+///
+/// The drain reschedules itself every five seconds when the backlog is empty
+/// (`vpay_worker::webhooks`), so an event written just after a pass is picked
+/// up by the next one. Four times that, for the same container-scheduling
+/// margin [`SETTLE_TIMEOUT`] carries.
+const FANOUT_TIMEOUT: Duration = Duration::from_secs(20);
+
 fn mappings_dir(rail: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../conformance/wiremock")
@@ -166,6 +174,8 @@ impl Harness {
             Arc::clone(&self.adapters),
             Arc::clone(&self.rails),
             policy,
+            support::no_webhook_endpoints(),
+            support::webhook_client(),
             concurrency,
             grace,
             "worker-e2e-suite".to_owned(),
@@ -344,6 +354,58 @@ async fn events_for(pool: &PgPool, object_id: &str) -> anyhow::Result<Vec<(Strin
     .context("reading the events table")
 }
 
+/// Just the event types, in `seq` order.
+///
+/// Separate from [`events_for`] because `fanout_state` stopped being a
+/// constant the moment the loop grew a fan-out drain (Step 5): the same
+/// `run_loop` that settles the charge also drains the outbox, so an assertion
+/// on the pair is a race between two of this loop's own jobs. What each of
+/// these cases is about is that the settlement emitted *one* event of the
+/// *right type*; the state that follows is [`wait_for_fanout`]'s assertion,
+/// and the deliveries it produces are `webhooks.rs`'s.
+async fn event_types_for(pool: &PgPool, object_id: &str) -> anyhow::Result<Vec<String>> {
+    Ok(events_for(pool, object_id)
+        .await?
+        .into_iter()
+        .map(|(kind, _)| kind)
+        .collect())
+}
+
+/// Waits for the fan-out drain to mark every event on `object_id` `done`.
+///
+/// This is the seam between Step 4's settlement and Step 5's outbox, and the
+/// only place this suite asserts it: `run_loop` seeds `fanout:events`
+/// alongside `sweep:expired` and `scan:live`, so an event this loop wrote
+/// must be drained by this same loop without anything else running. A
+/// deployment where that seeding was dropped settles payments and tells no
+/// merchant about any of them — and every other assertion in this file would
+/// still pass.
+///
+/// This harness registers **no** endpoints, so `done` here means "fanned out
+/// to zero endpoints", which is the documented behaviour for a merchant who
+/// has configured none. The delivery half is proven in `webhooks.rs` against
+/// a real receiver.
+async fn wait_for_fanout(pool: &PgPool, object_id: &str) -> anyhow::Result<()> {
+    let deadline = Instant::now() + FANOUT_TIMEOUT;
+    loop {
+        let states: Vec<String> = events_for(pool, object_id)
+            .await?
+            .into_iter()
+            .map(|(_, state)| state)
+            .collect();
+        if !states.is_empty() && states.iter().all(|state| state == "done") {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "the fan-out drain did not mark the events on {object_id} done within \
+             {FANOUT_TIMEOUT:?}; states were {states:?}. The usual cause is that \
+             `run_loop` no longer seeds the `fanout:events` singleton."
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 /// The `events.data` snapshot: the wire object as it stood at emit time.
 ///
 /// Read as JSON rather than as columns because what matters is the *body*.
@@ -499,6 +561,8 @@ async fn a_confirmed_payment_is_driven_to_succeeded_and_the_merchant_sees_it() -
             adapters,
             rails,
             RecoveryPolicy::default(),
+            support::no_webhook_endpoints(),
+            support::webhook_client(),
             2,
             Duration::from_secs(10),
             "worker-e2e-suite".to_owned(),
@@ -535,11 +599,13 @@ async fn a_confirmed_payment_is_driven_to_succeeded_and_the_merchant_sees_it() -
     );
 
     assert_eq!(
-        events_for(&h.pool, &created.id).await?,
-        vec![("payment_intent.succeeded".to_owned(), "pending".to_owned())],
-        "exactly one event, emitted in the settlement transaction and awaiting the fan-out \
-         Step 5 will do"
+        event_types_for(&h.pool, &created.id).await?,
+        vec!["payment_intent.succeeded".to_owned()],
+        "exactly one event, emitted in the settlement transaction"
     );
+    // And the loop that settled it drains its own outbox — see
+    // `wait_for_fanout` for why this is asserted here and not in `webhooks.rs`.
+    wait_for_fanout(&h.pool, &created.id).await?;
 
     // The body, not just the type. Step 5 delivers this object verbatim, so a
     // snapshot taken *before* the transition — the natural mistake, since
@@ -633,11 +699,17 @@ async fn a_decline_after_submission_returns_the_intent_to_requires_payment_metho
 
     // One step of the real loop is all this needs: the rail answers with a
     // terminal status on the first poll.
+    let endpoints = support::no_webhook_endpoints();
+    let http = support::webhook_client();
     let settled = vpay_worker::run_once(
         &h.pool,
         &h.adapters,
         &h.rails,
         &RecoveryPolicy::default(),
+        &vpay_worker::WebhookContext {
+            endpoints: &endpoints,
+            http: &http,
+        },
         "worker-e2e-suite",
     )
     .await?
@@ -690,8 +762,16 @@ async fn a_decline_after_submission_returns_the_intent_to_requires_payment_metho
             "payment_intent.payment_failed".to_owned(),
             "pending".to_owned()
         )],
-        "exactly one event, awaiting fan-out"
+        "exactly one event, emitted in the settlement transaction, and still awaiting \
+         fan-out: a decline is as much a webhook as a success, and an event the settlement \
+         wrote as anything but `pending` would never be delivered at all"
     );
+    // `fanout_state` is deterministic *here* and nowhere else in this file:
+    // this case drives a single `run_once`, which claims exactly one job and
+    // never seeds a singleton, so no `fan_out_events` pass can have run. The
+    // cases that call `run_loop` do seed one, and there the pair is a race
+    // between two of the loop's own jobs — which is why they assert through
+    // `event_types_for` and `wait_for_fanout` instead.
     h.shutdown().await;
     Ok(())
 }

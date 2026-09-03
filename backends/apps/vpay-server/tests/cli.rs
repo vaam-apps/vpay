@@ -499,6 +499,15 @@ fn the_repositorys_own_configuration_passes_the_adapter_join() {
         .env("ORANGE_MERCHANT_KEY", "not-a-real-key")
         .env("ORANGE_CLIENT_ID", "not-a-real-client")
         .env("ORANGE_CLIENT_SECRET", "not-a-real-secret")
+        // Added 2026-09-03 (Step 5): the example merchant now names a webhook
+        // endpoint whose `secrets:` is a `${MERCHANT_WEBHOOK_SECRET}`
+        // placeholder. An unresolved placeholder is exit 78 *before* the join,
+        // which would make this test pass for the wrong reason — it asserts
+        // that the join is not what stops the config.
+        .env(
+            "MERCHANT_WEBHOOK_SECRET",
+            "not-a-real-secret-but-32-bytes-long",
+        )
         .output()
         .expect("spawn vpay-server");
 

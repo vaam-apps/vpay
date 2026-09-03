@@ -254,6 +254,11 @@ mod tests {
             scopes: vec!["payments:write".to_owned()],
             allowed_audiences: vec![MERCHANT_AUDIENCE.to_owned()],
             client_secret: None,
+            // The client store converts a registration into an OAuth
+            // `ClientRegistration`; webhook endpoints are not part of that
+            // conversion and must never become part of it — they are a
+            // delivery destination, not an authentication fact.
+            webhooks: Vec::new(),
         }
     }
 

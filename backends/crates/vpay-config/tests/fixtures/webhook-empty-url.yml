@@ -1,0 +1,28 @@
+# Fixture for `every_webhook_endpoint_rule_refuses_its_own_fixture`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# A `url:` key whose value was lost. Under `livemode: false` `validate_host`
+# returns Ok without reading the string at all, so before this rule an
+# endpoint with no destination booted clean and every delivery to it failed
+# in the worker, one attempt at a time, all the way to `exhausted`.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    webhooks:
+      - id: primary
+        url: ""
+        secrets: [whsec-sandbox-literal-is-fine-here]
