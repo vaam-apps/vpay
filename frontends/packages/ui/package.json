@@ -16,8 +16,8 @@
     "build-storybook": "storybook build -o storybook-static"
   },
   "dependencies": {
-    "@vpay/tokens": "workspace:*",
     "@headlessui/react": "^2.2.0",
+    "@vpay/tokens": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "framer-motion": "^11.15.0",
@@ -40,12 +40,12 @@
     "autoprefixer": "^10.4.20",
     "daisyui": "^4.12.23",
     "jsdom": "^25.0.1",
-    "postcss": "^8.4.49",
+    "postcss": "^8.5.28",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "storybook": "^8.4.0",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.0",
-    "vitest": "^2.1.8"
+    "vitest": "^3.2.7"
   }
 }
