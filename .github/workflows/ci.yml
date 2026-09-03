@@ -152,7 +152,29 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with: { node-version-file: .nvmrc, cache: pnpm }
+      # For `just audit-web` below. Pinned to a full commit SHA rather than
+      # the `@v2` the `rust` and `e2e` jobs use — matching what `deploy`
+      # does, and for the reason stated there: a mutable tag is a promise
+      # from whoever can move it, and this is the step that decides whether
+      # a known-vulnerable dependency can land.
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: just
       - run: pnpm install --frozen-lockfile
+      # Immediately after install and before anything is built, so a
+      # known-vulnerable dependency fails this job in seconds rather than
+      # after a Storybook build. `just audit-web`, not a copy of its
+      # commands: the recipe is what a contributor runs locally, and the
+      # justfile carries the reasoning (two runs, `--audit-level=high`, and
+      # why dev dependencies are gated too — every JS advisory this repo has
+      # had was in dev tooling). `pnpm audit` resolves from `pnpm-lock.yaml`,
+      # which the step above has just proved is current, so this gates what
+      # would actually be installed rather than what happens to be on disk.
+      #
+      # Only this job runs it: `e2e` installs from the same lockfile, and
+      # auditing it twice per pull request buys nothing.
+      - name: audit-web (pnpm audit; high and critical fail)
+        run: just audit-web
       # Before `typecheck`, not after it. The Node SDK is the one package
       # whose `build` actually emits JS (`dist/`, consumed by merchants and by
       # `just sdk-conformance-node`), so `pnpm -r typecheck` alone would not

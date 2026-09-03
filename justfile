@@ -146,6 +146,44 @@ lint-web: build-sdk-node
 deny:
     cargo deny check
 
+# `deny`'s counterpart for the JavaScript half of the repo, and CI's `web`
+# job runs THIS recipe rather than a copy of its commands, so the gate and
+# the local check cannot drift.
+#
+# Two runs, not one, and the narrower one first. `--prod` walks only the
+# production dependency graph — what a merchant would actually receive from
+# `@vpay/sdk` / `@vpay/stripe-js`, and what `frontends/Dockerfile` ships —
+# so a failure there is a different kind of news from a failure in the build
+# tooling, and reporting both under one exit code would flatten that. The
+# second run covers everything, dev dependencies included, because every
+# advisory this repo has had on the JS side has been in dev tooling
+# (vitest/vite/esbuild, Next's pinned postcss, Cypress's request stack,
+# Storybook's uuid) — gating only `--prod` would have been a green light
+# over all sixteen of them, which is exactly the "suite goes green while
+# proving nothing" failure CLAUDE.md names.
+#
+# `--audit-level=high` on both: high and critical fail, moderate does not.
+# A deliberate ceiling, not an oversight — a moderate advisory in a
+# transitive dev dependency appears most weeks, and blocking every merge on
+# one trains people to reach for the ignore list, which is the only escape
+# hatch here (`pnpm.auditConfig.ignoreCves` in `package.json`, currently
+# ABSENT — no advisory is being suppressed as of 2026-09-03). A bare
+# `pnpm audit` still reports moderates; this recipe just does not fail on
+# them.
+#
+# NOT part of `just ci`, for the reason `helm-check` below is not: it talks
+# to the npm registry's advisory endpoint on every run and cannot work
+# offline at all, and `just ci` is expected to run on a machine with no
+# network. CI runs it on every PR regardless.
+audit-web:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "audit-web: production dependency graph only"
+    pnpm audit --audit-level=high --prod
+    echo "audit-web: whole workspace, dev dependencies included"
+    pnpm audit --audit-level=high
+    echo "audit-web: ok — no high or critical advisory in the workspace"
+
 # ---------------------------------------------------- self-verification ----
 
 # The checks that keep this repository honest. CI runs exactly this.
