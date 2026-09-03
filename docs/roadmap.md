@@ -1,33 +1,67 @@
 # Roadmap
 
-**Snapshot date: 2026-08-11.** A point-in-time read of the repository, for
-someone opening it cold or coming back after a break, organized as the
-sequence of phases from scaffold to a deployable gateway. It goes stale the
-moment code moves and nobody is obliged to update it on the same schedule as
-a commit. **On any disagreement, [`docs/status.md`](status.md) and the ADRs
-in [`docs/adr/`](adr/) win, always** — they are the machine-checked and
-immutable sources of truth respectively. This page does not restate
+**Snapshot date: 2026-08-11, last refreshed 2026-09-03.** A point-in-time read
+of the repository, for someone opening it cold or coming back after a break,
+organized as the sequence of phases from scaffold to a deployable gateway. It
+goes stale the moment code moves and nobody is obliged to update it on the
+same schedule as a commit. **On any disagreement,
+[`docs/status.md`](status.md) and the ADRs in [`docs/adr/`](adr/) win,
+always** — they are the machine-checked and immutable sources of truth
+respectively. This page does not restate
 `docs/status.md`'s per-feature rows; if you're here to check whether some
 specific thing works, go there instead.
 
-**vpay still cannot take a payment.** *That sentence used to continue "no HTTP
-call to any rail has ever been made by this code", which stopped being true on
-2026-09-03: both adapters call rails, and since Step 4 the worker drives a
-confirmed intent all the way to `succeeded`. **Every one of those calls went to
-a WireMock host — no real rail has ever been called, and no money has ever
-moved.*** Everything below explains what stands between here and that no longer
-being true.
+**vpay still cannot take a payment — with real money.** *That sentence used to
+continue "no HTTP call to any rail has ever been made by this code", which
+stopped being true on 2026-09-03: both adapters call rails, and since Step 4 the
+worker drives a confirmed intent all the way to `succeeded`. **Every one of
+those calls went to a WireMock host — no real rail has ever been called, and no
+money has ever moved.***
 
-| # | Phase | Status |
+*Refreshed 2026-09-03 (evening), and stated precisely in both directions.*
+**What is proven**, by tests that fail if it breaks, on a developer machine and
+in CI: a merchant authenticates on `/v1` with `private_key_jwt`, creates a
+`PaymentIntent`, confirms it, the worker polls the charge and drives the intent
+to `succeeded` with nobody touching it, and a signed `payment_intent.succeeded`
+webhook is delivered and verified — by both shipping SDKs and by the official
+`stripe` package's own `constructEvent`. A payer's own browser can drive the
+push half of that through `@vpay/stripe-js` without a merchant credential.
+**What is not proven, and is what stands between this and taking money**: every
+rail in every one of those runs is a `wiremock/wiremock` host, **no real rail
+has ever been called**; every webhook receiver is one too, **no merchant
+endpoint has ever been POSTed to**; and **nothing has ever run on a cluster**.
+Everything below explains what stands between here and that no longer being
+true.
+
+| # | Phase | Status, with the evidence that backs it |
 |---|---|---|
-| 1 | Foundations | ✅ Complete |
-| 2 | Authentication — merchant (`/v1`) | 🟡 In progress — **the repo is here now**; the merchant OP is built, the evidence is one manual run (see the 2026-09-02 addendum) |
-| 2b | Authentication — dashboard login (`/dash/v1`) | ⛔ Not started — split out of Phase 2 on 2026-09-02 |
-| 3 | Payment API (`/v1`) | ⛔ Not started |
-| 4 | The rails | ⛔ Not started — *split on 2026-09-03 into 4a (the adapters, done) and 4b (push-rail recovery, absorbed into Phase 5 and delivered there); this row is the pre-split one and the two headings below are current* |
-| 5 | The worker | 🟡 In progress — the job loop, the poll ladder, recovery and settlement landed 2026-09-03 (Step 4) against WireMock rails; the callback route and prompt expiry did not |
-| 6 | Webhooks | 🟡 In progress — the outbox drain, signing and delivery landed 2026-09-03 (Step 5) against a WireMock receiver; no merchant endpoint has ever been POSTed to, there is no SSRF protection of any kind (boot-time `validate_host` is a stub-host guard, not an address check), delivery is unordered, and replaying an exhausted delivery is a hand-written transaction |
-| 7 | Operability | ⛔ Blocked by environment, not by unwritten code |
+| 1 | Foundations | ✅ Complete — seven commits through `932d8a4`; the **26** migrations in `backends/migrations/` apply cleanly and their constraints are proven to fire (`postgres_smoke.rs`) |
+| 2 | Authentication — merchant (`/v1`) | ✅ Delivered 2026-09-02 (Step 1, PR #15) — the OP is mounted at `/v1/oauth` and `AuthenticatedMerchant` gates the whole `/v1` nest; 7 `merchant_token_flow` tests. *`docs/status.md`'s own "Merchant auth" row is still 🟡 and names its own trigger — "when the CI `rust` job runs them green" — which has since happened on `master` (run `33792230584`) without that row being re-measured* |
+| 2b | Authentication — dashboard login (`/dash/v1`) | ⛔ Not started, unchanged — no `/login`, no `/authorize`, no `SessionStore`, no `/dash/v1` route of any kind; split out of Phase 2 on 2026-09-02 |
+| 3 | Payment API (`/v1`) | ✅ Delivered 2026-09-02→03 (Steps 2–3, PRs #16–#17) — create / retrieve / list / cancel / confirm, form-encoded, idempotent and merchant-scoped, with `confirm` moving the intent to `processing` or `requires_action`. **Against WireMock rails**, which is why the matching `docs/status.md` rows are 🟡 |
+| 4 | The rails | → **split 2026-09-03.** **4a** ✅ delivered (Step 3, PR #17) — both adapters pass the one shared conformance suite, 26 tests, 0 `#[ignore]`s, every one of them against a `wiremock/wiremock` container. **4b** (push-rail recovery) delivered inside Phase 5 (Step 4, PR #18). The two headings below are current; this row is the pre-split one |
+| 5 | The worker | 🟡 In progress — the job loop, the poll ladder, recovery and settlement landed 2026-09-03 (Step 4, PR #18) against WireMock rails, and a confirmed intent reaches `succeeded` unattended; **the callback route (`POST /provider/{code}/callback`) and prompt expiry did not**, and the "crash tests" kill no process |
+| 5b | Stripe SDK compatibility on `/v1` | ✅ Delivered 2026-09-03 (PR #20) — the real `stripe@22.6.1` package driven out of process against the compose stack: `sdks/stripe-compat`, **25 cases, 0 skipped**, run by CI's `e2e (compose)` job; [flows/stripe-sdk-compat.md](flows/stripe-sdk-compat.md). *`docs/status.md`'s row is 🟡 for the standing limit — the rail and the receiver are both WireMock hosts* |
+| 5c | Stripe.js-compatible browser checkout | ✅ Delivered 2026-09-03 (PR #22), **push rails only** — `/v1/browser` plus `@vpay/stripe-js`, no merchant credential in the browser, proven by `checkout.cy.ts` against the compose stack. **The redirect return trip is a named gap**: there is no bounce endpoint, so an Orange checkout must not be shipped on this package ([flows/browser-checkout.md](flows/browser-checkout.md), "The redirect gap") |
+| 6 | Webhooks | 🟡 In progress — the outbox drain, signing and delivery landed 2026-09-03 (Step 5, PR #19) against a WireMock receiver; no merchant endpoint has ever been POSTed to, there is no SSRF protection of any kind (boot-time `validate_host` is a stub-host guard, not an address check), delivery is unordered, and replaying an exhausted delivery is a hand-written transaction |
+| 7 | Operability — including Step 6's groundwork (PR #21) | 🟡 In progress — **the repo is here now**, on Step 7 (see below). No longer "blocked by environment": CI runs the compose stack, both Cypress specs and the stripe-node conformance suite; the Helm chart is linted, rendered and kubeconform-checked by CI's `deploy` job; `release.yml` has built and signed images on every push to `master` since Step 6; `just demo` runs seven steps. **Not done: no cluster, no Prometheus scrape, no runbook walked against a real fault, and no real rail behind any of it** |
+
+**Where the repo is now, 2026-09-03 (evening).** Steps 5b, 6 and 5c landed on
+`master` in that order (PRs #20, #21, #22), followed by a frontend dependency
+audit and a CI timeout fix (PRs #23, #24). The work in flight is **Step 7, the
+cleanup rework** ([plans/2026-09-03-step7-cleanup-rework.md](plans/2026-09-03-step7-cleanup-rework.md)),
+on a branch and unmerged: repository traits hiding the `sqlx` implementations
+behind an interface, a real `#[source]` on the adapter transport/malformed
+errors so a rail failure keeps its cause, doctests so the documentation cannot
+lie, and flow prose moved out of long module comments into `.md` files. **It
+moves no capability.** Nothing in the table above changes when it lands, and the
+conformance, integration and SDK suites are the guard that says so.
+
+**On the markers in that table.** ✅ means "delivered, with a test that would
+fail if it broke" — it does not mean "safe with money". Every ✅ above is proven
+against WireMock rails and a WireMock receiver, which is why most of the
+matching per-feature rows in [`docs/status.md`](status.md) are 🟡. Where this
+page and that one disagree, that one wins.
 
 Phases 3 and 4 are listed in build order but genuinely interleave — see
 Phase 3's note. `docs/status.md`'s own "What would have to be true to call
@@ -62,7 +96,11 @@ signal-handler race fix) → `3d7635a` (#5, CrateStack re-verify) →
   not the repository total: there are **20** migrations as of 2026-09-03
   (`0013` with the authkestra upgrade, `0014`–`0018` with Step 2, of which
   `0017` and `0018` are schema only, and `0019`–`0020` with Step 3). See the
-  Phase 3 addenda.*
+  Phase 3 addenda.* **Corrected 2026-09-03 (evening): that "20" was true when
+  it was written and is now wrong — `ls backends/migrations | wc -l` answers
+  26.** `0021`–`0024` came with the worker and the webhook outbox (Steps 4 and
+  5), `0025` with the Stripe-SDK retry advice (Step 5b) and `0026` with
+  `client_secret` (Step 5c). Phase 1's own scope is still the first twelve.
 - YAML configuration loading (`vpay_config::Config::load`: Figment layers +
   hand-rolled `${ENV}` resolution + `garde` validation), wired into both
   binaries as a hard startup requirement — [ADR-0003](adr/0003-yaml-configuration.md).
@@ -79,9 +117,10 @@ each binary's `tests/cli.rs`); `/healthz` returns 200 or 503 based on a real
 `SELECT 1`, not a static string; all migrations apply cleanly and
 idempotently with their constraints proven to fire in
 `backends/tests/integration/tests/postgres_smoke.rs` — 12 when this phase
-closed, **20** as of 2026-09-03 (`schema_migrates_cleanly_on_an_empty_database`
-applies whatever is in `backends/migrations/`, so the count is not pinned
-here).
+closed, **26** as of 2026-09-03 (evening; this line said 20 until then —
+`schema_migrates_cleanly_on_an_empty_database` applies whatever is in
+`backends/migrations/`, so the count is not pinned here and a stale number in
+this document never failed a build).
 
 **Unblocks.** Everything below — no later phase can start without a durable
 process and a database.
@@ -170,6 +209,15 @@ plus the Stripe-shaped 404.
 > answers**, by the code: the access-token TTL is 900 s and the
 > rotation-overlap window is 24 h. Both are constants a maintainer should
 > still decide; neither is recorded in an ADR or configurable.
+>
+> **Update, 2026-09-03 (evening): the "this is where the repo is now"
+> sentence in the Status paragraph above is history, and is left standing
+> rather than edited.** The marker moved to Phase 7 in the table at the top
+> of this page. Phases 3, 4a, 4b/5 and 6 have all landed since, along with
+> two deliverables this document had no phase for (5b and 5c), and the merchant
+> half of this phase now has CI evidence rather than one manual run — CI's
+> `rust` job is green on `master` (run `33792230584`). The dashboard half
+> (Phase 2b) has not moved at all.
 
 **Scope, in dependency order.**
 1. ~~`YamlClientStore`: convert configured `vpay_config::oauth::MerchantClient`
@@ -489,6 +537,14 @@ phase. *This line said "Not started" until then.* The object model and state
 machine (`vpay-core::state`) are implemented and tested, and four
 `/v1/payment_intents` paths now route HTTP requests through them; `confirm`
 reaches the rail adapter and stops at its `NotImplemented`.
+
+*Addendum, 2026-09-03 (evening): two later deliverables sit **on top of** this
+surface without changing its contract — the official Stripe SDK path (Step 5b,
+PR #20, [flows/stripe-sdk-compat.md](flows/stripe-sdk-compat.md)) and the
+unauthenticated browser surface a payer's own page calls (Step 5c, PR #22,
+`/v1/browser`, [flows/browser-checkout.md](flows/browser-checkout.md)).
+Migrations `0025` and `0026` came with them; the repository total is now 26,
+not the 20 the Step 3 addendum below records.*
 
 **Scope.**
 - `POST /v1/payment_intents` (create) — writes a row via the existing
@@ -852,6 +908,19 @@ far went to a WireMock host on a compose network, on a developer machine and in
 CI. That is why this phase is 🟡 and not ✅, and it is the same limit Phases 4
 and 5 carry about rails.
 
+> **Addendum, 2026-09-03 (evening) — two follow-ons landed on top of this
+> phase, and neither changes anything above.** Step 5b (PR #20) proved a
+> delivered webhook verifies through the **official `stripe` package**'s
+> `webhooks.constructEvent`, against bytes read back out of the receiver's own
+> request journal rather than bytes vpay believes it sent, and refuses both a
+> body with one byte flipped and the right body under the wrong secret
+> ([flows/stripe-sdk-compat.md](flows/stripe-sdk-compat.md)). Step 5c (PR #22)
+> added the browser surface a payer's page polls while a delivery is in flight
+> ([flows/browser-checkout.md](flows/browser-checkout.md)). Both are rows in
+> the table at the top of this page rather than scope here. **The receiver is
+> still a WireMock host, delivery is still unordered, and there is still no
+> SSRF protection of any kind.**
+
 **Scope, and what became of each item.**
 - ✅ An outbox row written in the same transaction as the state change it
   reports — `vpay_db::events::insert_in_tx`, inside
@@ -942,6 +1011,58 @@ exercises the dashboard's scaffold notice, not a real payment flow, so
 running it green proves the environment works before it proves anything
 about payments.
 
+> **Addendum, 2026-09-03 (evening) — the environment blocker is lifted, and
+> what is left of this phase is a cluster nobody has rather than a registry
+> nobody could reach.** The 2026-09-02 correction above stands and is not
+> deleted; the paragraph before this one describes the *original* authoring
+> machine and is still true of it. What Step 6 (PR #21) and the CI runs since
+> then changed:
+>
+> - **The compose stack runs in CI, on every pull request and every push.**
+>   `ci`'s `e2e (compose)` job builds both images, brings the stack up against
+>   WireMock rails, and runs **both Cypress specs** — `dashboard.cy.ts`'s three
+>   tests and Step 5c's `checkout.cy.ts`, which drives a real browser through
+>   confirm → processing → succeeded — plus the stripe-node conformance suite.
+>   Green on `master` at run `33792230584`. The one spec this phase's Status
+>   paragraph above calls "only the dashboard's scaffold notice" is no longer
+>   the only spec.
+> - **The Helm chart exists and CI checks it.** `deploy/helm/vpay`, fifteen
+>   named template guards, `helm lint` / `helm template` / `kubeconform`
+>   through `just helm-check`, run by CI's `deploy (helm chart)` job — the job
+>   runs the recipe rather than a copy of it, so the two cannot drift. 20
+>   resources validated, 0 invalid; every guard fires by name.
+> - **The release pipeline has run, and signed what it built.** `release.yml`
+>   builds three images across two native architectures, merges each into a
+>   manifest list and signs it with keyless cosign. Four runs on `master`
+>   since Step 6 landed — `33772512791`, `33784613048`, `33789060270`,
+>   `33792230539` — nine jobs each, all green. **The `edge` images exist
+>   because of those runs and for no other reason.** No `v*` tag has been
+>   pushed, so the semver tag path is still unexercised; and the first push
+>   creates each GHCR package **private**, so nobody outside CI can pull one
+>   until a human flips the visibility by hand
+>   ([runbooks/release.md](runbooks/release.md)).
+> - **`just demo` runs seven steps** end to end against the containerised
+>   stack, the seventh being a signed `payment_intent.succeeded` read back out
+>   of a WireMock receiver's own request journal and verified with the
+>   shipping SDK.
+> - **Both binaries have an observability listener** on a second port —
+>   `/livez` and `/metrics`, twelve metric names with one seam each.
+>
+> **What is still not done is the whole of this phase's Definition of done.**
+> **No cluster has ever run the chart** — not a real one, not kind — so
+> nothing above is evidence about scheduling, admission, probe behaviour,
+> `readOnlyRootFilesystem`, NetworkPolicy enforcement, PDB behaviour during a
+> drain, or whether an ingress controller honours the `limit-rps` annotation
+> CI greps for. **No Prometheus has ever scraped a vpay process**, so all five
+> alert rules are unevaluated and every threshold is provisional rather than
+> derived from traffic. **No runbook has been walked against a real fault** —
+> eight are written, none has been followed against a deployment, because no
+> deployment exists. No backup has ever been taken
+> ([ADR-0013](adr/0013-database-backups-and-retention.md) is *proposed*). And
+> under all of it, no real rail has ever been called. See
+> [flows/deployment.md](flows/deployment.md) and `docs/status.md`'s
+> Infrastructure rows for the per-artefact account.
+
 **Scope.**
 - Build `backends/Dockerfile` and `frontends/Dockerfile` to completion (both
   rewritten this cycle — musl target, non-root UID 65532, `.dockerignore` —
@@ -987,3 +1108,30 @@ Status block carries the detail, including the one thing that matters most
 about the evidence — the six integration tests that cover the flow have run
 once, manually, against a scratch database, and never under Docker or in
 CI. Phases 3–7 are untouched.
+
+**Third addendum, 2026-09-03 (evening).** Eight pull requests merged to
+`master` in one day, and the table at the top of this page is rewritten against
+them rather than patched around them: **#17** the rail adapters (Step 3),
+**#18** the worker — job queue, poll ladder, recovery, settlement (Step 4),
+**#19** signed webhook delivery with its retry ladder and the events API
+(Step 5), **#20** compatibility with the official `stripe` package and the
+`sdks/stripe-compat` conformance suite (Step 5b), **#21** the Helm chart, the
+release pipeline, the observability listener, twelve metrics and four new
+runbooks — eight in total (Step 6), **#22** the Stripe.js-compatible browser checkout — `/v1/browser`,
+`@vpay/stripe-js`, `examples/checkout-browser` (Step 5c), **#23** a frontend
+dependency audit clearing 21 Dependabot alerts and adding `just audit-web` as a
+gate, and **#24** a raised Cypress verify budget in the CI e2e job. **Step 7,
+the cleanup rework, is on a branch and unmerged**; it moves no capability.
+
+**The caveats none of those merges touched**, and which this page must not be
+read as having retired: no HTTP call to a **real** rail has ever been made —
+every payment in this repository's history settled against a
+`wiremock/wiremock` host answering the way these documents say a rail answers;
+**no merchant endpoint has ever been POSTed to** and there is no SSRF
+protection on webhook destinations; **no cluster has run the Helm chart and no
+Prometheus has scraped a vpay process**; the GHCR packages those release runs
+created are **private** — nothing in this repository can publish them, and
+making one pullable is a one-time change a human makes in the package's own
+settings ([runbooks/release.md](runbooks/release.md)); there is still no
+`/dash/v1` login; and **no runbook has been followed against a real fault**.
+[`docs/status.md`](status.md) records each of those per feature, and it wins.
