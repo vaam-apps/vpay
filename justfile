@@ -141,8 +141,12 @@ verify-errors:
 # day and all 26 cases run live against WireMock containers. A test is
 # ignored only while its behaviour is unbuilt (AGENTS.md rule 2).
 expected_ignored := "0"
-expected_suites := "35"
-min_tests := "640"
+# 37 since 2026-09-03: Step 4 added `worker_recovery` and `worker_e2e` under
+# backends/tests/integration/tests/, the two suites that are the *only* proof
+# any job handler works (vpay_worker::handlers' own module comment says why it
+# has no unit tests).
+expected_suites := "37"
+min_tests := "790"
 
 verify-ignored:
     #!/usr/bin/env bash

@@ -2,15 +2,32 @@
 //!
 //! Everything that touches the network happens here, never in the API process.
 //!
-//! STATUS: only the poll ladder and the job loop's *error contract*
-//! ([`JobError`]) are implemented and tested. Job dequeue, submission,
-//! polling and delivery are NOT implemented — see `docs/status.md`. Nothing
-//! here calls [`JobError::decision`]; it is the type Phase 5 consumes.
+//! Read in this order: [`mod@run_loop`] owns the `jobs` row (claim, settle,
+//! drain), [`handlers::handle`] does the work of one job, [`recovery`] and
+//! `vpay_core::settlement` are the two pure decision tables it consults, and
+//! [`error`] is the retry policy all of it derives from `Classify`.
+//!
+//! STATUS: polling, recovery and settlement are implemented and proven
+//! against a real Postgres and a real WireMock rail in
+//! `backends/tests/integration/tests/worker_{recovery,e2e}.rs`. **Webhook
+//! delivery is not** — `deliver_webhook` is absent from [`jobs::JobKind`] and
+//! from migration 0021's `kind_is_known` CHECK, so this build cannot enqueue
+//! one by accident. See `docs/status.md`.
 
 use std::time::Duration;
 
 pub mod error;
+pub mod handlers;
+pub mod jobs;
+pub mod recovery;
+pub mod run_loop;
 pub use error::{Decision, JobError, tracing_level};
+pub use handlers::{Adapters, RailConfigs, handle};
+pub use jobs::{JobKind, Outcome, PollChargePayload, ResubmitPayload};
+pub use recovery::{RecoveryAction, RecoveryPolicy, SubmitAttempt, recovery_step};
+pub use run_loop::{
+    Disposition, Drain, LoopReport, Settled, run_loop, run_once, seed_singletons, worker_id,
+};
 
 /// Delay before poll number `n` (0-indexed), per `docs/flows/reconciler.md`.
 ///
@@ -36,6 +53,12 @@ pub fn poll_delay(attempt: u32) -> Duration {
 /// stay live, because a late success at hour 30 is a normal transition, not
 /// an exception. This is the delay [`JobError::decision`] pairs with
 /// `alert: true` for [`JobError::Exhausted`].
+///
+/// "Polled" is literal: each of these hourly runs asks the rail again, and a
+/// terminal answer settles the charge exactly as it would have on the first
+/// rung ([`handlers::handle`]). The escalation changes the *interval* and adds
+/// the alert; it never stops the question being asked, because a charge
+/// nobody asks about is one whose late success is lost.
 pub const UNRESOLVED_POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 #[cfg(test)]

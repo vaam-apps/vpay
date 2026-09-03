@@ -222,6 +222,41 @@ pub async fn get_for_merchant(
         .map_err(DbError::Query)
 }
 
+/// Reads one intent by its own id, with no merchant scope.
+///
+/// # Why this exists in a module whose whole rule is "merchant-scoped in SQL"
+///
+/// [`get_for_merchant`] is the *handler's* read, and the scope is what stops
+/// a handler leaking another merchant's object. This one is the **worker's**
+/// read: it is reached from `charges.payment_intent_id`, a foreign key, so
+/// the caller already holds the row that names it and there is no request
+/// whose authorisation could be checked. Taking a `merchant_id` here would
+/// have to be a value the worker looked up from the very intent it is about
+/// to read — an authorisation check against itself, which reads as a
+/// guarantee while providing none.
+///
+/// The worker needs it because the settlement transaction takes the event's
+/// wire object as an *input* (`docs/flows/webhooks.md`: the event is a
+/// snapshot of the object as it was when the transition happened), so the
+/// object has to be rendered before the write rather than from its result.
+///
+/// **Not for use in a `/v1` handler.** A handler with this function and a
+/// merchant id in scope will eventually compare them in Rust, which is the
+/// read-then-compare this module exists to make impossible.
+///
+/// # Errors
+///
+/// Returns [`DbError::Query`] if the read fails.
+pub async fn get_by_id(pool: &PgPool, id: &str) -> Result<Option<PaymentIntentRow>, DbError> {
+    let sql = format!("SELECT {COLUMNS} FROM payment_intents WHERE id = $1");
+
+    sqlx::query_as::<_, PaymentIntentRow>(&sql)
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(DbError::Query)
+}
+
 /// One page of this merchant's intents, newest first, plus whether more
 /// exist beyond it.
 ///
@@ -452,6 +487,205 @@ pub async fn record_payment_error(
         .map_err(classify_write)
 }
 
+/// The `intent_status` labels a live charge's intent can legitimately be in
+/// when a settlement arrives.
+///
+/// Two of them are the confirmed statuses: a push rail leaves the intent
+/// `processing`, a redirect rail leaves it `requires_action` until the payer
+/// comes back (`docs/flows/payment-lifecycle.md`). Both settlement writers
+/// below guard on the set rather than on a single expected status supplied by
+/// the caller, because the worker settling a charge does not know — and must
+/// not have to know — which rail's flow put the intent where it is. Branching
+/// on that in the caller would be exactly the rail-shaped branch ADR-0002
+/// forbids; naming the legal *values* is not.
+///
+/// # Why `requires_payment_method` is in the set
+///
+/// Because a crash puts it there, and the charge — not the intent — is the
+/// record of whether a confirm happened. `confirm` commits the charge and its
+/// poll job in one transaction *before* the rail is called, and moves the
+/// intent only afterwards, in `persist_submitted`
+/// (`vpay_api::v1::payment_intents`, `docs/flows/crash-safety.md`). So all
+/// three of that document's kill points leave a live charge against an intent
+/// still reading `requires_payment_method`, which is precisely the state the
+/// recovery pass exists to resolve.
+///
+/// Excluding it made the settlement of a crashed confirm unreachable: the
+/// charge compare-and-swap in [`crate::settlement`] would fire, the intent
+/// guard would match nothing, and the whole transaction became
+/// [`DbError::WriteMatchedNoRow`] → `Category::Internal` → `Retry::Never` →
+/// a dead-lettered poll job, with the charge left live and nothing ever
+/// driving it again. A charge that the rail may have collected is exactly
+/// what must not be parked.
+///
+/// It is safe because the settlement writers are never called on their own:
+/// they run inside [`crate::settlement`]'s transaction, *after* a charge
+/// compare-and-swap over `LIVE_CHARGE_STATES` has already matched a row. A
+/// live charge is proof a confirm happened, whatever the intent's status says.
+///
+/// `succeeded` and `canceled` stay out, and that is what keeps the guard a
+/// guard: neither can coexist with a live charge (`cancel`'s `NOT EXISTS`,
+/// and "one charge per intent, forever"), so either one appearing here is a
+/// broken invariant that must page rather than settle.
+const SETTLEABLE_STATUSES: &str = "'processing', 'requires_action', 'requires_payment_method'";
+
+/// The `lpe_message_length` CHECK's ceiling (migration 0014), in characters.
+const LAST_PAYMENT_ERROR_MESSAGE_MAX_CHARS: usize = 512;
+
+/// Settles the intent of a charge the rail reported as paid: any of
+/// `SETTLEABLE_STATUSES` → `succeeded`, with `amount_received` set to the
+/// full `amount`, in one statement.
+///
+/// `requires_payment_method` is one of those statuses, so this is also the
+/// write that resolves a confirm that crashed before it could move the intent
+/// — see `SETTLEABLE_STATUSES` for why that is not a hole in the guard.
+///
+/// # Why `amount_received = amount` and not a parameter
+///
+/// Neither rail vpay speaks to today can settle a *part* of a submitted
+/// amount: `vpay_provider::ChargeStatus::Succeeded` carries a transaction
+/// identifier and no amount at all, because a push rail either collects what
+/// it was asked for or fails. Taking an amount here would invite a caller to
+/// supply one it derived from somewhere — and the only place it could derive
+/// it from is the charge, which is already required to equal the intent's
+/// amount. When a rail that can partially collect arrives, this becomes a
+/// parameter *and* `succeeded` stops being the right status; that is a
+/// change to the state machine, not a missing argument today.
+///
+/// `Ok(None)` means the guard refused: no such intent, or its status is
+/// outside `SETTLEABLE_STATUSES` — which, for the settlement transaction,
+/// leaves only `succeeded` and `canceled`. Both are invariant violations
+/// rather than races (neither can coexist with the live charge the caller's
+/// compare-and-swap has just matched), and [`crate::settlement`] turns them
+/// into [`DbError::WriteMatchedNoRow`] rather than committing half a
+/// settlement.
+///
+/// # Why `pub(crate)`
+///
+/// The widened guard's safety argument is "this is never called outside the
+/// settlement transaction, after a charge compare-and-swap over
+/// `LIVE_CHARGE_STATES` has already matched". `pub(crate)` is what makes the
+/// compiler enforce that rather than this paragraph: [`crate::settlement`] is
+/// the only module that can reach it, and a caller elsewhere — a handler, a
+/// test, a future repair script — would have to move a `pub` here in the same
+/// diff, which is the moment the argument has to be re-made.
+///
+/// # Errors
+///
+/// Returns [`DbError::Query`] if the write fails.
+pub(crate) async fn succeed_after_submission(
+    tx: &mut sqlx::PgConnection,
+    id: &str,
+) -> Result<Option<PaymentIntentRow>, DbError> {
+    let sql = format!(
+        "UPDATE payment_intents \
+         SET status = 'succeeded'::intent_status, \
+             amount_received = amount, \
+             updated_at = now() \
+         WHERE id = $1 AND status IN ({SETTLEABLE_STATUSES}) \
+         RETURNING {COLUMNS}"
+    );
+
+    sqlx::query_as::<_, PaymentIntentRow>(&sql)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(classify_write)
+}
+
+/// Returns the intent of a declined charge to `requires_payment_method`
+/// **and** stamps the failure that sent it there, in one statement.
+///
+/// # `requires_payment_method` → `requires_payment_method` is a real write
+///
+/// That status is itself in `SETTLEABLE_STATUSES`, so a confirm that crashed
+/// before it could move the intent still matches one row here: the status
+/// does not move, and the write is the error pair alone. Counting that as
+/// *applied* is the point — the alternative is zero rows matched, which
+/// [`crate::settlement`] reports as a broken invariant and which parks the
+/// poll job of a charge the rail may have collected.
+///
+/// # Why this exists next to [`record_payment_error`]
+///
+/// They are two different moments. `record_payment_error` is for a rail that
+/// declined at submit: the intent never left `requires_payment_method`, so
+/// there is no status to move and the whole write is the error pair. This one
+/// is for a decline the *poll* discovered, after the intent had already moved
+/// to `processing`/`requires_action` — and `docs/flows/payment-lifecycle.md`
+/// is explicit that such a failure "returns the intent to
+/// `requires_payment_method`" with `last_payment_error` populated (there is
+/// no `failed` status; the diagram's failed box is that alias). So the status
+/// change is real, and it must happen in the same statement as the error
+/// pair: an intent that is back at `requires_payment_method` carrying no
+/// error reads to a merchant as one that was never attempted.
+///
+/// A merchant polling `GET` therefore sees a resolved intent — and one that
+/// *looks* confirmable again. It is not: "one charge per intent, forever"
+/// means the failed charge still blocks a second `confirm`, which answers
+/// `already_charged` and tells the merchant a retry is a new intent
+/// (`vpay_api::v1::payment_intents`). That guard is what makes this
+/// transition safe, and the design records it as the thing to verify before
+/// shipping this writer.
+///
+/// # Not merchant-scoped, unlike every other query in this module
+///
+/// The caller is the worker settling a charge, not a merchant addressing
+/// their own object, and there is no request whose authorisation could be
+/// checked here. The module's rule exists to stop a *handler* leaking
+/// another merchant's object by reading first and comparing afterwards;
+/// taking a `merchant_id` the worker would have to look up from the intent
+/// it is already holding would look like an authorisation check while
+/// checking that the intent belongs to itself. The `id` comes from
+/// `charges.payment_intent_id`, which is a foreign key — it cannot name
+/// another merchant's intent by accident.
+///
+/// `message` is truncated to the column's 512 characters rather than left to
+/// the `lpe_message_length` CHECK: this write is the last statement of a
+/// settlement transaction, and a rail whose text runs long would otherwise
+/// abort the whole settlement — leaving the charge live and the job to retry
+/// forever against a message that will be just as long next time.
+///
+/// `Ok(None)` means the guard refused, exactly as in
+/// [`succeed_after_submission`], and it is `pub(crate)` for the same reason:
+/// the guard is only safe because a live charge has already been matched in
+/// the same transaction, and visibility is how that stays true.
+///
+/// # Errors
+///
+/// Returns [`DbError::Query`] if the write fails, including a `code` outside
+/// the `failure_code` enum — a vpay bug, since the vocabulary is closed.
+pub(crate) async fn fail_after_submission(
+    tx: &mut sqlx::PgConnection,
+    id: &str,
+    code: &str,
+    message: &str,
+) -> Result<Option<PaymentIntentRow>, DbError> {
+    // Characters, not bytes: the CHECK counts characters, and slicing bytes
+    // could split one.
+    let bounded: String = message
+        .chars()
+        .take(LAST_PAYMENT_ERROR_MESSAGE_MAX_CHARS)
+        .collect();
+
+    let sql = format!(
+        "UPDATE payment_intents \
+         SET status = 'requires_payment_method'::intent_status, \
+             last_payment_error_code = $2::failure_code, \
+             last_payment_error_message = $3, \
+             updated_at = now() \
+         WHERE id = $1 AND status IN ({SETTLEABLE_STATUSES}) \
+         RETURNING {COLUMNS}"
+    );
+
+    sqlx::query_as::<_, PaymentIntentRow>(&sql)
+        .bind(id)
+        .bind(code)
+        .bind(&bounded)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(classify_write)
+}
+
 /// The `charge_state` labels a charge is in while the rail may still act on
 /// it — the four non-terminal members of the enum created by migration 0004,
 /// and exactly the set the partial index `charges_live_idx` (migration 0014)
@@ -461,7 +695,13 @@ pub async fn record_payment_error(
 /// because this crate carries Postgres enums as `String` (D4) and the list
 /// has to appear inside a statement; the migration and this constant are the
 /// two places it is written, and `charges_live_idx` is what ties them.
-const LIVE_CHARGE_STATES: &str = "'submitting', 'submitted', 'pending', 'unresolved'";
+///
+/// `pub(crate)` because [`crate::settlement`] guards its charge
+/// compare-and-swaps on the same set — a settlement may only move a charge
+/// the rail could still have been acting on — and two copies of this list
+/// could drift, which would either let a settled charge be settled twice or
+/// stop a cancel from seeing a live one.
+pub(crate) const LIVE_CHARGE_STATES: &str = "'submitting', 'submitted', 'pending', 'unresolved'";
 
 /// Cancels an intent that is still `requires_payment_method` **and** has no
 /// charge the rail may still be acting on.

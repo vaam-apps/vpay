@@ -133,8 +133,47 @@ decline path and read back by `GET`. One charge per intent is enforced at
 the API level as well as by the index
 (`a_second_confirm_cannot_produce_a_second_charge`).
 
-**`succeeded` has still never happened, and neither has `canceled` after a
-confirm.** `processing` and `requires_action` are where a confirmed intent
-stops: nothing polls a `submitted` charge, so no intent has ever reached
-`succeeded` (or moved to `requires_payment_method` from a *post-submission*
-failure). That is Phase 5 / the worker — see [../status.md](../status.md).
+**Updated 2026-09-03 (Step 4): `succeeded` happens, and the worker is what
+makes it happen.** A confirmed intent no longer stops at
+`processing`/`requires_action`. The `poll_charge` job committed with the charge
+drives it to a terminal state:
+
+- **the rail reports the payment** → charge `succeeded` carrying the rail's
+  `provider_txn_id` (migration `0021`), intent `succeeded` with
+  `amount_received = amount`, and one `payment_intent.succeeded` event — all in
+  **one** transaction (`vpay_db::settlement::apply_succeeded`), so there is no
+  state in which the intent is paid and the event is missing
+  (`a_confirmed_payment_is_driven_to_succeeded_and_the_merchant_sees_it`,
+  `backends/tests/integration/tests/worker_e2e.rs`, which drives a real confirm
+  through the real loop against a WireMock rail and reads the result back
+  through `GET /v1/payment_intents/{id}`);
+- **the rail reports a decline after submission** → charge `failed` with its
+  `failure_code`/`failure_raw`, intent back to **`requires_payment_method`**
+  carrying `last_payment_error`, and one `payment_intent.payment_failed` event,
+  in the same single transaction (`apply_failed` →
+  `payment_intents::fail_after_submission`). This is the transition this
+  document describes and nothing could previously perform: `record_payment_error`
+  stamps the error without moving the status, so a sibling writer was added that
+  does both in one statement
+  (`a_decline_after_submission_returns_the_intent_to_requires_payment_method`).
+  A retry is still a new intent — the charge is terminal and
+  `one_charge_per_intent` is forever;
+- **the rail never answers** → after 24 hours the *charge* moves to
+  `unresolved` and a human is alerted, while the **intent stays where it is**.
+  `unresolved` is an escalation, not a verdict; the charge is still polled
+  hourly and a late success settles it normally
+  ([reconciler.md](reconciler.md)).
+
+The settlement's intent guard accepts `processing`, `requires_action` **and**
+`requires_payment_method`, because a confirm that crashed before it could move
+the intent leaves a live charge against an intent still reading
+`requires_payment_method` — see [crash-safety.md](crash-safety.md).
+
+**What still has never happened.** `canceled` after a confirm (cancel is legal
+only from `requires_payment_method` and refuses an intent with a live charge —
+by design, not by omission); any partial `amount_received`, because neither
+rail can collect part of an amount and `ChargeStatus::Succeeded` carries no
+amount at all; `prompt_expired_at` and the `payment_intent.processing`
+milestone ([reconciler.md](reconciler.md)); and any of this against a **real**
+rail — every settlement observed so far came from a WireMock host. See
+[../status.md](../status.md).

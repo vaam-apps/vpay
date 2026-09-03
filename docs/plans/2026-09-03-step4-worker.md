@@ -172,3 +172,91 @@ Plus `charges::get_by_id`, and the sweeps moved out of `vpay-server/src/main.rs:
 7. **Does the MTN e2e scenario mapping go in the shared `backends/tests/conformance/wiremock/` tree (which `compose.yml` and the conformance suite also mount), or a new integration-only tree?** *Default: shared tree, priority 5, keyed on a new documentation MSISDN.* Gained: one stub definition, `just up`/demo behaviour unchanged, and it follows the precedent already argued at length in `requesttopay.json`. Lost: a mapping that exists for one integration test now sits in the conformance fixtures, and a careless future priority change can silently break a conformance case. A separate tree costs a second `start_wiremock` fixture and a duplicated `token.json`.
 
 8. **Is `roadmap.md`'s Phase 4/4b split part of this step's commit?** *Default: yes — Step 4 must land it, since `status.md:492` already cites a split that does not exist in `roadmap.md:569-600`.* Gained: the two documents stop contradicting each other, and Phase 4's Definition of Done stops claiming recovery. Lost: nothing, beyond the edit; the concurrent docs agent may be doing it already — coordinate before duplicating.
+---
+
+# Outcome (2026-09-03, branch `claude/step4-worker`)
+
+*Written after the pass landed. `docs/status.md` and the flow docs are the
+record from here; this section exists so a reader of the design can see what
+became of it.*
+
+**What landed.** Migration `0021` (the `jobs` table plus
+`charges.provider_txn_id`); `vpay_db::{jobs, settlement, events}`;
+`vpay_core::settlement::{settle, contradiction}`;
+`vpay_worker::{jobs, handlers, recovery, run_loop}`; the enqueue inside
+`insert_charge`'s transaction; a real `vpay-worker-bin` (boot step 4 reconcile
+under the `CONFIG_RECONCILE` advisory lock, lease reaping, singleton seeding,
+`run_loop`, bounded drain, non-zero exit on a timed-out drain); the MTN
+`PENDING → SUCCESSFUL` WireMock scenario; a sixth demo step that ends in
+`succeeded`; 20 `worker_recovery` + 3 `worker_e2e` container-backed tests. The
+whole workspace suite after the third remediation: **806 tests run, 806 passed, 0 skipped**.
+
+**Where the implementation deviates from this design, and why.**
+
+- **`contradiction` lives in `vpay-core`, not in the worker**, and it is
+  wired but its call sites are untested. The design never named it; it came
+  out of review finding F4. The classifier sits beside `settle` because it is
+  the same table read the other way and must stay total in both dimensions.
+  One call site is currently unreachable (behind the terminal guard, written
+  out deliberately rather than removed) and the other needs a multi-worker
+  race no test stages — so "vpay would tell you if a rail reversed a settled
+  payment" is not yet a claim this repository can make.
+- **Lease reaping is not only the `sweep_expired` job** (§1 and §2 said it
+  was). It also runs at worker boot, unconditionally and before seeding, and
+  then on a dedicated timer every `lease / 2` floored at the idle poll —
+  because the sweep is itself a row in `jobs`, so a worker that died holding
+  it would leave the only reaper unclaimable. Finding F2.
+- **The intent guard is wider than §3's.** `SETTLEABLE_STATUSES` includes
+  `requires_payment_method`, because that is where all three kill points leave
+  a crashed confirm's intent. Finding F1.
+- **The gauge line names two fields differently from §5** — `finished` rather
+  than "succeeded" (it counts a declined charge too; calling it `succeeded`
+  would read as a payment count) and `queue_behind_seconds` rather than the
+  oldest `run_at` (a duration is the thing alerting thresholds; a timestamp
+  would have to be diffed by whoever read the line). It also carries
+  `worker_id`, which §5 omitted.
+- **`resubmit_charge` merges `provider_ref_extra`** instead of assigning it,
+  so a push rail's empty answer on a second submit cannot erase key material.
+  Finding F5.
+- **Q6 was taken as designed:** `prompt_ttl_seconds` / `prompt_expired_at` are
+  deferred and named in `reconciler.md`'s Status. Q8 (the roadmap 4a/4b split)
+  landed here.
+- **The crash tests do not kill a process.** They write the state each kill
+  point leaves and run the real handlers against it — §6's own framing, kept
+  honest in `crash-safety.md` rather than described as a `SIGKILL` test.
+
+**Review findings, one line each.**
+
+- **F1 (blocker).** A crash between the charge insert and `persist_submitted`
+  left the intent at `requires_payment_method`, which the settlement guard
+  (`processing | requires_action`) rejected — so the recovered charge
+  dead-lettered instead of settling. Fixed by widening the guard to
+  `SETTLEABLE_STATUSES`.
+- **F2 (high).** Expired leases were reaped only inside the hourly
+  `sweep:expired` job and never at boot, so a job stranded by a `SIGKILL`
+  waited up to an hour — forever, if the stranded job was the sweep. Fixed by
+  reaping at boot before seeding, plus a reaper every `lease / 2`.
+- **F3 (high).** A rail that never answered rode the retry ladder forever,
+  because the `unresolved_after` horizon was only reached after a *successful*
+  status query. Fixed by evaluating the horizon before the query. **The first
+  fix over-corrected** — it returned before the query, so a charge past the
+  horizon stopped being polled at all, contradicting this document's "still
+  polled, once an hour" and "a late success at hour 30 is the normal
+  transition". Caught by the remediation review and corrected in a second
+  remediation: past the horizon the worker still queries the rail hourly, a
+  terminal answer settles through the ordinary path, and a failed or
+  non-terminal answer keeps the charge `unresolved` and re-raises the alert.
+- **F4 (medium).** A rail answer contradicting an already-settled charge was
+  silently dropped as `Done`. Fixed by `vpay_core::settlement::contradiction`
+  (table-tested) wired to an `error!(alert = true, …)` log — **the classifier
+  is tested and the two call sites are not**, which is why the Settlement row
+  in `docs/status.md` is 🟡 and not ✅.
+- **F5 (low).** `resubmit_charge` overwrote `provider_ref_extra` wholesale.
+  Fixed in SQL (`COALESCE(existing, '{}') || new`), with a `NULL` argument
+  leaving the column untouched.
+
+Conventions review, addressed in the same remediation: the gauge line lacked
+`worker_id`; `oldest_runnable_run_at` had no test; the "no `sqlx`" comments in
+`vpay-worker` overclaimed (the rule is about where *statements* live, not about
+the type being absent); the WireMock scenario lacked its demo-reset note; and
+`worker_e2e` did not assert the contents of `events.data`.

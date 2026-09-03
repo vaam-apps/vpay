@@ -1000,14 +1000,50 @@ fn currencies_agree(rail: &RailConfig, intent_currency: &str) -> Result<(), ApiE
     ))
 }
 
-/// Commits the charge row in `submitting`, in its own transaction, before
-/// any network call.
+/// The `jobs.kind` and `jobs.dedupe_key` this handler enqueues under.
 ///
-/// A transaction for a single insert looks redundant and is not: the
-/// signature `vpay_db::charges::insert_for_intent` offers takes a
-/// `PgConnection` precisely so the commit point is the caller's decision,
-/// and this one has to be *before* the adapter call rather than pooled into
-/// some later unit of work.
+/// Written out as literals rather than imported from `vpay_worker::jobs`,
+/// which is where they are otherwise spelled. Not a preference: `vpay-worker`
+/// depends on *this* crate (for `crate::model::PaymentIntentObject`, which it
+/// renders `events.data` through), so importing it back would be a cycle.
+///
+/// Three things stop that duplication drifting silently, which is why it is
+/// acceptable at all:
+///
+/// * migration 0021's `kind_is_known` CHECK refuses any `kind` outside the
+///   four the worker knows, so a typo here fails the *confirm* rather than
+///   producing a job nothing dispatches;
+/// * `the_enqueued_job_matches_the_workers_own_spelling` below transcribes
+///   both values from `vpay_worker::jobs` and fails if either moves;
+/// * `worker_e2e.rs` drives a real confirm through a real worker, so a
+///   dedupe key the worker cannot recognise means the payment never settles.
+const POLL_CHARGE_KIND: &str = "poll_charge";
+
+/// Commits the charge row in `submitting`, **and the job that will poll it**,
+/// in one transaction, before any network call.
+///
+/// # Why the enqueue is here and not after the rail answers
+///
+/// `docs/flows/crash-safety.md` names three points at which this process can
+/// die between a merchant's confirm and a settled charge. Enqueueing at step
+/// 6 — beside `persist_submitted`, once the rail has answered — would leave
+/// the first two of them, which are precisely the recovery cases, with a
+/// committed charge and no job: a payer whose handset may be prompting, and
+/// nothing anywhere that will ever ask the rail what happened. Enqueueing in
+/// *this* transaction makes the job and the charge one atomic fact, so all
+/// three kill points leave work behind and no scan is load-bearing for
+/// recovery.
+///
+/// That is also why the transaction is not redundant for what looks like a
+/// single insert: `vpay_db::charges::insert_for_intent` and
+/// `vpay_db::jobs::enqueue_in_tx` both take a `PgConnection` precisely so the
+/// commit point is the caller's, and this one has to be *before* the adapter
+/// call rather than pooled into some later unit of work.
+///
+/// The enqueue's `ON CONFLICT (dedupe_key) DO NOTHING` cannot fire here — the
+/// charge id was generated moments ago — but a `false` return is not treated
+/// as an error anywhere, because the same key is enqueued by the worker's
+/// backstop scan and by `resubmit_charge`.
 async fn insert_charge(pool: &PgPool, new: &NewCharge) -> Result<ChargeRow, ApiError> {
     let mut tx = pool.begin().await.map_err(vpay_db::DbError::Query)?;
     let charge = match charges::insert_for_intent(&mut tx, new).await {
@@ -1036,8 +1072,34 @@ async fn insert_charge(pool: &PgPool, new: &NewCharge) -> Result<ChargeRow, ApiE
         }
         Err(error) => return Err(error.into()),
     };
+
+    // The payload is the minimal one `vpay_worker::jobs::PollChargePayload`
+    // defaults the ladder fields from: the confirm path has no `NotFound`
+    // streak to carry, and writing zeroes for one would be this handler
+    // asserting something about a rail it has not yet called.
+    vpay_db::jobs::enqueue_in_tx(
+        &mut tx,
+        POLL_CHARGE_KIND,
+        &poll_dedupe_key(&charge.id),
+        &serde_json::json!({ "charge_id": charge.id }),
+        OffsetDateTime::now_utc(),
+    )
+    .await?;
+
     tx.commit().await.map_err(vpay_db::DbError::Query)?;
     Ok(charge)
+}
+
+/// The `jobs.dedupe_key` for polling one charge — `vpay_worker::jobs`'
+/// `poll_dedupe_key`, duplicated for the reason [`POLL_CHARGE_KIND`] gives.
+///
+/// The unique index on `dedupe_key` is what makes "one live poll job per
+/// charge, forever" a property of the schema, so this string is load-bearing
+/// in a way the `kind` is not: a *different* key here would not fail any
+/// constraint, it would quietly produce a second job for the same charge that
+/// the worker's own enqueues would never deduplicate against.
+fn poll_dedupe_key(charge_id: &str) -> String {
+    format!("poll:{charge_id}")
 }
 
 /// The 409 both the read and the unique-index race produce — and which of
@@ -2158,6 +2220,30 @@ mod tests {
         }
     }
 
+    /// The two strings [`insert_charge`] enqueues under, transcribed from
+    /// `vpay_worker::jobs` (`JobKind::PollCharge::as_wire_str` and
+    /// `poll_dedupe_key`) and from migration 0021's `kind_is_known` CHECK.
+    ///
+    /// Transcribed rather than imported because `vpay-worker` depends on this
+    /// crate; even as a dev-dependency the edge back would be a cycle. So
+    /// this is the cheap half of the guard, and it only catches a change made
+    /// *here*. The half that catches a change made in the worker is
+    /// `worker_e2e.rs`, which asserts the row this handler writes against the
+    /// worker's own constants and then drives the job to a settled payment —
+    /// if these ever disagree, that suite's confirm never reaches
+    /// `succeeded`.
+    #[test]
+    fn the_enqueued_job_matches_the_workers_own_spelling() {
+        assert_eq!(POLL_CHARGE_KIND, "poll_charge");
+        assert_eq!(poll_dedupe_key("ch_abc"), "poll:ch_abc");
+        // A charge id is already unique, so the key is too — the property the
+        // `jobs_dedupe_key` unique index turns into "one poll job per charge".
+        assert_ne!(poll_dedupe_key("ch_a"), poll_dedupe_key("ch_b"));
+        // Namespaced, so the worker's own `resubmit:<id>` cannot collide with
+        // it and lose to its `ON CONFLICT DO NOTHING`.
+        assert!(poll_dedupe_key("ch_abc").starts_with("poll:"));
+    }
+
     /// `return_url` is persisted and then rendered back into a browser, so
     /// the two things a merchant must not be able to put there are a scheme
     /// a browser *executes* and a value the column would refuse.
@@ -2232,6 +2318,10 @@ mod tests {
             provider_code: "orange_money".to_owned(),
             provider_reference_id: Uuid::nil(),
             provider_ref_extra: None,
+            // Migration 0021's column: only the settlement transaction ever
+            // writes it, and a charge the confirm path has just committed
+            // has not settled.
+            provider_txn_id: None,
             redirect_url: None,
             return_url: None,
             state: vpay_core::ChargeState::INITIAL.as_wire_str().to_owned(),

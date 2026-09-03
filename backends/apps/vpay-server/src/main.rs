@@ -365,50 +365,24 @@ async fn run() -> anyhow::Result<()> {
         }
     }
 
-    // A boot-time stopgap, not the cleanup job this table needs: vpay has no
-    // worker job loop yet (`docs/status.md`), so nothing runs scheduled work.
-    // Sweeping once per process start bounds `client_assertion_jtis` at
-    // roughly "assertions since the last restart" instead of "assertions
-    // forever". When the job loop lands, it should call this on a timer —
-    // this call is meant to be *scheduled* properly then, not replaced.
+    // The two boot-time sweeps that used to stand here — expired
+    // `client_assertion_jtis` and expired `idempotency_keys` — belong to the
+    // worker's `sweep_expired` job now (`kind = 'sweep_expired'`, one of the
+    // four labels migration 0021's `kind_is_known` CHECK allows), which also
+    // reaps stale job leases and runs hourly rather than once per process
+    // start. `vpay_db::delete_expired_client_assertion_jtis` and
+    // `vpay_db::idempotency::sweep_expired` are unchanged; only their caller
+    // moved.
     //
-    // Non-fatal, deliberately: failing to prune is not a reason to refuse to
-    // serve payments, and the rows it would have deleted are already expired
-    // and therefore already unusable for a replay (see
-    // `vpay_db::delete_expired_client_assertion_jtis`).
-    match vpay_db::delete_expired_client_assertion_jtis(&pool).await {
-        Ok(deleted) => tracing::info!(
-            deleted,
-            "swept expired client-assertion jtis (boot-time stopgap; there is no cleanup job yet)"
-        ),
-        Err(error) => tracing::warn!(
-            %error,
-            "could not sweep expired client-assertion jtis; continuing — replay protection is \
-             unaffected, only table growth"
-        ),
-    }
-
-    // The same stopgap, for the same reason, on `idempotency_keys`: no job
-    // loop exists to schedule it, so once per process start is what there
-    // is. When the loop lands, this call is the one to move onto a timer.
-    //
-    // Purely about table size, and deliberately so — no idempotency
-    // guarantee depends on it running. A key past its 24-hour window is
-    // reclaimed by `vpay_db::idempotency::claim` itself if a merchant
-    // presents it again, so a deployment that never swept would still hand
-    // every expired key back; it would simply keep the rows. Non-fatal for
-    // that reason.
-    match vpay_db::idempotency::sweep_expired(&pool).await {
-        Ok(deleted) => tracing::info!(
-            deleted,
-            "swept expired idempotency keys (boot-time stopgap; there is no cleanup job yet)"
-        ),
-        Err(error) => tracing::warn!(
-            %error,
-            "could not sweep expired idempotency keys; continuing — an expired key is still \
-             reclaimable on its next use, only the rows remain"
-        ),
-    }
+    // Removed rather than left here as well: two owners of one schedule is
+    // how a repository ends up unable to say which process is responsible
+    // for a table's growth, and both sweeps were only ever about growth.
+    // Neither is load-bearing for correctness — an expired idempotency key
+    // is reclaimed by `idempotency::claim` on its next use, and an expired
+    // `jti` is refused by `verify_client_assertion` before the store is
+    // consulted at all — so a window in which nothing sweeps costs rows, not
+    // guarantees. `docs/status.md` is the record of when the job itself
+    // landed.
 
     let merchant_op = Arc::new(MerchantOp::new(&config, signing_key, pool.clone()));
 

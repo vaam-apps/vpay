@@ -9,6 +9,14 @@
 //! blind updates, so a recovery pass and a live confirm cannot overwrite
 //! each other's answer — see their own docs.
 //!
+//! The writes that take a charge to a *terminal* state from anywhere in the
+//! live set — what the worker's poll ladder decides — are not here: they
+//! move the charge, the intent and an `events` row together and therefore
+//! belong to the one transaction that does all three
+//! ([`crate::settlement`]). Splitting them across this module would have
+//! made it possible to call one without the others, which is the specific
+//! thing that transaction exists to prevent.
+//!
 //! # "One charge per intent, forever" is the database's job, not this
 //! module's
 //!
@@ -46,9 +54,15 @@ use crate::error::{DbError, classify_write};
 /// `state` and `failure_code` are cast to `TEXT` for the same reason
 /// `payment_intents`' enums are: this crate carries Postgres enums as
 /// `String` and `vpay-core` parses them (D4).
-const COLUMNS: &str = "id, payment_intent_id, provider_code, provider_reference_id, \
-                       provider_ref_extra, redirect_url, return_url, state::TEXT AS state, \
-                       amount, currency_code, payer_ref, payer_ref_masked, \
+///
+/// `pub(crate)` because the settlement transaction
+/// ([`crate::settlement::apply_succeeded`]) writes this table too, and a
+/// second column list there would let the two drift on what
+/// [`ChargeRow`] decodes — the exact failure a shared constant exists to
+/// prevent.
+pub(crate) const COLUMNS: &str = "id, payment_intent_id, provider_code, provider_reference_id, \
+                       provider_ref_extra, provider_txn_id, redirect_url, return_url, \
+                       state::TEXT AS state, amount, currency_code, payer_ref, payer_ref_masked, \
                        failure_code::TEXT AS failure_code, failure_raw, created_at, updated_at";
 
 /// One `charges` row, exactly as stored.
@@ -67,6 +81,12 @@ pub struct ChargeRow {
     /// Rail key material captured from a previous call (Orange's
     /// `pay_token`, and similar) — `vpay_provider::RefExtra` as JSON.
     pub provider_ref_extra: Option<serde_json::Value>,
+    /// The rail's own identifier for the settled payment (migration 0021),
+    /// learned from `ChargeStatus::Succeeded` and written only by
+    /// [`crate::settlement::apply_succeeded`]. `None` until the charge
+    /// succeeds — and still `None` afterwards if the rail named no
+    /// identifier, because there is nothing honest to put here.
+    pub provider_txn_id: Option<String>,
     /// Set only on redirect rails, and only once the rail has issued it.
     pub redirect_url: Option<String>,
     /// Where the *merchant* asked the rail to send the payer back
@@ -208,6 +228,35 @@ pub async fn get_for_intent(
         .map_err(DbError::Query)
 }
 
+/// Reads one charge by its own id.
+///
+/// # Why this exists alongside [`get_for_intent`]
+///
+/// The worker addresses charges directly: a `poll_charge` job's payload
+/// carries a `charge_id`, because that is what was known at enqueue time and
+/// what stays true across a crash. Reaching it through its intent would mean
+/// the job payload had to carry the *intent* id and the worker had to hope
+/// the one-charge-per-intent invariant holds — which it does, but making the
+/// lookup depend on an invariant it does not need is how a repair path that
+/// runs on a broken database stops working exactly when it is needed.
+///
+/// Not merchant-scoped, for the reason [`get_for_intent`] gives: `charges`
+/// has no `merchant_id`, and the caller here is a background worker with no
+/// merchant to scope to at all.
+///
+/// # Errors
+///
+/// Returns [`DbError::Query`] if the read fails.
+pub async fn get_by_id(pool: &PgPool, id: &str) -> Result<Option<ChargeRow>, DbError> {
+    let sql = format!("SELECT {COLUMNS} FROM charges WHERE id = $1");
+
+    sqlx::query_as::<_, ChargeRow>(&sql)
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(DbError::Query)
+}
+
 /// Records what the rail answered a `submit` with, as a compare-and-swap out
 /// of `submitting`, inside the caller's transaction.
 ///
@@ -231,6 +280,45 @@ pub async fn get_for_intent(
 /// insert (see [`NewCharge::return_url`]), and a rail's answer has no
 /// business overwriting it.
 ///
+/// # Why `provider_ref_extra` is merged and not assigned
+///
+/// The column is `vpay_provider::RefExtra` — *rail key material* (migration
+/// 0019's header), and on a redirect rail the `pay_token` in it is the only
+/// thing that can ever query the charge again. `vpay_worker`'s
+/// `resubmit_charge` calls this function with whatever the rail answered the
+/// **second** submit with, and a push rail answers with an empty map; a plain
+/// `provider_ref_extra = $3` would then overwrite key material with `{}` and
+/// leave a charge nobody can ask about. So the new map is merged over the
+/// stored one (`||`, right-hand wins per key), and a `NULL` argument — "the
+/// answer carried nothing" — leaves the column exactly as it was rather than
+/// erasing it. Merging cannot lose a key; assigning can, and the loss is
+/// silent and permanent.
+///
+/// The state guard makes that unreachable on today's paths (only a
+/// `submitting` charge matches, and nothing writes key material before the
+/// first answer), which is precisely why it is worth writing down: this is a
+/// defence against the *next* caller, not against a bug that exists.
+///
+/// # `redirect_url` follows the same rule, for the same reason
+///
+/// `redirect_url = COALESCE($4, redirect_url)`: a `NULL` argument means "this
+/// answer carried no URL", never "there is no URL". The two are the same
+/// statement's two audiences — the payer, who may already be holding that URL
+/// (`docs/flows/crash-safety.md`, "the commit is the gate on the redirect"),
+/// and `GET /v1/payment_intents/{id}`, whose `next_action` is rendered from
+/// this column (`vpay_api::v1::payment_intents`). A plain assignment would
+/// let a second `mark_submitted` — a resubmit whose answer had no URL —
+/// blank the only address the payer can pay at, while leaving the charge
+/// live: an intent in `requires_action` with nothing to act on, which is a
+/// state the API answers `500` for by design.
+///
+/// Unreachable today for the same reason as above and one more: a redirect
+/// charge still in `submitting` is failed rather than resubmitted
+/// (`vpay_worker::recovery`, `RecoveryAction::FailDeadOrder`), so the only
+/// caller that could pass a second answer never runs on the rail that has
+/// URLs. It is written as a merge anyway because "unreachable" is a property
+/// of today's callers and this is a column a payer is standing on.
+///
 /// # Errors
 ///
 /// [`DbError::WriteMatchedNoRow`] if `id` names no charge in `submitting` —
@@ -248,8 +336,11 @@ pub async fn mark_submitted(
     let sql = format!(
         "UPDATE charges \
          SET state = $2::charge_state, \
-             provider_ref_extra = $3, \
-             redirect_url = $4, \
+             provider_ref_extra = CASE \
+                 WHEN $3::JSONB IS NULL THEN provider_ref_extra \
+                 ELSE COALESCE(provider_ref_extra, '{{}}'::JSONB) || $3::JSONB \
+             END, \
+             redirect_url = COALESCE($4, redirect_url), \
              updated_at = now() \
          WHERE id = $1 AND state = 'submitting'::charge_state \
          RETURNING {COLUMNS}"

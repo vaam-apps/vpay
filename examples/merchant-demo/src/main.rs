@@ -1,7 +1,7 @@
 //! `merchant-demo` — a runnable walk through **everything vpay's `/v1`
 //! surface answers today**, and a deliberate demonstration of where it stops.
 //!
-//! Five steps:
+//! Six steps:
 //!
 //! 1. Read the OP's discovery document and JWKS, and show the issuer and the
 //!    `kid` the server signs `/v1` access tokens with.
@@ -12,26 +12,36 @@
 //!    vpay's error envelope, so the authentication boundary is real.
 //! 4. Create a PaymentIntent through the merchant SDK and read it back,
 //!    printing its id, status, amount and currency.
-//! 5. Confirm it against the push rail — which now **succeeds**: the MTN
-//!    adapter submits to the WireMock rail `compose.yml` configures, and the
-//!    intent moves to `processing`.
+//! 5. Confirm it against the push rail, which accepts it: the MTN adapter
+//!    submits to the WireMock rail `compose.yml` configures, and the intent
+//!    moves to `processing`.
+//! 6. Wait for `vpay-worker` to drive it to `succeeded`, polling
+//!    `GET /v1/payment_intents/{id}` exactly as a merchant integration would.
 //!
-//! **Step 5 changed in Step 3, and the change is the point.** It used to
-//! assert a `501 not_implemented`, because no adapter implemented `submit`
-//! and a `200` would have been a fabricated payment. The adapters landed, so
-//! it now asserts the opposite: a confirm that does *not* reach `processing`
-//! fails this demo. What has not changed is the rule — the demo asserts what
-//! the code actually does, and is the first thing to break when that stops
-//! being true.
+//! **Each of the last two steps changed once the code behind it landed, and
+//! that is the point.** Step 5 used to assert a `501 not_implemented`,
+//! because no adapter implemented `submit`; step 6 did not exist, because
+//! nothing polled a charge and the demo said so in place of a payment. Both
+//! now assert what the code actually does, and both are the first thing to
+//! break when that stops being true.
 //!
-//! **`processing` is not `succeeded`, and nothing polls it.** The rail has
-//! the request; whether the payer approves it is a question only
-//! `query_status` can answer, and the worker that would ask is Step 4
-//! (`docs/status.md`). This demo says so out loud rather than leaving a
-//! reader to assume a payment completed.
+//! **Why the demo can end in `succeeded` at all.** Step 6 is not a poll that
+//! hopes: the rail stub answers `PENDING` on the first status query and
+//! `SUCCESSFUL` on the second, and it does so because the confirm's MSISDN
+//! ([`DEMO_MSISDN`]) enters a WireMock scenario keyed on that number
+//! (`backends/tests/conformance/wiremock/mtn/mappings/requesttopay-scenario.json`).
+//! Nothing here fakes an approval; a real worker asks a real stub twice, over
+//! HTTP, and the second answer is the one that moves the money.
+//!
+//! **What step 6 still cannot show:** `amount_received`. The settlement
+//! transaction writes that column (`vpay_db::settlement::apply_succeeded`),
+//! but the `payment_intent` object does not carry it, so a merchant's client
+//! cannot see it and neither can this demo. Printing it would mean reading
+//! the database behind the API this demo exists to demonstrate. It is named
+//! here rather than quietly omitted.
 //!
 //! Nothing here prints a secret: not the access token, not the private key,
-//! not a rail credential. Step 4 prints the intent's own public fields.
+//! not a rail credential. Steps 4-6 print the intent's own public fields.
 //!
 //! # Why the token exchange in step 2 is not `Client`'s
 //!
@@ -88,8 +98,8 @@ const DEMO_INTENT_ID: &str = "pi_demo";
 /// *after* a rail accepts a charge, which is still nothing: no worker asks
 /// the rail whether the payer approved.
 const NOT_BUILT_YET: &str = concat!(
-    "nothing polls this yet — the worker that asks the rail whether the payer ",
-    "approved is Step 4 (docs/status.md)"
+    "webhook delivery is not built yet — a merchant polls GET /v1/payment_intents/{id}, ",
+    "as step 6 does, until Step 5 lands the fan-out (docs/status.md)"
 );
 
 /// The intent step 4 creates: 5,000 minor units on the push rail.
@@ -106,8 +116,36 @@ const NOT_BUILT_YET: &str = concat!(
 const DEMO_AMOUNT: i64 = 5000;
 const DEMO_CURRENCY: &str = "eur";
 
-/// The MSISDN step 5 would prompt. A documentation number, not anyone's.
-const DEMO_MSISDN: &str = "237670000000";
+/// The MSISDN step 5 prompts. A documentation number, not anyone's — and a
+/// *specific* one, which is load-bearing rather than arbitrary.
+///
+/// `backends/tests/conformance/wiremock/mtn/mappings/requesttopay-scenario.json`
+/// keys a WireMock scenario (`mtn-e2e-poll`, priority 5) on this value: a
+/// `requestToPay` carrying it is accepted normally, and the two *status*
+/// queries that follow answer `PENDING` then `SUCCESSFUL`. That is what lets
+/// step 6 end in a settled payment instead of a demo that waits forever.
+///
+/// It has to be steered on the submit because it cannot be steered anywhere
+/// else. `confirm` mints the rail reference itself (`Uuid::new_v4()`), and
+/// MTN's status query is a `GET` carrying no body — so the payer's number,
+/// which comes from the merchant's own request, is the only field of this
+/// exchange a demo can choose. Change this constant and the demo stops
+/// settling; that is the coupling, stated rather than buried.
+const DEMO_MSISDN: &str = "237600000ce0";
+
+/// How long step 6 waits for the worker to settle the charge.
+///
+/// The poll ladder's first rung is ten seconds (`vpay_worker::poll_delay`)
+/// and the stub answers `PENDING` first, so the earliest possible settlement
+/// is about eleven seconds after the confirm. This is a *ceiling* on a wait
+/// that normally ends well before it — generous enough that a cold compose
+/// stack does not fail the demo, tight enough that a worker which is not
+/// running fails it in under a minute with a message saying so.
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// How often step 6 asks. A merchant integration polls; this is what that
+/// looks like, at a rate that will not annoy the API.
+const SETTLE_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// How long the demo waits on any single HTTP request. Short on purpose: a
 /// stack that has not finished booting should fail this demo in seconds with
@@ -132,7 +170,7 @@ async fn main() -> ExitCode {
     match run().await {
         Ok(()) => {
             println!();
-            println!("✔ all five steps behaved as expected.");
+            println!("✔ all six steps behaved as expected.");
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -185,6 +223,7 @@ async fn run() -> anyhow::Result<()> {
     let run = run_id()?;
     let intent_id = step_4_create_and_retrieve(&client, &run).await?;
     step_5_confirm(&client, &intent_id, &run).await?;
+    step_6_await_settlement(&client, &intent_id).await?;
 
     Ok(())
 }
@@ -233,7 +272,7 @@ struct Endpoints {
 async fn step_1_discovery(http: &reqwest::Client, base_url: &str) -> anyhow::Result<Endpoints> {
     const STEP: &str = "step 1 (discovery + JWKS)";
 
-    println!("[1/5] discovery + JWKS");
+    println!("[1/6] discovery + JWKS");
 
     let discovery_url = format!("{base_url}/v1/oauth/.well-known/openid-configuration");
     let discovery = get_json(http, &discovery_url)
@@ -314,7 +353,7 @@ async fn step_2_access_token(
     const STEP: &str = "step 2 (access token)";
 
     println!();
-    println!("[2/5] access token (client_credentials + private_key_jwt)");
+    println!("[2/6] access token (client_credentials + private_key_jwt)");
 
     let credentials = credentials(client_id, pem).with_context(|| STEP)?;
     let assertion = vpay_sdk::auth::mint_client_assertion(
@@ -415,7 +454,7 @@ async fn step_3_unauthenticated(http: &reqwest::Client, base_url: &str) -> anyho
     const STEP: &str = "step 3 (unauthenticated /v1 is 401)";
 
     println!();
-    println!("[3/5] the same path with no bearer token");
+    println!("[3/6] the same path with no bearer token");
 
     let url = format!("{base_url}/v1/payment_intents/{DEMO_INTENT_ID}");
     let response = http
@@ -489,7 +528,7 @@ async fn step_4_create_and_retrieve(client: &Client, run: &str) -> anyhow::Resul
     const STEP: &str = "step 4 (create + retrieve a payment intent)";
 
     println!();
-    println!("[4/5] payment_intents().create(…) then .retrieve(…) through vpay-sdk");
+    println!("[4/6] payment_intents().create(…) then .retrieve(…) through vpay-sdk");
 
     let params = CreatePaymentIntentParams {
         amount: DEMO_AMOUNT,
@@ -573,7 +612,7 @@ async fn step_5_confirm(client: &Client, intent_id: &str, run: &str) -> anyhow::
     const STEP: &str = "step 5 (confirm reaches the rail and is accepted)";
 
     println!();
-    println!("[5/5] payment_intents().confirm(\"{intent_id}\") through vpay-sdk");
+    println!("[5/6] payment_intents().confirm(\"{intent_id}\") through vpay-sdk");
 
     let confirmed = client
         .payment_intents()
@@ -632,6 +671,118 @@ async fn step_5_confirm(client: &Client, intent_id: &str, run: &str) -> anyhow::
          was told is the `{}` vpay stored",
         status_label(after.status),
         status_label(after.status),
+    );
+    println!(
+        "      the payer's handset is prompting; nothing here knows yet whether they \
+         approved. Only an authenticated query_status can say, and that is step 6."
+    );
+
+    Ok(())
+}
+
+// ------------------------------------------------------------------ step 6
+
+/// Waits for `vpay-worker` to drive the charge to a terminal state, polling
+/// the merchant API exactly as a merchant integration would.
+///
+/// `succeeded` is this step's success condition and every other outcome fails
+/// the demo — including `requires_payment_method`, which is what a *declined*
+/// payment looks like and would mean the rail stub answered something other
+/// than the scenario this MSISDN selects.
+///
+/// # What is actually happening while this loop waits
+///
+/// Nothing in this process. The work is in the `vpay-worker` container: it
+/// claimed the `poll_charge` job the confirm committed *in the same
+/// transaction as the charge*, asked MTN over HTTP, was told `PENDING`, put
+/// the job back on the ladder ten seconds out, asked again, was told
+/// `SUCCESSFUL`, and committed the charge, the intent and one
+/// `payment_intent.succeeded` event together. This loop only observes the
+/// result through the same `GET` any merchant has.
+///
+/// # Why a merchant polls at all
+///
+/// Because webhook fan-out is not built (`docs/status.md`). When it is, this
+/// is the step that becomes a delivered `payment_intent.succeeded` instead of
+/// a loop — and the object a merchant's handler receives will be the snapshot
+/// already being written into `events.data` today.
+async fn step_6_await_settlement(client: &Client, intent_id: &str) -> anyhow::Result<()> {
+    const STEP: &str = "step 6 (the worker drives the charge to a terminal state)";
+
+    println!();
+    println!(
+        "[6/6] polling payment_intents().retrieve(\"{intent_id}\") until it is no longer \
+         processing"
+    );
+    println!(
+        "      (the vpay-worker container is asking the rail; the ladder's first rung is \
+         10s, so this normally takes ~10-15s)"
+    );
+
+    let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
+    let mut polls = 0_u32;
+    let settled = loop {
+        let intent = client
+            .payment_intents()
+            .retrieve(intent_id)
+            .await
+            .map_err(|error| describe(STEP, "re-reading the intent while it settles", &error))?;
+        polls += 1;
+        if intent.status != IntentStatus::Processing {
+            break intent;
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!(
+                "{STEP}: the intent was still `processing` after {SETTLE_TIMEOUT:?} and \
+                 {polls} polls. Nothing drove the charge to a terminal state — the usual \
+                 cause is that vpay-worker is not running or cannot reach the rail. Try \
+                 `docker compose logs vpay-worker`."
+            );
+        }
+        tokio::time::sleep(SETTLE_POLL_INTERVAL).await;
+    };
+
+    if settled.status != IntentStatus::Succeeded {
+        bail!(
+            "{STEP}: the charge resolved to `{}` rather than `succeeded`{}. The MSISDN this \
+             demo confirms with ({DEMO_MSISDN}) selects a rail stub that answers PENDING \
+             then SUCCESSFUL, so anything else means the stub, the mapping or the \
+             settlement path changed.",
+            status_label(settled.status),
+            settled
+                .last_payment_error
+                .as_ref()
+                .map_or_else(String::new, |error| format!(
+                    " ({}: {})",
+                    error.code, error.message
+                )),
+        );
+    }
+
+    println!("  ✔ settled after {polls} polls — the rail confirmed the payer approved it");
+    println!("      id             {}", settled.id);
+    println!(
+        "      status         {}   (was processing)",
+        status_label(settled.status)
+    );
+    println!(
+        "      amount         {} {}   (integer minor units — docs/flows/money.md)",
+        settled.amount,
+        settled.currency.to_ascii_uppercase()
+    );
+    // Named, not printed, because it is genuinely not on the wire — see this
+    // file's header. A demo that invented a number here, or that read the
+    // database behind the API it is demonstrating, would be worse than one
+    // that says what is missing.
+    println!(
+        "      amount_received  not on the wire — the settlement transaction writes \
+         payment_intents.amount_received (= amount, {}), but the payment_intent object \
+         does not carry it yet",
+        settled.amount
+    );
+    println!(
+        "      charge         succeeded in Postgres, with the rail's own provider_txn_id; \
+         /v1 has no charges resource (docs/api/README.md)"
     );
     println!();
     println!("      {NOT_BUILT_YET}");

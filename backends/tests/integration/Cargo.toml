@@ -21,6 +21,13 @@ vpay-api.workspace = true
 vpay-config.workspace = true
 vpay-db.workspace = true
 vpay-provider.workspace = true
+# `tests/worker_{recovery,e2e}.rs`: the crate under test. These two suites are
+# the *only* proof that any handler works — `vpay_worker::handlers`' own module
+# comment says so and explains why it has no unit tests: every function there
+# is a sequence of writes against real Postgres and a real rail, and the only
+# way to test one in-process would be a fake pool or a fake `ProviderAdapter`,
+# which AGENTS.md's first rule forbids.
+vpay-worker.workspace = true
 vpay-adapter-mtn-momo.workspace = true
 vpay-adapter-orange-money.workspace = true
 vpay-testkit.workspace = true

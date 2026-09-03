@@ -86,87 +86,108 @@ preconditions are stated **per flow shape** rather than universally.
 
 ## Tests
 
-The crash tests kill the worker at three points — after the charge insert and
-before any `provider_requests` row; after that row and before the response;
-after the response and before the state update — and assert the recovery table
-resolves all three without double-charging.
+The three kill points are: after the charge insert and before any
+`provider_requests` row; after that row and before the response; after the
+response and before the state update. Each must resolve without
+double-charging.
 
-**Status: the ordering is implemented for `confirm`, on both flow shapes;
-the recovery is not.** Updated 2026-09-03 (Step 3).
+**They are exercised by writing the state a crash leaves, not by killing a
+process.** `backends/tests/integration/tests/worker_recovery.rs` builds each of
+the three states directly against a real Postgres — commit the charge and no
+attempt row; add an attempt row with `status_code IS NULL`; add one carrying a
+status — then runs the real handler against a real WireMock rail and asserts
+the recovery table resolves it. The decisive assertion in each is that **every
+`provider_requests` row for the charge carries the same
+`provider_reference_id`** (`assert_one_reference`), which is the property the
+retry rule exists for.
 
-**What is built.** `POST /v1/payment_intents/{id}/confirm`
+That is a weaker claim than "a `SIGKILL` at each point resolves cleanly", and
+it is stated this way on purpose: it proves the recovery table, not the
+process's behaviour under a signal. Nothing in this repository kills a process
+mid-confirm.
+
+**Status: implemented, and driving payments. Updated 2026-09-03 (Step 4).**
+
+**What was already true (Step 3), unchanged.**
+`POST /v1/payment_intents/{id}/confirm`
 (`backends/crates/vpay-api/src/v1/payment_intents.rs`) performs exactly the
 ordering this document requires, and in this order:
 
 1. mint the `provider_reference_id`;
-2. **commit** the charge row in `submitting` carrying that reference, in its
-   own transaction, before any network call
-   (`vpay_db::charges::insert_for_intent` takes a connection precisely so the
-   commit point is the caller's);
+2. **commit** the charge row in `submitting` carrying that reference — and,
+   since Step 4, **the `poll_charge` job that will drive it**, in the *same*
+   transaction — before any network call;
 3. insert a `provider_requests` row with `status_code IS NULL` (migration
    `0016`);
 4. call the adapter's `submit`;
 5. record what came back on that row.
 
-**And, since 2026-09-03, the redirect half:** the merchant's `return_url` is
-committed on the charge row at step 2 (`charges.return_url`, migration
-`0019`), and the rail's `pay_token` + `redirect_url` are committed at step 5
-in **one** transaction — after which, and only after which, `next_action` is
-built. It is built by re-reading the committed row, not from the adapter's
-return value, so there is no code path that can emit a URL the database does
-not already hold. That is "the commit is the gate on the redirect", enforced
-by construction rather than by discipline.
+The redirect half is unchanged too: the merchant's `return_url` is committed on
+the charge row at step 2 (`charges.return_url`, migration `0019`), and the
+rail's `pay_token` + `redirect_url` are committed at step 5 in **one**
+transaction — after which, and only after which, `next_action` is built, from
+the committed row rather than from the adapter's return value
+(`redirect_confirm_commits_the_rails_material_before_it_answers`;
+`an_unreachable_rail_leaves_the_charge_where_recovery_expects_it`;
+`a_second_confirm_cannot_produce_a_second_charge`).
 
-**What proves it.**
+**What Step 4 adds: the recovery table is now read by code.**
 
-- `redirect_confirm_commits_the_rails_material_before_it_answers`
-  (`backends/tests/integration/tests/confirm_rails.rs`) — the decisive one:
-  the `next_action.redirect_to_url.url` the merchant is handed is asserted
-  equal to the `redirect_url` already on the committed `charges` row, and
-  the `return_url` likewise.
-- `an_unreachable_rail_leaves_the_charge_where_recovery_expects_it` — a
-  submit that never got an answer leaves a `submitting` charge with its
-  reference and a `provider_requests` row with `status_code IS NULL`,
-  `responded_at IS NULL` and `error_kind = 'provider_unavailable'`. Retrying
-  the same confirm meets that live charge and is refused with the "poll,
-  do not create a new PaymentIntent" `409`.
-- `a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read` — the
-  answered-but-declined case: the attempt is stamped with `status_code = 0`
-  (the sentinel migration `0020` documents: *answered, but the port carries
-  no HTTP status*) and `error_kind = 'charge_declined'`, so an operator can
-  tell it apart from an unanswered attempt without reading a body.
-- `provider_requests_record_attempts_and_keep_status_and_responded_at_in_step`
-  (`backends/crates/vpay-db/tests/repositories.rs`) pins the
-  `response_is_paired` CHECK, so a row can never claim a status without a
-  `responded_at`.
-- `a_second_confirm_cannot_produce_a_second_charge` proves the reference is
-  not regenerated — there is no second charge to regenerate it for.
+- **The job comes with the charge.** `vpay_db::jobs::enqueue_in_tx` runs inside
+  step 2's transaction, so all three kill points leave a job behind. The
+  alternative — enqueueing beside step 5 — would have left kill points 1 and 2,
+  precisely the recovery cases, with a committed charge and nothing that would
+  ever ask the rail about it. The hourly `scan:live` backstop covers only what
+  that transaction cannot: charges written before the queue existed, and a job
+  lost to operator error.
+- **The table itself** is `vpay_worker::recovery::recovery_step`, a pure
+  function over (flow shape, latest submit attempt, `NotFound` streak, window).
+  `SubmitAttempt::{Never, Unanswered, Answered(code)}` are the three rows above;
+  `Answered` includes migration `0020`'s `0` sentinel.
+- **The flow shape decides first.** A **redirect** charge still in `submitting`
+  is failed (`provider_unavailable`, intent back to `requires_payment_method`):
+  the payer was never handed a URL, and the `pay_token` needed to ask the rail
+  about the order was in the response that was lost, so that `order_id` is dead
+  — this document's own conclusion, now executed
+  (`a_redirect_charge_with_no_token_is_failed_without_ever_asking_the_rail`).
+  The branch is on `Capabilities::flow`, a capability *value*, never a rail code
+  (ADR-0002).
+- **The resubmit rule holds.** `resubmit_charge` reads
+  `charges.provider_reference_id` and never mints one
+  (`a_charge_whose_submit_never_left_is_resubmitted_under_the_same_reference`).
+  The `NotFound` threshold is both conditions, never either: 3 consecutive
+  answers **and** ≥60 s (`three_not_founds_over_the_window_resubmit_and_two_do_not`,
+  which drives the policy at 50 ms so it needs no sleeps).
+  `charges::mark_submitted` **merges** `provider_ref_extra` (`||`) rather than
+  assigning it, so a push rail's empty answer on a second submit cannot erase
+  key material a first answer wrote.
+- **An answered submit advances rather than resubmits**
+  (`an_answered_submit_advances_the_bookkeeping_rather_than_submitting_again`):
+  kill point 3 is a bookkeeping repair, not a rail call.
+- **A settlement lands on the intent a crashed confirm left behind.** Because
+  the confirm moves the intent only *after* the rail answers, all three kill
+  points leave a live charge against an intent still reading
+  `requires_payment_method` — so the settlement transaction's intent guard
+  accepts that status alongside `processing` and `requires_action`
+  (`vpay_db::payment_intents::SETTLEABLE_STATUSES`). Excluding it, as the first
+  implementation did, made the recovered charge dead-letter instead of settling
+  (`a_settlement_lands_on_the_intent_a_crashed_confirm_left_behind` — a review
+  finding, and the reason that constant is documented at length).
+- **A worker's own crash is recovered too.** Leases are reaped at worker boot,
+  every `lease / 2` on a dedicated timer, and inside the hourly sweep
+  (`a_lease_stranded_by_a_crash_is_freed_at_boot_before_any_sweep_runs`,
+  `a_lease_that_expires_while_the_worker_runs_is_reaped_on_its_own_timer`).
 
-**Those rows are deliberately left behind.** A confirm whose submit was lost
-leaves precisely the state a crash between steps 3 and 5 would leave. That is
-the point: it is what a recovery pass has to read.
+**What is still not built.**
 
-**What is not built, and is the whole rest of this document:**
-
-- **No recovery pass.** Nothing reads the table above. No code resubmits, no
-  code polls, no code advances a state from a status code. The worker's job
-  loop does not exist.
-- **No retry of any kind.** The "retry with the same reference" rule is
-  written down and executed by nothing.
-- **No crash tests.** The three kill points above are not exercised by
-  anything; nothing kills a process mid-confirm. What is proven is the
-  *ordering* and the rows a lost answer leaves — not that a `SIGKILL` at
-  each point resolves without a double charge.
-- **The recovery table above is read by nothing**, so the two rules it
-  states — "no `provider_requests` row → resubmit" and "row with
-  `status_code IS NULL` → poll, and require 3 consecutive `NotFound` over
-  ≥60 s before treating the request as never received" — are written down
-  and executed by no code. Step 3 shipped only the adapter API that
-  recovery needs: `query_status` returning a canonical
-  `ChargeStatus::NotFound` rather than a failure
-  (`not_found_is_never_on_its_own_a_failure`, both rails).
-
-*(The "no redirect-rail ordering" item that stood here on 2026-09-02 is
-resolved: `charges.return_url` exists, and the commit gates the redirect.)*
+- **No `SIGKILL` test.** See the Tests section above: the states are written,
+  not caused. A real kill-and-restart test would additionally prove the
+  process's behaviour under a signal, and nothing does.
+- **No callback route**, so a rail that tries to tell us about a charge is
+  ignored and only the ladder finds out — see [reconciler.md](reconciler.md).
+- **The rails are WireMock hosts.** Every recovery case above is proven against
+  a stub speaking the documented protocol. No real rail has ever been called,
+  so what is proven is that the recovery table is executed correctly, not that
+  the rails behave as these documents claim.
 
 See [../status.md](../status.md).

@@ -13,11 +13,23 @@ workspace = true
 [dependencies]
 vpay-core.workspace = true
 vpay-provider.workspace = true
-# `JobError` (ADR-0011 Tier 2) wraps `DbError` directly, so the job loop and
-# the API can never disagree about whether a Postgres failure is transient —
-# both read `Classify::retry` off the same leaf. This crate does not open a
-# pool or run a query yet (there is no job loop — docs/status.md); the
-# dependency is for the error type alone.
+# Every statement this crate runs belongs to a `vpay-db` repository function
+# — `jobs` for the queue, `settlement`/`charges`/`provider_requests` for the
+# work — and `JobError` (ADR-0011 Tier 2) wraps `DbError` directly, so the
+# job loop and the API can never disagree about whether a Postgres failure is
+# transient: both read `Classify::retry` off the same leaf.
+#
+# **No `sqlx` under `[dependencies]`, and that is a rule and not an
+# oversight.** Where two writes must commit together this crate calls
+# `PgPool::begin` and passes the transaction straight through, so no `sqlx`
+# *path* is written here: the pool arrives as `vpay_db::PgPool` and the
+# transaction is handed back to `vpay-db` unread. That is not the same as the
+# type being absent — `vpay_db::PgPool` is `sqlx::PgPool` one re-export away,
+# and pretending otherwise would make this comment the thing that is wrong
+# rather than the code. The rule is about where *statements* live: the moment
+# `sqlx` is a dependency here, one can be written outside `vpay-db`, which is
+# how the API and the worker would end up with two spellings of the same
+# compare-and-swap.
 vpay-db.workspace = true
 # `JobError` also wraps `LedgerError` (ADR-0011: a composite `#[from]`s every
 # leaf its layer can meet). The job loop is what will write ledger
@@ -26,13 +38,42 @@ vpay-db.workspace = true
 # does not. No cycle: `vpay-ledger` depends on `vpay-core` only, never on
 # this crate. It is new to both binaries' graphs (nothing linked it before)
 # but adds no third-party package — its own dependencies are all already
-# there. Like `vpay-db` above, this is for the error type alone; nothing here
-# builds a transaction yet (docs/status.md).
+# there. Nothing here builds a ledger transaction yet — capture and refund are
+# Phase 5 (docs/status.md) — so today this is for the error type alone.
 vpay-ledger.workspace = true
+# For `vpay_api::model::PaymentIntentObject` and nothing else.
+#
+# `events.data` is a *snapshot of the wire object* (migration 0018), and Step 5
+# delivers it verbatim to a merchant's Stripe-shaped webhook handler. Rendering
+# it here by hand would put a second copy of that shape in the tree — the exact
+# mistake `vpay_api::model`'s own comment on `ListObject` names ("a second
+# hand-written copy of these four keys is how `has_more` ends up meaning
+# different things on different endpoints") — and the divergence would be
+# invisible until a merchant's handler broke on a webhook.
+#
+# No cycle: `vpay-api` depends on `vpay-core`/`vpay-provider`/`vpay-db`/
+# `vpay-ledger`/`vpay-config` and never on this crate (`cargo tree -p vpay-api
+# -i vpay-worker` finds nothing). No new package in either binary's graph
+# either: `vpay-worker-bin` already lists `vpay-api` (it calls
+# `vpay_api::v1::boot`), and `vpay-server` links both. This is the library-side
+# half of the step 4 design's decision 1, "the worker keeps linking vpay-api".
+vpay-api.workspace = true
 # `JobError::Poisoned`/`Exhausted` name the `jobs` row they refer to, and
 # that primary key is a UUID everywhere else in the schema
 # (backends/migrations/).
 uuid.workspace = true
+# `jobs.run_at`, `provider_requests.sent_at` and the `NotFound` window are all
+# `time::OffsetDateTime` — the type `vpay-db` reads out of Postgres — so the
+# recovery decision compares instants of one type rather than converting at
+# every boundary. Already in both binaries' graphs via `vpay-db`.
+#
+# `serde-well-known` is on top of the workspace pin (which carries `serde` and
+# `macros` only) for one field: `PollChargePayload::first_not_found_at` is
+# stored RFC 3339 in `jobs.payload`. `time`'s default `serde` encoding round
+# trips just as well, but this value is read by an operator in `psql` while
+# deciding whether a charge is about to be resubmitted, and it should not need
+# decoding. Feature-only addition: no new package anywhere.
+time = { workspace = true, features = ["serde-well-known"] }
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true

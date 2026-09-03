@@ -56,36 +56,108 @@ The `dedupe_key` is what stops duplicate callbacks becoming a job storm.
 
 ## Status
 
-`poll_delay` is implemented and tested. The job loop, the escalation and the
-callback endpoint are **not started** — see [../status.md](../status.md).
+**Changed 2026-09-03 (Step 4): the loop exists, and it settles payments.**
+The poll ladder, the recovery table and the 24-hour escalation all run —
+against a real Postgres and a real WireMock rail, in
+`backends/tests/integration/tests/worker_{recovery,e2e}.rs`. What is still
+unbuilt is named at the end, and the callback endpoint is still one of them.
 
-The loop's *error contract* now exists ahead of the loop:
+**What is built.**
+
+- **A durable queue.** `jobs` (migration `0021`), claimed with
+  `UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED LIMIT 1)`, leased on
+  `locked_by`, completed by `DELETE … WHERE id AND locked_by`. Every write
+  that ends a lease is guarded on `locked_by`, so a worker whose lease was
+  reaped mid-run discards its answer instead of stamping it over whoever holds
+  the job now (`two_workers_claiming_together_never_take_the_same_job`).
+- **The job is enqueued in the same transaction as the charge**
+  (`vpay_api::v1::payment_intents`'s confirm path calls
+  `vpay_db::jobs::enqueue_in_tx` inside the charge insert's transaction), so
+  every kill point in [crash-safety.md](crash-safety.md) leaves work behind.
+  The hourly `scan:live` job is a **backstop only** — it re-enqueues a live
+  charge nothing has touched for ten minutes, and in a healthy deployment it
+  finds nothing.
+- **The ladder above, wired.** `vpay_worker::poll_delay(attempt)` is indexed by
+  `jobs.attempts - 1` (the claim increments the counter), and a rung is one
+  `UPDATE jobs SET run_at = now() + delay`.
+- **The state table.** `vpay_core::settlement::settle(StatusKind, ChargeState)`
+  is a `const fn`, total and wildcard-free in both dimensions; its 24-pair
+  table is transcribed as a test, and a second test proves the transcription
+  covers every pair exactly once. A terminal charge answers `None`: no rail
+  answer moves one, in either direction.
+- **The 24-hour escalation, and it does not stop the polling.**
+  `RecoveryPolicy::unresolved_after` (default 24 h, measured from
+  `charges.created_at`, which is written before the rail is called) moves the
+  charge to `unresolved` and fails the job with `JobError::Exhausted` →
+  `RetryAfter { delay: 1 h, alert: true }`: an hourly re-poll *and* an alert,
+  never a dead letter
+  (`a_charge_past_the_horizon_is_unresolved_polled_hourly_and_alerted_never_parked`).
+  **The escalation does not depend on the rail answering.** A status query that
+  fails — a rail whose endpoint is down, or misconfigured — used to keep the
+  charge off the horizon entirely, riding the ladder quietly forever, because
+  the horizon was only reached after a successful answer
+  (`a_rail_that_never_answers_is_still_escalated_at_the_horizon`; a review
+  finding, not a design property). Past the horizon every outcome short of a
+  settlement leaves the charge `unresolved` — **and the worker keeps asking the
+  rail, once an hour.** A terminal answer at hour 30 settles the payment
+  through the ordinary path, exactly as "a late success is the normal
+  transition" above requires, whether it is a success or a decline
+  (`a_late_success_past_the_horizon_still_settles`,
+  `a_decline_past_the_horizon_settles_an_unresolved_charge_and_clears_the_alert`
+  — the second one is what pins `unresolved` inside
+  `vpay_db::payment_intents::LIVE_CHARGE_STATES`, without which an escalated
+  charge could never be settled at all). A **rail** failure, another
+  non-terminal answer, or a `submitting` charge the recovery table wants to
+  resubmit each leave the charge `unresolved` and raise the hourly alert again
+  (`a_resubmit_past_the_horizon_still_escalates` — that last one also a review
+  finding: the resubmit arm returned a ladder rung and never escalated). The
+  re-escalation writes nothing once the charge is already there, so
+  `charges.updated_at` keeps naming the last real change
+  (`a_second_hourly_poll_of_an_unresolved_charge_re_alerts_without_writing_it_again`).
+  A rail failure and nothing else: a poisoned job row or a Postgres error past
+  the horizon keeps its own classification and is parked or retried as itself,
+  because a composite re-deciding a leaf's category is precisely what ADR-0011
+  forbids (`a_poisoned_job_past_the_horizon_is_parked_rather_than_rescheduled_hourly`).
+- **A late success settles normally.** `succeeded` from any live state is one
+  transaction: charge `succeeded` (plus `provider_txn_id`), intent `succeeded`
+  with `amount_received = amount`, and one `payment_intent.succeeded` event —
+  no special type, no special case.
+- **Housekeeping is on a timer at last.** `sweep:expired` (hourly) deletes
+  expired idempotency keys and client-assertion `jti`s and reaps expired job
+  leases; both deletes used to run once at `vpay-server` boot and nowhere else.
+  Lease reaping additionally runs at worker boot and every `lease / 2`, because
+  the sweep is itself a row in `jobs` and a worker that died holding it would
+  leave the only reaper unclaimable.
+
+**What is not built.**
+
+- **No callback endpoint.** `POST /provider/{code}/callback` does not exist, so
+  nothing enqueues a poll from a callback and nothing compares Orange's
+  `notif_token` against the stored one. `parse_callback` is implemented on both
+  rails and is exercised by tests and by nothing else. The section above
+  describes a design, not a route.
+- **`prompt_ttl_seconds` / `prompt_expired_at` are not implemented** — the
+  whole of "Timers assert nothing" above except the 24-hour rung. There is no
+  `charges.prompt_expired_at` column, no config key, and no
+  `payment_intent.processing` event with `expired: true`, so a merchant's
+  "check your phone" UI has nothing to turn off. Deferred deliberately in Step
+  4 (decision 6 of `docs/plans/2026-09-03-step4-worker.md`); it is a coherent
+  unit with the fan-out in Step 5.
+- **No fan-out.** The `events` rows this document's late success writes are
+  inserted with `fanout_state = 'pending'` and nothing reads them —
+  see [webhooks.md](webhooks.md).
+- **The `contradiction` classifier is wired but its call sites are untested.**
+  A rail that reports the opposite of a settled charge raises
+  `error!(alert = true, …)` and changes nothing; the classifier's table is unit
+  tested over the whole cartesian product, and neither call site is reached by
+  any test (one is unreachable behind the terminal guard, the other needs a
+  real multi-worker race). See [../status.md](../status.md).
+
+The loop's error contract is unchanged and now has a consumer:
 `vpay_worker::JobError::decision(attempt)` turns any job failure into
-`RetryAfter { delay, alert }`, `Terminal`, or `DeadLetter`, derived only from
-the error's classification ([errors.md](errors.md)). The 24-hour `unresolved`
-escalation above is `JobError::Exhausted` → `RetryAfter { delay: 1 h, alert:
-true }`: exactly this document's "still polled, once an hour, and now
-raising an alert" — never a silent failure, and never a dead-letter, because
-the late success at hour 30 is a normal transition. Nothing calls
-`decision()` yet.
+`RetryAfter { delay, alert }`, `Terminal` or `DeadLetter`, derived only from
+the error's classification ([errors.md](errors.md)), and
+`vpay_worker::run_loop` is the one place those three answers become the three
+writes that end a lease.
 
-**Unchanged by Step 3 (2026-09-03), deliberately — but the adapter API this
-document needs now exists.** No job loop, no escalation, no callback
-endpoint: nothing polls a `submitted` charge, so a confirmed push intent sits
-in `processing` indefinitely and a redirect intent in `requires_action`.
-What Step 3 supplied is the half a reconciler cannot be written without:
-
-- `ProviderAdapter::query_status` is implemented on both rails and is
-  `async`, and it returns a canonical `ChargeStatus::NotFound` for a
-  reference the rail has no record of — never a failure. That distinction is
-  the whole basis of the recovery table in
-  [crash-safety.md](crash-safety.md), and it is proven on both rails by the
-  conformance case `not_found_is_never_on_its_own_a_failure`.
-- A charge that is pending and later settles walks correctly:
-  `pending_then_successful_walks_the_scenario` drives a WireMock scenario
-  through two `query_status` calls.
-- `parse_callback` is implemented on both rails and returns identifiers
-  only. **There is still no callback route**, so nothing compares Orange's
-  `notif_token` against the stored one, and MTN's callbacks are unsigned and
-  unauthenticated in any case. Until that route exists, `parse_callback`
-  is exercised by tests and by nothing else.
+See [../status.md](../status.md).

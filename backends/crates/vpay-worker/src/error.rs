@@ -1,14 +1,15 @@
 //! [`JobError`], the job loop's Tier-2 composite error, and the retry
 //! [`Decision`] every boundary in the worker derives from it.
 //!
-//! **There is no job loop yet** (`docs/status.md`): nothing in this workspace
-//! dequeues a job, so nothing calls [`JobError::decision`] in production
-//! today. This module is the *contract* Phase 5 builds against, and its tests
-//! prove exactly one thing — that the retry decision is a pure function of
+//! [`crate::run_loop::run_loop`] is the one caller of [`JobError::decision`], and the
+//! only place a [`Decision`] becomes a write: `RetryAfter` reschedules,
+//! `Terminal` deletes, `DeadLetter` parks. This module's own tests prove
+//! exactly one thing — that the decision is a pure function of
 //! [`Classify::retry`], [`Classify::severity`] and the two delays
 //! ([`crate::poll_delay`], [`crate::UNRESOLVED_POLL_INTERVAL`]), with no
-//! second opinion anywhere. It does not prove that a job runs, is retried, or is
-//! dead-lettered, because none of that exists.
+//! second opinion anywhere. That a job is *actually* retried, finished or
+//! parked is a claim about Postgres, and it is proven where it can be —
+//! `backends/tests/integration/tests/worker_recovery.rs`.
 //!
 //! Per [ADR-0011](../../../../docs/adr/0011-error-modelling.md), a composite
 //! error **never re-classifies** what it wraps: a `DbError` is

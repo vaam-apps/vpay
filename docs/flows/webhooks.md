@@ -41,4 +41,36 @@ Delivery is at-least-once; merchants must dedupe by `event.id`.
 
 ## Status
 
-**Not started.** See [../status.md](../status.md).
+**TX 1 is real. Everything after it is not. Updated 2026-09-03 (Step 4).**
+
+**What is built.** The worker writes the `events` row *inside* the business
+transaction, exactly as the sketch above requires: `vpay_db::settlement::`
+`apply_succeeded`/`apply_failed` move the charge, move the intent and insert one
+event in a single transaction, with `fanout_state = 'pending'`. Two types only,
+both from this document's list — `payment_intent.succeeded` and
+`payment_intent.payment_failed` — and the CHECK `type_is_a_documented_event`
+(migration `0018`) refuses anything else at the database. `data` is the
+`payment_intent` **wire object**, rendered through the same
+`vpay_api::model::PaymentIntentObject` that `GET /v1/payment_intents/{id}`
+returns, so the body a merchant will eventually receive cannot disagree with the
+API's own about a field. `worker_e2e.rs` asserts the row: exactly one event for
+the settled intent, its type, its `fanout_state`, and the contents of its
+`data`.
+
+**What is not built — all of TX 2 and everything downstream.** No fan-out loop:
+the backlog query `vpay_db::events::pending_page` exists and is tested, and **no
+shipping code calls it**, so every event ever written is still `pending`. No
+endpoint registry, no `webhook_deliveries` table, no
+signing, no `Vpay-Signature` header, no retry schedule, no
+`GET /v1/events` route. `deliver_webhook` is deliberately **absent** from
+migration `0021`'s `kind_is_known` CHECK, so this build cannot enqueue a
+delivery by accident and then silently never run it; Step 5 adds the kind in
+its own migration. **No merchant has ever received a webhook from this code.**
+
+The three event types this document lists that nothing writes at all —
+`payment_intent.created`, `payment_intent.processing`,
+`payment_intent.canceled` — plus the two refund types, are unchanged: Step 4
+writes events for terminal transitions only (decision 4 of
+`docs/plans/2026-09-03-step4-worker.md`).
+
+See [../status.md](../status.md).

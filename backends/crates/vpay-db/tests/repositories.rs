@@ -2344,6 +2344,183 @@ async fn provider_requests_record_attempts_and_keep_status_and_responded_at_in_s
     Ok(())
 }
 
+/// A resubmit that answers with nothing must not erase the rail key material
+/// an earlier answer left.
+///
+/// `charges.provider_ref_extra` is `vpay_provider::RefExtra` — on a redirect
+/// rail the `pay_token` in it is the only thing that can ever query the
+/// charge again (`docs/flows/crash-safety.md`). `vpay_worker`'s
+/// `resubmit_charge` calls `mark_submitted` with whatever the *second* submit
+/// answered, and a push rail answers with an empty map; assigning that map
+/// would replace key material with `{}` and leave a charge nobody can ask
+/// about. So the write is a merge.
+///
+/// Driven through `mark_submitted` twice against two different charges rather
+/// than one, because the state guard (`submitting`) means one charge can only
+/// take that write once — which is also why this is defence against the next
+/// caller rather than a bug that is reachable today.
+#[tokio::test]
+async fn mark_submitted_merges_ref_extra_and_never_erases_it() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_merge", "XAF")).await?;
+
+    // A charge that already holds a rail's key material when the write lands
+    // — the shape a callback repair, or a second attempt on a redirect rail,
+    // would present.
+    let mut with_token = fixture_charge("ch_merge", "pi_merge");
+    with_token.provider_ref_extra = Some(json!({ "pay_token": "tok_abc" }));
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    vpay_db::charges::insert_for_intent(&mut tx, &with_token)
+        .await
+        .context("opening the charge must succeed")?;
+    tx.commit().await.context("transaction commits")?;
+
+    // The empty answer a push rail gives a resubmit.
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let merged =
+        vpay_db::charges::mark_submitted(&mut tx, "ch_merge", "submitted", Some(&json!({})), None)
+            .await
+            .context("recording the resubmit's answer must succeed")?;
+    tx.commit().await.context("transaction commits")?;
+    assert_eq!(
+        merged.provider_ref_extra,
+        Some(json!({ "pay_token": "tok_abc" })),
+        "an empty answer erased the rail key material; that charge can never be queried \
+         again"
+    );
+
+    // A `None` argument — "the answer carried nothing at all" — is also not
+    // an erasure.
+    let mut none_arg = fixture_charge("ch_merge_none", "pi_merge_none");
+    none_arg.provider_ref_extra = Some(json!({ "pay_token": "tok_xyz" }));
+    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_merge_none", "XAF")).await?;
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    vpay_db::charges::insert_for_intent(&mut tx, &none_arg)
+        .await
+        .context("opening the charge must succeed")?;
+    let untouched =
+        vpay_db::charges::mark_submitted(&mut tx, "ch_merge_none", "submitted", None, None)
+            .await
+            .context("recording an answer with no key material must succeed")?;
+    tx.commit().await.context("transaction commits")?;
+    assert_eq!(
+        untouched.provider_ref_extra,
+        Some(json!({ "pay_token": "tok_xyz" })),
+        "a NULL argument must leave the column alone rather than nulling it"
+    );
+
+    // And a real answer still wins, per key: this is a merge, not a refusal
+    // to write.
+    let mut fresh = fixture_charge("ch_merge_new", "pi_merge_new");
+    fresh.provider_ref_extra = Some(json!({ "pay_token": "tok_old", "keep": "me" }));
+    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_merge_new", "XAF")).await?;
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    vpay_db::charges::insert_for_intent(&mut tx, &fresh)
+        .await
+        .context("opening the charge must succeed")?;
+    let replaced = vpay_db::charges::mark_submitted(
+        &mut tx,
+        "ch_merge_new",
+        "submitted",
+        Some(&json!({ "pay_token": "tok_new" })),
+        None,
+    )
+    .await
+    .context("recording a fresh token must succeed")?;
+    tx.commit().await.context("transaction commits")?;
+    assert_eq!(
+        replaced.provider_ref_extra,
+        Some(json!({ "pay_token": "tok_new", "keep": "me" })),
+        "the rail's newer value must win for the keys it names, and only those"
+    );
+
+    Ok(())
+}
+
+/// A second answer that carries no URL must not blank the one a payer is
+/// standing on.
+///
+/// `charges.redirect_url` is what `GET /v1/payment_intents/{id}` renders as
+/// `next_action` (`vpay_api::v1::payment_intents`), and on a redirect rail the
+/// payer is handed it strictly *after* it is committed
+/// (`docs/flows/crash-safety.md`). Assigning `$4` blindly would let a
+/// resubmit whose answer had no URL leave an intent in `requires_action` with
+/// nothing to act on — the charge still live, the address gone. So the write
+/// is `COALESCE($4, redirect_url)`: `NULL` means "this answer carried no
+/// URL", never "there is no URL".
+///
+/// Same shape as [`mark_submitted_merges_ref_extra_and_never_erases_it`], and
+/// for the same reason it uses a charge per claim: the `submitting` guard
+/// means one charge can only take this write once.
+#[tokio::test]
+async fn mark_submitted_never_erases_the_redirect_url() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+
+    // A charge that already carries the rail's URL when a second answer
+    // lands — the shape a resubmit on a redirect rail would present.
+    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_url_keep", "XAF")).await?;
+    let mut holding_url = fixture_charge("ch_url_keep", "pi_url_keep");
+    holding_url.redirect_url = Some("https://pay.example/abc".to_owned());
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    vpay_db::charges::insert_for_intent(&mut tx, &holding_url)
+        .await
+        .context("opening the charge must succeed")?;
+    let kept = vpay_db::charges::mark_submitted(&mut tx, "ch_url_keep", "submitted", None, None)
+        .await
+        .context("recording an answer with no URL must succeed")?;
+    tx.commit().await.context("transaction commits")?;
+    assert_eq!(
+        kept.redirect_url.as_deref(),
+        Some("https://pay.example/abc"),
+        "a NULL argument erased the only address the payer can pay at; the intent would          read `requires_action` with no next_action"
+    );
+
+    // A real answer still wins: this is a merge, not a refusal to write.
+    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_url_new", "XAF")).await?;
+    let mut replacing = fixture_charge("ch_url_new", "pi_url_new");
+    replacing.redirect_url = Some("https://pay.example/old".to_owned());
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    vpay_db::charges::insert_for_intent(&mut tx, &replacing)
+        .await
+        .context("opening the charge must succeed")?;
+    let replaced = vpay_db::charges::mark_submitted(
+        &mut tx,
+        "ch_url_new",
+        "submitted",
+        None,
+        Some("https://pay.example/new"),
+    )
+    .await
+    .context("recording a fresh URL must succeed")?;
+    tx.commit().await.context("transaction commits")?;
+    assert_eq!(
+        replaced.redirect_url.as_deref(),
+        Some("https://pay.example/new"),
+        "the rail's newer URL must win; COALESCE must not become a refusal to update"
+    );
+
+    // And the ordinary push-rail confirm: nothing stored, nothing answered,
+    // nothing written.
+    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_url_none", "XAF")).await?;
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    vpay_db::charges::insert_for_intent(&mut tx, &fixture_charge("ch_url_none", "pi_url_none"))
+        .await
+        .context("opening the charge must succeed")?;
+    let still_none =
+        vpay_db::charges::mark_submitted(&mut tx, "ch_url_none", "submitted", None, None)
+            .await
+            .context("recording a push rail's answer must succeed")?;
+    tx.commit().await.context("transaction commits")?;
+    assert_eq!(
+        still_none.redirect_url, None,
+        "a push rail has no URL and must not acquire one"
+    );
+
+    Ok(())
+}
+
 /// The write a rail's acceptance produces, and the guard that makes it a
 /// state machine rather than a hope.
 ///
@@ -2610,6 +2787,1302 @@ async fn the_charge_and_the_intent_move_together_or_not_at_all() -> anyhow::Resu
     assert_eq!(
         status, "requires_payment_method",
         "an intent must never be left in requires_action with no URL to send the payer to"
+    );
+
+    Ok(())
+}
+
+// --- jobs and settlement (migration 0021, Step 4) --------------------------
+
+/// A live charge on a confirmed intent, in whatever pair of states the test
+/// under discussion needs.
+///
+/// The two are set directly rather than driven through `confirm`, because
+/// what is under test here is the *settlement* half of the lifecycle and the
+/// shapes it has to cope with — `submitted`/`processing` (a push rail),
+/// `pending`/`requires_action` (a redirect rail whose payer has been sent
+/// away), and the invariant-violating pairs a broken database could present.
+/// Reaching those through the API would test the API.
+async fn live_charge(
+    pool: &PgPool,
+    intent_id: &str,
+    charge_id: &str,
+    intent_status: &str,
+    charge_state: &str,
+) -> anyhow::Result<()> {
+    let mut intent = fixture_intent(intent_id, "XAF");
+    intent.status = intent_status.to_owned();
+    vpay_db::payment_intents::insert(pool, &intent)
+        .await
+        .context("inserting the intent must succeed")?;
+
+    let mut charge = fixture_charge(charge_id, intent_id);
+    charge.state = charge_state.to_owned();
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    vpay_db::charges::insert_for_intent(&mut tx, &charge)
+        .await
+        .context("opening the charge must succeed")?;
+    tx.commit().await.context("transaction commits")?;
+
+    Ok(())
+}
+
+/// Enqueues one job in its own committed transaction — the pooled
+/// convenience `vpay_db::jobs` deliberately does not offer, because a
+/// *caller* enqueueing outside the transaction that creates the work is the
+/// bug that module exists to prevent. A test setting up a queue has no such
+/// work to be in step with.
+async fn enqueue(
+    pool: &PgPool,
+    kind: &str,
+    dedupe_key: &str,
+    run_at: time::OffsetDateTime,
+) -> anyhow::Result<bool> {
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let inserted = vpay_db::jobs::enqueue_in_tx(
+        &mut tx,
+        kind,
+        dedupe_key,
+        &json!({ "charge_id": "ch_x" }),
+        run_at,
+    )
+    .await
+    .context("enqueueing must succeed")?;
+    tx.commit().await.context("transaction commits")?;
+    Ok(inserted)
+}
+
+/// How many `events` rows name this object. The settlement transaction's
+/// central claim is "exactly one", and a count is the only assertion that
+/// can catch the failure that matters (a second delivery to a merchant).
+async fn event_count(pool: &PgPool, object_id: &str) -> anyhow::Result<i64> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM events WHERE object_id = $1")
+        .bind(object_id)
+        .fetch_one(pool)
+        .await
+        .context("counting events must succeed")
+}
+
+/// Reads a charge's stored state without going through the repository, so an
+/// assertion about what was *committed* cannot be satisfied by whatever the
+/// writer happened to return.
+async fn charge_state(pool: &PgPool, charge_id: &str) -> anyhow::Result<String> {
+    sqlx::query_scalar::<_, String>("SELECT state::TEXT FROM charges WHERE id = $1")
+        .bind(charge_id)
+        .fetch_one(pool)
+        .await
+        .context("re-reading the charge must succeed")
+}
+
+/// `claim` takes the *oldest* runnable job, and leaves a job whose `run_at`
+/// has not arrived alone. Without the second half, a poll ladder would be
+/// decorative: every rescheduled job would be claimed again immediately.
+#[tokio::test]
+async fn claim_takes_the_earliest_runnable_job_and_leaves_the_future_one() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+
+    enqueue(
+        &pool,
+        "poll_charge",
+        "poll:newer",
+        now - time::Duration::seconds(10),
+    )
+    .await?;
+    enqueue(
+        &pool,
+        "poll_charge",
+        "poll:older",
+        now - time::Duration::seconds(60),
+    )
+    .await?;
+    enqueue(
+        &pool,
+        "poll_charge",
+        "poll:future",
+        now + time::Duration::hours(1),
+    )
+    .await?;
+
+    let first = vpay_db::jobs::claim(&pool, "worker-1")
+        .await?
+        .context("a runnable job must be claimable")?;
+    assert_eq!(
+        first.dedupe_key, "poll:older",
+        "the oldest runnable job wins"
+    );
+    assert_eq!(first.attempts, 1, "the claim itself counts the attempt");
+    assert_eq!(first.locked_by.as_deref(), Some("worker-1"));
+
+    let second = vpay_db::jobs::claim(&pool, "worker-1")
+        .await?
+        .context("the second runnable job must be claimable")?;
+    assert_eq!(second.dedupe_key, "poll:newer");
+
+    assert!(
+        vpay_db::jobs::claim(&pool, "worker-1").await?.is_none(),
+        "a job scheduled an hour out must not be claimable now"
+    );
+
+    Ok(())
+}
+
+/// Eight workers racing for **one** job: exactly one may win. Two workers
+/// running the same `poll_charge` would query the rail twice and race each
+/// other into the settlement transaction.
+#[tokio::test]
+async fn eight_concurrent_claims_over_one_job_yield_exactly_one_claim() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    enqueue(
+        &pool,
+        "poll_charge",
+        "poll:contended",
+        time::OffsetDateTime::now_utc(),
+    )
+    .await?;
+
+    const WORKERS: usize = 8;
+    let mut handles = Vec::with_capacity(WORKERS);
+    for worker in 0..WORKERS {
+        let pool = pool.clone();
+        handles.push(tokio::spawn(async move {
+            vpay_db::jobs::claim(&pool, &format!("worker-{worker}")).await
+        }));
+    }
+
+    let mut claimed = Vec::new();
+    for handle in handles {
+        if let Some(job) = handle.await.context("the claim task must not panic")?? {
+            claimed.push(job);
+        }
+    }
+
+    assert_eq!(
+        claimed.len(),
+        1,
+        "exactly one of {WORKERS} concurrent claims may take the single job; got {claimed:?}"
+    );
+
+    Ok(())
+}
+
+/// The other half of the same property, and the one that fails if
+/// `FOR UPDATE SKIP LOCKED` is dropped: eight workers racing for **eight**
+/// jobs must take eight *different* ones and none must come away empty.
+///
+/// A plain `WHERE locked_at IS NULL … LIMIT 1` subquery makes every worker
+/// pick the same candidate row, block on it, and then match nothing once the
+/// winner commits — so seven of the eight claim nothing while seven jobs sit
+/// runnable. That is not a correctness failure a "exactly one winner" test
+/// can see (it also returns one winner); it is a queue that does not scale
+/// past one worker, and this is the test that catches it.
+#[tokio::test]
+async fn eight_concurrent_claims_over_eight_jobs_take_eight_distinct_jobs() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+
+    const WORKERS: usize = 8;
+    for n in 0..WORKERS {
+        enqueue(
+            &pool,
+            "poll_charge",
+            &format!("poll:{n}"),
+            now - time::Duration::seconds(i64::try_from(n).unwrap_or(0)),
+        )
+        .await?;
+    }
+
+    let mut handles = Vec::with_capacity(WORKERS);
+    for worker in 0..WORKERS {
+        let pool = pool.clone();
+        handles.push(tokio::spawn(async move {
+            vpay_db::jobs::claim(&pool, &format!("worker-{worker}")).await
+        }));
+    }
+
+    let mut keys = std::collections::BTreeSet::new();
+    let mut empty = 0;
+    for handle in handles {
+        match handle.await.context("the claim task must not panic")?? {
+            Some(job) => {
+                assert!(
+                    keys.insert(job.dedupe_key.clone()),
+                    "two workers claimed {}",
+                    job.dedupe_key
+                );
+            }
+            None => empty += 1,
+        }
+    }
+
+    assert_eq!(
+        empty, 0,
+        "no worker may come away empty while {WORKERS} jobs are runnable — SKIP LOCKED is what \
+         makes a contended claim take the *next* job rather than nothing"
+    );
+    assert_eq!(
+        keys.len(),
+        WORKERS,
+        "every job must have been claimed exactly once"
+    );
+
+    Ok(())
+}
+
+/// A leased job is invisible to `claim` until something releases it. This is
+/// the property the lease exists for, stated on its own so a change to the
+/// claim predicate cannot pass by accident.
+#[tokio::test]
+async fn a_leased_job_is_invisible_to_claim() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    enqueue(
+        &pool,
+        "sweep_expired",
+        "sweep:expired",
+        time::OffsetDateTime::now_utc(),
+    )
+    .await?;
+
+    let job = vpay_db::jobs::claim(&pool, "worker-1")
+        .await?
+        .context("the job must be claimable once")?;
+
+    assert!(
+        vpay_db::jobs::claim(&pool, "worker-2").await?.is_none(),
+        "a job another worker holds must not be claimable"
+    );
+
+    assert!(
+        vpay_db::jobs::release_all(&pool, "worker-1").await? == 1,
+        "the drain path must hand the lease back"
+    );
+    let reclaimed = vpay_db::jobs::claim(&pool, "worker-2")
+        .await?
+        .context("a released job must be claimable again")?;
+    assert_eq!(reclaimed.id, job.id);
+    assert_eq!(
+        reclaimed.attempts, 2,
+        "attempts count claims, so a job that is handed back and retaken is visibly on its \
+         second attempt"
+    );
+
+    Ok(())
+}
+
+/// `finish` is guarded on the lease holder. A worker whose lease was reaped
+/// as stale must not delete the job the worker that took it over is still
+/// running — that is the ABA the `locked_by` guard closes.
+#[tokio::test]
+async fn finish_with_the_wrong_worker_id_deletes_nothing() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    enqueue(
+        &pool,
+        "poll_charge",
+        "poll:aba",
+        time::OffsetDateTime::now_utc(),
+    )
+    .await?;
+
+    let job = vpay_db::jobs::claim(&pool, "worker-1")
+        .await?
+        .context("the job must be claimable")?;
+
+    assert!(
+        !vpay_db::jobs::finish(&pool, job.id, "worker-2").await?,
+        "a worker that does not hold the lease must not be told it finished the job"
+    );
+    let survivors: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE id = $1")
+        .bind(job.id)
+        .fetch_one(&pool)
+        .await
+        .context("counting the job must succeed")?;
+    assert_eq!(survivors, 1, "the job must still be there");
+
+    assert!(
+        vpay_db::jobs::finish(&pool, job.id, "worker-1").await?,
+        "the lease holder finishes it"
+    );
+    let survivors: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE id = $1")
+        .bind(job.id)
+        .fetch_one(&pool)
+        .await
+        .context("counting the job must succeed")?;
+    assert_eq!(survivors, 0, "a finished job is deleted, not flagged");
+
+    Ok(())
+}
+
+/// `reschedule` releases the lease and moves `run_at` in one write, and
+/// records a `last_error` bounded to the column's 2000 characters — the
+/// bound matters because a refused write here would leave the job leased
+/// with nothing saying why it did not finish.
+#[tokio::test]
+async fn reschedule_clears_the_lease_and_moves_run_at_into_the_future() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    enqueue(
+        &pool,
+        "poll_charge",
+        "poll:ladder",
+        time::OffsetDateTime::now_utc(),
+    )
+    .await?;
+
+    let job = vpay_db::jobs::claim(&pool, "worker-1")
+        .await?
+        .context("the job must be claimable")?;
+
+    let over_long = "e".repeat(3_000);
+    assert!(
+        !vpay_db::jobs::reschedule(
+            &pool,
+            job.id,
+            "worker-2",
+            std::time::Duration::from_secs(60),
+            Some(&over_long)
+        )
+        .await?,
+        "a worker that does not hold the lease must not be able to reschedule the job"
+    );
+
+    assert!(
+        vpay_db::jobs::reschedule(
+            &pool,
+            job.id,
+            "worker-1",
+            std::time::Duration::from_secs(60),
+            Some(&over_long)
+        )
+        .await?,
+        "the lease holder reschedules it"
+    );
+
+    let (run_at, locked_at, locked_by, last_error): (
+        time::OffsetDateTime,
+        Option<time::OffsetDateTime>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as("SELECT run_at, locked_at, locked_by, last_error FROM jobs WHERE id = $1")
+        .bind(job.id)
+        .fetch_one(&pool)
+        .await
+        .context("re-reading the job must succeed")?;
+
+    assert!(
+        run_at > time::OffsetDateTime::now_utc(),
+        "a rescheduled job must not be runnable yet"
+    );
+    assert_eq!(locked_at, None, "the lease is released");
+    assert_eq!(locked_by, None, "…and so is its holder — lock_is_paired");
+    assert_eq!(
+        last_error.map(|error| error.chars().count()),
+        Some(2_000),
+        "the error is truncated to the column's ceiling rather than refused"
+    );
+
+    assert!(
+        vpay_db::jobs::claim(&pool, "worker-1").await?.is_none(),
+        "the rescheduled job must not be claimable before its new run_at"
+    );
+
+    Ok(())
+}
+
+/// The reaper frees a lease whose worker died, and *only* that one: reaping
+/// a lease that is merely slow hands a running job to a second worker.
+#[tokio::test]
+async fn reap_expired_leases_frees_only_the_stale_lease() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+    enqueue(
+        &pool,
+        "poll_charge",
+        "poll:stale",
+        now - time::Duration::seconds(60),
+    )
+    .await?;
+    enqueue(&pool, "poll_charge", "poll:fresh", now).await?;
+
+    let stale = vpay_db::jobs::claim(&pool, "worker-dead")
+        .await?
+        .context("the stale job must be claimable")?;
+    let fresh = vpay_db::jobs::claim(&pool, "worker-alive")
+        .await?
+        .context("the fresh job must be claimable")?;
+
+    // The crash: a worker that took a lease ten minutes ago and never came
+    // back. Written directly because there is no other way to produce it —
+    // waiting ten minutes is not a test.
+    sqlx::query("UPDATE jobs SET locked_at = now() - INTERVAL '10 minutes' WHERE id = $1")
+        .bind(stale.id)
+        .execute(&pool)
+        .await
+        .context("backdating the lease must succeed")?;
+
+    let reaped = vpay_db::jobs::reap_expired_leases(&pool, std::time::Duration::from_secs(300))
+        .await
+        .context("reaping must succeed")?;
+    assert_eq!(
+        reaped, 1,
+        "only the ten-minute-old lease is stale at a five-minute lease"
+    );
+
+    let (locked_by, last_error): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT locked_by, last_error FROM jobs WHERE id = $1")
+            .bind(stale.id)
+            .fetch_one(&pool)
+            .await
+            .context("re-reading the reaped job must succeed")?;
+    assert_eq!(locked_by, None, "the stale lease is freed");
+    assert_eq!(last_error.as_deref(), Some("lease expired"), "and says why");
+
+    let still_held: Option<String> = sqlx::query_scalar("SELECT locked_by FROM jobs WHERE id = $1")
+        .bind(fresh.id)
+        .fetch_one(&pool)
+        .await
+        .context("re-reading the live job must succeed")?;
+    assert_eq!(
+        still_held.as_deref(),
+        Some("worker-alive"),
+        "a lease that is merely young must not be reaped"
+    );
+
+    Ok(())
+}
+
+/// The gauge's queue-age number: the oldest job that anything could actually
+/// claim.
+///
+/// Three exclusions, and each one is a way the number could lie to whoever is
+/// watching for a backlog. A **leased** job is being worked on, not waiting.
+/// A **future-dated** job is on the poll ladder, which is the ladder working
+/// correctly rather than a queue falling behind. A **parked** job
+/// (`run_at = 'infinity'`) is not backlog at all — counting it would peg the
+/// gauge at "infinitely behind" from the first dead letter onwards and, more
+/// bluntly, `'infinity'` has no `OffsetDateTime`, so decoding one fails the
+/// query instead of answering it.
+///
+/// The empty answer is `None` and not zero, because "the queue is empty" and
+/// "the queue is zero seconds behind" are different facts and an operator
+/// acts differently on each.
+#[tokio::test]
+async fn oldest_runnable_run_at_ignores_leased_future_and_parked_jobs() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+
+    assert_eq!(
+        vpay_db::jobs::oldest_runnable_run_at(&pool)
+            .await
+            .context("an empty queue must be readable, not an error")?,
+        None,
+        "an empty queue has no age; zero would read as `caught up`"
+    );
+
+    let parked_at = now - time::Duration::hours(3);
+    let leased_at = now - time::Duration::hours(2);
+    let runnable_at = now - time::Duration::hours(1);
+    enqueue(&pool, "poll_charge", "poll:parked", parked_at).await?;
+    enqueue(&pool, "poll_charge", "poll:leased", leased_at).await?;
+    enqueue(&pool, "poll_charge", "poll:runnable", runnable_at).await?;
+    enqueue(
+        &pool,
+        "poll_charge",
+        "poll:later",
+        now + time::Duration::hours(1),
+    )
+    .await?;
+
+    // The oldest row of all, parked by the same write the loop uses — so the
+    // exclusion is asserted against `dead_letter`'s own output rather than
+    // against a hand-written `'infinity'`.
+    let parked = vpay_db::jobs::claim(&pool, "worker-parking")
+        .await?
+        .context("the oldest job must be claimable")?;
+    assert_eq!(parked.dedupe_key, "poll:parked");
+    assert!(
+        vpay_db::jobs::dead_letter(
+            &pool,
+            parked.id,
+            "worker-parking",
+            "poisoned: no such charge"
+        )
+        .await?,
+        "the lease holder parks it"
+    );
+
+    // The next-oldest, held by a worker that is still working on it.
+    let leased = vpay_db::jobs::claim(&pool, "worker-busy")
+        .await?
+        .context("the next job must be claimable")?;
+    assert_eq!(leased.dedupe_key, "poll:leased");
+
+    let oldest = vpay_db::jobs::oldest_runnable_run_at(&pool)
+        .await
+        .context("reading the queue age must succeed")?
+        .context("three of the four rows are excluded, but `poll:runnable` is not")?;
+    // Compared with a tolerance, not for equality: `timestamptz` is
+    // microsecond-precision and `OffsetDateTime` is nanosecond, so a
+    // round-trip truncates. An hour of slack would hide the bug; a
+    // millisecond cannot.
+    assert!(
+        (oldest - runnable_at).abs() < time::Duration::milliseconds(1),
+        "the age must come from the oldest job nothing is doing and nothing has parked; \
+         got {oldest} for a row written at {runnable_at}"
+    );
+
+    // And a queue whose only rows are excluded is indistinguishable from an
+    // empty one, which is the honest answer: there is no backlog.
+    sqlx::query("DELETE FROM jobs WHERE dedupe_key IN ('poll:runnable', 'poll:later')")
+        .execute(&pool)
+        .await
+        .context("removing the claimable rows must succeed")?;
+    assert_eq!(
+        vpay_db::jobs::oldest_runnable_run_at(&pool).await?,
+        None,
+        "a parked job and a leased one are not a backlog"
+    );
+
+    Ok(())
+}
+
+/// `dedupe_key` names the *work*, so a second enqueue of the same work is a
+/// no-op — and specifically not an upsert: a backstop scan must not be able
+/// to drag a job already scheduled an hour out back to now.
+#[tokio::test]
+async fn enqueue_in_tx_dedupes_on_dedupe_key() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    let later = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+
+    assert!(
+        enqueue(&pool, "poll_charge", "poll:ch_once", later).await?,
+        "the first enqueue inserts"
+    );
+
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let inserted = vpay_db::jobs::enqueue_in_tx(
+        &mut tx,
+        "resubmit_charge",
+        "poll:ch_once",
+        &json!({ "charge_id": "ch_other" }),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+    .context("a duplicate enqueue must not error")?;
+    tx.commit().await.context("transaction commits")?;
+    assert!(
+        !inserted,
+        "the second enqueue of the same work inserts nothing"
+    );
+
+    let (kind, payload, run_at): (String, serde_json::Value, time::OffsetDateTime) =
+        sqlx::query_as("SELECT kind, payload, run_at FROM jobs WHERE dedupe_key = $1")
+            .bind("poll:ch_once")
+            .fetch_one(&pool)
+            .await
+            .context("exactly one row must carry the dedupe key")?;
+    assert_eq!(kind, "poll_charge", "the first enqueue's kind survives");
+    assert_eq!(payload, json!({ "charge_id": "ch_x" }), "and its payload");
+    assert!(
+        run_at > time::OffsetDateTime::now_utc(),
+        "a duplicate enqueue must not pull a scheduled job forward — DO NOTHING, not DO UPDATE"
+    );
+
+    Ok(())
+}
+
+/// The push-rail settlement: a `submitted` charge on a `processing` intent.
+/// Charge and intent both reach `succeeded`, `amount_received` becomes the
+/// full amount, and **one** `payment_intent.succeeded` event is queued for
+/// fan-out.
+#[tokio::test]
+async fn apply_succeeded_settles_a_submitted_charge_and_emits_one_event() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+    live_charge(&pool, "pi_push", "ch_push", "processing", "submitted").await?;
+
+    let data = json!({ "id": "pi_push", "object": "payment_intent", "status": "succeeded" });
+    let (charge, intent) = vpay_db::settlement::apply_succeeded(
+        &pool,
+        "ch_push",
+        Some("MTN-TXN-4242"),
+        "evt_push_succeeded",
+        &data,
+    )
+    .await
+    .context("settling must succeed")?
+    .context("a live charge must settle")?;
+
+    assert_eq!(charge.state, "succeeded");
+    assert_eq!(charge.provider_txn_id.as_deref(), Some("MTN-TXN-4242"));
+    assert_eq!(intent.status, "succeeded");
+    assert_eq!(
+        intent.amount_received, intent.amount,
+        "a settled push-rail payment collected the whole amount"
+    );
+    assert_eq!(intent.amount_received, 5_000);
+
+    assert_eq!(
+        charge_state(&pool, "ch_push").await?,
+        "succeeded",
+        "committed, not just returned"
+    );
+    assert_eq!(event_count(&pool, "pi_push").await?, 1);
+
+    let pending = vpay_db::events::pending_page(&pool, 10)
+        .await
+        .context("the fan-out backlog must be readable")?;
+    let event = pending
+        .first()
+        .context("the settlement's event must be in the backlog")?;
+    assert_eq!(event.event_type, "payment_intent.succeeded");
+    assert_eq!(event.object_id, "pi_push");
+    assert_eq!(
+        event.merchant_id, "merchant_a",
+        "copied from the intent, not joined"
+    );
+    assert!(!event.livemode);
+    assert_eq!(event.fanout_state, "pending");
+    assert_eq!(
+        event.data, data,
+        "the wire object is snapshotted, not re-derived"
+    );
+
+    Ok(())
+}
+
+/// The redirect-rail settlement: a `pending` charge on a `requires_action`
+/// intent. `requires_action → succeeded` is a legal settlement precisely
+/// because the payer acting at the rail is what the status means; the guard
+/// names both confirmed statuses for that reason.
+#[tokio::test]
+async fn apply_succeeded_settles_a_pending_charge_from_a_requires_action_intent()
+-> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+    live_charge(
+        &pool,
+        "pi_redirect",
+        "ch_redirect",
+        "requires_action",
+        "pending",
+    )
+    .await?;
+
+    let (charge, intent) = vpay_db::settlement::apply_succeeded(
+        &pool,
+        "ch_redirect",
+        None,
+        "evt_redirect_succeeded",
+        &json!({ "id": "pi_redirect" }),
+    )
+    .await?
+    .context("a pending charge on a requires_action intent must settle")?;
+
+    assert_eq!(charge.state, "succeeded");
+    assert_eq!(
+        charge.provider_txn_id, None,
+        "a rail that named no transaction id leaves the column NULL rather than inventing one"
+    );
+    assert_eq!(intent.status, "succeeded");
+    assert_eq!(intent.amount_received, 5_000);
+    assert_eq!(event_count(&pool, "pi_redirect").await?, 1);
+
+    Ok(())
+}
+
+/// Re-running a settled job — the normal outcome when a worker dies between
+/// committing the settlement and deleting its job — must change nothing and
+/// must not queue a second webhook.
+#[tokio::test]
+async fn a_second_apply_succeeded_returns_none_and_writes_no_second_event() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+    live_charge(&pool, "pi_twice", "ch_twice", "processing", "submitted").await?;
+
+    vpay_db::settlement::apply_succeeded(
+        &pool,
+        "ch_twice",
+        Some("TXN-1"),
+        "evt_first",
+        &json!({ "id": "pi_twice" }),
+    )
+    .await?
+    .context("the first settlement must fire")?;
+
+    let second = vpay_db::settlement::apply_succeeded(
+        &pool,
+        "ch_twice",
+        Some("TXN-2"),
+        "evt_second",
+        &json!({ "id": "pi_twice" }),
+    )
+    .await
+    .context("a re-run must not error — it is a normal outcome, not a failure")?;
+    assert!(
+        second.is_none(),
+        "an already-settled charge reports nothing to do"
+    );
+
+    assert_eq!(
+        event_count(&pool, "pi_twice").await?,
+        1,
+        "a second event would be a second webhook for one payment, under a different evt_ id \
+         that a merchant deduping on it cannot catch"
+    );
+
+    let txn: Option<String> =
+        sqlx::query_scalar("SELECT provider_txn_id FROM charges WHERE id = $1")
+            .bind("ch_twice")
+            .fetch_one(&pool)
+            .await
+            .context("re-reading the charge must succeed")?;
+    assert_eq!(
+        txn.as_deref(),
+        Some("TXN-1"),
+        "the re-run overwrote nothing"
+    );
+
+    Ok(())
+}
+
+/// A decline the poll discovered: the charge goes terminal, and the intent
+/// goes *back* to `requires_payment_method` carrying the error pair — the
+/// transition `docs/flows/payment-lifecycle.md` describes and that
+/// `record_payment_error` deliberately does not perform.
+#[tokio::test]
+async fn apply_failed_returns_the_intent_to_requires_payment_method_with_the_error_pair()
+-> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+    live_charge(&pool, "pi_declined", "ch_declined", "processing", "pending").await?;
+
+    let (charge, intent) = vpay_db::settlement::apply_failed(
+        &pool,
+        "ch_declined",
+        "payer_declined",
+        "PAYER_REJECTED: the payer declined the prompt",
+        "The payer declined the payment request.",
+        "evt_declined",
+        &json!({ "id": "pi_declined", "status": "requires_payment_method" }),
+    )
+    .await?
+    .context("a live charge must be failable")?;
+
+    assert_eq!(charge.state, "failed");
+    assert_eq!(charge.failure_code.as_deref(), Some("payer_declined"));
+    assert_eq!(
+        charge.failure_raw.as_deref(),
+        Some("PAYER_REJECTED: the payer declined the prompt"),
+        "the rail's own words survive"
+    );
+    assert_eq!(
+        intent.status, "requires_payment_method",
+        "there is no `failed` intent status — the diagram's failed box is this status plus the \
+         error pair"
+    );
+    assert_eq!(
+        intent.last_payment_error_code.as_deref(),
+        Some("payer_declined")
+    );
+    assert_eq!(
+        intent.last_payment_error_message.as_deref(),
+        Some("The payer declined the payment request."),
+    );
+    assert_eq!(intent.amount_received, 0, "nothing was collected");
+
+    let pending = vpay_db::events::pending_page(&pool, 10).await?;
+    let event = pending
+        .first()
+        .context("the failure must be queued for fan-out")?;
+    assert_eq!(event.event_type, "payment_intent.payment_failed");
+    assert_eq!(event_count(&pool, "pi_declined").await?, 1);
+
+    assert!(
+        vpay_db::settlement::apply_failed(
+            &pool,
+            "ch_declined",
+            "payer_declined",
+            "raw",
+            "message",
+            "evt_declined_again",
+            &json!({ "id": "pi_declined" }),
+        )
+        .await?
+        .is_none(),
+        "a charge that is already terminal reports nothing to do"
+    );
+    assert_eq!(event_count(&pool, "pi_declined").await?, 1);
+
+    Ok(())
+}
+
+/// The settlement of a confirm that crashed before it could move the intent.
+///
+/// `confirm` commits the charge and its poll job in one transaction *before*
+/// calling the rail, and moves the intent only afterwards, in
+/// `persist_submitted` (`vpay_api::v1::payment_intents`,
+/// `docs/flows/crash-safety.md`). So all three of that document's kill points
+/// leave exactly this pairing: a live charge against an intent that still
+/// reads `requires_payment_method`.
+///
+/// This case is the one that caught the bug. While the intent guard named
+/// only `processing`/`requires_action`, the charge compare-and-swap fired,
+/// the intent write matched nothing, and the settlement raised
+/// `WriteMatchedNoRow` — `Category::Internal`, `Retry::Never`,
+/// `Decision::DeadLetter`. The charge the rail had just collected was left
+/// live with its poll job parked at `run_at = 'infinity'`, and the merchant's
+/// intent said no payment had ever been attempted. Reverting
+/// `SETTLEABLE_STATUSES` to the two confirmed statuses turns this test back
+/// into that failure, which is what makes it worth its container.
+///
+/// The charge is the record of whether a confirm happened; the intent's
+/// status is not. The compare-and-swap above has already proven a live charge
+/// exists, and only a confirm writes one.
+#[tokio::test]
+async fn a_settlement_after_a_crashed_confirm_still_moves_the_intent() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+    live_charge(
+        &pool,
+        "pi_crashed",
+        "ch_crashed",
+        "requires_payment_method",
+        "submitted",
+    )
+    .await?;
+
+    let (charge, intent) = vpay_db::settlement::apply_succeeded(
+        &pool,
+        "ch_crashed",
+        Some("TXN-CRASHED"),
+        "evt_crashed",
+        &json!({ "id": "pi_crashed", "status": "succeeded" }),
+    )
+    .await
+    .context("a crashed confirm's charge must be settleable, not a WriteMatchedNoRow")?
+    .context("the live charge must settle")?;
+
+    assert_eq!(charge.state, "succeeded");
+    assert_eq!(charge.provider_txn_id.as_deref(), Some("TXN-CRASHED"));
+    assert_eq!(
+        intent.status, "succeeded",
+        "the intent must move even though the confirm never moved it out of \
+         requires_payment_method"
+    );
+    assert_eq!(
+        intent.amount_received, intent.amount,
+        "amount_received is written by the same statement, whatever the intent's previous \
+         status was"
+    );
+    assert_eq!(
+        charge_state(&pool, "ch_crashed").await?,
+        "succeeded",
+        "committed, not just returned"
+    );
+    assert_eq!(event_count(&pool, "pi_crashed").await?, 1);
+
+    Ok(())
+}
+
+/// The same crash, declined instead of paid: the status does not move (it is
+/// already `requires_payment_method`) and the write is the error pair alone —
+/// but it must still count as **applied**.
+///
+/// Zero rows matched is what `vpay_db::settlement` reports as a broken
+/// invariant, and one row matched with nothing to change is not that. The
+/// distinction is the whole difference between "the merchant is told why the
+/// payment failed" and "the poll job is parked forever".
+#[tokio::test]
+async fn a_decline_after_a_crashed_confirm_stamps_the_error_without_moving_the_status()
+-> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+    live_charge(
+        &pool,
+        "pi_crash_declined",
+        "ch_crash_declined",
+        "requires_payment_method",
+        "submitted",
+    )
+    .await?;
+
+    let (charge, intent) = vpay_db::settlement::apply_failed(
+        &pool,
+        "ch_crash_declined",
+        "insufficient_funds",
+        "NOT_ENOUGH_FUNDS",
+        "The payer's account did not have enough funds.",
+        "evt_crash_declined",
+        &json!({ "id": "pi_crash_declined", "status": "requires_payment_method" }),
+    )
+    .await
+    .context("a crashed confirm's decline must apply, not raise WriteMatchedNoRow")?
+    .context("the live charge must fail")?;
+
+    assert_eq!(charge.state, "failed");
+    assert_eq!(charge.failure_code.as_deref(), Some("insufficient_funds"));
+    assert_eq!(
+        intent.status, "requires_payment_method",
+        "there was nowhere to move it: that is already the status a decline returns to"
+    );
+    assert_eq!(
+        intent.last_payment_error_code.as_deref(),
+        Some("insufficient_funds"),
+        "the error pair is the entire write here, and it is what the merchant reads"
+    );
+    assert!(intent.last_payment_error_message.is_some());
+    assert_eq!(event_count(&pool, "pi_crash_declined").await?, 1);
+
+    Ok(())
+}
+
+/// The intent half of the settlement is a compare-and-swap too, and it is
+/// the one that keeps a broken database from becoming a wrong balance: a
+/// live charge against a `canceled` intent is an invariant violation, and the
+/// settlement refuses it outright rather than moving an intent the merchant
+/// withdrew to `succeeded`.
+///
+/// `canceled` and not `requires_payment_method`: that one is now a legal
+/// settlement source (see above), while this one is genuinely unreachable —
+/// `payment_intents::cancel`'s `NOT EXISTS` refuses to cancel an intent with
+/// a live charge, so the pairing can only be produced by a bug. `succeeded`
+/// is the other unreachable one, kept out by "one charge per intent, forever".
+///
+/// The whole transaction must roll back — the charge stays live, no event is
+/// queued — so a retry finds exactly the state it expects.
+#[tokio::test]
+async fn apply_succeeded_refuses_a_canceled_intent_and_commits_nothing() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+    // Not reachable through the API (cancel refuses while a charge is live) —
+    // which is the point: this is the shape a bug elsewhere would present,
+    // and it must not settle.
+    live_charge(&pool, "pi_broken", "ch_broken", "canceled", "submitted").await?;
+
+    let error = vpay_db::settlement::apply_succeeded(
+        &pool,
+        "ch_broken",
+        Some("TXN-BROKEN"),
+        "evt_broken",
+        &json!({ "id": "pi_broken" }),
+    )
+    .await
+    .expect_err("settling against a canceled intent must not report success");
+    assert!(
+        matches!(
+            error,
+            vpay_db::DbError::WriteMatchedNoRow {
+                table: "payment_intents",
+                ..
+            }
+        ),
+        "the refusal must name the row that did not move, and classify as Internal: {error}"
+    );
+
+    assert_eq!(
+        charge_state(&pool, "ch_broken").await?,
+        "submitted",
+        "the charge half must have rolled back with the rest"
+    );
+    let status: String =
+        sqlx::query_scalar("SELECT status::TEXT FROM payment_intents WHERE id = $1")
+            .bind("pi_broken")
+            .fetch_one(&pool)
+            .await
+            .context("re-reading the intent must succeed")?;
+    assert_eq!(status, "canceled", "the intent must not have moved");
+    assert_eq!(
+        event_count(&pool, "pi_broken").await?,
+        0,
+        "and nothing may be announced"
+    );
+
+    Ok(())
+}
+
+/// The non-terminal rungs of the poll ladder are a compare-and-swap on the
+/// state the caller believed the charge was in, so a job running twice
+/// cannot walk a charge backwards.
+#[tokio::test]
+async fn set_live_state_moves_a_charge_only_from_the_expected_state() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+    live_charge(&pool, "pi_live", "ch_live", "processing", "submitted").await?;
+
+    assert!(
+        !vpay_db::settlement::set_live_state(&pool, "ch_live", "pending", "unresolved").await?,
+        "a swap from a state the charge is not in must not fire"
+    );
+    assert_eq!(charge_state(&pool, "ch_live").await?, "submitted");
+
+    assert!(
+        vpay_db::settlement::set_live_state(&pool, "ch_live", "submitted", "pending").await?,
+        "the expected state swaps"
+    );
+    assert_eq!(charge_state(&pool, "ch_live").await?, "pending");
+
+    assert!(
+        !vpay_db::settlement::set_live_state(&pool, "ch_live", "submitted", "pending").await?,
+        "re-running the same swap is a no-op, not a second move"
+    );
+
+    Ok(())
+}
+
+/// The recovery table reads the *latest* submit, ignoring the poll ladder's
+/// own `query_status` rows — and reads the `status_code`/`responded_at` pair
+/// that tells it whether an answer was ever received.
+#[tokio::test]
+async fn latest_submit_attempt_returns_the_newest_submit_and_ignores_query_status()
+-> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+    live_charge(
+        &pool,
+        "pi_attempts",
+        "ch_attempts",
+        "processing",
+        "submitting",
+    )
+    .await?;
+
+    assert!(
+        vpay_db::settlement::latest_submit_attempt(&pool, "ch_attempts")
+            .await?
+            .is_none(),
+        "a charge whose rail was never called has no attempt — the resubmit branch"
+    );
+
+    let charge = vpay_db::charges::get_by_id(&pool, "ch_attempts")
+        .await?
+        .context("the charge must be readable by its own id")?;
+
+    vpay_db::provider_requests::insert_pending(
+        &pool,
+        "ch_attempts",
+        "mtn_momo",
+        "submit",
+        charge.provider_reference_id,
+        1,
+    )
+    .await?;
+    let second = vpay_db::provider_requests::insert_pending(
+        &pool,
+        "ch_attempts",
+        "mtn_momo",
+        "submit",
+        charge.provider_reference_id,
+        2,
+    )
+    .await?;
+    // Inserted *last*, and must still not win: the recovery table asks about
+    // submits, and a poll of a charge that was never answered would otherwise
+    // hide the unanswered submit behind its own row.
+    vpay_db::provider_requests::insert_pending(
+        &pool,
+        "ch_attempts",
+        "mtn_momo",
+        "query_status",
+        charge.provider_reference_id,
+        1,
+    )
+    .await?;
+
+    let latest = vpay_db::settlement::latest_submit_attempt(&pool, "ch_attempts")
+        .await?
+        .context("the submit attempts must be visible")?;
+    assert_eq!(latest.id, second, "the newest submit wins");
+    assert_eq!(latest.attempt, 2);
+    assert_eq!(latest.provider_reference_id, charge.provider_reference_id);
+    assert_eq!(
+        (latest.status_code, latest.responded_at),
+        (None, None),
+        "no answer was received — the pair the poll branch keys on"
+    );
+
+    vpay_db::provider_requests::record_response(&pool, second, Some(202), None).await?;
+    let answered = vpay_db::settlement::latest_submit_attempt(&pool, "ch_attempts")
+        .await?
+        .context("the attempt must still be there")?;
+    assert_eq!(answered.status_code, Some(202));
+    assert!(
+        answered.responded_at.is_some(),
+        "response_is_paired holds in both directions"
+    );
+
+    Ok(())
+}
+
+/// The backstop scan sees live charges that have gone quiet, and nothing
+/// else: not a terminal charge, and not one that moved a moment ago.
+#[tokio::test]
+async fn live_charges_stale_since_honours_the_cutoff_and_the_live_state_set() -> anyhow::Result<()>
+{
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+
+    live_charge(&pool, "pi_a", "ch_stale_old", "processing", "submitted").await?;
+    live_charge(&pool, "pi_b", "ch_stale_older", "processing", "pending").await?;
+    live_charge(&pool, "pi_c", "ch_terminal", "succeeded", "succeeded").await?;
+    live_charge(&pool, "pi_d", "ch_recent", "processing", "submitted").await?;
+
+    for (id, minutes) in [
+        ("ch_stale_old", 20),
+        ("ch_stale_older", 60),
+        ("ch_terminal", 60),
+    ] {
+        sqlx::query(
+            "UPDATE charges SET updated_at = now() - make_interval(mins => $2) WHERE id = $1",
+        )
+        .bind(id)
+        .bind(minutes)
+        .execute(&pool)
+        .await
+        .context("backdating the charge must succeed")?;
+    }
+
+    let cutoff = time::OffsetDateTime::now_utc() - time::Duration::minutes(10);
+    let stale = vpay_db::settlement::live_charges_stale_since(&pool, cutoff, 10).await?;
+
+    assert_eq!(
+        stale,
+        vec!["ch_stale_older".to_owned(), "ch_stale_old".to_owned()],
+        "oldest first, terminal charges excluded, and a charge that moved inside the window left \
+         alone"
+    );
+
+    assert_eq!(
+        vpay_db::settlement::live_charges_stale_since(&pool, cutoff, 1).await?,
+        vec!["ch_stale_older".to_owned()],
+        "the limit bounds the page"
+    );
+
+    Ok(())
+}
+
+/// `provider_txn_id` round-trips through the settlement transaction, and the
+/// `provider_txn_id_length` CHECK refuses the two values that would be lies:
+/// an empty string (reads as "there is an identifier", carries none) and an
+/// unbounded blob from a misparsed response. Both must roll the settlement
+/// back rather than half-applying it.
+#[tokio::test]
+async fn provider_txn_id_round_trips_and_its_check_refuses_empty_and_over_long()
+-> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+    live_charge(&pool, "pi_txn", "ch_txn", "processing", "submitted").await?;
+
+    for bad in ["", &"9".repeat(129)] {
+        let error = vpay_db::settlement::apply_succeeded(
+            &pool,
+            "ch_txn",
+            Some(bad),
+            "evt_txn_bad",
+            &json!({ "id": "pi_txn" }),
+        )
+        .await
+        .expect_err("the CHECK must refuse this transaction id");
+        assert!(
+            matches!(error, vpay_db::DbError::Query(_)),
+            "a CHECK violation is a vpay bug, not a merchant's: {error}"
+        );
+        assert_eq!(
+            charge_state(&pool, "ch_txn").await?,
+            "submitted",
+            "the refused settlement must leave the charge exactly where a retry expects it"
+        );
+        assert_eq!(event_count(&pool, "pi_txn").await?, 0);
+    }
+
+    vpay_db::settlement::apply_succeeded(
+        &pool,
+        "ch_txn",
+        Some("0123456789"),
+        "evt_txn_ok",
+        &json!({ "id": "pi_txn" }),
+    )
+    .await?
+    .context("a well-formed transaction id must settle")?;
+
+    let charge = vpay_db::charges::get_by_id(&pool, "ch_txn")
+        .await?
+        .context("the charge must be readable")?;
+    assert_eq!(charge.provider_txn_id.as_deref(), Some("0123456789"));
+
+    Ok(())
+}
+
+/// The worker's unscoped read of an intent: it is reached from a charge's
+/// foreign key, so there is no merchant to scope by — and it must still
+/// answer `None` for an id that names nothing, rather than erroring, because
+/// the caller turns that into a poisoned job with a name in it.
+#[tokio::test]
+async fn payment_intents_get_by_id_reads_without_a_merchant_scope() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+    live_charge(
+        &pool,
+        "pi_unscoped",
+        "ch_unscoped",
+        "processing",
+        "submitted",
+    )
+    .await?;
+
+    let row = vpay_db::payment_intents::get_by_id(&pool, "pi_unscoped")
+        .await?
+        .context("the worker must be able to read the intent its charge names")?;
+    assert_eq!(row.id, "pi_unscoped");
+    assert_eq!(row.status, "processing");
+    assert_eq!(row.merchant_id, "merchant_a");
+
+    assert!(
+        vpay_db::payment_intents::get_by_id(&pool, "pi_does_not_exist")
+            .await?
+            .is_none(),
+        "an id that names nothing is None, not an error"
+    );
+
+    Ok(())
+}
+
+/// The recovery table's per-job bookkeeping — the `not_found_streak` — is
+/// carried in the payload, and writing it is guarded on the lease like every
+/// other write that follows a claim.
+#[tokio::test]
+async fn set_payload_writes_only_for_the_lease_holder() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    enqueue(
+        &pool,
+        "poll_charge",
+        "poll:streak",
+        time::OffsetDateTime::now_utc(),
+    )
+    .await?;
+
+    let job = vpay_db::jobs::claim(&pool, "worker-1")
+        .await?
+        .context("the job must be claimable")?;
+    let updated = json!({ "charge_id": "ch_x", "not_found_streak": 2 });
+
+    assert!(
+        !vpay_db::jobs::set_payload(&pool, job.id, "worker-2", &updated).await?,
+        "a worker that does not hold the lease must not rewrite the payload"
+    );
+    assert!(
+        vpay_db::jobs::set_payload(&pool, job.id, "worker-1", &updated).await?,
+        "the lease holder records its bookkeeping"
+    );
+
+    let (payload, run_at): (serde_json::Value, time::OffsetDateTime) =
+        sqlx::query_as("SELECT payload, run_at FROM jobs WHERE id = $1")
+            .bind(job.id)
+            .fetch_one(&pool)
+            .await
+            .context("re-reading the job must succeed")?;
+    assert_eq!(payload, updated);
+    assert_eq!(
+        run_at, job.run_at,
+        "recording bookkeeping must not move the schedule — that is reschedule's job"
     );
 
     Ok(())
