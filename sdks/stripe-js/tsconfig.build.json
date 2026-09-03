@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // `src` is not in `files`, so a published .map would point at nothing.
+    "sourceMap": false,
+    "declarationMap": false,
+    // Nothing under `src/` that ships touches Node. Dropping the ambient
+    // Node globals from the build is what makes that checked rather than
+    // intended: a `Buffer` or `process` reaching shipping code fails here.
+    "types": []
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts", "src/testing/**"]
+}

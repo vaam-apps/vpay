@@ -416,6 +416,27 @@ describe("resource methods", () => {
     expect(result.status).toBe("requires_payment_method");
   });
 
+  it("payment_intents.create surfaces client_secret typed, when the server sends it", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: makeSamplePaymentIntent({
+          client_secret: "pi_123_secret_abc123",
+        }),
+      }),
+    });
+    const client = makeClient(server);
+
+    const result = await client.paymentIntents.create({
+      amount: 5000,
+      currency: "xaf",
+      payment_method_types: ["mtn_momo"],
+    });
+
+    // Typed access, no cast: `result.client_secret` is `string | undefined`.
+    expect(result.client_secret).toBe("pi_123_secret_abc123");
+  });
+
   it("payment_intents.create generates an Idempotency-Key when the caller supplies none", async () => {
     const server = await withServer({
       resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
@@ -462,6 +483,22 @@ describe("resource methods", () => {
     )!;
     expect(req.method).toBe("GET");
     expect(req.url).toBe("/v1/payment_intents/pi_123");
+  });
+
+  it("payment_intents.retrieve surfaces client_secret typed, when the server sends it", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: makeSamplePaymentIntent({
+          client_secret: "pi_123_secret_abc123",
+        }),
+      }),
+    });
+    const client = makeClient(server);
+
+    const result = await client.paymentIntents.retrieve("pi_123");
+
+    expect(result.client_secret).toBe("pi_123_secret_abc123");
   });
 
   it("percent-encodes a path id so it can never escape the /v1 namespace", async () => {
@@ -610,6 +647,11 @@ describe("resource methods", () => {
     expect(req.url).toBe("/v1/payment_intents?limit=10&starting_after=pi_100");
     expect(result.object).toBe("list");
     expect(result.data).toHaveLength(1);
+    // The server never puts client_secret on a list item — a merchant's own
+    // listing view must not receive a live payer credential for every
+    // intent on the page. `makeSamplePaymentIntent()` above did not set it,
+    // so this is also a typed access: `string | undefined`, not `string`.
+    expect(result.data[0]?.client_secret).toBeUndefined();
   });
 
   it("refunds.create: exact path and body, amount omitted for a full refund", async () => {

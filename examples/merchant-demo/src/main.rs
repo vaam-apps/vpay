@@ -704,15 +704,27 @@ async fn step_5_confirm(client: &Client, intent_id: &str, run: &str) -> anyhow::
 
     // The response and the stored row agree. This is the assertion that
     // would fail if `confirm` rendered a status it had not committed.
+    //
+    // `client_secret` is excluded from that comparison, deliberately: it is
+    // the one field that is *supposed* to differ between the two responses
+    // (Step 5c's D2, `vpay_api::model::PaymentIntentWithSecret`) — `confirm`
+    // omits it (the merchant already holds the credential from `create`,
+    // and a browser never reaches this route), `retrieve` includes it. A
+    // blanket comparison here would fail on that documented asymmetry
+    // rather than on an actual disagreement between what the response said
+    // and what the database holds.
     let after = client
         .payment_intents()
         .retrieve(intent_id)
         .await
         .map_err(|error| describe(STEP, "re-reading the intent after the confirm", &error))?;
-    if after != confirmed {
+    let mut after_without_secret = after.clone();
+    after_without_secret.client_secret = None;
+    if after_without_secret != confirmed {
         bail!(
-            "{STEP}: the confirm's response and a later retrieve are different objects. One of \
-             them is not what the database holds."
+            "{STEP}: the confirm's response and a later retrieve are different objects (apart \
+             from client_secret, which is expected to differ). One of them is not what the \
+             database holds."
         );
     }
     println!(

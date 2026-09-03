@@ -479,6 +479,87 @@ pub enum ConfigError {
         /// Zero-based position within `secrets:`.
         index: usize,
     },
+
+    /// Two merchants — or one merchant twice — declare the same publishable
+    /// key.
+    ///
+    /// Fatal rather than first-wins. `vpay_api::ResourceConfig` resolves a
+    /// publishable key to exactly one `merchant_id` and the browser surface
+    /// then requires the intent it was handed to belong to *that* tenant, so
+    /// a shared key means one of the two merchants' payers silently get a
+    /// uniform 404 on every confirm — with which merchant depending on
+    /// iteration order. It is the same failure `DuplicateMerchantId` refuses
+    /// for the same reason: a tenancy boundary with two answers is not a
+    /// boundary.
+    ///
+    /// The key itself is named in the message. It is not secret (see
+    /// [`oauth::MerchantClient::publishable_keys`]), and it is the string an
+    /// operator has to search the file for.
+    #[error(
+        "duplicate publishable key `{key}` (declared by merchant clients {first} and {second})"
+    )]
+    DuplicatePublishableKey {
+        /// The key declared twice.
+        key: String,
+        /// The `client_id` that declared it first.
+        first: String,
+        /// The `client_id` that declared it again — the same value when one
+        /// registration lists it twice.
+        second: String,
+    },
+    /// A publishable key is not shaped like one.
+    ///
+    /// The shape is `pk_test_…`/`pk_live_…` plus 16–64 characters of
+    /// `[A-Za-z0-9]` — Stripe's own spelling, which is what makes a merchant
+    /// able to tell at a glance which of the credentials on their page is
+    /// which. Refused at boot rather than at request time because a malformed
+    /// key is not something a payer can do anything about: it resolves to no
+    /// merchant, so every browser call against it is a 404 that names nothing
+    /// and no log line connects to the typo in the YAML.
+    ///
+    /// The rule is the *deployment's*, not a rail's or a merchant's, so there
+    /// is no environment branch here — a `pk_test_` key is legal in a livemode
+    /// deployment's file only in the sense that
+    /// [`Self::PublishableKeyLivemodeMismatch`] refuses it a moment later,
+    /// for a different and more specific reason.
+    #[error(
+        "merchant client {client_id} declares a malformed publishable key `{key}`; expected \
+         `pk_test_` or `pk_live_` followed by 16 to 64 characters of [A-Za-z0-9]"
+    )]
+    MalformedPublishableKey {
+        /// The registration the key belongs to.
+        client_id: String,
+        /// The key as written.
+        key: String,
+    },
+    /// A publishable key's `test`/`live` marker contradicts
+    /// `deployment.livemode`.
+    ///
+    /// **Not an environment branch** (ADR-0003): nothing in vpay behaves
+    /// differently because a key says `live`. The marker is a *label a human
+    /// reads*, and the whole value of the label is that it is never wrong —
+    /// a `pk_test_` key served by a livemode deployment is a merchant
+    /// pasting what they believe is a sandbox credential into a page that
+    /// takes real money, and a `pk_live_` key in a sandbox is the same
+    /// mistake pointing the other way. Both are visible only here; at
+    /// runtime either one authenticates perfectly.
+    ///
+    /// Refusing to boot is the cheap moment to see it, and it is the same
+    /// argument [`Self::MerchantMissingV1Audience`] makes.
+    #[error(
+        "merchant client {client_id} declares publishable key `{key}` under \
+         deployment.livemode: {livemode}; a `pk_live_` key belongs to a livemode deployment and \
+         a `pk_test_` key to a sandbox one"
+    )]
+    PublishableKeyLivemodeMismatch {
+        /// The registration the key belongs to.
+        client_id: String,
+        /// The key as written.
+        key: String,
+        /// What `deployment.livemode` actually says, so the message names
+        /// both halves of the contradiction.
+        livemode: bool,
+    },
 }
 
 impl vpay_core::Classify for ConfigError {

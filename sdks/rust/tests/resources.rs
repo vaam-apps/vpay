@@ -263,6 +263,81 @@ async fn retrieve_payment_intent_is_a_get_with_no_body_and_decodes_next_action()
 }
 
 #[tokio::test]
+async fn create_surfaces_client_secret_when_the_server_sends_it() {
+    // `POST /v1/payment_intents` renders `PaymentIntentWithSecret` (Step 5c's
+    // D2) — the twelve documented keys plus `client_secret`.
+    let (server, client) = fixture().await;
+    let mut body = support::payment_intent_json("pi_1");
+    body["client_secret"] = json!("pi_1_secret_abc123");
+    Mock::given(method("POST"))
+        .and(path("/v1/payment_intents"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+
+    let intent = client
+        .payment_intents()
+        .create(
+            CreatePaymentIntentParams {
+                amount: 5000,
+                currency: "xaf".to_string(),
+                payment_method_types: vec![PaymentMethodType::MtnMomo],
+                ..Default::default()
+            },
+            RequestOptions::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(intent.client_secret.as_deref(), Some("pi_1_secret_abc123"));
+}
+
+#[tokio::test]
+async fn retrieve_surfaces_client_secret_when_the_server_sends_it() {
+    // `GET /v1/payment_intents/{id}` renders the same `PaymentIntentWithSecret`.
+    let (server, client) = fixture().await;
+    let mut body = support::payment_intent_json("pi_1");
+    body["client_secret"] = json!("pi_1_secret_abc123");
+    Mock::given(method("GET"))
+        .and(path("/v1/payment_intents/pi_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+
+    let intent = client.payment_intents().retrieve("pi_1").await.unwrap();
+
+    assert_eq!(intent.client_secret.as_deref(), Some("pi_1_secret_abc123"));
+}
+
+#[tokio::test]
+async fn a_list_items_client_secret_is_none() {
+    // `GET /v1/payment_intents` renders the plain `PaymentIntentObject` per
+    // item — no `client_secret` key at all, unlike create/retrieve. A
+    // merchant's own listing view must never receive a live payer
+    // credential for every intent on the page.
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/payment_intents"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list",
+            "data": [support::payment_intent_json("pi_1")],
+            "has_more": false,
+            "url": "/v1/payment_intents",
+        })))
+        .mount(&server)
+        .await;
+
+    let list = client
+        .payment_intents()
+        .list(ListPaymentIntentsParams::default())
+        .await
+        .unwrap();
+
+    assert_eq!(list.data.len(), 1);
+    assert_eq!(list.data[0].client_secret, None);
+}
+
+#[tokio::test]
 async fn a_failed_charge_decodes_as_last_payment_error_with_no_failed_status() {
     // `docs/flows/payment-lifecycle.md`: there is no `failed` intent status.
     // A rail failure comes back as `requires_payment_method` plus

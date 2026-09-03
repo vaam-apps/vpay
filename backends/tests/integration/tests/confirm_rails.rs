@@ -539,9 +539,29 @@ async fn a_push_confirm_the_rail_accepts_moves_the_intent_to_processing() -> any
         .retrieve(&intent.id)
         .await
         .context("re-reading the confirmed intent")?;
+    // `client_secret` is the one field that must differ, by design (Step
+    // 5c's D2, `vpay_api::model::PaymentIntentWithSecret`): `confirm` is
+    // deliberately `SecretRendering::Omit` (the merchant already holds the
+    // credential from `create` and a browser never reaches this route), and
+    // `retrieve` is `SecretRendering::Include`. Asserted explicitly, on both
+    // sides, before the rest of the object is compared with the field
+    // normalised out — a blanket `assert_eq!` here would either miss a
+    // regression in the asymmetry itself or fail on the asymmetry every
+    // time, and neither is what "reproducible" is supposed to mean.
     assert_eq!(
-        retrieved, confirmed,
-        "the confirm's response and a later retrieve must be the same object"
+        confirmed.client_secret, None,
+        "confirm must not repeat a credential the merchant already holds"
+    );
+    assert!(
+        retrieved.client_secret.is_some(),
+        "retrieve must render the credential a browser needs to confirm"
+    );
+    let mut retrieved_without_secret = retrieved.clone();
+    retrieved_without_secret.client_secret = None;
+    assert_eq!(
+        retrieved_without_secret, confirmed,
+        "the confirm's response and a later retrieve must be the same object apart from \
+         client_secret"
     );
 
     harness.shutdown().await;
@@ -643,9 +663,25 @@ async fn redirect_confirm_commits_the_rails_material_before_it_answers() -> anyh
         .retrieve(&intent.id)
         .await
         .context("re-reading the intent in requires_action")?;
+    // `client_secret` is the one field that must differ, by design (Step
+    // 5c's D2, `vpay_api::model::PaymentIntentWithSecret`) — see the
+    // matching comment in `a_push_confirm_the_rail_accepts_moves_the_intent_
+    // to_processing` for why a blanket `assert_eq!` here is wrong now that
+    // the SDK models the field at all.
     assert_eq!(
-        retrieved, confirmed,
-        "a merchant who lost the confirm's response must be able to read the same action back"
+        confirmed.client_secret, None,
+        "confirm must not repeat a credential the merchant already holds"
+    );
+    assert!(
+        retrieved.client_secret.is_some(),
+        "retrieve must render the credential a browser needs to confirm"
+    );
+    let mut retrieved_without_secret = retrieved.clone();
+    retrieved_without_secret.client_secret = None;
+    assert_eq!(
+        retrieved_without_secret, confirmed,
+        "a merchant who lost the confirm's response must be able to read the same action back \
+         (apart from client_secret)"
     );
 
     harness.shutdown().await;

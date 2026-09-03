@@ -85,8 +85,14 @@ vpay-sdk = { path = "../../../sdks/rust", version = "0.1.0" }
 axum.workspace = true
 # The client for the three requests the SDK deliberately cannot make: one
 # with no bearer token, one with a bearer token it did not mint, and the same
-# `client_assertion` sent twice.
-reqwest.workspace = true
+# `client_assertion` sent twice. `tests/browser_checkout.rs` also uses it
+# directly against `/v1/browser`, where the credential is a `client_secret` —
+# `query`/`form` are on (the workspace declaration leaves both off) so that
+# surface can hand the credential to `RequestBuilder::query`/`::form` instead
+# of joining it into a URL or body with `format!`, the same kind of
+# dev-dependency-only feature addition `authkestra-op`'s `sqlx-postgres` above
+# already does.
+reqwest = { workspace = true, features = ["query", "form"] }
 # Mints the RSA keypairs those tests sign with — the merchant's and the
 # server's — so nothing is verified against hard-coded material. Pinned
 # directly at the same "0.9" `vpay-api` uses (neither is a workspace

@@ -125,6 +125,12 @@ pub(crate) fn merchant(client_id: &str, scopes: &[&str]) -> MerchantClient {
         // `backends/tests/integration/tests/webhooks.rs` — build their own
         // registration with real secrets.
         webhooks: Vec::new(),
+        // The fail-closed default. Nothing in this crate's unit tests reaches
+        // `/v1/browser` with a real key — that needs a database, so it is
+        // `backends/tests/integration/tests/browser_checkout.rs` — and an
+        // unused key here would be a key no test in this binary could
+        // exercise.
+        publishable_keys: Vec::new(),
     }
 }
 

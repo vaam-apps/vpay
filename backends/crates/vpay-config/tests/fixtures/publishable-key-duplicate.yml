@@ -1,0 +1,39 @@
+# Fixture for `two_merchant_clients_sharing_a_publishable_key_are_rejected`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# Both clients are individually valid — different `client_id`s, different
+# tenants, well-shaped `pk_test_` keys that agree with `livemode: false` — so
+# every other rule passes. The only defect is that the same publishable key
+# names two tenants, which `vpay_api::ResourceConfig` resolves to exactly one
+# of them: whichever loses is a merchant whose payers get the browser
+# surface's uniform 404 on every confirm, with which one depending on
+# iteration order.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    publishable_keys: ["pk_test_sharedbetweentwotenants"]
+  - client_id: beta-douala
+    merchant_id: beta-douala-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k2
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    publishable_keys: ["pk_test_sharedbetweentwotenants"]

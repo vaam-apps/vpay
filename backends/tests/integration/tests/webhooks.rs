@@ -1289,8 +1289,13 @@ fn events_config(base_url: &str, jwks_a: Value, jwks_b: Value, scopes: &[&str]) 
                     "http://receiver.internal/webhooks",
                     &[SECRET],
                 )],
+                // No publishable keys: nothing in this suite reaches
+                // `/v1/browser`, and `client_secret` must never appear in an
+                // event body — which `no_event_body_carries_a_client_secret`
+                // in `browser_checkout.rs` is what proves.
+                Vec::new(),
             ),
-            merchant_client_with(CLIENT_B, MERCHANT_B, jwks_b, scopes, Vec::new()),
+            merchant_client_with(CLIENT_B, MERCHANT_B, jwks_b, scopes, Vec::new(), Vec::new()),
         ],
         dashboard_client: None,
     }

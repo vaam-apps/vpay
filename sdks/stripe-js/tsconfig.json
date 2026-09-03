@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // A browser package. `bundler` resolution (the base's) is what a
+    // merchant's bundler actually does with `exports`, and ES2020 is the
+    // floor at which `window.location.assign`, `AbortController` and native
+    // ESM are all present without a transform — deliberately lower than the
+    // ES2023 the Node-only `@vpay/sdk` targets.
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM"],
+    "outDir": "dist",
+    "rootDir": "src",
+    // `src/testing/**` and `*.test.ts` run under vitest on Node and use
+    // `node:http`; they are excluded from the build (tsconfig.build.json)
+    // but still typechecked here, which is why @types/node is present.
+    "types": ["node"]
+  },
+  "include": ["src"]
+}

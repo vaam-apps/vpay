@@ -1,6 +1,10 @@
 # API
 
-vpay exposes two HTTP surfaces, and conflating them is a security bug.
+vpay exposes three authenticated HTTP surfaces plus one public, stateless
+callback path, and conflating any of them is a security bug: `/v1` (a
+merchant's own backend), `/v1/browser` (a payer's browser, added Step 5c —
+see below), and `/dash/v1` (a logged-in staff member). Each has its own
+credential model and its own section below.
 
 ## `/v1` — the merchant API (Stripe-shaped object model, not Stripe-shaped auth)
 
@@ -10,7 +14,9 @@ client, configured directly in vpay's YAML config
 ([ADR-0003](../adr/0003-yaml-configuration.md)), holding its own private
 key; vpay stores only the merchant's **public** JWK. There is no
 `sk_live_`/`sk_test_` key, no database-stored secret, and no other way to
-authenticate on this surface. See
+authenticate **this** surface — `/v1/browser` below is a deliberately
+different surface, for a different caller, with its own credential model; it
+is not a second way in through this one. See
 [ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md), which supersedes
 the scope-boundary paragraph of
 [ADR-0009](../adr/0009-dashboard-oidc-provider.md) that had kept `/v1` on
@@ -366,6 +372,44 @@ vpay.
 
 Everything not listed under "Served today" returns a Stripe-shaped 404 naming
 vpay honestly, rather than pretending the route exists.
+
+## `/v1/browser` — the payer's browser (Step 5c)
+
+Two routes, unauthenticated by a bearer token of any kind and **not** part of
+`/v1`'s route table (`vpay_api::V1_ROUTES`) or its 401 boundary — its own
+table is `BROWSER_ROUTES`, exactly two entries, its own `.nest`, its own
+`.fallback(not_found)`. This is the surface `@vpay/stripe-js`
+(`sdks/stripe-js/`) speaks, because `@stripe/stripe-js` cannot be pointed at
+vpay (verified directly — see that package's own README).
+
+| Method | Path | Auth | What it does |
+|---|---|---|---|
+| GET | `/v1/browser/payment_intents/{id}` | `key` + `client_secret` (query) | The polling endpoint — `waitForPaymentIntent` calls it. |
+| POST | `/v1/browser/payment_intents/{id}/confirm` | `key` + `client_secret` (form) | Reaches the same `confirm_once` `/v1` calls, scoped to the one intent the credential names. |
+
+**The credential model is not `/v1`'s.** A **publishable key** (`pk_test_…`/
+`pk_live_…`, `merchant_clients[].publishable_keys` — explicit YAML, never
+derived from `merchant_id`) names a tenant and authorises nothing; the
+intent's own **`client_secret`** (`pi_…_secret_…`, 160 bits from the OS
+CSPRNG, minted once at `create`) is what authorises the one request it is
+presented with. Neither is a bearer token and neither can be exchanged for
+one. Every credential failure — unknown key, wrong secret, another
+merchant's key, unknown intent — answers the byte-identical `404`; a
+distinct answer for any one of them would let a caller enumerate merchants
+or separate "wrong secret" from "no such intent", which is half of a
+guessing attack. `client_secret` itself is rendered only by `create`,
+`retrieve`, and these two routes (`PaymentIntentWithSecret`) — never by
+`list` or by a webhook body, which keep the same 12-key object every other
+`/v1` reader sees. CORS (`allow_origin: Any`, no credentials) is mounted on
+this nest and on no other — the merchant `/v1` nest carries none, so a
+stolen bearer token cannot even be *attempted* cross-origin. Full detail,
+the decisions (D1–D5), the redirect gap, and a Node/Rust SDK typing gap this
+step found and did not fix: [../flows/browser-checkout.md](../flows/browser-checkout.md).
+
+**Status: served**, as of Step 5c — see `docs/status.md` for the
+machine-checked test counts. **Rate limiting is not in this process,
+deliberately (D5)** — an ingress in front of it is an operational
+requirement this repository does not enforce.
 
 ## `/dash/v1` — the dashboard API
 

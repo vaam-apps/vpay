@@ -121,8 +121,21 @@ fn new_id(prefix: &str) -> String {
 
     let mut id = String::with_capacity(prefix.len() + BODY_CHARS);
     id.push_str(prefix);
-    for position in (0..BODY_CHARS).rev() {
-        let index = ((bits >> (position * BITS_PER_CHAR)) & 0x1f) as usize;
+    push_base32(&mut id, bits, BODY_CHARS);
+    id
+}
+
+/// Appends the low `chars * BITS_PER_CHAR` bits of `value` to `out` as base32
+/// digits, most significant first.
+///
+/// Shared by [`new_id`] and [`client_secret_suffix`] rather than written
+/// twice: an id and a secret that disagreed about which characters are legal
+/// would put a `client_secret` on the wire that this module's own alphabet
+/// rules do not describe, and the URL-safety property the module doc rests on
+/// would then hold for only one of the two.
+fn push_base32(out: &mut String, value: u128, chars: usize) {
+    for position in (0..chars).rev() {
+        let index = ((value >> (position * BITS_PER_CHAR)) & 0x1f) as usize;
         // `index` is five bits masked, so it is 0..=31 and `ALPHABET` has 32
         // entries — the `.get()` cannot be `None`. It is written as a total
         // expression rather than an index (`clippy::indexing_slicing`) or an
@@ -130,9 +143,8 @@ fn new_id(prefix: &str) -> String {
         // *proved* unreachable by the alphabet-length test below rather than
         // merely asserted here.
         let digit = ALPHABET.get(index).copied().unwrap_or(b'0');
-        id.push(char::from(digit));
+        out.push(char::from(digit));
     }
-    id
 }
 
 /// A new PaymentIntent id, `pi_…`.
@@ -166,6 +178,81 @@ pub fn refund_id() -> String {
 #[must_use]
 pub fn event_id() -> String {
     new_id(EVENT_PREFIX)
+}
+
+/// What joins an object id to its secret suffix: `pi_…` + this + the suffix.
+///
+/// Public because it is a **wire contract**, not an implementation detail:
+/// `@vpay/stripe-js` splits a `clientSecret` on this exact string to recover
+/// the id it must build a URL from (`sdks/stripe-js/src/client.ts`'s
+/// `SECRET_SEPARATOR`), and Stripe's own client secrets are spelled the same
+/// way — a merchant who has integrated against Stripe recognises it. Spelled
+/// once here so the minting side and any Rust-side parser cannot drift from
+/// each other the way two literals would.
+pub const CLIENT_SECRET_INFIX: &str = "_secret_";
+
+/// How many alphabet characters a client-secret suffix carries.
+///
+/// 32 x 5 = 160 bits, which is the number `docs/plans/2026-09-03-step5c-stripejs.md`
+/// §4 commits to and the floor `client_secret_suffix_length` (migration
+/// `0026`) enforces in the database. Deliberately more than an id's 120: an
+/// id names an object and is *meant* to be quotable in a support ticket,
+/// while this is the credential that authorises a stranger's browser to
+/// confirm a payment, and the only thing standing between a guesser and a
+/// live intent is how many bits it holds.
+const CLIENT_SECRET_SUFFIX_CHARS: usize = 32;
+
+/// A fresh client-secret suffix — the half of a `client_secret` that is
+/// stored (`payment_intents.client_secret_suffix`, migration `0026`).
+///
+/// # Why two UUID draws
+///
+/// One v4 UUID is 128 bits and this needs 160, so a single draw could not
+/// supply them however it were sliced. Two draws contribute the **top 80
+/// bits** each; `Uuid::new_v4` is `getrandom`-backed (the OS CSPRNG), which
+/// is the property that matters, and it is already how every id in this
+/// module is minted — adding a second RNG crate to this dependency-light
+/// crate would be a second thing to audit for the same guarantee.
+///
+/// Of the 160 bits, **148 are unpredictable**: RFC 9562 fixes four version
+/// bits and two variant bits in each draw's top 80, and this function does
+/// not fold them out because folding would be arithmetic nobody could check
+/// by eye for a fraction of a bit of collision margin. 148 bits is far past
+/// the point where guessing is the attack anyone would choose.
+///
+/// The result is base32 in the same alphabet as an id, so a `client_secret`
+/// survives a query string, a form body and a filename unchanged — which it
+/// must, since `@vpay/stripe-js` sends it as a query parameter on every poll.
+#[must_use]
+pub fn client_secret_suffix() -> String {
+    // Halves rather than 32 characters from one draw plus 0 from the other:
+    // an even split is the shape that makes "two independent CSPRNG draws"
+    // true of the whole string rather than of a prefix of it.
+    const HALF: usize = CLIENT_SECRET_SUFFIX_CHARS / 2;
+    let mut suffix = String::with_capacity(CLIENT_SECRET_SUFFIX_CHARS);
+    for _ in 0..2 {
+        let bits = Uuid::new_v4().as_u128() >> (128 - HALF * BITS_PER_CHAR);
+        push_base32(&mut suffix, bits, HALF);
+    }
+    suffix
+}
+
+/// Joins an object id and its stored suffix into the credential a payer's
+/// browser presents: `pi_…_secret_…`.
+///
+/// **The one place the two halves are joined**, on both the minting side and
+/// the checking side — `vpay_api::browser::authenticate` rebuilds the
+/// expected secret with this function and compares that, rather than parsing
+/// what the caller sent. A parser would have to decide what to do with a
+/// value carrying two separators or none, and every such decision is a place
+/// where "which secret did we actually compare?" stops being obvious.
+///
+/// Takes the id rather than deriving it, because the caller always has the
+/// row: a function that took only a suffix could not produce the value the
+/// database and the browser agree on.
+#[must_use]
+pub fn client_secret(id: &str, suffix: &str) -> String {
+    format!("{id}{CLIENT_SECRET_INFIX}{suffix}")
 }
 
 #[cfg(test)]
@@ -360,6 +447,93 @@ mod tests {
             &format!("{PAYMENT_INTENT_PREFIX}{}", "é".repeat(BODY_CHARS))
         ));
         assert!(!is_well_formed(PAYMENT_INTENT_PREFIX, ""));
+    }
+
+    /// The suffix is exactly what migration `0026`'s
+    /// `client_secret_suffix_length` CHECK accepts, and exactly what the
+    /// module's URL-safety property covers.
+    ///
+    /// The length is written as a literal rather than derived from
+    /// `CLIENT_SECRET_SUFFIX_CHARS`, so shrinking that constant is a
+    /// deliberate change to this test too and not something that slips
+    /// through green — the constant *is* the entropy budget.
+    #[test]
+    fn a_client_secret_suffix_is_thirty_two_alphabet_characters() {
+        for _ in 0..64 {
+            let suffix = client_secret_suffix();
+            assert_eq!(
+                suffix.len(),
+                32,
+                "client_secret_suffix() must be exactly 32 bytes long"
+            );
+            assert!(suffix.is_ascii(), "client_secret_suffix() must be ASCII");
+            for c in suffix.chars() {
+                assert!(
+                    c.is_ascii_lowercase() || c.is_ascii_digit(),
+                    "client_secret_suffix() produced {c:?}, outside the [a-z0-9] alphabet"
+                );
+            }
+            // The database CHECK, restated: 32 is inside `BETWEEN 32 AND 128`
+            // at its lower bound, which is where an off-by-one would land.
+            assert!((32..=128).contains(&suffix.chars().count()));
+        }
+    }
+
+    /// The credential is guessed, or it is not: a suffix that repeated, or
+    /// whose second half were a copy of its first, would be a live payment
+    /// intent anyone holding one secret could reach.
+    ///
+    /// Every character position is checked to vary for
+    /// [`every_character_position_varies`]'s reason — a shift/mask bug in the
+    /// *second* draw would leave the tail constant while every uniqueness
+    /// assertion still passed on the strength of the first.
+    #[test]
+    fn client_secret_suffixes_are_distinct_in_every_position() {
+        const N: usize = 4_096;
+        let suffixes: Vec<String> = (0..N).map(|_| client_secret_suffix()).collect();
+        let unique: HashSet<&String> = suffixes.iter().collect();
+        assert_eq!(unique.len(), N, "a collision in {N} client secret suffixes");
+
+        for position in 0..32 {
+            let seen: HashSet<Option<char>> =
+                suffixes.iter().map(|s| s.chars().nth(position)).collect();
+            assert!(
+                seen.len() > 1,
+                "position {position} is constant across {N} suffixes"
+            );
+        }
+    }
+
+    /// The joined credential, and the property `@vpay/stripe-js` relies on:
+    /// splitting on the **first** `_secret_` recovers the id.
+    ///
+    /// The separator is asserted as a literal because it is a wire contract
+    /// shared with a package that cannot import this constant
+    /// (`sdks/stripe-js/src/client.ts`'s `SECRET_SEPARATOR`). A rename here
+    /// that only touched the constant would compile, pass every other test,
+    /// and make every browser call address `/v1/browser/payment_intents/` with
+    /// an empty id.
+    #[test]
+    fn a_client_secret_is_the_id_the_separator_and_the_suffix() {
+        assert_eq!(CLIENT_SECRET_INFIX, "_secret_");
+
+        let id = payment_intent_id();
+        let suffix = client_secret_suffix();
+        let secret = client_secret(&id, &suffix);
+
+        assert_eq!(secret, format!("{id}_secret_{suffix}"));
+        assert!(secret.starts_with(&id));
+        // What the browser package does, reproduced: everything before the
+        // first separator is the id, everything after it is the suffix.
+        let (recovered_id, recovered_suffix) = secret
+            .split_once("_secret_")
+            .expect("a client secret carries the separator");
+        assert_eq!(recovered_id, id);
+        assert_eq!(recovered_suffix, suffix);
+
+        // And the whole thing survives a URL, which it must: it travels as a
+        // query parameter on every poll.
+        assert_eq!(percent_encode(&secret), secret);
     }
 
     /// A weak generator that returned a constant, a counter, or the same

@@ -18,6 +18,12 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  examples/checkout-browser:
+    dependencies:
+      '@vpay/sdk':
+        specifier: workspace:*
+        version: link:../../sdks/nodejs
+
   examples/merchant-node:
     dependencies:
       '@vpay/sdk':
@@ -193,6 +199,9 @@ importers:
 
   frontends/tests/e2e:
     devDependencies:
+      '@vpay/sdk':
+        specifier: workspace:*
+        version: link:../../../sdks/nodejs
       cypress:
         specifier: ^13.17.0
         version: 13.17.0
@@ -224,6 +233,21 @@ importers:
         specifier: ^22.6.1
         version: 22.6.1(@types/node@22.20.1)
     devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)
+
+  sdks/stripe-js:
+    devDependencies:
+      '@stripe/stripe-js':
+        specifier: 9.15.0
+        version: 9.15.0
       '@types/node':
         specifier: ^22.10.0
         version: 22.20.1
@@ -1425,6 +1449,10 @@ packages:
     resolution: {integrity: sha512-n6OEjEtHupa2PdTwWzRepr7cO8NkDd4rgF6BKLitRbujOspLxzMBEqdphs+QLcuiCIgf33SqmEA64QWnbSMhPw==}
     peerDependencies:
       storybook: ^8.2.0 || ^8.3.0-0 || ^8.4.0-0 || ^8.5.0-0 || ^8.6.0-0
+
+  '@stripe/stripe-js@9.15.0':
+    resolution: {integrity: sha512-0ySfsYH9XzfEspNS6MXMU2cjGsxNXWDQT9JxS43nOAatj6jDEP0fLBm2BanfblzU/GL/kDjFFcKmGInHmrASeg==}
+    engines: {node: '>=12.16'}
 
   '@swc/helpers@0.5.15':
     resolution: {integrity: sha512-JQ5TuMi45Owi4/BIMAJBoSQoOJu12oOk/gADqlcUL9JEdHB8vyjUSsxqeNXnmXHjYKMi2WcYtezGEEhqUI/E2g==}
@@ -4360,6 +4388,8 @@ snapshots:
   '@storybook/theming@8.6.18(storybook@8.6.18(prettier@3.9.6))':
     dependencies:
       storybook: 8.6.18(prettier@3.9.6)
+
+  '@stripe/stripe-js@9.15.0': {}
 
   '@swc/helpers@0.5.15':
     dependencies:

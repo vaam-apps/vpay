@@ -209,6 +209,26 @@ impl MerchantScope {
     pub fn merchant_id(&self) -> &str {
         &self.merchant_id
     }
+
+    /// The **one** other way a scope comes into existence: minted by
+    /// [`crate::browser::PayerScope::as_merchant_scope`] once a publishable
+    /// key and a payment intent's own `client_secret` have both been verified
+    /// (Step 5c).
+    ///
+    /// `pub(crate)` and named for its caller rather than a general `new`,
+    /// because the type's whole value is that a handler cannot invent one.
+    /// A constructor called `new` would be an invitation; this one cannot be
+    /// reached from outside the crate at all, and inside it there is exactly
+    /// one call site, which the name points at.
+    ///
+    /// What it means is unchanged: "queries may be filtered by this tenant".
+    /// It carries no OAuth scope claim and never did — `/v1`'s scope check
+    /// happens in `crate::require_merchant_token`, before a `MerchantScope`
+    /// exists, and the browser surface needs none because it mounts two
+    /// routes and both address one already-authorised intent.
+    pub(crate) fn for_payer(merchant_id: String) -> Self {
+        Self { merchant_id }
+    }
 }
 
 impl<S> FromRequestParts<S> for MerchantScope
@@ -407,6 +427,21 @@ pub struct ResourceConfig {
     /// currently lose an endpoint — it is written to merge anyway, because
     /// the day that rule is relaxed the failure would be silent.
     endpoints_by_merchant_id: BTreeMap<String, Vec<WebhookEndpointConfig>>,
+    /// Which tenant a `pk_test_…`/`pk_live_…` names — the first step of
+    /// [`crate::browser::authenticate`] (Step 5c D1).
+    ///
+    /// Keyed on the **tenant** like [`Self::endpoints_by_merchant_id`] and
+    /// unlike [`Self::merchant_id_by_client_id`], but for a different reason:
+    /// there is no credential in the picture at all on the browser surface.
+    /// A publishable key names who the intent must belong to, and the
+    /// intent's own `client_secret` is what authorises the request.
+    ///
+    /// `Config::validate_all` refuses a key claimed by two merchants
+    /// (`ConfigError::DuplicatePublishableKey`), so this map cannot silently
+    /// lose one — it is built with a plain `collect` rather than a merge for
+    /// exactly that reason, and the day the rule is relaxed the collision
+    /// would have to be decided here rather than discovered.
+    merchant_id_by_publishable_key: BTreeMap<String, String>,
 }
 
 impl ResourceConfig {
@@ -472,12 +507,24 @@ impl ResourceConfig {
                 );
         }
 
+        let merchant_id_by_publishable_key = config
+            .merchant_clients
+            .iter()
+            .flat_map(|client| {
+                client
+                    .publishable_keys
+                    .iter()
+                    .map(|key| (key.clone(), client.merchant_id.clone()))
+            })
+            .collect();
+
         Ok(Self {
             livemode: config.deployment.livemode,
             merchant_id_by_client_id,
             currency_codes,
             rails,
             endpoints_by_merchant_id,
+            merchant_id_by_publishable_key,
         })
     }
 
@@ -499,6 +546,28 @@ impl ResourceConfig {
     pub fn merchant_id_for(&self, client_id: &str) -> Option<&str> {
         self.merchant_id_by_client_id
             .get(client_id)
+            .map(String::as_str)
+    }
+
+    /// The tenant a publishable key names, or `None` if this deployment has
+    /// no registration carrying it.
+    ///
+    /// **`None` is the common case and is not an error.** Most deployments
+    /// register no publishable keys at all, and a payer's browser is an
+    /// unauthenticated caller that can send anything — so this answering
+    /// `None` is what a mistyped key, a retired key, or a key from another
+    /// deployment all look like, and [`crate::browser::authenticate`] turns
+    /// every one of them into the same 404 as a wrong `client_secret`.
+    ///
+    /// Deliberately **not** a `merchant_id_for` overload: the two resolve
+    /// different things (a credential vs. a browser-side tenant label) from
+    /// different namespaces, and one function taking either would be one
+    /// `client_id` typo away from letting a merchant's own id act as a
+    /// publishable key.
+    #[must_use]
+    pub fn merchant_id_for_publishable_key(&self, key: &str) -> Option<&str> {
+        self.merchant_id_by_publishable_key
+            .get(key)
             .map(String::as_str)
     }
 
@@ -775,6 +844,60 @@ mod tests {
         assert!(!formatted.contains("whsec-never-log-me"), "{formatted}");
         assert!(formatted.contains("[1 redacted]"), "{formatted}");
         assert!(formatted.contains("hooks.acme.example"), "{formatted}");
+    }
+
+    /// The browser surface's first step: a publishable key resolves to a
+    /// tenant, and to nothing else.
+    ///
+    /// The fixture's `client_id`, `merchant_id` and publishable key are three
+    /// different strings on purpose. A projection that keyed this map on the
+    /// credential — which is what the map beside it does — would pass every
+    /// other test in this file and would then authenticate a payer against
+    /// whichever merchant happened to share a name with their key.
+    #[test]
+    fn a_publishable_key_resolves_to_a_tenant_and_a_client_id_does_not() {
+        let mut config = config();
+        config
+            .merchant_clients
+            .first_mut()
+            .expect("the fixture registers one merchant")
+            .publishable_keys = vec!["pk_test_acmecameroonsandbox01".to_owned()];
+
+        let resource_config = ResourceConfig::from_config(&config)
+            .expect("the fixture's rails project onto the port");
+
+        assert_eq!(
+            resource_config.merchant_id_for_publishable_key("pk_test_acmecameroonsandbox01"),
+            Some("acme-cameroon-tenant")
+        );
+        // The credential's own id is not a publishable key, and neither is
+        // the tenant: the browser namespace is separate from both.
+        assert_eq!(
+            resource_config.merchant_id_for_publishable_key("acme-cameroon"),
+            None
+        );
+        assert_eq!(
+            resource_config.merchant_id_for_publishable_key("acme-cameroon-tenant"),
+            None
+        );
+        // And a key nobody registered — a payer can send anything.
+        assert_eq!(
+            resource_config.merchant_id_for_publishable_key("pk_test_neverregisteredanywhere"),
+            None
+        );
+    }
+
+    /// The fail-closed default: a deployment that registered no publishable
+    /// keys resolves nothing, so its `/v1/browser` surface answers 404 to
+    /// every request rather than falling back to a tenant.
+    #[test]
+    fn a_deployment_with_no_publishable_keys_resolves_nothing() {
+        let resource_config = ResourceConfig::from_config(&config())
+            .expect("the fixture's rails project onto the port");
+        assert_eq!(
+            resource_config.merchant_id_for_publishable_key("pk_test_anythingatall000000"),
+            None
+        );
     }
 
     #[test]

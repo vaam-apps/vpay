@@ -67,6 +67,18 @@ export interface PaymentIntent {
   /** Unix seconds. */
   created: number;
   livemode: boolean;
+  /**
+   * `pi_…_secret_…` — the payer credential `/v1/browser` accepts to confirm
+   * this intent from a browser (hand it to `@vpay/stripe-js`).
+   *
+   * Present **only** on `create()` and `retrieve()` responses (Step 5c's
+   * D2, `vpay_api::model::PaymentIntentWithSecret`); absent — this property
+   * is missing entirely, not `null` — on every `list()` item and on
+   * `event.data.object`, so it never reaches a merchant's listing view or a
+   * webhook body that's stored and forwarded at-least-once. Never log this
+   * value.
+   */
+  client_secret?: string;
 }
 
 export type RefundStatus = "pending" | "succeeded" | "failed" | "canceled";

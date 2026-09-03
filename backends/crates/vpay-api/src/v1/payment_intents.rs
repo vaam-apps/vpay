@@ -64,7 +64,9 @@ use vpay_provider::{ChargeRef, ProviderAdapter, ProviderError, Submitted};
 use crate::error::ApiError;
 use crate::form::{VpayForm, VpayQuery};
 use crate::idempotency::{IdempotencyKey, request_hash};
-use crate::model::{ListObject, NextAction, PaymentIntentObject, RedirectToUrl};
+use crate::model::{
+    ListObject, NextAction, PaymentIntentObject, PaymentIntentWithSecret, RedirectToUrl,
+};
 use crate::v1::paging::{self, CursorKind};
 use crate::v1::{MerchantScope, RailConfig, ResourceConfig};
 
@@ -342,13 +344,23 @@ pub(crate) async fn create(
         ),
         metadata: Value::Object(metadata),
         description,
+        // Minted here, once, and never again: there is no rotation endpoint
+        // (§4) because a payer credential that could be rolled would need a
+        // way to tell a browser holding the old one, and "retry" on this API
+        // means a *new* payment intent anyway. `ids::client_secret_suffix`
+        // draws from the OS CSPRNG.
+        client_secret_suffix: ids::client_secret_suffix(),
         created_at: OffsetDateTime::now_utc(),
     };
 
     let outcome = payment_intents::insert(&pool, &new)
         .await
         .map_err(ApiError::from)
-        .and_then(|row| object_response(&row));
+        // The one response that carries the credential a merchant's page
+        // renders into the payer's browser. `create` is where a merchant
+        // *gets* it: `retrieve` can hand it back, but a merchant who never
+        // saw it here has nothing to put on the page.
+        .and_then(|row| object_response(&row, SecretRendering::Include));
 
     post.finish(&pool, &scope, claim_id, outcome).await
 }
@@ -425,13 +437,35 @@ pub(crate) async fn retrieve(
     let row = payment_intents::get_for_merchant(&pool, scope.merchant_id(), &id)
         .await?
         .ok_or_else(|| not_found(&id))?;
+    // The merchant surface renders the credential too, so a merchant who
+    // lost the create response can recover it without creating a second
+    // intent. Their token is what authorises this read; the browser route
+    // reaches the same function with a `client_secret` instead.
+    rendered_intent(&pool, &row, SecretRendering::Include).await
+}
 
-    let object = PaymentIntentObject::try_from(&row)?;
+/// A stored intent as a `200`, with `next_action` attached when the status
+/// says there is one.
+///
+/// `pub(crate)` and factored out of [`retrieve`] because
+/// [`crate::browser::retrieve`] must answer *exactly this*: a payer polling
+/// a redirect confirm needs the same `next_action.redirect_to_url` a
+/// merchant would see, and two functions deriving it would be two chances
+/// for the browser to be told there is nothing to do while a rail holds a
+/// live payment. The two routes differ only in how they authenticated and
+/// in the `rendering` they pass — and today both pass
+/// [`SecretRendering::Include`].
+pub(crate) async fn rendered_intent(
+    pool: &PgPool,
+    row: &vpay_db::PaymentIntentRow,
+    rendering: SecretRendering,
+) -> Result<Response, ApiError> {
+    let object = PaymentIntentObject::try_from(row)?;
     if object.status != IntentStatus::RequiresAction {
-        return json_response(StatusCode::OK, &object);
+        return intent_response(row, object, rendering);
     }
 
-    let charge = charges::get_for_intent(&pool, &row.id).await?;
+    let charge = charges::get_for_intent(pool, &row.id).await?;
     let next_action = charge.as_ref().and_then(next_action_of);
     if next_action.is_none() {
         // `requires_action` means "the payer has somewhere to go". An intent
@@ -446,7 +480,7 @@ pub(crate) async fn retrieve(
         )));
     }
 
-    json_response(StatusCode::OK, &object.with_next_action(next_action))
+    intent_response(row, object.with_next_action(next_action), rendering)
 }
 
 /// The `next_action` a charge implies, or `None` when the rail gave the
@@ -541,7 +575,7 @@ pub(crate) async fn cancel(
 
 async fn cancel_once(pool: &PgPool, scope: &MerchantScope, id: &str) -> Result<Response, ApiError> {
     if let Some(row) = payment_intents::cancel(pool, scope.merchant_id(), id).await? {
-        return object_response(&row);
+        return object_response(&row, SecretRendering::Omit);
     }
 
     // Which of the update's guards refused, told apart by one read rather
@@ -591,8 +625,15 @@ fn charge_in_flight() -> ApiError {
 /// have to name `mtn_momo` as a field — and `if provider == "mtn_momo"`
 /// outside an adapter crate is exactly what ADR-0002 forbids. Read this way,
 /// the code comes from the request and this file never learns a rail's name.
+///
+/// `pub(crate)` since Step 5c: `crate::browser::confirm` decodes the payer's
+/// form into this same struct rather than one of its own, so the two
+/// surfaces cannot disagree about what `payment_method_data` means. Its
+/// fields stay private — a browser handler builds one through
+/// [`ConfirmParams::from_payer`], which is the type-level statement of "a
+/// payer may influence these two fields and nothing else".
 #[derive(Debug, Deserialize)]
-struct ConfirmParams {
+pub(crate) struct ConfirmParams {
     payment_method_data: Option<Map<String, Value>>,
     return_url: Option<String>,
     /// The same refusal set `POST /v1/payment_intents` carries. stripe-node's
@@ -601,6 +642,30 @@ struct ConfirmParams {
     /// silently ignored one request later.
     #[serde(flatten)]
     unsupported: UnsupportedStripeParams,
+}
+
+impl ConfirmParams {
+    /// The two fields a **payer** may influence, and nothing else.
+    ///
+    /// The browser surface decodes its own form into its own struct and
+    /// converts here, rather than deserialising a `ConfirmParams` directly
+    /// from the payer's body. The difference is what
+    /// `docs/plans/2026-09-03-step5c-stripejs.md` §4 promises: a payer's body
+    /// cannot reach [`UnsupportedStripeParams`] at all, so it can neither
+    /// trip those refusals nor — the direction that would matter if the
+    /// refusal list were ever loosened — carry a `transfer_data` into a
+    /// confirm. `unsupported` is `Default`, i.e. "none of them were sent",
+    /// which is the truth about a request that had no way to send them.
+    pub(crate) fn from_payer(
+        payment_method_data: Option<Map<String, Value>>,
+        return_url: Option<String>,
+    ) -> Self {
+        Self {
+            payment_method_data,
+            return_url,
+            unsupported: UnsupportedStripeParams::default(),
+        }
+    }
 }
 
 /// `POST /v1/payment_intents/{id}/confirm`.
@@ -667,7 +732,19 @@ pub(crate) async fn confirm(
         ClaimOutcome::Answered(response) => return Ok(response),
     };
 
-    let outcome = confirm_once(&pool, &config, &adapters, &scope, &id, params).await;
+    // `SecretRendering::Omit`: this is the merchant surface, and the
+    // merchant already holds the credential from `create`. Rendering it again
+    // here would put it on a response no browser reads (D2).
+    let outcome = confirm_once(
+        &pool,
+        &config,
+        &adapters,
+        &scope,
+        &id,
+        params,
+        SecretRendering::Omit,
+    )
+    .await;
     post.finish(&pool, &scope, claim_id, outcome).await
 }
 
@@ -675,13 +752,48 @@ pub(crate) async fn confirm(
 /// something about the instrument is wrong.
 const PMD_TYPE_PARAM: &str = "payment_method_data[type]";
 
-async fn confirm_once(
+/// Every step of a confirm, from loading the intent to answering — shared
+/// verbatim by `POST /v1/payment_intents/{id}/confirm` and
+/// `POST /v1/browser/payment_intents/{id}/confirm`.
+///
+/// `pub(crate)` since Step 5c. The browser route calls **this**, not
+/// [`confirm`]: the idempotency machinery around that handler
+/// (`PostRequest::read`) requires an `Idempotency-Key`, which a browser
+/// cannot send without turning a CORS simple request into a preflighted one
+/// (§0 S4). What protects a double-submit here is the same thing that
+/// protects it for a merchant who omitted the key's protection anyway — the
+/// pre-insert charge check plus the `one_charge_per_intent` unique index,
+/// which answers the second confirm a `409`.
+///
+/// The `scope` a browser call passes is minted from a `PayerScope`, so the
+/// tenancy filter on every query below is the merchant the *publishable key*
+/// named — see [`crate::browser::authenticate`].
+///
+/// # Why seven loose arguments and not a struct
+///
+/// Each one is a distinct dependency of the six steps — the pool, the
+/// deployment's rails, the linked adapters, the tenant, the object, the
+/// payer's instrument, and what the response renders — and the two callers
+/// pass different values for every one of them. A parameter struct would put
+/// a constructor between the two surfaces and this function, which is exactly
+/// the place a browser-specific default could hide unnoticed. It sits at
+/// clippy's threshold, deliberately: an eighth would be the signal that the
+/// confirm has grown a second responsibility.
+///
+/// # Errors
+///
+/// Everything the six steps below can answer: `404` for an intent this scope
+/// cannot see, `409` for a status or a charge that forbids the confirm,
+/// `400` for an instrument this deployment or this intent will not take, and
+/// the rail's own classification for anything the adapter returns.
+pub(crate) async fn confirm_once(
     pool: &PgPool,
     config: &ResourceConfig,
     adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
     scope: &MerchantScope,
     id: &str,
     params: ConfirmParams,
+    rendering: SecretRendering,
 ) -> Result<Response, ApiError> {
     // --- step 1: the intent, this merchant's, in a status that allows it
     let intent = payment_intents::get_for_merchant(pool, scope.merchant_id(), id)
@@ -861,7 +973,7 @@ async fn confirm_once(
             .await?;
             let (intent, charge) =
                 persist_submitted(pool, scope, &intent, &charge, flow, &submitted).await?;
-            submitted_response(&intent, &charge)
+            submitted_response(&intent, &charge, rendering)
         }
         Err(error) => {
             match &error {
@@ -1030,10 +1142,11 @@ async fn persist_submitted(
 fn submitted_response(
     intent: &vpay_db::PaymentIntentRow,
     charge: &ChargeRow,
+    rendering: SecretRendering,
 ) -> Result<Response, ApiError> {
     let object = PaymentIntentObject::try_from(intent)?;
     if object.status != IntentStatus::RequiresAction {
-        return json_response(StatusCode::OK, &object);
+        return intent_response(intent, object, rendering);
     }
     let next_action = next_action_of(charge).ok_or_else(|| {
         ApiError::Internal(format!(
@@ -1042,7 +1155,11 @@ fn submitted_response(
             charge.id,
         ))
     })?;
-    json_response(StatusCode::OK, &object.with_next_action(Some(next_action)))
+    intent_response(
+        intent,
+        object.with_next_action(Some(next_action)),
+        rendering,
+    )
 }
 
 /// Commits what a decline at submit implies, in one transaction: the charge
@@ -1558,9 +1675,60 @@ fn not_found(id: &str) -> ApiError {
     }
 }
 
+/// Whether a rendered payment intent carries the payer credential that
+/// addresses it (Step 5c's D2).
+///
+/// A parameter rather than a property of the type, because it is a property
+/// of the **route**: the same row is rendered with the secret by `create`,
+/// `retrieve` and `/v1/browser`, and without it by `confirm`, `cancel` and
+/// the list. Making the routes pass it is what stops "which responses carry
+/// the credential?" from being answerable only by reading every handler —
+/// and a new route cannot be added without deciding.
+///
+/// `Include` derives the secret from the row rather than taking a string, so
+/// there is no call site that could pass one intent's secret while rendering
+/// another's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SecretRendering {
+    /// The twelve-key [`PaymentIntentObject`] — what the merchant surface's
+    /// `confirm`, `cancel` and `list` answer with, and what
+    /// `vpay_worker`'s `intent_snapshot` writes into `events.data`.
+    Omit,
+    /// [`PaymentIntentWithSecret`] — `create`, `retrieve` and the two
+    /// `/v1/browser` routes.
+    Include,
+}
+
+/// The one place a rendered object is paired with its `client_secret`.
+///
+/// Takes the row *and* the already-rendered object rather than deriving the
+/// object here: two callers have attached `next_action` first
+/// ([`PaymentIntentObject::with_next_action`]), and re-deriving would drop
+/// it — a redirect confirm that answered `next_action: null` is the exact
+/// failure `submitted_response` exists to prevent.
+fn intent_response(
+    row: &vpay_db::PaymentIntentRow,
+    object: PaymentIntentObject,
+    rendering: SecretRendering,
+) -> Result<Response, ApiError> {
+    match rendering {
+        SecretRendering::Omit => json_response(StatusCode::OK, &object),
+        SecretRendering::Include => json_response(
+            StatusCode::OK,
+            &PaymentIntentWithSecret::new(
+                object,
+                ids::client_secret(&row.id, &row.client_secret_suffix),
+            ),
+        ),
+    }
+}
+
 /// Renders a stored row as its wire object, `200 OK`.
-fn object_response(row: &vpay_db::PaymentIntentRow) -> Result<Response, ApiError> {
-    json_response(StatusCode::OK, &PaymentIntentObject::try_from(row)?)
+fn object_response(
+    row: &vpay_db::PaymentIntentRow,
+    rendering: SecretRendering,
+) -> Result<Response, ApiError> {
+    intent_response(row, PaymentIntentObject::try_from(row)?, rendering)
 }
 
 /// The one JSON renderer for a *successful* `/v1` response.

@@ -100,21 +100,30 @@ await vpay.events.list({ type: "payment_intent.succeeded", limit: 20 });
 await vpay.balance.retrieve();
 ```
 
+`create()` and `retrieve()` responses carry a `client_secret` (`intent.client_secret`,
+typed `string | undefined`) — the payer credential `/v1/browser` accepts for a
+browser-side confirm. Hand it straight to `@vpay/stripe-js` on the page you
+render for the payer; never log it or send it anywhere but the browser. It is
+the one field on `PaymentIntent` that is genuinely absent — not `null` — from
+every other response shape: a `list()` item and `event.data.object` never
+carry it, so a merchant's own listing view or a stored/forwarded webhook body
+never receives a live payer credential for intents it did not just create.
+
 ## Configuration
 
-| Option                     | Default               | Notes                                                                                                                                                                                                                       |
-| -------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `baseUrl`                  | —                     | Required, e.g. `https://api.vpay.example`.                                                                                                                                                                                  |
-| `clientId`                 | —                     | Required. Your registered OAuth2 `client_id`.                                                                                                                                                                               |
-| `privateKey`               | —                     | Required. PEM text or a `crypto.KeyObject`. Never logged, never serialized.                                                                                                                                                 |
-| `kid`                      | —                     | Required only if you registered more than one JWK.                                                                                                                                                                          |
-| `issuer`                   | `${baseUrl}/v1/oauth` | This default is what the server does: `vpay_api::op::issuer_for` builds the issuer as `{public_base_url}/v1/oauth` from the deployment YAML, and `vpay_api::router` mounts the OP there. Override only for a deployment behind a path prefix. |
-| `tokenEndpoint`            | `${issuer}/token`     | The server's token route, and also the assertion's `aud` claim.                                                                                                                                                             |
+| Option                     | Default               | Notes                                                                                                                                                                                                                                                                                        |
+| -------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `baseUrl`                  | —                     | Required, e.g. `https://api.vpay.example`.                                                                                                                                                                                                                                                   |
+| `clientId`                 | —                     | Required. Your registered OAuth2 `client_id`.                                                                                                                                                                                                                                                |
+| `privateKey`               | —                     | Required. PEM text or a `crypto.KeyObject`. Never logged, never serialized.                                                                                                                                                                                                                  |
+| `kid`                      | —                     | Required only if you registered more than one JWK.                                                                                                                                                                                                                                           |
+| `issuer`                   | `${baseUrl}/v1/oauth` | This default is what the server does: `vpay_api::op::issuer_for` builds the issuer as `{public_base_url}/v1/oauth` from the deployment YAML, and `vpay_api::router` mounts the OP there. Override only for a deployment behind a path prefix.                                                |
+| `tokenEndpoint`            | `${issuer}/token`     | The server's token route, and also the assertion's `aud` claim.                                                                                                                                                                                                                              |
 | `audience`                 | `vpay:v1`             | The OAuth2 `audience` request parameter. Load-bearing: without it the OP mints a token whose `aud` is the `client_id`, which the resource server rejects. Server-side the same string is `vpay_config::MERCHANT_AUDIENCE`; this package keeps its own copy, so the two must change together. |
-| `scope`                    | —                     | Omitted from the token request unless set.                                                                                                                                                                                  |
-| `assertionLifetimeSeconds` | `60`                  | Must be an integer in `1..=300`; anything else throws `VpayConfigError` at construction, not at request time. Keep the default — see the note below the table.                                                              |
-| `timeoutMs`                | `30000`               | Applies to both the token exchange and every resource call.                                                                                                                                                                 |
-| `fetch`                    | global `fetch`        | Injection point for tests or an outbound proxy.                                                                                                                                                                             |
+| `scope`                    | —                     | Omitted from the token request unless set.                                                                                                                                                                                                                                                   |
+| `assertionLifetimeSeconds` | `60`                  | Must be an integer in `1..=300`; anything else throws `VpayConfigError` at construction, not at request time. Keep the default — see the note below the table.                                                                                                                               |
+| `timeoutMs`                | `30000`               | Applies to both the token exchange and every resource call.                                                                                                                                                                                                                                  |
+| `fetch`                    | global `fetch`        | Injection point for tests or an outbound proxy.                                                                                                                                                                                                                                              |
 
 **Do not raise `assertionLifetimeSeconds` to 300.** 300 is not a comfortable
 maximum, it is the OP's exact refusal boundary
@@ -160,7 +169,7 @@ try {
 ```
 
 `VpayApiError` is one class for every error envelope: the envelope's `type`
-is a *field*, not a subclass. Branch on `code`, which is what the server
+is a _field_, not a subclass. Branch on `code`, which is what the server
 treats as the machine-readable answer — two idempotency errors share a status
 (`400`) and a `type` (`idempotency_error`) and mean opposite things:
 
@@ -280,12 +289,12 @@ yourself if you want this entry point, and `@vpay/sdk`'s core entry never
 imports it. This package itself still has **zero runtime dependencies**.
 
 The empty first argument is not a trick — stripe-node's `_setAuthenticator`
-refuses only *both* an API key and an authenticator, or *neither*. The token
+refuses only _both_ an API key and an authenticator, or _neither_. The token
 cache, its single-flight refresh and its `expires_in` safety margin are the
 same ones `VpayClient` uses, not a second implementation.
 
 `authenticator.invalidate()` discards the cached token. You need it because an
-authenticator runs *before* a request and its promise settles before any
+authenticator runs _before_ a request and its promise settles before any
 status code exists — it cannot see a `401` and re-auth the way `VpayClient`
 does:
 
@@ -308,7 +317,7 @@ try {
   no publishable key and no Connect equivalent.
 - **`Idempotency-Key` is mandatory on every `/v1` POST**, not optional as at
   Stripe. This costs you nothing: stripe-node puts a
-  `stripe-node-retry-<uuid>` key on every v1 POST unconditionally — *including*
+  `stripe-node-retry-<uuid>` key on every v1 POST unconditionally — _including_
   when `maxNetworkRetries` is `0`. Pass your own with
   `{ idempotencyKey: "order_1234_attempt_1" }` when you want the retry window
   to span more than one process.
@@ -326,7 +335,7 @@ try {
   ignored.** `capture_method` with any value other than `automatic`,
   `application_fee_amount`, `transfer_data` and `on_behalf_of` come back as a
   `400` naming the field in `error.param`. vpay has no authorise-now /
-  capture-later split — confirming *is* the charge — and no Connect, so
+  capture-later split — confirming _is_ the charge — and no Connect, so
   ignoring any of them would move a merchant's money somewhere, or at a time,
   they did not ask for and could not see in the response.
 
@@ -336,10 +345,11 @@ try {
   `expand` and `metadata` (`metadata` is actually stored) all leave the
   payment exactly as requested. Nothing is expandable, so an `expand` request
   simply produces no expanded field — visible in the response itself.
+
 - **Rail codes are vpay's, not Stripe's.** `payment_method_types` entries and
   `payment_method_data.type` are `mtn_momo` / `orange_money`; stripe-node's
   TypeScript types enumerate Stripe's own rails and reject them, so a cast is
-  needed at those call sites — the values are right, the *type* is Stripe's:
+  needed at those call sites — the values are right, the _type_ is Stripe's:
 
   ```ts
   await stripe.paymentIntents.confirm(id, {
@@ -353,12 +363,14 @@ try {
 - **`429` is never emitted.** Nothing in vpay constructs a rate-limit
   category, so `Stripe.errors.StripeRateLimitError` cannot occur. Do not build
   a backoff path around it.
-- **`client_secret` is absent** from vpay's PaymentIntent today, along with
-  `amount_received`, `capture_method` and `confirmation_method`. stripe-node's
-  TypeScript types declare all four as present — it casts responses, it never
-  validates them — so these read as `undefined` at runtime while the type says
-  otherwise. There is no client-side confirmation flow to use a
-  `client_secret` with.
+- **`client_secret` is present, but only on `create`/`retrieve`.** vpay's
+  `create()` and `retrieve()` responses carry it — see "Usage" above — for
+  `@vpay/stripe-js`'s browser-side confirm flow. `amount_received`,
+  `capture_method` and `confirmation_method` stay genuinely absent, though:
+  stripe-node's TypeScript types declare all three as present on every
+  response shape — it casts responses, it never validates them — so these
+  read as `undefined` at runtime while the type says otherwise, on every
+  route including `create`/`retrieve`.
 - **`Stripe-Version`, `Stripe-Account`, `Stripe-Context` and the
   `X-Stripe-Client-*` headers are accepted and ignored.** vpay advertises no
   dated API version, so `obj.lastResponse.apiVersion` is `undefined` and
@@ -458,7 +470,7 @@ function is assignable to `Stripe.StripeConfig["authenticator"]` is checked by
 What is **not** proven here:
 
 - **Nothing in this package has run against a real `vpay-server`.** The
-  end-to-end test's server is a stub in this repository. What *has* run
+  end-to-end test's server is a stub in this repository. What _has_ run
   against a real one is
   [`sdks/stripe-compat`](../stripe-compat/) — the official `stripe` package
   driven through this authenticator against a live compose stack, 25 cases,
@@ -466,7 +478,7 @@ What is **not** proven here:
   needs a stack, and a suite that needs a stack must not be able to report
   green in a job that has none.
 - **Every webhook verified so far was delivered to a WireMock receiver on a
-  compose network.** The *signature* is now proven three ways — against this
+  compose network.** The _signature_ is now proven three ways — against this
   package's own `verifyWebhook`, against `vpay_sdk::webhooks::verify_at`, and
   against the official `stripe` package's `constructEvent` — but **no merchant
   endpoint has ever been POSTed to**, and there is no SSRF protection on the
@@ -518,7 +530,7 @@ through `paymentIntents.retrieve` and nothing else. `/v1/events` is served
 `404 unknown_route`. **This package has no client method for any of that
 beyond the payment-intent routes it already wraps.**
 
-**No test in *this package* has ever talked to a vpay** — every server in
+**No test in _this package_ has ever talked to a vpay** — every server in
 these tests is a `node:http` stub started by the test. What has talked to a
 real one is `sdks/stripe-compat`, which drives the official `stripe` package
 through this package's own `createStripeAuthenticator` against a live
@@ -548,6 +560,9 @@ none of them touches the network:
 - Every resource method's exact HTTP method, path, headers, and
   bracket-encoded body — including that a caller-supplied `Idempotency-Key`
   is honoured and one is generated when omitted.
+- That `create()` and `retrieve()` surface `client_secret` typed (`string`)
+  when the server sends it, and that a `list()` item without one reads back
+  `undefined` rather than a cast or a runtime crash.
 - The form encoder's nested-object/array/boolean/percent-encoding rules, and
   that a non-integer `amount` throws `TypeError` before any request is sent.
 - Error mapping for a Stripe-shaped `400`, an unexpected `502` HTML body, a

@@ -65,6 +65,9 @@ fn configured_merchant() -> MerchantClient {
         // destination is not one, and nothing in the conversion to
         // `ClientRegistration` may ever read this.
         webhooks: Vec::new(),
+        // And neither is a publishable key: it names a tenant for a payer's
+        // browser, never a credential this store resolves.
+        publishable_keys: Vec::new(),
     }
 }
 

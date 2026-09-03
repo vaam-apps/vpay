@@ -136,6 +136,27 @@ merchant_clients:
     # route then rejects as a bare 401. `Config::validate_all` now refuses to
     # boot without it (ConfigError::MerchantMissingV1Audience).
     allowed_audiences: ["vpay:v1"]
+    # The keys a payer's *browser* presents on `/v1/browser` alongside the
+    # payment intent's own `client_secret` (Step 5c, `@vpay/stripe-js`).
+    #
+    # Not secret — this value is rendered into the merchant's public checkout
+    # page by construction, exactly like `jwks` above, and it authorises
+    # nothing on its own: it names the tenant, and the per-intent
+    # `client_secret` is what authorises the request. A publishable key with
+    # the wrong `client_secret` is the same 404 as no key at all.
+    #
+    # Explicit, never derived from `merchant_id` (D1): derivation would make
+    # a key unretirable and would let anyone who has seen an object's owner
+    # reconstruct it. Rolling a key means adding the new one, deploying, then
+    # removing the old.
+    #
+    # `pk_test_` because `deployment.livemode` above is `false`. The marker
+    # is a label a human reads, never a code branch (ADR-0003) — and
+    # `Config::validate_all` refuses the combination that would make the
+    # label a lie (ConfigError::PublishableKeyLivemodeMismatch). An empty
+    # list (the default) is the fail-closed shape for a merchant with no
+    # browser checkout.
+    publishable_keys: ["pk_test_acmecameroonsandbox01"]
     # Where this merchant's events are POSTed (docs/flows/webhooks.md), and
     # what each delivery is signed with. Endpoints are YAML, not a `/v1`
     # resource and not a table — see `vpay_config::oauth::WebhookEndpoint`.
