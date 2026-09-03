@@ -272,7 +272,7 @@ Stripe `type` across two statuses is an ADR-level change, left as a
 maintainer decision. Branch on `code`, which is distinct either way.
 
 **Not built:** nothing sweeps the table on a schedule.
-`vpay_db::idempotency::sweep_expired` exists and `vpay-server` calls it once
+`vpay_db::Idempotency::sweep_expired` exists and `vpay-server` calls it once
 at boot as a stopgap; there is no worker job loop, so a long-lived
 deployment grows `idempotency_keys` monotonically between restarts.
 

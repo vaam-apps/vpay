@@ -1,84 +1,18 @@
-//! The outbound HTTP client every server-side caller in this workspace
-//! should use, and the reason one has to exist at all.
+//! The outbound HTTP client every server-side caller in this workspace uses,
+//! and the bounded read every rail answer comes back through.
 //!
-//! # Why this module lives in the *port* crate
+//! [`client`] hands reqwest a finished vendored-roots `rustls::ClientConfig`
+//! instead of letting it read the platform trust store, which is the only
+//! kind of client that survives the `FROM scratch` runtime image
+//! ([ADR-0004]) — `reqwest::Client::new()` *panics* there. It also removes
+//! two reqwest defaults: redirects are not followed, and the environment's
+//! proxy variables are ignored. [`bounded_body`] and [`read_rail_body`] stop
+//! a rail deciding how much memory this process allocates.
 //!
-//! It was `vpay_api::http_client` until Step 3 (`docs/plans/2026-09-03-step3-rails.md`,
-//! decision 2) and moved here verbatim when the rail adapters needed it: an
-//! adapter crate depends on `vpay-provider` and must not depend on
-//! `vpay-api` (the HTTP surface depends on the port, never the reverse), so
-//! the only home both an adapter and `vpay-api` can reach is this crate.
-//! `vpay_api::http_client` is now a re-export of this module, which is why
-//! no existing call site changed.
-//!
-//! The cost, stated plainly rather than hidden: `vpay-provider` is no longer
-//! a pure interface crate — it links reqwest, rustls and webpki-roots, so a
-//! future non-HTTP rail (a USSD gateway, a file drop) compiles a TLS stack it
-//! never uses. No *binary* grew: both already resolved all three. The
-//! alternative, a new `vpay-http` crate, was rejected for the workspace
-//! member, `deny.toml` entry and second `sdks/rust` twin note it would add.
-//!
-//! # Why not `reqwest::Client::new()`
-//!
-//! The runtime image is `FROM scratch` ([ADR-0004]): no glibc, no shell, and
-//! no OS certificate store. reqwest is pinned at 0.13 with
-//! `rustls-no-provider` (see the long note on the pin in the root
-//! `Cargo.toml`), and on that version reqwest no longer offers a
-//! vendored-roots feature — it builds a `rustls_platform_verifier::Verifier`,
-//! i.e. it reads the *platform* trust store. It does so **eagerly, inside
-//! `ClientBuilder::build()`**, not lazily at connect time, and when the store
-//! turns up empty the verifier returns
-//! `General("No CA certificates were loaded from the system")`, which
-//! `Client::new()` converts into a panic.
-//!
-//! That is not a hypothetical. `JwtValidator::new` used to call
-//! `authkestra_resource::jwt::JwksCache::new`, which calls
-//! `reqwest::Client::new()`, and `vpay-server` panicked at boot inside its own
-//! image while passing every test on machines that happen to have `/etc/ssl`.
-//! The JWKS URL it was about to fetch is plain `http://` over loopback — TLS
-//! was never going to be negotiated — so the failure had nothing to do with
-//! the request being made and everything to do with when the trust store is
-//! read. `tests/cli.rs`'s
-//! `a_server_with_no_os_trust_store_boots_and_still_validates_tokens`
-//! reproduces the condition with `SSL_CERT_FILE`/`SSL_CERT_DIR` pointed at
-//! paths that do not exist.
-//!
-//! [`client`] therefore hands reqwest a finished [`rustls::ClientConfig`]
-//! built from Mozilla's vendored bundle. That takes reqwest's
-//! `TlsBackend::BuiltRustls` branch, which consults neither the platform
-//! verifier nor the process-wide `CryptoProvider` — so it also cannot hit the
-//! *other* panic the `rustls-no-provider` pin exposes ("No rustls crypto
-//! provider is configured"), independently of whether the binary installed a
-//! default provider first.
-//!
-//! # The trade-off, stated plainly
-//!
-//! Vendored roots mean a deployment behind a TLS-intercepting proxy with a
-//! private CA is not served by this client, and `SSL_CERT_FILE` will not
-//! change that. That is the deliberate cost of being able to run in a
-//! `scratch` image at all; the alternative is an image that carries a trust
-//! store, which is a different ADR.
-//!
-//! # The twin in `sdks/rust`
-//!
-//! `sdks/rust/src/client.rs` has a near-identical `rustls_client_config`, and
-//! it stays a separate copy on purpose: `vpay-sdk` is what a *merchant*
-//! compiles into their own process, so it must not depend on a server crate —
-//! making it depend on a server crate would drag axum, sqlx and the whole OP
-//! into a merchant's build. The two are expected to stay in step; if you change
-//! the provider, the root source or the ALPN list here, change it there too.
-//! The SDK's copy carries the extra constraint that a library inside someone
-//! else's process may neither panic nor install a process-wide
-//! `CryptoProvider` on that process's behalf.
-//!
-//! The two copies now differ in one place, deliberately: this one refuses
-//! redirects and ignores `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`, and the
-//! SDK's does neither. A merchant's process runs on a merchant's network,
-//! where a corporate egress proxy is ordinary and a redirect to a caller's
-//! own gateway may be exactly what they configured; a payment gateway's own
-//! egress is not that. See `preconfigured_builder`'s doc comment. Everything
-//! else — the provider, the root source, the ALPN list — is still expected
-//! to stay in step.
+//! Each of those is a decision with a specific attack or outage behind it,
+//! and each is argued in `docs/reference/rails.md` — including why this
+//! module lives in the port crate, what the vendored roots cost, and the one
+//! place the `sdks/rust` twin deliberately differs.
 //!
 //! [ADR-0004]: ../../../docs/adr/0004-musl-mimalloc.md
 
@@ -155,16 +89,23 @@ fn vendored_root_store() -> rustls::RootCertStore {
 /// # Deliberately not configurable
 ///
 /// No timeout and no header: a caller that needs timeouts — every rail
-/// adapter does — uses [`client_with_timeouts`], the "grow a `builder()`
-/// sibling" this comment used to only anticipate.
+/// adapter does — uses [`client_with_timeouts`].
 ///
-/// Two of reqwest's defaults are *removed* rather than left alone, and
-/// those are not configurable either: redirects are not followed and the
-/// environment's proxy variables are ignored. `preconfigured_builder` says
-/// why, at length. This is therefore no longer "the same client
-/// `reqwest::Client::new()` would have, minus the trust store" — it is that
+/// Two of reqwest's defaults are *removed* rather than left alone, and those
+/// are not configurable either: redirects are not followed and the
+/// environment's proxy variables are ignored — `docs/reference/rails.md`
+/// gives both arguments. This is therefore not "the client
+/// `reqwest::Client::new()` would have, minus the trust store": it is that
 /// client minus two behaviours a server-side caller in this workspace must
 /// never have.
+///
+/// ```
+/// // No process-wide rustls `CryptoProvider` is installed here, and this
+/// // still returns `Ok`: that is the whole difference from
+/// // `reqwest::Client::new()`, which panics on both of the conditions the
+/// // `FROM scratch` runtime image presents.
+/// assert!(vpay_provider::http::client().is_ok());
+/// ```
 pub fn client() -> Result<reqwest::Client, HttpClientError> {
     preconfigured_builder()?
         .build()
@@ -173,23 +114,11 @@ pub fn client() -> Result<reqwest::Client, HttpClientError> {
 
 /// The same vendored-roots client, bounded in time.
 ///
-/// # Why the caller supplies the durations
-///
-/// One client is shared by every rail in a process (both binaries build it
-/// once at boot and hand clones to the adapters), so the timeouts cannot be
-/// a property of *this* function's opinion about rails — they come from
-/// [`crate::ProviderConfig::connect_timeout`] /
-/// [`crate::ProviderConfig::request_timeout`], which the deployment's YAML
-/// feeds. That is also what lets the conformance suite assert
-/// [`crate::ProviderError::Transport`] against a deliberately-slow WireMock
-/// mapping in 100 ms instead of waiting out a 20 s production default.
-///
-/// `timeout` is reqwest's *whole-request* deadline (connect, send, and the
-/// response body) and `connect_timeout` bounds only the TCP+TLS handshake.
-/// Both are set: a request timeout alone would let a black-holed rail hold a
-/// worker task for the full request budget on a connection that was never
-/// going to establish, and a connect timeout alone bounds nothing once the
-/// socket is open.
+/// The durations are the caller's because one client is shared by every rail
+/// in a process: they come from [`crate::ProviderConfig`], which the
+/// deployment's YAML feeds. `request` is reqwest's *whole-request* deadline
+/// and `connect` bounds only the TCP+TLS handshake; both are set, because
+/// either alone leaves a hole. See `docs/reference/rails.md`.
 ///
 /// # Errors
 ///
@@ -197,6 +126,15 @@ pub fn client() -> Result<reqwest::Client, HttpClientError> {
 /// Neither is reachable from a duration — reqwest validates nothing about
 /// them — so a failure here means the same fixed TLS stack failed to
 /// assemble.
+///
+/// ```
+/// use vpay_provider::{DEFAULT_CONNECT_TIMEOUT, DEFAULT_REQUEST_TIMEOUT};
+/// use vpay_provider::http::client_with_timeouts;
+///
+/// // The pair a `ProviderConfig` built from YAML carries. Durations are not
+/// // validated, so construction fails only if the fixed TLS stack does.
+/// assert!(client_with_timeouts(DEFAULT_CONNECT_TIMEOUT, DEFAULT_REQUEST_TIMEOUT).is_ok());
+/// ```
 pub fn client_with_timeouts(
     connect: Duration,
     request: Duration,
@@ -210,47 +148,18 @@ pub fn client_with_timeouts(
 
 /// The vendored-roots TLS configuration, already installed on a
 /// `reqwest::ClientBuilder`, shared by the two constructors above so neither
-/// can drift onto a different trust store, a different ALPN list, a
-/// redirect policy or a proxy.
+/// can drift onto a different trust store, a different ALPN list, a redirect
+/// policy or a proxy.
 ///
-/// # Why redirects are not followed
-///
-/// reqwest's default is `redirect::Policy::limited(10)`, and on a
-/// cross-host hop it strips exactly three headers: `Authorization`,
-/// `Cookie` and `Proxy-Authorization`. Every *other* header is replayed at
-/// the new host, and a rail adapter's headers are precisely the ones that
-/// are not on that list — MTN's `Ocp-Apim-Subscription-Key`,
-/// `X-Target-Environment`, `X-Reference-Id` and `X-Callback-Url` — while a
-/// 307/308 replays the request **body**, which on Orange's `webpayment`
-/// carries `merchant_key`. A rail (or anyone who can answer as one) that
-/// responds `302 Location: https://attacker.example/` would therefore be
-/// handed a merchant's rail credentials and the identity of a live charge,
-/// by a client that was only asked to take a payment.
-///
-/// Neither rail documents a redirect on any call this workspace makes, so
-/// there is nothing to lose by refusing: a 3xx arrives at the adapters'
-/// "unexpected status" arms as [`crate::ProviderError::Malformed`], which
-/// leaves the charge in the state a recovery pass reads rather than
-/// advancing it on the strength of an answer from somewhere else. The
-/// conformance suite's `REF_REDIRECT` case pins that, and pins the decisive
-/// half: the redirect target is a mapping on the same WireMock that must
-/// stay unrequested.
-///
-/// # Why the process environment cannot reroute a rail call
-///
-/// reqwest reads `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` from the
-/// environment by default. A payment gateway's egress must be explicit
-/// configuration, not ambient: a variable set on a pod — by a sidecar, a
-/// base image, or a helpful default in a chart — must not silently put a
-/// third party in the middle of a call that carries rail credentials. If a
-/// deployment ever genuinely needs an egress proxy, it is a change here and
-/// in an ADR, visible in review, rather than a value in an environment
-/// nobody diffed.
-///
-/// This is deliberately **not** mirrored in the `sdks/rust` twin: that
-/// client runs inside a *merchant's* process, on their network, where a
-/// corporate egress proxy is a legitimate and common requirement. The two
-/// copies differ here on purpose (see the module doc's note on the twin).
+/// The redirect policy and `no_proxy` are *removals* of a reqwest default,
+/// and they are here rather than at a call site because a client built
+/// without them is the dangerous one: there must be no way to construct it.
+/// `docs/reference/rails.md` gives both arguments — in short, a followed
+/// redirect replays every header reqwest does not consider sensitive (which
+/// is exactly the set a rail adapter uses) and, on a 307/308, the request
+/// body, at whatever host answered; and a proxy variable set on a pod by a
+/// sidecar or a base image must not be able to put a third party in the
+/// middle of a call carrying rail credentials.
 fn preconfigured_builder() -> Result<reqwest::ClientBuilder, HttpClientError> {
     let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
@@ -281,24 +190,15 @@ fn preconfigured_builder() -> Result<reqwest::ClientBuilder, HttpClientError> {
 
 /// The most of a rail's response body this workspace will hold in memory.
 ///
-/// 256 KiB. Every documented body either rail answers with is under a
-/// kilobyte; the sizes that matter are the undocumented ones — a load
-/// balancer's HTML error page, a captive portal, or a host that is not the
-/// rail at all — and `reqwest`'s `text()`/`bytes()` buffer whatever arrives
-/// in full. One worker task per charge, each willing to allocate an
-/// unbounded body, is a memory exhaustion an attacker gets to choose the
-/// size of.
-///
-/// Large enough that no real answer is ever near it, so a body that trips
-/// the cap is evidence in itself rather than a tuning problem.
+/// 256 KiB: large enough that no real answer is ever near it, so a body that
+/// trips the cap is evidence in itself rather than a tuning problem.
+/// `docs/reference/rails.md` has the exhaustion this bounds.
 pub const MAX_RAIL_BODY_BYTES: usize = 256 * 1024;
 
 /// Why a response body could not be read within its bound.
 ///
 /// Separate from [`HttpClientError`], which is construction-time only: this
-/// one is reachable from a live request path, on every call an adapter
-/// makes, and the two classify differently — a rail sending an oversize or
-/// truncated body is [`Category::Rail`], not a bug in this module.
+/// one is reachable from a live request path and classifies differently.
 #[derive(Debug, thiserror::Error)]
 pub enum HttpBodyError {
     /// The rail sent more than the caller was willing to hold.
@@ -319,15 +219,12 @@ pub enum HttpBodyError {
 }
 
 impl Classify for HttpBodyError {
-    /// Both variants are the rail's behaviour, not ours.
-    ///
-    /// [`Category::Rail`] rather than `Internal` because neither says the
-    /// charge failed and neither is fixed by a deploy: the fate of the
-    /// request is unknown, which is exactly the state
-    /// `docs/flows/crash-safety.md` resolves by asking the rail again. An
-    /// oversize body in particular must never read as a decline — the rail
-    /// may have accepted the payment and then answered with a proxy's error
-    /// page.
+    /// Both variants are the rail's behaviour, not ours: neither says the
+    /// charge failed and neither is fixed by a deploy, so the fate of the
+    /// request is unknown — the state `docs/flows/crash-safety.md` resolves
+    /// by asking the rail again. An oversize body in particular must never
+    /// read as a decline; the rail may have accepted the payment and then
+    /// answered with a proxy's error page.
     fn category(&self) -> Category {
         Category::Rail
     }
@@ -335,24 +232,15 @@ impl Classify for HttpBodyError {
 
 /// Reads a response body, refusing to hold more than `max` bytes of it.
 ///
-/// # Why this exists rather than `Response::text()`
+/// `text()`/`bytes()` read to end of stream, which lets the peer decide how
+/// much memory this process allocates; this gives up the moment the
+/// accumulated length would exceed the cap, so an oversize body costs one
+/// chunk of over-read rather than all of it. `Content-Length` is an
+/// optimisation and never the guard — a chunked response has none and a
+/// lying one is caught by the running total. See `docs/reference/rails.md`.
 ///
-/// `text()` and `bytes()` read to end of stream: the peer decides how much
-/// memory this process allocates. That is acceptable for a body whose size
-/// a caller controls and unacceptable for a rail's — see
-/// [`MAX_RAIL_BODY_BYTES`]. This reads chunk by chunk and gives up the
-/// moment the accumulated length would exceed the cap, so an oversize body
-/// costs one chunk of over-read rather than all of it, and the connection
-/// is dropped with the response.
-///
-/// `Content-Length` is checked first when the peer supplies one, which
-/// turns the common case into a refusal before a single body byte is read.
-/// It is only a hint — a chunked response has none, and a lying one is
-/// caught by the running total anyway — so it is an optimisation, never the
-/// guard.
-///
-/// The status is returned alongside the bytes because the caller has given
-/// up ownership of the response to get here, and every caller needs both.
+/// The status comes back alongside the bytes because the caller gave up
+/// ownership of the response to get here, and every caller needs both.
 ///
 /// # Errors
 ///
@@ -383,6 +271,49 @@ pub async fn bounded_body(
     }
 
     Ok((status, body))
+}
+
+/// [`bounded_body`] at [`MAX_RAIL_BODY_BYTES`], with each outcome already in
+/// the [`ProviderError`](crate::ProviderError) an adapter has to return.
+///
+/// `context` is the adapter's own sentence — which rail, doing what — and is
+/// what `Display` renders; the library error travels underneath as a
+/// `#[source]`. Both adapters had a copy of this four-line match, differing
+/// only in that prefix, which is one copy too many for a decision this
+/// consequential: an oversize body must never read as a decline. See
+/// `docs/reference/rails.md`.
+///
+/// Bytes, not text: Orange parses JSON from them and MTN decodes lossily for
+/// its own diagnostics, and a reader that decoded for both would make one of
+/// them re-encode.
+///
+/// # Errors
+///
+/// [`ProviderError::Malformed`](crate::ProviderError::Malformed) when the
+/// body exceeds the cap, naming the cap in the message — an operator needs to
+/// see that the limit was ours and what it is, and the conformance suite
+/// asserts it. `Malformed` and not a decline, because an oversize answer says
+/// nothing about whether the payment happened, and
+/// `docs/flows/crash-safety.md` resolves an unknown fate by asking again.
+/// [`ProviderError::Transport`](crate::ProviderError::Transport) if the
+/// stream fails part-way, which leaves the same unknown fate.
+pub async fn read_rail_body(
+    response: reqwest::Response,
+    context: &str,
+) -> Result<(reqwest::StatusCode, Vec<u8>), crate::ProviderError> {
+    match bounded_body(response, MAX_RAIL_BODY_BYTES).await {
+        Ok(answered) => Ok(answered),
+        // The cap is written into the message rather than left to the
+        // source's `Display`: it is the whole diagnostic, and a `Display`
+        // that stops at `context` would not carry it.
+        Err(error @ HttpBodyError::TooLarge { .. }) => Err(crate::ProviderError::malformed_from(
+            format!("{context}: the response exceeded {MAX_RAIL_BODY_BYTES} bytes"),
+            error,
+        )),
+        Err(error @ HttpBodyError::Read(_)) => {
+            Err(crate::ProviderError::transport_from(context, error))
+        }
+    }
 }
 
 #[cfg(test)]

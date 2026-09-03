@@ -1,53 +1,79 @@
 //! The cross-cutting error classification every vpay error implements.
 //!
-//! vpay has many error *types* on purpose — `MoneyError`, `LedgerError`,
-//! `ConfigError`, `DbError`, `ProviderError`, and the composite errors the
-//! API and worker layers build from them — because a caller that can
-//! `match` on a closed enum can react precisely, and a `String` cannot be
-//! matched on at all. What those types share is not a base class but a
-//! *classification*: whichever concrete error reaches a boundary, the
-//! boundary needs to answer the same five questions —
+//! [`Classify`] is the seam: one decision — the [`Category`] — and every
+//! boundary's answer follows from it, so the HTTP envelope, the worker's
+//! retry decision, the log severity and a binary's exit code are derived
+//! rather than chosen at a call site.
 //!
-//! 1. whose fault is it (**category**),
-//! 2. what HTTP status and Stripe-shaped `type` does it map to,
-//! 3. may it be retried, and by whom (**retry**),
-//! 4. how loudly should it be logged (**severity**),
-//! 5. what may a merchant be told about it (**public message**).
+//! [ADR-0011](../../../../docs/adr/0011-error-modelling.md) is the decision
+//! and `docs/flows/errors.md` the policy table. The three tiers, the five
+//! questions a boundary has to answer and why this crate returns plain data
+//! rather than framework types:
+//! [docs/reference/vpay-core.md § error](../../../../docs/reference/vpay-core.md#error).
 //!
-//! [`Classify`] is that seam. Every error enum in `backends/crates` implements
-//! it (machine-checked by `cargo xtask verify-errors`), so the HTTP envelope,
-//! the worker's retry decision and a binary's exit code are all *derived*
-//! from one classification instead of hand-rolled per call site — the same
-//! discipline `docs/flows/failures.md` already applies to the merchant-facing
-//! failure taxonomy, applied to the system's own errors.
+//! ```
+//! use vpay_core::{Category, Classify, Retry, Severity};
 //!
-//! Three tiers, per [ADR-0011](../../../../docs/adr/0011-error-modelling.md):
+//! #[derive(Debug, thiserror::Error)]
+//! #[error("no signing key for merchant {0}")]
+//! struct NoSigningKey(String);
 //!
-//! - **Leaf** errors: one `thiserror` enum per crate concern, closed, with
-//!   `#[source]` chains preserved and no secrets in `Display`.
-//! - **Composite** errors: a layer's own enum that `#[from]`s the leaves it
-//!   depends on and adds the layer's own variants (`vpay_api::ApiError`,
-//!   `vpay_worker::JobError`). Its `Classify` impl delegates to the leaf.
-//! - **Boundary**: `anyhow` in `backends/apps/*` only, for `.context(..)`
-//!   chains at startup; the HTTP envelope; the worker's retry policy; the
-//!   process exit code. Boundaries consume `Classify`, they never re-invent
-//!   it.
+//! // The only required method.
+//! impl Classify for NoSigningKey {
+//!     fn category(&self) -> Category {
+//!         Category::Configuration
+//!     }
+//! }
 //!
-//! This crate knows nothing about HTTP frameworks or `tracing`, so the
-//! mappings below are plain data (`u16`, `&'static str`, small enums) that a
-//! boundary translates into its own vocabulary.
+//! let error = NoSigningKey("acct_1".to_owned());
+//! assert_eq!(error.category().http_status(), 500);
+//! assert_eq!(error.code(), "misconfigured");
+//! assert_eq!(error.retry(), Retry::Never);
+//! assert_eq!(error.severity(), Severity::Error);
+//! assert_eq!(error.category().exit_code(), 78); // EX_CONFIG
+//! // A merchant is told the category's generic sentence, never the Display.
+//! assert_eq!(
+//!     error.public_message(),
+//!     "vpay is misconfigured for this operation. Contact support."
+//! );
+//! ```
 
 use std::error::Error as StdError;
 
 /// Whose problem an error is, and therefore how every boundary treats it.
 ///
-/// Deliberately coarse: a category decides *policy* (status, retry,
-/// severity). The fine detail a merchant needs to fix their request lives
-/// in [`Classify::code`] and [`Classify::public_message`], and the fine
-/// detail an operator needs lives in the error's own `Display`/`source`
-/// chain. Adding a variant here is an ADR-level change because every
-/// boundary must decide what to do with it — the `match`es below are
-/// exhaustive on purpose.
+/// Deliberately coarse: a category decides *policy*. The detail a merchant
+/// needs lives in [`Classify::code`] and [`Classify::public_message`], the
+/// detail an operator needs in the error's own `Display`/`source` chain.
+/// Adding a variant is an ADR-level change — the `match`es below are
+/// exhaustive on purpose, so every boundary is forced to decide.
+///
+/// ```
+/// use vpay_core::{Category, Retry, Severity};
+///
+/// // A merchant's mistake: 4xx, never retried, logged at Info, and the
+/// // caller is told what to fix.
+/// assert_eq!(Category::InvalidRequest.http_status(), 400);
+/// assert_eq!(Category::InvalidRequest.default_retry(), Retry::Never);
+/// assert_eq!(Category::InvalidRequest.default_severity(), Severity::Info);
+///
+/// // A rail that would not answer: 502, retried by the poll ladder, and
+/// // `EX_UNAVAILABLE` if a binary hits it at startup.
+/// assert_eq!(Category::Rail.http_status(), 502);
+/// assert_eq!(Category::Rail.default_retry(), Retry::AfterBackoff);
+/// assert_eq!(Category::Rail.exit_code(), 69);
+///
+/// // Only an invariant violation pages, and it says nothing to the caller.
+/// assert_eq!(Category::Internal.default_severity(), Severity::Page);
+/// assert_eq!(
+///     Category::Internal.generic_message(),
+///     "An internal error occurred. Contact support with the request id."
+/// );
+///
+/// // Stripe's `type` vocabulary is closed, so several categories share one.
+/// assert_eq!(Category::NotFound.stripe_type(), "invalid_request_error");
+/// assert_eq!(Category::Storage.stripe_type(), "api_error");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Category {
     /// The caller's input is wrong: a malformed field, an amount that is
@@ -137,9 +163,16 @@ impl Severity {
     /// The string this severity is spelled with on a metric label — the
     /// `Debug` spelling, for the reason [`Category::as_metric_label`] gives.
     ///
-    /// Note that `Error` and `Page` are two *labels* on one `tracing` level:
-    /// the level cannot tell them apart, which is why `vpay_alert_events_total`
-    /// exists as a separate counter rather than as a level filter.
+    /// `Error` and `Page` are two *labels* on one `tracing` level: the level
+    /// cannot tell them apart, which is why `vpay_alert_events_total` exists
+    /// as a separate counter rather than as a level filter.
+    ///
+    /// ```
+    /// use vpay_core::Severity;
+    ///
+    /// assert_eq!(Severity::Page.as_metric_label(), "Page");
+    /// assert_eq!(format!("{:?}", Severity::Page), Severity::Page.as_metric_label());
+    /// ```
     #[must_use]
     pub const fn as_metric_label(self) -> &'static str {
         match self {
@@ -250,20 +283,18 @@ impl Category {
         }
     }
 
-    /// The string this category is spelled with on a metric label, and it
-    /// is deliberately the `Debug` spelling.
+    /// The string this category is spelled with on a metric label — the
+    /// `Debug` spelling, so an alert's label and the JSON log line that
+    /// produced it are joinable by eye. See
+    /// [docs/reference/vpay-core.md § metric labels are the Debug spelling](../../../../docs/reference/vpay-core.md#metric-labels-are-the-debug-spelling).
     ///
-    /// `vpay_error_events_total{category="Internal"}` has to be joinable by
-    /// eye with the JSON log line that produced it, and that line carries
-    /// `category` through `tracing`'s `?category` — i.e. `Debug`. A
-    /// snake_case label would read better in PromQL and would mean an
-    /// operator pivoting from an alert to the logs had to translate; worse,
-    /// the two spellings could drift without anything failing.
-    /// `the_metric_label_is_the_debug_spelling` pins them together for
-    /// every variant.
+    /// ```
+    /// use vpay_core::Category;
     ///
-    /// A `const fn` over an exhaustive match, so a thirteenth category is a
-    /// compile error here rather than a series that silently never appears.
+    /// for category in Category::ALL {
+    ///     assert_eq!(format!("{category:?}"), category.as_metric_label());
+    /// }
+    /// ```
     #[must_use]
     pub const fn as_metric_label(self) -> &'static str {
         match self {
@@ -353,9 +384,38 @@ impl Category {
 /// the system, and the binaries consume this rather than implement it.
 ///
 /// Only [`Classify::category`] is required. The defaults derive everything
-/// else from the category, so a new error variant gets sane policy by
-/// classifying itself once; an override is a deliberate statement that the
+/// else from the category; an override is a deliberate statement that the
 /// default is wrong for that variant, and should say why in a comment.
+///
+/// ```
+/// use vpay_core::{Category, Classify};
+///
+/// #[derive(Debug, thiserror::Error)]
+/// #[error("amount must not be negative, got {0}")]
+/// struct Negative(i64);
+///
+/// impl Classify for Negative {
+///     fn category(&self) -> Category {
+///         Category::InvalidRequest
+///     }
+///
+///     // Overridden: the caller's own value *is* the useful information,
+///     // and echoing it leaks nothing internal.
+///     fn code(&self) -> &'static str {
+///         "amount_negative"
+///     }
+///
+///     fn public_message(&self) -> String {
+///         self.to_string()
+///     }
+/// }
+///
+/// let error = Negative(-1);
+/// assert_eq!(error.code(), "amount_negative");
+/// assert_eq!(error.public_message(), "amount must not be negative, got -1");
+/// // Everything not overridden still comes from the category.
+/// assert_eq!(error.severity(), Category::InvalidRequest.default_severity());
+/// ```
 pub trait Classify: StdError {
     /// Whose problem this is. Decides status, retry, severity and exit code
     /// unless overridden below.
@@ -389,17 +449,139 @@ pub trait Classify: StdError {
     }
 }
 
-/// Finds the first [`Classify`] implementor of type `T` anywhere in an
-/// error chain — the tool a boundary uses to classify an `anyhow::Error`
-/// (whose `chain()` yields exactly this iterator) without depending on
-/// `anyhow` here.
+/// Every link *below* `error`, joined with `": "`.
+///
+/// The half of an error that names the concrete cause and the half a
+/// `Display` alone throws away. `vpay_api::ApiError::log` and
+/// `vpay_worker`'s job settlement both emit it beside the `Display`, so an
+/// operator reading either sees the same two lines and `jobs.last_error`
+/// keeps the leaf.
+///
+/// Empty when `error` has no source. It walks `Error::source`, so a leaf that
+/// flattens its cause into its own message contributes nothing here — which
+/// is the point: this function is what makes `#[source]` worth carrying.
+///
+/// ```
+/// use vpay_core::error::source_chain;
+///
+/// #[derive(Debug, thiserror::Error)]
+/// #[error("the rail refused the connection")]
+/// struct Transport;
+///
+/// #[derive(Debug, thiserror::Error)]
+/// #[error("submit failed")]
+/// struct Submit(#[source] Transport);
+///
+/// // `Display` names only the top of the chain…
+/// assert_eq!(Submit(Transport).to_string(), "submit failed");
+/// // …and this is the rest of it.
+/// assert_eq!(
+///     source_chain(&Submit(Transport)),
+///     "the rail refused the connection"
+/// );
+/// // A leaf with nothing under it contributes nothing.
+/// assert_eq!(source_chain(&Transport), "");
+/// ```
+#[must_use]
+pub fn source_chain(error: &dyn StdError) -> String {
+    let mut parts = Vec::new();
+    let mut current = error.source();
+    while let Some(link) = current {
+        parts.push(link.to_string());
+        current = link.source();
+    }
+    parts.join(": ")
+}
+
+/// `error` and every link below it, joined with `": "` — the whole failure as
+/// one line for an operator.
+///
+/// The rendering a durable `last_error`-shaped column wants. [`source_chain`]
+/// alone throws away the top of the chain and `Display` alone throws away the
+/// bottom, and a caller that writes only one of them has recorded a failure
+/// that names either the operation or the cause but never both.
+///
+/// Two write sites use it today and they are the reason it is here rather than
+/// inlined at each: `jobs.last_error` (`vpay_worker::run_loop`) and
+/// `webhook_deliveries.response_excerpt` for a delivery that got no answer
+/// (`vpay_worker::webhooks`). Neither truncates here — both columns carry a
+/// `char_length` CHECK and `vpay_db` bounds the value against it at the write,
+/// which is the only layer that knows the ceiling.
+///
+/// ```
+/// use vpay_core::error::display_with_chain;
+///
+/// #[derive(Debug, thiserror::Error)]
+/// #[error("connection refused")]
+/// struct Refused;
+///
+/// #[derive(Debug, thiserror::Error)]
+/// #[error("the request to the rail failed")]
+/// struct Transport(#[source] Refused);
+///
+/// // Both halves, in that order.
+/// assert_eq!(
+///     display_with_chain(&Transport(Refused)),
+///     "the request to the rail failed: connection refused"
+/// );
+/// // A leaf with nothing under it renders exactly as its `Display`, with no
+/// // trailing separator.
+/// assert_eq!(display_with_chain(&Refused), "connection refused");
+/// ```
+#[must_use]
+pub fn display_with_chain(error: &dyn StdError) -> String {
+    let chain = source_chain(error);
+    if chain.is_empty() {
+        error.to_string()
+    } else {
+        format!("{error}: {chain}")
+    }
+}
+
+/// Finds the first [`Classify`] implementor of type `T` anywhere in an error
+/// chain — the tool a boundary uses to classify an `anyhow::Error` (whose
+/// `chain()` yields exactly this iterator) without depending on `anyhow`
+/// here.
 ///
 /// Typed rather than dynamic on purpose: `dyn Error` cannot be downcast to
-/// `dyn Classify`, so a boundary names the leaf types it knows how to
-/// classify (`ConfigError`, `DbError`, ...) in order of specificity and
-/// falls back to [`Category::Internal`] for anything else. That fallback is
-/// the honest answer for an error nothing classified — it pages, which is
-/// what an unclassified startup failure in a payment binary deserves.
+/// `dyn Classify`, so a binary names the leaf types it knows how to classify
+/// in order of specificity and falls back to [`Category::Internal`] for
+/// anything else — which pages, the honest outcome for an unclassified
+/// startup failure in a payment binary.
+///
+/// ```
+/// use std::error::Error as StdError;
+///
+/// use vpay_core::{Category, Classify, error::find_in_chain};
+///
+/// #[derive(Debug, thiserror::Error)]
+/// #[error("no such file: vpay.yaml")]
+/// struct MissingConfig;
+///
+/// impl Classify for MissingConfig {
+///     fn category(&self) -> Category {
+///         Category::Configuration
+///     }
+/// }
+///
+/// #[derive(Debug, thiserror::Error)]
+/// #[error("while loading configuration")]
+/// struct WhileLoading(#[source] MissingConfig);
+///
+/// // What `anyhow::Error::chain()` yields: the error, then its sources.
+/// let outer = WhileLoading(MissingConfig);
+/// let mut chain: Vec<&(dyn StdError + 'static)> = vec![&outer];
+/// let mut current: &(dyn StdError + 'static) = &outer;
+/// while let Some(source) = current.source() {
+///     chain.push(source);
+///     current = source;
+/// }
+///
+/// let found = find_in_chain::<MissingConfig>(chain.iter().copied());
+/// assert_eq!(found.map(Classify::category), Some(Category::Configuration));
+/// // …so the binary exits 78 (EX_CONFIG) rather than a bare 1.
+/// assert_eq!(found.map(|e| e.category().exit_code()), Some(78));
+/// ```
 #[must_use]
 pub fn find_in_chain<'a, T: Classify + 'static>(
     chain: impl IntoIterator<Item = &'a (dyn StdError + 'static)>,

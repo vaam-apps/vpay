@@ -1,20 +1,19 @@
 //! Domain types shared by every part of vpay.
 //!
-//! This crate knows nothing about any payment rail, any HTTP framework, or any
-//! database. If a rail-specific name (`msisdn`, `pay_token`, `subscription
-//! key`) appears here, that is a defect — see `docs/adr/0002-provider-port.md`.
+//! This crate knows nothing about any payment rail, any HTTP framework, or
+//! any database. If a rail-specific name (`msisdn`, `pay_token`,
+//! `subscription key`) appears here, that is a defect — see
+//! `docs/adr/0002-provider-port.md`.
+//!
+//! [docs/reference/vpay-core.md](../../../../docs/reference/vpay-core.md) is the
+//! narrative half of this crate's documentation: why each of these shapes is
+//! the way it is. Each module's own docs say what it is and link into it.
 
 pub mod error;
 pub mod failure;
 pub mod ids;
-// The metric *vocabulary* — names, units, help text — and nothing that
-// installs a recorder. A library that installed one would take that decision
-// out of the binary's hands; see the module header.
 pub mod metrics;
 pub mod money;
-// The reconciler's half of the state machine, kept apart from `state` on
-// purpose: `state::Transition` is the merchant's three verbs and must stay
-// unreachable from a rail answer. See the module header.
 pub mod settlement;
 pub mod state;
 

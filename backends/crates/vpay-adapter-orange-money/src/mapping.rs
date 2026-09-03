@@ -94,18 +94,18 @@ fn meaning(status: &str) -> Option<Meaning> {
 /// the token that gates a payer's redirect.
 pub(crate) fn submitted(body: &[u8]) -> Result<Submitted, ProviderError> {
     let parsed: WebPaymentResponse = serde_json::from_slice(body).map_err(|error| {
-        ProviderError::Malformed(format!(
+        ProviderError::malformed(format!(
             "orange_money: the webpayment response is not the documented JSON: {error}"
         ))
     })?;
 
     let pay_token = non_empty(parsed.pay_token).ok_or_else(|| {
-        ProviderError::Malformed(
+        ProviderError::malformed(
             "orange_money: the webpayment response carries no pay_token".to_owned(),
         )
     })?;
     let payment_url = non_empty(parsed.payment_url).ok_or_else(|| {
-        ProviderError::Malformed(
+        ProviderError::malformed(
             "orange_money: the webpayment response carries no payment_url".to_owned(),
         )
     })?;
@@ -140,13 +140,13 @@ pub(crate) fn submitted(body: &[u8]) -> Result<Submitted, ProviderError> {
 /// or carries one that is not in [`STATUS_TABLE`].
 pub(crate) fn charge_status(body: &[u8]) -> Result<ChargeStatus, ProviderError> {
     let parsed: TransactionStatusResponse = serde_json::from_slice(body).map_err(|error| {
-        ProviderError::Malformed(format!(
+        ProviderError::malformed(format!(
             "orange_money: the transactionstatus response is not the documented JSON: {error}"
         ))
     })?;
 
     let status = non_empty(parsed.status).ok_or_else(|| {
-        ProviderError::Malformed(
+        ProviderError::malformed(
             "orange_money: the transactionstatus response carries no status".to_owned(),
         )
     })?;
@@ -160,7 +160,7 @@ pub(crate) fn charge_status(body: &[u8]) -> Result<ChargeStatus, ProviderError> 
             code,
             raw: raw_reason(&status, parsed.message.as_deref()),
         }),
-        None => Err(ProviderError::Malformed(format!(
+        None => Err(ProviderError::malformed(format!(
             "orange_money: unrecognised transaction status {status:?}; refusing to guess whether \
              the charge is still in flight"
         ))),
@@ -212,14 +212,14 @@ fn checked_redirect_url(url: String) -> Result<String, ProviderError> {
         .iter()
         .any(|scheme| lowercase.starts_with(scheme))
     {
-        return Err(ProviderError::Malformed(
+        return Err(ProviderError::malformed(
             "orange_money: the webpayment response's payment_url is not an http(s) URL; \
              refusing to hand a payer a redirect this rail invented"
                 .to_owned(),
         ));
     }
     if url.chars().count() > MAX_REDIRECT_URL_CHARS {
-        return Err(ProviderError::Malformed(format!(
+        return Err(ProviderError::malformed(format!(
             "orange_money: the webpayment response's payment_url is longer than \
              {MAX_REDIRECT_URL_CHARS} characters"
         )));
@@ -328,13 +328,19 @@ mod tests {
     fn an_unrecognised_status_is_an_error_never_a_failure() {
         let error = charge_status(br#"{"status":"REVERSED"}"#)
             .expect_err("an unmapped status must not be guessed at");
-        assert!(matches!(error, ProviderError::Malformed(_)), "{error:?}");
+        assert!(
+            matches!(error, ProviderError::Malformed { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
     fn a_status_body_without_a_status_is_malformed() {
         let error = charge_status(br#"{"order_id":"x"}"#).expect_err("no status, no answer");
-        assert!(matches!(error, ProviderError::Malformed(_)), "{error:?}");
+        assert!(
+            matches!(error, ProviderError::Malformed { .. }),
+            "{error:?}"
+        );
     }
 
     /// The shape the whole redirect flow rests on: the URL and the key
@@ -378,14 +384,20 @@ mod tests {
     fn a_submit_response_without_a_pay_token_is_malformed() {
         let error = submitted(br#"{"payment_url":"https://p/x"}"#)
             .expect_err("a URL with no token is exactly what must not reach a caller");
-        assert!(matches!(error, ProviderError::Malformed(_)), "{error:?}");
+        assert!(
+            matches!(error, ProviderError::Malformed { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
     fn a_submit_response_without_a_payment_url_is_malformed() {
         let error = submitted(br#"{"pay_token":"pt"}"#)
             .expect_err("a redirect rail owes us somewhere to send the payer");
-        assert!(matches!(error, ProviderError::Malformed(_)), "{error:?}");
+        assert!(
+            matches!(error, ProviderError::Malformed { .. }),
+            "{error:?}"
+        );
     }
 
     /// The rail's own words must never carry the token that gates the payer's
@@ -411,7 +423,7 @@ mod tests {
             let error = submitted(hostile.as_bytes())
                 .expect_err("only an http(s) URL may be handed to a payer");
             assert!(
-                matches!(error, ProviderError::Malformed(_)),
+                matches!(error, ProviderError::Malformed { .. }),
                 "{hostile}: {error:?}"
             );
         }
@@ -440,7 +452,10 @@ mod tests {
             "x".repeat(MAX_REDIRECT_URL_CHARS)
         );
         let error = submitted(long.as_bytes()).expect_err("the column would refuse it too");
-        assert!(matches!(error, ProviderError::Malformed(_)), "{error:?}");
+        assert!(
+            matches!(error, ProviderError::Malformed { .. }),
+            "{error:?}"
+        );
 
         let at_the_limit = "x".repeat(MAX_REDIRECT_URL_CHARS - "https://p.example/".len());
         let ok =

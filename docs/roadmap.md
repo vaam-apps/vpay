@@ -562,7 +562,7 @@ against a real `postgres:16-alpine` on the authoring machine on 2026-09-03
 - **Request-auth middleware (D3)** validating once, resolving the tenant, and
   checking `payments:write` / `payments:read`
   (`a_client_registered_for_no_scopes_is_forbidden_while_a_scoped_one_is_not`).
-- **Boot step 4** — `vpay_db::config_reconcile::reconcile`, one
+- **Boot step 4** — `vpay_db::ConfigReconcile::reconcile`, one
   advisory-locked transaction in both binaries, with a YAML rail that has no
   linked adapter exiting `78`
   (`a_provider_code_with_no_linked_adapter_is_exit_78`).
@@ -818,7 +818,7 @@ transaction, `drain` in insertion order, an axum drain/gc handler pair, and no
 schema macro) or to write the ~200-line outbox by hand. **The answer is the
 hand-written one**, in migrations `0021`/`0022`: the `jobs` table already
 provides `FOR UPDATE SKIP LOCKED` claims, leases guarded on `locked_by`, a
-reaper, dead-letter parking and a dedupe key, and `vpay_db::events::insert_in_tx`
+reaper, dead-letter parking and a dedupe key, and `vpay_db::TxRepositories::insert_in_tx`
 already writes the outbox row in the same transaction as the charge. Adopting
 `cratestack-outbox` would duplicate all of that — two drain paths, two lease
 mechanisms, two sets of metrics for one queue — and add a dependency in the
@@ -854,8 +854,8 @@ and 5 carry about rails.
 
 **Scope, and what became of each item.**
 - ✅ An outbox row written in the same transaction as the state change it
-  reports — `vpay_db::events::insert_in_tx`, inside
-  `vpay_db::settlement::apply_succeeded`/`apply_failed` (Step 4).
+  reports — `vpay_db::TxRepositories::insert_in_tx`, inside
+  `vpay_db::Settlement::apply_succeeded`/`apply_failed` (Step 4).
 - ✅ A signing scheme matching Stripe's — `t=…,v1=…` over `"{t}.{body}"`,
   emitted under both header names, verified by the two shipping SDKs against
   bytes this server actually sent.

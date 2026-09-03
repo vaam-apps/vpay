@@ -85,10 +85,12 @@ use std::collections::{BTreeMap, HashMap};
 use anyhow::Context as _;
 use serde_json::Value;
 use sqlx::PgPool;
+use std::sync::Arc;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_api::op::keys::LoadedSigningKey;
 use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost};
+use vpay_db::Repositories;
 use vpay_sdk::{
     ConfirmPaymentIntentParams, CreatePaymentIntentParams, Credentials, IntentStatus,
     ListPaymentIntentsParams, PaymentMethodType, RequestOptions,
@@ -137,6 +139,9 @@ const AMOUNT: i64 = 5000;
 struct Harness {
     _container: ContainerAsync<PostgresImage>,
     server: tokio::task::JoinHandle<()>,
+    repositories: Arc<dyn Repositories>,
+    /// The plain `sqlx` pool, for the fixtures that read or force schema
+    /// state no repository method owns.
     pool: PgPool,
     base_url: String,
     /// Merchant A's, B's and C's private keys, PEM-encoded.
@@ -323,14 +328,14 @@ fn config_with(
 async fn harness() -> anyhow::Result<Harness> {
     ensure_crypto_provider_installed();
 
-    let (container, pool) = migrated_postgres().await?;
+    let (container, repositories, pool) = migrated_postgres().await?;
 
     let (server_pem, _server_jwks) = generate_key();
     let (pem_a, jwks_a) = generate_key();
     let (pem_b, jwks_b) = generate_key();
     let (pem_c, jwks_c) = generate_key();
 
-    let served = serve(&pool, &server_pem, |base_url| {
+    let served = serve(&repositories, &server_pem, |base_url| {
         config_with(base_url, jwks_a, jwks_b, jwks_c, true)
     })
     .await?;
@@ -338,6 +343,7 @@ async fn harness() -> anyhow::Result<Harness> {
     Ok(Harness {
         _container: container,
         server: served.server,
+        repositories,
         pool,
         base_url: served.base_url,
         pem_a,
@@ -1572,7 +1578,7 @@ async fn a_replay_survives_the_rail_being_disabled() -> anyhow::Result<()> {
     let (_pem_b, jwks_b) = generate_key();
     let (_pem_c, jwks_c) = generate_key();
     let (server_pem, _server_jwks) = generate_key();
-    let served = serve(&harness.pool, &server_pem, |base_url| {
+    let served = serve(&harness.repositories, &server_pem, |base_url| {
         config_with(base_url, jwks_a, jwks_b, jwks_c, false)
     })
     .await?;

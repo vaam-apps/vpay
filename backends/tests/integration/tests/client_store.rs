@@ -22,9 +22,11 @@ use anyhow::Context;
 use authkestra_op::client::ClientStore;
 use authkestra_op::client_assertion::ClientAssertionStore;
 use chrono::{Duration as ChronoDuration, Utc};
+use std::sync::Arc;
 use vpay_api::op::clients::YamlClientStore;
 use vpay_config::MERCHANT_AUDIENCE;
 use vpay_config::oauth::{GrantType, MerchantClient};
+
 use vpay_db::SqlClientAssertionStore;
 
 mod support;
@@ -81,8 +83,8 @@ fn configured_merchant() -> MerchantClient {
 /// container starts, so each one is wall-clock time this suite pays for).
 #[tokio::test]
 async fn find_client_reflects_the_disabled_clients_kill_switch() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    let store = YamlClientStore::new(&[configured_merchant()], pool.clone());
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let store = YamlClientStore::new(&[configured_merchant()], Arc::clone(&repositories));
 
     let found = store
         .find_client(CLIENT_ID)
@@ -100,7 +102,8 @@ async fn find_client_reflects_the_disabled_clients_kill_switch() -> anyhow::Resu
         "a client_id absent from YAML must never resolve, disabled or not"
     );
 
-    vpay_db::disable_client(&pool, CLIENT_ID, Some("key compromised, ticket INC-123"))
+    repositories
+        .disable_client(CLIENT_ID, Some("key compromised, ticket INC-123"))
         .await
         .context("disabling the client")?;
 
@@ -113,7 +116,8 @@ async fn find_client_reflects_the_disabled_clients_kill_switch() -> anyhow::Resu
         "a disabled client must stop resolving immediately, with no restart and no config change"
     );
 
-    vpay_db::enable_client(&pool, CLIENT_ID)
+    repositories
+        .enable_client(CLIENT_ID)
         .await
         .context("re-enabling the client")?;
 
@@ -135,8 +139,8 @@ async fn find_client_reflects_the_disabled_clients_kill_switch() -> anyhow::Resu
 /// report a plausible number.
 #[tokio::test]
 async fn expired_client_assertion_jtis_are_swept_and_live_ones_are_kept() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    let store = SqlClientAssertionStore::new(pool.clone());
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let store = SqlClientAssertionStore::new(repositories.op_store_pool());
 
     // Recorded through the real store rather than a hand-written INSERT, so
     // the sweep is proven against rows in exactly the shape the production
@@ -151,7 +155,8 @@ async fn expired_client_assertion_jtis_are_swept_and_live_ones_are_kept() -> any
         .map_err(|e| anyhow::anyhow!("record_jti failed: {e}"))?;
     assert!(expired_is_fresh && live_is_fresh, "both jtis are first use");
 
-    let deleted = vpay_db::delete_expired_client_assertion_jtis(&pool)
+    let deleted = repositories
+        .delete_expired_client_assertion_jtis()
         .await
         .context("sweeping expired jtis")?;
     assert_eq!(deleted, 1, "exactly the expired row is deleted");
@@ -166,7 +171,8 @@ async fn expired_client_assertion_jtis_are_swept_and_live_ones_are_kept() -> any
     // Idempotent: a second sweep with nothing expired deletes nothing. A
     // boot-time stopgap runs on every restart, so "no rows" must be an
     // ordinary outcome, not an error.
-    let deleted_again = vpay_db::delete_expired_client_assertion_jtis(&pool)
+    let deleted_again = repositories
+        .delete_expired_client_assertion_jtis()
         .await
         .context("second sweep")?;
     assert_eq!(deleted_again, 0);

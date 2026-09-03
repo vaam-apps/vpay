@@ -72,7 +72,7 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use time::{Duration, OffsetDateTime};
 use vpay_core::{Category, Classify};
-use vpay_db::{ActivationOutcome, DbError, PgPool};
+use vpay_db::{ActivationOutcome, DbError, SigningKeys};
 
 /// How long a key stays publishable in `/jwks.json` after it has been
 /// rotated out.
@@ -231,7 +231,7 @@ impl LoadedSigningKey {
     /// already — what every replica calls at boot, before serving traffic.
     ///
     /// The whole read-decide-write runs inside one locked transaction in
-    /// [`vpay_db::ensure_active_signing_key`], so N replicas booting at once
+    /// [`vpay_db::SigningKeys::ensure_active_signing_key`], so N replicas booting at once
     /// with the same Secret produce one rotation between them, not N. This
     /// method's own job is small and is the reason it lives here rather than
     /// in `vpay-db`: it supplies [`ROTATION_OVERLAP`], which is *policy*, to
@@ -243,22 +243,22 @@ impl LoadedSigningKey {
     /// Returns [`DbError::Query`] if the database cannot be read or written,
     /// and `DbError::SigningKeyRetired` for the deliberate failure when this
     /// `kid` exists but is retired (a rollback to an older key), documented
-    /// on [`vpay_db::ensure_active_signing_key`]. The two are separate
+    /// on [`vpay_db::SigningKeys::ensure_active_signing_key`]. The two are separate
     /// variants because they call for opposite responses from a supervisor:
     /// the first is "wait for Postgres" (exit 69), the second is "fix the
     /// deploy" (exit 78, `Category::Configuration`), and restarting into a
     /// rollback forever is what the single variant used to cause.
     pub async fn ensure_active_in_database(
         &self,
-        pool: &PgPool,
+        repositories: &dyn SigningKeys,
     ) -> Result<ActivationOutcome, DbError> {
-        vpay_db::ensure_active_signing_key(
-            pool,
-            &self.kid,
-            &self.public_jwk,
-            OffsetDateTime::now_utc() + ROTATION_OVERLAP,
-        )
-        .await
+        repositories
+            .ensure_active_signing_key(
+                &self.kid,
+                &self.public_jwk,
+                OffsetDateTime::now_utc() + ROTATION_OVERLAP,
+            )
+            .await
     }
 }
 

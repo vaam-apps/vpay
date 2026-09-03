@@ -65,7 +65,7 @@ in configuration, reached over HTTP exactly as a merchant's endpoint would be
 (ADR-0006) — which is the same limit the rails carry, and the reason
 [../status.md](../status.md)'s Webhooks row is 🟡.
 
-**TX 1 — the business transaction.** `vpay_db::settlement::apply_succeeded` /
+**TX 1 — the business transaction.** `vpay_db::Settlement::apply_succeeded` /
 `apply_failed` move the charge, move the intent and insert one `events` row in
 a single transaction, with `fanout_state = 'pending'`. Two types only, both
 from this document's list — `payment_intent.succeeded` and
@@ -77,7 +77,7 @@ from this document's list — `payment_intent.succeeded` and
 `sweep:expired`, `scan:live` and `scan:deliveries` by
 `vpay_worker::run_loop::seed_singletons`,
 rescheduled every 5 s, or immediately when its page came back full. It reads
-`vpay_db::events::pending_page`, and per event, in **one transaction**, inserts
+`vpay_db::Events::pending_page`, and per event, in **one transaction**, inserts
 a `webhook_deliveries` row per configured endpoint, enqueues one
 `deliver_webhook` job per row and flips `fanout_state` to `done`. Crash
 idempotency is the unique index `webhook_deliveries_event_endpoint` plus
@@ -139,6 +139,15 @@ first attempt and compared on every later one, and a mismatch is
 eighth failure is `state = 'exhausted'` with an `alert = true` log line, never
 another rung (`the_ladder_walks_delivery_delay_and_then_succeeds`,
 `a_delivery_past_the_last_rung_is_exhausted_and_not_rescheduled`).
+
+**A delivery that got no answer records why, not just that.** A transport
+failure — DNS, connect, TLS, the request deadline — is stored with
+`status_code IS NULL` (the encoding for "the request went out and nothing came
+back") and a `response_excerpt` reading `no response: <error>: <source chain>`.
+The chain was added in Step 7 for the reason `jobs.last_error` carries one
+(ADR-0011's amendment): a `reqwest` error's own `Display` names the URL an
+operator already has and keeps "connection refused" in its `source()`. The
+excerpt is bounded by migration `0022`'s `excerpt_length` CHECK either way.
 
 **Acknowledge first, then work.** The delivery client is
 `vpay_provider::http::client_with_timeouts(5s, 10s)` — 5 seconds to connect,
@@ -230,7 +239,7 @@ listing, and this is the sentence that says so before it happens.
 
 **A lost job is recovered; an exhausted delivery is not.** The `scan:deliveries`
 singleton (`JobKind::ScanDeliveries`, migration `0023`) walks
-`vpay_db::webhook_deliveries::pending_due` every **10 minutes**, up to **500
+`vpay_db::WebhookDeliveries::pending_due` every **10 minutes**, up to **500
 rows** a pass — the same interval and batch `scan:live` uses for charges — and
 re-enqueues a `deliver_webhook` job for each row it finds. Two arms, and the
 second is the one that took thought: a `pending` delivery whose
@@ -245,7 +254,7 @@ not been claimed yet. So a delivery whose job was **deleted**, or lost to a
 `pending_due_returns_the_deliveries_nothing_is_driving`).
 
 **It does not recover a delivery whose job was *dead-lettered*, and that is
-deliberate.** `vpay_db::jobs::dead_letter` parks the job at
+deliberate.** `vpay_db::Jobs::dead_letter` parks the job at
 `run_at = 'infinity'` and keeps its `dedupe_key`, so the scan's
 `ON CONFLICT (dedupe_key) DO NOTHING` insert is a no-op for exactly those
 rows: the delivery stays `pending` and no attempt is ever made. A
@@ -334,5 +343,11 @@ delivery has been observed reaching a receiver.**
   `payment_intent.canceled` — plus the two refund types, are unchanged: events
   are written for terminal transitions only (decision 4 of
   `docs/plans/2026-09-03-step4-worker.md`).
+
+Why the delivery code is shaped the way it is — the digest invariant, the two
+failure recorders, the fan-out's per-event transaction, and what the backstop
+may and may not share — is
+[../reference/vpay-worker.md](../reference/vpay-worker.md); the tables' own
+reasoning is [../reference/vpay-db.md](../reference/vpay-db.md).
 
 See [../status.md](../status.md).

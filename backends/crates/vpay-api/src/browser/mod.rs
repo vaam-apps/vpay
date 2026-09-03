@@ -67,7 +67,7 @@ use axum::routing::{get, post};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use vpay_core::ids;
-use vpay_db::{PaymentIntentRow, PgPool, payment_intents};
+use vpay_db::{PaymentIntentRow, PaymentIntents, Repositories};
 use vpay_provider::ProviderAdapter;
 
 use crate::error::ApiError;
@@ -290,7 +290,7 @@ fn secrets_match(expected: &str, presented: &str) -> bool {
 ///    nothing, and nothing further happens — in particular no database read,
 ///    so an unknown key costs a caller no query and tells them nothing about
 ///    whether the id exists.
-/// 2. **`id` → row**, by [`payment_intents::get_by_id`] and *not* by
+/// 2. **`id` → row**, by [`PaymentIntents::get_by_id`] and *not* by
 ///    `get_for_merchant`. This is the one place in the HTTP layer that
 ///    deliberately reads unscoped, because the tenant to filter by is not
 ///    yet trusted: it came from an unauthenticated caller. The comparison in
@@ -312,12 +312,12 @@ fn secrets_match(expected: &str, presented: &str) -> bool {
 /// # Errors
 ///
 /// [`ApiError::NotFound`], identically, for every one of the four — see the
-/// module docs — and whatever [`payment_intents::get_by_id`] raises for a
+/// module docs — and whatever [`PaymentIntents::get_by_id`] raises for a
 /// database that is unreachable, which is a `503` about vpay and not about
 /// the caller.
 pub async fn authenticate(
     config: &ResourceConfig,
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     id: &str,
     key: &str,
     secret: &str,
@@ -334,7 +334,7 @@ pub async fn authenticate(
         return Err(not_found(id));
     };
 
-    let Some(row) = payment_intents::get_by_id(pool, id).await? else {
+    let Some(row) = PaymentIntents::get_by_id(repositories, id).await? else {
         return Err(not_found(id));
     };
 
@@ -420,14 +420,14 @@ impl PayerCredential {
 /// response the same `PaymentIntentWithSecret` shape a merchant's page
 /// already holds (`sdks/stripe-js/src/types.ts`).
 async fn retrieve(
-    State(pool): State<PgPool>,
+    State(repositories): State<Arc<dyn Repositories>>,
     State(config): State<Arc<ResourceConfig>>,
     Path(id): Path<String>,
     VpayQuery(credential): VpayQuery<PayerCredential>,
 ) -> Result<Response, ApiError> {
     let (key, secret) = credential.parts(&id)?;
-    let (_scope, row) = authenticate(&config, &pool, &id, key, secret).await?;
-    rendered_intent(&pool, &row, SecretRendering::Include).await
+    let (_scope, row) = authenticate(&config, repositories.as_ref(), &id, key, secret).await?;
+    rendered_intent(repositories.as_ref(), &row, SecretRendering::Include).await
 }
 
 /// `POST /v1/browser/payment_intents/{id}/confirm`'s form, beyond the
@@ -472,7 +472,7 @@ struct BrowserConfirmParams {
 /// the payer to poll is a worse experience than a replayed 200, and it is
 /// not a second charge.
 async fn confirm(
-    State(pool): State<PgPool>,
+    State(repositories): State<Arc<dyn Repositories>>,
     State(config): State<Arc<ResourceConfig>>,
     State(adapters): State<Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>>,
     Path(id): Path<String>,
@@ -480,10 +480,10 @@ async fn confirm(
 ) -> Result<Response, ApiError> {
     let VpayForm(params) = VpayForm::<BrowserConfirmParams>::from_request(request, &()).await?;
     let (key, secret) = params.credential.parts(&id)?;
-    let (scope, _row) = authenticate(&config, &pool, &id, key, secret).await?;
+    let (scope, _row) = authenticate(&config, repositories.as_ref(), &id, key, secret).await?;
 
     confirm_once(
-        &pool,
+        repositories.as_ref(),
         &config,
         &adapters,
         &scope.as_merchant_scope(),

@@ -3,6 +3,7 @@
 //! Writes rows and returns. It never calls a payment rail — that is the
 //! worker's job, and it is what makes the system crash-safe.
 
+use std::collections::BTreeMap;
 use std::future::{Future, IntoFuture as _};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::ExitCode;
@@ -65,27 +66,14 @@ fn main() -> ExitCode {
 
 /// A required startup input this binary was not given.
 ///
-/// It exists so that "you forgot a flag" reaches an operator as exit `78`
-/// ("fix the deploy") rather than `1` ("this is a vpay bug"). Without a
-/// typed leaf in the chain, `.context("...is required")` on an `Option`
-/// produces a bare `anyhow` error, [`exit_code_for`] finds nothing to
-/// classify, and the honest-but-unhelpful [`Category::Internal`] fallback
-/// applies. `--config`'s equivalent already gets `78` because
-/// `vpay_config::Config::load` returns a typed `ConfigError::MissingPath`;
-/// this is the same idea for the inputs that are checked here rather than
-/// inside a library.
+/// It exists so that "you forgot a flag" reaches an operator as exit `78` ("fix
+/// the deploy") rather than `1` ("this is a vpay bug"): without a typed leaf in
+/// the chain, [`exit_code_for`] has nothing to classify and the
+/// honest-but-unhelpful [`Category::Internal`] fallback applies.
 ///
-/// **Defined in the binary, not in `vpay-config`, deliberately.** Which
-/// inputs a process requires is a property of *that process*, not of the
-/// crate that declares the flags: `vpay-worker-bin` takes no
-/// `--oauth-signing-key-file` at all (it issues no tokens, so mounting the
-/// signing key into it would widen the Secret's blast radius for no
-/// capability), so a `ConfigError` variant about a missing signing key would
-/// be a requirement one binary has, spelled in a crate both link. ADR-0011
-/// allows this: a closed `thiserror` enum with one `Classify` impl,
-/// classified once and never re-decided at a call site. It is the same
-/// reasoning [`exit_code_for`]'s own doc comment gives for why that function
-/// is a deliberate near-copy rather than a shared helper.
+/// **Defined in the binary, not in `vpay-config`, deliberately** — which inputs
+/// a process requires is a property of *that process*. See
+/// [docs/reference/vpay-config.md § optional flags that are required in practice](../../../../docs/reference/vpay-config.md#optional-flags-that-are-required-in-practice).
 #[derive(Debug, thiserror::Error)]
 enum StartupError {
     /// `--oauth-signing-key-file` / `VPAY_OAUTH_SIGNING_KEY_FILE` was not
@@ -111,45 +99,14 @@ impl vpay_core::error::Classify for StartupError {
 /// The exit code for a failed startup, per ADR-0011's Tier 3 and the table in
 /// `docs/flows/errors.md`.
 ///
-/// `vpay-worker-bin` has a near-copy of this function, deliberately. A shared
-/// helper has to name both leaf types it looks for, so it would need a home
-/// that depends on `vpay-config` **and** `vpay-db` and exists only to hold
-/// it. "Which leaf errors this binary knows how to classify" is a property of
-/// the binary rather than a library boundary — the two are free to diverge as
-/// they grow — so this is two copies of eight lines, each pinned by its own
-/// CLI tests, rather than a crate created to avoid them.
+/// The lookup order is load-bearing rather than alphabetical, `DbError` last
+/// does not mean it always means `69`, and `vpay-worker-bin`'s near-copy is
+/// deliberate rather than an oversight — all three are explained in
+/// [docs/reference/vpay-config.md § exit codes](../../../../docs/reference/vpay-config.md#exit-codes).
 ///
-/// The order is load-bearing, not alphabetical: `ConfigError` and
-/// `SigningKeyError` are looked for **before** `DbError` because a chain can
-/// plausibly contain both (a config that names an unreachable database), and
-/// in that case the operator's actual problem is the configuration — `78`
-/// ("fix the deploy") is more useful than `69` ("wait for Postgres").
-///
-/// Note that `DbError` being last does **not** mean it always means `69`:
-/// the arm asks the leaf for its own category, and
-/// `DbError::SigningKeyRetired` (a deployed Secret naming a key this
-/// database has already retired — see `vpay_db::ensure_active_signing_key`)
-/// classifies as `Category::Configuration`, so it exits `78` from this same
-/// arm. That is the point of deriving the code from `Classify` rather than
-/// from which `find_in_chain` matched: a leaf that knows it is a deploy
-/// problem says so, and no ordering change was needed to let it.
 /// `find_in_chain` is typed, so this function is also the exhaustive list of
-/// leaf errors this binary knows how to classify; anything else — a `clap`
-/// failure that got this far, a bind error, a panic-free `anyhow!` from
-/// somewhere new — falls through to [`Category::Internal`], i.e. exit `1`.
-/// That fallback is deliberately the pessimistic one: an unclassified
-/// startup failure in a payment binary should look like a bug, not like a
-/// known condition.
-///
-/// `SigningKeyError` joined the list when this binary started loading the
-/// OAuth signing key: every one of its variants classifies as
-/// `Category::Configuration`, so a missing Secret mount, a key that is not
-/// RSA, and a key below the 2048-bit floor all exit `78` — the same number
-/// as a broken YAML file, because they are the same kind of operator
-/// problem. Without an arm here it would have fallen through to `1` and
-/// looked like a vpay bug. Its position relative to `ConfigError` is
-/// arbitrary in outcome (both are `78`) and deliberate in intent: config is
-/// loaded first, so it is listed first.
+/// leaf errors this binary knows how to classify; anything else falls through to
+/// [`Category::Internal`], i.e. exit `1`.
 fn exit_code_for(error: &anyhow::Error) -> u8 {
     let category = find_in_chain::<StartupError>(error.chain())
         .map(|e| e.category())
@@ -164,30 +121,147 @@ fn exit_code_for(error: &anyhow::Error) -> u8 {
     u8::try_from(category.exit_code()).unwrap_or(1)
 }
 
+/// Everything the boot sequence produces that [`run`] still needs once it is
+/// over: the validated deployment, the rails this binary can reach, the pool
+/// behind them, and the OP that will sign every `/v1` token.
+///
+/// A struct rather than a five-tuple because two of the fields are only
+/// distinguishable by type (`Arc<dyn Repositories>` and `Arc<MerchantOp>` both
+/// read as "some shared thing") and one of them, `adapters`, is the value the
+/// router and the reconcile both consume.
+struct Booted {
+    config: vpay_config::Config,
+    adapters: BTreeMap<String, Box<dyn vpay_provider::ProviderAdapter>>,
+    repositories: Arc<dyn vpay_db::Repositories>,
+    merchant_op: Arc<MerchantOp>,
+}
+
+/// The whole startup, as the ordered list of steps it is.
+///
+/// Every step is a named function and the order between them is the contract —
+/// see
+/// [docs/reference/vpay-config.md § the boot sequence](../../../../docs/reference/vpay-config.md#the-boot-sequence)
+/// for why each one is where it is, and what a probe against a half-started
+/// process gets.
 #[tokio::main]
 async fn run() -> anyhow::Result<()> {
     let args = ServerArgs::parse();
 
     // Installed before anything else — including tracing init — so the
-    // SIGTERM/SIGINT handlers are live for this process's entire lifetime,
-    // not just once axum::serve's graceful-shutdown future is first polled.
-    // See vpay_config::signal for the race this closes. A failure here is a
-    // hard startup failure (see ShutdownSignals::install's docs for why),
-    // deliberately not a logged warning that lets the process continue with
-    // no graceful shutdown path at all.
+    // SIGTERM/SIGINT handlers are live for this process's entire lifetime, not
+    // just once axum::serve's graceful-shutdown future is first polled. See
+    // vpay_config::signal for the race this closes. A failure here is a hard
+    // startup failure, deliberately not a logged warning that lets the process
+    // continue with no graceful shutdown path at all.
     let mut shutdown_signals =
         ShutdownSignals::install().context("installing SIGINT/SIGTERM handlers")?;
 
+    let metrics = install_process_defaults(&args)?;
+    let booted = boot(&args).await?;
+
+    // Bound *before* the validator is built, because the validator needs the
+    // port this listener actually got — `--bind 127.0.0.1:0` is a real
+    // configuration (every test in tests/cli.rs uses an ephemeral port) and
+    // `args.bind` would still say `:0`.
+    let listener = tokio::net::TcpListener::bind(args.bind)
+        .await
+        .with_context(|| format!("binding {}", args.bind))?;
+    let bound = listener
+        .local_addr()
+        .context("reading the bound address back off the listener")?;
+    let merchant_validator = loopback_validator(bound, &booted.merchant_op)?;
+
+    tracing::warn!(
+        "vpay-server implements /healthz, /v1/oauth (token, discovery, jwks), the /v1 \
+         authentication boundary and /v1/payment_intents (create, retrieve, list, confirm, \
+         cancel). No rail adapter implements `submit`, so a confirm reaches the rail and \
+         answers 501 not_implemented; every other /v1 resource answers the honest 404. See \
+         docs/status.md"
+    );
+    tracing::info!(addr = %bound, "listening");
+
+    let deps = RouterDeps {
+        repositories: booted.repositories,
+        merchant_op: booted.merchant_op,
+        merchant_validator,
+        adapters: Arc::new(booted.adapters),
+        // The projection, not the whole `Config` — see `ResourceConfig`, and
+        // note this is the only way `deployment.livemode` reaches a handler.
+        resource_config: Arc::new(
+            ResourceConfig::from_config(&booted.config)
+                .context("projecting the validated configuration onto the /v1 request path")?,
+        ),
+    };
+
+    let (observability, observability_shutdown_tx) = start_observability(&args, metrics).await?;
+
+    let shutdown_grace = Duration::from_secs(args.common.shutdown_grace_seconds);
+    let shutdown = async move {
+        shutdown_signals.wait().await;
+        // A closed receiver just means the observability listener already
+        // stopped — nothing to tell.
+        let _ = observability_shutdown_tx.send(());
+    };
+    match serve_with_bounded_drain(listener, deps, shutdown_grace, shutdown).await? {
+        DrainOutcome::Clean => {
+            join_observability(observability, shutdown_grace).await;
+            tracing::info!("graceful shutdown complete, exiting");
+            Ok(())
+        }
+        DrainOutcome::TimedOut => {
+            tracing::warn!(
+                shutdown_grace_seconds = args.common.shutdown_grace_seconds,
+                "shutdown grace period elapsed before in-flight requests finished draining; \
+                 stopped waiting for them and exiting anyway"
+            );
+            // Exit non-zero rather than the clean path's implicit 0: unlike a
+            // clean drain, this exit means real in-flight work was cut off. See
+            // docs/reference/vpay-config.md § shutdown and drain.
+            std::process::exit(1);
+        }
+    }
+}
+
+/// The three process-wide defaults, in the one order that is safe.
+///
+/// All three are global state that anything after them may depend on, so
+/// nothing can be allowed to run ahead of them: a `reqwest::Client` built
+/// before the crypto provider panics, and a metric recorded before the
+/// recorder is installed goes nowhere and is never recovered. Tracing is last
+/// of the three so the two that can fail do so before a subscriber exists to
+/// swallow the message — `main`'s `eprintln!` is what reports them.
+///
+/// # Errors
+///
+/// Only [`install_recorder`]'s, which cannot happen in this binary.
+fn install_process_defaults(args: &ServerArgs) -> anyhow::Result<PrometheusHandle> {
     install_crypto_provider();
-
-    // Beside `install_crypto_provider`, and before `init_tracing`, for the
-    // same reason: it is a process-wide default that everything after it
-    // may depend on, so nothing can be allowed to run ahead of it. A metric
-    // recorded before this call goes nowhere and is never recovered.
     let metrics = install_recorder().context("installing the Prometheus metrics recorder")?;
-
     init_tracing(&args.common.log_filter, args.common.log_format);
+    Ok(metrics)
+}
 
+/// Boot steps 1-4 plus this binary's own signing key, in the order
+/// `docs/flows/configuration.md` fixes: rails, YAML, the join between them, the
+/// key, the database, the reconcile, the key's activation.
+///
+/// Everything here that both binaries share is [`vpay_api::boot`], one
+/// implementation, because both write the same two tables in the same database
+/// and a divergence there would be silent. What is left in this function is
+/// what only *this* binary does: it serves `/v1/oauth/token`, so it loads and
+/// activates an RS256 signing key.
+///
+/// Nothing here binds a socket. That is the entire definition of `/livez`: a
+/// probe against a process that is still inside this function, or one about to
+/// exit `78`, gets a connection refusal rather than a cheerful 200.
+///
+/// # Errors
+///
+/// A missing flag, an invalid YAML file, a rail with no linked adapter, an
+/// unmounted or unusable signing key, an unreachable database, a migration that
+/// will not apply, or a reconcile that cannot take its lock. Each carries a
+/// typed leaf so [`exit_code_for`] can tell `78` from `69`.
+async fn boot(args: &ServerArgs) -> anyhow::Result<Booted> {
     // The codes, before anything is constructed: this log line is the first
     // thing an operator reads on a boot that later fails, and
     // `vpay_server::adapter_codes` is a `const` list precisely so printing it
@@ -213,79 +287,84 @@ async fn run() -> anyhow::Result<()> {
     // Built once and used twice: the boot-step-4 join below, and
     // `RouterDeps::adapters`, which is how a `/v1/payment_intents/{id}/confirm`
     // reaches a rail at all.
-    let adapters = vpay_api::v1::boot::adapters_by_code(vpay_server::adapters(http));
-    // `profile` names a YAML config file, never a code path — see
-    // vpay_config::cli and docs/adr/0003-yaml-configuration.md.
-    tracing::info!(profile = %args.common.profile, "deployment profile (selects a config file only)");
+    let adapters = vpay_api::boot::adapters_by_code(vpay_server::adapters(http));
 
-    // Load and validate the YAML deployment configuration (ADR-0003) before
-    // touching the database at all. Boot-sequence steps 1-3 in
-    // docs/flows/configuration.md — load, resolve `${ENV}`, validate — are
-    // deliberately ordered ahead of step 4 (DB reconciliation, not yet
-    // implemented) and step 5 (bind the port) in that doc, and this mirrors
-    // it: validating a local YAML file needs no network round trip, so a
-    // broken config fails in milliseconds instead of after paying for a
-    // Postgres connection attempt and a migration run this process is about
-    // to throw away anyway. `--config` / `VPAY_CONFIG` stays `Option<PathBuf>`
-    // at the clap level (`vpay_config::CommonArgs::config`) for the same
-    // reason `--database-url` does — see that field's doc comment — but is
-    // required here: a payment gateway that boots with no validated
-    // deployment configuration is exactly the half-configured process
-    // ADR-0003 says must never serve traffic, `/healthz` included.
-    let config = vpay_config::Config::load(args.common.config.as_deref(), &args.common.profile)
-        .context("loading and validating configuration (--config / VPAY_CONFIG, ADR-0003)")?;
-    // Redaction-safe by construction: discrete, non-secret fields only,
-    // never the `Config` struct itself (its `Debug` is safe too, per its
-    // own doc comment, but logging it wholesale would make that safety a
-    // load-bearing assumption of this log line instead of a defence in
-    // depth behind it).
-    tracing::info!(
-        deployment = %config.deployment.name,
-        livemode = config.deployment.livemode,
-        providers = config.providers.len(),
-        merchant_clients = config.merchant_clients.len(),
-        dashboard_client_configured = config.dashboard_client.is_some(),
-        "configuration loaded and validated"
-    );
+    let config =
+        vpay_api::boot::load_config(args.common.config.as_deref(), &args.common.profile)
+            .context("loading and validating configuration (--config / VPAY_CONFIG, ADR-0003)")?;
 
-    // Boot step 4's *inputs*, resolved here rather than beside the
-    // `reconcile` call below: joining the YAML's rails against this binary's
-    // adapters is pure CPU, so a `providers[]` entry naming a rail nothing
-    // implements fails in milliseconds and — as
-    // `a_provider_code_with_no_linked_adapter_is_exit_78` in `tests/cli.rs`
-    // relies on — without a database. The write itself still happens at step
-    // 4's documented position, after the migrations.
-    let (currency_seeds, provider_seeds) = vpay_api::v1::boot::boot_seeds(&config, &adapters)?;
+    // Boot step 4's *inputs*, resolved before the database is touched: joining
+    // the YAML's rails against this binary's adapters is pure CPU, so a
+    // `providers[]` entry naming a rail nothing implements fails in
+    // milliseconds and — as `a_provider_code_with_no_linked_adapter_is_exit_78`
+    // in `tests/cli.rs` relies on — without a database.
+    let (currency_seeds, provider_seeds) = vpay_api::boot::boot_seeds(&config, &adapters)?;
 
-    // The RS256 signing key, loaded *before* the database and before the
-    // listener — the same "cheapest hard failure first" ordering the config
-    // load above follows, and for a sharper reason: reading a file needs no
-    // network round trip, so a Secret that was not mounted fails in
-    // milliseconds instead of after a Postgres connection and a migration
-    // run this process is about to throw away. It also means the negative
-    // path is testable without Docker (`tests/cli.rs`).
-    //
-    // `--oauth-signing-key-file` / `VPAY_OAUTH_SIGNING_KEY_FILE` stays
-    // `Option<PathBuf>` at the clap level for the same reason `--config`
-    // does (see `vpay_config::cli::ServerArgs`), and is required here: this
-    // binary serves `/v1/oauth/token`, and a server that cannot sign cannot
-    // mint a single merchant token — it would bind a port, answer
-    // `/healthz` with a cheerful 200, and refuse every real request. That is
-    // precisely the half-configured process ADR-0003 says must never serve
-    // traffic.
+    let signing_key = load_signing_key(args, &config)?;
+
+    // `--database-url` / `DATABASE_URL` stays `Option<String>` at the clap
+    // level and is required here — see docs/reference/vpay-config.md
+    // § optional flags that are required in practice.
+    let database_url = args.common.database_url.as_deref().context(
+        "--database-url / DATABASE_URL is required: vpay-server cannot serve traffic without \
+         a database to open a pool against and migrate (see docs/status.md)",
+    )?;
+    let repositories = vpay_api::boot::open_migrated_database(database_url).await?;
+
+    vpay_api::boot::reconcile_reference_tables(
+        repositories.as_ref(),
+        &currency_seeds,
+        &provider_seeds,
+    )
+    .await
+    .context("reconciling currencies and providers from configuration (boot step 4)")?;
+
+    announce_signing_key(&signing_key, repositories.as_ref()).await?;
+
+    let merchant_op = Arc::new(MerchantOp::new(
+        &config,
+        signing_key,
+        Arc::clone(&repositories),
+    ));
+
+    Ok(Booted {
+        config,
+        adapters,
+        repositories,
+        merchant_op,
+    })
+}
+
+/// The RS256 key every `/v1` access token is signed with, read from the Secret
+/// mount named by `--oauth-signing-key-file`.
+///
+/// Loaded *before* the database and before the listener — reading a file needs
+/// no network round trip, so a Secret that was not mounted fails in
+/// milliseconds instead of after a Postgres connection and a migration run this
+/// process is about to throw away. It also means the negative path is testable
+/// without Docker (`tests/cli.rs`).
+///
+/// The `issuer` is asked for rather than formatted here: `vpay_api::op::issuer_for`
+/// is the one derivation in the workspace and `MerchantOp::new` calls the same
+/// function, so the `iss` this key stamps and the `iss` the OP advertises cannot
+/// drift.
+///
+/// # Errors
+///
+/// [`StartupError::MissingSigningKeyFile`] when the flag is absent — this
+/// binary serves `/v1/oauth/token`, and a server that cannot sign would bind a
+/// port, answer `/healthz` with a cheerful 200 and refuse every real request.
+/// [`SigningKeyError`] for a file that is not there, is not RSA, or is below
+/// the 2048-bit floor. All of them are `78`.
+fn load_signing_key(
+    args: &ServerArgs,
+    config: &vpay_config::Config,
+) -> anyhow::Result<LoadedSigningKey> {
     let signing_key_file = args
         .oauth_signing_key_file
         .as_deref()
         .ok_or(StartupError::MissingSigningKeyFile)?;
-
-    // The issuer string every token carries and every validator pins. Asked
-    // for rather than formatted here: `vpay_api::op::issuer_for` is the one
-    // derivation in the workspace, and `MerchantOp::new` calls the same
-    // function, so the `iss` this key stamps and the `iss` the OP advertises
-    // cannot drift. See that function for what a mismatch would look like
-    // (a bare 401 on every /v1 call, with no diagnostic anywhere).
-    let issuer = vpay_api::op::issuer_for(&config);
-
+    let issuer = vpay_api::op::issuer_for(config);
     let signing_key =
         LoadedSigningKey::from_file(signing_key_file, &issuer).with_context(|| {
             format!(
@@ -294,65 +373,33 @@ async fn run() -> anyhow::Result<()> {
                 signing_key_file.display()
             )
         })?;
-    // The `kid` is public (it is in every token header and in
-    // `/jwks.json`); the key itself never reaches a log line, a database
-    // column or an error message — see `vpay_api::op::keys`.
-    tracing::info!(
-        kid = signing_key.kid(),
-        %issuer,
-        "OAuth signing key loaded"
-    );
+    // The `kid` is public (it is in every token header and in `/jwks.json`);
+    // the key itself never reaches a log line, a database column or an error
+    // message — see `vpay_api::op::keys`.
+    tracing::info!(kid = signing_key.kid(), %issuer, "OAuth signing key loaded");
+    Ok(signing_key)
+}
 
-    // `--database-url` / `DATABASE_URL` stays `Option<String>` at the clap
-    // level (`vpay_config::CommonArgs`) for the same reason `--config` does
-    // above, but is treated as required *here*: a payment server that binds
-    // a listener and answers `/healthz` with no database behind it would be
-    // lying about its own readiness (`/healthz` now runs a real `SELECT 1`
-    // — see `vpay_api::router`), and this repo's own rule is never to look
-    // more finished than it is. A missing value is a hard, loud startup
-    // failure, not a silently DB-less scaffold mode.
-    let database_url = args.common.database_url.as_deref().context(
-        "--database-url / DATABASE_URL is required: vpay-server cannot serve traffic without \
-         a database to open a pool against and migrate (see docs/status.md)",
-    )?;
-
-    // Connect and migrate *before* binding the listener: a server that binds
-    // its port before proving the database is reachable and up to date would
-    // start accepting connections it cannot actually serve correctly.
-    let pool = vpay_db::connect(database_url)
-        .await
-        .context("connecting to Postgres")?;
-    vpay_db::run_migrations(&pool)
-        .await
-        .context("running database migrations")?;
-    tracing::info!("database connected and migrations applied");
-
-    // Boot step 4 (`docs/flows/configuration.md`): make `currencies` and
-    // `providers` match this deployment's configuration, in one transaction.
-    // After the migrations because the tables have to exist, and before the
-    // signing key is announced because everything past this point assumes a
-    // database that agrees with the config file this process just validated.
-    // Fatal on failure: a `providers` table that still enables a rail an
-    // operator removed is a deployment that would keep taking charges on it.
-    vpay_db::config_reconcile::reconcile(&pool, &currency_seeds, &provider_seeds)
-        .await
-        .context("reconciling currencies and providers from configuration (boot step 4)")?;
-    tracing::info!(
-        currencies = currency_seeds.len(),
-        providers = provider_seeds.len(),
-        enabled_providers = provider_seeds.iter().filter(|seed| seed.enabled).count(),
-        "reference tables reconciled from configuration"
-    );
-
-    // Announce this key as the active one, so `/jwks.json` publishes it and
-    // every replica agrees on which `kid` is current. Fatal on failure: a
-    // process whose key is not in `oauth_signing_keys` mints tokens that no
-    // verifier — including its own `/v1` — can check, so serving traffic
-    // would be worse than not starting. Runs inside one locked transaction
-    // in `vpay_db`, so N replicas booting at once produce one rotation
-    // between them.
+/// Records this key as the active one, so `/jwks.json` publishes it and every
+/// replica agrees on which `kid` is current.
+///
+/// Fatal on failure: a process whose key is not in `oauth_signing_keys` mints
+/// tokens that no verifier — including its own `/v1` — can check, so serving
+/// traffic would be worse than not starting. Runs inside one locked transaction
+/// in `vpay_db`, so N replicas booting at once produce one rotation between
+/// them.
+///
+/// # Errors
+///
+/// [`vpay_db::DbError`], including `SigningKeyRetired` for a rollback to a key
+/// this database has already retired — which classifies as a deploy to fix
+/// (`78`), not a database to wait for (`69`).
+async fn announce_signing_key(
+    signing_key: &LoadedSigningKey,
+    repositories: &dyn vpay_db::Repositories,
+) -> anyhow::Result<()> {
     let activation = signing_key
-        .ensure_active_in_database(&pool)
+        .ensure_active_in_database(repositories)
         .await
         .context("recording the OAuth signing key as active in oauth_signing_keys")?;
     match &activation {
@@ -371,46 +418,29 @@ async fn run() -> anyhow::Result<()> {
             );
         }
     }
+    Ok(())
+}
 
-    // The two boot-time sweeps that used to stand here — expired
-    // `client_assertion_jtis` and expired `idempotency_keys` — belong to the
-    // worker's `sweep_expired` job now (`kind = 'sweep_expired'`, one of the
-    // four labels migration 0021's `kind_is_known` CHECK allows), which also
-    // reaps stale job leases and runs hourly rather than once per process
-    // start. `vpay_db::delete_expired_client_assertion_jtis` and
-    // `vpay_db::idempotency::sweep_expired` are unchanged; only their caller
-    // moved.
-    //
-    // Removed rather than left here as well: two owners of one schedule is
-    // how a repository ends up unable to say which process is responsible
-    // for a table's growth, and both sweeps were only ever about growth.
-    // Neither is load-bearing for correctness — an expired idempotency key
-    // is reclaimed by `idempotency::claim` on its next use, and an expired
-    // `jti` is refused by `verify_client_assertion` before the store is
-    // consulted at all — so a window in which nothing sweeps costs rows, not
-    // guarantees. `docs/status.md` is the record of when the job itself
-    // landed.
-
-    let merchant_op = Arc::new(MerchantOp::new(&config, signing_key, pool.clone()));
-
-    // Bind *before* building the validator, because the validator needs the
-    // port this listener actually got — `--bind 127.0.0.1:0` is a real
-    // configuration (every test in tests/cli.rs uses an ephemeral port) and
-    // `args.bind` would still say `:0`.
-    let listener = tokio::net::TcpListener::bind(args.bind)
-        .await
-        .with_context(|| format!("binding {}", args.bind))?;
-    let bound = listener
-        .local_addr()
-        .context("reading the bound address back off the listener")?;
-
+/// The `/v1` token validator, pointed at this process's own JWKS over loopback.
+///
+/// Why loopback rather than the public URL the discovery document advertises is
+/// [`loopback_jwks_url`]'s doc comment.
+///
+/// # Errors
+///
+/// Whatever building the JWKS client fails with — in practice only a TLS or
+/// client-construction failure, since no request is made here.
+fn loopback_validator(
+    bound: SocketAddr,
+    merchant_op: &MerchantOp,
+) -> anyhow::Result<MerchantJwtValidator> {
     let jwks_url = loopback_jwks_url(bound);
     tracing::info!(
         %jwks_url,
         public_jwks_url = %merchant_op.jwks_url(),
         "validating /v1 tokens against this process's own JWKS over loopback"
     );
-    let merchant_validator = MerchantJwtValidator(
+    Ok(MerchantJwtValidator(
         JwtValidator::new(
             jwks_url,
             JWKS_REFRESH_INTERVAL,
@@ -418,43 +448,38 @@ async fn run() -> anyhow::Result<()> {
             Surface::Merchant,
         )
         .context("building the JWKS client the /v1 token validator fetches with")?,
-    );
+    ))
+}
 
-    tracing::warn!(
-        "vpay-server implements /healthz, /v1/oauth (token, discovery, jwks), the /v1 \
-         authentication boundary and /v1/payment_intents (create, retrieve, list, confirm, \
-         cancel). No rail adapter implements `submit`, so a confirm reaches the rail and \
-         answers 501 not_implemented; every other /v1 resource answers the honest 404. See \
-         docs/status.md"
-    );
-    tracing::info!(addr = %bound, "listening");
-
-    let deps = RouterDeps {
-        pool,
-        merchant_op,
-        merchant_validator,
-        adapters: Arc::new(adapters),
-        // The projection, not the whole `Config` — see `ResourceConfig`, and
-        // note this is the only way `deployment.livemode` reaches a handler.
-        resource_config: Arc::new(
-            ResourceConfig::from_config(&config)
-                .context("projecting the validated configuration onto the /v1 request path")?,
-        ),
-    };
-
-    // The observability listener, bound *last* — after the config, the
-    // signing key, the database, the migrations, boot step 4 and the
-    // validator. That ordering is the entire definition of `/livez`: this
-    // process answers `ok` only once every one of those has succeeded, so a
-    // probe against a server that is still starting, or one that is about to
-    // exit 78 or 69, gets a connection refusal rather than a cheerful 200.
-    // Nothing in `vpay_api::observability`'s handler checks anything; the
-    // bind is the check.
-    //
-    // Never `args.bind`: `/metrics` names every rail, route and error code
-    // this deployment has, and `args.bind` is the port an Ingress fronts.
-    // See `vpay_config::CommonArgs::observability_bind`.
-    let observability_listener = tokio::net::TcpListener::bind(args.common.observability_bind)
+/// Binds `--observability-bind` and starts serving `/livez` and `/metrics` on
+/// it, returning the task and the switch that stops it.
+///
+/// Bound **last**, after the config, the signing key, the database, the
+/// migrations, boot step 4 and the validator: that ordering is the entire
+/// definition of `/livez`, and nothing in the handler checks anything — the
+/// bind *is* the check.
+///
+/// Never `args.bind`: `/metrics` names every rail, route and error code this
+/// deployment has, and `args.bind` is the port an Ingress fronts. See
+/// `vpay_config::CommonArgs::observability_bind`.
+///
+/// The returned sender is observed by the served future, so this listener stops
+/// accepting at the same moment the traffic drain starts. A detached task with
+/// no shutdown of its own would keep the port open past the drain and answer
+/// `/livez` with `ok` while the process was on its way out.
+///
+/// # Errors
+///
+/// A bind failure on `--observability-bind`, or a listener whose bound address
+/// cannot be read back.
+async fn start_observability(
+    args: &ServerArgs,
+    metrics: PrometheusHandle,
+) -> anyhow::Result<(
+    tokio::task::JoinHandle<std::io::Result<()>>,
+    tokio::sync::oneshot::Sender<()>,
+)> {
+    let listener = tokio::net::TcpListener::bind(args.common.observability_bind)
         .await
         .with_context(|| {
             format!(
@@ -463,72 +488,26 @@ async fn run() -> anyhow::Result<()> {
                 args.common.observability_bind
             )
         })?;
-    let observability_bound = observability_listener
+    let bound = listener
         .local_addr()
         .context("reading the bound address back off the observability listener")?;
-    // Logged because `--observability-bind 127.0.0.1:0` is a real
-    // configuration — the subprocess tests in `tests/cli.rs` use it — and
-    // with a `:0` port nothing else in the system can know the answer.
-    tracing::info!(
-        addr = %observability_bound,
-        "observability listener listening (/livez, /metrics)"
-    );
+    // Logged because `--observability-bind 127.0.0.1:0` is a real configuration
+    // — the subprocess tests in `tests/cli.rs` use it — and with a `:0` port
+    // nothing else in the system can know the answer.
+    tracing::info!(addr = %bound, "observability listener listening (/livez, /metrics)");
 
-    // Observed twice: `serve_with_bounded_drain` starts the traffic drain on
-    // it, and this listener stops accepting on it. A detached task with no
-    // shutdown of its own would keep the port open past the drain and answer
-    // `/livez` with `ok` while the process was on its way out.
-    let (observability_shutdown_tx, observability_shutdown_rx) =
-        tokio::sync::oneshot::channel::<()>();
-    let observability = tokio::spawn(vpay_api::observability::serve(
-        observability_listener,
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let task = tokio::spawn(vpay_api::observability::serve(
+        listener,
         move || metrics.render(),
         async move {
             // A dropped sender means the traffic future ended some other way
-            // and the process is exiting regardless; either way this
-            // listener should stop.
-            let _ = observability_shutdown_rx.await;
+            // and the process is exiting regardless; either way this listener
+            // should stop.
+            let _ = shutdown_rx.await;
         },
     ));
-
-    let shutdown_grace = Duration::from_secs(args.common.shutdown_grace_seconds);
-    let shutdown = async move {
-        shutdown_signals.wait().await;
-        // A closed receiver just means the observability listener already
-        // stopped — nothing to tell.
-        let _ = observability_shutdown_tx.send(());
-    };
-    match serve_with_bounded_drain(listener, deps, shutdown_grace, shutdown).await? {
-        DrainOutcome::Clean => {
-            join_observability(observability, shutdown_grace).await;
-            tracing::info!("graceful shutdown complete, exiting");
-            Ok(())
-        }
-        DrainOutcome::TimedOut => {
-            tracing::warn!(
-                shutdown_grace_seconds = args.common.shutdown_grace_seconds,
-                "shutdown grace period elapsed before in-flight requests finished draining; \
-                 stopped waiting for them and exiting anyway"
-            );
-            // Exit non-zero rather than the clean path's implicit 0.
-            //
-            // Reasoning: a container orchestrator (docker compose, k8s)
-            // already treats the container as "stopped" the moment this
-            // process exits at all, whatever the code — it does not retry
-            // or block shutdown on a non-zero exit here, so this changes
-            // nothing about the orchestration outcome. But unlike the clean
-            // path, this exit means real in-flight work was cut off rather
-            // than finished, which is not "successful" from this process's
-            // own point of view. A non-zero exit lets anything that *does*
-            // watch this process's exit code — a supervisor, `docker inspect
-            // --format '{{.State.ExitCode}}'`, a monitoring rule on
-            // container restarts/exit codes — tell a forced cutoff apart
-            // from a clean drain without having to parse logs. `1` rather
-            // than a SIGKILL-style `128+n` encoding, since nothing signalled
-            // this process; it chose to stop waiting on its own.
-            std::process::exit(1);
-        }
-    }
+    Ok((task, shutdown_tx))
 }
 
 /// How often the `/v1` validator re-fetches the JWKS.
@@ -548,39 +527,11 @@ const JWKS_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 /// The URL this process's own `/v1` validator fetches the JWKS from: always
 /// loopback, on the port actually bound.
 ///
-/// **Deliberately not `public_base_url`.** The public URL is what a
-/// *merchant* uses and what the discovery document advertises
-/// (`MerchantOp::jwks_url`), but a pod is not guaranteed to be able to reach
-/// its own public hostname: split-horizon DNS may not resolve it inside the
-/// cluster, an ingress may terminate somewhere this process cannot route
-/// back through, an egress `NetworkPolicy` may forbid the hairpin, and a
-/// deployment behind a not-yet-warm DNS record would fail its first
-/// validation. All of those turn "verify a token" into a network dependency
-/// on infrastructure that exists to serve *inbound* traffic. Loopback has
-/// none of those failure modes and reaches the same handler, backed by the
-/// same database rows, that a merchant's fetch would.
-///
-/// The port comes from `TcpListener::local_addr`, not from `--bind`,
-/// because `:0` is a real configuration.
-///
-/// An unspecified bind address (`0.0.0.0`, `[::]`) is mapped to the
-/// corresponding loopback address rather than used as-is: `0.0.0.0` means
-/// "listen on every interface" and is not a *destination* — connecting to it
-/// is platform-dependent (Linux happens to route it to loopback; it is not
-/// something to rely on in a payment binary). The address family is
-/// preserved, so an IPv6-only deployment dials `[::1]` and not `127.0.0.1`.
-/// A specific bind address is used verbatim: an operator who bound one
-/// interface on purpose gets a URL on that interface.
-///
-/// This whole round trip is an HTTP call to ourselves and could later be
-/// replaced by an in-process key source, which would remove a socket from
-/// the path entirely. It is not done here because the alternative —
-/// publishing the one key *this* process holds — is exactly the mistake
-/// `vpay_api::op::jwks`'s module docs reject: during a rotation the JWKS
-/// must carry every key still inside its overlap window, which is a property
-/// of the database and not of this process's memory. An in-process source
-/// would have to read the same rows and cache them, which is a real design
-/// with its own invalidation question, not a simplification.
+/// **Deliberately not `public_base_url`**, and deliberately not `--bind` either
+/// — an unspecified bind address is mapped to the matching loopback address of
+/// the same family rather than used as a destination. Why, and what the
+/// in-process alternative would cost:
+/// [docs/reference/vpay-config.md § why the /v1 validator fetches its JWKS over loopback](../../../../docs/reference/vpay-config.md#why-the-v1-validator-fetches-its-jwks-over-loopback).
 fn loopback_jwks_url(bound: SocketAddr) -> String {
     let host = match bound.ip() {
         IpAddr::V4(v4) if v4.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -596,21 +547,19 @@ fn loopback_jwks_url(bound: SocketAddr) -> String {
 /// Serves `listener` until the shutdown signal fires, then waits at most
 /// `shutdown_grace` for in-flight connections to drain.
 ///
-/// `axum::serve(..).with_graceful_shutdown(..)` waits indefinitely for
-/// in-flight connections once its signal future resolves — there is no
-/// built-in bound on that wait. To add one, the shutdown signal is observed
-/// twice via a oneshot: axum's graceful-shutdown future uses it to start
-/// draining, and a second consumer starts a `shutdown_grace`-long clock at
-/// that same moment. Whichever finishes first — the drain, or the clock —
-/// decides the [`DrainOutcome`].
+/// axum has no built-in bound on that wait; the bound here comes from observing
+/// the signal twice through a oneshot — see
+/// [docs/reference/vpay-config.md § shutdown and drain](../../../../docs/reference/vpay-config.md#shutdown-and-drain).
 ///
-/// `shutdown` is a future rather than the `ShutdownSignals` itself because
-/// the signal now has a *third* observer: `run` wraps it so that the
-/// observability listener stops accepting at the same moment this drain
-/// starts. Taking a future here keeps that composition in `run`, where the
-/// listener it belongs to is constructed, and matches
-/// `vpay_worker::run_loop`'s signature so the two binaries' shutdown paths
-/// read the same way.
+/// `shutdown` is a future rather than the [`ShutdownSignals`] itself because the
+/// signal has a *third* observer, the observability listener. Taking a future
+/// keeps that composition in [`run`], where the listener it belongs to is
+/// constructed, and matches `vpay_worker::run_loop`'s signature so the two
+/// binaries' shutdown paths read the same way.
+///
+/// # Errors
+///
+/// Whatever `axum::serve` ends with, if it ends with one.
 async fn serve_with_bounded_drain(
     listener: tokio::net::TcpListener,
     deps: RouterDeps,
@@ -644,15 +593,9 @@ async fn serve_with_bounded_drain(
 /// Waits for the observability listener to stop, bounded by the same grace
 /// period the traffic drain uses.
 ///
-/// Called only on the clean path. The timed-out path calls
-/// `std::process::exit(1)` and takes this task with it, which is the correct
-/// answer there: a process that has already given up on in-flight payments
-/// should not then wait on a metrics socket.
-///
-/// A failure here is logged and *not* propagated. The observability port is
-/// not a payment path, and turning "the scrape socket had an accept error on
-/// the way out" into a non-zero exit would make an operator's
-/// forced-cutoff signal (see [`DrainOutcome::TimedOut`]) ambiguous.
+/// Called only on the clean path, and failures here are logged rather than
+/// propagated — see
+/// [docs/reference/vpay-config.md § shutdown and drain](../../../../docs/reference/vpay-config.md#shutdown-and-drain).
 async fn join_observability(
     observability: tokio::task::JoinHandle<std::io::Result<()>>,
     grace: Duration,
@@ -670,45 +613,21 @@ async fn join_observability(
     }
 }
 
-/// Installs this process's Prometheus recorder, describes every metric name
-/// and stamps `vpay_build_info`.
+/// Installs this process's Prometheus recorder, describes every metric name and
+/// stamps `vpay_build_info`.
 ///
 /// The twin of [`install_crypto_provider`] and placed beside it for the same
 /// reason: it is a process-wide default, and anything recorded before it is
-/// silently lost. `vpay-worker-bin` has a near-copy — the same argument that
-/// keeps `exit_code_for` and `init_tracing` duplicated applies here, and
-/// with an extra edge: the exporter's configuration (which quantiles, which
-/// buckets, which idle timeout) is a property of what a process measures,
-/// and the two measure different things.
-///
-/// **Why a library does not do this.** `vpay_core::metrics` owns the names
-/// and nothing else; installing a global recorder from a library takes the
-/// decision out of the application's hands and makes two linked libraries a
-/// startup failure. See that module's header.
-///
-/// # `vpay_build_info`'s `git_sha`, and when it is `unknown`
-///
-/// [`vpay_core::metrics::record_build_info`] stamps the gauge from
-/// `vpay_core::metrics::git_sha`, which is `option_env!("VPAY_GIT_SHA")`
-/// resolved when *`vpay-core`* was compiled (that crate's `build.rs` puts
-/// the variable in cargo's fingerprint, so changing it rebuilds rather than
-/// silently reusing the previous label). `backends/Dockerfile` declares
-/// `ARG VPAY_GIT_SHA` and exports it into the builder stage, and
-/// `.github/workflows/release.yml` passes `${{ github.sha }}`.
-///
-/// Every build that nobody passed one to — every local `cargo build`, every
-/// `just demo`, every `docker build` without `--build-arg` — reads
-/// `unknown`, and that is the honest value rather than a placeholder:
-/// deriving one from `git rev-parse` at runtime would report the sha of
-/// whatever tree the *process* is standing in, which for a `FROM scratch`
-/// image is nothing at all.
+/// silently lost. Why a library does not do this, why `vpay-worker-bin` keeps a
+/// near-copy, and when `git_sha` reads `unknown`:
+/// [docs/reference/vpay-config.md § vpay_build_info's git_sha](../../../../docs/reference/vpay-config.md#vpay_build_infos-git_sha-and-when-it-is-unknown).
 ///
 /// # Errors
 ///
-/// Only if a recorder was already installed, which cannot happen in this
-/// binary — nothing else calls `metrics::set_global_recorder`. It is
-/// reported rather than ignored because the alternative is a process whose
-/// `/metrics` renders empty forever while looking healthy.
+/// Only if a recorder was already installed, which cannot happen in this binary
+/// — nothing else calls `metrics::set_global_recorder`. It is reported rather
+/// than ignored because the alternative is a process whose `/metrics` renders
+/// empty forever while looking healthy.
 fn install_recorder() -> anyhow::Result<PrometheusHandle> {
     let recorder = PrometheusBuilder::new().build_recorder();
     let handle = recorder.handle();
@@ -730,12 +649,11 @@ fn install_recorder() -> anyhow::Result<PrometheusHandle> {
 /// Waits for the shutdown signal to actually reach `with_graceful_shutdown`
 /// (i.e. for draining to have started), then sleeps for `grace`.
 ///
-/// If the sender is dropped without ever sending — which only happens if
-/// the served future resolved some other way first, e.g. an accept error —
-/// this never resolves. That is intentional: `tokio::select!` in
-/// [`serve_with_bounded_drain`] drops this future the moment the served
-/// future wins, so a server error can never be mistaken for a timed-out
-/// drain.
+/// If the sender is dropped without ever sending — which only happens if the
+/// served future resolved some other way first, e.g. an accept error — this
+/// never resolves. That is intentional: `tokio::select!` in
+/// [`serve_with_bounded_drain`] drops this future the moment the served future
+/// wins, so a server error can never be mistaken for a timed-out drain.
 async fn grace_clock(drain_started_rx: tokio::sync::oneshot::Receiver<()>, grace: Duration) {
     if drain_started_rx.await.is_ok() {
         tokio::time::sleep(grace).await;
@@ -749,62 +667,15 @@ async fn grace_clock(drain_started_rx: tokio::sync::oneshot::Receiver<()>, grace
 ///
 /// [`CryptoProvider`]: rustls::crypto::CryptoProvider
 ///
-/// **Why it exists at all.** The root `Cargo.toml` pins `reqwest` with
-/// `rustls-no-provider` (see the long comment on that pin, and the one on
-/// the `authkestra-*` pins below it): the alternative selects `aws-lc-rs`,
-/// which `deny.toml` bans outright because two providers in one process are
-/// exactly what makes `install_default()` panic. The cost of picking nothing
-/// is that reqwest 0.13's `ClientBuilder::build()` calls
-/// `CryptoProvider::get_default()` and **panics** — "No rustls crypto
-/// provider is configured" — when there is no process default. That is a
-/// panic in a shipping payment binary, i.e. a defect under ADR-0007, on a
-/// path no unit test reaches. `docs/status.md`'s "rustls `CryptoProvider`
-/// process default" row tracks it as a documented landmine, and until this
-/// call landed the workspace's only `install_default()` was a `#[cfg(test)]`
-/// helper in `vpay_api::resource_auth`.
+/// Without it, reqwest 0.13's `ClientBuilder::build()` panics — a panic in a
+/// shipping payment binary, i.e. a defect under ADR-0007. No path this binary
+/// reaches today depends on it, and it stays because the hazard it guards is one
+/// `use` away rather than gone. Why the result is dropped, and what it is *not*
+/// sufficient protection for:
+/// [docs/reference/vpay-config.md § the rustls CryptoProvider process default](../../../../docs/reference/vpay-config.md#the-rustls-cryptoprovider-process-default).
 ///
-/// **Why here.** The one ordering constraint is "before the first
-/// `reqwest::Client` is built", so this sits at the top of `run`, right
-/// after the signal handlers and above `init_tracing`, where no future edit
-/// can slip a client construction in ahead of it. It is deliberately *not*
-/// done in a library: installing a process-wide default from a library takes
-/// a decision out of the application's hands (the reasoning `sdks/rust`
-/// records for why it hands reqwest a pre-built `ClientConfig` instead).
-///
-/// **What it does *not* cover, and why it stays anyway.** This used to be
-/// the thing standing between `run` and a panic: the [`MerchantJwtValidator`]
-/// that guards `/v1` was built from `authkestra_resource::jwt::JwksCache`,
-/// whose `new` calls `reqwest::Client::new()` eagerly. That is no longer
-/// true — `vpay_api::http_client` hands reqwest a finished
-/// `rustls::ClientConfig`, which takes a branch that consults neither the
-/// process default nor the OS trust store, and `vpay_api::jwks_cache` is
-/// what lets the validator be given that client at all. `sqlx` never needed
-/// it either (`vpay_db`'s module doc reads `sqlx-core`'s TLS setup and shows
-/// it passes its own provider explicitly). So no path this binary reaches
-/// today depends on this call.
-///
-/// It stays because the hazard it guards is one `use` away, not gone:
-/// `authkestra-engine` still writes `reqwest::Client::new()` in its captcha
-/// and device/client-credentials flows (`authkestra-engine-0.7.1/src/flow/`),
-/// and tomorrow's first HTTPS-speaking rail adapter is another candidate.
-/// Note that this call is **not** sufficient protection for either: inside
-/// the `FROM scratch` runtime image a bare `reqwest::Client::new()` panics
-/// on the *trust store* (`"No CA certificates were loaded from the system"`)
-/// whether or not a provider is installed. `vpay_api::http_client::client`
-/// is the only client constructor that works there, and any new outbound
-/// HTTP in this binary should use it.
-///
-/// **Why the result is dropped.** `install_default()` returns
-/// `Err(Arc<CryptoProvider>)` for exactly one reason: a default was already
-/// installed. In a binary that means some other code got there first, which
-/// is the state this call wanted anyway — so `.ok()`, which is what the root
-/// `Cargo.toml`'s own note on the `authkestra-*` pins recommends verbatim.
-/// `unwrap`/`expect` are denied here (ADR-0007) and would turn a harmless
-/// double install into a startup crash.
-///
-/// `vpay-worker-bin` has a byte-identical copy, for the same reason its
-/// `exit_code_for` and `init_tracing` are copies: this is a property of the
-/// binary, not a library boundary.
+/// `vpay-worker-bin` has a byte-identical copy, for the reason
+/// [`exit_code_for`]'s doc gives.
 fn install_crypto_provider() {
     rustls::crypto::ring::default_provider()
         .install_default()

@@ -141,7 +141,7 @@ drives it to a terminal state:
 - **the rail reports the payment** → charge `succeeded` carrying the rail's
   `provider_txn_id` (migration `0021`), intent `succeeded` with
   `amount_received = amount`, and one `payment_intent.succeeded` event — all in
-  **one** transaction (`vpay_db::settlement::apply_succeeded`), so there is no
+  **one** transaction (`vpay_db::Settlement::apply_succeeded`), so there is no
   state in which the intent is paid and the event is missing
   (`a_confirmed_payment_is_driven_to_succeeded_and_the_merchant_sees_it`,
   `backends/tests/integration/tests/worker_e2e.rs`, which drives a real confirm

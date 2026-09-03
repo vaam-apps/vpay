@@ -1,8 +1,11 @@
 //! Money as integer minor units. There is no floating point in this crate,
-//! and `clippy::float_arithmetic` is denied workspace-wide to keep it that way.
+//! and `clippy::float_arithmetic` is denied workspace-wide to keep it that
+//! way.
 //!
-//! See `docs/flows/money.md` for why XAF is zero-decimal and what that means
-//! for serialisation to a provider.
+//! `docs/flows/money.md` is the flow: why XAF is zero-decimal and what the
+//! single conversion point means. The two renderings a rail may ask for, and
+//! the bound on what a rejected currency code may echo back, are in
+//! [docs/reference/vpay-core.md § money](../../../../docs/reference/vpay-core.md#money).
 
 use std::fmt;
 
@@ -12,7 +15,19 @@ use serde::{Deserialize, Serialize};
 ///
 /// The exponent is a property of the *currency*, universally — not of a
 /// deployment or an environment. `XAF` is zero-decimal everywhere.
+///
+/// ```
+/// use vpay_core::Currency;
+///
+/// assert_eq!(Currency::Xaf.exponent(), 0);
+/// assert_eq!(Currency::Eur.exponent(), 2);
+/// assert_eq!(Currency::Xaf.code(), "XAF");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+// `UPPERCASE`, not the workspace's `snake_case` convention, and exempt from it
+// on purpose: these are ISO-4217 codes rather than vpay field names, and
+// `"XAF"` is the spelling the database, both adapters and [`Currency::code`]
+// already agree on.
 #[serde(rename_all = "UPPERCASE")]
 pub enum Currency {
     /// Central African CFA franc. Zero-decimal.
@@ -22,6 +37,10 @@ pub enum Currency {
 }
 
 impl Currency {
+    /// Every currency, so [`Currency::from_code`] and any exhaustive test can
+    /// be written once over the list rather than twice over the table.
+    pub const ALL: [Self; 2] = [Self::Xaf, Self::Eur];
+
     /// Minor units per major unit, as a power of ten.
     #[must_use]
     pub const fn exponent(self) -> u32 {
@@ -31,6 +50,7 @@ impl Currency {
         }
     }
 
+    /// The uppercase ISO-4217 code, as the database and the adapters spell it.
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
@@ -39,17 +59,37 @@ impl Currency {
         }
     }
 
-    /// Parse an uppercase ISO code. The wire API uses lowercase and normalises
-    /// on ingress; the database and adapters use uppercase.
+    /// Parses an uppercase ISO code. The wire API uses lowercase and
+    /// normalises on ingress; the database and adapters use uppercase.
+    ///
+    /// Reads [`Currency::code`] back rather than repeating the table, so the
+    /// two directions cannot disagree about a code's spelling.
+    ///
+    /// # Errors
+    /// [`UnknownCurrency`] for anything outside [`Currency::ALL`], carrying
+    /// the caller's own string.
+    ///
+    /// ```
+    /// use vpay_core::Currency;
+    ///
+    /// assert_eq!(Currency::from_code("EUR").expect("a known code"), Currency::Eur);
+    /// // Uppercase only: the wire API normalises before it gets here.
+    /// assert!(Currency::from_code("eur").is_err());
+    /// ```
     pub fn from_code(s: &str) -> Result<Self, UnknownCurrency> {
-        match s {
-            "XAF" => Ok(Self::Xaf),
-            "EUR" => Ok(Self::Eur),
-            other => Err(UnknownCurrency(other.to_owned())),
-        }
+        Self::ALL
+            .into_iter()
+            .find(|currency| currency.code() == s)
+            .ok_or_else(|| UnknownCurrency(s.to_owned()))
     }
 }
 
+/// A currency code that is not one of [`Currency::ALL`], carrying the
+/// caller's own string.
+///
+/// `Display` keeps the whole of it (it goes to an operator's log);
+/// [`Classify::public_message`](crate::error::Classify::public_message)
+/// truncates, because that half crosses the wire.
 #[derive(Debug, thiserror::Error)]
 #[error("unknown currency: {0}")]
 pub struct UnknownCurrency(pub String);
@@ -58,15 +98,40 @@ pub struct UnknownCurrency(pub String);
 ///
 /// `Money::new(5_000, Currency::Xaf)` is 5,000 FCFA — not 50.00, because XAF
 /// has no centimes in circulating use.
+///
+/// ```
+/// use vpay_core::{Currency, Money};
+///
+/// let five_thousand_francs = Money::new(5_000, Currency::Xaf).expect("non-negative");
+/// assert_eq!(five_thousand_francs.minor(), 5_000);
+/// assert_eq!(five_thousand_francs.currency(), Currency::Xaf);
+/// assert_eq!(five_thousand_francs.to_string(), "5000 XAF");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+// vpay's own shape, so it carries the workspace convention even though both
+// field names are already snake_case — the attribute is what keeps it true
+// when someone adds a field.
+#[serde(rename_all = "snake_case")]
 pub struct Money {
     minor: i64,
     currency: Currency,
 }
 
 impl Money {
+    /// An amount in `currency`'s minor unit.
+    ///
     /// # Errors
     /// Returns [`MoneyError::Negative`] for a negative amount.
+    ///
+    /// ```
+    /// use vpay_core::{Currency, Money, MoneyError};
+    ///
+    /// assert!(Money::new(0, Currency::Xaf).is_ok());
+    /// assert_eq!(
+    ///     Money::new(-1, Currency::Xaf),
+    ///     Err(MoneyError::Negative(-1))
+    /// );
+    /// ```
     pub fn new(minor: i64, currency: Currency) -> Result<Self, MoneyError> {
         if minor < 0 {
             return Err(MoneyError::Negative(minor));
@@ -74,11 +139,13 @@ impl Money {
         Ok(Self { minor, currency })
     }
 
+    /// The amount, in the currency's minor unit.
     #[must_use]
     pub const fn minor(self) -> i64 {
         self.minor
     }
 
+    /// The currency this amount is denominated in.
     #[must_use]
     pub const fn currency(self) -> Currency {
         self.currency
@@ -87,6 +154,19 @@ impl Money {
     /// # Errors
     /// [`MoneyError::CurrencyMismatch`] if the currencies differ,
     /// [`MoneyError::Overflow`] on i64 overflow.
+    ///
+    /// ```
+    /// use vpay_core::{Currency, Money, MoneyError};
+    ///
+    /// let xaf = |n| Money::new(n, Currency::Xaf).expect("non-negative");
+    /// assert_eq!(xaf(100).checked_add(xaf(23)), Ok(xaf(123)));
+    ///
+    /// let eur = Money::new(100, Currency::Eur).expect("non-negative");
+    /// assert!(matches!(
+    ///     xaf(100).checked_add(eur),
+    ///     Err(MoneyError::CurrencyMismatch { .. })
+    /// ));
+    /// ```
     pub fn checked_add(self, other: Self) -> Result<Self, MoneyError> {
         self.same_currency(other)?;
         let minor = self
@@ -98,7 +178,19 @@ impl Money {
 
     /// # Errors
     /// [`MoneyError::CurrencyMismatch`], or [`MoneyError::Negative`] if the
-    /// result would go below zero — a refund can never exceed what was captured.
+    /// result would go below zero — a refund can never exceed what was
+    /// captured.
+    ///
+    /// ```
+    /// use vpay_core::{Currency, Money, MoneyError};
+    ///
+    /// let xaf = |n| Money::new(n, Currency::Xaf).expect("non-negative");
+    /// assert_eq!(xaf(100).checked_sub(xaf(40)), Ok(xaf(60)));
+    /// assert!(matches!(
+    ///     xaf(100).checked_sub(xaf(101)),
+    ///     Err(MoneyError::Negative(_))
+    /// ));
+    /// ```
     pub fn checked_sub(self, other: Self) -> Result<Self, MoneyError> {
         self.same_currency(other)?;
         let minor = self
@@ -123,21 +215,10 @@ impl Money {
     /// takes a JSON *number* rather than a decimal string.
     ///
     /// The same conversion as [`Money::to_provider_string`] in a different
-    /// encoding, not a second conversion: both read the exponent from the
-    /// currency and neither scales anything. Orange Money's `webpayment`
-    /// body sends `"amount": 5000` (`docs/flows/adapter-orange-money.md`),
-    /// while MTN's sends `"amount": "5000"` — one exponent lookup, two
-    /// renderings, which is what `docs/flows/money.md`'s "single conversion
-    /// point" rule means now that a rail needs the other encoding.
-    ///
-    /// # The mistake this can be used to make
-    ///
-    /// It returns *minor* units. Handing `5000` to a rail that expects major
-    /// units is 100× on a two-decimal currency and nothing can detect it
-    /// downstream — the number is valid, the currency is right, and the
-    /// charge succeeds. An adapter that reaches for this must have read its
-    /// rail's documentation and found the word "minor" (or a zero-decimal
-    /// currency, where the question does not arise).
+    /// encoding, not a second conversion. **It returns minor units**, and
+    /// handing them to a rail that expects major units is 100× on a
+    /// two-decimal currency with nothing downstream able to detect it — see
+    /// [docs/reference/vpay-core.md § the two provider encodings](../../../../docs/reference/vpay-core.md#the-two-provider-encodings).
     ///
     /// ```
     /// use vpay_core::{Currency, Money};
@@ -156,10 +237,18 @@ impl Money {
 
     /// Render for transmission to a provider, using the currency's exponent.
     ///
-    /// This is the single conversion point referenced by `docs/flows/money.md`.
-    /// XAF (exponent 0) renders `5000`; EUR (exponent 2) renders `50.00`.
-    /// [`Money::to_provider_minor`] is the same conversion for a rail whose
-    /// API takes a JSON number.
+    /// This is the single conversion point referenced by
+    /// `docs/flows/money.md`. [`Money::to_provider_minor`] is the same
+    /// conversion for a rail whose API takes a JSON number.
+    ///
+    /// ```
+    /// use vpay_core::{Currency, Money};
+    ///
+    /// let xaf = Money::new(5_000, Currency::Xaf).expect("non-negative");
+    /// let eur = Money::new(5_005, Currency::Eur).expect("non-negative");
+    /// assert_eq!(xaf.to_provider_string(), "5000"); // exponent 0
+    /// assert_eq!(eur.to_provider_string(), "50.05"); // exponent 2, padded
+    /// ```
     #[must_use]
     pub fn to_provider_string(self) -> String {
         let exp = self.currency.exponent();
@@ -179,12 +268,22 @@ impl fmt::Display for Money {
     }
 }
 
+/// What can go wrong constructing or combining a [`Money`].
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum MoneyError {
+    /// An amount below zero. vpay has no negative money: a refund is its own
+    /// object, not a negative charge.
     #[error("amount must not be negative, got {0}")]
     Negative(i64),
+    /// Two amounts in different currencies were combined.
     #[error("currency mismatch: {left:?} vs {right:?}")]
-    CurrencyMismatch { left: Currency, right: Currency },
+    CurrencyMismatch {
+        /// The left operand's currency.
+        left: Currency,
+        /// The right operand's currency.
+        right: Currency,
+    },
+    /// `i64` minor units overflowed.
     #[error("arithmetic overflow")]
     Overflow,
 }
@@ -225,23 +324,17 @@ impl crate::error::Classify for MoneyError {
 
 /// How many characters of a rejected currency code may be echoed back.
 ///
-/// An ISO-4217 code is three characters; eight is generous enough that a
-/// merchant recognises what they sent (`"xaf "`, `"XAFF"`, `"xaf\n"`) and
-/// short enough that the echo cannot become a reflection channel. Without a
-/// bound, [`Currency::from_code`] would happily build an `UnknownCurrency`
-/// around a megabyte of caller-supplied bytes and
-/// [`Classify::public_message`](crate::error::Classify::public_message)
-/// would put all of it in a response body.
+/// Eight: generous enough that a merchant recognises what they sent, short
+/// enough that the echo cannot become a reflection channel. See
+/// [docs/reference/vpay-core.md § the bounded currency echo](../../../../docs/reference/vpay-core.md#the-bounded-currency-echo).
 const CURRENCY_ECHO_CHARS: usize = 8;
 
 /// The first [`CURRENCY_ECHO_CHARS`] characters of `code`, with an ellipsis
 /// iff anything was dropped.
 ///
 /// Character-wise, not byte-wise: the code is caller-supplied text and
-/// slicing at byte 8 would panic on a multi-byte boundary — ADR-0007 denies
-/// panics in production code, and this runs on a request path. Nothing is
-/// appended when the input already fits, so the overwhelmingly common case
-/// (a three-letter typo) reads back exactly as the caller sent it.
+/// slicing at byte 8 would panic on a multi-byte boundary (ADR-0007, on a
+/// request path).
 fn echoed_currency(code: &str) -> String {
     let mut out: String = code.chars().take(CURRENCY_ECHO_CHARS).collect();
     if code.chars().nth(CURRENCY_ECHO_CHARS).is_some() {
@@ -259,12 +352,22 @@ impl crate::error::Classify for UnknownCurrency {
         "currency_unknown"
     }
 
-    /// Echoes the offending code, bounded. The value is the caller's own so
-    /// echoing it leaks nothing — but it is also *unbounded*: `from_code`
-    /// accepts whatever arrived on the wire, so the public message truncates
-    /// rather than trusting an upstream length check that does not exist
-    /// yet. `Display` keeps the whole string, because that half goes to an
-    /// operator's log, not into a response body.
+    /// Echoes the offending code, bounded — `from_code` wraps whatever
+    /// arrived on the wire, so the bound lives here rather than in a caller
+    /// that may forget.
+    ///
+    /// ```
+    /// use vpay_core::{Classify, Currency};
+    ///
+    /// let short = Currency::from_code("xaf").expect_err("lowercase is not a code");
+    /// assert_eq!(short.public_message(), "unknown currency: xaf");
+    ///
+    /// let huge = Currency::from_code(&"A".repeat(1024 * 1024)).expect_err("not a code");
+    /// assert_eq!(huge.public_message(), "unknown currency: AAAAAAAA\u{2026}");
+    /// // The operator-facing half is deliberately unbounded: it goes to a
+    /// // log, never to a response body.
+    /// assert!(huge.to_string().len() > 1024 * 1024);
+    /// ```
     fn public_message(&self) -> String {
         format!("unknown currency: {}", echoed_currency(&self.0))
     }

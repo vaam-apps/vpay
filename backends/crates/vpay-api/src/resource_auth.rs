@@ -1,101 +1,21 @@
-//! Resource-server JWT validation for vpay's two protected HTTP surfaces.
+//! Resource-server JWT validation for vpay's two protected HTTP surfaces:
+//! `/v1` (merchant, ADR-0010) and `/dash/v1` (dashboard, ADR-0009).
 //!
-//! `docs/api/README.md` defines three surfaces with three different
-//! protections; this module builds the validation layer for the two that
-//! need one — `/v1` (merchant, `client_credentials` + `private_key_jwt`) and
-//! `/dash/v1` (dashboard, a staff OIDC session, one read-only scope). See
-//! [ADR-0009](../../../docs/adr/0009-dashboard-oidc-provider.md) (vpay runs
-//! its own Authkestra OP) and
-//! [ADR-0010](../../../docs/adr/0010-merchant-auth-private-key-jwt.md)
-//! (merchant auth).
+//! STATUS: the merchant half is live and guards real rows —
+//! [`crate::require_merchant_token`] validates through [`MerchantJwtValidator`]
+//! and is mounted in front of the whole `/v1` nest. The dashboard half is
+//! unmounted: [`AuthenticatedDashboard`] exists, no `/dash/v1/*` route does,
+//! and nothing constructs a [`DashboardJwtValidator`].
 //!
-//! STATUS: the merchant half is live and now guards real rows.
-//! [`crate::require_merchant_token`] — which validates through this module's
-//! [`MerchantJwtValidator`] and hands [`AuthenticatedMerchant`] its claims —
-//! is mounted in front of the whole `/v1` nest by [`crate::router`] (see its
-//! route table), and `vpay-server` builds the validator behind it against
-//! this process's own JWKS. Behind that boundary is `/v1/payment_intents`,
-//! whose every query is filtered by the tenant the middleware resolved. The
-//! dashboard half is unmounted — [`AuthenticatedDashboard`] exists, no
-//! `/dash/v1/*` route does, and nothing constructs a
-//! [`DashboardJwtValidator`].
+//! Validation is local — `crate::jwks_cache` (private) caches the JWKS and every check
+//! after the first verifies the signature from memory. The one input that can
+//! still force a network fetch is an *unrecognized* `kid`, which is why this
+//! module throttles: see `UNKNOWN_KID_REFRESH_INTERVAL` (private, in this file).
 //!
-//! ## Validation is local, not a network round trip per request
-//!
-//! `crate::jwks_cache::JwksCache` fetches the JWKS once and caches it
-//! (`jwks_refresh_interval`, below); every call after that looks the key up
-//! by `kid` from memory and verifies the signature locally with
-//! `jsonwebtoken`. That cache is a narrowed port of
-//! `authkestra_resource::jwt::JwksCache` — its module doc says why it had to
-//! be ported rather than called — and it keeps the original's refresh policy
-//! bar one deliberate change: `get_key` only calls `refresh()` (an HTTP GET)
-//! on a cache miss or once the TTL has elapsed, never on every validation,
-//! and the TTL refresh re-checks the cache once it holds the write guard, so
-//! a boundary crossed by any number of concurrent requests costs exactly one
-//! fetch (deviation 5 in that module's doc — the one behavioural divergence
-//! from upstream, measured and quantified there). That is what makes this
-//! safe to put in front of a payment-processing route.
-//!
-//! ## …except on an unrecognized `kid`, which is why this module throttles
-//!
-//! The other half of `get_key` — carried over from the original unchanged,
-//! deliberately (`jwt.rs` ~181-193): when the cached JWKS does **not** hold
-//! the requested `kid`, it calls `refresh()` unconditionally — "in case of
-//! rotation" — and `refresh()` holds the cache's write lock *across* the HTTP
-//! GET. On top of that, key resolution happens **before** the signature is
-//! verified, so nothing about the token has been checked at that point.
-//!
-//! Unthrottled, that makes an unauthenticated request with a random `kid` in
-//! its header a remote control for two things at once: one loopback
-//! `GET /v1/oauth/jwks.json` per request (which in this deployment is a
-//! Postgres `SELECT`, so the amplification lands on the database), and a
-//! write lock held across that round trip, which blocks every *legitimate*
-//! validation in the process for its duration. [`JwtValidator::validate`]
-//! closes both by deciding, before it delegates, whether this `kid` is one
-//! the process has ever seen a valid token for; see
-//! `UNKNOWN_KID_REFRESH_INTERVAL` for the throttle and the trade-off it
-//! makes.
-//!
-//! ## A sharp edge in `jsonwebtoken`'s default audience validation
-//!
-//! `jsonwebtoken::Validation::validate_aud` defaults to `true`, but the
-//! check it gates only runs *if the token has an `aud` claim at all* —
-//! confirmed by reading `jsonwebtoken-11.0.0/src/validation.rs`: the
-//! doc comment on `validate_aud` itself says "Validation only happens if
-//! `aud` claim is present", and the `_ => {}` fallthrough arm of `validate`'s
-//! `match (claims.aud, options.aud.as_ref())` proves it — a token with no
-//! `aud` claim reaches that arm and passes regardless of what
-//! `set_audience` was told. A token minted with no audience at all would
-//! therefore sail through unchecked, which is exactly the kind of ambiguity
-//! this module is required to fail closed on (a missing claim, not merely a
-//! wrong one). The fix here is not to hand-roll audience comparison:
-//! [`JwtValidator::new`] calls `set_required_spec_claims(&["exp", "aud",
-//! "iss"])`, which makes the `aud` claim's mere *presence* mandatory — a
-//! token with no audience is rejected as a missing required claim before the
-//! comparison logic ever runs — and `set_audience` continues to do the real
-//! membership check with the library's own (tested) logic. Covered by
-//! `a_token_with_no_audience_claim_at_all_is_rejected`, below.
-//!
-//! ## `authkestra_resource::jwt::JwtStrategy` was deliberately not used here
-//!
-//! `JwtStrategy<I>`'s `cache` and `validation` fields are both private with
-//! no accessor — confirmed by reading `jwt.rs`: neither field is `pub`, and
-//! no getter or setter method exists for either. Once a `JwtStrategy` is
-//! built via `ValidationConfig`/`ValidationConfigBuilder`, nothing outside
-//! the crate can inspect or adjust its `Validation` afterwards. That is a
-//! real limitation — a sibling project had to work around it by setting
-//! `validation.validate_aud = false` and hand-rolling the audience check
-//! itself — but it does not bite this module, because this module never
-//! constructs a `JwtStrategy` at all. It drives its own `crate::jwks_cache`
-//! (a port of the `pub` `JwksCache`/`validate_jwt_generic` pair) and builds its own
-//! `jsonwebtoken::Validation`, so every field — including `validate_aud` and
-//! `required_spec_claims` — stays under this module's control from
-//! construction onward. `ValidationConfigBuilder` does expose `.audience()`/
-//! `.audiences()`, so the *audience* half of the sibling project's problem
-//! would not necessarily recur through `JwtStrategy` either — but the
-//! `required_spec_claims` fix above has no equivalent builder method at all,
-//! which alone would have forced hand-rolling (or living with the gap) had
-//! `JwtStrategy` been used.
+//! Why the throttle exists, the `jsonwebtoken` audience edge
+//! [`JwtValidator::new`] closes with `set_required_spec_claims`, and why
+//! `authkestra_resource::jwt::JwtStrategy` was not used:
+//! [docs/reference/vpay-api.md § resource-server JWT validation](../../../../docs/reference/vpay-api.md#resource-server-jwt-validation-resource_authrs).
 
 use std::collections::HashSet;
 use std::fmt;
@@ -729,7 +649,7 @@ pub struct DashboardJwtValidator(pub JwtValidator);
 
 /// Extractor for `/v1` handlers:
 ///
-/// ```ignore
+/// ```text
 /// async fn create_payment_intent(
 ///     AuthenticatedMerchant(claims): AuthenticatedMerchant,
 ///     // ... other extractors ...
@@ -737,6 +657,12 @@ pub struct DashboardJwtValidator(pub JwtValidator);
 ///     // claims.client_id, claims.scope
 /// }
 /// ```
+///
+/// `text` rather than a compiled doctest, deliberately: making this one run
+/// means standing up a router, a JWKS server and a signed token, which is an
+/// integration test (`backends/tests/integration`) and not an illustration of a
+/// signature. A ```ignore``` block would have been the dishonest option — it
+/// looks compiled and is not.
 ///
 /// # It reads a validated token; it does not validate one
 ///

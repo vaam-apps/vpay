@@ -2,9 +2,12 @@
 
 use std::time::Duration;
 
-use sqlx::postgres::{PgPool, PgPoolOptions};
+use std::sync::Arc;
+
+use sqlx::postgres::PgPoolOptions;
 
 use crate::error::DbError;
+use crate::repository::{PgRepositories, Repositories};
 
 /// Maximum number of live Postgres connections the pool will hold.
 ///
@@ -47,7 +50,11 @@ const MAX_CONNECTIONS: u32 = 10;
 /// seconds — while still tolerating a slow-starting container locally.
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Builds a `PgPool` against `database_url` with vpay's pool policy.
+/// Opens the repository layer against `database_url` with vpay's pool policy.
+///
+/// The pool itself never leaves this crate: what a caller gets back is the
+/// [`Repositories`] trait object every consumer holds, so "how vpay reaches
+/// Postgres" has exactly one spelling in the workspace (`crate::repository`).
 ///
 /// This is eager: it returns only once at least one connection has been
 /// established (or `ACQUIRE_TIMEOUT` has elapsed and it gives up) — never
@@ -58,11 +65,57 @@ const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// Returns [`DbError::Connect`] if no connection could be established within
 /// `ACQUIRE_TIMEOUT`.
-pub async fn connect(database_url: &str) -> Result<PgPool, DbError> {
-    PgPoolOptions::new()
+pub async fn connect(database_url: &str) -> Result<Arc<dyn Repositories>, DbError> {
+    let pool = PgPoolOptions::new()
         .max_connections(MAX_CONNECTIONS)
         .acquire_timeout(ACQUIRE_TIMEOUT)
         .connect(database_url)
         .await
-        .map_err(DbError::Connect)
+        .map_err(DbError::Connect)?;
+    Ok(PgRepositories::boxed(pool))
+}
+
+/// The same repositories over a pool that has **not** connected yet.
+///
+/// Not a second connection policy and not a test double: the pool is the
+/// real `sqlx` one, every query really goes to Postgres, and the only
+/// difference from [`connect`] is when the first connection is opened.
+///
+/// It exists because `connect` is deliberately eager — a boot that cannot
+/// reach the database must fail at boot, not at the first payment — and
+/// that makes "a handle whose queries fail" unobtainable, which is exactly
+/// what `vpay-api`'s own unit tests need to prove that an unreachable
+/// database produces a refusal (`ClientStore::find_client` answering *no*,
+/// `/healthz` answering 503) rather than an admission. Before the repository
+/// split those tests built the lazy pool themselves with `sqlx`; the seam
+/// has to offer it now, or the behaviour stops being testable at all.
+///
+/// **No shipping binary calls this, and `cargo xtask verify-no-mocks` is
+/// what keeps that true**: it fails the build if `connect_lazy` appears in
+/// non-test code anywhere under `backends/apps`. A sentence in this doc
+/// would not have held — the call is not a test double and no dependency
+/// rule would object to it, which is exactly why it needed a mechanical
+/// guard rather than a note. `vpay-server` and `vpay-worker-bin` both call
+/// [`connect`].
+///
+/// `#[doc(hidden)]` for the same reason: this is a seam that exists for
+/// `vpay-api`'s own unit tests, not part of the surface a consumer of this
+/// crate is invited to choose from.
+///
+/// # Errors
+///
+/// Returns [`DbError::Connect`] if `database_url` does not parse. No I/O is
+/// performed, so an unreachable host is *not* an error here — it surfaces on
+/// the first query.
+#[doc(hidden)]
+pub fn connect_lazy(
+    database_url: &str,
+    acquire_timeout: Duration,
+) -> Result<Arc<dyn Repositories>, DbError> {
+    let pool = PgPoolOptions::new()
+        .max_connections(MAX_CONNECTIONS)
+        .acquire_timeout(acquire_timeout)
+        .connect_lazy(database_url)
+        .map_err(DbError::Connect)?;
+    Ok(PgRepositories::boxed(pool))
 }

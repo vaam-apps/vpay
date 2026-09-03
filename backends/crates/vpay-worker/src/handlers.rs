@@ -9,37 +9,15 @@
 //! and the worker end up disagreeing about whether a Postgres failure is
 //! transient (ADR-0011).
 //!
-//! **`vpay-worker` has no `sqlx` dependency and must not grow one.** Every
-//! statement lives in a `vpay-db` repository function. Where two of those
-//! functions must commit together this module opens a transaction with
-//! `PgPool::begin` and passes it straight through, so no `sqlx` *path* is
-//! written here — the pool and the transaction arrive as `vpay_db::PgPool`
-//! and are handed straight back, which is also why the two `enqueue_in_tx`
-//! calls are written out at their call sites instead of behind a shared
-//! helper: a helper would have to *name* `sqlx::PgConnection` in its own
-//! signature. `vpay_db::PgPool` is `sqlx::PgPool` one re-export away, so this
-//! is a rule about where statements live, not a claim that the type is
-//! absent.
+//! **`vpay-worker` has no `sqlx` dependency and cannot grow one here.** Every
+//! statement is reached through `&dyn Repositories`, and two writes that must
+//! commit together go through `UnitOfWork::transaction`, so no `sqlx` type is
+//! nameable.
 //!
-//! # How these are tested
-//!
-//! The handlers are not unit-tested in this crate, and that is deliberate.
-//! (The one `#[cfg(test)]` module at the bottom of this file covers
-//! `past_the_horizon`, which is a pure function of a timestamp and a policy
-//! and writes nothing — it is not one of the sequences this paragraph is
-//! about, and it is here rather than in `recovery` because it reads a
-//! `vpay_db::ChargeRow`.) Every handler below is a sequence of writes against
-//! real Postgres and a real
-//! rail; the only way to test it in-process would be to introduce a fake pool
-//! or a fake [`ProviderAdapter`], and AGENTS.md's first rule forbids a test
-//! double reachable from a shipping binary (ADR-0006: the stub rail is a
-//! WireMock host in configuration, reached over HTTP exactly as a real rail
-//! is). So the proofs live in `backends/tests/integration/tests/`, which
-//! drives *these functions* against a Postgres container and a WireMock
-//! container, and reproduces each crash-safety kill point by writing the state
-//! a crash leaves behind. The pure parts they depend on — the settlement
-//! table, the recovery table, the payload encoding — are unit-tested in their
-//! own modules, which is why those are separate modules at all.
+//! The handlers are deliberately **not** unit-tested; their proofs are the
+//! integration suites, and `docs/reference/vpay-worker.md` §"How this crate is
+//! tested" says why. That section, §"One poll" and §"The outbox drain" also
+//! carry the orderings this module depends on.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -51,7 +29,9 @@ use vpay_core::state::{ChargeState, IntentStatus};
 use vpay_core::{
     Classify, FailureCode, Money, Settlement, Severity, StatusKind, contradiction, ids, settle,
 };
-use vpay_db::{ChargeRow, DbError, PgPool};
+use vpay_db::{
+    ChargeRow, Charges, DbError, PaymentIntents, Repositories, TxOutcome, UnitOfWork as _,
+};
 use vpay_provider::{
     ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig, ProviderError, RefExtra,
 };
@@ -71,39 +51,27 @@ pub type Adapters = BTreeMap<String, Box<dyn ProviderAdapter>>;
 /// Each rail's deployment configuration, by `providers.code`.
 ///
 /// Plain values rather than `vpay_api::v1::ResourceConfig`, although the
-/// worker binary already links `vpay-api` and could pass the projection
-/// itself. Two reasons, and neither is dogma about layering:
-///
-/// * a handler needs exactly one thing from that projection —
-///   `RailConfig::provider_config()` for the charge's rail — while
-///   `ResourceConfig` also carries the merchant-client table and the
-///   deployment's currency list, neither of which any job may read;
-/// * the flow shape, which is the *only* thing the recovery table branches on,
-///   comes from `ProviderAdapter::capabilities()` and not from configuration
-///   at all, so there is nothing left for a config type to supply.
-///
-/// The binary builds this in one line from the projection it already has:
-/// `resource_config.rail(code).map(RailConfig::provider_config)` for each
-/// adapter code.
+/// worker binary links `vpay-api` and could pass the projection itself: a
+/// handler needs exactly one thing from it, and `ResourceConfig` also carries
+/// the merchant-client table and the currency list, which no job may read. The
+/// flow shape the recovery table branches on comes from
+/// `ProviderAdapter::capabilities()`, not from configuration at all.
 pub type RailConfigs = BTreeMap<String, ProviderConfig>;
 
 /// What the two webhook jobs need and no other job may touch: the endpoint
 /// table and the outbound HTTP client.
 ///
 /// Borrowed as one struct rather than added as two parameters to every
-/// handler, for the reason [`RailConfigs`] is a projection rather than the
-/// whole of `ResourceConfig`: a poll job has no business reaching a merchant's
-/// signing secrets, and grouping the two makes the dispatch signature say so.
+/// handler, for the reason [`RailConfigs`] is a projection: a poll job has no
+/// business reaching a merchant's signing secrets, and grouping the two makes
+/// the dispatch signature say so.
 ///
 /// The client is built **by the binary**, once, with
 /// `vpay_provider::http::client_with_timeouts` over
 /// [`crate::WEBHOOK_CONNECT_TIMEOUT`] and [`crate::WEBHOOK_REQUEST_TIMEOUT`],
-/// and cloned. The budgets are named rather than written out here, for the
-/// reason those constants exist at all: the pair was once spelled in three
-/// places, and prose repeating the numbers is a fourth copy nothing pins. It
-/// is not built here and never by `reqwest::Client::new()`, which panics in
-/// the `scratch` runtime image (see that module) — and building one per job
-/// would also throw away every pooled connection between attempts.
+/// and cloned. Never here and never by `reqwest::Client::new()`, which panics
+/// in the `scratch` runtime image — and one client per job would throw away
+/// every pooled connection between attempts.
 #[derive(Debug, Clone, Copy)]
 pub struct WebhookContext<'a> {
     /// Every merchant's configured endpoints, by `events.merchant_id`.
@@ -141,15 +109,14 @@ const SCAN_BATCH: i64 = 500;
 /// Runs one claimed job, and says what the loop should do with the row.
 ///
 /// The loop owns the row: it claimed it, and it is what calls
-/// [`vpay_db::jobs::finish`] or [`vpay_db::jobs::reschedule`] afterwards. This
-/// function only says which. On `Err`, the loop derives the same answer from
-/// [`JobError::decision`] — see [`Outcome::from_decision`].
+/// [`vpay_db::Jobs::finish`] or [`vpay_db::Jobs::reschedule`] afterwards. This
+/// function only says which; on `Err` the loop derives the same answer from
+/// [`JobError::decision`].
 ///
-/// Failures are logged here rather than only at the loop, at the level
-/// [`Classify::severity`] implies and with `alert = true` when that severity
-/// is [`Severity::Page`], because this is the frame that still knows *which*
-/// job and which charge failed. `crate::tracing_level` documents why the flag
-/// cannot be attached by a helper.
+/// Failures are logged here as well as at the loop, because this is the frame
+/// that still knows *which* job and which charge failed —
+/// `docs/reference/vpay-worker.md` §"Where a job failure is logged" says what
+/// each of the two lines is for.
 ///
 /// # Errors
 ///
@@ -162,14 +129,14 @@ const SCAN_BATCH: i64 = 500;
 /// [`RecoveryPolicy::unresolved_after`] is [`JobError::Exhausted`], which is
 /// neither of those — it keeps polling hourly and alerts.
 pub async fn handle(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     adapters: &Adapters,
     rails: &RailConfigs,
     policy: &RecoveryPolicy,
     webhooks: &WebhookContext<'_>,
     job: &vpay_db::JobRow,
 ) -> Result<Outcome, JobError> {
-    let result = dispatch(pool, adapters, rails, policy, webhooks, job).await;
+    let result = dispatch(repositories, adapters, rails, policy, webhooks, job).await;
     if let Err(error) = &result {
         log_failure(job, error);
     }
@@ -177,7 +144,7 @@ pub async fn handle(
 }
 
 async fn dispatch(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     adapters: &Adapters,
     rails: &RailConfigs,
     policy: &RecoveryPolicy,
@@ -196,23 +163,23 @@ async fn dispatch(
     })?;
 
     match kind {
-        JobKind::PollCharge => poll_charge(pool, adapters, rails, policy, job).await,
-        JobKind::ResubmitCharge => resubmit_charge(pool, adapters, rails, job).await,
-        JobKind::SweepExpired => sweep_expired(pool, policy).await,
-        JobKind::ScanLiveCharges => scan_live_charges(pool, job).await,
+        JobKind::PollCharge => poll_charge(repositories, adapters, rails, policy, job).await,
+        JobKind::ResubmitCharge => resubmit_charge(repositories, adapters, rails, job).await,
+        JobKind::SweepExpired => sweep_expired(repositories, policy).await,
+        JobKind::ScanLiveCharges => scan_live_charges(repositories, job).await,
         // Both live in `crate::webhooks`, which owns every decision they make.
         // This module only routes: a second copy of the delivery ladder or of
         // the fan-out's transaction boundary here is exactly the duplication
         // this file's header refuses.
-        JobKind::FanOutEvents => handle_fan_out(pool, webhooks.endpoints, job).await,
+        JobKind::FanOutEvents => handle_fan_out(repositories, webhooks.endpoints, job).await,
         JobKind::DeliverWebhook => {
-            handle_deliver(pool, webhooks.http, webhooks.endpoints, job).await
+            handle_deliver(repositories, webhooks.http, webhooks.endpoints, job).await
         }
         // The delivery queue's backstop. `policy.lease` and not a constant of
         // its own: the never-attempted arm of the scan's query asks "has this
         // delivery's job been outstanding longer than a claim may legitimately
         // be?", and that is the same number the reaper compares against.
-        JobKind::ScanDeliveries => handle_scan_deliveries(pool, policy.lease, job).await,
+        JobKind::ScanDeliveries => handle_scan_deliveries(repositories, policy.lease, job).await,
     }
 }
 
@@ -223,15 +190,21 @@ async fn dispatch(
 /// answered *after* it, so an attempt that got no answer is distinguishable
 /// from one that was never made — which is the single fact the recovery table
 /// branches on.
+///
+/// The six steps below are one each: the terminal guard, the horizon, the
+/// crash-recovery block, the rail, the settlement table's answer, and what to
+/// do with it. `docs/reference/vpay-worker.md` §"One poll" carries the
+/// reasoning behind the two orderings that are load-bearing — the horizon
+/// above the recovery block, and the attempt row around the query.
 async fn poll_charge(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     adapters: &Adapters,
     rails: &RailConfigs,
     policy: &RecoveryPolicy,
     job: &vpay_db::JobRow,
 ) -> Result<Outcome, JobError> {
     let payload: PollChargePayload = decode(job)?;
-    let charge = load_charge(pool, job, &payload.charge_id).await?;
+    let charge = load_charge(repositories, job, &payload.charge_id).await?;
     let mut state = parse_state(job, &charge)?;
     if state.is_terminal() {
         // A duplicate job, a callback that arrived after the answer, or a
@@ -243,169 +216,66 @@ async fn poll_charge(
     let flow = adapter.capabilities().flow;
     let now = OffsetDateTime::now_utc();
 
-    // The horizon is a property of the charge and the clock alone, so it is
-    // evaluated once, here, and carried down: nothing the rail says can move
-    // it, and there is exactly one place it is decided.
-    //
-    // It does **not** decide whether to ask the rail. Past the horizon the
-    // charge is still polled — hourly rather than on the ladder — because "a
-    // late success — minute 40, or hour 30 from `unresolved` — is the normal
-    // transition" (`docs/flows/reconciler.md`), and a poll that stopped asking
-    // would be the thing that lost it. What the horizon decides is what
-    // happens to every answer *short of* a terminal one: escalate, instead of
-    // taking another rung.
-    //
-    // Evaluated *above* the crash-recovery block and not below it, which is
-    // the one thing about its placement that is load-bearing. That block can
-    // return without ever reaching this line — and one of its arms,
-    // `Resubmit`, returns a rung of the ladder. A `submitting` charge whose
-    // resubmit job is dead-lettered comes back to it on every poll
-    // (`SubmitAttempt::Never` → `Resubmit`, forever), so a horizon evaluated
-    // afterwards would never be evaluated at all for exactly the charge that
-    // has been stuck longest.
+    // Evaluated once, here, and carried down. **Above** the crash-recovery
+    // block, which can return without ever reaching this line — see
+    // [`past_the_horizon`].
     let past_horizon = past_the_horizon(&charge, policy, now);
 
-    // The crash-recovery branch, and only for `submitting`: past that state
-    // the payer may already hold a redirect URL, which is what makes
-    // `FailDeadOrder` safe there and unsafe everywhere else. See
-    // `recovery_step`'s precondition.
+    // Only for `submitting`: past that state the payer may already hold a
+    // redirect URL, which is what makes `FailDeadOrder` safe there and unsafe
+    // everywhere else. See `recovery_step`'s precondition.
     if state == ChargeState::Submitting {
-        let evidence = submit_evidence(pool, &charge.id).await?;
-        let action = recovery_step(
-            flow,
-            evidence,
-            payload.not_found_streak,
-            payload.first_not_found_at,
-            now,
-            policy,
-        );
-        match action {
-            RecoveryAction::FailDeadOrder => return fail_dead_order(pool, job, &charge).await,
-            RecoveryAction::Resubmit => {
-                return resubmit_then_escalate_if_late(
-                    pool,
-                    job,
-                    &charge,
-                    state,
-                    past_horizon,
-                    &payload,
-                )
-                .await;
-            }
-            RecoveryAction::Advance(status_code) => {
-                // Kill point 3 of `docs/flows/crash-safety.md`: the rail
-                // answered and the state update was lost. Catch the
-                // bookkeeping up, then poll as normal.
-                if vpay_db::settlement::set_live_state(
-                    pool,
-                    &charge.id,
-                    ChargeState::Submitting.as_wire_str(),
-                    ChargeState::Submitted.as_wire_str(),
-                )
-                .await?
-                {
-                    state = ChargeState::Submitted;
-                    tracing::info!(
-                        job_id = %job.id,
-                        charge_id = %charge.id,
-                        status_code,
-                        "recovered a charge whose submit was answered but never recorded"
-                    );
-                }
-            }
-            RecoveryAction::Poll => {}
+        let action = recovery_action(repositories, &charge, flow, policy, now, &payload).await?;
+        match act_on_recovery(repositories, job, &charge, action, past_horizon, &payload).await? {
+            Recovered::Answered(outcome) => return Ok(outcome),
+            Recovered::StillPolling(recovered) => state = recovered,
         }
     }
 
-    let status = match query_status(pool, adapter, config, job, &charge).await {
+    let status = match query_status(repositories, adapter, config, job, &charge).await {
         Ok(status) => status,
-        // A rail that will not answer must not be able to keep a charge off
-        // the escalation. `ProviderError::Unavailable` is only
-        // `Severity::Warn`, so a status endpoint answering `503` on every
-        // rung rode the ladder quietly past the horizon forever: no
-        // `unresolved`, no alert, nobody reconciling a charge a payer may
-        // have paid. The rail's error is logged rather than returned, because
-        // past the horizon the fact an operator needs is "this charge is
-        // unreconciled after 24 hours", not "the last poll got a 503" — and
-        // `Exhausted` is the error that says so, hourly and with an alert.
-        //
-        // **Only `Provider`.** This arm is the one place in the worker where a
-        // composite replaces a leaf's classification with its own, and
-        // ADR-0011 permits it here for one reason: `Exhausted` says something
-        // *truer* about a rail that will not answer a day-old charge than the
-        // rail's own transient error does. Nothing else it wraps is like that.
-        // Written as a wildcard, the arm also swallowed `Poisoned` — a row
-        // this build cannot interpret, `Retry::Never`, a bug — and
-        // re-published it as `Category::Rail`, retried hourly with an alert,
-        // forever, on work no retry can complete; and it swallowed `Db`, whose
-        // own retry policy exists so the worker and the API cannot disagree
-        // about whether Postgres is transient. Both now propagate untouched.
-        Err(JobError::Provider(error)) if past_horizon => {
-            tracing::warn!(
-                job_id = %job.id,
-                charge_id = %charge.id,
-                error = %error,
-                "the rail did not answer about a charge that is already past the horizon"
-            );
-            return escalate_to_unresolved(pool, job, &charge, state).await;
+        Err(error) => {
+            return rail_did_not_answer(repositories, job, &charge, state, past_horizon, error)
+                .await;
         }
-        Err(error) => return Err(error),
     };
     let kind = status_kind(&status);
 
     let Some(settlement) = settle(kind, state) else {
-        // `settle` answers `None` only for a terminal charge, and the guard
-        // at the top of this function has already returned for one — so this
-        // arm is unreachable today, and is written out rather than removed
-        // because the alternative is an `unwrap`-shaped access on a fact two
-        // separate `match`es agree on rather than the compiler.
-        //
-        // The contradiction check is here for the same reason it is in
-        // `report_late_answer`, which is where a rail that reverses a settled
-        // charge is *actually* caught: if this arm ever becomes reachable —
-        // by the terminal guard moving, or by `settle` gaining a terminal
-        // answer — a rail saying the money went the other way from what the
-        // merchant was told must not become a silent `Done`.
-        if contradiction(kind, state) {
-            log_contradiction(job, &charge.id, state, kind);
-        }
-        return Ok(Outcome::Done);
+        return Ok(nothing_to_settle(job, &charge.id, state, kind));
     };
 
     match settlement {
         Settlement::Succeeded => {
-            let provider_txn_id = match &status {
-                ChargeStatus::Succeeded { provider_txn_id } => provider_txn_id.as_deref(),
-                // Unreachable: `settle` only answers `Succeeded` for
-                // `StatusKind::Succeeded`. Written as a `match` rather than an
-                // `unwrap`-shaped access because the two types are joined by a
-                // convention, not by the compiler.
-                _ => None,
-            };
-            settle_succeeded(pool, job, &charge, provider_txn_id).await
+            settle_succeeded(repositories, job, &charge, succeeded_txn_id(&status)).await
         }
-        Settlement::Failed(code) => settle_failed(pool, job, &charge, code, &status).await,
+        Settlement::Failed(code) => settle_failed(repositories, job, &charge, code, &status).await,
         Settlement::Live(next) => {
-            vpay_db::settlement::set_live_state(
-                pool,
-                &charge.id,
-                state.as_wire_str(),
-                next.as_wire_str(),
+            advance_and_keep_polling(
+                repositories,
+                job,
+                &charge,
+                state,
+                next,
+                past_horizon,
+                &payload.reset(),
             )
-            .await?;
-            keep_polling(pool, job, &charge, next, past_horizon, &payload.reset()).await
+            .await
         }
         Settlement::Stay => {
-            let next_payload = if kind == StatusKind::NotFound {
-                payload.saw_not_found(now)
-            } else {
-                payload.reset()
-            };
-            keep_polling(pool, job, &charge, state, past_horizon, &next_payload).await
+            keep_polling(
+                repositories,
+                job,
+                &charge,
+                state,
+                past_horizon,
+                &stayed(&payload, kind, now),
+            )
+            .await
         }
         Settlement::Recover => {
             recover(
-                pool,
+                repositories,
                 job,
                 &charge,
                 state,
@@ -417,6 +287,218 @@ async fn poll_charge(
             )
             .await
         }
+    }
+}
+
+/// Reads `provider_requests` for this charge and asks the recovery table what
+/// to do about it.
+///
+/// The two callers reach the same decision from different evidence — the
+/// crash-recovery step at the top of a poll, and a `NotFound` the poll itself
+/// received — and they must not drift, which is why the read and the table are
+/// one step rather than two lines written twice.
+///
+/// # Errors
+///
+/// [`JobError::Db`] if the attempt row cannot be read.
+async fn recovery_action(
+    repositories: &dyn Repositories,
+    charge: &ChargeRow,
+    flow: vpay_core::ProviderFlow,
+    policy: &RecoveryPolicy,
+    now: OffsetDateTime,
+    payload: &PollChargePayload,
+) -> Result<RecoveryAction, JobError> {
+    let evidence = submit_evidence(repositories, &charge.id).await?;
+    Ok(recovery_step(
+        flow,
+        evidence,
+        payload.not_found_streak,
+        payload.first_not_found_at,
+        now,
+        policy,
+    ))
+}
+
+/// What the crash-recovery block left for the rest of the poll to do.
+///
+/// Two values rather than an `Option<Outcome>`, because the second one
+/// carries a fact the caller must not discard: the state the charge is in
+/// *after* recovery, which `Advance` moves.
+enum Recovered {
+    /// The recovery table answered for the whole job — the charge was
+    /// abandoned as a dead order, or a resubmit was scheduled.
+    Answered(Outcome),
+    /// Carry on to the rail, in this state.
+    StillPolling(ChargeState),
+}
+
+/// Performs the action [`recovery_step`] chose for a `submitting` charge.
+///
+/// The `Advance` arm is kill point 3 of `docs/flows/crash-safety.md`: the rail
+/// answered and the state update was lost, so the bookkeeping catches up and
+/// the poll continues as normal. A compare-and-swap that matched nothing means
+/// something else moved the row first, and this poll carries on in the state it
+/// read.
+///
+/// # Errors
+///
+/// [`JobError::Db`] for the state write, and whatever
+/// [`fail_dead_order`]/[`resubmit_then_escalate_if_late`] raise — including the
+/// [`JobError::Exhausted`] a past-the-horizon resubmit escalates with.
+async fn act_on_recovery(
+    repositories: &dyn Repositories,
+    job: &vpay_db::JobRow,
+    charge: &ChargeRow,
+    action: RecoveryAction,
+    past_horizon: bool,
+    payload: &PollChargePayload,
+) -> Result<Recovered, JobError> {
+    match action {
+        RecoveryAction::FailDeadOrder => Ok(Recovered::Answered(
+            fail_dead_order(repositories, job, charge).await?,
+        )),
+        RecoveryAction::Resubmit => Ok(Recovered::Answered(
+            resubmit_then_escalate_if_late(
+                repositories,
+                job,
+                charge,
+                ChargeState::Submitting,
+                past_horizon,
+                payload,
+            )
+            .await?,
+        )),
+        RecoveryAction::Advance(status_code) => {
+            if repositories
+                .set_live_state(
+                    &charge.id,
+                    ChargeState::Submitting.as_wire_str(),
+                    ChargeState::Submitted.as_wire_str(),
+                )
+                .await?
+            {
+                tracing::info!(
+                    job_id = %job.id,
+                    charge_id = %charge.id,
+                    status_code,
+                    "recovered a charge whose submit was answered but never recorded"
+                );
+                return Ok(Recovered::StillPolling(ChargeState::Submitted));
+            }
+            Ok(Recovered::StillPolling(ChargeState::Submitting))
+        }
+        RecoveryAction::Poll => Ok(Recovered::StillPolling(ChargeState::Submitting)),
+    }
+}
+
+/// A rail that would not answer, read against the horizon.
+///
+/// A rail that will not answer must not be able to keep a charge off the
+/// escalation: `ProviderError::Unavailable` is only [`Severity::Warn`], so a
+/// status endpoint answering `503` on every rung rode the ladder quietly past
+/// the horizon forever. Past it the fact an operator needs is "this charge is
+/// unreconciled after 24 hours", not "the last poll got a 503", so the rail's
+/// error is logged rather than returned and [`JobError::Exhausted`] says so
+/// hourly and with an alert.
+///
+/// **Only [`JobError::Provider`].** This is the one place in the worker where
+/// a composite replaces a leaf's classification with its own;
+/// `docs/reference/vpay-worker.md` §"One poll" records why ADR-0011 permits it
+/// here and what a wildcard arm swallowed before.
+///
+/// # Errors
+///
+/// The error it was given, untouched, for anything that is not a rail failure
+/// short of the horizon; [`JobError::Exhausted`] for the escalation, or
+/// [`JobError::Db`] if the escalation's state write fails.
+async fn rail_did_not_answer(
+    repositories: &dyn Repositories,
+    job: &vpay_db::JobRow,
+    charge: &ChargeRow,
+    state: ChargeState,
+    past_horizon: bool,
+    error: JobError,
+) -> Result<Outcome, JobError> {
+    match error {
+        JobError::Provider(error) if past_horizon => {
+            tracing::warn!(
+                job_id = %job.id,
+                charge_id = %charge.id,
+                error = %error,
+                "the rail did not answer about a charge that is already past the horizon"
+            );
+            escalate_to_unresolved(repositories, job, charge, state).await
+        }
+        error => Err(error),
+    }
+}
+
+/// `vpay_core::settle` had no answer, which today means the charge is already
+/// terminal.
+///
+/// Unreachable, because [`poll_charge`]'s own guard returns for a terminal
+/// charge before the rail is asked. It is written out rather than removed
+/// because the alternative is an `unwrap`-shaped access on a fact two separate
+/// `match`es agree on rather than the compiler — and because if it ever does
+/// become reachable, a rail saying the money went the other way from what the
+/// merchant was told must not become a silent `Done`.
+fn nothing_to_settle(
+    job: &vpay_db::JobRow,
+    charge_id: &str,
+    state: ChargeState,
+    kind: StatusKind,
+) -> Outcome {
+    if contradiction(kind, state) {
+        log_contradiction(job, charge_id, state, kind);
+    }
+    Outcome::Done
+}
+
+/// The rail's own transaction id, off a `Succeeded` answer.
+///
+/// A `match` rather than an `unwrap`-shaped access because the answer and the
+/// settlement are joined by a convention rather than by the compiler:
+/// `vpay_core::settle` answers `Succeeded` only for `StatusKind::Succeeded`,
+/// which this build only produces from [`ChargeStatus::Succeeded`].
+fn succeeded_txn_id(status: &ChargeStatus) -> Option<&str> {
+    match status {
+        ChargeStatus::Succeeded { provider_txn_id } => provider_txn_id.as_deref(),
+        _ => None,
+    }
+}
+
+/// Moves a live charge to the state the rail's answer implies, then takes the
+/// next rung of the ladder in that new state.
+///
+/// # Errors
+///
+/// [`JobError::Db`] for the state write or for what [`keep_polling`] records,
+/// and [`JobError::Exhausted`] when the charge is past the horizon.
+async fn advance_and_keep_polling(
+    repositories: &dyn Repositories,
+    job: &vpay_db::JobRow,
+    charge: &ChargeRow,
+    from: ChargeState,
+    to: ChargeState,
+    past_horizon: bool,
+    payload: &PollChargePayload,
+) -> Result<Outcome, JobError> {
+    repositories
+        .set_live_state(&charge.id, from.as_wire_str(), to.as_wire_str())
+        .await?;
+    keep_polling(repositories, job, charge, to, past_horizon, payload).await
+}
+
+/// The ladder's own state after an answer that moved nothing.
+///
+/// A `NotFound` extends the streak the recovery table counts; anything else
+/// resets it, because the streak means *consecutive* denials.
+fn stayed(payload: &PollChargePayload, kind: StatusKind, now: OffsetDateTime) -> PollChargePayload {
+    if kind == StatusKind::NotFound {
+        payload.saw_not_found(now)
+    } else {
+        payload.reset()
     }
 }
 
@@ -437,7 +519,7 @@ async fn poll_charge(
               struct would hide which ones the branch actually reads"
 )]
 async fn recover(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
     charge: &ChargeRow,
     state: ChargeState,
@@ -457,28 +539,43 @@ async fn recover(
             not_found_streak = next_payload.not_found_streak,
             "the rail has no record of a charge it had already acknowledged"
         );
-        return keep_polling(pool, job, charge, state, past_horizon, &next_payload).await;
+        return keep_polling(
+            repositories,
+            job,
+            charge,
+            state,
+            past_horizon,
+            &next_payload,
+        )
+        .await;
     }
 
-    let evidence = submit_evidence(pool, &charge.id).await?;
-    match recovery_step(
-        flow,
-        evidence,
-        next_payload.not_found_streak,
-        next_payload.first_not_found_at,
-        now,
-        policy,
-    ) {
-        RecoveryAction::FailDeadOrder => fail_dead_order(pool, job, charge).await,
+    match recovery_action(repositories, charge, flow, policy, now, &next_payload).await? {
+        RecoveryAction::FailDeadOrder => fail_dead_order(repositories, job, charge).await,
         RecoveryAction::Resubmit => {
-            resubmit_then_escalate_if_late(pool, job, charge, state, past_horizon, &next_payload)
-                .await
+            resubmit_then_escalate_if_late(
+                repositories,
+                job,
+                charge,
+                state,
+                past_horizon,
+                &next_payload,
+            )
+            .await
         }
         // `Advance` cannot follow a `NotFound` on an answered submit for a
         // charge still in `submitting` without the state having moved under
         // us; polling again is the harmless answer either way.
         RecoveryAction::Poll | RecoveryAction::Advance(_) => {
-            keep_polling(pool, job, charge, state, past_horizon, &next_payload).await
+            keep_polling(
+                repositories,
+                job,
+                charge,
+                state,
+                past_horizon,
+                &next_payload,
+            )
+            .await
         }
     }
 }
@@ -491,13 +588,13 @@ async fn recover(
 /// submission is reported as `Submitted`, not as an error — is what makes this
 /// safe even when the rail did receive the first one.
 async fn resubmit_charge(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     adapters: &Adapters,
     rails: &RailConfigs,
     job: &vpay_db::JobRow,
 ) -> Result<Outcome, JobError> {
     let payload: ResubmitPayload = decode(job)?;
-    let charge = load_charge(pool, job, &payload.charge_id).await?;
+    let charge = load_charge(repositories, job, &payload.charge_id).await?;
     let state = parse_state(job, &charge)?;
     if state != ChargeState::Submitting {
         // Something already resolved the ambiguity — a concurrent poll, or a
@@ -506,36 +603,105 @@ async fn resubmit_charge(
     }
 
     let (adapter, config) = rail(rails, adapters, job, &charge.provider_code)?;
+    let attempt = next_submit_attempt(repositories, &charge).await?;
+    let submitted = submit_again(repositories, adapter, config, job, &charge, attempt).await?;
+    commit_resubmission(repositories, job, &charge, submitted).await?;
 
-    // `attempt` is supplied rather than derived by the database
-    // (`provider_requests::insert_pending`'s own reasoning): the ladder knows
-    // how many times it has tried, and a `SELECT max(attempt) + 1` would race
-    // two retries into the same number.
-    let next_attempt = vpay_db::settlement::latest_submit_attempt(pool, &charge.id)
+    tracing::info!(
+        job_id = %job.id,
+        charge_id = %charge.id,
+        provider_reference_id = %charge.provider_reference_id,
+        attempt,
+        "resubmitted a charge under its existing reference"
+    );
+    Ok(Outcome::Done)
+}
+
+/// The `provider_requests.attempt` number this resubmission will carry.
+///
+/// Supplied rather than derived by the database
+/// (`vpay_db::provider_requests`' own reasoning): the ladder knows how many
+/// times it has tried, and a `SELECT max(attempt) + 1` would race two retries
+/// into the same number.
+///
+/// # Errors
+///
+/// [`JobError::Db`] for a Postgres failure.
+async fn next_submit_attempt(
+    repositories: &dyn Repositories,
+    charge: &ChargeRow,
+) -> Result<i32, JobError> {
+    Ok(repositories
+        .latest_submit_attempt(&charge.id)
         .await?
-        .map_or(1, |row| row.attempt.saturating_add(1));
-    let attempt_id = vpay_db::provider_requests::insert_pending(
-        pool,
-        &charge.id,
-        &charge.provider_code,
-        "submit",
-        charge.provider_reference_id,
-        next_attempt,
-    )
-    .await?;
+        .map_or(1, |row| row.attempt.saturating_add(1)))
+}
 
-    let charge_ref = charge_ref(job, &charge)?;
-    let submitted = match adapter.submit(&charge_ref, config).await {
+/// The submit itself, wrapped in the attempt row that makes it auditable.
+///
+/// The same shape as [`query_status`], and for the same reason: the row is
+/// written before the call and answered after it, so an attempt that got no
+/// answer is distinguishable from one that was never made
+/// (`docs/flows/crash-safety.md`).
+///
+/// # Errors
+///
+/// [`JobError::Db`] for the attempt row, and [`JobError::Provider`] for a rail
+/// that refused or would not answer — recorded against the attempt row before
+/// it is raised.
+async fn submit_again(
+    repositories: &dyn Repositories,
+    adapter: &dyn ProviderAdapter,
+    config: &ProviderConfig,
+    job: &vpay_db::JobRow,
+    charge: &ChargeRow,
+    attempt: i32,
+) -> Result<vpay_provider::Submitted, JobError> {
+    let attempt_id = repositories
+        .insert_pending(
+            &charge.id,
+            &charge.provider_code,
+            "submit",
+            charge.provider_reference_id,
+            attempt,
+        )
+        .await?;
+
+    let charge_ref = charge_ref(job, charge)?;
+    match adapter.submit(&charge_ref, config).await {
         Ok(submitted) => {
-            record_answer(pool, attempt_id, None).await?;
-            submitted
+            record_answer(repositories, attempt_id, None).await?;
+            Ok(submitted)
         }
         Err(error) => {
-            record_failure(pool, attempt_id, &error).await?;
-            return Err(JobError::Provider(error));
+            record_failure(repositories, attempt_id, &error).await?;
+            Err(JobError::Provider(error))
         }
-    };
+    }
+}
 
+/// Commits what the rail answered: the charge leaves `submitting`, and its
+/// poll job is there when it does.
+///
+/// One transaction for both, for the reason `enqueue_in_tx` exists at all: a
+/// charge that reached `submitted` with no job behind it is a charge nothing
+/// will ever drive to terminal. Normally the poll job already exists and the
+/// enqueue writes nothing.
+///
+/// The transition counter is recorded **after** the commit, never inside it —
+/// see `vpay_db::charges`' header.
+///
+/// # Errors
+///
+/// [`JobError::Poisoned`] for a payload that will not encode — raised before
+/// the transaction opens, so the unit of work stays a unit of *storage* work —
+/// and [`JobError::Db`] for the writes.
+async fn commit_resubmission(
+    repositories: &dyn Repositories,
+    job: &vpay_db::JobRow,
+    charge: &ChargeRow,
+    submitted: vpay_provider::Submitted,
+) -> Result<(), JobError> {
     let ref_extra = serde_json::Value::Object(
         submitted
             .ref_extra
@@ -543,43 +709,37 @@ async fn resubmit_charge(
             .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
             .collect(),
     );
+    let payload = poll_payload(job, &charge.id)?;
+    let dedupe_key = poll_dedupe_key(&charge.id);
 
-    let mut tx = pool.begin().await.map_err(DbError::Query)?;
-    let submitted_charge = vpay_db::charges::mark_submitted(
-        &mut tx,
-        &charge.id,
-        ChargeState::Submitted.as_wire_str(),
-        Some(&ref_extra),
-        submitted.redirect_url.as_deref(),
-    )
-    .await?;
-    // In the same transaction as the state move, for the reason
-    // `enqueue_in_tx` exists at all: a charge that reached `submitted` with no
-    // job behind it is a charge nothing will ever drive to terminal. Normally
-    // the poll job already exists and this writes nothing (`Ok(false)`).
-    vpay_db::jobs::enqueue_in_tx(
-        &mut tx,
-        JobKind::PollCharge.as_wire_str(),
-        &poll_dedupe_key(&charge.id),
-        &poll_payload(job, &charge.id)?,
-        OffsetDateTime::now_utc(),
-    )
-    .await?;
-    tx.commit().await.map_err(DbError::Query)?;
+    let submitted_charge = repositories
+        .transaction(|tx| {
+            // Borrowed, not moved: the caller's log line reads `charge` again.
+            let charge = &charge;
+            Box::pin(async move {
+                let submitted_charge = tx
+                    .mark_submitted(
+                        &charge.id,
+                        ChargeState::Submitted.as_wire_str(),
+                        Some(&ref_extra),
+                        submitted.redirect_url.as_deref(),
+                    )
+                    .await?;
+                tx.enqueue_in_tx(
+                    JobKind::PollCharge.as_wire_str(),
+                    &dedupe_key,
+                    &payload,
+                    OffsetDateTime::now_utc(),
+                )
+                .await?;
+                Ok::<_, DbError>(TxOutcome::Commit(submitted_charge))
+            })
+        })
+        .await?
+        .into_inner();
 
-    // After the commit: the enqueue above shares this transaction, and a
-    // resubmit whose transaction rolled back moved no charge. See
-    // `vpay_db::charges`' header.
-    vpay_db::charges::record_left_submitting(&submitted_charge);
-
-    tracing::info!(
-        job_id = %job.id,
-        charge_id = %charge.id,
-        provider_reference_id = %charge.provider_reference_id,
-        attempt = next_attempt,
-        "resubmitted a charge under its existing reference"
-    );
-    Ok(Outcome::Done)
+    repositories.record_left_submitting(&submitted_charge);
+    Ok(())
 }
 
 /// Deletes what has expired: idempotency records, client-assertion `jti`s, and
@@ -590,9 +750,12 @@ async fn resubmit_charge(
 /// (`docs/status.md`). Three independent statements, each its own transaction:
 /// they share nothing, and one failing should not roll back the other two's
 /// work. Always reschedules — a sweep that found nothing is the healthy case.
-async fn sweep_expired(pool: &PgPool, policy: &RecoveryPolicy) -> Result<Outcome, JobError> {
-    let idempotency = vpay_db::idempotency::sweep_expired(pool).await?;
-    let assertions = vpay_db::delete_expired_client_assertion_jtis(pool).await?;
+async fn sweep_expired(
+    repositories: &dyn Repositories,
+    policy: &RecoveryPolicy,
+) -> Result<Outcome, JobError> {
+    let idempotency = repositories.sweep_expired().await?;
+    let assertions = repositories.delete_expired_client_assertion_jtis().await?;
     // Lease expiry is a separate reaper rather than a condition on `claim`,
     // so `jobs_claimable_idx`'s `locked_at IS NULL` predicate stays exact.
     // Not the *only* reaper, and it must not be: `crate::run_loop` reaps at
@@ -600,7 +763,7 @@ async fn sweep_expired(pool: &PgPool, policy: &RecoveryPolicy) -> Result<Outcome
     // in `jobs` and a worker that died holding it would leave the sweep — and
     // therefore the reaping — unclaimable forever. Reaping here as well costs
     // one statement an hour and keeps the sweep's own description honest.
-    let leases = vpay_db::jobs::reap_expired_leases(pool, policy.lease).await?;
+    let leases = repositories.reap_expired_leases(policy.lease).await?;
 
     tracing::info!(
         idempotency_keys = idempotency,
@@ -619,29 +782,42 @@ async fn sweep_expired(pool: &PgPool, policy: &RecoveryPolicy) -> Result<Outcome
 /// charges written before the queue existed, and a job lost to operator error.
 /// Every insert is `ON CONFLICT (dedupe_key) DO NOTHING`, so a charge that
 /// already has a poll job is untouched, including one scheduled an hour out.
-async fn scan_live_charges(pool: &PgPool, job: &vpay_db::JobRow) -> Result<Outcome, JobError> {
+async fn scan_live_charges(
+    repositories: &dyn Repositories,
+    job: &vpay_db::JobRow,
+) -> Result<Outcome, JobError> {
     let now = OffsetDateTime::now_utc();
     let cutoff = now - stale_after();
-    let charge_ids =
-        vpay_db::settlement::live_charges_stale_since(pool, cutoff, SCAN_BATCH).await?;
+    let charge_ids = repositories
+        .live_charges_stale_since(cutoff, SCAN_BATCH)
+        .await?;
 
     let mut enqueued = 0_usize;
     if !charge_ids.is_empty() {
-        let mut tx = pool.begin().await.map_err(DbError::Query)?;
-        for charge_id in &charge_ids {
-            let inserted = vpay_db::jobs::enqueue_in_tx(
-                &mut tx,
-                JobKind::PollCharge.as_wire_str(),
-                &poll_dedupe_key(charge_id),
-                &poll_payload(job, charge_id)?,
-                now,
-            )
-            .await?;
-            if inserted {
-                enqueued += 1;
-            }
-        }
-        tx.commit().await.map_err(DbError::Query)?;
+        enqueued = repositories
+            .transaction(|tx| {
+                // Borrowed, not moved: the count below reads `charge_ids` again.
+                let charge_ids = &charge_ids;
+                Box::pin(async move {
+                    let mut enqueued = 0_usize;
+                    for charge_id in charge_ids {
+                        let inserted = tx
+                            .enqueue_in_tx(
+                                JobKind::PollCharge.as_wire_str(),
+                                &poll_dedupe_key(charge_id),
+                                &poll_payload(job, charge_id)?,
+                                now,
+                            )
+                            .await?;
+                        if inserted {
+                            enqueued += 1;
+                        }
+                    }
+                    Ok::<_, JobError>(TxOutcome::Commit(enqueued))
+                })
+            })
+            .await?
+            .into_inner();
     }
 
     if enqueued > 0 {
@@ -676,7 +852,7 @@ async fn scan_live_charges(pool: &PgPool, job: &vpay_db::JobRow) -> Result<Outco
 /// — hourly instead of on the ladder — because "a late success at hour 30 is
 /// the normal transition".
 async fn keep_polling(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
     charge: &ChargeRow,
     state: ChargeState,
@@ -685,10 +861,10 @@ async fn keep_polling(
 ) -> Result<Outcome, JobError> {
     // Recorded before the escalation, so what this poll learned survives even
     // when the answer is an escalation rather than a reschedule.
-    remember(pool, job, payload).await?;
+    remember(repositories, job, payload).await?;
 
     if past_horizon {
-        return escalate_to_unresolved(pool, job, charge, state).await;
+        return escalate_to_unresolved(repositories, job, charge, state).await;
     }
 
     Ok(Outcome::RescheduleAfter(crate::poll_delay(attempt_index(
@@ -700,18 +876,15 @@ async fn keep_polling(
 /// 24-hour horizon?
 ///
 /// Measured from `charges.created_at`, which is written *before* the rail is
-/// called, by construction (`docs/flows/crash-safety.md`) — so it is the age
-/// of the payer's exposure and not of our bookkeeping. A `Duration` that does
-/// not fit `time::Duration` saturates to `MAX`, i.e. "never", which is the
-/// safe direction: an unrepresentable horizon must not escalate every charge
-/// at once.
+/// called — so it is the age of the payer's exposure and not of our
+/// bookkeeping. A `Duration` that does not fit `time::Duration` saturates to
+/// "never", which is the safe direction.
 ///
-/// Called from exactly one place, [`poll_charge`], which evaluates it before
-/// the crash-recovery block and carries the answer down to [`keep_polling`]
-/// and [`resubmit_then_escalate_if_late`] — the two frames that can conclude
-/// "this charge is still live and still unanswered". It is not a gate on
-/// asking the rail: past the horizon the charge is polled hourly rather than
-/// not at all, and what escalates is every outcome short of a settlement.
+/// Called from exactly one place, [`poll_charge`], which evaluates it *above*
+/// the crash-recovery block and carries the answer down. Both the placement
+/// and the fact that this is not a gate on asking the rail are load-bearing:
+/// `docs/reference/vpay-worker.md` §"The horizon is evaluated above the
+/// crash-recovery block".
 fn past_the_horizon(charge: &ChargeRow, policy: &RecoveryPolicy, now: OffsetDateTime) -> bool {
     let horizon = time::Duration::try_from(policy.unresolved_after).unwrap_or(time::Duration::MAX);
     now - charge.created_at >= horizon
@@ -719,49 +892,35 @@ fn past_the_horizon(charge: &ChargeRow, policy: &RecoveryPolicy, now: OffsetDate
 
 /// Marks a charge `unresolved` and fails the job with [`JobError::Exhausted`].
 ///
-/// **Never returns `Ok`.** The `Result<Outcome, _>` return type is so callers
-/// can `return escalate_to_unresolved(…).await;` from a function that
-/// otherwise produces outcomes, and so the `set_live_state` write can
-/// propagate a real [`DbError`] with `?` instead of being swallowed into the
-/// exhaustion. A database failure here is a database failure, not an
-/// escalation, and it must be retried as one.
+/// **Never returns `Ok`.** The charge stays *live*: `unresolved` is an
+/// escalation, not a verdict, and a late success at hour 30 is the normal
+/// transition (`docs/flows/reconciler.md`) — which is why the error is
+/// `Exhausted`, hourly retry plus an alert, rather than anything that parks
+/// the job. The state write is skipped when the charge is already
+/// `unresolved`, which is what makes the hourly re-escalation idempotent.
 ///
-/// The charge stays **live**: `unresolved` is an escalation, not a verdict.
-/// "A late success — minute 40, or hour 30 from `unresolved` — is the normal
-/// transition" (`docs/flows/reconciler.md`), which is why the error is
-/// `Exhausted` (hourly retry + alert) rather than anything that parks the job.
+/// `docs/reference/vpay-worker.md` §"One poll" says why the return type is a
+/// `Result<Outcome, _>` that never answers `Ok`, and which test would fail if
+/// the idempotence became a silent no-op.
 ///
-/// Once a charge is `unresolved` every later hourly run *does* ask the rail
-/// before arriving back here, so the late success has something to arrive
-/// through — the crash-recovery block that can return earlier is entered only
-/// from `submitting`, which this function has just left. The run that
-/// escalates is the one exception, and it has two shapes: it either asked the
-/// rail and got an answer short of terminal (or no answer at all), or it came
-/// from [`resubmit_then_escalate_if_late`], which is reached without a query
-/// because the recovery table concluded from `provider_requests` alone.
+/// # Errors
 ///
-/// The state write is skipped when the charge is already `unresolved`, which
-/// is what makes the hourly re-escalation idempotent: the alert repeats, the
-/// row does not move, and `charges.updated_at` keeps naming the last time
-/// anything actually changed. Proven by
-/// `a_second_hourly_poll_of_an_unresolved_charge_re_alerts_without_writing_it_again`
-/// in `backends/tests/integration/tests/worker_recovery.rs`, which asserts the
-/// timestamp *and* the alert — a no-op that also stopped alerting would
-/// satisfy half of this sentence.
+/// Always: [`JobError::Exhausted`], or [`JobError::Db`] if the state write
+/// fails — a database failure here is a database failure, not an escalation.
 async fn escalate_to_unresolved(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
     charge: &ChargeRow,
     state: ChargeState,
 ) -> Result<Outcome, JobError> {
     if state != ChargeState::Unresolved {
-        vpay_db::settlement::set_live_state(
-            pool,
-            &charge.id,
-            state.as_wire_str(),
-            ChargeState::Unresolved.as_wire_str(),
-        )
-        .await?;
+        repositories
+            .set_live_state(
+                &charge.id,
+                state.as_wire_str(),
+                ChargeState::Unresolved.as_wire_str(),
+            )
+            .await?;
     }
     Err(JobError::Exhausted {
         job_id: job.id,
@@ -777,7 +936,7 @@ async fn escalate_to_unresolved(
 /// in `submitting` is one nobody could have paid — see
 /// [`crate::recovery::recovery_step`].
 async fn fail_dead_order(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
     charge: &ChargeRow,
 ) -> Result<Outcome, JobError> {
@@ -786,7 +945,7 @@ async fn fail_dead_order(
                        order can never be queried and no payment can have occurred \
                        (docs/flows/crash-safety.md)";
     settle_failed_with(
-        pool,
+        repositories,
         job,
         charge,
         FailureCode::ProviderUnavailable,
@@ -798,27 +957,22 @@ async fn fail_dead_order(
 
 /// Commits a rail-reported success.
 async fn settle_succeeded(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
     charge: &ChargeRow,
     provider_txn_id: Option<&str>,
 ) -> Result<Outcome, JobError> {
     let data = intent_snapshot(
-        pool,
+        repositories,
         job,
         &charge.payment_intent_id,
         IntentStatus::Succeeded,
         None,
     )
     .await?;
-    let settled = vpay_db::settlement::apply_succeeded(
-        pool,
-        &charge.id,
-        provider_txn_id,
-        &ids::event_id(),
-        &data,
-    )
-    .await?;
+    let settled = repositories
+        .apply_succeeded(&charge.id, provider_txn_id, &ids::event_id(), &data)
+        .await?;
 
     match settled {
         Some(_) => tracing::info!(
@@ -831,14 +985,14 @@ async fn settle_succeeded(
         // between this run's read and its write. Usually that is a duplicate
         // run agreeing with itself; if the charge is `failed`, the rail has
         // just contradicted what the merchant was told.
-        None => report_late_answer(pool, job, charge, StatusKind::Succeeded).await,
+        None => report_late_answer(repositories, job, charge, StatusKind::Succeeded).await,
     }
     Ok(Outcome::Done)
 }
 
 /// Commits a rail-reported decline.
 async fn settle_failed(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
     charge: &ChargeRow,
     code: FailureCode,
@@ -853,7 +1007,7 @@ async fn settle_failed(
         _ => code.as_str(),
     };
     settle_failed_with(
-        pool,
+        repositories,
         job,
         charge,
         code,
@@ -864,7 +1018,7 @@ async fn settle_failed(
 }
 
 async fn settle_failed_with(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
     charge: &ChargeRow,
     code: FailureCode,
@@ -873,23 +1027,23 @@ async fn settle_failed_with(
 ) -> Result<Outcome, JobError> {
     let message = merchant_message(code, raw);
     let data = intent_snapshot(
-        pool,
+        repositories,
         job,
         &charge.payment_intent_id,
         IntentStatus::RequiresPaymentMethod,
         Some((code, &message)),
     )
     .await?;
-    let settled = vpay_db::settlement::apply_failed(
-        pool,
-        &charge.id,
-        code.as_str(),
-        raw,
-        &message,
-        &ids::event_id(),
-        &data,
-    )
-    .await?;
+    let settled = repositories
+        .apply_failed(
+            &charge.id,
+            code.as_str(),
+            raw,
+            &message,
+            &ids::event_id(),
+            &data,
+        )
+        .await?;
 
     match settled {
         Some(_) => tracing::warn!(
@@ -902,7 +1056,7 @@ async fn settle_failed_with(
         // As in `settle_succeeded`: nothing was written because the charge is
         // already terminal. A `succeeded` charge here is the rail reversing a
         // payment the merchant has been told about.
-        None => report_late_answer(pool, job, charge, StatusKind::Failed(code)).await,
+        None => report_late_answer(repositories, job, charge, StatusKind::Failed(code)).await,
     }
     Ok(Outcome::Done)
 }
@@ -921,12 +1075,12 @@ async fn settle_failed_with(
 /// completed settlement into a retry because a *diagnostic* read failed would
 /// re-run the whole poll for nothing.
 async fn report_late_answer(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
     charge: &ChargeRow,
     kind: StatusKind,
 ) {
-    let stored = match vpay_db::charges::get_by_id(pool, &charge.id).await {
+    let stored = match Charges::get_by_id(repositories, &charge.id).await {
         Ok(Some(row)) => row,
         Ok(None) => return,
         Err(error) => {
@@ -992,39 +1146,25 @@ const fn status_kind_label(kind: StatusKind) -> &'static str {
 /// Both `Resubmit` arms go through here, which is the point: the arm in
 /// [`poll_charge`]'s crash-recovery block and the one in [`recover`] are the
 /// same decision reached from different evidence, and only one of them used to
-/// know about the horizon. Neither did the right thing at 24 hours — a
-/// `submitting` charge whose rail answers `404` forever cycled resubmit →
-/// ladder → resubmit, never `unresolved` and never alerting, which is the one
-/// outcome `docs/flows/reconciler.md` rules out for a charge that has been
-/// live for a day.
+/// know about the horizon.
 ///
-/// # What "escalate on top of it" is worth, exactly
-///
-/// The resubmit row is committed first and the escalation second, in two
-/// transactions, and the escalation moves the charge to `unresolved`. So the
-/// resubmit job usually finds the charge outside `submitting` and returns
-/// `Outcome::Done` without calling the rail ([`resubmit_charge`]'s own guard):
-/// past the horizon the escalation ordinarily *supersedes* the resubmit rather
-/// than running alongside it. A concurrent worker that claims the resubmit
-/// between the two commits does send it, under the charge's existing
-/// reference. Both orders are safe — the reference never changes, and
-/// [`escalate_to_unresolved`] is idempotent — but this is a real
-/// non-determinism and not a detail: what the horizon guarantees here is the
-/// alert and the hourly poll, not that a 25-hour-old charge is resent. That is
-/// deliberate. Once a human is reconciling a charge against the rail's
-/// settlement statement, whether to push another submission at it is their
-/// call, not a queue's.
+/// The resubmit row commits first and the escalation second, in two
+/// transactions, so past the horizon the escalation ordinarily *supersedes*
+/// the resubmit rather than running alongside it — but not always.
+/// `docs/reference/vpay-worker.md` §"Resubmit and escalate is a real
+/// non-determinism" states what the horizon does and does not guarantee here,
+/// and why that is deliberate.
 async fn resubmit_then_escalate_if_late(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
     charge: &ChargeRow,
     state: ChargeState,
     past_horizon: bool,
     payload: &PollChargePayload,
 ) -> Result<Outcome, JobError> {
-    let rescheduled = schedule_resubmit(pool, job, charge, payload).await?;
+    let rescheduled = schedule_resubmit(repositories, job, charge, payload).await?;
     if past_horizon {
-        return escalate_to_unresolved(pool, job, charge, state).await;
+        return escalate_to_unresolved(repositories, job, charge, state).await;
     }
     Ok(rescheduled)
 }
@@ -1035,21 +1175,29 @@ async fn resubmit_then_escalate_if_late(
 /// is polled by the job that was already tracking this charge instead of a
 /// fresh ladder starting at rung zero.
 async fn schedule_resubmit(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
     charge: &ChargeRow,
     payload: &PollChargePayload,
 ) -> Result<Outcome, JobError> {
-    let mut tx = pool.begin().await.map_err(DbError::Query)?;
-    let enqueued = vpay_db::jobs::enqueue_in_tx(
-        &mut tx,
-        JobKind::ResubmitCharge.as_wire_str(),
-        &resubmit_dedupe_key(&charge.id),
-        &encode(job, &ResubmitPayload::new(charge.id.clone()))?,
-        OffsetDateTime::now_utc(),
-    )
-    .await?;
-    tx.commit().await.map_err(DbError::Query)?;
+    let enqueued = repositories
+        .transaction(|tx| {
+            // Borrowed, not moved: the log line below reads `charge` again.
+            let charge = &charge;
+            Box::pin(async move {
+                let enqueued = tx
+                    .enqueue_in_tx(
+                        JobKind::ResubmitCharge.as_wire_str(),
+                        &resubmit_dedupe_key(&charge.id),
+                        &encode(job, &ResubmitPayload::new(charge.id.clone()))?,
+                        OffsetDateTime::now_utc(),
+                    )
+                    .await?;
+                Ok::<_, JobError>(TxOutcome::Commit(enqueued))
+            })
+        })
+        .await?
+        .into_inner();
 
     if enqueued {
         tracing::warn!(
@@ -1063,7 +1211,7 @@ async fn schedule_resubmit(
 
     // A resubmit *is* the reset: the ladder that follows it starts fresh, so
     // a threshold that has just been satisfied cannot immediately re-fire.
-    remember(pool, job, &payload.reset()).await?;
+    remember(repositories, job, &payload.reset()).await?;
     Ok(Outcome::RescheduleAfter(crate::poll_delay(attempt_index(
         job,
     ))))
@@ -1072,32 +1220,32 @@ async fn schedule_resubmit(
 /// The one authenticated status read, wrapped in the attempt row that makes
 /// it auditable.
 async fn query_status(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     adapter: &dyn ProviderAdapter,
     config: &ProviderConfig,
     job: &vpay_db::JobRow,
     charge: &ChargeRow,
 ) -> Result<ChargeStatus, JobError> {
     let charge_ref = charge_ref(job, charge)?;
-    let attempt_id = vpay_db::provider_requests::insert_pending(
-        pool,
-        &charge.id,
-        &charge.provider_code,
-        "query_status",
-        charge.provider_reference_id,
-        attempt_number(job),
-    )
-    .await?;
+    let attempt_id = repositories
+        .insert_pending(
+            &charge.id,
+            &charge.provider_code,
+            "query_status",
+            charge.provider_reference_id,
+            attempt_number(job),
+        )
+        .await?;
 
     match adapter.query_status(&charge_ref, config).await {
         Ok(status) => {
             // The answer's own label, so an operator can tell a `NotFound`
             // run of the ladder from a `Pending` one without replaying it.
-            record_answer(pool, attempt_id, Some(status_label(&status))).await?;
+            record_answer(repositories, attempt_id, Some(status_label(&status))).await?;
             Ok(status)
         }
         Err(error) => {
-            record_failure(pool, attempt_id, &error).await?;
+            record_failure(repositories, attempt_id, &error).await?;
             Err(JobError::Provider(error))
         }
     }
@@ -1110,17 +1258,17 @@ async fn query_status(
 /// the rail's status line, and inventing one here would be a per-rail guess in
 /// the layer that is forbidden to know which rail it is talking to.
 async fn record_answer(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     attempt_id: i64,
     label: Option<&'static str>,
 ) -> Result<(), JobError> {
-    vpay_db::provider_requests::record_response(
-        pool,
-        attempt_id,
-        Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT),
-        label,
-    )
-    .await?;
+    repositories
+        .record_response(
+            attempt_id,
+            Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT),
+            label,
+        )
+        .await?;
     Ok(())
 }
 
@@ -1131,11 +1279,13 @@ async fn record_answer(
 /// the error's own classification code — operator-facing, never a merchant's
 /// vocabulary.
 async fn record_failure(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     attempt_id: i64,
     error: &ProviderError,
 ) -> Result<(), JobError> {
-    vpay_db::provider_requests::record_response(pool, attempt_id, None, Some(error.code())).await?;
+    repositories
+        .record_response(attempt_id, None, Some(error.code()))
+        .await?;
     Ok(())
 }
 
@@ -1182,8 +1332,11 @@ fn ref_extra_of(charge: &ChargeRow) -> RefExtra {
 }
 
 /// What `provider_requests` says about the last attempt to submit this charge.
-async fn submit_evidence(pool: &PgPool, charge_id: &str) -> Result<SubmitAttempt, JobError> {
-    let latest = vpay_db::settlement::latest_submit_attempt(pool, charge_id).await?;
+async fn submit_evidence(
+    repositories: &dyn Repositories,
+    charge_id: &str,
+) -> Result<SubmitAttempt, JobError> {
+    let latest = repositories.latest_submit_attempt(charge_id).await?;
     Ok(match latest {
         None => SubmitAttempt::Never,
         Some(row) => match row.status_code {
@@ -1197,26 +1350,24 @@ async fn submit_evidence(pool: &PgPool, charge_id: &str) -> Result<SubmitAttempt
 ///
 /// Rendered through `vpay_api::model::PaymentIntentObject`, the same type
 /// `GET /v1/payment_intents/{id}` returns, because `events.data` is a
-/// *snapshot of the object* (migration 0018) and Step 5 delivers it verbatim
-/// to a merchant's Stripe-shaped handler. A second, hand-written copy of that
-/// shape here is exactly how the webhook body and the API response start
-/// disagreeing about a field.
+/// *snapshot of the object* (migration 0018) delivered verbatim to a
+/// merchant's handler. A second, hand-written copy of that shape is how the
+/// webhook body and the API response start disagreeing about a field.
 ///
-/// The projection is applied to the row **before** the write, because
-/// `apply_succeeded`/`apply_failed` take `event_data` as an input — the event
-/// is written inside the same transaction as the row it describes, so it
-/// cannot be rendered from the result. The two fields patched here are exactly
-/// the ones those functions change and that the object renders: `status`, and
-/// the `last_payment_error` pair. `amount_received` is *not* patched because
-/// the object does not carry it.
+/// The projection is applied **before** the write, because the settlement
+/// takes `event_data` as an input — the event is written inside the same
+/// transaction as the row it describes, so it cannot be rendered from the
+/// result. The two fields patched are exactly the ones the settlement changes
+/// and the object renders; `amount_received` is not patched because the object
+/// does not carry it.
 async fn intent_snapshot(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
     payment_intent_id: &str,
     status: IntentStatus,
     error: Option<(FailureCode, &str)>,
 ) -> Result<serde_json::Value, JobError> {
-    let mut row = vpay_db::payment_intents::get_by_id(pool, payment_intent_id)
+    let mut row = PaymentIntents::get_by_id(repositories, payment_intent_id)
         .await?
         .ok_or_else(|| {
             poisoned(
@@ -1267,7 +1418,7 @@ fn merchant_message(code: FailureCode, raw: &str) -> String {
 /// and this worker's answer is being discarded anyway — the loop discovers the
 /// same thing when it tries to reschedule, so this does not raise it twice.
 async fn remember(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
     payload: &PollChargePayload,
 ) -> Result<(), JobError> {
@@ -1282,27 +1433,30 @@ async fn remember(
             "a claimed job row carries no `locked_by`".to_owned(),
         ));
     };
-    vpay_db::jobs::set_payload(pool, job.id, worker_id, &encoded).await?;
+    repositories
+        .set_payload(job.id, worker_id, &encoded)
+        .await?;
     Ok(())
 }
 
 /// A fresh poll payload for one charge, as JSONB.
 ///
-/// The enqueue itself is written out at each call site rather than wrapped in
-/// a helper, because a helper would have to name `sqlx::PgConnection` in its
-/// signature and this crate deliberately does not depend on `sqlx` — every
-/// statement belongs to `vpay-db`.
+/// The enqueue itself is still written out at each call site: the payload is
+/// the only part the three sites share, and each one belongs to a different
+/// transaction. Before Step 7 a shared helper was not even expressible — it
+/// would have had to name `sqlx::PgConnection`, which this crate deliberately
+/// does not depend on.
 fn poll_payload(job: &vpay_db::JobRow, charge_id: &str) -> Result<serde_json::Value, JobError> {
     encode(job, &PollChargePayload::new(charge_id))
 }
 
 /// Loads the charge a job names, or says the row is poisoned.
 async fn load_charge(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
     charge_id: &str,
 ) -> Result<ChargeRow, JobError> {
-    vpay_db::charges::get_by_id(pool, charge_id)
+    Charges::get_by_id(repositories, charge_id)
         .await?
         .ok_or_else(|| poisoned(job, format!("charge {charge_id} does not exist")))
 }
@@ -1424,27 +1578,20 @@ fn stale_after() -> time::Duration {
     time::Duration::try_from(SCAN_INTERVAL).unwrap_or(time::Duration::MAX)
 }
 
-/// Logs a job failure at the level its classification implies.
+/// Logs a job failure at the level its classification implies, and counts it.
 ///
-/// The four arms mirror [`crate::tracing_level`] exactly and exist separately
-/// only because `alert = true` is an event *field*, which has to be written at
-/// the macro call site — that function's own doc comment explains why it
-/// cannot attach it for the caller. `alert` is set for [`Severity::Page`] and
-/// nothing else, so an alerting rule can select pages without also firing on
-/// every rail timeout.
+/// `alert = true` for [`Severity::Page`] and nothing else, so an alerting rule
+/// can select pages without also firing on every rail timeout. This is also
+/// where a job failure reaches `vpay_error_events_total` and, for a `Page`,
+/// `vpay_alert_events_total` — the counter and the field are one decision read
+/// off one [`Classify`] impl, so no log-scraping layer can classify the same
+/// failure differently.
 ///
-/// It is also where a job failure reaches `vpay_error_events_total` and —
-/// for a `Page` — `vpay_alert_events_total`, through
-/// [`vpay_core::metrics::record_error_event`]. This is the `JobError` twin
-/// of `vpay_api::ApiError::log`, and for the same reason: the counter and
-/// the `alert = true` field are one decision read off one [`Classify`] impl,
-/// so no log-scraping layer can classify the same failure differently.
-///
-/// `crate::run_loop`'s `log_disposition` reports the *same* failure again as
-/// a disposition, at a wider severity net, and deliberately does **not**
-/// increment: it would double-count this one and add others that carry no
-/// classification to label. `record_error_event`'s own docs list every
-/// `alert = true` line in the workspace that the counters do not carry.
+/// The four arms exist separately because `alert` is an event *field* and has
+/// to be written at the macro call site; see [`crate::tracing_level`].
+/// `docs/reference/vpay-worker.md` §"Where a job failure is logged" explains
+/// the second line `crate::run_loop` writes for the same failure, and why it
+/// deliberately does not increment.
 fn log_failure(job: &vpay_db::JobRow, error: &JobError) {
     let severity = error.severity();
     let code = error.code();

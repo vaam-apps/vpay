@@ -1,46 +1,15 @@
-//! The `Vpay-Signature` header: the exact bytes vpay signs, and the exact
-//! text it writes.
+//! The `Vpay-Signature` header: the exact bytes vpay signs, and the exact text
+//! it writes.
 //!
 //! `docs/flows/webhooks.md` names the scheme — Stripe's, copied — and the two
-//! SDK verifiers (`sdks/rust/src/webhooks.rs`,
-//! `sdks/nodejs/src/webhooks.ts`) are the specification this module is held
-//! to. This is the *sending* half of that pair and the only place in the
-//! workspace that produces the header.
+//! SDK verifiers (`sdks/rust/src/webhooks.rs`, `sdks/nodejs/src/webhooks.ts`)
+//! are the specification this module is held to. This is the *sending* half of
+//! that pair and the only place in the workspace that produces the header.
 //!
-//! # The three things that make a delivery verifiable
-//!
-//! **The signed payload is `t_text || "." || body`, and `t_text` is the
-//! literal text written into the header.** Not a number re-rendered on
-//! either side. The verifiers pin this deliberately
-//! (`the_hmac_covers_the_literal_t_text_not_a_re_rendered_number`), because a
-//! sender whose `t` does not round-trip through an integer would otherwise
-//! produce genuine deliveries that every merchant silently rejects. This
-//! module writes the decimal rendering of `now.unix_timestamp()` once and
-//! signs that same `String`, so the two cannot diverge here even in
-//! principle.
-//!
-//! **`body` is the bytes that go on the wire, not a value that will be
-//! re-serialised.** Hence `&[u8]`: the caller renders once
-//! ([`crate::webhooks::event_bytes`]), signs those bytes, and sends those
-//! bytes. A signature computed over a re-serialisation of the same JSON is a
-//! signature over different bytes the moment a key order or a float rendering
-//! differs.
-//!
-//! **One `v1=` per configured secret, in configuration order.** Rotation is
-//! "add the new secret, wait, remove the old one": during the overlap a
-//! receiver holding *either* secret verifies, because both SDK verifiers try
-//! every `v1=` value. Emitting only the newest would make rotation a
-//! flag-day.
-//!
-//! # What this module deliberately does not do
-//!
-//! No constant-time anything. Signing produces a value; it never compares
-//! one, so there is nothing here for `subtle` to protect — which is why this
-//! crate does not depend on it while the SDK does.
-//!
-//! No tolerance, no replay window: those are the *receiver's* checks
-//! (`DEFAULT_TOLERANCE`, 5 minutes), and a sender that tried to enforce them
-//! would only be describing its own clock.
+//! `docs/reference/vpay-worker.md` §"Signing" carries the three properties
+//! that make a delivery verifiable — the literal `t` text is what is signed,
+//! the bytes signed are the bytes sent, and one `v1=` per configured secret —
+//! and the two things this module deliberately does not do.
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -75,6 +44,32 @@ type HmacSha256 = Hmac<Sha256>;
 /// would fail the *tolerance* check instead — the same rejection, reported as
 /// something the merchant could plausibly debug. A refused header that names
 /// the real clock is the failure an operator can act on.
+///
+/// ```
+/// use time::{Duration, OffsetDateTime};
+/// use vpay_worker::signature_header;
+///
+/// let now = OffsetDateTime::UNIX_EPOCH + Duration::seconds(1_753_401_600);
+/// let secrets = ["whsec_old".to_owned(), "whsec_new".to_owned()];
+/// let header = signature_header(br#"{"id":"evt_1"}"#, now, &secrets);
+///
+/// let parts: Vec<&str> = header.split(',').collect();
+/// // `t=` is plain decimal seconds, no padding and no sign, and it is that
+/// // literal text the HMAC covers.
+/// assert_eq!(parts[0], "t=1753401600");
+/// // One `v1=` per configured secret, in configuration order — which is what
+/// // lets a receiver holding *either* secret verify during a rotation.
+/// assert_eq!(parts.len(), 3);
+/// assert!(parts[1..].iter().all(|part| part.starts_with("v1=")));
+/// assert_ne!(parts[1], parts[2]);
+/// // SHA-256 is 32 bytes, rendered as 64 lowercase hex characters.
+/// assert!(parts[1..].iter().all(|part| part.len() == 3 + 64));
+/// assert!(header.chars().all(|c| c != ' '));
+///
+/// // No secret configured yields a header carrying no signature at all,
+/// // which every verifier calls malformed. That is the honest answer.
+/// assert_eq!(signature_header(b"{}", now, &[]), "t=1753401600");
+/// ```
 #[must_use]
 pub fn signature_header(body: &[u8], now: OffsetDateTime, secrets: &[String]) -> String {
     // Written once and *reused* for the HMAC below. The whole scheme rests on

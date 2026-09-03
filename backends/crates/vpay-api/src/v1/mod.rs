@@ -57,7 +57,10 @@ pub mod events;
 /// outside this crate could usefully build (the repositories take
 /// `vpay_db::ListPage` directly). Keeping it crate-private is also what lets
 /// its module docs link to the private functions they are about.
-pub(crate) mod paging;
+// `pub` since Step 7, and only so its rules can carry compiled doctests: a
+// doctest links the library as an external crate, so a `pub(crate)` helper
+// cannot be called from one. Nothing here reaches a database or a rail.
+pub mod paging;
 pub mod payment_intents;
 
 /// The scope a token must carry to *change* anything under `/v1`.

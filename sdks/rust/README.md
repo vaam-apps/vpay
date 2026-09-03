@@ -350,16 +350,17 @@ Where the two type systems land differently, and why:
 
 ## Status
 
-**Half of the server side of this contract exists.** `vpay-server` mounts the
-merchant OP — `POST /v1/oauth/token`, `GET /v1/oauth/jwks.json`,
+**The server side of this contract is partial, not absent.** `vpay-server`
+mounts the merchant OP — `POST /v1/oauth/token`, `GET /v1/oauth/jwks.json`,
 `GET /v1/oauth/.well-known/openid-configuration` — and gates every other `/v1`
-path behind a merchant bearer token. What does not exist is a single `/v1`
-_resource_ route: past that boundary, `payment_intents`, `refunds`, `events`
-and `balance` all answer a Stripe-shaped `404 unknown_route`. So this SDK's
-authentication half has completed real requests against a real vpay
-(`backends/tests/integration/tests/merchant_token_flow.rs` drives this crate
-against the real router over a real Postgres) and its resource half never has.
-See [`docs/status.md`](../../docs/status.md) and
+path behind a merchant bearer token. Past that boundary, `payment_intents`
+(`create`/`retrieve`/`list`/`confirm`/`cancel`) and `events`
+(`list`/`retrieve`) are routed and real; `refunds` and `balance` have no route
+yet and still answer a Stripe-shaped `404 unknown_route`. This SDK's
+authentication half and its routed resource calls have completed real
+requests against a real vpay (`backends/tests/integration/tests/merchant_token_flow.rs`
+drives this crate against the real router over a real Postgres); `refunds`
+and `balance` have not. See [`docs/status.md`](../../docs/status.md) and
 [`docs/flows/merchant-auth.md`](../../docs/flows/merchant-auth.md).
 
 What the tests **do** prove — 113 tests, 0 ignored, run by
@@ -471,9 +472,11 @@ against the real `vpay_api::router` on a real socket over a real Postgres in
 from nothing but a base URL and a credential obtains a token from
 `/v1/oauth/token` and crosses the `/v1` boundary with it, and a replayed
 `client_assertion` is refused the second time (the `ClientAssertionStore` is
-wired: `vpay_db::SqlClientAssertionStore`). What that suite reaches on the
-other side is a `404 unknown_route`, because vpay implements **no `/v1`
-resource route** — so every `payment_intents`, `refunds`, `events` and
-`balance` call in this crate is still unproven against a server, and the
-request/response shapes they encode remain this SDK's own claim about an
-API that does not answer yet. See `docs/status.md`.
+wired: `vpay_db::SqlClientAssertionStore`). Since Step 2 (2026-09-03) the other
+side of that boundary is real for payment intents (create, retrieve, list,
+confirm, cancel) and events (list, retrieve): `sdks/rust/tests/resources.rs`
+drives them against a booted server, and the `stripe-compat` suite exercises
+the same routes through the official `stripe` package. `refunds` and `balance`
+are still unrouted and answer the Stripe-shaped `404 unknown_route`, so those
+two clients remain this SDK's own claim about an API that does not answer
+yet. See `docs/status.md` and `docs/sdks/parity.md`.

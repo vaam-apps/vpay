@@ -376,15 +376,23 @@ What does not exist, stated plainly:
   tested against real data. Every threshold is still *proposed* rather than
   derived from traffic (step-6 decision (5)), and each rule carries a
   `provisional: "true"` label so this is visible in Alertmanager.
-- **The `release.yml` workflow now exists and has never run** (Step 6, block A,
-  same day). §2 above describes it: three images, two native runner pools, a
-  manifest merge, provenance/SBOM, keyless cosign signing. No tag has been
-  pushed, so nothing has been published and nothing has been signed. `edge`,
-  produced by the first merge to `master`, is the first evidence any of it
-  works. `actionlint` reports the file clean; that is a syntax check, not a
-  run. `aarch64-unknown-linux-musl` has never been compiled anywhere —
-  [ADR-0014](../adr/0014-builder-host-musl-triple.md) adds its `+crt-static`
-  entry to `.cargo/config.toml` and says so.
+- ~~**The `release.yml` workflow now exists and has never run**~~ (Step 6,
+  block A). **Corrected 2026-09-03 (Step 7): it has run four times on
+  `master` — `33772512791`, `33784613048`, `33789060270`, `33792230539` —
+  nine jobs each, all green.** That is the `type=raw,value=edge` path §2
+  describes: three images × two native runner pools, the `imagetools create`
+  merge, and the keyless `cosign sign` step, each of which ran and exited 0 on
+  a GitHub runner. `aarch64-unknown-linux-musl` therefore *has* been compiled,
+  on `ubuntu-24.04-arm` — this bullet used to say it never had anywhere, and
+  that sentence is gone rather than struck because it is simply no longer
+  true ([ADR-0014](../adr/0014-builder-host-musl-triple.md) still records why
+  the `+crt-static` entry is needed). **What has still not happened:** no `v*` tag
+  has been pushed, so the semver tag path is unexercised; nobody has pulled
+  any of these images or checked GHCR package visibility, so this repository
+  has never observed an image at those names *from the outside*; and no
+  `cosign verify` has been run, so no Fulcio certificate or Rekor entry has
+  been read — see the "Image signing" row in
+  [../status.md](../status.md).
 - [../runbooks/release.md](../runbooks/release.md) covers cutting a tag,
   verifying a signature and pinning a digest — written from the workflow file,
   never followed. **The deploy/rollback, key-rotation, rail-credential and

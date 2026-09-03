@@ -1,38 +1,25 @@
-//! Boot step 4's *derivation*: turning this deployment's YAML plus the
-//! adapters a binary links into the seeds `vpay_db::config_reconcile`
-//! writes.
+//! The boot steps both binaries run before either serves anything: the
+//! adapters this binary links keyed by `providers.code`, the YAML loaded and
+//! validated, the join between the two, and the reference-table reconcile.
 //!
-//! # Why this lives in `vpay-api` and not in either binary
+//! Re-exported as [`crate::boot`], which is the name to call it by; it lives
+//! under `v1` for historical reasons only.
 //!
-//! It used to live in both. `vpay-server`'s `main.rs` and
-//! `vpay-worker-bin`'s carried verbatim copies of `adapters_by_code`,
-//! `boot_seeds`, `flow_label` and `display_name_for` — about 150 lines each,
-//! with comments explaining that the duplication was deliberate. It was not
-//! safe: the two processes reconcile the *same two tables* in the same
-//! database, so a change to one copy and not the other is a rollout where
-//! `providers.display_name` or `providers.flow` flips back and forth
-//! depending on which binary restarted last, with nothing to report it. The
-//! previous arrangement had no drift guard of any kind — not a shared test,
-//! not a compile-time link.
-//!
-//! What stays per-binary is the thing that genuinely *is* per-binary: the
-//! four-line `adapters()` list of linked rails (Step 2's D6). A worker that
-//! learned which rails exist from `vpay-server`'s crate would make its
-//! capabilities a function of the API server, and the two deploy
-//! independently. Everything downstream of that list — the map, the join
-//! against the YAML, the enum labels — is one derivation and now has one
-//! implementation.
-//!
-//! `vpay-api` is the home because it is the only crate both binaries already
-//! link that also depends on `vpay-config` (the YAML), `vpay-provider` (the
-//! port) and `vpay-db` (the seed types). No new dependency edge exists
-//! because of this module.
+//! Why `vpay-api` is the home for it, what stays per-binary, why one
+//! implementation rather than two, and why every adapter comes back wrapped in
+//! [`vpay_provider::Measured`]:
+//! [docs/reference/vpay-api.md § boot](../../../../../docs/reference/vpay-api.md#boot-bootrs).
+//! The ordering these steps have to be called in is
+//! [docs/reference/vpay-config.md § the boot sequence](../../../../../docs/reference/vpay-config.md#the-boot-sequence).
 
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::Arc;
 
 use vpay_config::{Config, ConfigError};
 use vpay_core::ProviderFlow;
-use vpay_db::{CurrencySeed, ProviderSeed};
+use vpay_core::error::{Category, Classify};
+use vpay_db::{CurrencySeed, DbError, ProviderSeed, Repositories};
 use vpay_provider::{Measured, ProviderAdapter};
 
 /// A binary's linked adapters, keyed by `providers.code`.
@@ -200,6 +187,154 @@ fn display_name_for(code: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// A boot step that failed before the process could serve anything.
+///
+/// It exists so the two database steps keep the *distinct* sentences they had
+/// when each carried its own `.context(..)` in a binary: `{error:#}` renders
+/// `connecting to Postgres: <what Postgres said>`, which is what an operator
+/// reads on a failed start. A single combined message would have made "the URL
+/// is wrong" and "a migration will not apply" the same line.
+///
+/// [`Classify`] is delegated to the [`DbError`] underneath, never re-decided
+/// here (ADR-0011): a `DbError` that knows it is a deploy problem —
+/// `SigningKeyRetired`, say — must exit `78` through this wrapper exactly as it
+/// would without one.
+#[derive(Debug, thiserror::Error)]
+pub enum BootError {
+    /// The pool could not be opened. Almost always the deployment's
+    /// `DATABASE_URL` or a Postgres that is not up yet.
+    #[error("connecting to Postgres")]
+    Connect(#[source] DbError),
+    /// The pool opened and a migration did not apply.
+    #[error("running database migrations")]
+    Migrate(#[source] DbError),
+}
+
+impl Classify for BootError {
+    fn category(&self) -> Category {
+        match self {
+            Self::Connect(error) | Self::Migrate(error) => error.category(),
+        }
+    }
+
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Connect(error) | Self::Migrate(error) => error.code(),
+        }
+    }
+
+    fn retry(&self) -> vpay_core::error::Retry {
+        match self {
+            Self::Connect(error) | Self::Migrate(error) => error.retry(),
+        }
+    }
+
+    fn severity(&self) -> vpay_core::error::Severity {
+        match self {
+            Self::Connect(error) | Self::Migrate(error) => error.severity(),
+        }
+    }
+
+    fn public_message(&self) -> String {
+        match self {
+            Self::Connect(error) | Self::Migrate(error) => error.public_message(),
+        }
+    }
+}
+
+/// Boot steps 1-3: load `application.yml`, overlay `application-{profile}.yml`,
+/// resolve `${ENV}`, validate (ADR-0003).
+///
+/// Call it **before** the database is touched. Validating a local YAML file
+/// needs no network round trip, so a broken config fails in milliseconds
+/// instead of after paying for a Postgres connection and a migration run the
+/// process is about to throw away.
+///
+/// The two log lines are here rather than at the call sites so both binaries
+/// emit the same fields in the same order — an operator reading a failed boot
+/// compares them. Neither line carries the `Config` itself: they are discrete,
+/// non-secret fields, so redaction is a property of *what is logged* rather
+/// than of `Config`'s `Debug`.
+///
+/// # Errors
+///
+/// [`ConfigError`] — a missing or unreadable file, an unresolved `${ENV}`
+/// placeholder, or anything `Config::validate_all` refuses. Every variant
+/// classifies as [`Category::Configuration`], so a binary exits `78`.
+pub fn load_config(path: Option<&Path>, profile: &str) -> Result<Config, ConfigError> {
+    // `profile` names a YAML config file, never a code path — ADR-0003.
+    tracing::info!(%profile, "deployment profile (selects a config file only)");
+    let config = Config::load(path, profile)?;
+    tracing::info!(
+        deployment = %config.deployment.name,
+        livemode = config.deployment.livemode,
+        providers = config.providers.len(),
+        merchant_clients = config.merchant_clients.len(),
+        dashboard_client_configured = config.dashboard_client.is_some(),
+        "configuration loaded and validated"
+    );
+    Ok(config)
+}
+
+/// Opens the pool and applies every migration, in that order.
+///
+/// Both binaries do this before they bind anything: a process that binds a port
+/// before proving the database is reachable and up to date would start
+/// accepting connections it cannot serve correctly, and `/healthz` runs a real
+/// `SELECT 1`.
+///
+/// # Errors
+///
+/// [`BootError::Connect`] or [`BootError::Migrate`], each carrying the
+/// [`DbError`] underneath so a binary's `exit_code_for` classifies the leaf
+/// rather than the step.
+pub async fn open_migrated_database(
+    database_url: &str,
+) -> Result<Arc<dyn Repositories>, BootError> {
+    let repositories = vpay_db::connect(database_url)
+        .await
+        .map_err(BootError::Connect)?;
+    repositories
+        .run_migrations()
+        .await
+        .map_err(BootError::Migrate)?;
+    tracing::info!("database connected and migrations applied");
+    Ok(repositories)
+}
+
+/// Boot step 4 (`docs/flows/configuration.md`): make `currencies` and
+/// `providers` match this deployment's configuration, in one transaction.
+///
+/// After the migrations, because the tables have to exist. Fatal on failure at
+/// every call site: a `providers` table that still enables a rail an operator
+/// removed is a deployment that would keep taking charges on it.
+///
+/// Safe to call from **both** binaries, and not because it is idempotent —
+/// idempotence covers repeating a reconcile, and a rollout *overlaps* two of
+/// them. They cannot interleave (the transaction opens by taking
+/// `vpay_db::lock_keys::CONFIG_RECONCILE`) and they cannot disagree about what
+/// to write (the seeds come from [`boot_seeds`], one derivation). Two processes
+/// on *different* YAML each write their own view, last commit winning; the lock
+/// makes that one of the two inputs rather than a mixture.
+///
+/// # Errors
+///
+/// [`DbError`] if the transaction cannot be taken or the writes fail.
+pub async fn reconcile_reference_tables(
+    repositories: &dyn Repositories,
+    currencies: &[CurrencySeed],
+    providers: &[ProviderSeed],
+) -> Result<(), DbError> {
+    repositories.reconcile(currencies, providers).await?;
+    tracing::info!(
+        currencies = currencies.len(),
+        providers = providers.len(),
+        enabled_providers = providers.iter().filter(|seed| seed.enabled).count(),
+        "reference tables reconciled from configuration"
+    );
+    Ok(())
 }
 
 #[cfg(test)]

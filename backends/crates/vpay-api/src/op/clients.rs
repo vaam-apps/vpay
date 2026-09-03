@@ -31,6 +31,7 @@
 //! lives, for the operator who flipped the switch.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use authkestra_op::client::{
@@ -38,7 +39,7 @@ use authkestra_op::client::{
 };
 use authkestra_op::error::OpError;
 use vpay_config::oauth::{GrantType as ConfigGrantType, MerchantClient};
-use vpay_db::PgPool;
+use vpay_db::Repositories;
 
 /// Converts one configured merchant into the registration the OP consumes.
 ///
@@ -109,24 +110,24 @@ pub fn registration_for(client: &MerchantClient) -> ClientRegistration {
 #[derive(Debug, Clone)]
 pub struct YamlClientStore {
     registrations: HashMap<String, ClientRegistration>,
-    pool: PgPool,
+    repositories: Arc<dyn Repositories>,
 }
 
 impl YamlClientStore {
-    /// Indexes `clients` by `client_id` and keeps `pool` for the kill-switch
-    /// lookup.
+    /// Indexes `clients` by `client_id` and keeps `repositories` for the
+    /// kill-switch lookup.
     ///
-    /// `PgPool` is a cheap `Arc`-backed handle (sqlx's own docs), so this
-    /// opens no connection — the first query happens on the first
-    /// [`ClientStore::find_client`] call that resolves a known client.
+    /// The handle is `Arc`-backed and opens no connection — the first query
+    /// happens on the first [`ClientStore::find_client`] call that resolves a
+    /// known client.
     #[must_use]
-    pub fn new(clients: &[MerchantClient], pool: PgPool) -> Self {
+    pub fn new(clients: &[MerchantClient], repositories: Arc<dyn Repositories>) -> Self {
         Self {
             registrations: clients
                 .iter()
                 .map(|client| (client.client_id.clone(), registration_for(client)))
                 .collect(),
-            pool,
+            repositories,
         }
     }
 }
@@ -163,7 +164,7 @@ impl ClientStore for YamlClientStore {
             return Ok(None);
         };
 
-        match vpay_db::is_client_disabled(&self.pool, client_id).await {
+        match self.repositories.is_client_disabled(client_id).await {
             Ok(false) => Ok(Some(registration.clone())),
             Ok(true) => {
                 tracing::warn!(
@@ -288,11 +289,12 @@ mod tests {
     /// a 30-second test on its own. The property under test is *which* answer
     /// a failed lookup produces, which is independent of how long the failure
     /// took to arrive.
-    fn lazy_pool() -> PgPool {
-        sqlx::postgres::PgPoolOptions::new()
-            .acquire_timeout(Duration::from_millis(500))
-            .connect_lazy("postgres://vpay:vpay@127.0.0.1:1/does-not-exist")
-            .expect("a syntactically valid postgres URL parses without connecting")
+    fn lazy_repositories() -> Arc<dyn Repositories> {
+        vpay_db::connect_lazy(
+            "postgres://vpay:vpay@127.0.0.1:1/does-not-exist",
+            Duration::from_millis(500),
+        )
+        .expect("a syntactically valid postgres URL parses without connecting")
     }
 
     #[test]
@@ -393,7 +395,7 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_client_id_is_refused_without_touching_the_database() {
         let (_pem, jwks) = generate_key(None);
-        let store = YamlClientStore::new(&[merchant(jwks)], lazy_pool());
+        let store = YamlClientStore::new(&[merchant(jwks)], lazy_repositories());
 
         let found = store
             .find_client("someone-else")
@@ -417,7 +419,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_kill_switch_lookup_refuses_a_known_client_rather_than_admitting_it() {
         let (_pem, jwks) = generate_key(None);
-        let store = YamlClientStore::new(&[merchant(jwks)], lazy_pool());
+        let store = YamlClientStore::new(&[merchant(jwks)], lazy_repositories());
 
         let outcome = store.find_client(CLIENT_ID).await;
 
@@ -437,7 +439,7 @@ mod tests {
         let mut other = merchant(second);
         other.client_id = "beta-merchant".to_owned();
 
-        let store = YamlClientStore::new(&[merchant(first), other], lazy_pool());
+        let store = YamlClientStore::new(&[merchant(first), other], lazy_repositories());
 
         assert_eq!(store.registrations.len(), 2);
         assert!(store.registrations.contains_key(CLIENT_ID));

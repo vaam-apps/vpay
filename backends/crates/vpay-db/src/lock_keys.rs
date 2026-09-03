@@ -25,7 +25,7 @@
 //! excluding each other for exactly the window the lock exists to cover.
 
 /// `vpaykey` — taken by every writer in this crate's `signing_keys` module
-/// (private; its entry point is [`crate::ensure_active_signing_key`]) before
+/// (private; its entry point is [`crate::SigningKeys::ensure_active_signing_key`]) before
 /// it reads or changes which OAuth signing key is active.
 ///
 /// Why a lock at all, when the writes are already one transaction:
@@ -39,7 +39,7 @@
 pub const SIGNING_KEY_ROTATION: i64 = 0x0076_7061_796b_6579;
 
 /// `vpaycfg` — taken as the first statement of
-/// [`crate::config_reconcile::reconcile`]'s transaction.
+/// [`crate::ConfigReconcile::reconcile`]'s transaction.
 ///
 /// Boot step 4 runs in **both** binaries and in every replica of each, so a
 /// rollout restarting four processes runs four reconciles against one

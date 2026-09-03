@@ -177,6 +177,26 @@ const fn adapter_codes() -> [&'static str; 2] {
     ["mtn_momo", "orange_money"]
 }
 
+/// Everything [`boot`] assembles for the job loop.
+///
+/// One struct rather than a tuple of six, because the loop's argument list is
+/// already long enough that a positional mistake would compile.
+struct Booted {
+    repositories: Arc<dyn vpay_db::Repositories>,
+    adapters: BTreeMap<String, Box<dyn ProviderAdapter>>,
+    rails: BTreeMap<String, vpay_provider::ProviderConfig>,
+    endpoints: EndpointRegistry,
+    webhook_http: reqwest::Client,
+    concurrency: usize,
+}
+
+/// The whole startup, as the ordered list of steps it is.
+///
+/// Every step is a named function and the order between them is the contract —
+/// see
+/// [docs/reference/vpay-config.md § the boot sequence](../../../../docs/reference/vpay-config.md#the-boot-sequence)
+/// for why each one is where it is, and what a probe against a half-started
+/// process gets.
 #[tokio::main]
 async fn run() -> anyhow::Result<()> {
     let args = WorkerArgs::parse();
@@ -191,218 +211,8 @@ async fn run() -> anyhow::Result<()> {
     let mut shutdown_signals =
         ShutdownSignals::install().context("installing SIGINT/SIGTERM handlers")?;
 
-    install_crypto_provider();
-
-    // Beside `install_crypto_provider`, and before `init_tracing`, for the
-    // same reason: a process-wide default that everything after it may
-    // depend on. A metric recorded before this call goes nowhere.
-    let metrics = install_recorder().context("installing the Prometheus metrics recorder")?;
-
-    init_tracing(&args.common.log_filter, args.common.log_format);
-
-    // `profile` names a YAML config file, never a code path — see
-    // vpay_config::cli and docs/adr/0003-yaml-configuration.md.
-    tracing::info!(profile = %args.common.profile, "deployment profile (selects a config file only)");
-
-    // Load and validate the YAML deployment configuration (ADR-0003) before
-    // touching the database — same ordering and reasoning as
-    // `vpay-server`'s `main.rs`: boot-sequence steps 1-3 in
-    // docs/flows/configuration.md (load, resolve `${ENV}`, validate) come
-    // before step 4 (DB reconciliation, not yet implemented), and a broken
-    // local YAML file should fail in milliseconds rather than after this
-    // process has already paid for a Postgres connection and migration run
-    // it is about to discard. `--config` / `VPAY_CONFIG` stays
-    // `Option<PathBuf>` at the clap level for the same reason
-    // `--database-url` does below, but is required here.
-    let config = vpay_config::Config::load(args.common.config.as_deref(), &args.common.profile)
-        .context("loading and validating configuration (--config / VPAY_CONFIG, ADR-0003)")?;
-    // Redaction-safe by construction — see `vpay-server`'s identical log
-    // line for why this logs discrete fields rather than the `Config`
-    // struct itself.
-    tracing::info!(
-        deployment = %config.deployment.name,
-        livemode = config.deployment.livemode,
-        providers = config.providers.len(),
-        merchant_clients = config.merchant_clients.len(),
-        dashboard_client_configured = config.dashboard_client.is_some(),
-        "configuration loaded and validated"
-    );
-
-    // Validated here, beside the YAML and *before* the database, for the same
-    // reason the YAML is loaded before the database: a knob set to a value
-    // this process cannot use should fail in milliseconds, not after paying
-    // for a Postgres connection and a migration run it is about to discard.
-    let concurrency = args
-        .concurrency()
-        .map_err(StartupError::UnusableConcurrency)?;
-    tracing::info!(concurrency, "job loop concurrency");
-
-    // Boot step 4's inputs, before the database is touched — see
-    // `vpay_api::v1::boot::boot_seeds`, which is the *same function*
-    // `vpay-server` calls, over this binary's own `adapters()`. Both
-    // binaries reconcile, so both have to agree about which rails exist and
-    // what each one's row should say; a worker that skipped this could be
-    // started against a config the server would have refused, and a worker
-    // with its own copy of the derivation could write a row the server would
-    // immediately overwrite.
-    tracing::info!(rails = ?adapter_codes(), "provider adapters linked");
-    // One client per process, shared by every adapter — see `vpay-server`'s
-    // `main.rs` for the full reasoning (a second client is a second
-    // connection pool, and construction is fallible so it belongs in `main`).
-    // The durations are the port's defaults; a rail's own budget rides on
-    // `ProviderConfig` and an adapter applies it per request.
-    let http = vpay_provider::http::client_with_timeouts(
-        vpay_provider::DEFAULT_CONNECT_TIMEOUT,
-        vpay_provider::DEFAULT_REQUEST_TIMEOUT,
-    )
-    .context("building the outbound HTTP client every rail adapter shares")?;
-    let adapters = vpay_api::v1::boot::adapters_by_code(adapters(http));
-    let (currency_seeds, provider_seeds) = vpay_api::v1::boot::boot_seeds(&config, &adapters)?;
-
-    // `--database-url` / `DATABASE_URL` stays `Option<String>` at the clap
-    // level (`vpay_config::CommonArgs`) but is treated as required *here*,
-    // matching `vpay-server`'s decision (see that binary's `main.rs` for the
-    // fuller reasoning): a process that boots with no database at all is not
-    // doing the thing this pass exists to do, and silently skipping the
-    // connection when the flag is absent would leave it dormant behind an
-    // optional flag rather than the live path this repo's delivery style
-    // requires.
-    let database_url = args.common.database_url.as_deref().context(
-        "--database-url / DATABASE_URL is required: vpay-worker-bin cannot start without \
-         a database to open a pool against and migrate (see docs/status.md)",
-    )?;
-
-    // Connect and migrate at startup, same as `vpay-server` — "database
-    // connectivity and migrations at boot" applies to both binaries, not
-    // just the one with an HTTP listener. The pool's only consumer is boot
-    // step 4 below (the job loop is not implemented, docs/status.md), so it
-    // is dropped once that has run; the goal here is the loud, fail-fast
-    // proof that the database is reachable, migrated and agreeing with this
-    // deployment's configuration before this process claims to be running.
-    let pool = vpay_db::connect(database_url)
-        .await
-        .context("connecting to Postgres")?;
-    vpay_db::run_migrations(&pool)
-        .await
-        .context("running database migrations")?;
-    tracing::info!("database connected and migrations applied");
-
-    // Boot step 4 (`docs/flows/configuration.md`), the same call
-    // `vpay-server` makes and in the same position: after the migrations, in
-    // one transaction.
-    //
-    // Two things make it safe to run this from both binaries rather than
-    // nominating one of them as the writer, and neither is "idempotence".
-    // Idempotence covers *repeating* a reconcile, which is not what happens
-    // during a rollout — there, two of them *overlap*:
-    //
-    // * they cannot interleave, because `reconcile`'s transaction opens by
-    //   taking `vpay_db::lock_keys::CONFIG_RECONCILE` (proven taken by
-    //   `reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_released`);
-    // * they cannot disagree about *what* to write, because the seeds come
-    //   from one shared derivation — `vpay_api::v1::boot::boot_seeds`, the
-    //   same function `vpay-server` calls, over this binary's own linked
-    //   rails.
-    //
-    // What is still true and worth stating plainly: two processes configured
-    // with *different* YAML will each write their own view, last commit
-    // winning. Nothing here detects that, and nothing should — the lock
-    // makes the outcome one of the two inputs rather than a mixture of both.
-    vpay_db::config_reconcile::reconcile(&pool, &currency_seeds, &provider_seeds)
-        .await
-        .context("reconciling currencies and providers from configuration (boot step 4)")?;
-    tracing::info!(
-        currencies = currency_seeds.len(),
-        providers = provider_seeds.len(),
-        enabled_providers = provider_seeds.iter().filter(|seed| seed.enabled).count(),
-        "reference tables reconciled from configuration"
-    );
-
-    // Each rail's `ProviderConfig`, keyed the same way the adapters are.
-    //
-    // Projected through `vpay_api::ResourceConfig` — the *same* projection
-    // `vpay-server` hands its router — rather than read out of the `Config`
-    // here, so the host, credentials, timeouts and callback URL a worker
-    // polls with are byte-identical to the ones the server submitted with. A
-    // second derivation would be a rail that can be charged and not queried.
-    //
-    // Only the rails this binary actually links are kept: a `providers:`
-    // entry with no adapter is a configuration error `boot_seeds` above has
-    // already refused, so this filter drops nothing in a booting deployment
-    // and keeps the map's meaning exact ("what this process can talk to").
-    let resource_config = vpay_api::ResourceConfig::from_config(&config)
-        .context("projecting the deployment configuration onto the provider port")?;
-    let rails: BTreeMap<String, vpay_provider::ProviderConfig> = adapters
-        .keys()
-        .filter_map(|code| {
-            resource_config
-                .rail(code)
-                .map(|rail| (code.clone(), rail.provider_config()))
-        })
-        .collect();
-    tracing::info!(
-        rails = rails.len(),
-        "rail configurations projected for the job loop"
-    );
-
-    // Every merchant's webhook endpoints, keyed on `events.merchant_id` —
-    // which is the fan-out key, and deliberately *not* `client_id`: one
-    // merchant may hold several credentials and all of them describe the same
-    // tenant, so keying on the credential would deliver an event once per key
-    // a merchant happens to have (`docs/plans/2026-09-03-step5-webhooks.md`,
-    // S5).
-    //
-    // This is the one place `vpay_api::WebhookEndpointConfig` and
-    // `vpay_worker::webhooks::Endpoint` meet, and it has to be a binary:
-    // `vpay-worker` already depends on `vpay-api` to render the delivered
-    // body, so the reverse edge that would let either crate do this
-    // conversion itself is a cycle. See `WebhookEndpointConfig`'s own doc
-    // comment.
-    let endpoints = EndpointRegistry::from_pairs(resource_config.webhook_endpoints().map(
-        |(merchant_id, endpoints)| {
-            (
-                merchant_id.to_owned(),
-                endpoints
-                    .iter()
-                    .map(|endpoint| vpay_worker::Endpoint {
-                        id: endpoint.id().to_owned(),
-                        url: endpoint.url().to_owned(),
-                        secrets: endpoint.secrets().to_vec(),
-                    })
-                    .collect(),
-            )
-        },
-    ));
-    tracing::info!(
-        merchants_with_endpoints = resource_config.webhook_endpoints().count(),
-        endpoints = resource_config
-            .webhook_endpoints()
-            .map(|(_, endpoints)| endpoints.len())
-            .sum::<usize>(),
-        "webhook endpoints projected for the fan-out"
-    );
-
-    // A *second* client, not the rails' one, and the difference is the
-    // timeouts. A rail's budget is the port's default and rides on
-    // `ProviderConfig`; a merchant's receiver is somebody else's server that
-    // this process must not be held open by, so it gets a short connect and a
-    // bounded read. The two budgets are
-    // `vpay_worker::webhooks`' own constants and not this binary's: the
-    // handler that spends them is there, and the integration suite reads the
-    // same pair, so a change cannot leave the tests exercising a client that
-    // no longer ships. Everything
-    // else is `client_with_timeouts`'s doing and is what makes it safe to
-    // POST a signed body at an operator-configured URL: vendored roots,
-    // `redirect::Policy::none()` so a receiver cannot bounce the delivery at
-    // a host nobody configured, and `no_proxy()`.
-    //
-    // Built once and cloned into every task — `reqwest::Client` is an `Arc`
-    // internally, so the clones share one connection pool.
-    let webhook_http = vpay_provider::http::client_with_timeouts(
-        vpay_worker::WEBHOOK_CONNECT_TIMEOUT,
-        vpay_worker::WEBHOOK_REQUEST_TIMEOUT,
-    )
-    .context("building the outbound HTTP client webhook delivery uses")?;
+    let metrics = install_process_defaults(&args)?;
+    let booted = boot(&args).await?;
 
     // The documented numbers (`docs/flows/{crash-safety,reconciler}.md`),
     // constructed here and passed down rather than read from a
@@ -413,58 +223,16 @@ async fn run() -> anyhow::Result<()> {
     let grace = Duration::from_secs(args.common.shutdown_grace_seconds);
     let worker_id = vpay_worker::worker_id();
 
-    // **The only socket this process opens.** Before it existed, the worker
-    // had no listener at all: no liveness probe a Deployment could use, and
-    // no way to export the queue-depth gauge that is the one number saying
-    // whether live charges are being driven. `vpay-server`'s `main.rs` binds
-    // the identical listener on the identical flag.
-    //
-    // Bound *last*, after the config, the database, the migrations, boot
-    // step 4 and the rail projection, because that ordering is the whole
-    // definition of `/livez`: a worker that is still starting, or one about
-    // to exit 78 for a `--worker-concurrency` of 0, refuses the connection
-    // rather than answering `ok`.
-    let observability_listener = tokio::net::TcpListener::bind(args.common.observability_bind)
-        .await
-        .with_context(|| {
-            format!(
-                "binding the observability listener on {} (--observability-bind / \
-                 VPAY_OBSERVABILITY_BIND)",
-                args.common.observability_bind
-            )
-        })?;
-    let observability_bound = observability_listener
-        .local_addr()
-        .context("reading the bound address back off the observability listener")?;
-    // `--observability-bind 127.0.0.1:0` is a real configuration (the
-    // subprocess tests use it) and with a `:0` port nothing else can know
-    // the answer.
-    tracing::info!(
-        addr = %observability_bound,
-        "observability listener listening (/livez, /metrics)"
-    );
-
-    // One signal, two consumers: `run_loop`'s drain and this listener. A
-    // detached task with no shutdown of its own would keep answering
-    // `/livez` with `ok` while the drain was already cutting jobs off.
-    let (observability_shutdown_tx, observability_shutdown_rx) =
-        tokio::sync::oneshot::channel::<()>();
-    let observability = tokio::spawn(vpay_api::observability::serve(
-        observability_listener,
-        move || metrics.render(),
-        async move {
-            let _ = observability_shutdown_rx.await;
-        },
-    ));
+    let (observability, observability_shutdown_tx) = start_observability(&args, metrics).await?;
 
     let report = vpay_worker::run_loop(
-        &pool,
-        Arc::new(adapters),
-        Arc::new(rails),
+        booted.repositories,
+        Arc::new(booted.adapters),
+        Arc::new(booted.rails),
         policy,
-        Arc::new(endpoints),
-        webhook_http,
-        concurrency,
+        Arc::new(booted.endpoints),
+        booted.webhook_http,
+        booted.concurrency,
         grace,
         worker_id,
         async move {
@@ -505,6 +273,254 @@ async fn run() -> anyhow::Result<()> {
             std::process::exit(1);
         }
     }
+}
+
+/// The three process-wide defaults, in the one order that is safe.
+///
+/// The twin of `vpay-server`'s function of the same name, and a copy for the
+/// reason [`exit_code_for`] is: all three are global state anything after them
+/// may depend on, so nothing may run ahead of them — a `reqwest::Client` built
+/// before the crypto provider panics, and a metric recorded before the
+/// recorder is installed goes nowhere. Tracing is last of the three so the two
+/// that can fail do so before a subscriber exists to swallow the message;
+/// [`main`]'s `eprintln!` is what reports them.
+///
+/// # Errors
+///
+/// Only [`install_recorder`]'s.
+fn install_process_defaults(args: &WorkerArgs) -> anyhow::Result<PrometheusHandle> {
+    install_crypto_provider();
+    let metrics = install_recorder().context("installing the Prometheus metrics recorder")?;
+    init_tracing(&args.common.log_filter, args.common.log_format);
+    Ok(metrics)
+}
+
+/// Boot steps 1-4 plus everything the job loop needs to be handed.
+///
+/// Everything here that both binaries share is [`vpay_api::boot`], one
+/// implementation, because both write the same two tables in the same database
+/// and a divergence there would be silent. What is left is what only *this*
+/// binary does: the rail projection the loop polls with, and the webhook
+/// endpoints and client it delivers with.
+///
+/// Nothing here binds a socket, which is the entire definition of `/livez`: a
+/// probe against a process still inside this function, or one about to exit
+/// `78` for a `--worker-concurrency` of 0, gets a connection refusal rather
+/// than a cheerful 200.
+///
+/// The YAML and `--worker-concurrency` are validated before the database is
+/// touched, deliberately: a knob set to a value this process cannot use should
+/// fail in milliseconds, not after paying for a Postgres connection and a
+/// migration run it is about to discard.
+///
+/// # Errors
+///
+/// A missing flag, an invalid YAML file, a rail with no linked adapter, a
+/// concurrency of zero, an unreachable database, a migration that will not
+/// apply, or a reconcile that cannot take its lock. Each carries a typed leaf
+/// so [`exit_code_for`] can tell `78` from `69`.
+async fn boot(args: &WorkerArgs) -> anyhow::Result<Booted> {
+    let config =
+        vpay_api::boot::load_config(args.common.config.as_deref(), &args.common.profile)
+            .context("loading and validating configuration (--config / VPAY_CONFIG, ADR-0003)")?;
+
+    let concurrency = args
+        .concurrency()
+        .map_err(StartupError::UnusableConcurrency)?;
+    tracing::info!(concurrency, "job loop concurrency");
+
+    // Boot step 4's inputs, before the database is touched — over this
+    // binary's own `adapters()`. Both binaries reconcile, so both have to
+    // agree about which rails exist and what each one's row should say; a
+    // worker with its own copy of the derivation could write a row the server
+    // would immediately overwrite.
+    tracing::info!(rails = ?adapter_codes(), "provider adapters linked");
+    // One client per process, shared by every adapter — see `vpay-server`'s
+    // `main.rs` for the full reasoning (a second client is a second
+    // connection pool, and construction is fallible so it belongs here).
+    // The durations are the port's defaults; a rail's own budget rides on
+    // `ProviderConfig` and an adapter applies it per request.
+    let http = vpay_provider::http::client_with_timeouts(
+        vpay_provider::DEFAULT_CONNECT_TIMEOUT,
+        vpay_provider::DEFAULT_REQUEST_TIMEOUT,
+    )
+    .context("building the outbound HTTP client every rail adapter shares")?;
+    let adapters = vpay_api::boot::adapters_by_code(adapters(http));
+    let (currency_seeds, provider_seeds) = vpay_api::boot::boot_seeds(&config, &adapters)?;
+
+    // `--database-url` / `DATABASE_URL` stays `Option<String>` at the clap
+    // level and is required here — see docs/reference/vpay-config.md
+    // § optional flags that are required in practice.
+    let database_url = args.common.database_url.as_deref().context(
+        "--database-url / DATABASE_URL is required: vpay-worker-bin cannot start without \
+         a database to open a pool against and migrate (see docs/status.md)",
+    )?;
+    let repositories = vpay_api::boot::open_migrated_database(database_url).await?;
+
+    vpay_api::boot::reconcile_reference_tables(
+        repositories.as_ref(),
+        &currency_seeds,
+        &provider_seeds,
+    )
+    .await
+    .context("reconciling currencies and providers from configuration (boot step 4)")?;
+
+    let resource_config = vpay_api::ResourceConfig::from_config(&config)
+        .context("projecting the deployment configuration onto the provider port")?;
+    let rails = project_rails(&resource_config, &adapters);
+    let endpoints = project_endpoints(&resource_config);
+
+    // A *second* client, not the rails' one, and the difference is the
+    // timeouts. A rail's budget is the port's default and rides on
+    // `ProviderConfig`; a merchant's receiver is somebody else's server that
+    // this process must not be held open by, so it gets a short connect and a
+    // bounded read. The two budgets are `vpay_worker::webhooks`' own constants
+    // and not this binary's, so a change cannot leave the integration suite
+    // exercising a client that no longer ships. Everything else is
+    // `client_with_timeouts`'s doing and is what makes it safe to POST a
+    // signed body at an operator-configured URL: vendored roots,
+    // `redirect::Policy::none()` so a receiver cannot bounce the delivery at a
+    // host nobody configured, and `no_proxy()`.
+    //
+    // Built once and cloned into every task — `reqwest::Client` is an `Arc`
+    // internally, so the clones share one connection pool.
+    let webhook_http = vpay_provider::http::client_with_timeouts(
+        vpay_worker::WEBHOOK_CONNECT_TIMEOUT,
+        vpay_worker::WEBHOOK_REQUEST_TIMEOUT,
+    )
+    .context("building the outbound HTTP client webhook delivery uses")?;
+
+    Ok(Booted {
+        repositories,
+        adapters,
+        rails,
+        endpoints,
+        webhook_http,
+        concurrency,
+    })
+}
+
+/// Each rail's `ProviderConfig`, keyed the same way the adapters are.
+///
+/// Projected through `vpay_api::ResourceConfig` — the *same* projection
+/// `vpay-server` hands its router — rather than read out of the `Config`, so
+/// the host, credentials, timeouts and callback URL a worker polls with are
+/// byte-identical to the ones the server submitted with. A second derivation
+/// would be a rail that can be charged and not queried.
+///
+/// Only the rails this binary actually links are kept: a `providers:` entry
+/// with no adapter is a configuration error `boot_seeds` has already refused,
+/// so this filter drops nothing in a booting deployment and keeps the map's
+/// meaning exact ("what this process can talk to").
+fn project_rails(
+    resource_config: &vpay_api::ResourceConfig,
+    adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
+) -> BTreeMap<String, vpay_provider::ProviderConfig> {
+    let rails: BTreeMap<String, vpay_provider::ProviderConfig> = adapters
+        .keys()
+        .filter_map(|code| {
+            resource_config
+                .rail(code)
+                .map(|rail| (code.clone(), rail.provider_config()))
+        })
+        .collect();
+    tracing::info!(
+        rails = rails.len(),
+        "rail configurations projected for the job loop"
+    );
+    rails
+}
+
+/// Every merchant's webhook endpoints, keyed on `events.merchant_id` — which
+/// is the fan-out key, and deliberately *not* `client_id`.
+///
+/// This is the one place `vpay_api::WebhookEndpointConfig` and
+/// `vpay_worker::Endpoint` meet, and it has to be a binary: `vpay-worker`
+/// already depends on `vpay-api` to render the delivered body, so the reverse
+/// edge that would let either crate do this conversion itself is a cycle. See
+/// `WebhookEndpointConfig`'s own doc comment.
+fn project_endpoints(resource_config: &vpay_api::ResourceConfig) -> EndpointRegistry {
+    let endpoints = EndpointRegistry::from_pairs(resource_config.webhook_endpoints().map(
+        |(merchant_id, endpoints)| {
+            (
+                merchant_id.to_owned(),
+                endpoints
+                    .iter()
+                    .map(|endpoint| vpay_worker::Endpoint {
+                        id: endpoint.id().to_owned(),
+                        url: endpoint.url().to_owned(),
+                        secrets: endpoint.secrets().to_vec(),
+                    })
+                    .collect(),
+            )
+        },
+    ));
+    tracing::info!(
+        merchants_with_endpoints = resource_config.webhook_endpoints().count(),
+        endpoints = resource_config
+            .webhook_endpoints()
+            .map(|(_, endpoints)| endpoints.len())
+            .sum::<usize>(),
+        "webhook endpoints projected for the fan-out"
+    );
+    endpoints
+}
+
+/// Binds **the only socket this process opens** and serves `/livez` and
+/// `/metrics` on it.
+///
+/// Bound *last*, after the config, the database, the migrations, boot step 4
+/// and the rail projection, because that ordering is the whole definition of
+/// `/livez`. Before it existed the worker had no listener at all: no liveness
+/// probe a Deployment could use, and no way to export the queue-depth gauge
+/// that is the one number saying whether live charges are being driven.
+/// `vpay-server`'s `main.rs` binds the identical listener on the identical
+/// flag.
+///
+/// The returned sender is the second half of one shutdown: `run_loop`'s drain
+/// and this listener stop together, because a detached task with no shutdown
+/// of its own would keep answering `/livez` with `ok` while the drain was
+/// already cutting jobs off.
+///
+/// # Errors
+///
+/// A bind that fails, or an address that cannot be read back.
+async fn start_observability(
+    args: &WorkerArgs,
+    metrics: PrometheusHandle,
+) -> anyhow::Result<(
+    tokio::task::JoinHandle<std::io::Result<()>>,
+    tokio::sync::oneshot::Sender<()>,
+)> {
+    let listener = tokio::net::TcpListener::bind(args.common.observability_bind)
+        .await
+        .with_context(|| {
+            format!(
+                "binding the observability listener on {} (--observability-bind / \
+                 VPAY_OBSERVABILITY_BIND)",
+                args.common.observability_bind
+            )
+        })?;
+    let bound = listener
+        .local_addr()
+        .context("reading the bound address back off the observability listener")?;
+    // `--observability-bind 127.0.0.1:0` is a real configuration (the
+    // subprocess tests use it) and with a `:0` port nothing else can know
+    // the answer.
+    tracing::info!(
+        addr = %bound,
+        "observability listener listening (/livez, /metrics)"
+    );
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let task = tokio::spawn(vpay_api::observability::serve(
+        listener,
+        move || metrics.render(),
+        async move {
+            let _ = shutdown_rx.await;
+        },
+    ));
+    Ok((task, shutdown_tx))
 }
 
 /// Waits for the observability listener to stop, bounded by the same grace
@@ -577,44 +593,16 @@ fn install_recorder() -> anyhow::Result<PrometheusHandle> {
 ///
 /// [`CryptoProvider`]: rustls::crypto::CryptoProvider
 ///
-/// **Why it exists at all.** The root `Cargo.toml` pins `reqwest` with
-/// `rustls-no-provider` (see the long comment on that pin, and the one on
-/// the `authkestra-*` pins below it): the alternative selects `aws-lc-rs`,
-/// which `deny.toml` bans outright because two providers in one process are
-/// exactly what makes `install_default()` panic. The cost of picking nothing
-/// is that reqwest 0.13's `ClientBuilder::build()` calls
-/// `CryptoProvider::get_default()` and **panics** — "No rustls crypto
-/// provider is configured" — when there is no process default. That is a
-/// panic in a shipping payment binary, i.e. a defect under ADR-0007, on a
-/// path no unit test reaches. `docs/status.md`'s "rustls `CryptoProvider`
-/// process default" row tracks it as a documented landmine, and until this
-/// call landed the workspace's only `install_default()` was a `#[cfg(test)]`
-/// helper in `vpay_api::resource_auth`.
+/// Without it, reqwest 0.13's `ClientBuilder::build()` panics — a panic in a
+/// shipping payment binary, i.e. a defect under ADR-0007. [`adapters`] builds
+/// the client this call must precede, and the job loop calls the rails it
+/// hands out on every poll that reaches the rail and on every
+/// `resubmit_charge`. Why the result is dropped, and what it is *not*
+/// sufficient protection for:
+/// [docs/reference/vpay-config.md § the rustls CryptoProvider process default](../../../../docs/reference/vpay-config.md#the-rustls-cryptoprovider-process-default).
 ///
-/// **Why here.** The one ordering constraint is "before the first
-/// `reqwest::Client` is built", and this process builds one on every start:
-/// [`adapters`] hands `vpay_provider::http`'s client to both rail adapters,
-/// and the job loop then calls those rails over HTTPS on each poll that
-/// reaches the rail and on every `resubmit_charge`. ("Each poll that reaches
-/// the rail" and not "every `poll_charge`": a poll of an already-terminal
-/// charge, one the recovery table answers `FailDeadOrder` to, and one it
-/// answers `Resubmit` to all return before the status query.) Without this
-/// line that construction is the
-/// panic described above, on the startup path of a shipping binary. Right
-/// after the signal handlers and above `init_tracing` puts it ahead of
-/// [`adapters`] with room to spare, so no future edit can slip a client
-/// construction in front of it either.
-///
-/// **Why the result is dropped.** `install_default()` returns
-/// `Err(Arc<CryptoProvider>)` for exactly one reason: a default was already
-/// installed. In a binary that means some other code got there first, which
-/// is the state this call wanted anyway — so `.ok()`, which is what the root
-/// `Cargo.toml`'s own note on the `authkestra-*` pins recommends verbatim.
-/// `unwrap`/`expect` are denied here (ADR-0007) and would turn a harmless
-/// double install into a startup crash.
-///
-/// A byte-identical copy of `vpay-server`'s function of the same name, for
-/// the same reason `exit_code_for` and `init_tracing` are copies.
+/// `vpay-server` has a byte-identical copy, for the reason
+/// [`exit_code_for`]'s doc gives.
 fn install_crypto_provider() {
     rustls::crypto::ring::default_provider()
         .install_default()

@@ -284,7 +284,7 @@ this backstop cannot recover them, and it will not try"
 ### What it means
 
 A `deliver_webhook` job was **parked**, not deleted: `run_at = 'infinity'`,
-lease cleared, reason in `last_error` (`vpay_db::jobs::dead_letter`, and that
+lease cleared, reason in `last_error` (`vpay_db::Jobs::dead_letter`, and that
 module's own comment explains why parking rather than deleting). The delivery
 row is still `pending` and **nothing will ever attempt it**. The
 `scan:deliveries` backstop cannot help: parking keeps the `dedupe_key`, so its
@@ -346,7 +346,7 @@ statement that a merchant was owed an event and did not get it.
 
 **Not executed.** Unlike the replay transaction above, this `UPDATE` has not
 been run against a database — it is written from migration `0021`'s columns
-and `vpay_db::jobs::dead_letter`'s own write. Read it before running it.
+and `vpay_db::Jobs::dead_letter`'s own write. Read it before running it.
 
 ## An event that was never fanned out
 

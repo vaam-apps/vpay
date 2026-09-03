@@ -6,19 +6,16 @@
 //! drain), [`handlers::handle`] does the work of one job, [`recovery`],
 //! `vpay_core::settlement` and [`webhooks`] are the decision tables it
 //! consults, and [`error`] is the retry policy all of it derives from
-//! `Classify`.
+//! `Classify` (ADR-0011).
 //!
-//! STATUS: polling, recovery and settlement are implemented and proven
-//! against a real Postgres and a real WireMock rail in
-//! `backends/tests/integration/tests/worker_{recovery,e2e}.rs`; webhook
-//! fan-out, signing and delivery in `webhooks.rs` against a real WireMock
-//! receiver. `docs/status.md` is the record of what is actually wired up,
-//! and it is the one to trust — this crate holds *handlers*, and a handler
-//! no loop calls is not a running worker.
+//! Two independent retry ladders live here: [`poll_delay`] for charge polling
+//! and [`delivery_delay`] for webhook delivery. They are deliberately separate
+//! — see [`delivery_delay`].
 //!
-//! Two independent retry ladders live here: [`poll_delay`] for charge
-//! polling and [`delivery_delay`] for webhook delivery. They are
-//! deliberately separate — see [`delivery_delay`].
+//! `docs/reference/vpay-worker.md` explains why this crate is shaped the way
+//! it is; `docs/status.md` is the record of what is actually wired up, and it
+//! is the one to trust — this crate holds *handlers*, and a handler no loop
+//! calls is not a running worker.
 
 use std::time::Duration;
 
@@ -45,7 +42,20 @@ pub use webhooks::{
 /// Delay before poll number `n` (0-indexed), per `docs/flows/reconciler.md`.
 ///
 /// Ladder: 10s, 20s, 30s, 45s, 60s, 90s, then 120s to the 30-minute mark, then
-/// 15 minutes out to 24 hours.
+/// 15 minutes out to 24 hours. It never runs out — a live charge is always
+/// owed another question, which is what [`delivery_delay`] does differently.
+///
+/// ```
+/// use std::time::Duration;
+/// use vpay_worker::poll_delay;
+///
+/// assert_eq!(poll_delay(0), Duration::from_secs(10));
+/// assert_eq!(poll_delay(5), Duration::from_secs(90));
+/// assert_eq!(poll_delay(6), Duration::from_secs(120));
+/// // Past the half hour, and for ever after: a rung, never a `None`.
+/// assert_eq!(poll_delay(100), Duration::from_secs(15 * 60));
+/// assert_eq!(poll_delay(u32::MAX), Duration::from_secs(15 * 60));
+/// ```
 #[must_use]
 pub fn poll_delay(attempt: u32) -> Duration {
     const LADDER: [u64; 6] = [10, 20, 30, 45, 60, 90];
@@ -60,43 +70,47 @@ pub fn poll_delay(attempt: u32) -> Duration {
 /// run out — `docs/flows/reconciler.md`: "still polled, once an hour, and now
 /// raising an alert for a human".
 ///
-/// Deliberately *not* the last rung of [`poll_delay`] (15 minutes). Once a
+/// Deliberately *not* the last rung of [`poll_delay`] (15 minutes): once a
 /// human is reconciling the charge against the rail's settlement statement,
-/// four polls an hour buy nothing; one keeps the charge live — and it must
-/// stay live, because a late success at hour 30 is a normal transition, not
-/// an exception. This is the delay [`JobError::decision`] pairs with
-/// `alert: true` for [`JobError::Exhausted`].
+/// four polls an hour buy nothing. This is the delay [`JobError::decision`]
+/// pairs with `alert: true` for [`JobError::Exhausted`].
 ///
-/// "Polled" is literal: each of these hourly runs asks the rail again, and a
-/// terminal answer settles the charge exactly as it would have on the first
-/// rung ([`handlers::handle`]). The escalation changes the *interval* and adds
-/// the alert; it never stops the question being asked, because a charge
-/// nobody asks about is one whose late success is lost.
+/// "Polled" is literal: each hourly run asks the rail again, and a terminal
+/// answer settles the charge exactly as it would have on the first rung. The
+/// escalation changes the *interval* and adds the alert; it never stops the
+/// question being asked, because a charge nobody asks about is one whose late
+/// success is lost.
 pub const UNRESOLVED_POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// Delay before webhook delivery attempt number `n` (0-indexed), or `None`
 /// when the ladder has run out — `docs/flows/webhooks.md`: "delivery, with
 /// retries: 10s → 30s → 2m → 10m → 1h → 6h → 24h".
 ///
-/// # Why this is not [`poll_delay`], and not [`JobError::decision`]
+/// Deliberately **not** [`poll_delay`] and not [`JobError::decision`]:
+/// polling asks a *rail* what happened to money, delivering tells a *merchant*
+/// what already happened, and the two have no failure vocabulary in common.
+/// `Option` rather than a final rung, because "the ladder ran out" is the
+/// `exhausted` transition of a `webhook_deliveries` row and must not be
+/// expressible as another delay. `docs/reference/vpay-worker.md` §"Two retry
+/// ladders, and why they do not share" carries both arguments.
 ///
-/// Polling asks a *rail* what happened to money; delivering tells a
-/// *merchant* what already happened. The two have no failure vocabulary in
-/// common: a merchant's `500` is not a `ProviderError`, nothing about it is
-/// classified by ADR-0011's table, and pushing it through
-/// [`JobError::decision`] would give a webhook receiver the poll ladder's
-/// 24-hour horizon and its hourly `unresolved` escalation. So delivery keeps
-/// its own ladder and never consults `Classify::retry`
-/// (`docs/flows/reconciler.md`'s Status says the same in the other
-/// direction).
+/// The index is the delivery's **pre-increment** `attempt`, which counts
+/// failures so far: after the first failure the wait is `delivery_delay(0)`.
 ///
-/// # Why `Option` rather than a final rung
+/// ```
+/// use std::time::Duration;
+/// use vpay_worker::delivery_delay;
 ///
-/// "The ladder ran out" is the `exhausted` transition of a
-/// `webhook_deliveries` row, and it must not be expressible as another
-/// delay. A `Duration` return would make the seventh failure and the eighth
-/// indistinguishable at the type level, and a delivery that keeps
-/// rescheduling forever is a queue that never drains.
+/// // docs/flows/webhooks.md: 10s -> 30s -> 2m -> 10m -> 1h -> 6h -> 24h.
+/// assert_eq!(delivery_delay(0), Some(Duration::from_secs(10)));
+/// assert_eq!(delivery_delay(1), Some(Duration::from_secs(30)));
+/// assert_eq!(delivery_delay(6), Some(Duration::from_secs(24 * 60 * 60)));
+///
+/// // Seven rungs, then the delivery is `exhausted` — never an eighth
+/// // attempt, and never a silent repeat of the last rung.
+/// assert_eq!(delivery_delay(7), None);
+/// assert_eq!(delivery_delay(u32::MAX), None);
+/// ```
 #[must_use]
 pub fn delivery_delay(attempt: u32) -> Option<Duration> {
     const LADDER: [u64; 7] = [10, 30, 120, 600, 3_600, 21_600, 86_400];

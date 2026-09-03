@@ -25,7 +25,28 @@ pub use config::{Config, CurrencyEntry, ProviderHost};
 pub use oauth::{DashboardClient, GrantType, MERCHANT_AUDIENCE, MerchantClient, WebhookEndpoint};
 pub use signal::ShutdownSignals;
 
+/// The `deployment:` block of a config file: who this deployment is, and
+/// whether it is live.
+///
+/// # Examples
+///
+/// The YAML keys are the field names, which is what `rename_all` is here to
+/// keep true when someone adds a field:
+///
+/// ```
+/// use vpay_config::Deployment;
+///
+/// let deployment: Deployment = serde_yaml_ng::from_str(
+///     "name: sandbox\nlivemode: false\npublic_base_url: https://sandbox.vpay.example\n",
+/// )
+/// .expect("the block a config file writes");
+///
+/// assert_eq!(deployment.name, "sandbox");
+/// assert_eq!(deployment.public_base_url, "https://sandbox.vpay.example");
+/// assert!(!deployment.livemode, "livemode gates no behaviour, but it is a label that must be right");
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, garde::Validate)]
+#[serde(rename_all = "snake_case")]
 pub struct Deployment {
     #[garde(length(min = 1))]
     pub name: String,
@@ -37,6 +58,7 @@ pub struct Deployment {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, garde::Validate)]
+#[serde(rename_all = "snake_case")]
 pub struct HostEntry {
     #[garde(length(min = 1))]
     pub url: String,

@@ -8,6 +8,13 @@
 //! * `verify-errors`    — every error type classifies itself, and `anyhow`
 //!   stays at the process edge (`docs/adr/0011-error-modelling.md`).
 //!
+//! One reports rather than enforcing:
+//!
+//! * `verify-docs`      — doc-comment volume, long functions, ```` ```ignore ````
+//!   fences and `#[allow]`s. It **never fails a build**: Step 7's decision (4)
+//!   is that a comment budget is a report, because the cheapest way to pass a
+//!   ratio gate is to delete the `# Errors` sections ADR-0011 depends on.
+//!
 //! One does real work rather than checking:
 //!
 //! * `gen-signing-key`  — generates the RS256 key the OP signs with, offline,
@@ -48,10 +55,18 @@ fn main() -> ExitCode {
         "verify-all" => verify_no_mocks(&root)
             .and_then(|()| verify_status(&root))
             .and_then(|()| verify_errors(&root)),
+        // Not `Result`-shaped like the three gates above, and that is the
+        // point: there is nothing here for a caller to fail on. See
+        // `verify_docs`.
+        "verify-docs" => {
+            verify_docs(&root);
+            Ok(())
+        }
         "gen-signing-key" => gen_signing_key(&args),
         "help" | "--help" | "-h" => {
             println!(
                 "usage: cargo xtask <verify-no-mocks|verify-status|verify-errors|verify-all>\n\
+                 \x20      cargo xtask verify-docs        (a report; never fails)\n\
                  \x20      cargo xtask gen-signing-key --out <dir>"
             );
             Ok(())
@@ -112,13 +127,12 @@ fn verify_no_mocks(root: &Path) -> Result<(), String> {
         }
     }
 
-    // Nothing outside the testkit itself may reference a stub adapter type.
+    // Nothing outside the testkit itself may reference a stub adapter type,
+    // and no shipping binary may open a pool that pretends to be connected.
     for src in rust_sources(&root.join("backends/apps")) {
         let text = fs::read_to_string(&src).unwrap_or_default();
-        for needle in ["MockAdapter", "FakeAdapter", "StubAdapter", "DummyAdapter"] {
-            if text.contains(needle) {
-                problems.push(format!("{} mentions `{needle}`", src.display()));
-            }
+        for violation in app_source_violations(&text) {
+            problems.push(format!("{} {violation}", src.display()));
         }
     }
 
@@ -139,6 +153,55 @@ fn verify_no_mocks(root: &Path) -> Result<(), String> {
             problems.join("\n  - ")
         ))
     }
+}
+
+/// Type names a shipping binary must not so much as spell.
+///
+/// Matched against the raw file, comments included: a binary that names a
+/// stub adapter in a comment is describing a code path someone intended, and
+/// the point of ADR-0006 is that there is nothing to describe.
+const STUB_ADAPTER_NAMES: [&str; 4] = ["MockAdapter", "FakeAdapter", "StubAdapter", "DummyAdapter"];
+
+/// What is wrong with one source file under `backends/apps`, phrased to
+/// follow the file's path in a violation line.
+///
+/// Split out of [`verify_no_mocks`] so it can be driven over a synthetic
+/// file: the check reads the two shipping binaries, so the only way to see
+/// it fire without breaking them is to hand it text.
+///
+/// The `connect_lazy` half is the one that needs explaining.
+/// `vpay_db::connect_lazy` is not a test double — the pool is the real
+/// `sqlx` one and every query really reaches Postgres — which is exactly why
+/// no linter and no `[dev-dependencies]` rule would ever object to it. What
+/// it *does* is defeat the property `vpay_db::connect` exists to hold: a
+/// process that cannot reach its database must fail at boot rather than at
+/// the first payment. A binary that opened its pool lazily would report
+/// itself started, pass its own readiness probe, and discover Postgres was
+/// gone at the moment a merchant's confirm arrived. `connect_lazy` is public
+/// solely so `vpay-api`'s unit tests can prove what an unreachable database
+/// answers; this is the guard that keeps it there.
+///
+/// Comments and `#[cfg(test)]` items are stripped for that half (a binary's
+/// own tests may legitimately want a pool that never connects, and a comment
+/// naming the function is documentation) but deliberately *not* for
+/// [`STUB_ADAPTER_NAMES`].
+fn app_source_violations(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = STUB_ADAPTER_NAMES
+        .iter()
+        .filter(|needle| text.contains(**needle))
+        .map(|needle| format!("mentions `{needle}`"))
+        .collect();
+
+    if searchable(text).contains("connect_lazy") {
+        out.push(
+            "calls `vpay_db::connect_lazy` outside `#[cfg(test)]`; a shipping binary opens \
+             its pool with `vpay_db::connect`, which fails at boot when the database is \
+             unreachable rather than at the first payment (ADR-0006)"
+                .to_owned(),
+        );
+    }
+
+    out
 }
 
 /// Runs `cargo metadata` and returns the parsed document.
@@ -629,6 +692,7 @@ fn verify_errors(root: &Path) -> Result<(), String> {
 
     let mut problems = Vec::new();
     let mut classified = 0usize;
+    let mut delegated = 0usize;
 
     for crate_dir in &crate_dirs {
         let sources: Vec<(PathBuf, String)> = rust_sources(crate_dir)
@@ -652,6 +716,32 @@ fn verify_errors(root: &Path) -> Result<(), String> {
                 }
                 if sources.iter().any(|(_, t)| has_classify_impl(t, &name)) {
                     classified += 1;
+                    for (impl_path, impl_text) in &sources {
+                        // Only the file that carries both the declaration and
+                        // the impl can be checked — `undelegated_from_variants`
+                        // needs the variants and the method bodies together —
+                        // so it is also the only file that may contribute to
+                        // the count. Counting a declaration whose impl lives
+                        // elsewhere would print variants nothing verified.
+                        if !has_classify_impl(impl_text, &name) {
+                            continue;
+                        }
+                        let undelegated = undelegated_from_variants(impl_text, &name);
+                        let swallowed: BTreeSet<&str> =
+                            undelegated.iter().map(|(_, v)| v.as_str()).collect();
+                        delegated += from_variants(impl_text, &name)
+                            .iter()
+                            .filter(|variant| !swallowed.contains(variant.as_str()))
+                            .count();
+                        for (method, variant) in undelegated {
+                            problems.push(format!(
+                                "{}: `{name}::{variant}` is `#[from]` but `Classify::{method}` \
+                                 has no `Self::{variant}` arm — the wildcard would answer for \
+                                 the leaf instead of delegating to it (ADR-0011)",
+                                relative(root, impl_path),
+                            ));
+                        }
+                    }
                 } else {
                     problems.push(format!(
                         "{}: `{name}` has no `impl Classify` anywhere in `{}` (ADR-0011)",
@@ -678,7 +768,8 @@ fn verify_errors(root: &Path) -> Result<(), String> {
     if problems.is_empty() {
         println!(
             "verify-errors: ok — {classified} error type(s), all classified; \
-             anyhow confined to binaries"
+             {delegated} `#[from]` variant(s) delegate every `Classify` method they \
+             match on; anyhow confined to binaries"
         );
         Ok(())
     } else {
@@ -1061,6 +1152,183 @@ fn attribute_derives_error(attribute: &str) -> bool {
         .any(|path| path.rsplit("::").next().is_some_and(|last| last == "Error"))
 }
 
+/// The five methods of `Classify`, in the order the trait declares them.
+///
+/// A composite that `#[from]`s a leaf must delegate *each* of them (ADR-0011,
+/// "Composites do not re-classify"): `category` alone is not enough, because
+/// the other four have category-derived defaults that would quietly overrule
+/// the leaf's own overrides — `ProviderError::Rejected`'s `public_message`,
+/// `Unsupported`'s severity.
+const CLASSIFY_METHODS: [&str; 5] = ["category", "code", "retry", "severity", "public_message"];
+
+/// The `{ … }` that starts at or after `from`, balanced, without the braces.
+///
+/// String literals are honoured: a `#[error("a { b")]` inside the block must
+/// not unbalance it.
+fn balanced_block(text: &str, from: usize) -> Option<&str> {
+    let open = from + text.get(from..)?.find('{')?;
+    let body_start = open + 1;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, c) in text.get(open..)?.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return text.get(body_start..open + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The body of the first item whose declaration starts with `header`.
+fn item_body<'a>(searchable_text: &'a str, header: &str) -> Option<&'a str> {
+    let at = searchable_text.find(header)?;
+    balanced_block(searchable_text, at)
+}
+
+/// Every variant of `enum name` that carries a `#[from]` field.
+///
+/// Text-scanned like the rest of this file, tracking bracket depth so a
+/// `#[from]` on a field is attributed to the variant that encloses it and a
+/// nested type never reads as a variant name.
+fn from_variants(searchable_text: &str, name: &str) -> Vec<String> {
+    let Some(body) = item_body(searchable_text, &format!("pub enum {name} ")) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut current: Option<String> = None;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut ident_start: Option<usize> = None;
+    for (offset, c) in body.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if let Some(start) = ident_start
+            && !is_ident_char(c)
+        {
+            if let Some(ident) = body.get(start..offset)
+                && ident.starts_with(char::is_uppercase)
+            {
+                current = Some(ident.to_owned());
+            }
+            ident_start = None;
+        }
+        match c {
+            '"' => in_string = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            '#' if depth > 0 => {
+                if body
+                    .get(offset..)
+                    .is_some_and(|rest| rest.starts_with("#[from]"))
+                    && let Some(variant) = &current
+                    && !out.contains(variant)
+                {
+                    out.push(variant.clone());
+                }
+            }
+            _ => {
+                if depth == 0 && ident_start.is_none() && (c.is_alphabetic() || c == '_') {
+                    ident_start = Some(offset);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Every spelling of "this method's answer depends on which variant `self`
+/// is", so a method that discriminates cannot escape the check below by
+/// discriminating in a form the scan does not know.
+///
+/// `match self` was the only form recognised when the check landed, which
+/// made the whole rule opt-out: writing the same ladder as `if let
+/// Self::A(e) = self { … } else { … }` or `matches!(self, Self::A(_))`
+/// silently exempted the method, and an `else` branch answers for an
+/// unnamed leaf exactly as a `_ =>` arm does. `match *self` is here for the
+/// same reason — it is the ordinary spelling when the arms bind by value.
+const SELF_DISCRIMINATING_FORMS: [&str; 5] = [
+    "match self",
+    "match *self",
+    "match &self",
+    "if let Self::",
+    "matches!(self",
+];
+
+/// Every `#[from]` variant that a `Classify` method which discriminates on
+/// `self` does not name.
+///
+/// The failure this catches: a new `#[from] SomeLeaf` variant added to
+/// `ApiError` or `JobError` compiles the moment the existing `_ =>` arm
+/// swallows it, and the leaf's own `code`/`retry`/`severity` are silently
+/// replaced by the category default — the drift ADR-0011's "composites do not
+/// re-classify" exists to stop, and the one kind of ADR-0011 violation that
+/// produces no compiler error.
+///
+/// Only methods that discriminate on `self` (any of
+/// [`SELF_DISCRIMINATING_FORMS`]) are checked: a `Classify` impl
+/// that answers the same thing for every variant (`RailFailure::category`)
+/// has no wildcard to hide in, and a method the impl does not define at all
+/// inherits the category-derived default, which is decided by `category` —
+/// itself checked here.
+fn undelegated_from_variants(searchable_text: &str, name: &str) -> Vec<(String, String)> {
+    let variants = from_variants(searchable_text, name);
+    if variants.is_empty() {
+        return Vec::new();
+    }
+    let Some(impl_body) = CLASSIFY_IMPL_HEADERS
+        .iter()
+        .find_map(|header| item_body(searchable_text, &format!("{header}{name} ")))
+    else {
+        return Vec::new();
+    };
+
+    let mut problems = Vec::new();
+    for method in CLASSIFY_METHODS {
+        let Some(body) = item_body(impl_body, &format!("fn {method}(")) else {
+            continue;
+        };
+        if !SELF_DISCRIMINATING_FORMS
+            .iter()
+            .any(|form| body.contains(form))
+        {
+            continue;
+        }
+        for variant in &variants {
+            if !body.contains(&format!("Self::{variant}")) {
+                problems.push((method.to_owned(), variant.clone()));
+            }
+        }
+    }
+    problems
+}
+
 /// Whether this file implements `Classify` for `name`, in any of the spellings
 /// a crate here may use.
 fn has_classify_impl(searchable_text: &str, name: &str) -> bool {
@@ -1112,6 +1380,973 @@ fn rust_sources(dir: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// verify-docs
+// ---------------------------------------------------------------------------
+
+/// The trees the report covers.
+///
+/// `sdks/rust`, `.xtask` and everything under `frontends/` are deliberately
+/// outside it. These numbers exist to be compared against the baseline table
+/// in `docs/plans/2026-09-03-step7-cleanup-rework.md` §"(a) Re-measured
+/// baselines", which was measured over exactly these two trees; widening the
+/// scope would make the before/after the step is judged on incomparable.
+const DOC_REPORT_DIRS: [&str; 2] = ["backends/crates", "backends/apps"];
+
+/// A production function at least this long is named in the report.
+const LONG_FUNCTION_LINES: usize = 80;
+
+/// How many worst-ratio files the report names.
+const WORST_FILES: usize = 10;
+
+/// Doc-comment lines against code lines, for one file or one crate.
+#[derive(Debug, Default, Clone, Copy)]
+struct DocCounts {
+    /// Lines whose first non-space characters are `///` or `//!`.
+    doc: usize,
+    /// The part of `doc` inside a fenced block, delimiters included — a
+    /// compiled example rather than prose.
+    example: usize,
+    /// Lines that are neither a doc comment, a `//` comment, nor blank.
+    code: usize,
+    /// Every non-doc line, blanks and `//` comments included — the design's
+    /// own denominator, kept so the totals stay comparable with its table.
+    other: usize,
+}
+
+impl DocCounts {
+    /// The half of `doc` that is prose: the number a comment budget is
+    /// actually about.
+    ///
+    /// Splitting the two is not a refinement, it is the difference between a
+    /// report that helps and one that lies. Step 7's whole doctest half turns
+    /// prose into compiled examples — `vpay-core` went from 1019 prose lines
+    /// to 803 while its total doc lines rose from 1043 to 1412, because 585
+    /// of them are now examples `just test-doc` runs. Measured on `doc`
+    /// alone, doing exactly what the step asked for reads as a 31-point
+    /// regression.
+    fn prose(&self) -> usize {
+        self.doc.saturating_sub(self.example)
+    }
+}
+
+impl DocCounts {
+    fn add(&mut self, rhs: DocCounts) {
+        self.doc += rhs.doc;
+        self.example += rhs.example;
+        self.code += rhs.code;
+        self.other += rhs.other;
+    }
+}
+
+/// A production function of at least [`LONG_FUNCTION_LINES`] lines.
+#[derive(Debug)]
+struct LongFunction {
+    line: usize,
+    name: String,
+    length: usize,
+}
+
+/// Everything the report knows about one file.
+#[derive(Debug)]
+struct FileReport {
+    path: String,
+    counts: DocCounts,
+    long_functions: Vec<LongFunction>,
+    ignore_fences: Vec<usize>,
+    allows: Vec<(usize, String)>,
+}
+
+/// Print the documentation report. **Never fails**, by construction.
+///
+/// Step 7's decision (4): the comment budget is a report, not a gate. A hard
+/// ratio would put pressure on exactly the `# Errors` and `# Panics` sections
+/// [ADR-0011](../../docs/adr/0011-error-modelling.md) and rustdoc depend on,
+/// and the cheapest way to pass it would be to delete them. So this returns
+/// nothing to fail on — `just verify` runs it after the three gates and the
+/// build cannot go red on a number printed here.
+///
+/// What it measures, per crate under [`DOC_REPORT_DIRS`], over `src/` only
+/// (each crate's own `tests/` is a different kind of code and is skipped):
+///
+/// * doc-comment lines against code lines;
+/// * functions of [`LONG_FUNCTION_LINES`] lines or more;
+/// * ```` ```ignore ```` doctest fences — a doctest that is compiled by
+///   nobody is a claim nothing checks, which is what `just test-doc` exists
+///   to stop;
+/// * `#[allow]` / `#[expect]` in production code.
+///
+/// All four are measured on the part of a file *before* its first
+/// `#[cfg(test)]` — see [`production_region`].
+fn verify_docs(root: &Path) {
+    println!(
+        "verify-docs: a report, not a gate — it never fails a build (Step 7, decision 4).\n\
+         \x20 scope: {} — `src/` only, each crate's own `tests/` excluded, and\n\
+         \x20        everything from a file's first `#[cfg(test)]` onward excluded.\n\
+         \x20 `code` counts lines that are neither a doc comment, a `//` comment, nor blank.",
+        DOC_REPORT_DIRS.join(", ")
+    );
+
+    let mut crates: Vec<(String, Vec<FileReport>)> = Vec::new();
+    for dir in DOC_REPORT_DIRS {
+        let Ok(entries) = fs::read_dir(root.join(dir)) else {
+            println!("verify-docs: WARNING — `{dir}` is not readable; it contributed nothing");
+            continue;
+        };
+        let mut crate_dirs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect();
+        crate_dirs.sort();
+        for crate_dir in crate_dirs {
+            let name = crate_dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let mut files: Vec<FileReport> = rust_sources(&crate_dir)
+                .into_iter()
+                .filter(|path| path.components().any(|c| c.as_os_str() == "src"))
+                .map(|path| {
+                    let text = fs::read_to_string(&path).unwrap_or_default();
+                    let region = production_region(&text);
+                    FileReport {
+                        path: relative(root, &path),
+                        counts: count_doc_and_code(&region.raw),
+                        long_functions: long_functions(&region.cleaned),
+                        ignore_fences: ignore_fences(&region.raw),
+                        allows: allow_sites(&region),
+                    }
+                })
+                .collect();
+            files.sort_by(|a, b| a.path.cmp(&b.path));
+            if !files.is_empty() {
+                crates.push((name, files));
+            }
+        }
+    }
+
+    if crates.is_empty() {
+        println!(
+            "verify-docs: WARNING — no crate sources were found under {}. This report \
+             measured NOTHING; do not read its silence as a clean result.",
+            DOC_REPORT_DIRS.join(" or ")
+        );
+        return;
+    }
+
+    print_ratio_table(&crates);
+    print_long_functions(&crates);
+    print_ignore_fences(&crates);
+    print_allow_sites(&crates);
+}
+
+/// `doc / code` as a percentage with one decimal, without floating point —
+/// [ADR-0007](../../docs/adr/0007-lint-policy.md) denies float arithmetic
+/// workspace-wide and a report is not an exception worth carving.
+fn ratio_tenths(doc: usize, code: usize) -> usize {
+    if code == 0 {
+        return 0;
+    }
+    doc.saturating_mul(1000) / code
+}
+
+fn percent(tenths: usize) -> String {
+    format!("{}.{}%", tenths / 10, tenths % 10)
+}
+
+fn print_ratio_table(crates: &[(String, Vec<FileReport>)]) {
+    let mut total = DocCounts::default();
+    let width = crates
+        .iter()
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(4)
+        .max(5);
+    println!("\ndoc-comment lines against code lines");
+    println!(
+        "  `prose` is what a comment budget is about; `ex` is doc lines inside a ``` fence,\n  \
+         which `just test-doc` compiles. `ratio` is prose/code — an example is not a comment."
+    );
+    println!(
+        "  {:width$}  {:>7}  {:>7}  {:>7}  {:>8}",
+        "crate", "prose", "ex", "code", "ratio"
+    );
+    for (name, files) in crates {
+        let mut counts = DocCounts::default();
+        for file in files {
+            counts.add(file.counts);
+        }
+        total.add(counts);
+        println!(
+            "  {:width$}  {:>7}  {:>7}  {:>7}  {:>8}",
+            name,
+            counts.prose(),
+            counts.example,
+            counts.code,
+            percent(ratio_tenths(counts.prose(), counts.code)),
+        );
+    }
+    println!(
+        "  {:width$}  {:>7}  {:>7}  {:>7}  {:>8}",
+        "TOTAL",
+        total.prose(),
+        total.example,
+        total.code,
+        percent(ratio_tenths(total.prose(), total.code)),
+    );
+    println!(
+        "  the same totals in the design's own convention, which predates the doctests and\n  \
+         counts every doc line as prose (denominator = every non-doc line, blanks and `//`\n  \
+         comments included): doc {} / code {} = {}",
+        total.doc,
+        total.other,
+        percent(ratio_tenths(total.doc, total.other)),
+    );
+
+    let mut worst: Vec<&FileReport> = crates
+        .iter()
+        .flat_map(|(_, files)| files.iter())
+        .filter(|file| file.counts.code > 0)
+        .collect();
+    worst.sort_by(|a, b| {
+        ratio_tenths(b.counts.prose(), b.counts.code)
+            .cmp(&ratio_tenths(a.counts.prose(), a.counts.code))
+            .then_with(|| b.counts.prose().cmp(&a.counts.prose()))
+    });
+    println!("\n  the {WORST_FILES} files with the highest prose ratio");
+    for file in worst.iter().take(WORST_FILES) {
+        println!(
+            "    {:>8}  {} (prose {} / ex {} / code {})",
+            percent(ratio_tenths(file.counts.prose(), file.counts.code)),
+            file.path,
+            file.counts.prose(),
+            file.counts.example,
+            file.counts.code,
+        );
+    }
+}
+
+fn print_long_functions(crates: &[(String, Vec<FileReport>)]) {
+    let mut all: Vec<(&FileReport, &LongFunction)> = crates
+        .iter()
+        .flat_map(|(_, files)| files.iter())
+        .flat_map(|file| file.long_functions.iter().map(move |f| (file, f)))
+        .collect();
+    all.sort_by_key(|(_, func)| std::cmp::Reverse(func.length));
+    println!(
+        "\nproduction functions of {LONG_FUNCTION_LINES} lines or more ({})",
+        all.len()
+    );
+    for (file, func) in &all {
+        println!(
+            "  {:>4}  {}:{}  fn {}",
+            func.length, file.path, func.line, func.name
+        );
+    }
+}
+
+fn print_ignore_fences(crates: &[(String, Vec<FileReport>)]) {
+    let sites: Vec<String> = crates
+        .iter()
+        .flat_map(|(_, files)| files.iter())
+        .flat_map(|file| {
+            file.ignore_fences
+                .iter()
+                .map(move |line| format!("{}:{line}", file.path))
+        })
+        .collect();
+    println!(
+        "\n```ignore doctest fences ({}) — an example nothing compiles",
+        sites.len()
+    );
+    for site in &sites {
+        println!("  {site}");
+    }
+}
+
+fn print_allow_sites(crates: &[(String, Vec<FileReport>)]) {
+    let sites: Vec<String> = crates
+        .iter()
+        .flat_map(|(_, files)| files.iter())
+        .flat_map(|file| {
+            file.allows
+                .iter()
+                .map(move |(line, text)| format!("{}:{line}  {text}", file.path))
+        })
+        .collect();
+    println!(
+        "\n#[allow] / #[expect] in production code ({})",
+        sites.len()
+    );
+    for site in &sites {
+        println!("  {site}");
+    }
+}
+
+/// The part of a file that ships, in two spellings of the same characters.
+#[derive(Debug)]
+struct Region {
+    /// As written — the only form in which a doc comment is still visible.
+    raw: String,
+    /// Comments and literals blanked, one space per character removed, so a
+    /// position in `cleaned` is the same position in `raw`.
+    cleaned: String,
+}
+
+/// The part of a file that ships: everything before its first `#[cfg(test)]`.
+///
+/// Deliberately cruder than [`strip_cfg_test_items`], which this file's three
+/// *gates* use. This report prints `path:line` for everything it finds, and a
+/// scanner that deleted test items out of the middle of a file would renumber
+/// every line after them — so each printed line would point somewhere else.
+/// Truncating at the first one keeps the numbers real, and costs nothing in
+/// this workspace, where tests are written at the end of the file.
+///
+/// The search runs over [`strip_code_noise`]'s output, not the source: three
+/// files in `vpay-worker` and `vpay-worker-bin` *discuss* `#[cfg(test)]` in
+/// their module headers, and a scan over raw text stopped at the sentence —
+/// dropping `poll_charge`, `run_loop` and both `#[expect]`s out of the first
+/// version of this report. That is the failure mode the report exists to
+/// avoid, arriving through the report itself.
+///
+/// The predicate rules are [`match_cfg_test`]'s: `#[cfg(any(test, …))]`
+/// truncates, `#[cfg(not(test))]` (the production-only spelling) does not.
+fn production_region(text: &str) -> Region {
+    let raw: Vec<char> = text.chars().collect();
+    let cleaned: Vec<char> = strip_code_noise(text).chars().collect();
+    let mut cut = raw.len();
+    let mut i = 0usize;
+    while i < cleaned.len() {
+        if match_cfg_test(&cleaned, i).is_some() {
+            cut = i;
+            break;
+        }
+        i += 1;
+    }
+    Region {
+        raw: raw.get(..cut).unwrap_or_default().iter().collect(),
+        cleaned: cleaned.get(..cut).unwrap_or_default().iter().collect(),
+    }
+}
+
+/// Count doc lines, the fenced-example part of them, and code lines in a
+/// production region.
+///
+/// Block comments are removed first (line breaks intact), so a `/* … */`
+/// paragraph counts as neither doc nor code — it is prose either way, and
+/// counting it as code would make a file look *better* the more of it there
+/// is.
+///
+/// A doc line inside a ```` ``` ```` fence counts as an example, delimiters
+/// included, and the fence state resets at the first non-doc line so an
+/// unclosed fence in one item cannot swallow the next one's prose.
+fn count_doc_and_code(region: &str) -> DocCounts {
+    let visible = strip_block_comments(region);
+    let mut counts = DocCounts::default();
+    let mut in_fence = false;
+    for line in visible.lines() {
+        let trimmed = line.trim_start();
+        let Some(body) = trimmed
+            .strip_prefix("///")
+            .or_else(|| trimmed.strip_prefix("//!"))
+        else {
+            in_fence = false;
+            counts.other += 1;
+            if !trimmed.is_empty() && !trimmed.starts_with("//") {
+                counts.code += 1;
+            }
+            continue;
+        };
+        counts.doc += 1;
+        let fence = body.trim_start().starts_with("```");
+        if in_fence || fence {
+            counts.example += 1;
+        }
+        if fence {
+            in_fence = !in_fence;
+        }
+    }
+    counts
+}
+
+/// Every function in a production region that is [`LONG_FUNCTION_LINES`] or
+/// longer, measured from its `fn` line through its closing brace inclusive.
+///
+/// Comments and string literals are blanked first ([`strip_code_noise`]),
+/// because a `format!` body containing `{` is what makes a naive brace-depth
+/// scan report a function that runs to the end of the file.
+fn long_functions(cleaned: &str) -> Vec<LongFunction> {
+    let chars: Vec<char> = cleaned.chars().collect();
+    let mut out = Vec::new();
+    let mut line = 1usize;
+    let mut i = 0usize;
+    while let Some(&c) = chars.get(i) {
+        if c == '\n' {
+            line += 1;
+            i += 1;
+            continue;
+        }
+        if is_fn_keyword(&chars, i)
+            && let Some(found) = function_at(&chars, i, line)
+            && found.length >= LONG_FUNCTION_LINES
+        {
+            out.push(found);
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Whether the `fn` keyword — not an identifier containing it — starts at `i`.
+fn is_fn_keyword(chars: &[char], i: usize) -> bool {
+    if chars.get(i) != Some(&'f') || chars.get(i + 1) != Some(&'n') {
+        return false;
+    }
+    if i > 0 && chars.get(i - 1).is_some_and(|c| is_ident_char(*c)) {
+        return false;
+    }
+    !chars.get(i + 2).is_some_and(|c| is_ident_char(*c))
+}
+
+/// The function whose `fn` keyword starts at `start`, if it has a body.
+///
+/// `None` for a declaration without one (a trait method's signature, an
+/// `extern` block): those end at a `;` reached outside every bracket, and a
+/// scan that took the *next* `{` in the file would attribute the following
+/// item's body to them. The bracket depth is tracked for the same reason a
+/// `;` cannot be trusted naively — `fn f(buf: [u8; 4])` carries one inside
+/// its own signature.
+fn function_at(chars: &[char], start: usize, start_line: usize) -> Option<LongFunction> {
+    let mut i = start + 2;
+    while chars.get(i).is_some_and(|c| c.is_whitespace()) {
+        i += 1;
+    }
+    let name: String = chars
+        .get(i..)?
+        .iter()
+        .take_while(|c| is_ident_char(**c))
+        .collect();
+    if name.is_empty() {
+        return None;
+    }
+
+    let mut braces = 0usize;
+    let mut parens = 0usize;
+    let mut brackets = 0usize;
+    let mut opened = false;
+    let mut lines_spanned = 0usize;
+    let mut j = start;
+    while let Some(&c) = chars.get(j) {
+        match c {
+            '\n' => lines_spanned += 1,
+            '(' => parens += 1,
+            ')' => parens = parens.saturating_sub(1),
+            '[' => brackets += 1,
+            ']' => brackets = brackets.saturating_sub(1),
+            '{' => {
+                braces += 1;
+                opened = true;
+            }
+            '}' => {
+                braces = braces.saturating_sub(1);
+                if opened && braces == 0 {
+                    return Some(LongFunction {
+                        line: start_line,
+                        name,
+                        length: lines_spanned + 1,
+                    });
+                }
+            }
+            ';' if !opened && parens == 0 && brackets == 0 => return None,
+            _ => {}
+        }
+        j += 1;
+    }
+    None
+}
+
+/// The 1-based lines carrying a ```` ```ignore ```` doctest fence.
+///
+/// Only doc-comment lines are read: a fence quoted in an ordinary `//`
+/// comment compiles nothing and promises nothing. The info string is split on
+/// commas and whitespace, so ```` ```rust,ignore ```` counts too.
+fn ignore_fences(region: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    for (index, line) in region.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("///") && !trimmed.starts_with("//!") {
+            continue;
+        }
+        let Some((_, info)) = trimmed.split_once("```") else {
+            continue;
+        };
+        if info
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .any(|token| token == "ignore")
+        {
+            out.push(index + 1);
+        }
+    }
+    out
+}
+
+/// Every `#[allow]` / `#[expect]` in a production region, with its line.
+///
+/// Read off the comment- and literal-stripped text so an attribute *quoted*
+/// in a doc comment (this file does it twice) or built inside a macro's
+/// string is not counted, then reported from the original line so the message
+/// shows what was actually written.
+fn allow_sites(region: &Region) -> Vec<(usize, String)> {
+    let cleaned = &region.cleaned;
+    let raw: Vec<&str> = region.raw.lines().collect();
+    let mut out = Vec::new();
+    for (index, line) in cleaned.lines().enumerate() {
+        let hit = ["#[allow(", "#[expect(", "#![allow(", "#![expect("]
+            .iter()
+            .any(|needle| line.contains(needle));
+        if hit {
+            out.push((index + 1, attribute_text(&raw, index)));
+        }
+    }
+    out
+}
+
+/// The attribute at `raw[index]`, joined across the lines rustfmt wrapped it
+/// over.
+///
+/// Every `#[expect(...)]` in `vpay-worker` carries a `reason = "..."` long
+/// enough that rustfmt breaks the attribute over four lines, and reporting
+/// the first of them prints `#[expect(` — the one part that says nothing
+/// about which lint was silenced or why.
+fn attribute_text(raw: &[&str], index: usize) -> String {
+    let mut text = String::new();
+    for offset in 0..6usize {
+        let Some(line) = raw.get(index + offset) else {
+            break;
+        };
+        if offset > 0 {
+            text.push(' ');
+        }
+        text.push_str(line.trim());
+        let opens = text.matches('(').count() + text.matches('[').count();
+        let closes = text.matches(')').count() + text.matches(']').count();
+        if opens <= closes {
+            break;
+        }
+    }
+    text.chars().take(120).collect()
+}
+
+/// Blank out comments and every literal, keeping each line break in place.
+///
+/// Line count and line numbers are preserved exactly — the report prints
+/// them — so everything removed is replaced by spaces rather than deleted.
+/// Raw strings (`r#"…"#`) are handled because `vpay-db` writes SQL in them,
+/// and lifetimes are told apart from `char` literals because `'a` is not an
+/// unterminated `'`.
+fn strip_code_noise(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    while let Some(&c) = chars.get(i) {
+        // A line comment: blanked to the end of its line.
+        if c == '/' && chars.get(i + 1) == Some(&'/') {
+            while chars.get(i).is_some_and(|c| *c != '\n') {
+                out.push(' ');
+                i += 1;
+            }
+            continue;
+        }
+        // A block comment, nesting as Rust's do.
+        if c == '/' && chars.get(i + 1) == Some(&'*') {
+            let mut depth = 1usize;
+            out.push_str("  ");
+            i += 2;
+            while let Some(&inner) = chars.get(i) {
+                if inner == '/' && chars.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    out.push_str("  ");
+                    i += 2;
+                    continue;
+                }
+                if inner == '*' && chars.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    out.push_str("  ");
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                    continue;
+                }
+                out.push(if inner == '\n' { '\n' } else { ' ' });
+                i += 1;
+            }
+            continue;
+        }
+        // A raw string: `r`, any number of `#`, then the quote.
+        if c == 'r' && !(i > 0 && chars.get(i - 1).is_some_and(|p| is_ident_char(*p))) {
+            let mut hashes = 0usize;
+            let mut j = i + 1;
+            while chars.get(j) == Some(&'#') {
+                hashes += 1;
+                j += 1;
+            }
+            if chars.get(j) == Some(&'"') {
+                out.push_str(&" ".repeat(j - i + 1));
+                i = j + 1;
+                while let Some(&inner) = chars.get(i) {
+                    if inner == '"' && (0..hashes).all(|k| chars.get(i + 1 + k) == Some(&'#')) {
+                        out.push_str(&" ".repeat(hashes + 1));
+                        i += hashes + 1;
+                        break;
+                    }
+                    out.push(if inner == '\n' { '\n' } else { ' ' });
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        // An ordinary string, escapes and all.
+        if c == '"' {
+            out.push(' ');
+            i += 1;
+            let mut escaped = false;
+            while let Some(&inner) = chars.get(i) {
+                out.push(if inner == '\n' { '\n' } else { ' ' });
+                i += 1;
+                if escaped {
+                    escaped = false;
+                } else if inner == '\\' {
+                    escaped = true;
+                } else if inner == '"' {
+                    break;
+                }
+            }
+            continue;
+        }
+        // A `char` literal — but `'a` is a lifetime and stays.
+        if c == '\'' {
+            let escaped = chars.get(i + 1) == Some(&'\\');
+            let plain = chars.get(i + 2) == Some(&'\'');
+            if escaped || plain {
+                out.push(' ');
+                i += 1;
+                let mut skip = false;
+                while let Some(&inner) = chars.get(i) {
+                    out.push(if inner == '\n' { '\n' } else { ' ' });
+                    i += 1;
+                    if skip {
+                        skip = false;
+                    } else if inner == '\\' {
+                        skip = true;
+                    } else if inner == '\'' {
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+#[cfg(test)]
+mod doc_report_tests {
+    use super::*;
+
+    /// Everything this report prints is a `path:line`, and every line number
+    /// comes from counting characters in [`strip_code_noise`]'s output
+    /// against the source. If that function ever removed a character instead
+    /// of blanking it, every number after the removal would be wrong and
+    /// nothing else here would notice.
+    #[test]
+    fn blanking_noise_changes_no_character_count_and_no_line_count() {
+        let source = r####"
+//! A header /* with a block comment */ and a "quoted" thing.
+/// ```ignore
+fn f() -> &'static str {
+    let sql = r#"SELECT '{' FROM "t" -- not a comment"#;
+    let brace = '{';
+    let escaped = '\'';
+    "a \" string with // and /* inside"
+}
+"####;
+        let cleaned = strip_code_noise(source);
+        assert_eq!(
+            cleaned.chars().count(),
+            source.chars().count(),
+            "a blanked character must still be one character"
+        );
+        assert_eq!(cleaned.lines().count(), source.lines().count());
+        assert!(
+            !cleaned.contains("SELECT"),
+            "a raw string's body must not survive: {cleaned}"
+        );
+        assert!(!cleaned.contains("not a comment"));
+        assert!(cleaned.contains("fn f"), "code itself must survive");
+    }
+
+    #[test]
+    fn the_production_region_stops_at_the_first_cfg_test() {
+        let region = production_region(
+            "fn shipped() {}\n#[cfg(test)]\nmod tests {\n    fn only_in_tests() {}\n}\n",
+        );
+        assert!(region.raw.contains("fn shipped"));
+        assert!(!region.raw.contains("only_in_tests"));
+    }
+
+    /// The defect this report shipped with for one run: three files in
+    /// `vpay-worker` and `vpay-worker-bin` *discuss* `#[cfg(test)]` in their
+    /// module headers, and a scan over raw text stopped at the sentence —
+    /// silently dropping two 200-line functions and two `#[expect]`s.
+    #[test]
+    fn a_cfg_test_written_in_a_comment_or_a_string_does_not_end_the_region() {
+        let region = production_region(concat!(
+            "//! This module has no `#[cfg(test)]` variant, deliberately.\n",
+            "const NOTE: &str = \"#[cfg(test)]\";\n",
+            "fn shipped() {}\n",
+            "#[cfg(test)]\nmod tests {}\n",
+        ));
+        assert!(
+            region.raw.contains("fn shipped"),
+            "the region ended early: {}",
+            region.raw
+        );
+        assert!(!region.raw.contains("mod tests"));
+    }
+
+    #[test]
+    fn the_production_only_spelling_does_not_end_the_region() {
+        let region = production_region("#[cfg(not(test))]\nfn shipped() {}\n");
+        assert!(region.raw.contains("fn shipped"));
+    }
+
+    #[test]
+    fn doc_lines_code_lines_and_everything_else_are_counted_apart() {
+        let counts = count_doc_and_code(concat!(
+            "//! module doc\n",
+            "\n",
+            "/// item doc\n",
+            "// an ordinary comment\n",
+            "/* a block\n",
+            "   comment */\n",
+            "pub fn f() {}\n",
+        ));
+        assert_eq!(counts.doc, 2, "`//!` and `///`, and nothing else");
+        assert_eq!(counts.code, 1, "only `pub fn f() {{}}`");
+        assert_eq!(
+            counts.other, 5,
+            "the design's denominator: every non-doc line, blanks and comments included"
+        );
+        assert_eq!(counts.example, 0);
+        assert_eq!(counts.prose(), 2);
+    }
+
+    /// Step 7 turns prose into compiled examples, and a report that counted
+    /// them as comment volume would score doing exactly what the step asked
+    /// for as a regression: `vpay-core`'s prose fell 1019 -> 803 while its
+    /// total doc lines rose 1043 -> 1412.
+    #[test]
+    fn a_fenced_example_is_counted_apart_from_prose() {
+        let counts = count_doc_and_code(concat!(
+            "/// One line of prose.\n",
+            "///\n",
+            "/// ```\n",
+            "/// let x = 1;\n",
+            "/// assert_eq!(x, 1);\n",
+            "/// ```\n",
+            "/// A closing line of prose.\n",
+            "pub fn f() {}\n",
+        ));
+        assert_eq!(counts.doc, 7, "every doc line still counts once");
+        assert_eq!(
+            counts.example, 4,
+            "the two fence delimiters and the two lines between them"
+        );
+        assert_eq!(counts.prose(), 3);
+        assert_eq!(counts.code, 1);
+    }
+
+    #[test]
+    fn a_fence_does_not_bleed_past_the_item_it_is_written_in() {
+        let counts = count_doc_and_code(concat!(
+            "/// ```\n",
+            "/// let x = 1;\n",
+            "pub fn unterminated() {}\n",
+            "\n",
+            "/// Prose belonging to the next item.\n",
+            "pub fn g() {}\n",
+        ));
+        assert_eq!(
+            counts.example, 2,
+            "the unclosed fence ends with its own doc block"
+        );
+        assert_eq!(counts.prose(), 1);
+    }
+
+    #[test]
+    fn a_fence_with_an_info_string_is_still_a_fence() {
+        let counts = count_doc_and_code(concat!(
+            "//! ```rust,no_run\n",
+            "//! let x = 1;\n",
+            "//! ```\n",
+            "//! Prose.\n",
+        ));
+        assert_eq!(counts.example, 3);
+        assert_eq!(counts.prose(), 1);
+    }
+
+    #[test]
+    fn a_brace_inside_a_string_does_not_swallow_the_rest_of_the_file() {
+        let mut source = String::from("fn short() {\n    let _ = \"{ { {\";\n}\n");
+        source.push_str("fn long() {\n");
+        for i in 0..90 {
+            source.push_str(&format!("    let _x{i} = \"}}\";\n"));
+        }
+        source.push_str("}\n");
+        let found = long_functions(&production_region(&source).cleaned);
+        assert_eq!(found.len(), 1, "only the long one: {found:?}");
+        let Some(func) = found.first() else {
+            panic!("no function found")
+        };
+        assert_eq!(func.name, "long");
+        assert_eq!(func.line, 4, "the `fn` line, not the first attribute");
+        assert_eq!(func.length, 92, "signature through closing brace inclusive");
+    }
+
+    #[test]
+    fn a_declaration_with_no_body_is_not_a_function_of_any_length() {
+        let mut source = String::from("trait T {\n    fn declared(&self) -> u8;\n");
+        // A body long enough to be reported, so that mis-attributing the
+        // declaration to it would be visible.
+        source.push_str("    fn implemented(&self) -> u8 {\n");
+        for _ in 0..85 {
+            source.push_str("        let _ = 1;\n");
+        }
+        source.push_str("        1\n    }\n}\n");
+        let found = long_functions(&production_region(&source).cleaned);
+        assert_eq!(found.len(), 1);
+        assert!(found.iter().all(|f| f.name == "implemented"));
+    }
+
+    #[test]
+    fn a_semicolon_inside_a_signature_does_not_hide_the_body() {
+        let mut source = String::from("fn f(buf: [u8; 4]) -> [u8; 4] {\n");
+        for _ in 0..85 {
+            source.push_str("    let _ = 1;\n");
+        }
+        source.push_str("    buf\n}\n");
+        let found = long_functions(&production_region(&source).cleaned);
+        assert_eq!(found.len(), 1, "the `; 4]` is not the end of a declaration");
+    }
+
+    #[test]
+    fn a_function_one_line_short_of_the_threshold_is_not_reported() {
+        // Signature line + body + closing brace, so a function of exactly
+        // `n` lines has `n - 2` body lines.
+        let of_length = |n: usize| {
+            let body = "    let _ = 1;\n".repeat(n - 2);
+            let source = format!("fn f() {{\n{body}}}\n");
+            let found = long_functions(&production_region(&source).cleaned);
+            assert!(
+                found.iter().all(|f| f.length == n),
+                "a {n}-line function measured as {found:?}"
+            );
+            found.len()
+        };
+        assert_eq!(
+            of_length(LONG_FUNCTION_LINES - 1),
+            0,
+            "{LONG_FUNCTION_LINES} is the floor"
+        );
+        assert_eq!(of_length(LONG_FUNCTION_LINES), 1);
+    }
+
+    #[test]
+    fn only_an_ignore_fence_in_a_doc_comment_counts() {
+        let lines = ignore_fences(concat!(
+            "/// ```ignore\n",
+            "/// ```rust,ignore\n",
+            "//! ```text\n",
+            "/// ```no_run\n",
+            "/// ```\n",
+            "// ```ignore\n",
+        ));
+        assert_eq!(
+            lines,
+            vec![1, 2],
+            "`text`, `no_run`, a bare fence and an ordinary comment are not it"
+        );
+    }
+
+    #[test]
+    fn an_allow_is_counted_where_it_is_written_and_nowhere_it_is_quoted() {
+        let region = production_region(concat!(
+            "/// Prefer this to `#[allow(dead_code)]`.\n",
+            "const HINT: &str = \"#[expect(clippy::all)]\";\n",
+            "#[allow(deprecated)]\n",
+            "fn f() {}\n",
+            "#![expect(clippy::print_stdout)]\n",
+        ));
+        let sites = allow_sites(&region);
+        assert_eq!(
+            sites.len(),
+            2,
+            "the doc comment and the string literal are not attributes: {sites:?}"
+        );
+        assert_eq!(
+            sites.first().map(|(line, _)| *line),
+            Some(3),
+            "reported at the line it is written on"
+        );
+        assert!(
+            sites
+                .first()
+                .is_some_and(|(_, text)| text == "#[allow(deprecated)]"),
+            "reported as written: {sites:?}"
+        );
+        assert_eq!(sites.get(1).map(|(line, _)| *line), Some(5));
+    }
+
+    /// Every `#[expect]` in `vpay-worker` carries a `reason =` long enough
+    /// that rustfmt breaks the attribute over four lines, and the first of
+    /// them is the one part that names neither the lint nor the reason.
+    #[test]
+    fn an_attribute_rustfmt_wrapped_is_reported_whole() {
+        let region = production_region(concat!(
+            "#[expect(\n",
+            "    clippy::too_many_arguments,\n",
+            "    reason = \"every argument is a distinct fact\"\n",
+            ")]\n",
+            "fn f() {}\n",
+        ));
+        let sites = allow_sites(&region);
+        assert_eq!(sites.len(), 1, "one attribute, not one per line: {sites:?}");
+        assert_eq!(
+            sites.first().map(|(_, text)| text.as_str()),
+            Some(
+                "#[expect( clippy::too_many_arguments, \
+                 reason = \"every argument is a distinct fact\" )]"
+            )
+        );
+    }
+
+    /// [ADR-0007](../../docs/adr/0007-lint-policy.md) denies float arithmetic
+    /// workspace-wide, so the ratio is integer division. A crate with no code
+    /// lines must not divide by zero.
+    #[test]
+    fn the_ratio_is_integer_arithmetic_and_survives_an_empty_crate() {
+        assert_eq!(percent(ratio_tenths(3413, 2370)), "144.0%");
+        assert_eq!(percent(ratio_tenths(10, 86)), "11.6%");
+        assert_eq!(percent(ratio_tenths(0, 0)), "0.0%");
+        assert_eq!(percent(ratio_tenths(7, 0)), "0.0%");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1514,6 +2749,145 @@ vpay-testkit = { path = \"x\" }
         assert!(error.contains(STATUS_TOKEN_HEADING), "{error}");
     }
 
+    /// The delegation check finds the `#[from]` variants and the methods that
+    /// swallow them, and finds nothing when every arm is present.
+    ///
+    /// Both directions, for the reason [`the_status_check_fails_in_both_directions`]
+    /// gives: a check that never fires is indistinguishable from one that
+    /// cannot.
+    #[test]
+    fn a_from_variant_missing_a_classify_arm_is_reported() {
+        let delegating = searchable(
+            r#"
+            pub enum ApiError {
+                #[error("db")]
+                Db(#[from] DbError),
+                #[error("internal: {0}")]
+                Internal(String),
+            }
+            impl Classify for ApiError {
+                fn category(&self) -> Category {
+                    match self {
+                        Self::Db(e) => e.category(),
+                        Self::Internal(_) => Category::Internal,
+                    }
+                }
+                fn code(&self) -> &'static str {
+                    match self {
+                        Self::Db(e) => e.code(),
+                        _ => "internal",
+                    }
+                }
+            }
+            "#,
+        );
+        assert_eq!(
+            from_variants(&delegating, "ApiError"),
+            vec!["Db".to_owned()]
+        );
+        assert!(undelegated_from_variants(&delegating, "ApiError").is_empty());
+
+        let swallowing = delegating.replace("Self::Db(e) => e.code(), ", "");
+        assert_eq!(
+            undelegated_from_variants(&swallowing, "ApiError"),
+            vec![("code".to_owned(), "Db".to_owned())],
+            "a `_ =>` arm answering for a `#[from]` leaf must be reported"
+        );
+    }
+
+    /// Discriminating on `self` without writing `match self` does not exempt
+    /// a `Classify` method from naming every `#[from]` leaf.
+    ///
+    /// This is the evasion the first version of the check allowed: an `if
+    /// let` ladder, a `matches!` and a `match *self` all answer differently
+    /// per variant, and the trailing `else`/`false` answers for an unnamed
+    /// leaf exactly as a `_ =>` arm would — but none of them contain the
+    /// literal `match self`, so the method was skipped and the leaf's own
+    /// `code`/`retry`/`severity` were silently replaced by the category
+    /// default. Narrowing [`SELF_DISCRIMINATING_FORMS`] back to `match self`
+    /// makes every assertion below fail.
+    #[test]
+    fn a_from_variant_swallowed_by_an_if_let_ladder_is_reported() {
+        // `Db` is named; `Ledger` — also `#[from]` — is answered for by the
+        // trailing `else`, by the `false` arm and by the `_ =>` respectively.
+        let evading = searchable(
+            r#"
+            pub enum JobError {
+                #[error("db")]
+                Db(#[from] DbError),
+                #[error("ledger")]
+                Ledger(#[from] LedgerError),
+                #[error("payload")]
+                Payload(String),
+            }
+            impl Classify for JobError {
+                fn category(&self) -> Category {
+                    if let Self::Db(e) = self {
+                        e.category()
+                    } else {
+                        Category::Internal
+                    }
+                }
+                fn retry(&self) -> Retry {
+                    if matches!(self, Self::Db(_)) {
+                        Retry::AfterBackoff
+                    } else {
+                        Retry::Never
+                    }
+                }
+                fn severity(&self) -> Severity {
+                    match *self {
+                        Self::Db(ref e) => e.severity(),
+                        _ => Severity::Warn,
+                    }
+                }
+            }
+            "#,
+        );
+        assert_eq!(
+            from_variants(&evading, "JobError"),
+            vec!["Db".to_owned(), "Ledger".to_owned()],
+            "both `#[from]` variants must be found before the delegation check runs"
+        );
+        assert_eq!(
+            undelegated_from_variants(&evading, "JobError"),
+            vec![
+                ("category".to_owned(), "Ledger".to_owned()),
+                ("retry".to_owned(), "Ledger".to_owned()),
+                ("severity".to_owned(), "Ledger".to_owned()),
+            ],
+            "an `if let` / `matches!` / `match *self` ladder that omits a \
+             `#[from]` leaf must be reported, not skipped"
+        );
+    }
+
+    /// A `Classify` method that answers the same thing for every variant has
+    /// no wildcard to hide in, so it is not required to enumerate them.
+    ///
+    /// `vpay_provider::RailFailure` is the real instance: both of its
+    /// `#[from]` variants are `Category::Rail` and its `category` is one
+    /// line with no `match`.
+    #[test]
+    fn a_classify_method_without_a_match_is_not_required_to_enumerate_variants() {
+        let text = searchable(
+            r#"
+            pub enum RailFailure {
+                #[error("sending the request")]
+                Http(#[from] reqwest::Error),
+                #[error("reading the response")]
+                Body(#[from] http::HttpBodyError),
+            }
+            impl vpay_core::Classify for RailFailure {
+                fn category(&self) -> vpay_core::Category {
+                    vpay_core::Category::Rail
+                }
+            }
+            "#,
+        );
+        assert_eq!(from_variants(&text, "RailFailure"), vec!["Http", "Body"]);
+        assert!(undelegated_from_variants(&text, "RailFailure").is_empty());
+    }
+
     /// Both directions of the check, over synthetic sources — the code→docs
     /// half that always worked, and the docs→code half that did not.
     ///
@@ -1764,6 +3138,65 @@ vpay-testkit = { path = \"x\" }
         let manifest = "[dependencies]\nvpay-testkit = { path = \"x\" }\n";
         let runtime = runtime_dependency_section(manifest);
         assert!(runtime.contains("vpay-testkit"));
+    }
+
+    /// A shipping binary that opens its pool with `connect_lazy` is a
+    /// violation; the same call under `#[cfg(test)]`, or merely named in a
+    /// comment, is not.
+    ///
+    /// Driven over a synthetic file because the real scan reads
+    /// `backends/apps`, and the only honest way to watch this fire is to
+    /// hand it a file that breaks the rule rather than to break a binary.
+    /// The `#[cfg(test)]` and comment halves are what keep the guard from
+    /// being reverted the first time it cries wolf at `vpay-server`'s own
+    /// CLI tests.
+    #[test]
+    fn a_binary_that_opens_its_pool_lazily_is_a_violation() {
+        let shipping = "\
+async fn run() -> anyhow::Result<()> {
+    let repositories = vpay_db::connect_lazy(&args.database_url, TIMEOUT)?;
+    Ok(())
+}
+";
+        let problems = app_source_violations(shipping);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems.first().is_some_and(|p| p.contains("connect_lazy")),
+            "{problems:?}"
+        );
+
+        let tested_and_documented = "\
+/// The pool is opened eagerly, never with `connect_lazy`.
+async fn run() -> anyhow::Result<()> {
+    let repositories = vpay_db::connect(&args.database_url).await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn an_unreachable_database_is_a_503() {
+        let repositories = vpay_db::connect_lazy(\"postgres://x:1/y\", TIMEOUT)?;
+    }
+}
+";
+        assert!(
+            app_source_violations(tested_and_documented).is_empty(),
+            "a comment naming the function, and a call under `#[cfg(test)]`, are not calls \
+             from a shipping path"
+        );
+    }
+
+    /// The stub-adapter half of the same scan still matches raw text —
+    /// including a comment, because there is no such code path to describe.
+    #[test]
+    fn a_stub_adapter_named_anywhere_in_a_binary_is_a_violation() {
+        let problems = app_source_violations("// we could wire a MockAdapter here for local dev\n");
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems.first().is_some_and(|p| p.contains("MockAdapter")),
+            "{problems:?}"
+        );
     }
 
     // ------------------------------------------------------- verify-errors ---

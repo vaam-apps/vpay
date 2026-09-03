@@ -9,6 +9,18 @@
 //! way out. A rail that starts quoting a number must not turn a settled
 //! payment into a parse error the poll ladder retries forever; a request body
 //! that drifts from the documented shape is a charge the rail refuses.
+//!
+//! # No `#[serde(rename_all = "snake_case")]` in this file, ever
+//!
+//! The workspace convention is that every type modelling *vpay's own* wire or
+//! config carries it, so a field added as `payTo` fails review instead of
+//! shipping. These types model **MTN's** wire, which is camelCase
+//! (`externalId`, `partyIdType`, `partyId`, `financialTransactionId`), and
+//! the rename attributes below are what makes each one exact. A blanket
+//! `rename_all` here would be a no-op masked by those per-field renames on
+//! the fields that have one, and a silent wire break on the fields that do
+//! not. Same rule applies to `token.rs`'s `TokenResponse`, which models
+//! OAuth's.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -205,7 +217,7 @@ impl CallbackBody {
                     .and_then(|v| Uuid::parse_str(v.trim()).ok())
             })
             .ok_or_else(|| {
-                ProviderError::Malformed(
+                ProviderError::malformed(
                     "mtn_momo: callback carries neither a referenceId nor an externalId that is \
                      one of our references"
                         .to_owned(),
@@ -334,7 +346,7 @@ mod tests {
         ] {
             let parsed: CallbackBody = serde_json::from_str(body).expect("parses");
             assert!(
-                matches!(parsed.reference(), Err(ProviderError::Malformed(_))),
+                matches!(parsed.reference(), Err(ProviderError::Malformed { .. })),
                 "{body}"
             );
         }

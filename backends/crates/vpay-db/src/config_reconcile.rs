@@ -10,7 +10,7 @@
 //!
 //! # Configuration is the authority; the database is the mirror
 //!
-//! [`reconcile`] takes the deployment's view and makes the tables match it,
+//! [`ConfigReconcile::reconcile`] takes the deployment's view and makes the tables match it,
 //! in one transaction: a provider present in the seed is inserted or
 //! updated, and a provider **absent** from the seed is set
 //! `enabled = false` — not deleted. Deleting would break every `charges`
@@ -45,8 +45,6 @@
 //! YAML), which removes the ordering half of the same hazard independently
 //! of the lock — two guards, because the sort only binds writers that share
 //! this function and the lock binds any writer of these tables.
-
-use sqlx::PgPool;
 
 use crate::error::{DbError, classify_write};
 use crate::lock_keys;
@@ -95,95 +93,106 @@ pub struct CurrencySeed {
     pub exponent: i32,
 }
 
-/// Makes `currencies` and `providers` match this deployment, in one
-/// transaction, with at most one such transaction in flight per database.
-///
-/// Idempotent: running it twice with the same seeds changes nothing an
-/// observer can see (proven by
-/// `reconcile_is_idempotent_and_disables_a_dropped_provider_code`), which
-/// is what makes it safe on every replica's boot rather than a migration
-/// that must run once.
-///
-/// **Serialised, not merely idempotent.** Idempotence is about *repeating*
-/// this function; it says nothing about two runs *overlapping*, which is the
-/// normal case (both binaries do this at boot, and a rollout restarts them
-/// together). The `pg_advisory_xact_lock` below is what makes the overlap
-/// safe, and `reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_released`
-/// in `tests/repositories.rs` is what proves the lock is actually taken.
-///
-/// # Errors
-///
-/// [`DbError::CurrencyExponentConflict`] if a currency is already recorded
-/// with a different exponent — refused rather than overwritten, because
-/// changing it would reinterpret every amount already stored in that
-/// currency. [`DbError::Query`] if a `flow` is not a member of the
-/// `provider_flow` enum, if `supports_partial_refunds` is set without
-/// `supports_refunds` (the `partial_refunds_imply_refunds` CHECK), or if
-/// any statement or the commit fails. Both roll the whole transaction back.
-pub async fn reconcile(
-    pool: &PgPool,
-    currencies: &[CurrencySeed],
-    providers: &[ProviderSeed],
-) -> Result<(), DbError> {
-    let mut tx = pool.begin().await.map_err(DbError::Query)?;
+#[async_trait::async_trait]
+pub trait ConfigReconcile: Send + Sync {
+    /// Makes `currencies` and `providers` match this deployment, in one
+    /// transaction, with at most one such transaction in flight per database.
+    ///
+    /// Idempotent: running it twice with the same seeds changes nothing an
+    /// observer can see (proven by
+    /// `reconcile_is_idempotent_and_disables_a_dropped_provider_code`), which
+    /// is what makes it safe on every replica's boot rather than a migration
+    /// that must run once.
+    ///
+    /// **Serialised, not merely idempotent.** Idempotence is about *repeating*
+    /// this function; it says nothing about two runs *overlapping*, which is the
+    /// normal case (both binaries do this at boot, and a rollout restarts them
+    /// together). The `pg_advisory_xact_lock` below is what makes the overlap
+    /// safe, and `reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_released`
+    /// in `tests/repositories.rs` is what proves the lock is actually taken.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::CurrencyExponentConflict`] if a currency is already recorded
+    /// with a different exponent — refused rather than overwritten, because
+    /// changing it would reinterpret every amount already stored in that
+    /// currency. [`DbError::Query`] if a `flow` is not a member of the
+    /// `provider_flow` enum, if `supports_partial_refunds` is set without
+    /// `supports_refunds` (the `partial_refunds_imply_refunds` CHECK), or if
+    /// any statement or the commit fails. Both roll the whole transaction back.
+    async fn reconcile(
+        &self,
+        currencies: &[CurrencySeed],
+        providers: &[ProviderSeed],
+    ) -> Result<(), DbError>;
+}
 
-    // The first statement of the transaction, before anything is read or
-    // written: every other reconcile against this database now waits here
-    // instead of interleaving its upserts with ours. Transaction-scoped, so
-    // `COMMIT`/`ROLLBACK` releases it and there is no unlock path to leak —
-    // including on the `CurrencyExponentConflict` early return below, which
-    // drops `tx` and rolls back.
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(lock_keys::CONFIG_RECONCILE)
-        .execute(&mut *tx)
-        .await
-        .map_err(DbError::Query)?;
+#[async_trait::async_trait]
+impl ConfigReconcile for crate::repository::PgRepositories {
+    async fn reconcile(
+        &self,
+        currencies: &[CurrencySeed],
+        providers: &[ProviderSeed],
+    ) -> Result<(), DbError> {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
 
-    // Sorted by code rather than iterated in YAML order. Two deployments
-    // that list the same rails in different orders would otherwise take the
-    // same row locks in opposite orders — a deadlock Postgres resolves by
-    // aborting one of them (`40P01`), i.e. by failing a boot. The lock above
-    // already prevents that between two `reconcile` calls; this makes the
-    // statement order a property of the data rather than of a config file's
-    // formatting, so it also holds against any future writer that takes the
-    // rows in code order without knowing about the lock. Cloning the slices
-    // is the cost of not mutating a caller's input: a handful of seeds at
-    // boot.
-    let mut currencies = currencies.to_vec();
-    currencies.sort_by(|left, right| left.code.cmp(&right.code));
-    let mut providers = providers.to_vec();
-    providers.sort_by(|left, right| left.code.cmp(&right.code));
+        // The first statement of the transaction, before anything is read or
+        // written: every other reconcile against this database now waits here
+        // instead of interleaving its upserts with ours. Transaction-scoped, so
+        // `COMMIT`/`ROLLBACK` releases it and there is no unlock path to leak —
+        // including on the `CurrencyExponentConflict` early return below, which
+        // drops `tx` and rolls back.
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(lock_keys::CONFIG_RECONCILE)
+            .execute(&mut *tx)
+            .await
+            .map_err(DbError::Query)?;
 
-    for currency in &currencies {
-        // `DO UPDATE SET exponent = currencies.exponent` is a deliberate
-        // no-op write: it locks the existing row and makes `RETURNING`
-        // yield the *stored* exponent (a bare `DO NOTHING` returns no row
-        // at all on conflict, which would need a second query and a race
-        // between the two). The comparison then happens in Rust, where the
-        // refusal can name both values.
-        let stored = sqlx::query_scalar::<_, i32>(
-            "INSERT INTO currencies (code, exponent) VALUES ($1, $2) \
+        // Sorted by code rather than iterated in YAML order. Two deployments
+        // that list the same rails in different orders would otherwise take the
+        // same row locks in opposite orders — a deadlock Postgres resolves by
+        // aborting one of them (`40P01`), i.e. by failing a boot. The lock above
+        // already prevents that between two `reconcile` calls; this makes the
+        // statement order a property of the data rather than of a config file's
+        // formatting, so it also holds against any future writer that takes the
+        // rows in code order without knowing about the lock. Cloning the slices
+        // is the cost of not mutating a caller's input: a handful of seeds at
+        // boot.
+        let mut currencies = currencies.to_vec();
+        currencies.sort_by(|left, right| left.code.cmp(&right.code));
+        let mut providers = providers.to_vec();
+        providers.sort_by(|left, right| left.code.cmp(&right.code));
+
+        for currency in &currencies {
+            // `DO UPDATE SET exponent = currencies.exponent` is a deliberate
+            // no-op write: it locks the existing row and makes `RETURNING`
+            // yield the *stored* exponent (a bare `DO NOTHING` returns no row
+            // at all on conflict, which would need a second query and a race
+            // between the two). The comparison then happens in Rust, where the
+            // refusal can name both values.
+            let stored = sqlx::query_scalar::<_, i32>(
+                "INSERT INTO currencies (code, exponent) VALUES ($1, $2) \
              ON CONFLICT (code) DO UPDATE SET exponent = currencies.exponent \
              RETURNING exponent",
-        )
-        .bind(&currency.code)
-        .bind(currency.exponent)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(classify_write)?;
+            )
+            .bind(&currency.code)
+            .bind(currency.exponent)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(classify_write)?;
 
-        if stored != currency.exponent {
-            return Err(DbError::CurrencyExponentConflict {
-                code: currency.code.clone(),
-                stored,
-                seeded: currency.exponent,
-            });
+            if stored != currency.exponent {
+                return Err(DbError::CurrencyExponentConflict {
+                    code: currency.code.clone(),
+                    stored,
+                    seeded: currency.exponent,
+                });
+            }
         }
-    }
 
-    for provider in &providers {
-        sqlx::query(
-            "INSERT INTO providers \
+        for provider in &providers {
+            sqlx::query(
+                "INSERT INTO providers \
                  (code, display_name, flow, supports_refunds, supports_partial_refunds, \
                   delivers_callbacks, requires_ip_allowlist, enabled) \
              VALUES ($1, $2, $3::provider_flow, $4, $5, $6, $7, $8) \
@@ -195,33 +204,34 @@ pub async fn reconcile(
                  delivers_callbacks = EXCLUDED.delivers_callbacks, \
                  requires_ip_allowlist = EXCLUDED.requires_ip_allowlist, \
                  enabled = EXCLUDED.enabled",
-        )
-        .bind(&provider.code)
-        .bind(&provider.display_name)
-        .bind(&provider.flow)
-        .bind(provider.supports_refunds)
-        .bind(provider.supports_partial_refunds)
-        .bind(provider.delivers_callbacks)
-        .bind(provider.requires_ip_allowlist)
-        .bind(provider.enabled)
-        .execute(&mut *tx)
-        .await
-        .map_err(classify_write)?;
+            )
+            .bind(&provider.code)
+            .bind(&provider.display_name)
+            .bind(&provider.flow)
+            .bind(provider.supports_refunds)
+            .bind(provider.supports_partial_refunds)
+            .bind(provider.delivers_callbacks)
+            .bind(provider.requires_ip_allowlist)
+            .bind(provider.enabled)
+            .execute(&mut *tx)
+            .await
+            .map_err(classify_write)?;
+        }
+
+        // Anything this deployment no longer configures is disabled, never
+        // deleted (module comment). With an empty seed this disables every
+        // provider, which is the correct reading of "this deployment has no
+        // rails" — and is why a binary must fail on an unknown YAML provider
+        // code *before* calling here rather than passing a shortened list.
+        let configured: Vec<String> = providers.iter().map(|p| p.code.clone()).collect();
+        sqlx::query("UPDATE providers SET enabled = false WHERE code <> ALL($1) AND enabled")
+            .bind(&configured)
+            .execute(&mut *tx)
+            .await
+            .map_err(classify_write)?;
+
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(())
     }
-
-    // Anything this deployment no longer configures is disabled, never
-    // deleted (module comment). With an empty seed this disables every
-    // provider, which is the correct reading of "this deployment has no
-    // rails" — and is why a binary must fail on an unknown YAML provider
-    // code *before* calling here rather than passing a shortened list.
-    let configured: Vec<String> = providers.iter().map(|p| p.code.clone()).collect();
-    sqlx::query("UPDATE providers SET enabled = false WHERE code <> ALL($1) AND enabled")
-        .bind(&configured)
-        .execute(&mut *tx)
-        .await
-        .map_err(classify_write)?;
-
-    tx.commit().await.map_err(DbError::Query)?;
-
-    Ok(())
 }

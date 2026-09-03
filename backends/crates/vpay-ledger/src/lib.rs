@@ -6,40 +6,86 @@
 //!
 //! STATUS: types and the balancing invariant are implemented and tested.
 //! Persistence is NOT implemented — see `docs/status.md`.
+//!
+//! ```
+//! use vpay_core::{Currency, Money};
+//! use vpay_ledger::{AccountKind, Direction, Entry, Transaction};
+//!
+//! let xaf = |n| Money::new(n, Currency::Xaf).expect("non-negative");
+//! let entry = |account, direction, n| Entry {
+//!     account,
+//!     direction,
+//!     amount: xaf(n),
+//! };
+//!
+//! // A 5,000 FCFA capture with a 100 FCFA platform fee.
+//! let capture = Transaction {
+//!     entries: vec![
+//!         entry(AccountKind::PayerClearing, Direction::Debit, 5_000),
+//!         entry(AccountKind::MerchantPayable, Direction::Credit, 4_900),
+//!         entry(AccountKind::PlatformFeeRevenue, Direction::Credit, 100),
+//!     ],
+//! };
+//! assert!(capture.validate().is_ok());
+//! ```
 
 use vpay_core::{Money, MoneyError};
 
+/// Which side of an account an entry lands on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
+    /// Decreases a credit-normal account's balance.
     Debit,
+    /// Increases a credit-normal account's balance.
     Credit,
 }
 
+/// The accounts vpay keeps. Not merchant-configurable: the chart of accounts
+/// is part of the settlement model, not of a deployment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountKind {
+    /// Money owed to the merchant. Credit-normal.
     MerchantPayable,
+    /// Money received from payers and not yet allocated.
     PayerClearing,
+    /// vpay's own fee income.
     PlatformFeeRevenue,
 }
 
+/// One leg of a [`Transaction`].
 #[derive(Debug, Clone)]
 pub struct Entry {
+    /// The account this leg moves.
     pub account: AccountKind,
+    /// Which way it moves.
     pub direction: Direction,
+    /// How much, in integer minor units.
     pub amount: Money,
 }
 
+/// A set of entries that must balance before it may be recorded.
 #[derive(Debug, Clone)]
 pub struct Transaction {
+    /// The legs, at least two of them, debits summing to credits.
     pub entries: Vec<Entry>,
 }
 
+/// What can go wrong building a ledger transaction.
 #[derive(Debug, thiserror::Error)]
 pub enum LedgerError {
+    /// Debits and credits do not sum to the same number.
     #[error("transaction does not balance: debits {debits}, credits {credits}")]
-    Unbalanced { debits: i64, credits: i64 },
+    Unbalanced {
+        /// The sum of every debit leg, in minor units.
+        debits: i64,
+        /// The sum of every credit leg, in minor units.
+        credits: i64,
+    },
+    /// Fewer than two legs — a single-legged transaction cannot balance and
+    /// is not a double entry.
     #[error("a ledger transaction needs at least two entries")]
     TooFewEntries,
+    /// An amount was not constructible.
     #[error(transparent)]
     Money(#[from] MoneyError),
 }
@@ -96,8 +142,51 @@ impl vpay_core::Classify for LedgerError {
 }
 
 impl Transaction {
+    /// Checks the double-entry invariant: at least two legs, debits equal to
+    /// credits.
+    ///
     /// # Errors
+    /// [`LedgerError::TooFewEntries`] for fewer than two legs,
     /// [`LedgerError::Unbalanced`] unless debits equal credits.
+    ///
+    /// ```
+    /// use vpay_core::{Classify, Currency, Money, Severity};
+    /// use vpay_ledger::{AccountKind, Direction, Entry, LedgerError, Transaction};
+    ///
+    /// let leg = |account, direction, n| Entry {
+    ///     account,
+    ///     direction,
+    ///     amount: Money::new(n, Currency::Xaf).expect("non-negative"),
+    /// };
+    ///
+    /// // 100 francs unaccounted for.
+    /// let lopsided = Transaction {
+    ///     entries: vec![
+    ///         leg(AccountKind::PayerClearing, Direction::Debit, 5_000),
+    ///         leg(AccountKind::MerchantPayable, Direction::Credit, 4_900),
+    ///     ],
+    /// };
+    /// let error = lopsided.validate().expect_err("that does not balance");
+    /// assert!(matches!(
+    ///     error,
+    ///     LedgerError::Unbalanced {
+    ///         debits: 5_000,
+    ///         credits: 4_900
+    ///     }
+    /// ));
+    /// // Nobody outside this code can cause it, so it pages and tells the
+    /// // merchant nothing about the ledger.
+    /// assert_eq!(error.severity(), Severity::Page);
+    ///
+    /// // One leg is not a double entry.
+    /// let single = Transaction {
+    ///     entries: vec![leg(AccountKind::PayerClearing, Direction::Debit, 1)],
+    /// };
+    /// assert!(matches!(
+    ///     single.validate(),
+    ///     Err(LedgerError::TooFewEntries)
+    /// ));
+    /// ```
     pub fn validate(&self) -> Result<(), LedgerError> {
         if self.entries.len() < 2 {
             return Err(LedgerError::TooFewEntries);

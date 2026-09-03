@@ -10,7 +10,7 @@
 //!
 //! # Caching — deliberately none, argued
 //!
-//! [`is_client_disabled`] is a plain `SELECT` on every call, with no cache in
+//! [`DisabledClients::is_client_disabled`] is a plain `SELECT` on every call, with no cache in
 //! front of it. That is a considered choice, not an oversight:
 //!
 //! - **A per-request `SELECT` is simplest and always correct.** It reads the
@@ -42,77 +42,83 @@
 //! minutes) built and justified at that point against a measured cost — not
 //! a change made speculatively here.
 
-use sqlx::PgPool;
-
 use crate::error::DbError;
 
-/// Reports whether `client_id` currently has a `disabled_clients` row.
-///
-/// See the module doc comment for why this is a plain, uncached `SELECT` on
-/// every call rather than a cached lookup.
-///
-/// # Errors
-///
-/// Returns [`DbError::Query`] if the lookup itself fails.
-pub async fn is_client_disabled(pool: &PgPool, client_id: &str) -> Result<bool, DbError> {
-    sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM disabled_clients WHERE client_id = $1)",
-    )
-    .bind(client_id)
-    .fetch_one(pool)
-    .await
-    .map_err(DbError::Query)
+#[async_trait::async_trait]
+pub trait DisabledClients: Send + Sync {
+    /// Reports whether `client_id` currently has a `disabled_clients` row.
+    ///
+    /// See the module doc comment for why this is a plain, uncached `SELECT` on
+    /// every call rather than a cached lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if the lookup itself fails.
+    async fn is_client_disabled(&self, client_id: &str) -> Result<bool, DbError>;
+
+    /// Disables `client_id`, with an optional free-text operator note.
+    ///
+    /// Idempotent at this layer via `INSERT ... ON CONFLICT (client_id) DO
+    /// UPDATE`: a raw duplicate `INSERT` is rejected by the database's own
+    /// primary key (proven by
+    /// `backends/tests/integration/tests/postgres_smoke.rs`'s
+    /// `a_duplicate_disabled_client_id_is_rejected_by_the_database`), but an
+    /// operator re-running "disable this client" — the actual caller of this
+    /// function — should not have to first check whether it is already
+    /// disabled. A second call updates the recorded `reason` (e.g. a fuller
+    /// explanation added after the fact) and leaves the original `disabled_at`
+    /// untouched, so "when was this client first disabled" stays accurate across
+    /// repeated calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if the write fails.
+    async fn disable_client(&self, client_id: &str, reason: Option<&str>) -> Result<(), DbError>;
+
+    /// Re-enables `client_id` by removing its `disabled_clients` row.
+    ///
+    /// A no-op, not an error, if `client_id` was not disabled to begin with —
+    /// "make sure this client is enabled" is naturally idempotent as a `DELETE`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if the write fails.
+    async fn enable_client(&self, client_id: &str) -> Result<(), DbError>;
 }
 
-/// Disables `client_id`, with an optional free-text operator note.
-///
-/// Idempotent at this layer via `INSERT ... ON CONFLICT (client_id) DO
-/// UPDATE`: a raw duplicate `INSERT` is rejected by the database's own
-/// primary key (proven by
-/// `backends/tests/integration/tests/postgres_smoke.rs`'s
-/// `a_duplicate_disabled_client_id_is_rejected_by_the_database`), but an
-/// operator re-running "disable this client" — the actual caller of this
-/// function — should not have to first check whether it is already
-/// disabled. A second call updates the recorded `reason` (e.g. a fuller
-/// explanation added after the fact) and leaves the original `disabled_at`
-/// untouched, so "when was this client first disabled" stays accurate across
-/// repeated calls.
-///
-/// # Errors
-///
-/// Returns [`DbError::Query`] if the write fails.
-pub async fn disable_client(
-    pool: &PgPool,
-    client_id: &str,
-    reason: Option<&str>,
-) -> Result<(), DbError> {
-    sqlx::query(
-        "INSERT INTO disabled_clients (client_id, reason) VALUES ($1, $2) \
-         ON CONFLICT (client_id) DO UPDATE SET reason = EXCLUDED.reason",
-    )
-    .bind(client_id)
-    .bind(reason)
-    .execute(pool)
-    .await
-    .map_err(DbError::Query)?;
-
-    Ok(())
-}
-
-/// Re-enables `client_id` by removing its `disabled_clients` row.
-///
-/// A no-op, not an error, if `client_id` was not disabled to begin with —
-/// "make sure this client is enabled" is naturally idempotent as a `DELETE`.
-///
-/// # Errors
-///
-/// Returns [`DbError::Query`] if the write fails.
-pub async fn enable_client(pool: &PgPool, client_id: &str) -> Result<(), DbError> {
-    sqlx::query("DELETE FROM disabled_clients WHERE client_id = $1")
+#[async_trait::async_trait]
+impl DisabledClients for crate::repository::PgRepositories {
+    async fn is_client_disabled(&self, client_id: &str) -> Result<bool, DbError> {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM disabled_clients WHERE client_id = $1)",
+        )
         .bind(client_id)
-        .execute(pool)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(DbError::Query)
+    }
+
+    async fn disable_client(&self, client_id: &str, reason: Option<&str>) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO disabled_clients (client_id, reason) VALUES ($1, $2) \
+         ON CONFLICT (client_id) DO UPDATE SET reason = EXCLUDED.reason",
+        )
+        .bind(client_id)
+        .bind(reason)
+        .execute(&self.pool)
         .await
         .map_err(DbError::Query)?;
 
-    Ok(())
+        Ok(())
+    }
+
+    async fn enable_client(&self, client_id: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM disabled_clients WHERE client_id = $1")
+            .bind(client_id)
+            .execute(&self.pool)
+            .await
+            .map_err(DbError::Query)?;
+
+        Ok(())
+    }
 }

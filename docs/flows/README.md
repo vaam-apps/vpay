@@ -3,6 +3,13 @@
 One document per process, each answering: what happens, in what order, what can
 go wrong, and what invariant holds throughout.
 
+This is one of three documentation tiers, and the distinction is worth keeping
+straight: an [ADR](../adr/) records a *decision* that has been taken (immutable
+— superseded, never edited); a flow here describes a *process*; and a
+[reference page](../reference/) explains why the *code* that implements it is
+shaped the way it is. A change to a process belongs here. A change to how the
+code expresses it belongs in `../reference/`.
+
 | Flow | What it covers |
 |---|---|
 | [payment-lifecycle.md](payment-lifecycle.md) | PaymentIntent states, both flow shapes, what each transition means |

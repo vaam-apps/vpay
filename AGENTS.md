@@ -10,6 +10,13 @@ writing code.
 These are not style preferences. Both are machine-enforced by `just verify`, and
 CI runs it.
 
+`just verify` is three gates and one report. The gates (`verify-no-mocks`,
+`verify-status`, `verify-errors`) fail the build. The report (`verify-docs`)
+never does — it prints doc-comment volume per crate, the production functions
+of 80 lines or more, every ```` ```ignore ```` doctest fence and every
+`#[allow]`/`#[expect]`, and nothing more. Read it; it is not a gate you can
+pass or fail.
+
 ### 1. No test doubles in shipping processes
 
 No mock, fake, stub or dummy may be reachable from `vpay-server` or
@@ -91,6 +98,15 @@ status. The authenticated status query is the only thing that moves money.
 - TLS: rustls only. `openssl`, `openssl-sys` and `native-tls` are banned in
   `deny.toml`; do not add a dependency that needs them without a new ADR.
 - Doc comments on every public item, explaining *why*, not restating the name.
+  An example in one is compiled and run — `just test-doc` (`cargo test --doc
+  --workspace`) is part of `just ci` and of CI's `rust` job, because
+  `cargo nextest` runs no doctests, so until 2026-09-03 not one of them had
+  ever been compiled by CI. Do not reach for ```` ```ignore ```` or ```` ```no_run ````
+  to make an example compile: an example nothing runs is a claim nothing
+  checks. Use ```` ```text ```` if it is not Rust, and otherwise make it real.
+- The reasoning behind a piece of code goes in `docs/reference/<crate>.md`, not
+  in an 80-line module header. One paragraph of what and why plus a link;
+  `# Errors`, `# Panics` and `# Examples` stay in the source.
 
 ## TypeScript conventions
 
@@ -108,6 +124,7 @@ status. The authenticated status query is the only thing that moves money.
 | Layer | Tool | Where |
 |---|---|---|
 | Rust unit | `cargo nextest` | alongside the code |
+| Rust doctests | `cargo test --doc` (`just test-doc`) | in `///` examples |
 | Rust integration | testcontainers | `backends/tests/integration` |
 | Adapter conformance | shared suite | `backends/tests/conformance` |
 | TS unit | vitest | alongside the code |
@@ -127,6 +144,8 @@ happens, in what order, what can go wrong, and what invariant holds throughout.
 Each ends with a **Status** section stating what is actually built.
 
 - A decision that has been made → an ADR (immutable; supersede, never edit).
+- A process → a flow doc, as above.
+- Why a piece of code is shaped the way it is → `docs/reference/<crate>.md`.
 - A proposal under discussion → an RFC.
 - Something an on-call person must do → a runbook.
 

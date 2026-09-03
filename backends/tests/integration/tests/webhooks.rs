@@ -47,7 +47,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -59,7 +59,9 @@ use testcontainers_modules::postgres::Postgres as PostgresImage;
 use time::OffsetDateTime;
 use vpay_api::op::keys::LoadedSigningKey;
 use vpay_config::{Config, CurrencyEntry, Deployment};
-use vpay_db::{DeliveryRow, EventRow, JobRow, NewEvent};
+use vpay_db::{
+    DeliveryRow, EventRow, JobRow, Jobs, NewEvent, Repositories, TxOutcome, UnitOfWork as _,
+};
 use vpay_worker::jobs::{FANOUT_DEDUPE_KEY, webhook_dedupe_key};
 use vpay_worker::webhooks::{
     Endpoint, EndpointRegistry, event_bytes, handle_deliver, handle_fan_out, payload_sha256,
@@ -146,6 +148,9 @@ async fn serve_metrics() -> anyhow::Result<(SocketAddr, tokio::task::JoinHandle<
 struct Harness {
     _postgres: ContainerAsync<PostgresImage>,
     _receiver: ContainerAsync<GenericImage>,
+    repositories: Arc<dyn Repositories>,
+    /// The plain `sqlx` pool, for the fixtures that read or force schema
+    /// state no repository method owns.
     pool: PgPool,
     /// `http://127.0.0.1:<mapped>` — the receiver as seen from this process.
     receiver_url: String,
@@ -186,7 +191,7 @@ impl Harness {
 async fn harness() -> anyhow::Result<Harness> {
     ensure_crypto_provider_installed();
 
-    let (postgres, pool) = migrated_postgres().await?;
+    let (postgres, repositories, pool) = migrated_postgres().await?;
     let receiver = vpay_testkit::containers::start_wiremock(&receiver_mappings_dir())
         .await
         .context("the merchant webhook receiver container starts")?;
@@ -210,6 +215,7 @@ async fn harness() -> anyhow::Result<Harness> {
     Ok(Harness {
         _postgres: postgres,
         _receiver: receiver,
+        repositories,
         pool,
         receiver_url,
         endpoints,
@@ -240,49 +246,57 @@ fn delivery_client() -> reqwest::Client {
 /// Appends one `payment_intent.succeeded` event for `merchant_id`, in its
 /// own transaction, exactly as `vpay_db::settlement` will.
 async fn insert_event(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     merchant_id: &str,
     object_id: &str,
 ) -> anyhow::Result<EventRow> {
-    let mut tx = pool.begin().await?;
-    let row = vpay_db::events::insert_in_tx(
-        &mut tx,
-        &NewEvent {
-            id: vpay_db::events::event_id(),
-            merchant_id: merchant_id.to_owned(),
-            livemode: false,
-            event_type: "payment_intent.succeeded".to_owned(),
-            object_id: object_id.to_owned(),
-            data: json!({
-                "id": object_id,
-                "object": "payment_intent",
-                "amount": 5000,
-                "currency": "eur",
-                "status": "succeeded",
-            }),
-        },
-    )
-    .await?;
-    tx.commit().await?;
+    let row = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let row = tx
+                    .insert_in_tx(&NewEvent {
+                        id: vpay_db::events::event_id(),
+                        merchant_id: merchant_id.to_owned(),
+                        livemode: false,
+                        event_type: "payment_intent.succeeded".to_owned(),
+                        object_id: object_id.to_owned(),
+                        data: json!({
+                            "id": object_id,
+                            "object": "payment_intent",
+                            "amount": 5000,
+                            "currency": "eur",
+                            "status": "succeeded",
+                        }),
+                    })
+                    .await?;
+                Ok::<_, anyhow::Error>(TxOutcome::Commit(row))
+            })
+        })
+        .await?
+        .into_inner();
     Ok(row)
 }
 
 /// Seeds the singleton fan-out job the worker binary seeds at boot, and
 /// claims it — so the `JobRow` handed to `handle_fan_out` is a real row with
 /// a real lease, not a struct literal.
-async fn claim_fanout_job(pool: &PgPool) -> anyhow::Result<JobRow> {
-    let mut tx = pool.begin().await?;
-    vpay_db::jobs::enqueue_in_tx(
-        &mut tx,
-        "fan_out_events",
-        FANOUT_DEDUPE_KEY,
-        &json!({}),
-        OffsetDateTime::now_utc(),
-    )
-    .await?;
-    tx.commit().await?;
+async fn claim_fanout_job(repositories: &dyn Repositories) -> anyhow::Result<JobRow> {
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.enqueue_in_tx(
+                    "fan_out_events",
+                    FANOUT_DEDUPE_KEY,
+                    &json!({}),
+                    OffsetDateTime::now_utc(),
+                )
+                .await?;
+                Ok::<_, anyhow::Error>(TxOutcome::Commit(()))
+            })
+        })
+        .await?;
 
-    vpay_db::jobs::claim(pool, WORKER)
+    Jobs::claim(repositories, WORKER)
         .await?
         .context("the fan-out job is claimable")
 }
@@ -468,7 +482,7 @@ async fn journal(receiver_url: &str) -> anyhow::Result<Vec<Recorded>> {
 #[tokio::test]
 async fn fan_out_creates_one_delivery_and_one_job_per_endpoint_and_is_idempotent() {
     let h = harness().await.expect("harness");
-    let event = insert_event(&h.pool, MERCHANT_A, "pi_fanout")
+    let event = insert_event(h.repositories.as_ref(), MERCHANT_A, "pi_fanout")
         .await
         .expect("an event to fan out");
     assert_eq!(
@@ -477,8 +491,10 @@ async fn fan_out_creates_one_delivery_and_one_job_per_endpoint_and_is_idempotent
         "an event is born pending or nothing would ever deliver it"
     );
 
-    let job = claim_fanout_job(&h.pool).await.expect("the fan-out job");
-    let outcome = handle_fan_out(&h.pool, &h.endpoints, &job)
+    let job = claim_fanout_job(h.repositories.as_ref())
+        .await
+        .expect("the fan-out job");
+    let outcome = handle_fan_out(h.repositories.as_ref(), &h.endpoints, &job)
         .await
         .expect("the first pass succeeds");
     assert!(
@@ -486,7 +502,9 @@ async fn fan_out_creates_one_delivery_and_one_job_per_endpoint_and_is_idempotent
         "the fan-out pass reschedules itself rather than finishing: {outcome:?}"
     );
 
-    let deliveries = vpay_db::webhook_deliveries::for_event(&h.pool, &event.id)
+    let deliveries = h
+        .repositories
+        .for_event(&event.id)
         .await
         .expect("deliveries");
     assert_eq!(deliveries.len(), 1, "one endpoint, one delivery");
@@ -511,12 +529,14 @@ async fn fan_out_creates_one_delivery_and_one_job_per_endpoint_and_is_idempotent
 
     // The replay. The event is `done`, so `pending_page` no longer returns
     // it and nothing at all should change.
-    let outcome = handle_fan_out(&h.pool, &h.endpoints, &job)
+    let outcome = handle_fan_out(h.repositories.as_ref(), &h.endpoints, &job)
         .await
         .expect("the second pass succeeds");
     assert!(matches!(outcome, Outcome::RescheduleAfter(_)));
 
-    let after = vpay_db::webhook_deliveries::for_event(&h.pool, &event.id)
+    let after = h
+        .repositories
+        .for_event(&event.id)
         .await
         .expect("deliveries");
     assert_eq!(after, deliveries, "a second pass created a second delivery");
@@ -538,12 +558,14 @@ async fn fan_out_creates_one_delivery_and_one_job_per_endpoint_and_is_idempotent
 #[tokio::test]
 async fn an_event_for_a_merchant_with_no_endpoints_is_still_fanned_out() {
     let h = harness().await.expect("harness");
-    let event = insert_event(&h.pool, MERCHANT_B, "pi_no_endpoints")
+    let event = insert_event(h.repositories.as_ref(), MERCHANT_B, "pi_no_endpoints")
         .await
         .expect("an event");
 
-    let job = claim_fanout_job(&h.pool).await.expect("the fan-out job");
-    handle_fan_out(&h.pool, &h.endpoints, &job)
+    let job = claim_fanout_job(h.repositories.as_ref())
+        .await
+        .expect("the fan-out job");
+    handle_fan_out(h.repositories.as_ref(), &h.endpoints, &job)
         .await
         .expect("the pass succeeds");
 
@@ -553,7 +575,8 @@ async fn an_event_for_a_merchant_with_no_endpoints_is_still_fanned_out() {
         "an event nobody has an endpoint for must not stay in the backlog"
     );
     assert!(
-        vpay_db::webhook_deliveries::for_event(&h.pool, &event.id)
+        h.repositories
+            .for_event(&event.id)
             .await
             .expect("deliveries")
             .is_empty()
@@ -574,15 +597,19 @@ async fn deliver_one(
     endpoints: &EndpointRegistry,
     object_id: &str,
 ) -> (EventRow, DeliveryRow, Recorded) {
-    let event = insert_event(&h.pool, MERCHANT_A, object_id)
+    let event = insert_event(h.repositories.as_ref(), MERCHANT_A, object_id)
         .await
         .expect("an event");
-    let job = claim_fanout_job(&h.pool).await.expect("the fan-out job");
-    handle_fan_out(&h.pool, endpoints, &job)
+    let job = claim_fanout_job(h.repositories.as_ref())
+        .await
+        .expect("the fan-out job");
+    handle_fan_out(h.repositories.as_ref(), endpoints, &job)
         .await
         .expect("fan-out");
 
-    let delivery = vpay_db::webhook_deliveries::for_event(&h.pool, &event.id)
+    let delivery = h
+        .repositories
+        .for_event(&event.id)
         .await
         .expect("deliveries")
         .pop()
@@ -591,7 +618,7 @@ async fn deliver_one(
         .await
         .expect("the delivery job");
 
-    let outcome = handle_deliver(&h.pool, &delivery_client(), endpoints, &job)
+    let outcome = handle_deliver(h.repositories.as_ref(), &delivery_client(), endpoints, &job)
         .await
         .expect("the delivery handler ran");
     assert!(
@@ -604,7 +631,9 @@ async fn deliver_one(
         .expect("the receiver's journal")
         .pop()
         .expect("the receiver recorded a POST");
-    let delivery = vpay_db::webhook_deliveries::get(&h.pool, delivery.id)
+    let delivery = h
+        .repositories
+        .get(delivery.id)
         .await
         .expect("the delivery row")
         .expect("the delivery still exists");
@@ -834,14 +863,18 @@ async fn the_ladder_walks_delivery_delay_and_then_succeeds() {
     let http = delivery_client();
     let (metrics_addr, metrics_task) = serve_metrics().await.expect("the metrics listener");
 
-    let event = insert_event(&h.pool, MERCHANT_A, "pi_flaky")
+    let event = insert_event(h.repositories.as_ref(), MERCHANT_A, "pi_flaky")
         .await
         .expect("an event");
-    let fanout = claim_fanout_job(&h.pool).await.expect("the fan-out job");
-    handle_fan_out(&h.pool, &endpoints, &fanout)
+    let fanout = claim_fanout_job(h.repositories.as_ref())
+        .await
+        .expect("the fan-out job");
+    handle_fan_out(h.repositories.as_ref(), &endpoints, &fanout)
         .await
         .expect("fan-out");
-    let delivery_id = vpay_db::webhook_deliveries::for_event(&h.pool, &event.id)
+    let delivery_id = h
+        .repositories
+        .for_event(&event.id)
         .await
         .expect("deliveries")
         .pop()
@@ -859,7 +892,7 @@ async fn the_ladder_walks_delivery_delay_and_then_succeeds() {
             .await
             .expect("the delivery job");
         let before = OffsetDateTime::now_utc();
-        let outcome = handle_deliver(&h.pool, &http, &endpoints, &job)
+        let outcome = handle_deliver(h.repositories.as_ref(), &http, &endpoints, &job)
             .await
             .expect("the handler ran");
 
@@ -869,7 +902,9 @@ async fn the_ladder_walks_delivery_delay_and_then_succeeds() {
             "rung {rung}: {outcome:?} is not RescheduleAfter({expected:?})"
         );
 
-        let row = vpay_db::webhook_deliveries::get(&h.pool, delivery_id)
+        let row = h
+            .repositories
+            .get(delivery_id)
             .await
             .expect("the delivery row")
             .expect("it still exists");
@@ -905,27 +940,24 @@ async fn the_ladder_walks_delivery_delay_and_then_succeeds() {
         // immediate. The *row* still carries the real `next_attempt_at`,
         // which is the value asserted above — the job's `run_at` is the
         // loop's bookkeeping, not the delivery's schedule.
-        vpay_db::jobs::reschedule(
-            &h.pool,
-            job.id,
-            WORKER,
-            Duration::ZERO,
-            Some("receiver refused"),
-        )
-        .await
-        .expect("the job reschedules");
+        h.repositories
+            .reschedule(job.id, WORKER, Duration::ZERO, Some("receiver refused"))
+            .await
+            .expect("the job reschedules");
     }
 
     // The fourth attempt: the receiver has recovered.
     let job = claim_delivery_job(&h.pool, delivery_id)
         .await
         .expect("the delivery job");
-    let outcome = handle_deliver(&h.pool, &http, &endpoints, &job)
+    let outcome = handle_deliver(h.repositories.as_ref(), &http, &endpoints, &job)
         .await
         .expect("the handler ran");
     assert!(matches!(outcome, Outcome::Done), "{outcome:?}");
 
-    let row = vpay_db::webhook_deliveries::get(&h.pool, delivery_id)
+    let row = h
+        .repositories
+        .get(delivery_id)
         .await
         .expect("the delivery row")
         .expect("it still exists");
@@ -977,14 +1009,18 @@ async fn a_delivery_past_the_last_rung_is_exhausted_and_not_rescheduled() {
     let endpoints = h.flaky_registry();
     let (metrics_addr, metrics_task) = serve_metrics().await.expect("the metrics listener");
 
-    let event = insert_event(&h.pool, MERCHANT_A, "pi_exhausted")
+    let event = insert_event(h.repositories.as_ref(), MERCHANT_A, "pi_exhausted")
         .await
         .expect("an event");
-    let fanout = claim_fanout_job(&h.pool).await.expect("the fan-out job");
-    handle_fan_out(&h.pool, &endpoints, &fanout)
+    let fanout = claim_fanout_job(h.repositories.as_ref())
+        .await
+        .expect("the fan-out job");
+    handle_fan_out(h.repositories.as_ref(), &endpoints, &fanout)
         .await
         .expect("fan-out");
-    let delivery_id = vpay_db::webhook_deliveries::for_event(&h.pool, &event.id)
+    let delivery_id = h
+        .repositories
+        .for_event(&event.id)
         .await
         .expect("deliveries")
         .pop()
@@ -1003,15 +1039,22 @@ async fn a_delivery_past_the_last_rung_is_exhausted_and_not_rescheduled() {
     let job = claim_delivery_job(&h.pool, delivery_id)
         .await
         .expect("the delivery job");
-    let outcome = handle_deliver(&h.pool, &delivery_client(), &endpoints, &job)
-        .await
-        .expect("the handler ran");
+    let outcome = handle_deliver(
+        h.repositories.as_ref(),
+        &delivery_client(),
+        &endpoints,
+        &job,
+    )
+    .await
+    .expect("the handler ran");
     assert!(
         matches!(outcome, Outcome::Done),
         "an exhausted delivery is finished, not retried: {outcome:?}"
     );
 
-    let row = vpay_db::webhook_deliveries::get(&h.pool, delivery_id)
+    let row = h
+        .repositories
+        .get(delivery_id)
         .await
         .expect("the delivery row")
         .expect("it still exists");
@@ -1046,13 +1089,13 @@ async fn a_delivery_past_the_last_rung_is_exhausted_and_not_rescheduled() {
 #[tokio::test]
 async fn events_are_listed_newest_first_scoped_to_the_merchant() {
     ensure_crypto_provider_installed();
-    let (_postgres, pool) = migrated_postgres().await.expect("postgres");
+    let (_postgres, repositories, _pool) = migrated_postgres().await.expect("postgres");
 
     let (server_pem, _) = generate_key();
     let (pem_a, jwks_a) = generate_key();
     let (_pem_b, jwks_b) = generate_key();
 
-    let served = serve(&pool, &server_pem, move |base_url| {
+    let served = serve(&repositories, &server_pem, move |base_url| {
         events_config(
             base_url,
             jwks_a.clone(),
@@ -1067,16 +1110,16 @@ async fn events_are_listed_newest_first_scoped_to_the_merchant() {
     // indexed: `newest` and `oldest` are what the assertions are about, and
     // a positional `mine[2]` would also be a `clippy::indexing_slicing`
     // denial (this workspace does not exempt tests from that one).
-    let oldest = insert_event(&pool, MERCHANT_A, "pi_1")
+    let oldest = insert_event(repositories.as_ref(), MERCHANT_A, "pi_1")
         .await
         .expect("an event");
-    let middle = insert_event(&pool, MERCHANT_A, "pi_2")
+    let middle = insert_event(repositories.as_ref(), MERCHANT_A, "pi_2")
         .await
         .expect("an event");
-    let newest = insert_event(&pool, MERCHANT_A, "pi_3")
+    let newest = insert_event(repositories.as_ref(), MERCHANT_A, "pi_3")
         .await
         .expect("an event");
-    let theirs = insert_event(&pool, MERCHANT_B, "pi_theirs")
+    let theirs = insert_event(repositories.as_ref(), MERCHANT_B, "pi_theirs")
         .await
         .expect("an event");
 
@@ -1209,19 +1252,19 @@ async fn events_are_listed_newest_first_scoped_to_the_merchant() {
 #[tokio::test]
 async fn reading_events_requires_a_scope() {
     ensure_crypto_provider_installed();
-    let (_postgres, pool) = migrated_postgres().await.expect("postgres");
+    let (_postgres, repositories, _pool) = migrated_postgres().await.expect("postgres");
 
     let (server_pem, _) = generate_key();
     let (pem_a, jwks_a) = generate_key();
     let (_pem_b, jwks_b) = generate_key();
 
-    let served = serve(&pool, &server_pem, move |base_url| {
+    let served = serve(&repositories, &server_pem, move |base_url| {
         events_config(base_url, jwks_a.clone(), jwks_b.clone(), &[])
     })
     .await
     .expect("a server");
 
-    insert_event(&pool, MERCHANT_A, "pi_scope")
+    insert_event(repositories.as_ref(), MERCHANT_A, "pi_scope")
         .await
         .expect("an event");
 
@@ -1527,10 +1570,10 @@ async fn one_merchants_unfannable_event_does_not_block_another_merchants() {
 
     // A's event first, so it is first in `pending_page`'s `seq` order. That
     // ordering is what makes this a test of isolation rather than of luck.
-    let blocked = insert_event(&h.pool, MERCHANT_A, "pi_blocked")
+    let blocked = insert_event(h.repositories.as_ref(), MERCHANT_A, "pi_blocked")
         .await
         .expect("merchant A's event");
-    let behind_it = insert_event(&h.pool, MERCHANT_B, "pi_behind_it")
+    let behind_it = insert_event(h.repositories.as_ref(), MERCHANT_B, "pi_behind_it")
         .await
         .expect("merchant B's event");
     assert!(
@@ -1538,8 +1581,10 @@ async fn one_merchants_unfannable_event_does_not_block_another_merchants() {
         "the failing event must come first in the page, or this proves nothing"
     );
 
-    let job = claim_fanout_job(&h.pool).await.expect("the fan-out job");
-    let outcome = handle_fan_out(&h.pool, &endpoints, &job)
+    let job = claim_fanout_job(h.repositories.as_ref())
+        .await
+        .expect("the fan-out job");
+    let outcome = handle_fan_out(h.repositories.as_ref(), &endpoints, &job)
         .await
         .expect("one event's failure must not fail the pass");
     assert!(
@@ -1554,7 +1599,8 @@ async fn one_merchants_unfannable_event_does_not_block_another_merchants() {
         "the failing event's transaction rolled back whole, so it is still owed a fan-out"
     );
     assert!(
-        vpay_db::webhook_deliveries::for_event(&h.pool, &blocked.id)
+        h.repositories
+            .for_event(&blocked.id)
             .await
             .expect("deliveries")
             .is_empty(),
@@ -1567,7 +1613,9 @@ async fn one_merchants_unfannable_event_does_not_block_another_merchants() {
         "done",
         "merchant B's event was blocked by merchant A's"
     );
-    let delivery = vpay_db::webhook_deliveries::for_event(&h.pool, &behind_it.id)
+    let delivery = h
+        .repositories
+        .for_event(&behind_it.id)
         .await
         .expect("deliveries")
         .pop()
@@ -1583,9 +1631,14 @@ async fn one_merchants_unfannable_event_does_not_block_another_merchants() {
     let job = claim_delivery_job(&h.pool, delivery.id)
         .await
         .expect("the delivery job");
-    let outcome = handle_deliver(&h.pool, &delivery_client(), &endpoints, &job)
-        .await
-        .expect("the delivery handler ran");
+    let outcome = handle_deliver(
+        h.repositories.as_ref(),
+        &delivery_client(),
+        &endpoints,
+        &job,
+    )
+    .await
+    .expect("the delivery handler ran");
     assert!(matches!(outcome, Outcome::Done), "{outcome:?}");
     let recorded = journal(&h.receiver_url)
         .await
@@ -1689,13 +1742,15 @@ async fn a_permanently_unfannable_event_is_abandoned_after_five_passes_and_alert
         }],
     )]);
 
-    let doomed = insert_event(&h.pool, MERCHANT_A, "pi_doomed")
+    let doomed = insert_event(h.repositories.as_ref(), MERCHANT_A, "pi_doomed")
         .await
         .expect("an event");
 
-    let job = claim_fanout_job(&h.pool).await.expect("the fan-out job");
+    let job = claim_fanout_job(h.repositories.as_ref())
+        .await
+        .expect("the fan-out job");
     for pass in 1..=vpay_worker::FANOUT_MAX_ATTEMPTS {
-        handle_fan_out(&h.pool, &endpoints, &job)
+        handle_fan_out(h.repositories.as_ref(), &endpoints, &job)
             .await
             .unwrap_or_else(|error| panic!("pass {pass} must not fail the job: {error}"));
     }
@@ -1713,7 +1768,8 @@ async fn a_permanently_unfannable_event_is_abandoned_after_five_passes_and_alert
         "the fifth failure must abandon the event"
     );
     assert!(
-        vpay_db::webhook_deliveries::for_event(&h.pool, &doomed.id)
+        h.repositories
+            .for_event(&doomed.id)
             .await
             .expect("deliveries")
             .is_empty(),
@@ -1721,9 +1777,7 @@ async fn a_permanently_unfannable_event_is_abandoned_after_five_passes_and_alert
     );
 
     // Out of the backlog — the property that stops it holding a page slot.
-    let backlog = vpay_db::events::pending_page(&h.pool, 100)
-        .await
-        .expect("the backlog");
+    let backlog = h.repositories.pending_page(100).await.expect("the backlog");
     assert!(
         !backlog.iter().any(|event| event.id == doomed.id),
         "an abandoned event must leave pending_page, or it heads every page forever"
@@ -1731,7 +1785,7 @@ async fn a_permanently_unfannable_event_is_abandoned_after_five_passes_and_alert
 
     // And a sixth pass is silent: it does not see the event at all.
     let before = logs.text().len();
-    handle_fan_out(&h.pool, &endpoints, &job)
+    handle_fan_out(h.repositories.as_ref(), &endpoints, &job)
         .await
         .expect("a pass over an empty backlog");
     assert_eq!(
@@ -1860,24 +1914,30 @@ async fn the_backstop_re_enqueues_a_delivery_whose_job_vanished() {
     let h = harness().await.expect("harness");
     let lease = vpay_worker::RecoveryPolicy::default().lease;
 
-    let stranded_event = insert_event(&h.pool, MERCHANT_A, "pi_stranded")
+    let stranded_event = insert_event(h.repositories.as_ref(), MERCHANT_A, "pi_stranded")
         .await
         .expect("an event");
-    let attended_event = insert_event(&h.pool, MERCHANT_A, "pi_attended")
+    let attended_event = insert_event(h.repositories.as_ref(), MERCHANT_A, "pi_attended")
         .await
         .expect("an event");
 
-    let fanout = claim_fanout_job(&h.pool).await.expect("the fan-out job");
-    handle_fan_out(&h.pool, &h.endpoints, &fanout)
+    let fanout = claim_fanout_job(h.repositories.as_ref())
+        .await
+        .expect("the fan-out job");
+    handle_fan_out(h.repositories.as_ref(), &h.endpoints, &fanout)
         .await
         .expect("fan-out");
 
-    let stranded = vpay_db::webhook_deliveries::for_event(&h.pool, &stranded_event.id)
+    let stranded = h
+        .repositories
+        .for_event(&stranded_event.id)
         .await
         .expect("deliveries")
         .pop()
         .expect("one delivery");
-    let attended = vpay_db::webhook_deliveries::for_event(&h.pool, &attended_event.id)
+    let attended = h
+        .repositories
+        .for_event(&attended_event.id)
         .await
         .expect("deliveries")
         .pop()
@@ -1903,10 +1963,10 @@ async fn the_backstop_re_enqueues_a_delivery_whose_job_vanished() {
     .await
     .expect("ageing the stranded delivery");
 
-    let scan = claim_scan_deliveries_job(&h.pool)
+    let scan = claim_scan_deliveries_job(h.repositories.as_ref(), &h.pool)
         .await
         .expect("the backstop job");
-    let outcome = vpay_worker::handle_scan_deliveries(&h.pool, lease, &scan)
+    let outcome = vpay_worker::handle_scan_deliveries(h.repositories.as_ref(), lease, &scan)
         .await
         .expect("the backstop ran");
     assert!(
@@ -1934,12 +1994,19 @@ async fn the_backstop_re_enqueues_a_delivery_whose_job_vanished() {
     let job = claim_delivery_job(&h.pool, stranded.id)
         .await
         .expect("the re-enqueued delivery job");
-    let outcome = handle_deliver(&h.pool, &delivery_client(), &h.endpoints, &job)
-        .await
-        .expect("the delivery handler ran");
+    let outcome = handle_deliver(
+        h.repositories.as_ref(),
+        &delivery_client(),
+        &h.endpoints,
+        &job,
+    )
+    .await
+    .expect("the delivery handler ran");
     assert!(matches!(outcome, Outcome::Done), "{outcome:?}");
 
-    let row = vpay_db::webhook_deliveries::get(&h.pool, stranded.id)
+    let row = h
+        .repositories
+        .get(stranded.id)
         .await
         .expect("the delivery row")
         .expect("it still exists");
@@ -2000,14 +2067,18 @@ async fn a_dead_lettered_delivery_job_is_not_resurrected_by_the_scan() {
     let h = harness().await.expect("harness");
     let lease = vpay_worker::RecoveryPolicy::default().lease;
 
-    let event = insert_event(&h.pool, MERCHANT_A, "pi_parked")
+    let event = insert_event(h.repositories.as_ref(), MERCHANT_A, "pi_parked")
         .await
         .expect("an event");
-    let fanout = claim_fanout_job(&h.pool).await.expect("the fan-out job");
-    handle_fan_out(&h.pool, &h.endpoints, &fanout)
+    let fanout = claim_fanout_job(h.repositories.as_ref())
+        .await
+        .expect("the fan-out job");
+    handle_fan_out(h.repositories.as_ref(), &h.endpoints, &fanout)
         .await
         .expect("fan-out");
-    let delivery = vpay_db::webhook_deliveries::for_event(&h.pool, &event.id)
+    let delivery = h
+        .repositories
+        .for_event(&event.id)
         .await
         .expect("deliveries")
         .pop()
@@ -2021,7 +2092,8 @@ async fn a_dead_lettered_delivery_job_is_not_resurrected_by_the_scan() {
         .await
         .expect("the delivery job");
     assert!(
-        vpay_db::jobs::dead_letter(&h.pool, job.id, WORKER, "event will not render")
+        h.repositories
+            .dead_letter(job.id, WORKER, "event will not render")
             .await
             .expect("parking the delivery job"),
         "the worker holding the lease must be able to park it"
@@ -2036,7 +2108,8 @@ async fn a_dead_lettered_delivery_job_is_not_resurrected_by_the_scan() {
     .await
     .expect("ageing the delivery");
     assert!(
-        vpay_db::webhook_deliveries::pending_due(&h.pool, lease, 100)
+        h.repositories
+            .pending_due(lease, 100)
             .await
             .expect("pending_due")
             .iter()
@@ -2044,10 +2117,10 @@ async fn a_dead_lettered_delivery_job_is_not_resurrected_by_the_scan() {
         "the scan must be able to see the row, or this test proves nothing"
     );
 
-    let scan = claim_scan_deliveries_job(&h.pool)
+    let scan = claim_scan_deliveries_job(h.repositories.as_ref(), &h.pool)
         .await
         .expect("the backstop job");
-    let outcome = vpay_worker::handle_scan_deliveries(&h.pool, lease, &scan)
+    let outcome = vpay_worker::handle_scan_deliveries(h.repositories.as_ref(), lease, &scan)
         .await
         .expect("the backstop ran");
     assert!(
@@ -2069,7 +2142,8 @@ async fn a_dead_lettered_delivery_job_is_not_resurrected_by_the_scan() {
         "the backstop must not un-park a dead-lettered delivery job"
     );
     assert_eq!(
-        vpay_db::webhook_deliveries::get(&h.pool, delivery.id)
+        h.repositories
+            .get(delivery.id)
             .await
             .expect("the delivery row")
             .expect("it still exists")
@@ -2096,17 +2170,24 @@ async fn a_dead_lettered_delivery_job_is_not_resurrected_by_the_scan() {
 
 /// Seeds and claims the `scan_deliveries` singleton, exactly as
 /// `run_loop::seed_singletons` seeds it.
-async fn claim_scan_deliveries_job(pool: &PgPool) -> anyhow::Result<JobRow> {
-    let mut tx = pool.begin().await?;
-    vpay_db::jobs::enqueue_in_tx(
-        &mut tx,
-        "scan_deliveries",
-        vpay_worker::jobs::SCAN_DELIVERIES_DEDUPE_KEY,
-        &json!({}),
-        OffsetDateTime::now_utc(),
-    )
-    .await?;
-    tx.commit().await?;
+async fn claim_scan_deliveries_job(
+    repositories: &dyn Repositories,
+    pool: &PgPool,
+) -> anyhow::Result<JobRow> {
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.enqueue_in_tx(
+                    "scan_deliveries",
+                    vpay_worker::jobs::SCAN_DELIVERIES_DEDUPE_KEY,
+                    &json!({}),
+                    OffsetDateTime::now_utc(),
+                )
+                .await?;
+                Ok::<_, anyhow::Error>(TxOutcome::Commit(()))
+            })
+        })
+        .await?;
 
     let row: JobRow = sqlx::query_as(
         "UPDATE jobs SET locked_at = now(), locked_by = $1, attempts = attempts + 1 \
@@ -2163,17 +2244,17 @@ async fn the_real_run_loop_delivers_a_backlog_event_to_the_receiver() {
     const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
     let h = harness().await.expect("harness");
-    let event = insert_event(&h.pool, MERCHANT_A, "pi_through_the_loop")
+    let event = insert_event(h.repositories.as_ref(), MERCHANT_A, "pi_through_the_loop")
         .await
         .expect("an event settlement would have written");
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let pool = h.pool.clone();
+    let repositories = Arc::clone(&h.repositories);
     let endpoints = std::sync::Arc::new(h.endpoints.clone());
     let http = delivery_client();
     let loop_handle = tokio::spawn(async move {
         vpay_worker::run_loop(
-            &pool,
+            repositories,
             // No rails: nothing in this test confirms a charge, and a
             // `poll_charge` job never exists. The webhook path reads neither.
             std::sync::Arc::new(vpay_worker::Adapters::new()),
@@ -2232,7 +2313,9 @@ async fn the_real_run_loop_delivers_a_backlog_event_to_the_receiver() {
     assert_eq!(verified.id, event.id);
 
     // And the durable record agrees with the receiver.
-    let delivery = vpay_db::webhook_deliveries::for_event(&h.pool, &event.id)
+    let delivery = h
+        .repositories
+        .for_event(&event.id)
         .await
         .expect("deliveries")
         .pop()
@@ -2275,18 +2358,22 @@ async fn the_real_run_loop_delivers_a_backlog_event_to_the_receiver() {
 #[tokio::test]
 async fn a_delivery_with_no_configured_endpoint_records_a_failure_and_no_digest() {
     let h = harness().await.expect("harness");
-    let event = insert_event(&h.pool, MERCHANT_A, "pi_unconfigured")
+    let event = insert_event(h.repositories.as_ref(), MERCHANT_A, "pi_unconfigured")
         .await
         .expect("an event");
 
     // Fanned out while the endpoint is configured, so the delivery row is a
     // real one; then the registry stops describing it, which is what a
     // rollout that briefly serves an older configuration looks like.
-    let fanout = claim_fanout_job(&h.pool).await.expect("the fan-out job");
-    handle_fan_out(&h.pool, &h.endpoints, &fanout)
+    let fanout = claim_fanout_job(h.repositories.as_ref())
+        .await
+        .expect("the fan-out job");
+    handle_fan_out(h.repositories.as_ref(), &h.endpoints, &fanout)
         .await
         .expect("fan-out");
-    let delivery = vpay_db::webhook_deliveries::for_event(&h.pool, &event.id)
+    let delivery = h
+        .repositories
+        .for_event(&event.id)
         .await
         .expect("deliveries")
         .pop()
@@ -2296,9 +2383,14 @@ async fn a_delivery_with_no_configured_endpoint_records_a_failure_and_no_digest(
     let job = claim_delivery_job(&h.pool, delivery.id)
         .await
         .expect("the delivery job");
-    let outcome = handle_deliver(&h.pool, &delivery_client(), &forgotten, &job)
-        .await
-        .expect("the delivery handler ran");
+    let outcome = handle_deliver(
+        h.repositories.as_ref(),
+        &delivery_client(),
+        &forgotten,
+        &job,
+    )
+    .await
+    .expect("the delivery handler ran");
     assert!(
         matches!(outcome, Outcome::RescheduleAfter(delay) if delay == delivery_delay(0)
             .expect("the first rung")),
@@ -2306,7 +2398,9 @@ async fn a_delivery_with_no_configured_endpoint_records_a_failure_and_no_digest(
          exhaustion and not an error: {outcome:?}"
     );
 
-    let row = vpay_db::webhook_deliveries::get(&h.pool, delivery.id)
+    let row = h
+        .repositories
+        .get(delivery.id)
         .await
         .expect("the delivery row")
         .expect("it still exists");

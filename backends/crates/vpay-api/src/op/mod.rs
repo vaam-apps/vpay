@@ -1,62 +1,18 @@
 //! The merchant-facing OAuth2 provider behind `/v1/oauth` (ADR-0010,
 //! [docs/flows/merchant-auth.md](../../../../../docs/flows/merchant-auth.md)).
 //!
-//! Four pieces, each its own module so it can be tested on its own:
+//! Four pieces, each its own module so it can be tested on its own: [`clients`]
+//! (the `ClientStore`, YAML minus the kill switch), [`keys`] (the RS256 signing
+//! key, loaded from a file at boot and never persisted), [`jwks`] (the
+//! database-backed `/jwks.json`, which publishes every key still in its rotation
+//! window rather than the one this process holds), and [`token`] (the two
+//! handlers vpay writes itself).
 //!
-//! - [`clients`] — the `ClientStore` the OP looks merchants up in: the
-//!   statically registered `merchant_clients` from YAML, minus anything in
-//!   the `disabled_clients` kill switch.
-//! - [`keys`] — the RS256 signing key: loaded from a file at boot, never
-//!   persisted; its `kid` and public JWK are what `oauth_signing_keys`
-//!   records and `/jwks.json` publishes.
-//! - [`jwks`] — the vpay-owned `/jwks.json`, publishing every key in its
-//!   rotation window from the database rather than the one key this
-//!   process holds.
-//! - [`token`] — the two HTTP handlers this crate writes itself: the RFC
-//!   6749 token endpoint and the discovery document.
+//! [`MerchantOp`] is the assembly. Nothing here serves the dashboard surface.
 //!
-//! [`MerchantOp`], below, is the assembly: it holds the one [`OpConfig`],
-//! the one [`OpStore`] and the one [`TokenManager`] that
-//! [`token::token_handler`] needs, built once at boot from a validated
-//! [`Config`], a [`keys::LoadedSigningKey`] and a pool.
-//!
-//! Nothing in this module serves the dashboard surface: `/dash/v1` login is
-//! a separate, later step, and this OP is deliberately pinned to the one
-//! grant `/v1` uses.
-//!
-//! # Why vpay writes its own handlers instead of mounting `authkestra-axum`
-//!
-//! `authkestra-axum` ships `axum_token_handler`/`axum_discovery_handler`
-//! and vpay does not use them, for three reasons that are all about *not*
-//! serving surface this deployment does not implement:
-//!
-//! 1. Its router helpers mount the authorization-code, device and userinfo
-//!    endpoints alongside the token endpoint. vpay serves none of those (see
-//!    [`OP_GRANT_TYPES`]), and a route that exists only to answer an error
-//!    is a route an integrator can find and misread.
-//! 2. `axum_authorize_handler` needs `tower_cookies::Cookies` in the request
-//!    extensions, so mounting that crate's OP routes drags a cookie layer
-//!    into a router whose entire `/v1` surface is cookie-free bearer auth.
-//! 3. Its handlers reach their state through `FromRef<AppState>` for
-//!    `Result<Arc<dyn OpStore>, AxumError>` and render their own errors,
-//!    which would put a second error-rendering path next to
-//!    [`crate::ApiError`] (ADR-0011 wants one).
-//!
-//! What vpay does *not* re-implement is the protocol itself:
-//! [`token::token_handler`] calls `authkestra_op`'s own
-//! [`handle_token`](authkestra_op::handlers::token::handle_token) directly,
-//! and the status mapping it applies is copied from
-//! `authkestra-axum-0.7.1/src/op.rs::axum_token_handler` — see that
-//! function's own doc comment for the one deliberate deviation (no DPoP
-//! header handling, because no DPoP replay store is wired).
-//!
-//! That file is a *reference*, not a dependency: `authkestra-axum` is
-//! deliberately absent from this workspace (the three reasons above), so it
-//! is in neither `Cargo.lock` nor any local registry checkout. The six
-//! ported lines are inlined verbatim in [`token`]'s module docs so a reader
-//! can compare without fetching anything, and that section says where to
-//! fetch the real copy from crates.io when an `authkestra-op` bump makes it
-//! worth re-diffing.
+//! Why vpay writes its own handlers instead of mounting `authkestra-axum`, and
+//! what it deliberately does *not* re-implement:
+//! [docs/reference/vpay-api.md § the merchant OP](../../../../../docs/reference/vpay-api.md#the-merchant-op-op).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -67,7 +23,7 @@ use authkestra_op::config::OpConfig;
 use authkestra_op::sqlx_store::SqlxOpStore;
 use authkestra_op::store::CompositeOpStore;
 use vpay_config::Config;
-use vpay_db::{PgPool, SqlClientAssertionStore};
+use vpay_db::{Repositories, SqlClientAssertionStore};
 
 use crate::op::clients::YamlClientStore;
 use crate::op::keys::LoadedSigningKey;
@@ -239,9 +195,19 @@ impl MerchantOp {
     /// because `backends/migrations/0006` + `0013` own that schema), so
     /// three unused slots cost three cloned `Arc` handles.
     #[must_use]
-    pub fn new(config: &Config, key: LoadedSigningKey, pool: PgPool) -> Self {
+    pub fn new(
+        config: &Config,
+        key: LoadedSigningKey,
+        repositories: Arc<dyn Repositories>,
+    ) -> Self {
+        // The one place `vpay_db` still hands out a raw pool, and the reason
+        // it does: `SqlxOpStore` and `SqlClientAssertionStore` are *foreign*
+        // trait implementations over a pool (ADR-0010), whose queries vpay
+        // does not own and cannot express as repository methods. Step 7's
+        // decision (9) — see `docs/status.md`.
+        let pool = repositories.op_store_pool();
         let store = CompositeOpStore::new(
-            YamlClientStore::new(&config.merchant_clients, pool.clone()),
+            YamlClientStore::new(&config.merchant_clients, repositories),
             SqlxOpStore::<sqlx::Postgres>::new(pool.clone()),
             SqlxOpStore::<sqlx::Postgres>::new(pool.clone()),
             SqlxOpStore::<sqlx::Postgres>::new(pool.clone()),
@@ -459,7 +425,7 @@ fn scopes_supported(config: &Config) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_fixtures::{config_with, lazy_pool, merchant, signing_key};
+    use crate::test_fixtures::{config_with, lazy_repositories, merchant, signing_key};
 
     #[tokio::test]
     async fn the_issuer_and_endpoints_are_what_the_sdk_derives_from_a_base_url() {
@@ -470,7 +436,7 @@ mod tests {
         let op = MerchantOp::new(
             &config_with("https://api.vpay.test", vec![]),
             signing_key(),
-            lazy_pool(),
+            lazy_repositories(),
         );
 
         assert_eq!(op.issuer(), "https://api.vpay.test/v1/oauth");
@@ -487,7 +453,7 @@ mod tests {
         let op = MerchantOp::new(
             &config_with("https://api.vpay.test/", vec![]),
             signing_key(),
-            lazy_pool(),
+            lazy_repositories(),
         );
 
         assert_eq!(op.issuer(), "https://api.vpay.test/v1/oauth");
@@ -567,7 +533,7 @@ mod tests {
         let op = MerchantOp::new(
             &config_with("https://api.vpay.test", vec![]),
             signing_key(),
-            lazy_pool(),
+            lazy_repositories(),
         );
 
         assert_eq!(op.config().access_token_ttl_secs, 900);
@@ -586,7 +552,7 @@ mod tests {
         let op = MerchantOp::new(
             &config_with("https://api.vpay.test", vec![]),
             signing_key(),
-            lazy_pool(),
+            lazy_repositories(),
         );
 
         assert_eq!(

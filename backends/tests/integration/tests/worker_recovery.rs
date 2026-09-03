@@ -55,6 +55,7 @@ use testcontainers::{ContainerAsync, GenericImage};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use uuid::Uuid;
 use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
+use vpay_db::{Jobs, Repositories, TxOutcome, UnitOfWork as _};
 use vpay_worker::{Adapters, Disposition, RailConfigs, RecoveryPolicy, Settled};
 
 mod support;
@@ -114,6 +115,9 @@ struct Harness {
     _postgres: ContainerAsync<PostgresImage>,
     _mtn: ContainerAsync<GenericImage>,
     _orange: ContainerAsync<GenericImage>,
+    repositories: Arc<dyn Repositories>,
+    /// The plain `sqlx` pool, for the fixtures that read or force schema
+    /// state no repository method owns.
     pool: PgPool,
     adapters: Arc<Adapters>,
     rails: Arc<RailConfigs>,
@@ -131,7 +135,7 @@ impl Harness {
         let endpoints = support::no_webhook_endpoints();
         let http = support::webhook_client();
         vpay_worker::run_once(
-            &self.pool,
+            self.repositories.as_ref(),
             &self.adapters,
             &self.rails,
             policy,
@@ -218,7 +222,7 @@ fn config_with(mtn_url: &str, orange_url: &str) -> Config {
 }
 
 async fn harness() -> anyhow::Result<Harness> {
-    let (postgres, pool) = migrated_postgres().await?;
+    let (postgres, repositories, pool) = migrated_postgres().await?;
 
     let mtn = vpay_testkit::containers::start_wiremock(&mappings_dir("mtn"))
         .await
@@ -244,12 +248,13 @@ async fn harness() -> anyhow::Result<Harness> {
     );
 
     let config = config_with(&mtn_url, &orange_url);
-    reconcile_from_config(&pool, &config).await?;
+    reconcile_from_config(repositories.as_ref(), &config).await?;
 
     Ok(Harness {
         _postgres: postgres,
         _mtn: mtn,
         _orange: orange,
+        repositories,
         pool,
         adapters: Arc::new(support::adapters_by_code()),
         rails: Arc::new(rail_configs(&config)),
@@ -363,18 +368,19 @@ async fn events(pool: &PgPool, object_id: &str) -> anyhow::Result<Vec<(String, S
 /// Stages kill point 2 or 3: an attempt row for a submit that either got no
 /// answer (`status_code = None`) or got one (`Some`).
 async fn record_submit_attempt(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     charge_id: &str,
     rail: &str,
     reference: Uuid,
     status_code: Option<i32>,
 ) -> anyhow::Result<()> {
-    let attempt_id =
-        vpay_db::provider_requests::insert_pending(pool, charge_id, rail, "submit", reference, 1)
-            .await
-            .context("writing the submit attempt row")?;
+    let attempt_id = repositories
+        .insert_pending(charge_id, rail, "submit", reference, 1)
+        .await
+        .context("writing the submit attempt row")?;
     if let Some(code) = status_code {
-        vpay_db::provider_requests::record_response(pool, attempt_id, Some(code), None)
+        repositories
+            .record_response(attempt_id, Some(code), None)
             .await
             .context("recording the submit answer")?;
     }
@@ -507,10 +513,17 @@ async fn a_charge_whose_submit_never_left_is_resubmitted_under_the_same_referenc
     let h = harness().await?;
     let policy = RecoveryPolicy::default();
 
-    let intent = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
     let reference = Uuid::new_v4();
     let charge_id = crashed_charge(
-        &h.pool,
+        h.repositories.as_ref(),
         &intent,
         PUSH_RAIL,
         reference,
@@ -576,10 +589,17 @@ async fn a_submit_whose_answer_was_lost_is_resolved_by_asking_the_rail() -> anyh
     let h = harness().await?;
     let policy = RecoveryPolicy::default();
 
-    let intent = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
     let reference = Uuid::new_v4();
     let charge_id = crashed_charge(
-        &h.pool,
+        h.repositories.as_ref(),
         &intent,
         PUSH_RAIL,
         reference,
@@ -588,7 +608,14 @@ async fn a_submit_whose_answer_was_lost_is_resolved_by_asking_the_rail() -> anyh
         Some(MSISDN),
     )
     .await?;
-    record_submit_attempt(&h.pool, &charge_id, PUSH_RAIL, reference, None).await?;
+    record_submit_attempt(
+        h.repositories.as_ref(),
+        &charge_id,
+        PUSH_RAIL,
+        reference,
+        None,
+    )
+    .await?;
 
     let settled = h.step(&policy).await?;
     assert_eq!(settled.kind, "poll_charge");
@@ -622,10 +649,17 @@ async fn an_answered_submit_advances_the_bookkeeping_rather_than_submitting_agai
     let h = harness().await?;
     let policy = RecoveryPolicy::default();
 
-    let intent = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
     let reference = Uuid::new_v4();
     let charge_id = crashed_charge(
-        &h.pool,
+        h.repositories.as_ref(),
         &intent,
         PUSH_RAIL,
         reference,
@@ -635,7 +669,7 @@ async fn an_answered_submit_advances_the_bookkeeping_rather_than_submitting_agai
     )
     .await?;
     record_submit_attempt(
-        &h.pool,
+        h.repositories.as_ref(),
         &charge_id,
         PUSH_RAIL,
         reference,
@@ -685,9 +719,16 @@ async fn three_not_founds_over_the_window_resubmit_and_two_do_not() -> anyhow::R
         ..RecoveryPolicy::default()
     };
 
-    let intent = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
     let charge_id = crashed_charge(
-        &h.pool,
+        h.repositories.as_ref(),
         &intent,
         PUSH_RAIL,
         NOT_FOUND_REF,
@@ -700,7 +741,14 @@ async fn three_not_founds_over_the_window_resubmit_and_two_do_not() -> anyhow::R
     // very first poll would resubmit for a different reason
     // (`SubmitAttempt::Never`), and this case would prove nothing about the
     // streak.
-    record_submit_attempt(&h.pool, &charge_id, PUSH_RAIL, NOT_FOUND_REF, None).await?;
+    record_submit_attempt(
+        h.repositories.as_ref(),
+        &charge_id,
+        PUSH_RAIL,
+        NOT_FOUND_REF,
+        None,
+    )
+    .await?;
 
     for poll in 1..=2 {
         let settled = h.step(&policy).await?;
@@ -763,9 +811,16 @@ async fn a_charge_past_the_horizon_is_unresolved_polled_hourly_and_alerted_never
         ..RecoveryPolicy::default()
     };
 
-    let intent = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
     let charge_id = crashed_charge(
-        &h.pool,
+        h.repositories.as_ref(),
         &intent,
         PUSH_RAIL,
         PENDING_THEN_SUCCESS_REF,
@@ -775,7 +830,7 @@ async fn a_charge_past_the_horizon_is_unresolved_polled_hourly_and_alerted_never
     )
     .await?;
     record_submit_attempt(
-        &h.pool,
+        h.repositories.as_ref(),
         &charge_id,
         PUSH_RAIL,
         PENDING_THEN_SUCCESS_REF,
@@ -862,12 +917,19 @@ async fn a_redirect_charge_with_no_token_is_failed_without_ever_asking_the_rail(
     let h = harness().await?;
     let policy = RecoveryPolicy::default();
 
-    let intent = confirmed_intent(&h.pool, MERCHANT, REDIRECT_RAIL, AMOUNT, CURRENCY).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        REDIRECT_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
     let reference = Uuid::new_v4();
     // No `payer_ref` and no `provider_ref_extra`: a redirect rail names no
     // payer up front, and the `pay_token` is exactly what was lost.
     let charge_id = crashed_charge(
-        &h.pool,
+        h.repositories.as_ref(),
         &intent,
         REDIRECT_RAIL,
         reference,
@@ -937,7 +999,14 @@ async fn a_settlement_lands_on_the_intent_a_crashed_confirm_left_behind() -> any
     let h = harness().await?;
     let policy = RecoveryPolicy::default();
 
-    let intent = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
     assert_eq!(
         intent_status(&h.pool, &intent).await?.0,
         "requires_payment_method",
@@ -947,7 +1016,7 @@ async fn a_settlement_lands_on_the_intent_a_crashed_confirm_left_behind() -> any
 
     let reference = Uuid::new_v4();
     let charge_id = crashed_charge(
-        &h.pool,
+        h.repositories.as_ref(),
         &intent,
         PUSH_RAIL,
         reference,
@@ -958,7 +1027,14 @@ async fn a_settlement_lands_on_the_intent_a_crashed_confirm_left_behind() -> any
     .await?;
     // Kill point 2: the POST went out and the answer was lost. The rail has
     // the payment; vpay's intent says nothing was attempted.
-    record_submit_attempt(&h.pool, &charge_id, PUSH_RAIL, reference, None).await?;
+    record_submit_attempt(
+        h.repositories.as_ref(),
+        &charge_id,
+        PUSH_RAIL,
+        reference,
+        None,
+    )
+    .await?;
 
     let settled = h.step(&policy).await?;
     assert_eq!(
@@ -1037,9 +1113,16 @@ async fn a_rail_that_never_answers_is_still_escalated_at_the_horizon() -> anyhow
         ..RecoveryPolicy::default()
     };
 
-    let intent = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
     let charge_id = crashed_charge(
-        &h.pool,
+        h.repositories.as_ref(),
         &intent,
         PUSH_RAIL,
         UNAVAILABLE_REF,
@@ -1052,7 +1135,7 @@ async fn a_rail_that_never_answers_is_still_escalated_at_the_horizon() -> anyhow
     // run reaches the point where it would ask the rail — which is the point
     // under test.
     record_submit_attempt(
-        &h.pool,
+        h.repositories.as_ref(),
         &charge_id,
         PUSH_RAIL,
         UNAVAILABLE_REF,
@@ -1132,8 +1215,15 @@ async fn a_late_success_past_the_horizon_still_settles() -> anyhow::Result<()> {
         ..RecoveryPolicy::default()
     };
 
-    let intent = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
-    let charge_id = charge_that_settles_in_one_poll(&h.pool, &intent).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
+    let charge_id = charge_that_settles_in_one_poll(h.repositories.as_ref(), &intent).await?;
 
     let settled = h.step(&policy).await?;
     assert_eq!(
@@ -1239,9 +1329,16 @@ async fn a_resubmit_past_the_horizon_still_escalates() -> anyhow::Result<()> {
         ..RecoveryPolicy::default()
     };
 
-    let intent = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
     let charge_id = crashed_charge(
-        &h.pool,
+        h.repositories.as_ref(),
         &intent,
         PUSH_RAIL,
         NOT_FOUND_REF,
@@ -1254,7 +1351,14 @@ async fn a_resubmit_past_the_horizon_still_escalates() -> anyhow::Result<()> {
     // row the very first poll would resubmit for a different reason
     // (`SubmitAttempt::Never`) and this case would never reach the arm it is
     // about.
-    record_submit_attempt(&h.pool, &charge_id, PUSH_RAIL, NOT_FOUND_REF, None).await?;
+    record_submit_attempt(
+        h.repositories.as_ref(),
+        &charge_id,
+        PUSH_RAIL,
+        NOT_FOUND_REF,
+        None,
+    )
+    .await?;
 
     for poll in 1..=2 {
         let settled = h.step(&policy).await?;
@@ -1340,10 +1444,17 @@ async fn a_never_submitted_charge_past_the_horizon_escalates_after_enqueuing_the
     let h = harness().await?;
     let policy = RecoveryPolicy::default();
 
-    let intent = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
     let reference = Uuid::new_v4();
     let charge_id = crashed_charge(
-        &h.pool,
+        h.repositories.as_ref(),
         &intent,
         PUSH_RAIL,
         reference,
@@ -1407,10 +1518,17 @@ async fn a_poisoned_job_past_the_horizon_is_parked_rather_than_rescheduled_hourl
         ..RecoveryPolicy::default()
     };
 
-    let intent = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
     let reference = Uuid::new_v4();
     let charge_id = crashed_charge(
-        &h.pool,
+        h.repositories.as_ref(),
         &intent,
         PUSH_RAIL,
         reference,
@@ -1421,7 +1539,14 @@ async fn a_poisoned_job_past_the_horizon_is_parked_rather_than_rescheduled_hourl
     .await?;
     // Kill point 2, so the recovery table answers `Poll` and the run reaches
     // the status query — which is where the unparseable row is read.
-    record_submit_attempt(&h.pool, &charge_id, PUSH_RAIL, reference, None).await?;
+    record_submit_attempt(
+        h.repositories.as_ref(),
+        &charge_id,
+        PUSH_RAIL,
+        reference,
+        None,
+    )
+    .await?;
     write_a_currency_this_build_cannot_parse(&h.pool, &charge_id).await?;
 
     let settled = h.step(&policy).await?;
@@ -1488,9 +1613,16 @@ async fn a_second_hourly_poll_of_an_unresolved_charge_re_alerts_without_writing_
         ..RecoveryPolicy::default()
     };
 
-    let intent = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
     let charge_id = crashed_charge(
-        &h.pool,
+        h.repositories.as_ref(),
         &intent,
         PUSH_RAIL,
         NOT_FOUND_REF,
@@ -1502,7 +1634,7 @@ async fn a_second_hourly_poll_of_an_unresolved_charge_re_alerts_without_writing_
     // Kill point 3: the rail answered the submit, so the recovery table
     // advances the bookkeeping and the poll runs the ordinary path.
     record_submit_attempt(
-        &h.pool,
+        h.repositories.as_ref(),
         &charge_id,
         PUSH_RAIL,
         NOT_FOUND_REF,
@@ -1589,9 +1721,16 @@ async fn a_decline_past_the_horizon_settles_an_unresolved_charge_and_clears_the_
         ..RecoveryPolicy::default()
     };
 
-    let intent = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
     let charge_id = crashed_charge(
-        &h.pool,
+        h.repositories.as_ref(),
         &intent,
         PUSH_RAIL,
         DECLINED_REF,
@@ -1675,8 +1814,11 @@ async fn a_decline_past_the_horizon_settles_an_unresolved_charge_and_clears_the_
 /// singleton added to `seed_singletons` without being parked here fails this
 /// helper instead of silently running inside a test whose subject is
 /// something else.
-async fn park_the_housekeeping_jobs(pool: &PgPool) -> anyhow::Result<()> {
-    vpay_worker::seed_singletons(pool)
+async fn park_the_housekeeping_jobs(
+    repositories: &dyn Repositories,
+    pool: &PgPool,
+) -> anyhow::Result<()> {
+    vpay_worker::seed_singletons(repositories)
         .await
         .context("seeding the singletons")?;
     let parked = sqlx::query(
@@ -1725,10 +1867,13 @@ async fn strand_the_poll_job(pool: &PgPool, charge_id: &str, age: Duration) -> a
 /// itself has to resolve in one claim; a charge whose recovery table said
 /// "resubmit" would need two and would not distinguish "reaped late" from
 /// "still on the ladder".
-async fn charge_that_settles_in_one_poll(pool: &PgPool, intent: &str) -> anyhow::Result<String> {
+async fn charge_that_settles_in_one_poll(
+    repositories: &dyn Repositories,
+    intent: &str,
+) -> anyhow::Result<String> {
     let reference = Uuid::new_v4();
     let charge_id = crashed_charge(
-        pool,
+        repositories,
         intent,
         PUSH_RAIL,
         reference,
@@ -1738,7 +1883,7 @@ async fn charge_that_settles_in_one_poll(pool: &PgPool, intent: &str) -> anyhow:
     )
     .await?;
     record_submit_attempt(
-        pool,
+        repositories,
         &charge_id,
         PUSH_RAIL,
         reference,
@@ -1793,25 +1938,32 @@ async fn a_lease_stranded_by_a_crash_is_freed_at_boot_before_any_sweep_runs() ->
         ..RecoveryPolicy::default()
     };
 
-    park_the_housekeeping_jobs(&h.pool).await?;
-    let intent = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
-    let charge_id = charge_that_settles_in_one_poll(&h.pool, &intent).await?;
+    park_the_housekeeping_jobs(h.repositories.as_ref(), &h.pool).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
+    let charge_id = charge_that_settles_in_one_poll(h.repositories.as_ref(), &intent).await?;
     strand_the_poll_job(&h.pool, &charge_id, Duration::from_secs(120)).await?;
 
     assert!(
-        vpay_db::jobs::claim(&h.pool, "a-live-worker")
+        Jobs::claim(h.repositories.as_ref(), "a-live-worker")
             .await?
             .is_none(),
         "the fixture must leave the job genuinely unclaimable, or this case proves nothing"
     );
 
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let pool = h.pool.clone();
+    let repositories = Arc::clone(&h.repositories);
     let adapters = Arc::clone(&h.adapters);
     let rails = Arc::clone(&h.rails);
     let worker = tokio::spawn(async move {
         vpay_worker::run_loop(
-            &pool,
+            repositories,
             adapters,
             rails,
             policy,
@@ -1868,20 +2020,27 @@ async fn a_lease_that_expires_while_the_worker_runs_is_reaped_on_its_own_timer()
         ..RecoveryPolicy::default()
     };
 
-    park_the_housekeeping_jobs(&h.pool).await?;
-    let intent = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
-    let charge_id = charge_that_settles_in_one_poll(&h.pool, &intent).await?;
+    park_the_housekeeping_jobs(h.repositories.as_ref(), &h.pool).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
+    let charge_id = charge_that_settles_in_one_poll(h.repositories.as_ref(), &intent).await?;
     // Taken *now*: at boot this lease has zero age, so it is younger than the
     // lease and the boot reap must leave it alone.
     strand_the_poll_job(&h.pool, &charge_id, Duration::ZERO).await?;
 
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let pool = h.pool.clone();
+    let repositories = Arc::clone(&h.repositories);
     let adapters = Arc::clone(&h.adapters);
     let rails = Arc::clone(&h.rails);
     let worker = tokio::spawn(async move {
         vpay_worker::run_loop(
-            &pool,
+            repositories,
             adapters,
             rails,
             policy,
@@ -1938,16 +2097,20 @@ async fn a_poisoned_job_is_parked_with_its_lease_cleared_and_its_reason_recorded
     // A poll job naming a charge that does not exist. That is precisely
     // `Poisoned`: the row is wrong, and no rail, no retry and no amount of
     // waiting changes it.
-    let mut tx = h.pool.begin().await?;
-    vpay_db::jobs::enqueue_in_tx(
-        &mut tx,
-        "poll_charge",
-        "poll:ch_does_not_exist",
-        &serde_json::json!({ "charge_id": "ch_does_not_exist" }),
-        time::OffsetDateTime::now_utc(),
-    )
-    .await?;
-    tx.commit().await?;
+    h.repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.enqueue_in_tx(
+                    "poll_charge",
+                    "poll:ch_does_not_exist",
+                    &serde_json::json!({ "charge_id": "ch_does_not_exist" }),
+                    time::OffsetDateTime::now_utc(),
+                )
+                .await?;
+                Ok::<_, anyhow::Error>(TxOutcome::Commit(()))
+            })
+        })
+        .await?;
 
     let settled = h.step(&policy).await?;
     assert_eq!(settled.disposition, Disposition::DeadLettered);
@@ -1985,7 +2148,7 @@ async fn a_poisoned_job_is_parked_with_its_lease_cleared_and_its_reason_recorded
     // And it stays parked: a second pass finds nothing to claim.
     assert!(
         vpay_worker::run_once(
-            &h.pool,
+            h.repositories.as_ref(),
             &h.adapters,
             &h.rails,
             &policy,
@@ -2017,7 +2180,7 @@ async fn the_housekeeping_jobs_are_seeded_once_and_reschedule_themselves() -> an
 
     // Three "workers" booting at once.
     for _ in 0..3 {
-        vpay_worker::seed_singletons(&h.pool).await?;
+        vpay_worker::seed_singletons(h.repositories.as_ref()).await?;
     }
     let queued = jobs(&h.pool).await?;
     assert_eq!(
@@ -2078,9 +2241,16 @@ async fn the_backstop_scan_re_enqueues_an_unattended_charge_and_leaves_attended_
     let h = harness().await?;
     let policy = RecoveryPolicy::default();
 
-    let attended = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
+    let attended = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
     let attended_charge = crashed_charge(
-        &h.pool,
+        h.repositories.as_ref(),
         &attended,
         PUSH_RAIL,
         Uuid::new_v4(),
@@ -2090,9 +2260,16 @@ async fn the_backstop_scan_re_enqueues_an_unattended_charge_and_leaves_attended_
     )
     .await?;
 
-    let orphan = confirmed_intent(&h.pool, MERCHANT, PUSH_RAIL, AMOUNT, CURRENCY).await?;
+    let orphan = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
     let orphan_charge = crashed_charge(
-        &h.pool,
+        h.repositories.as_ref(),
         &orphan,
         PUSH_RAIL,
         Uuid::new_v4(),
@@ -2114,7 +2291,7 @@ async fn the_backstop_scan_re_enqueues_an_unattended_charge_and_leaves_attended_
         .execute(&h.pool)
         .await?;
 
-    vpay_worker::seed_singletons(&h.pool).await?;
+    vpay_worker::seed_singletons(h.repositories.as_ref()).await?;
     // The four singletons and the attended charge's poll job are all
     // runnable; run until the scan has had its turn.
     for _ in 0..6 {
@@ -2154,26 +2331,30 @@ async fn the_backstop_scan_re_enqueues_an_unattended_charge_and_leaves_attended_
 async fn two_workers_claiming_together_never_take_the_same_job() -> anyhow::Result<()> {
     let h = harness().await?;
 
-    let mut tx = h.pool.begin().await?;
-    for n in 0..8 {
-        vpay_db::jobs::enqueue_in_tx(
-            &mut tx,
-            "poll_charge",
-            &format!("poll:ch_{n}"),
-            &serde_json::json!({ "charge_id": format!("ch_{n}") }),
-            time::OffsetDateTime::now_utc(),
-        )
+    h.repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                for n in 0..8 {
+                    tx.enqueue_in_tx(
+                        "poll_charge",
+                        &format!("poll:ch_{n}"),
+                        &serde_json::json!({ "charge_id": format!("ch_{n}") }),
+                        time::OffsetDateTime::now_utc(),
+                    )
+                    .await?;
+                }
+                Ok::<_, anyhow::Error>(TxOutcome::Commit(()))
+            })
+        })
         .await?;
-    }
-    tx.commit().await?;
 
     // Eight real tasks on the multi-thread runtime, two worker identities,
     // all racing one queue.
     let mut set = tokio::task::JoinSet::new();
     for n in 0..8 {
-        let pool = h.pool.clone();
+        let repositories = Arc::clone(&h.repositories);
         let worker = format!("worker-{}", n % 2);
-        set.spawn(async move { vpay_db::jobs::claim(&pool, &worker).await });
+        set.spawn(async move { Jobs::claim(repositories.as_ref(), &worker).await });
     }
 
     let mut ids: Vec<Uuid> = Vec::new();
