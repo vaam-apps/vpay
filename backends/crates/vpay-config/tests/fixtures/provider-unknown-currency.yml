@@ -1,0 +1,23 @@
+# Fixture for `a_rail_currency_outside_the_canonical_table_is_rejected`
+# (backends/crates/vpay-config/src/config.rs). `USD` is three characters, so
+# garde's length rule passes and the refusal comes from
+# `vpay_core::Currency::from_code` — the canonical table — rather than from a
+# second list of codes maintained here.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+providers:
+  - code: mtn_momo
+    currency: USD
+    host:
+      url: http://wiremock-mtn:8080
+      label: mtn-sandbox-wiremock
+    settings:
+      target_environment: sandbox
+      api_user: 11111111-2222-3333-4444-555555555555
+    credentials:
+      subscription_key: sub-key
+      api_key: api-key

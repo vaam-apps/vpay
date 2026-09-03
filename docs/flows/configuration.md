@@ -343,3 +343,64 @@ see that row above for what *is* enforced); a `display_name` that is a real
 port capability rather than a derivation of the code; and any hot reload —
 a config change is still a redeploy. `--public-base-url` remains accepted,
 parsed and read by nothing. See [../status.md](../status.md).
+
+**New 2026-09-03 (Step 3), and one of these is a bug this pass found rather
+than a feature it added:**
+
+- **Livemode had never been bootable.** `validate_secret`'s rule is "a
+  credential must be *written* as a `${VAR}` placeholder, not as a literal"
+  — a question about step 1's text — and it was being asked of step 2's
+  *resolved* values, where a correctly written `${MTN_API_KEY}` and a
+  literal `hunter2` are the same string. So the rule enforced nothing and
+  refused every correct livemode config. The pre-resolution text of each
+  `providers[].credentials` value is now captured before resolution and
+  checked against that (`RawProviderSecrets`, private to `vpay_config::config`).
+  The two rules now answer the two different questions they were always
+  meant to: *was it written as a reference* and *did the reference resolve*
+  (`a_livemode_config_with_a_literal_secret_is_rejected`,
+  `a_livemode_config_whose_placeholders_resolve_loads`,
+  `a_livemode_placeholder_that_does_not_resolve_is_still_the_unresolved_error`,
+  `a_sandbox_config_with_a_literal_secret_loads`).
+- **`providers[].currency`** is required and must be one this deployment's
+  currency table knows (`a_rail_currency_outside_the_canonical_table_is_rejected`).
+  It is checked at boot, not only when a request builds a `ProviderConfig`,
+  so an unknown code is a refusal to start rather than a 500 on a merchant's
+  confirm.
+- **`providers[].callback_url`** is optional and defaults to
+  `{public_base_url}/provider/{code}/callback`. The *effective* value — not
+  just an override — is put through `validate_host`, so a livemode
+  deployment cannot hand a live rail a plaintext or stub callback host
+  (`a_livemode_callback_url_that_is_not_https_is_rejected`,
+  `a_livemode_deployment_cannot_derive_a_plaintext_callback_url`,
+  `a_derived_callback_url_survives_a_trailing_slash_and_an_override_wins`).
+- **`REQUIRED_RAIL_KEYS`** refuses to boot a rail missing a key its adapter
+  cannot work without — MTN: `settings.target_environment`,
+  `settings.api_user`, `credentials.subscription_key`, `credentials.api_key`;
+  Orange: `credentials.merchant_key`, `credentials.client_id`,
+  `credentials.client_secret`. A present-but-empty value counts as missing.
+  This is a provider-code match outside an adapter crate, which ADR-0002
+  forbids; it is a deliberate, recorded interim —
+  [ADR-0012](../adr/0012-rail-configuration-requirements-in-config.md) — and
+  it moves behind the port the day the port grows a `required_settings()`
+  hook. Nothing here selects *behaviour*; it selects a refusal to start
+  (`a_rail_missing_a_required_setting_is_rejected`,
+  `a_rail_missing_a_required_credential_is_rejected`,
+  `a_required_key_present_but_empty_is_treated_as_missing`,
+  `a_rail_this_crate_has_no_key_table_for_is_not_refused_here`).
+- **`ProviderHost::to_provider_config(&Deployment)`** is the only place a
+  `vpay_provider::ProviderConfig` is built from configuration, so the server
+  and the worker cannot disagree about a rail's callback URL or currency
+  (`to_provider_config_projects_the_example_config_onto_the_port`, which
+  compares the whole projected value rather than field by field, and
+  `to_provider_config_names_a_currency_it_cannot_parse`). The two timeouts
+  are constants, not YAML knobs: no deployment has asked for a different
+  budget and a knob nobody sets is a knob nobody has tested.
+- **Six rail environment variables** are now referenced by
+  `config/application.yml` and must be supplied by every deployment —
+  `MTN_SUBSCRIPTION_KEY`, `MTN_API_KEY`, `MTN_API_USER`,
+  `ORANGE_MERCHANT_KEY`, `ORANGE_CLIENT_ID`, `ORANGE_CLIENT_SECRET`. All six
+  are set on **both** services in `compose.e2e.yml` and listed in
+  `.env.example`; miss one and the process exits `78` at boot, by design.
+- `vpay-config` now runs **70 tests, 70 passed, 0 skipped**
+  (`cargo nextest run -p vpay-config`, measured 2026-09-03 on this branch;
+  it was 57 before this pass).

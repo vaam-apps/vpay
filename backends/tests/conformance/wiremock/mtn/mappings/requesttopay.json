@@ -1,33 +1,208 @@
 {
   "mappings": [
     {
-      "name": "requestToPay accepted (202, empty body — the id is the caller's)",
-      "request": { "method": "POST", "urlPath": "/collection/v1_0/requesttopay" },
-      "response": { "status": 202 }
-    },
-    {
-      "name": "duplicate reference is reported as already existing",
+      "name": "requestToPay accepted (202, empty body \u2014 the id is the caller's)",
+      "priority": 10,
       "request": {
         "method": "POST",
-        "urlPath": "/collection/v1_0/requesttopay",
-        "headers": { "X-Reference-Id": { "equalTo": "00000000-0000-0000-0000-0000000000dd" } }
+        "urlPath": "/collection/v1_0/requesttopay"
       },
       "response": {
-        "status": 409,
-        "jsonBody": { "code": "RESOURCE_ALREADY_EXIST", "message": "Duplicated Reference Id" }
+        "status": 202
       }
     },
     {
-      "name": "status: successful",
-      "request": { "method": "GET", "urlPathPattern": "/collection/v1_0/requesttopay/.*" },
-      "response": {
-        "status": 200,
-        "jsonBody": {
-          "financialTransactionId": "1234567890",
-          "amount": "5000",
-          "currency": "XAF",
-          "status": "SUCCESSFUL"
+      "name": "duplicate reference is reported as already existing",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPath": "/collection/v1_0/requesttopay",
+        "headers": {
+          "X-Reference-Id": {
+            "equalTo": "00000000-0000-0000-0000-0000000000dd"
+          }
         }
+      },
+      "response": {
+        "status": 409,
+        "jsonBody": {
+          "code": "RESOURCE_ALREADY_EXIST",
+          "message": "Duplicated Reference Id"
+        }
+      },
+      "metadata": {
+        "why": "The adapter must read this as Submitted, not as an error: it is what makes a same-reference retry after a crash safe (docs/flows/crash-safety.md)."
+      }
+    },
+    {
+      "name": "400 with a documented reason code",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPath": "/collection/v1_0/requesttopay",
+        "headers": {
+          "X-Reference-Id": {
+            "equalTo": "00000000-0000-0000-0000-000000000400"
+          }
+        }
+      },
+      "response": {
+        "status": 400,
+        "jsonBody": {
+          "code": "PAYER_NOT_FOUND",
+          "message": "Payee does not exist"
+        }
+      },
+      "metadata": {
+        "why": "A 400 carries the same vocabulary as a FAILED status, so it maps through docs/flows/adapter-mtn-momo.md's table -> invalid_payer."
+      }
+    },
+    {
+      "name": "a payer the rail does not know, selected by MSISDN rather than by reference",
+      "priority": 5,
+      "request": {
+        "method": "POST",
+        "urlPath": "/collection/v1_0/requesttopay",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.payer.partyId",
+              "equalTo": "237600000400"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 400,
+        "jsonBody": {
+          "code": "PAYER_NOT_FOUND",
+          "message": "Payee does not exist"
+        }
+      },
+      "metadata": {
+        "why": [
+          "The same 400 as the `\u20260400` reference mapping above, selected by the payer",
+          "instead. A confirm cannot choose its reference -- the handler mints",
+          "provider_reference_id with Uuid::new_v4() before committing the charge, and a",
+          "seam to fix it from a test would be a code path that exists only outside",
+          "production (AGENTS.md's first rule). The MSISDN, though, comes from the",
+          "merchant's own request body, so this is the one matcher an end-to-end confirm",
+          "can steer.",
+          "",
+          "It exists for confirm_rails.rs's",
+          "a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read, which is",
+          "the only genuine payer-decline-at-submit in that suite: the case next to it",
+          "stages a rotated subscription key, which fails at the TOKEN call and is",
+          "provider_account_blocked -- an operator's page, not a payer's problem.",
+          "",
+          "priority 5: below the reference-keyed mappings (priority 1), which must keep",
+          "winning for the conformance suite whatever payer they carry, and above the",
+          "catch-all 202 (priority 10) that answers every other confirm here.",
+          "",
+          "237600000400 is a documentation MSISDN in the same 2376000000xx block the",
+          "conformance charges use, with the 0400 suffix naming the 400 it provokes."
+        ]
+      }
+    },
+    {
+      "name": "500 that is really our misconfiguration (MTN's biggest wart)",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPath": "/collection/v1_0/requesttopay",
+        "headers": {
+          "X-Reference-Id": {
+            "equalTo": "00000000-0000-0000-0000-000000000500"
+          }
+        }
+      },
+      "response": {
+        "status": 500,
+        "jsonBody": {
+          "code": "INVALID_CALLBACK_URL_HOST",
+          "message": "The callback url host is not registered for this API user"
+        }
+      },
+      "metadata": {
+        "why": "Three logical errors arrive as HTTP 500 with a code in the body. Retrying them is an outage that looks like a flake, so the adapter answers ProviderError::Config."
+      }
+    },
+    {
+      "name": "500 with a body that is not JSON at all",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPath": "/collection/v1_0/requesttopay",
+        "headers": {
+          "X-Reference-Id": {
+            "equalTo": "00000000-0000-0000-0000-0000000005ff"
+          }
+        }
+      },
+      "response": {
+        "status": 500,
+        "headers": {
+          "Content-Type": "text/html"
+        },
+        "body": "<html><head><title>500 Internal Server Error</title></head><body>gateway</body></html>"
+      },
+      "metadata": {
+        "why": "A gateway's own error page, which the adapter must classify as Transport rather than failing to parse it into a decline."
+      }
+    },
+    {
+      "name": "307 whose Location must never be requested",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPath": "/collection/v1_0/requesttopay",
+        "headers": {
+          "X-Reference-Id": {
+            "equalTo": "00000000-0000-0000-0000-000000000302"
+          }
+        }
+      },
+      "response": {
+        "status": 307,
+        "headers": {
+          "Location": "/__never-followed/00000000-0000-0000-0000-000000000302"
+        }
+      },
+      "metadata": {
+        "why": [
+          "REF_REDIRECT. reqwest's default redirect policy follows up to ten hops and strips",
+          "only Authorization/Cookie/Proxy-Authorization on a cross-host one, so",
+          "Ocp-Apim-Subscription-Key, X-Target-Environment, X-Reference-Id and X-Callback-Url",
+          "would all be replayed at whatever host the Location named -- and a 307 replays the",
+          "request BODY too. vpay_provider::http builds every client with",
+          "redirect::Policy::none(), so the adapter must see this 307 itself and answer",
+          "ProviderError::Malformed.",
+          "",
+          "The Location points at a mapping on THIS SAME stub on purpose. A cross-host target",
+          "would make the case pass for the wrong reason (an unroutable host errors out",
+          "whatever the policy is); a same-host path is the hop reqwest follows most eagerly,",
+          "so a request recorded against it is proof the policy is gone. See the",
+          "`the Location is never requested` mapping below and the __admin/requests/count",
+          "assertion in redirects_are_refused_and_never_followed."
+        ]
+      }
+    },
+    {
+      "name": "the Location is never requested (a 202 if it ever is)",
+      "priority": 1,
+      "request": {
+        "urlPath": "/__never-followed/00000000-0000-0000-0000-000000000302"
+      },
+      "response": {
+        "status": 202
+      },
+      "metadata": {
+        "why": [
+          "Answers the rail's ACCEPTED status deliberately: if redirects were ever followed",
+          "again, submit would return Ok(Submitted) and the conformance case's expect_err",
+          "would fail loudly -- before the request-count assertion even runs. Two independent",
+          "failures for one regression."
+        ]
       }
     }
   ]

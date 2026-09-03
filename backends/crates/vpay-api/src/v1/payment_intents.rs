@@ -1,9 +1,10 @@
 //! `/v1/payment_intents` — create, retrieve, list, confirm, cancel.
 //!
-//! Everything a merchant can do to a payment intent through this API, and
-//! nothing it cannot: `confirm` reaches the rail adapter and stops at the
-//! adapter's own `ProviderError::NotImplemented`, which is a real `501` and
-//! not a fabricated success (`docs/status.md`, `AGENTS.md`'s second rule).
+//! Everything a merchant can do to a payment intent through this API. As of
+//! Step 3 that includes a confirm that a rail *accepts*: `confirm` submits
+//! through the adapter and, on success, commits what the rail said before
+//! answering — so a `200` here is a payment a rail is genuinely working on,
+//! not a rendered optimism (`docs/status.md`, `AGENTS.md`'s second rule).
 //!
 //! # Three orderings this file exists to get right
 //!
@@ -58,13 +59,13 @@ use vpay_db::{
     ChargeRow, IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome, ListPage, NewCharge,
     NewPaymentIntent, PgPool, charges, idempotency, payment_intents, provider_requests,
 };
-use vpay_provider::{ChargeRef, ProviderAdapter, ProviderError};
+use vpay_provider::{ChargeRef, ProviderAdapter, ProviderError, Submitted};
 
 use crate::error::ApiError;
 use crate::form::{VpayForm, VpayQuery};
 use crate::idempotency::{IdempotencyKey, request_hash};
-use crate::model::{ListObject, PaymentIntentObject};
-use crate::v1::{MerchantScope, ResourceConfig};
+use crate::model::{ListObject, NextAction, PaymentIntentObject, RedirectToUrl};
+use crate::v1::{MerchantScope, RailConfig, ResourceConfig};
 
 /// The object type this module speaks about, in the API's own vocabulary.
 /// One constant so a 404 for an intent can never be spelled two ways.
@@ -250,13 +251,26 @@ async fn validate_create(
 
 /// `GET /v1/payment_intents/{id}`.
 ///
-/// `next_action` is `null` on every intent this deployment can currently
-/// produce, and that is not an omission: it is derived from a charge's
-/// `redirect_url`, which only a successful `submit` on a redirect rail can
-/// write — and no adapter implements `submit` yet (`docs/status.md`).
-/// Loading the charge here to render a field that cannot be populated would
-/// be a query per request bought for nothing, and the missing half would
-/// still be missing.
+/// # Why this reads the charge, and only sometimes
+///
+/// `next_action` is not on the intent row: it is the rail's `redirect_url`
+/// plus the merchant's `return_url`, both of which live on the *charge*
+/// (`charges.redirect_url`, `charges.return_url` — migration 0019). An
+/// intent in `requires_action` therefore costs one extra query, and every
+/// other intent costs none: `requires_action` is redirect-only
+/// (`docs/flows/payment-lifecycle.md`), so for any other status the answer
+/// is `null` and reading the charge could only confirm that.
+///
+/// Rendering it from the stored row rather than remembering what `confirm`
+/// answered is what makes the field *reproducible*: a merchant who lost the
+/// confirm's response gets the same `next_action` here, and a merchant who
+/// gets one here knows the database already held the URL before anyone was
+/// sent to it (`docs/flows/crash-safety.md`, "the commit is the gate on the
+/// redirect").
+///
+/// `last_payment_error` needs no such work — it is a column pair on the
+/// intent itself (`0014`), rendered by
+/// [`PaymentIntentObject::try_from`].
 pub(crate) async fn retrieve(
     State(pool): State<PgPool>,
     scope: MerchantScope,
@@ -265,7 +279,48 @@ pub(crate) async fn retrieve(
     let row = payment_intents::get_for_merchant(&pool, scope.merchant_id(), &id)
         .await?
         .ok_or_else(|| not_found(&id))?;
-    object_response(&row)
+
+    let object = PaymentIntentObject::try_from(&row)?;
+    if object.status != IntentStatus::RequiresAction {
+        return json_response(StatusCode::OK, &object);
+    }
+
+    let charge = charges::get_for_intent(&pool, &row.id).await?;
+    let next_action = charge.as_ref().and_then(next_action_of);
+    if next_action.is_none() {
+        // `requires_action` means "the payer has somewhere to go". An intent
+        // in that status whose charge carries no redirect URL is a row pair
+        // that cannot both be true, and answering `null` would tell a
+        // merchant their payer has nothing to do while a rail holds a live
+        // payment.
+        return Err(ApiError::Internal(format!(
+            "payment intent {} is `{}` but its charge carries no redirect_url",
+            row.id,
+            IntentStatus::RequiresAction.as_wire_str(),
+        )));
+    }
+
+    json_response(StatusCode::OK, &object.with_next_action(next_action))
+}
+
+/// The `next_action` a charge implies, or `None` when the rail gave the
+/// payer nowhere to go.
+///
+/// Reads `charges`, never a `Submitted` still in memory: see [`retrieve`].
+fn next_action_of(charge: &ChargeRow) -> Option<NextAction> {
+    charge
+        .redirect_url
+        .as_ref()
+        .map(|url| NextAction::RedirectToUrl {
+            redirect_to_url: RedirectToUrl {
+                url: url.clone(),
+                // Null rather than absent when the column is: the SDKs model
+                // `return_url` as an optional field of a required object, and
+                // a redirect rail that was given none is a shape this API can
+                // still describe honestly.
+                return_url: charge.return_url.clone(),
+            },
+        })
 }
 
 // ------------------------------------------------------------------- list
@@ -322,8 +377,8 @@ pub(crate) async fn list(
 /// redundant — a `confirm` commits its charge *before* calling the rail and
 /// leaves the status at `requires_payment_method` until it knows what
 /// happened, so "status is `requires_payment_method`" does not mean "nothing
-/// is in flight". Today that is not even a narrow window: a confirm that
-/// ends in the rail's `501` leaves exactly that state behind on purpose.
+/// is in flight". It is not a narrow window either: a confirm whose rail
+/// never answered leaves exactly that state behind on purpose.
 ///
 /// `Ok(None)` is ambiguous by construction, and [`cancel_once`]'s re-read is
 /// what turns it into the right answer: 404 if there is no such intent for
@@ -415,16 +470,28 @@ struct ConfirmParams {
 /// 3. mint the `provider_reference_id` and commit the charge row in
 ///    `submitting`, so the reference is durable before anything is sent;
 /// 4. record the attempt in `provider_requests` with no status;
-/// 5. call the adapter — synchronously; `submit` is not `async`;
+/// 5. call the adapter — `submit` is `async`, so the `.await` is what
+///    actually sends the request;
 /// 6. record what came back and answer.
 ///
-/// Today step 5 always returns `ProviderError::NotImplemented`, so step 6
-/// records `error_kind = 'not_implemented'` and this endpoint answers `501`.
-/// The `submitting` charge row and the status-less `provider_requests` row
-/// stay behind **on purpose**: they are exactly the state a crash between
-/// steps 4 and 6 would leave, and the recovery pass that will read them is
-/// the next piece of work (`docs/status.md`). The intent itself stays
-/// `requires_payment_method`, because nothing was submitted.
+/// Step 6 has three shapes, and which one runs is decided by the *error's*
+/// own classification rather than by anything this file knows about rails:
+///
+/// * **the rail accepted it** — one transaction moves the charge to
+///   `submitted` with the rail's key material and the intent to
+///   `processing`/`requires_action`, it commits, and only then is a response
+///   built (`persist_submitted`, and `docs/flows/crash-safety.md`'s "the
+///   commit is the gate on the redirect");
+/// * **the rail declined it** (`ProviderError::Rejected`) — one transaction
+///   fails the charge with its `failure_code` and stamps
+///   `last_payment_error` on the intent, which stays
+///   `requires_payment_method` because the lifecycle has no `failed` status;
+///   the merchant gets the `409` `charge_declined`;
+/// * **anything else** — we do not know what the rail did, so *nothing*
+///   moves. The `submitting` charge row and the status-less
+///   `provider_requests` row stay behind on purpose: they are exactly the
+///   state a crash between steps 4 and 6 would leave, and are what the
+///   recovery pass will read (Step 4 — `docs/status.md`).
 pub(crate) async fn confirm(
     State(pool): State<PgPool>,
     State(config): State<Arc<ResourceConfig>>,
@@ -488,8 +555,8 @@ async fn confirm_once(
     // attempt a second charge. The unique index `one_charge_per_intent` is
     // what actually enforces it — this check is what turns the race's loser
     // into a 409 instead of a 500.
-    if charges::get_for_intent(pool, &intent.id).await?.is_some() {
-        return Err(already_charged());
+    if let Some(existing) = charges::get_for_intent(pool, &intent.id).await? {
+        return Err(already_charged(&intent.id, Some(&existing)));
     }
 
     // --- step 2: the rail, resolved from the request and branched on by flow
@@ -528,17 +595,19 @@ async fn confirm_once(
         ));
     }
 
+    // The rail's own settlement currency against the intent's. Checked
+    // *before* anything is written, so a mismatch costs no charge row: see
+    // [`refuse_a_currency_the_rail_does_not_settle`].
+    currencies_agree(rail, &intent.currency_code)?;
+
     let flow = adapter.capabilities().flow;
     // The *only* branch on the rail in this file, and it is on the flow
     // shape, never on the code (ADR-0002).
-    // The redirect rail's `return_url` is validated and then deliberately
-    // dropped: `charges` has no column for it, and the only thing that would
-    // read it is the `next_action.return_url` a successful redirect `submit`
-    // would render — which nothing can produce yet (`docs/status.md`). The
-    // validation still has to happen now, so that a redirect confirm without
-    // one is refused rather than reaching a rail with nowhere to send the
-    // payer back to.
-    let (payer_ref, _return_url) = match flow {
+    // The redirect rail's `return_url` is carried into the charge row and
+    // committed *before* the rail is called (`charges.return_url`, migration
+    // 0019), because `next_action.redirect_to_url.return_url` has to be
+    // reproducible on every later read of the intent — see [`retrieve`].
+    let (payer_ref, return_url) = match flow {
         ProviderFlow::Push => {
             let msisdn = data
                 .get(code)
@@ -568,6 +637,7 @@ async fn confirm_once(
                          required.",
                     )
                 })?;
+            checked_return_url(return_url)?;
             (None, Some(return_url.to_owned()))
         }
     };
@@ -578,12 +648,25 @@ async fn confirm_once(
     let reference = Uuid::new_v4();
     let charge = insert_charge(
         pool,
-        &intent.id,
-        code,
-        reference,
-        intent.amount,
-        &intent.currency_code,
-        payer_ref.clone(),
+        &NewCharge {
+            id: ids::charge_id(),
+            payment_intent_id: intent.id.clone(),
+            provider_code: code.to_owned(),
+            provider_reference_id: reference,
+            provider_ref_extra: None,
+            // Nothing a rail said, because nothing has been asked yet. The
+            // merchant's own `return_url` *is* known and is written now.
+            redirect_url: None,
+            return_url: return_url.clone(),
+            state: vpay_core::ChargeState::INITIAL.as_wire_str().to_owned(),
+            amount: intent.amount,
+            // The intent's currency, verbatim: no conversion (Step 2's D2).
+            // `currencies_agree` above has already refused the case where the
+            // rail settles in a different one.
+            currency_code: intent.currency_code.clone(),
+            payer_ref: payer_ref.clone(),
+            payer_ref_masked: None,
+        },
     )
     .await?;
 
@@ -591,42 +674,330 @@ async fn confirm_once(
     let attempt =
         provider_requests::insert_pending(pool, &charge.id, code, "submit", reference, 1).await?;
 
-    // --- step 5: the rail. `submit` is synchronous — do not `.await` it.
+    // --- step 5: the rail. `submit` is `async` as of Step 3 (the port's
+    // methods return boxed futures via `#[async_trait]`), so the `.await` is
+    // load-bearing: without it this binds a future and step 6 below would be
+    // matching on a `Pin<Box<..>>` that never ran — a "submit" that never
+    // reached the rail while the charge row already said `submitting`.
     let charge_ref = ChargeRef {
         reference_id: reference,
         amount,
         payer_ref,
         ref_extra: BTreeMap::new(),
     };
-    let submitted = adapter.submit(&charge_ref, &rail.provider_config(currency));
+    let submitted = adapter.submit(&charge_ref, &rail.provider_config()).await;
 
     // --- step 6: what came back
     match submitted {
+        Ok(submitted) => {
+            // The rail answered, so the attempt is answered — before any
+            // state moves, and with a status that does not pretend to be an
+            // HTTP one (`STATUS_CODE_NOT_CARRIED_BY_THE_PORT`).
+            provider_requests::record_response(
+                pool,
+                attempt,
+                Some(provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT),
+                None,
+            )
+            .await?;
+            let (intent, charge) =
+                persist_submitted(pool, scope, &intent, &charge, flow, &submitted).await?;
+            submitted_response(&intent, &charge)
+        }
         Err(error) => {
-            provider_requests::record_response(pool, attempt, None, Some(error_kind(&error)))
-                .await?;
+            match &error {
+                // A rail *decision*, not a rail failure (`docs/flows/errors.md`).
+                // The charge is terminal, and the intent goes back to the
+                // status it never left, now carrying why.
+                ProviderError::Rejected { code, message } => {
+                    provider_requests::record_response(
+                        pool,
+                        attempt,
+                        Some(provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT),
+                        Some(error_kind(&error)),
+                    )
+                    .await?;
+                    persist_decline(
+                        pool,
+                        scope,
+                        &intent.id,
+                        &charge.id,
+                        *code,
+                        message,
+                        &vpay_core::Classify::public_message(&error),
+                    )
+                    .await?;
+                }
+                // Everything else means we do not know what the rail did
+                // with the request, so nothing moves: the charge stays
+                // `submitting`, which is the recovery state, and the
+                // attempt keeps `status_code IS NULL`, which is how a
+                // recovery pass tells "no answer" from "answered"
+                // (`docs/flows/crash-safety.md`'s table).
+                //
+                // `Malformed` is the one arm where "no answer" is not
+                // literally true — bytes came back, they just did not parse
+                // — and it is grouped here deliberately. What the table
+                // decides is whether to go and *ask the rail*, and an
+                // unparseable answer is exactly as unknown as a lost one:
+                // "every ambiguity resolves toward 'find out', never 'give
+                // up'".
+                ProviderError::Transport(_)
+                | ProviderError::Malformed(_)
+                | ProviderError::Config(_)
+                | ProviderError::Unsupported
+                | ProviderError::NotImplemented(_) => {
+                    provider_requests::record_response(
+                        pool,
+                        attempt,
+                        None,
+                        Some(error_kind(&error)),
+                    )
+                    .await?;
+                }
+            }
             Err(ApiError::from(error))
         }
-        Ok(_) => {
-            // Unreachable today: every linked adapter answers
-            // `NotImplemented` (`docs/status.md`). It is written as a loud
-            // internal failure rather than as a rendered success because
-            // there is nothing here that *could* be honest: persisting a
-            // submitted charge needs writes this layer has no repository
-            // call for — the rail's `ref_extra`, a redirect rail's
-            // `redirect_url`, the charge's move out of `submitting`, and the
-            // intent's move to `processing`/`requires_action`. Returning the
-            // intent as if nothing had happened would tell a merchant a
-            // payer was never prompted when they may already have been.
-            provider_requests::record_response(pool, attempt, None, Some("not_persisted")).await?;
-            Err(ApiError::Internal(format!(
-                "adapter `{code}` reported a successful submit for charge {} \
-                 (reference {reference}), and vpay cannot persist it: recording a submitted \
-                 charge is not built yet. The rail may hold a live payment.",
-                charge.id,
-            )))
-        }
     }
+}
+
+/// Commits everything a rail's acceptance implies, in **one** transaction,
+/// and hands back the two rows as they now stand.
+///
+/// # Why one transaction, and why the response is built from its result
+///
+/// `docs/flows/crash-safety.md`: "the commit is the gate on the redirect".
+/// A merchant may be handed a `next_action.redirect_to_url` only once the
+/// database already holds the URL and the rail's key material — otherwise a
+/// crash strands a payer on the rail's page against a charge vpay cannot
+/// query. Two statements outside a transaction would also let a reader see
+/// an intent in `requires_action` whose charge has no URL yet.
+///
+/// So both writes are here, the caller returns *this function's* rows rather
+/// than the values it sent, and [`submitted_response`] reads the charge row
+/// — which means a response carrying a URL is proof the committed row has
+/// one. Deleting the charge update does not produce a response without a
+/// `next_action`; it produces a `500`.
+///
+/// # Errors
+///
+/// [`vpay_db::DbError::WriteMatchedNoRow`] (a `500`) if either
+/// compare-and-swap matches nothing: someone else advanced the charge out of
+/// `submitting`, or moved the intent out of `requires_payment_method`. Both
+/// are refusals of a guard, not of the merchant, and both roll the whole
+/// transaction back — leaving the `submitting` charge and the answered
+/// attempt for a recovery pass, which is the honest state.
+async fn persist_submitted(
+    pool: &PgPool,
+    scope: &MerchantScope,
+    intent: &vpay_db::PaymentIntentRow,
+    charge: &ChargeRow,
+    flow: ProviderFlow,
+    submitted: &Submitted,
+) -> Result<(vpay_db::PaymentIntentRow, ChargeRow), ApiError> {
+    // The state machine answers, never a literal here
+    // (`docs/flows/payment-lifecycle.md`): push → `processing`, redirect →
+    // `requires_action`.
+    let next = next_status(
+        IntentStatus::RequiresPaymentMethod,
+        Transition::Confirm(flow),
+    )
+    .ok_or_else(|| {
+        ApiError::Internal(format!(
+            "the lifecycle refuses a confirm from `{}`, which step 1 had already allowed",
+            IntentStatus::RequiresPaymentMethod.as_wire_str(),
+        ))
+    })?;
+
+    let mut tx = pool.begin().await.map_err(vpay_db::DbError::Query)?;
+
+    // Written even when it is empty — a push rail returns no key material,
+    // and `{}` says "the rail answered and there was none" where NULL would
+    // be indistinguishable from a charge that was never submitted.
+    let ref_extra = Value::Object(
+        submitted
+            .ref_extra
+            .iter()
+            .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+            .collect(),
+    );
+    let charge = charges::mark_submitted(
+        &mut tx,
+        &charge.id,
+        vpay_core::ChargeState::Submitted.as_wire_str(),
+        Some(&ref_extra),
+        submitted.redirect_url.as_deref(),
+    )
+    .await?;
+
+    let intent = payment_intents::transition_in_tx(
+        &mut tx,
+        scope.merchant_id(),
+        &intent.id,
+        IntentStatus::RequiresPaymentMethod.as_wire_str(),
+        next.as_wire_str(),
+    )
+    .await?
+    .ok_or_else(|| {
+        // Unreachable while `cancel` refuses an intent with a live charge
+        // (`vpay_db::payment_intents::cancel`'s `NOT EXISTS`), and loud
+        // rather than quiet because if it ever fires, a rail is holding a
+        // payment for an intent that says it is not being paid.
+        ApiError::Internal(format!(
+            "the rail accepted charge {} but payment intent {} was no longer `{}`; \
+             the rail may hold a live payment",
+            charge.id,
+            intent.id,
+            IntentStatus::RequiresPaymentMethod.as_wire_str(),
+        ))
+    })?;
+
+    tx.commit().await.map_err(vpay_db::DbError::Query)?;
+    Ok((intent, charge))
+}
+
+/// The `200` for a confirm the rail accepted, built from the **committed**
+/// rows.
+///
+/// A redirect rail whose committed charge carries no URL is a `500`, not a
+/// `200` with `next_action: null`: the intent is in `requires_action`, so
+/// telling a merchant there is no action would be a fabricated success in
+/// the most literal sense — the payer would never be sent anywhere, and the
+/// rail would time the charge out hours later.
+fn submitted_response(
+    intent: &vpay_db::PaymentIntentRow,
+    charge: &ChargeRow,
+) -> Result<Response, ApiError> {
+    let object = PaymentIntentObject::try_from(intent)?;
+    if object.status != IntentStatus::RequiresAction {
+        return json_response(StatusCode::OK, &object);
+    }
+    let next_action = next_action_of(charge).ok_or_else(|| {
+        ApiError::Internal(format!(
+            "the rail accepted charge {} on a redirect flow and no redirect_url was committed; \
+             the payer cannot be sent anywhere",
+            charge.id,
+        ))
+    })?;
+    json_response(StatusCode::OK, &object.with_next_action(Some(next_action)))
+}
+
+/// Commits what a decline at submit implies, in one transaction: the charge
+/// is terminal with its `failure_code`, and the intent carries
+/// `last_payment_error` while keeping the status it never left.
+///
+/// # What each half stores, and why they are different strings
+///
+/// `charges.failure_raw` gets the **rail's own words** — kept because
+/// `docs/flows/failures.md` requires an unmapped reason to survive for
+/// whoever fixes the mapping table. `last_payment_error.message` is rendered
+/// to the *merchant*, so it gets the error's `public_message()`, the same
+/// sentence the `409` envelope carries: "the rail's raw reason string is not
+/// [public] — it is logged via Display, never sent" (`docs/flows/errors.md`).
+/// One rail message must not reach a merchant through a side door.
+///
+/// # Errors
+///
+/// As [`persist_submitted`]. `Ok(None)` from the intent write is *not* an
+/// error here: the charge is failed either way, and an intent that moved on
+/// simply does not get the error stamped onto it — see the body.
+async fn persist_decline(
+    pool: &PgPool,
+    scope: &MerchantScope,
+    intent_id: &str,
+    charge_id: &str,
+    code: vpay_core::FailureCode,
+    rail_message: &str,
+    public_message: &str,
+) -> Result<(), ApiError> {
+    let mut tx = pool.begin().await.map_err(vpay_db::DbError::Query)?;
+
+    charges::mark_failed(
+        &mut tx,
+        charge_id,
+        code.as_str(),
+        &bounded(rail_message, FAILURE_RAW_MAX_CHARS),
+    )
+    .await?;
+
+    let updated = payment_intents::record_payment_error(
+        &mut tx,
+        scope.merchant_id(),
+        intent_id,
+        IntentStatus::RequiresPaymentMethod.as_wire_str(),
+        code.as_str(),
+        &bounded(public_message, LAST_PAYMENT_ERROR_MAX_CHARS),
+    )
+    .await?;
+    if updated.is_none() {
+        // The intent moved while the rail was deciding. The charge is still
+        // failed — that write is about the rail's answer and is true
+        // whatever the intent says — and the missing half is logged rather
+        // than turned into a `500`, because the merchant's answer is the
+        // decline, which is accurate.
+        tracing::warn!(
+            merchant_id = %scope.merchant_id(),
+            payment_intent_id = %intent_id,
+            "a rail declined a charge whose intent was no longer requires_payment_method; \
+             last_payment_error was not recorded"
+        );
+    }
+
+    tx.commit().await.map_err(vpay_db::DbError::Query)?;
+    Ok(())
+}
+
+/// The `failure_raw_length` CHECK on `charges` (2000) and the
+/// `lpe_message_length` CHECK on `payment_intents` (512), mirrored here so a
+/// long rail message is truncated rather than answered as a constraint
+/// violation rendered as a `500`.
+const FAILURE_RAW_MAX_CHARS: usize = 2000;
+const LAST_PAYMENT_ERROR_MAX_CHARS: usize = 512;
+
+/// Truncates on a `char` boundary. Both database CHECKs count
+/// `char_length`, i.e. characters, so this counts characters too — a byte
+/// slice would both mis-measure and be a panic waiting for a rail that
+/// answers in Arabic.
+fn bounded(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
+/// Refuses a confirm whose intent is denominated in a currency the chosen
+/// rail does not settle in.
+///
+/// # Why this is the API's refusal and not the adapter's
+///
+/// `ProviderConfig.currency` is the rail's *profile* currency, from the
+/// deployment's YAML — MTN's sandbox accepts EUR and rejects XAF
+/// (`docs/flows/money.md`), which is a configuration fact and must never be
+/// a code branch (ADR-0003). The charge, meanwhile, carries the intent's
+/// currency verbatim (Step 2's D2). Nothing reconciled the two, so a confirm
+/// used to submit an XAF amount under a EUR profile and let the rail decide
+/// what that meant — which, for a rail that simply believes the number, is
+/// a payer charged 5,000 of the wrong unit.
+///
+/// It is a `400` on `payment_method_data[type]` rather than on `currency`
+/// because the currency is fixed at creation and cannot be changed: what the
+/// caller can still choose, and what is actually wrong, is the rail. The
+/// message names both so the merchant does not have to go and read the
+/// deployment's configuration to find out which one it settles in.
+fn currencies_agree(rail: &RailConfig, intent_currency: &str) -> Result<(), ApiError> {
+    let rail_currency = rail.currency();
+    if rail_currency.code() == intent_currency {
+        return Ok(());
+    }
+    Err(ApiError::invalid_param(
+        PMD_TYPE_PARAM,
+        format!(
+            "rail `{}` settles in {}; this PaymentIntent is {}. Confirm it on a rail \
+             configured for {}, or create a new PaymentIntent in {}.",
+            rail.code(),
+            rail_currency.code(),
+            intent_currency,
+            intent_currency,
+            rail_currency.code(),
+        ),
+    ))
 }
 
 /// Commits the charge row in `submitting`, in its own transaction, before
@@ -637,33 +1008,9 @@ async fn confirm_once(
 /// `PgConnection` precisely so the commit point is the caller's decision,
 /// and this one has to be *before* the adapter call rather than pooled into
 /// some later unit of work.
-async fn insert_charge(
-    pool: &PgPool,
-    payment_intent_id: &str,
-    provider_code: &str,
-    reference: Uuid,
-    amount: i64,
-    currency_code: &str,
-    payer_ref: Option<String>,
-) -> Result<ChargeRow, ApiError> {
-    let new = NewCharge {
-        id: ids::charge_id(),
-        payment_intent_id: payment_intent_id.to_owned(),
-        provider_code: provider_code.to_owned(),
-        provider_reference_id: reference,
-        provider_ref_extra: None,
-        redirect_url: None,
-        state: vpay_core::ChargeState::INITIAL.as_wire_str().to_owned(),
-        amount,
-        // The intent's currency, verbatim: no conversion, and no per-rail
-        // currency check (this step's D2).
-        currency_code: currency_code.to_owned(),
-        payer_ref,
-        payer_ref_masked: None,
-    };
-
+async fn insert_charge(pool: &PgPool, new: &NewCharge) -> Result<ChargeRow, ApiError> {
     let mut tx = pool.begin().await.map_err(vpay_db::DbError::Query)?;
-    let charge = match charges::insert_for_intent(&mut tx, &new).await {
+    let charge = match charges::insert_for_intent(&mut tx, new).await {
         Ok(charge) => charge,
         // The unique index is the enforcement; this arm is the race the
         // read in step 1 cannot close. Same 409 either way, so a merchant
@@ -672,7 +1019,20 @@ async fn insert_charge(
         Err(vpay_db::DbError::UniqueViolation { constraint, .. })
             if constraint == "one_charge_per_intent" =>
         {
-            return Err(already_charged());
+            // Re-read so the 409 can say which of the two sentences applies
+            // — and a read that fails must not turn the merchant's 409 into
+            // a 503, so its own error is dropped in favour of `None`, which
+            // `already_charged` treats as "assume the rail may hold it".
+            // One extra query on a path that is already a lost race — taken
+            // on a *second* pool connection, so the aborted transaction is
+            // released first rather than held while this read waits for a
+            // connection under a saturated pool (review finding, 2026-09-03).
+            drop(tx);
+            let existing = charges::get_for_intent(pool, &new.payment_intent_id)
+                .await
+                .ok()
+                .flatten();
+            return Err(already_charged(&new.payment_intent_id, existing.as_ref()));
         }
         Err(error) => return Err(error.into()),
     };
@@ -680,13 +1040,116 @@ async fn insert_charge(
     Ok(charge)
 }
 
-/// The 409 both the read and the unique-index race produce.
-fn already_charged() -> ApiError {
+/// The 409 both the read and the unique-index race produce — and which of
+/// its two sentences the merchant is given.
+///
+/// # Why "create a new payment intent" is not always safe advice
+///
+/// It was the only sentence until the Step 3 security review, and on a
+/// charge that is still **live** it is the double-charge instruction
+/// `docs/flows/crash-safety.md` exists to prevent. The case is not exotic;
+/// it is the ordinary one. A confirm whose `submit` timed out answers `502`,
+/// the idempotency key is released, the merchant retries, and the retry
+/// meets the `submitting` charge the first attempt left behind — a charge
+/// the rail may well be holding, because "the response was lost" is not
+/// "the request was not received" (that is the whole of crash-safety.md's
+/// recovery table). Telling that merchant to open a second PaymentIntent is
+/// telling them to prompt the payer's handset a second time for the same
+/// money.
+///
+/// So the advice follows the charge's state, from
+/// [`vpay_core::ChargeState::is_live`] — the same predicate the reconciler
+/// polls on, rather than a second list here that could drift from it:
+///
+/// * live (`submitting`/`submitted`/`pending`/`unresolved`) → wait and
+///   poll. The charge is going to resolve one way or the other, and the
+///   `GET` is where the merchant will see it.
+/// * terminal (`succeeded`/`failed`) → the original sentence. One charge
+///   per intent, forever; a retry is a new intent, and there is nothing in
+///   flight for it to duplicate.
+///
+/// `existing` is `None` when the caller could not read the row (the
+/// unique-violation race, whose re-read is best-effort). That is treated as
+/// live, because the unsafe direction of this decision is only one way:
+/// telling a merchant to wait for a charge that has already settled costs
+/// them one `GET`, and telling them to retry a charge the rail is holding
+/// costs a payer twice.
+fn already_charged(intent_id: &str, existing: Option<&ChargeRow>) -> ApiError {
+    let live = existing.is_none_or(|charge| {
+        vpay_core::ChargeState::from_wire(&charge.state).is_none_or(vpay_core::ChargeState::is_live)
+    });
+
+    if live {
+        return ApiError::Conflict {
+            message: format!(
+                "A charge for this PaymentIntent is being resolved with the rail; poll \
+                 GET /v1/payment_intents/{intent_id} — do not create a new PaymentIntent."
+            ),
+        };
+    }
     ApiError::Conflict {
         message: "This payment intent already has a charge. One charge per intent, forever \
                   — create a new payment intent to try again."
             .to_owned(),
     }
+}
+
+/// The ceiling `charges.return_url` is constrained to (migration `0019`).
+///
+/// The same 2048 characters, deliberately: this check exists so that the
+/// column's CHECK is a backstop rather than the guard. Trip the CHECK and a
+/// merchant's over-long URL comes back as a `503` telling them vpay is
+/// broken; trip this and it comes back as a `400` naming `return_url`,
+/// which is the truth.
+const RETURN_URL_MAX_CHARS: usize = 2_048;
+
+/// The schemes a payer's browser may be sent back to.
+///
+/// A closed list, not a denylist of dangerous schemes: `javascript:` is the
+/// obvious one, `data:` and `vbscript:` are the ones a denylist forgets, and
+/// the set of things that legitimately belong here is exactly two. `http`
+/// alongside `https` because a merchant's local development host is
+/// plain-HTTP and refusing it would push people to a worse workaround; the
+/// livemode https-only rule belongs to `vpay_config`'s `validate_host`,
+/// which is deployment-wide.
+const RETURN_URL_SCHEMES: [&str; 2] = ["http://", "https://"];
+
+/// Refuses a `return_url` that would be a `503` from a CHECK, or a redirect
+/// a browser would *execute* rather than navigate to.
+///
+/// Checked before any insert, so a bad value costs no charge row — the same
+/// reason `currencies_agree` runs where it does. Both rules mirror
+/// `charges`' constraints exactly (migration `0019`); "the API bounds it at
+/// the boundary too" is a claim that file's comment makes, and this is what
+/// makes it true.
+///
+/// # Errors
+///
+/// [`ApiError::invalid_param`] on `return_url` for a scheme that is not
+/// `http`/`https` — compared case-insensitively, as URL schemes are — or a
+/// value over [`RETURN_URL_MAX_CHARS`].
+fn checked_return_url(url: &str) -> Result<(), ApiError> {
+    let lowercase = url.to_lowercase();
+    if !RETURN_URL_SCHEMES
+        .iter()
+        .any(|scheme| lowercase.starts_with(scheme))
+    {
+        return Err(ApiError::invalid_param(
+            "return_url",
+            "`return_url` must be an `http://` or `https://` URL — it is where the payer's \
+             browser is sent after the rail's page.",
+        ));
+    }
+    // Characters, not bytes: the column's CHECK is `char_length`, and
+    // counting bytes here would refuse a legal URL whose query string is
+    // not ASCII.
+    if url.chars().count() > RETURN_URL_MAX_CHARS {
+        return Err(ApiError::invalid_param(
+            "return_url",
+            format!("`return_url` must be at most {RETURN_URL_MAX_CHARS} characters."),
+        ));
+    }
+    Ok(())
 }
 
 fn missing_payment_method_data() -> ApiError {
@@ -1061,9 +1524,9 @@ impl PostRequest {
     ///   and which was worse. Nothing else ever moves such a row, so every
     ///   retry under that key was answered "a request with this
     ///   Idempotency-Key is still in progress" for the *life of the
-    ///   deployment*. With today's rails, where every `confirm` ends in the
-    ///   adapter's `501`, that permanently burned a key on every confirm a
-    ///   merchant made.
+    ///   deployment*. Before the rails landed, when every `confirm` ended in
+    ///   the adapter's `501`, that permanently burned a key on every confirm
+    ///   a merchant made.
     ///
     /// Releasing means the retry re-executes. That is safe because it is not
     /// the idempotency key that stops a payment being taken twice — the
@@ -1254,6 +1717,8 @@ mod tests {
                         label: "mtn".to_owned(),
                     },
                     settings: BTreeMap::new(),
+                    callback_url: None,
+                    currency: "XAF".to_owned(),
                     credentials: BTreeMap::new(),
                 },
                 ProviderHost {
@@ -1264,6 +1729,8 @@ mod tests {
                         label: "orange".to_owned(),
                     },
                     settings: BTreeMap::new(),
+                    callback_url: None,
+                    currency: "XAF".to_owned(),
                     credentials: BTreeMap::new(),
                 },
             ],
@@ -1277,6 +1744,7 @@ mod tests {
             )],
             dashboard_client: None,
         })
+        .expect("the fixture's rails project onto the port")
     }
 
     fn param_of(error: &ApiError) -> Option<&str> {
@@ -1505,11 +1973,276 @@ mod tests {
 
     /// The `provider_requests.error_kind` a failed submit records is the
     /// error's own classification code, not a second vocabulary.
+    ///
+    /// The decline is the case worth pinning: the *taxonomy* code
+    /// (`insufficient_funds`) is what `charges.failure_code` gets, and this
+    /// column deliberately gets the classification instead, so an operator
+    /// counting rail attempts and a merchant reading an envelope are never
+    /// looking at the same word meaning two things
+    /// (`docs/flows/errors.md`'s note on `charge_declined`).
     #[test]
     fn the_recorded_error_kind_is_the_errors_own_code() {
         assert_eq!(
             error_kind(&ProviderError::NotImplemented("mtn_momo::submit")),
             "not_implemented"
         );
+        assert_eq!(
+            error_kind(&ProviderError::Transport("connection refused".to_owned())),
+            "provider_unavailable"
+        );
+        assert_eq!(
+            error_kind(&ProviderError::Rejected {
+                code: vpay_core::FailureCode::InsufficientFunds,
+                message: "NOT_ENOUGH_FUNDS".to_owned(),
+            }),
+            "charge_declined"
+        );
+    }
+
+    /// The rail's profile currency against the intent's, and what a
+    /// mismatch costs: a `400` on the parameter the caller can still change.
+    ///
+    /// The fixture's `mtn_momo` settles in XAF, so the EUR case has to be
+    /// built from the other rail — this is exactly the shape
+    /// `config/application.yml` ships (MTN on EUR, Orange on XAF), and it
+    /// is why the check exists at all.
+    #[test]
+    fn a_rail_that_settles_in_another_currency_is_refused_by_name() {
+        let config = resource_config();
+        let xaf_rail = config.rail("mtn_momo").expect("configured");
+        currencies_agree(xaf_rail, "XAF").expect("the rail settles in the intent's currency");
+
+        let error = currencies_agree(xaf_rail, "EUR").expect_err("XAF rail, EUR intent");
+        assert_eq!(param_of(&error), Some(PMD_TYPE_PARAM));
+        let message = vpay_core::Classify::public_message(&error);
+        assert!(
+            message.contains("XAF") && message.contains("EUR"),
+            "the refusal has to name both currencies or a merchant cannot act on it: {message}"
+        );
+    }
+
+    /// `next_action` is rendered from the charge row, never from a
+    /// `Submitted` still in memory — which is what makes it reproducible on
+    /// a later `GET` and what makes the commit the gate on the redirect.
+    #[test]
+    fn a_next_action_is_built_from_the_stored_row_and_needs_a_url() {
+        let mut charge = charge_fixture();
+        assert_eq!(
+            next_action_of(&charge),
+            None,
+            "a charge with no redirect_url has no next_action, whatever else it holds"
+        );
+
+        charge.redirect_url = Some("https://pay.example/abc".to_owned());
+        charge.return_url = Some("https://shop.example/return".to_owned());
+        assert_eq!(
+            next_action_of(&charge),
+            Some(NextAction::RedirectToUrl {
+                redirect_to_url: RedirectToUrl {
+                    url: "https://pay.example/abc".to_owned(),
+                    return_url: Some("https://shop.example/return".to_owned()),
+                },
+            })
+        );
+
+        // A rail that was given no return destination still gets a
+        // next_action: the key is `null`, not missing.
+        charge.return_url = None;
+        assert!(matches!(
+            next_action_of(&charge),
+            Some(NextAction::RedirectToUrl {
+                redirect_to_url: RedirectToUrl {
+                    return_url: None,
+                    ..
+                }
+            })
+        ));
+    }
+
+    /// Both database CHECKs count characters, so the truncation does too —
+    /// a rail answering in a non-ASCII script must not produce a panic or a
+    /// constraint violation rendered as a 500.
+    #[test]
+    fn a_rails_words_are_truncated_on_a_character_boundary() {
+        assert_eq!(bounded("short", FAILURE_RAW_MAX_CHARS), "short");
+        assert_eq!(
+            bounded(&"é".repeat(600), LAST_PAYMENT_ERROR_MAX_CHARS)
+                .chars()
+                .count(),
+            LAST_PAYMENT_ERROR_MAX_CHARS,
+        );
+        assert_eq!(bounded("abc", 0), "");
+    }
+
+    /// The message a merchant is given when their intent already has a
+    /// charge, and the reason it is not one message.
+    ///
+    /// The `submitting` row is the one that matters: it is what a confirm
+    /// whose `submit` timed out leaves behind, the rail may be holding the
+    /// payment, and "create a new payment intent to try again" would be an
+    /// instruction to charge the payer twice
+    /// (`docs/flows/crash-safety.md`).
+    #[test]
+    fn a_live_charge_is_never_answered_with_advice_to_open_a_second_intent() {
+        for state in [
+            vpay_core::ChargeState::Submitting,
+            vpay_core::ChargeState::Submitted,
+            vpay_core::ChargeState::Pending,
+            vpay_core::ChargeState::Unresolved,
+        ] {
+            let mut charge = charge_fixture();
+            charge.state = state.as_wire_str().to_owned();
+            let message = conflict_message(already_charged("pi_live", Some(&charge)));
+
+            assert!(
+                message.contains("do not create a new PaymentIntent"),
+                "{state:?}: {message}"
+            );
+            assert!(
+                message.contains("pi_live"),
+                "the merchant is told what to poll: {message}"
+            );
+            assert!(
+                !message.contains("create a new payment intent to try again"),
+                "{state:?} is live; that advice would double-charge the payer: {message}"
+            );
+        }
+    }
+
+    /// The terminal half, which keeps the original sentence: there is
+    /// nothing in flight, so "one charge per intent, forever — a retry is a
+    /// new intent" is both true and the only thing the merchant can do.
+    #[test]
+    fn a_terminal_charge_still_says_a_retry_is_a_new_intent() {
+        for state in [
+            vpay_core::ChargeState::Succeeded,
+            vpay_core::ChargeState::Failed,
+        ] {
+            let mut charge = charge_fixture();
+            charge.state = state.as_wire_str().to_owned();
+            let message = conflict_message(already_charged("pi_done", Some(&charge)));
+
+            assert!(
+                message.contains("One charge per intent, forever"),
+                "{state:?}: {message}"
+            );
+            assert!(
+                !message.contains("do not create a new PaymentIntent"),
+                "{state:?}: {message}"
+            );
+        }
+    }
+
+    /// The two cases where the state is not knowable — the unique-violation
+    /// race whose re-read failed, and a label this build does not
+    /// understand. Both must fall to the safe side: waiting for a settled
+    /// charge costs a `GET`, retrying a live one costs a payer twice.
+    #[test]
+    fn an_unknowable_charge_state_is_treated_as_live() {
+        let mut unparseable = charge_fixture();
+        unparseable.state = "reticulating_splines".to_owned();
+
+        for existing in [None, Some(&unparseable)] {
+            let message = conflict_message(already_charged("pi_unknown", existing));
+            assert!(
+                message.contains("do not create a new PaymentIntent"),
+                "{message}"
+            );
+        }
+    }
+
+    fn conflict_message(error: ApiError) -> String {
+        match error {
+            ApiError::Conflict { message } => message,
+            other => panic!("expected a 409 Conflict, got {other:?}"),
+        }
+    }
+
+    /// `return_url` is persisted and then rendered back into a browser, so
+    /// the two things a merchant must not be able to put there are a scheme
+    /// a browser *executes* and a value the column would refuse.
+    ///
+    /// The second is the subtler one: without this check the CHECK in
+    /// migration `0019` fires and the merchant is told, with a `503`, that
+    /// vpay is broken — for a field they got wrong.
+    #[test]
+    fn a_return_url_must_be_a_bounded_web_url() {
+        for accepted in [
+            "https://shop.example/return",
+            "http://localhost:3000/return?order=1",
+            // Schemes are case-insensitive, and the column's CHECK
+            // lowercases too — the two layers must agree.
+            "HTTPS://shop.example/return",
+            &format!("https://shop.example/{}", "x".repeat(2_000)),
+        ] {
+            assert!(
+                checked_return_url(accepted).is_ok(),
+                "must be accepted: {accepted}"
+            );
+        }
+
+        for (refused, why) in [
+            (
+                "javascript:alert(1)",
+                "a browser executes this rather than navigating",
+            ),
+            ("data:text/html;base64,PHNjcmlwdD4=", "same"),
+            ("//shop.example/return", "scheme-relative is not a scheme"),
+            ("shop.example/return", "no scheme at all"),
+        ] {
+            let error = checked_return_url(refused).expect_err(why);
+            assert_eq!(
+                invalid_param_of(error).as_deref(),
+                Some("return_url"),
+                "{refused}: the merchant must be told which field is wrong"
+            );
+        }
+
+        let too_long = format!("https://shop.example/{}", "x".repeat(RETURN_URL_MAX_CHARS));
+        assert_eq!(
+            invalid_param_of(checked_return_url(&too_long).expect_err("over the column limit"))
+                .as_deref(),
+            Some("return_url"),
+        );
+
+        // Exactly at the limit is accepted, or the API and the column
+        // disagree by one and the boundary case becomes a 503.
+        let exact = format!(
+            "https://shop.example/{}",
+            "x".repeat(RETURN_URL_MAX_CHARS - "https://shop.example/".len())
+        );
+        assert_eq!(exact.chars().count(), RETURN_URL_MAX_CHARS);
+        assert!(checked_return_url(&exact).is_ok());
+    }
+
+    fn invalid_param_of(error: ApiError) -> Option<String> {
+        match error {
+            ApiError::InvalidParam { param, .. } => Some(param),
+            other => panic!("expected an invalid-parameter error, got {other:?}"),
+        }
+    }
+
+    /// A charge row as the confirm path commits one, for the render tests
+    /// above. Not a database read — these assertions are about the
+    /// rendering, and the repository's own suite covers the columns.
+    fn charge_fixture() -> ChargeRow {
+        ChargeRow {
+            id: ids::charge_id(),
+            payment_intent_id: ids::payment_intent_id(),
+            provider_code: "orange_money".to_owned(),
+            provider_reference_id: Uuid::nil(),
+            provider_ref_extra: None,
+            redirect_url: None,
+            return_url: None,
+            state: vpay_core::ChargeState::INITIAL.as_wire_str().to_owned(),
+            amount: 5000,
+            currency_code: "XAF".to_owned(),
+            payer_ref: None,
+            payer_ref_masked: None,
+            failure_code: None,
+            failure_raw: None,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        }
     }
 }

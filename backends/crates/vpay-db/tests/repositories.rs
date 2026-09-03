@@ -683,6 +683,7 @@ fn fixture_charge(id: &str, payment_intent_id: &str) -> vpay_db::NewCharge {
         provider_reference_id: uuid::Uuid::new_v4(),
         provider_ref_extra: None,
         redirect_url: None,
+        return_url: None,
         state: "submitting".to_owned(),
         amount: 5000,
         currency_code: "XAF".to_owned(),
@@ -859,6 +860,104 @@ async fn a_second_charge_for_one_intent_is_refused_as_a_named_unique_violation()
         .await
         .context("counting charges must succeed")?;
     assert_eq!(charges, 1);
+
+    Ok(())
+}
+
+/// The two URL columns on `charges` are the only values in this schema that
+/// end up in a *browser*, and migration `0019` constrains both.
+///
+/// `redirect_url` is the rail's own hosted-payment page — rendered as
+/// `next_action.redirect_to_url.url` and followed by a payer — and until
+/// the Step 3 security review nothing checked it at all: the Orange adapter
+/// tested it for non-emptiness and wrote whatever came back. `return_url`
+/// is the merchant's. A `javascript:` value in either is stored XSS in
+/// whatever renders the intent.
+///
+/// The application refuses both before the write
+/// (`vpay_adapter_orange_money::mapping::checked_redirect_url`,
+/// `vpay_api::v1::payment_intents::checked_return_url`), which is what
+/// makes those refusals a `400`/`Malformed` rather than the `503` a CHECK
+/// violation becomes. This asserts the backstop underneath them, by writing
+/// what the application refuses to write — a constraint nothing ever tries
+/// to violate is a constraint nobody knows still exists.
+#[tokio::test]
+async fn a_charges_url_columns_refuse_a_scheme_a_browser_would_execute() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+
+    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_urls", "XAF")).await?;
+
+    // The happy path first, so the refusals below cannot be passing because
+    // the insert was broken for some unrelated reason.
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let mut good = fixture_charge("ch_urls", "pi_urls");
+    good.return_url = Some("https://shop.example/return".to_owned());
+    vpay_db::charges::insert_for_intent(&mut tx, &good)
+        .await
+        .context("an http(s) return_url must be accepted")?;
+    tx.commit().await.context("transaction commits")?;
+
+    let violations: [(&str, &str, &str); 5] = [
+        (
+            "UPDATE charges SET redirect_url = $1 WHERE id = 'ch_urls'",
+            "javascript:alert(document.cookie)",
+            "redirect_url_is_a_bounded_web_url",
+        ),
+        (
+            "UPDATE charges SET redirect_url = $1 WHERE id = 'ch_urls'",
+            // 2049 characters: one over the ceiling.
+            "",
+            "redirect_url_is_a_bounded_web_url",
+        ),
+        (
+            "UPDATE charges SET return_url = $1 WHERE id = 'ch_urls'",
+            "data:text/html;base64,PHNjcmlwdD4=",
+            "return_url_is_a_web_url",
+        ),
+        (
+            "UPDATE charges SET return_url = $1 WHERE id = 'ch_urls'",
+            "",
+            "return_url_length",
+        ),
+        (
+            "UPDATE charges SET redirect_url = $1 WHERE id = 'ch_urls'",
+            "//evil.example/pay",
+            "redirect_url_is_a_bounded_web_url",
+        ),
+    ];
+
+    for (index, (statement, value, expected)) in violations.into_iter().enumerate() {
+        // The two empty placeholders above are the over-length cases; built
+        // here rather than in the table so the literal is not 2 KB wide.
+        let value = if value.is_empty() {
+            format!("https://p.example/{}", "x".repeat(2_048))
+        } else {
+            value.to_owned()
+        };
+        let error = sqlx::query(statement)
+            .bind(&value)
+            .execute(&pool)
+            .await
+            .expect_err(&format!("case {index}: the CHECK must refuse this"));
+        assert_eq!(
+            error
+                .as_database_error()
+                .and_then(|e| e.constraint())
+                .unwrap_or_default(),
+            expected,
+            "case {index}: the refusal must name the rule that fired"
+        );
+    }
+
+    // And the schemes really are case-insensitive on both columns, so a rail
+    // shouting its scheme is accepted here exactly as the adapter accepts it.
+    sqlx::query("UPDATE charges SET redirect_url = $1, return_url = $2 WHERE id = 'ch_urls'")
+        .bind("HTTPS://webpayment.example/pay/tok")
+        .bind("HTTP://shop.example/return")
+        .execute(&pool)
+        .await
+        .context("an uppercase scheme is still an http(s) URL")?;
 
     Ok(())
 }
@@ -2240,6 +2339,277 @@ async fn provider_requests_record_attempts_and_keep_status_and_responded_at_in_s
             .and_then(|e| e.constraint())
             .unwrap_or_default(),
         "response_is_paired"
+    );
+
+    Ok(())
+}
+
+/// The write a rail's acceptance produces, and the guard that makes it a
+/// state machine rather than a hope.
+///
+/// Three claims, and the third is the one worth the container: a
+/// `mark_submitted` against a charge that is *no longer* `submitting`
+/// matches nothing and says so, instead of dragging a settled charge back
+/// into a live state. That is the collision a recovery pass (Step 4) will
+/// actually create — it and a slow confirm can both hold the same charge —
+/// and a blind `UPDATE … WHERE id = $1` would lose it silently.
+#[tokio::test]
+async fn a_submitted_charge_records_the_rails_material_and_only_from_submitting()
+-> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+
+    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_submitted", "XAF")).await?;
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let mut new = fixture_charge("ch_submitted", "pi_submitted");
+    // The merchant's own return destination, written before the rail is
+    // called (migration 0019).
+    new.return_url = Some("https://shop.example/order/1234/return".to_owned());
+    let charge = vpay_db::charges::insert_for_intent(&mut tx, &new)
+        .await
+        .context("opening the charge must succeed")?;
+    tx.commit().await.context("transaction commits")?;
+    assert_eq!(
+        charge.return_url.as_deref(),
+        Some("https://shop.example/order/1234/return"),
+        "the return_url is durable before anything is submitted"
+    );
+    assert_eq!(charge.redirect_url, None, "no rail has answered yet");
+
+    let ref_extra = json!({ "pay_token": "tok_abc" });
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let submitted = vpay_db::charges::mark_submitted(
+        &mut tx,
+        &charge.id,
+        "submitted",
+        Some(&ref_extra),
+        Some("https://webpayment.example/pay/tok_abc"),
+    )
+    .await
+    .context("recording the rail's answer must succeed")?;
+    tx.commit().await.context("transaction commits")?;
+
+    assert_eq!(submitted.state, "submitted");
+    assert_eq!(submitted.provider_ref_extra, Some(ref_extra));
+    assert_eq!(
+        submitted.redirect_url.as_deref(),
+        Some("https://webpayment.example/pay/tok_abc")
+    );
+    assert_eq!(
+        submitted.return_url, charge.return_url,
+        "a rail's answer must not touch the merchant's return_url"
+    );
+    assert!(
+        submitted.updated_at >= charge.updated_at,
+        "the row records that it moved"
+    );
+
+    // Second time round the charge is no longer `submitting`, and the guard
+    // is in the statement.
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let refused = vpay_db::charges::mark_submitted(
+        &mut tx,
+        &charge.id,
+        "submitted",
+        Some(&json!({ "pay_token": "tok_second" })),
+        Some("https://webpayment.example/pay/tok_second"),
+    )
+    .await;
+    tx.rollback().await.context("transaction rolls back")?;
+    assert!(
+        matches!(
+            refused,
+            Err(vpay_db::DbError::WriteMatchedNoRow {
+                table: "charges",
+                ..
+            })
+        ),
+        "a charge that has left `submitting` must not be moved back into it, and the refusal \
+         must name itself: got {refused:?}"
+    );
+
+    let unchanged: (String, Option<String>) =
+        sqlx::query_as("SELECT state::TEXT, redirect_url FROM charges WHERE id = $1")
+            .bind(&charge.id)
+            .fetch_one(&pool)
+            .await
+            .context("re-reading the charge must succeed")?;
+    assert_eq!(
+        unchanged.1.as_deref(),
+        Some("https://webpayment.example/pay/tok_abc"),
+        "the refused write changed nothing"
+    );
+
+    Ok(())
+}
+
+/// A decline at submit, as both rows record it: the charge is terminal and
+/// carries the taxonomy plus the rail's own words, and the intent keeps the
+/// status it never left while gaining `last_payment_error`.
+///
+/// `docs/flows/payment-lifecycle.md` has no `failed` intent status, so the
+/// pair below *is* what "the payment failed" means to a merchant — which is
+/// why the `lpe_paired` CHECK and the `failure_code` enum are both exercised
+/// here rather than assumed.
+#[tokio::test]
+async fn a_declined_charge_is_terminal_and_the_intent_keeps_its_status() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+
+    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_declined", "XAF")).await?;
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let charge =
+        vpay_db::charges::insert_for_intent(&mut tx, &fixture_charge("ch_declined", "pi_declined"))
+            .await
+            .context("opening the charge must succeed")?;
+    tx.commit().await.context("transaction commits")?;
+
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let failed = vpay_db::charges::mark_failed(
+        &mut tx,
+        &charge.id,
+        "insufficient_funds",
+        "NOT_ENOUGH_FUNDS",
+    )
+    .await
+    .context("failing the charge must succeed")?;
+    let intent = vpay_db::payment_intents::record_payment_error(
+        &mut tx,
+        "merchant_a",
+        "pi_declined",
+        "requires_payment_method",
+        "insufficient_funds",
+        "The payment was declined (insufficient_funds).",
+    )
+    .await
+    .context("recording the payment error must succeed")?
+    .context("the intent is still requires_payment_method, so the guard must have matched")?;
+    tx.commit().await.context("transaction commits")?;
+
+    assert_eq!(failed.state, "failed");
+    assert_eq!(failed.failure_code.as_deref(), Some("insufficient_funds"));
+    assert_eq!(
+        failed.failure_raw.as_deref(),
+        Some("NOT_ENOUGH_FUNDS"),
+        "the rail's own words survive for whoever fixes the mapping table"
+    );
+    assert_eq!(
+        intent.status, "requires_payment_method",
+        "a declined charge does not move the intent — there is no failed status"
+    );
+    assert_eq!(
+        intent.last_payment_error_code.as_deref(),
+        Some("insufficient_funds")
+    );
+    assert_eq!(
+        intent.last_payment_error_message.as_deref(),
+        Some("The payment was declined (insufficient_funds)."),
+        "the merchant-facing sentence, never the rail's raw string"
+    );
+
+    // The status is a guard here too: an intent that has moved on does not
+    // get a payment error stamped onto it.
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let stale = vpay_db::payment_intents::record_payment_error(
+        &mut tx,
+        "merchant_a",
+        "pi_declined",
+        "processing",
+        "payer_timeout",
+        "The payment was declined (payer_timeout).",
+    )
+    .await
+    .context("a guarded write that matches nothing is not an error")?;
+    tx.commit().await.context("transaction commits")?;
+    assert!(
+        stale.is_none(),
+        "the intent is not `processing`, so the write must match nothing"
+    );
+
+    // A foreign merchant cannot stamp an error onto someone else's intent.
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let foreign = vpay_db::payment_intents::record_payment_error(
+        &mut tx,
+        "merchant_b",
+        "pi_declined",
+        "requires_payment_method",
+        "payer_timeout",
+        "The payment was declined (payer_timeout).",
+    )
+    .await
+    .context("a tenancy-scoped write that matches nothing is not an error")?;
+    tx.commit().await.context("transaction commits")?;
+    assert!(foreign.is_none(), "every write in this module is scoped");
+
+    Ok(())
+}
+
+/// The two rows a confirm's success moves, moved in **one** transaction: a
+/// rollback leaves neither, so no reader can see an intent in
+/// `requires_action` whose charge carries no redirect URL.
+///
+/// This is the database half of `docs/flows/crash-safety.md`'s "the commit
+/// is the gate on the redirect". The API half — that the response is built
+/// only after the commit — is
+/// `redirect_confirm_commits_the_rails_material_before_it_answers` in
+/// `backends/tests/integration/tests/confirm_rails.rs`.
+#[tokio::test]
+async fn the_charge_and_the_intent_move_together_or_not_at_all() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_reference_data(&pool).await?;
+
+    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_atomic", "XAF")).await?;
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let charge =
+        vpay_db::charges::insert_for_intent(&mut tx, &fixture_charge("ch_atomic", "pi_atomic"))
+            .await
+            .context("opening the charge must succeed")?;
+    tx.commit().await.context("transaction commits")?;
+
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    vpay_db::charges::mark_submitted(
+        &mut tx,
+        &charge.id,
+        "submitted",
+        Some(&json!({ "pay_token": "tok_rolled_back" })),
+        Some("https://webpayment.example/pay/tok_rolled_back"),
+    )
+    .await
+    .context("the charge update must succeed inside the transaction")?;
+    vpay_db::payment_intents::transition_in_tx(
+        &mut tx,
+        "merchant_a",
+        "pi_atomic",
+        "requires_payment_method",
+        "requires_action",
+    )
+    .await
+    .context("the intent transition must succeed inside the transaction")?
+    .context("the guard must have matched")?;
+    // The crash: everything above is discarded.
+    tx.rollback().await.context("transaction rolls back")?;
+
+    let (state, redirect_url): (String, Option<String>) =
+        sqlx::query_as("SELECT state::TEXT, redirect_url FROM charges WHERE id = $1")
+            .bind(&charge.id)
+            .fetch_one(&pool)
+            .await
+            .context("re-reading the charge must succeed")?;
+    assert_eq!(
+        state, "submitting",
+        "the charge is back where a recovery pass expects to find it"
+    );
+    assert_eq!(redirect_url, None, "no URL survived the rollback");
+
+    let status: String =
+        sqlx::query_scalar("SELECT status::TEXT FROM payment_intents WHERE id = $1")
+            .bind("pi_atomic")
+            .fetch_one(&pool)
+            .await
+            .context("re-reading the intent must succeed")?;
+    assert_eq!(
+        status, "requires_payment_method",
+        "an intent must never be left in requires_action with no URL to send the payer to"
     );
 
     Ok(())

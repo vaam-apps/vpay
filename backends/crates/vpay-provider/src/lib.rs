@@ -5,10 +5,18 @@
 //! crate, the port is wrong — fix the port, not the caller.
 //!
 //! See `docs/adr/0002-provider-port.md` and `docs/flows/provider-port.md`.
+//!
+//! [`http`] is the outbound HTTP client every adapter builds on. It lives
+//! here rather than in `vpay-api` because an adapter may not depend on the
+//! HTTP surface — see that module's own docs for the move and what it costs.
+
+pub mod http;
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
+use std::time::Duration;
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use vpay_core::{FailureCode, Money, ProviderFlow};
@@ -241,7 +249,12 @@ impl vpay_core::Classify for ProviderError {
 }
 
 /// Opaque per-merchant, per-rail configuration handed to the adapter.
-#[derive(Debug, Clone)]
+///
+/// `PartialEq`/`Eq` so a test can assert what a deployment's YAML projects
+/// onto the port as one value rather than field by field — a per-field
+/// comparison silently stops covering a field the moment one is added, which
+/// is exactly how `connect_timeout` would have gone unasserted.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderConfig {
     pub base_url: String,
     pub callback_url: String,
@@ -250,12 +263,75 @@ pub struct ProviderConfig {
     pub settings: BTreeMap<String, String>,
     /// Decrypted immediately before use, adapter-defined.
     pub credentials: BTreeMap<String, String>,
+    /// How long the TCP+TLS handshake to this rail may take.
+    ///
+    /// On the *config*, not on the client, and that is the load-bearing
+    /// part: one `reqwest::Client` is built once per process and shared by
+    /// every adapter (see [`http::client_with_timeouts`]), so a per-rail
+    /// deadline cannot live on the client without giving each rail its own
+    /// connection pool. Carrying it here also lets the conformance suite ask
+    /// for 100 ms and assert [`ProviderError::Transport`] against a
+    /// deliberately-slow stub, instead of a test that takes 20 s to pass.
+    ///
+    /// Always [`DEFAULT_CONNECT_TIMEOUT`] for a config built from YAML:
+    /// `vpay_config::ProviderHost::to_provider_config` fills it from that
+    /// constant and there is no YAML knob, because no deployment has asked
+    /// for a different budget and a knob nobody sets is a knob nobody has
+    /// tested. The conformance suite builds a `ProviderConfig` directly and
+    /// is the one caller that overrides it.
+    pub connect_timeout: Duration,
+    /// The whole-request deadline: handshake, send, and reading the response
+    /// body. [`DEFAULT_REQUEST_TIMEOUT`], on the same terms as
+    /// `connect_timeout` above.
+    ///
+    /// A push rail's `submit` is the reason this is generous rather than
+    /// tight: it returns as soon as the rail has *accepted* the request, but
+    /// "accepted" can involve the rail's own upstream. A deadline that fires
+    /// early on a rail that did in fact accept the charge leaves a payer
+    /// prompted for a charge we recorded as a transport failure — which is
+    /// exactly the ambiguity `docs/flows/crash-safety.md` says the status
+    /// query, never a retry, must resolve.
+    pub request_timeout: Duration,
 }
+
+/// The handshake budget every deployment gets; see
+/// [`ProviderConfig::connect_timeout`] for why it is not configurable.
+///
+/// Five seconds is long for a TLS handshake to a rail in the same region and
+/// short enough that a black-holed host is a fast, obvious failure rather
+/// than a worker task parked for a minute.
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The whole-request budget every deployment gets; see
+/// [`ProviderConfig::connect_timeout`] for why it is not configurable.
+///
+/// Twenty seconds because MTN's `requesttopay` and Orange's `webpayment` are
+/// both synchronous calls into someone else's payment stack, and the failure
+/// mode of being too *tight* is worse than being slow: a timed-out submit on
+/// a push rail is a charge that may exist on the rail and not here.
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Every rail implements exactly this.
 ///
 /// Note `query_status` takes the whole [`ChargeRef`], not just an id: some
 /// rails need the amount and their own token to answer.
+///
+/// # Why `#[async_trait]` and not native `async fn`
+///
+/// Native async fns in traits landed, but a trait that has one is not
+/// dyn-safe, and this port is *only* ever used as `Box<dyn ProviderAdapter>`
+/// — that is what keeps `if provider == "mtn_momo"` structurally impossible
+/// outside an adapter crate (ADR-0002): the HTTP layer holds trait objects
+/// whose concrete types it cannot name. `async_trait`'s boxed-future
+/// desugaring costs one allocation per rail call, against a network round
+/// trip. Implementors must therefore also write `#[async_trait]`.
+///
+/// `parse_callback` stays synchronous on purpose: it parses bytes that have
+/// already arrived and must not be able to make a network call — a callback
+/// is a hint, and an adapter that could fetch something while "parsing" one
+/// is an adapter that could smuggle a status out of an unauthenticated
+/// request (`docs/flows/reconciler.md`).
+#[async_trait]
 pub trait ProviderAdapter: Debug + Send + Sync {
     /// Stable code, equal to the `payment_method_types` value.
     fn code(&self) -> &'static str;
@@ -265,14 +341,14 @@ pub trait ProviderAdapter: Debug + Send + Sync {
     /// Idempotent on `charge.reference_id`. A duplicate submission MUST be
     /// reported as [`Submitted`], never as an error — that is what makes
     /// same-reference retry safe.
-    fn submit(
+    async fn submit(
         &self,
         charge: &ChargeRef,
         config: &ProviderConfig,
     ) -> Result<Submitted, ProviderError>;
 
     /// Must remain callable indefinitely, long after any prompt expired.
-    fn query_status(
+    async fn query_status(
         &self,
         charge: &ChargeRef,
         config: &ProviderConfig,
@@ -282,7 +358,14 @@ pub trait ProviderAdapter: Debug + Send + Sync {
     fn parse_callback(&self, body: &[u8]) -> Result<CallbackRef, ProviderError>;
 
     /// Only called when [`Capabilities::supports_refunds`] is true.
-    fn refund(
+    ///
+    /// The default is [`ProviderError::Unsupported`], not
+    /// [`ProviderError::NotImplemented`]: a rail with no refund API is a
+    /// *permanent* answer the core can branch on via
+    /// [`Capabilities::supports_refunds`], not unbuilt work. An adapter that
+    /// has a refund API it has not written yet must override this with its
+    /// own `NotImplemented` token so `verify-status` can see it.
+    async fn refund(
         &self,
         _charge: &ChargeRef,
         _amount: Money,

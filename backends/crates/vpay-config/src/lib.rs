@@ -116,9 +116,35 @@ pub enum ConfigError {
         /// is actionable without a second lookup.
         linked: String,
     },
-    /// Not one of `vpay_core::Currency`'s variants.
+    /// Not one of `vpay_core::Currency`'s variants. Raised for a
+    /// `currencies[]` entry and for a `providers[].currency`.
     #[error("unknown currency code: {0}")]
     UnknownCurrency(String),
+    /// A rail's YAML omits a `settings`/`credentials` key its adapter cannot
+    /// work without — the table is `config::REQUIRED_RAIL_KEYS`, and that
+    /// constant's own doc explains why a per-code table lives in this crate
+    /// at all.
+    ///
+    /// Fatal at boot rather than at call time on purpose. The alternative is
+    /// a `ProviderError::Config` raised while a merchant's `confirm` is in
+    /// flight: the same defect, discovered by a payer, hours later, with the
+    /// charge row already written. An operator who has just deployed a rail
+    /// wants to hear about a missing `api_user` now.
+    ///
+    /// `section` is `"settings"` or `"credentials"` — a `&'static str` from
+    /// the check itself rather than caller-supplied text, so the message
+    /// cannot name a section that does not exist. The *value* never appears
+    /// in the message: the key is what an operator needs, and a credential
+    /// value in a boot error is a credential in a log aggregator.
+    #[error("provider {code} is missing required {section} key `{key}`")]
+    MissingProviderSetting {
+        /// The `providers[].code` whose block is incomplete.
+        code: String,
+        /// `"settings"` or `"credentials"`.
+        section: &'static str,
+        /// The key that is absent or empty.
+        key: String,
+    },
     /// "Currency exponent matches the canonical table"
     /// (`docs/flows/configuration.md`'s boot-guard table) — the exponent is
     /// a property of the currency itself, never configurable per deployment

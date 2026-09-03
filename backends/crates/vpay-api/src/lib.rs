@@ -55,7 +55,6 @@ use vpay_provider::ProviderAdapter;
 
 pub mod error;
 pub mod form;
-pub mod http_client;
 pub mod idempotency;
 mod jwks_cache;
 pub mod model;
@@ -66,6 +65,17 @@ mod test_fixtures;
 #[cfg(test)]
 mod test_log;
 pub mod v1;
+
+/// The outbound HTTP client, which now lives in the port crate.
+///
+/// It was `vpay_api::http_client` (its own module here) until Step 3, and
+/// moved to [`vpay_provider::http`] when the rail adapters needed it: an
+/// adapter depends on the port and must never depend on this crate, so the
+/// only home both can reach is `vpay-provider`. Re-exported under the old
+/// name rather than renamed at every call site — `resource_auth` and
+/// `jwks_cache` still spell `crate::http_client::client`, and a mechanical
+/// rename across them would have buried the one-line move in noise.
+pub use vpay_provider::http as http_client;
 
 pub use error::ApiError;
 pub use resource_auth::MerchantJwtValidator;

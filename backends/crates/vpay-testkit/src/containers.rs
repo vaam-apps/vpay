@@ -50,10 +50,12 @@
 
 use std::error::Error as _;
 use std::future::Future;
+use std::path::Path;
 use std::time::Duration;
 
+use testcontainers::core::{AccessMode, IntoContainerPort as _, Mount, WaitFor};
 use testcontainers::runners::AsyncRunner as _;
-use testcontainers::{ContainerAsync, ImageExt as _, TestcontainersError};
+use testcontainers::{ContainerAsync, GenericImage, ImageExt as _, TestcontainersError};
 use testcontainers_modules::postgres::Postgres;
 
 /// How many times a container start is attempted before the failure is the
@@ -113,6 +115,96 @@ const PORT_COLLISION: &str = "address already in use";
 pub async fn start_postgres_with_retry() -> Result<ContainerAsync<Postgres>, TestcontainersError> {
     retry_container_start("postgres:16-alpine", || {
         Postgres::default().with_tag("16-alpine").start()
+    })
+    .await
+}
+
+/// The WireMock image `compose.yml` runs, pinned.
+///
+/// 3.9.2 rather than `latest`: the conformance suite's mappings are written
+/// against this version's request-matching and response-templating
+/// behaviour, and a rail stub that silently changes what it matches is a
+/// suite that silently stops testing what it says it tests. Same tag as
+/// `compose.yml`, so a developer's `just up` and CI exercise one WireMock.
+const WIREMOCK_IMAGE: (&str, &str) = ("wiremock/wiremock", "3.9.2");
+
+/// The port WireMock listens on inside the container. The host port is
+/// whatever Docker hands out — ask the returned container for it with
+/// `get_host_port_ipv4(8080)`.
+const WIREMOCK_PORT: u16 = 8080;
+
+/// Where the image reads its `mappings/` and `__files/` from.
+const WIREMOCK_ROOT: &str = "/home/wiremock";
+
+/// Starts a WireMock container serving `mappings_dir`, retrying only a
+/// host-port collision (the same policy [`start_postgres_with_retry`] uses).
+///
+/// # This is not a test double
+///
+/// It is the same `wiremock/wiremock` image `compose.yml` runs, reached over
+/// HTTP exactly as a real rail is, configured by files on disk. That is what
+/// ADR-0006 means by "a stub rail is a WireMock host in configuration": the
+/// adapter under test builds a real request, a real server matches it, and a
+/// real response comes back over a socket. The Rust `wiremock` crate — an
+/// *in-process* double that would replace the adapter's transport — is the
+/// thing this function exists to make unnecessary, and this crate
+/// deliberately does not depend on it (see `Cargo.toml`).
+///
+/// # What `mappings_dir` must be
+///
+/// The WireMock *root* directory — the one that contains `mappings/`, e.g.
+/// `backends/tests/conformance/wiremock/mtn`, not that directory's
+/// `mappings` child. It is bind-mounted read-only at
+/// [`WIREMOCK_ROOT`]: read-only because a container that could rewrite the
+/// suite's own mappings is a test that can change its own expectations, and
+/// WireMock only writes there when asked to record, which this never does.
+///
+/// A path that does not exist is *not* rejected here: Docker would create an
+/// empty directory for it and WireMock would start with zero mappings,
+/// answering 404 to everything. That failure is loud in the caller's
+/// assertions and the alternative — a filesystem check in this helper —
+/// would only move it. Callers build the path from `CARGO_MANIFEST_DIR`.
+///
+/// # Flags
+///
+/// `--global-response-templating` so a mapping may use `{{request.*}}`
+/// helpers; `--verbose` so a
+/// mismatched request prints WireMock's own diff into the container log,
+/// which is the only way to debug "the stub returned 404" without attaching
+/// to the container.
+///
+/// # Readiness
+///
+/// [`WaitFor::healthcheck`], which uses the image's own
+/// `curl -f http://localhost:8080/__admin/health` (a 5 s start period, polled
+/// every 100 ms). Not a log-line match: the banner this image prints is
+/// decorative, colour-coded and version-dependent, and matching it would
+/// break on an upgrade for no reason. Not a fixed sleep either — that is how
+/// a suite becomes slow *and* flaky at once.
+///
+/// The caller owns the returned container: dropping it stops and removes it.
+///
+/// # Errors
+///
+/// The underlying [`TestcontainersError`] if the container could not be
+/// started for any non-port-collision reason, or if every attempt lost a
+/// port race.
+pub async fn start_wiremock(
+    mappings_dir: &Path,
+) -> Result<ContainerAsync<GenericImage>, TestcontainersError> {
+    let (image, tag) = WIREMOCK_IMAGE;
+    let host_path = mappings_dir.display().to_string();
+
+    retry_container_start(image, || {
+        GenericImage::new(image, tag)
+            .with_exposed_port(WIREMOCK_PORT.tcp())
+            .with_wait_for(WaitFor::healthcheck())
+            .with_cmd(["--global-response-templating", "--verbose"])
+            .with_mount(
+                Mount::bind_mount(host_path.clone(), WIREMOCK_ROOT)
+                    .with_access_mode(AccessMode::ReadOnly),
+            )
+            .start()
     })
     .await
 }
@@ -200,13 +292,96 @@ fn collided_port(text: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::path::{Path, PathBuf};
     use std::time::Instant;
 
     use testcontainers::TestcontainersError;
 
     use super::{
-        MAX_ATTEMPTS, PORT_COLLISION, RETRY_BACKOFF, collided_port, retry_container_start,
+        MAX_ATTEMPTS, PORT_COLLISION, RETRY_BACKOFF, WIREMOCK_PORT, collided_port,
+        retry_container_start, start_wiremock,
     };
+
+    /// The MTN rail stub's directory, the same one `compose.yml` bind-mounts
+    /// into `wiremock-mtn` and the same one the conformance suite starts.
+    fn mtn_mappings_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/conformance/wiremock/mtn")
+    }
+
+    /// How many stub mappings the files in `dir/mappings` declare between
+    /// them.
+    ///
+    /// Counted from disk rather than hard-coded: the rail's mapping set grows
+    /// as its adapter is built, and a literal here would have to be bumped by
+    /// whoever adds a mapping — which is exactly the kind of assertion people
+    /// "fix" by editing the number.
+    fn mappings_declared_on_disk(dir: &Path) -> usize {
+        let mut total = 0;
+        for entry in std::fs::read_dir(dir.join("mappings")).expect("the mappings directory exists")
+        {
+            let path = entry.expect("a readable directory entry").path();
+            if path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("a readable mapping file");
+            let document: serde_json::Value =
+                serde_json::from_str(&text).expect("a mapping file is valid JSON");
+            total += document
+                .get("mappings")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len);
+        }
+        total
+    }
+
+    /// Docker-backed: the rail stub really starts, really reads the
+    /// bind-mounted directory, and really serves what is in it.
+    ///
+    /// The assertion is deliberately *not* "the admin API answered": that
+    /// would pass with an empty mount, which is the single most likely way
+    /// this helper breaks (a wrong path, a directory Docker silently
+    /// created). Comparing WireMock's loaded count against the count in the
+    /// files on disk is what proves the mount arrived — and it stays true as
+    /// the adapters' own mappings land, because both sides are derived.
+    #[tokio::test]
+    async fn a_wiremock_container_serves_the_mappings_it_was_pointed_at() {
+        let dir = mtn_mappings_dir();
+        let expected = mappings_declared_on_disk(&dir);
+        assert!(
+            expected > 0,
+            "the MTN stub directory declares no mappings; this test would prove nothing"
+        );
+
+        let container = start_wiremock(&dir)
+            .await
+            .expect("the WireMock rail stub starts");
+        let port = container
+            .get_host_port_ipv4(WIREMOCK_PORT)
+            .await
+            .expect("the mapped host port");
+
+        // The vendored-roots client, over plain HTTP to loopback — the same
+        // constructor the binaries use, so this exercises no test-only
+        // transport.
+        let http = vpay_provider::http::client().expect("the vendored-roots client builds");
+        let response = http
+            .get(format!("http://127.0.0.1:{port}/__admin/mappings"))
+            .send()
+            .await
+            .expect("the admin API answers");
+
+        assert_eq!(response.status().as_u16(), 200);
+        let body: serde_json::Value = response.json().await.expect("the admin API returns JSON");
+        let loaded = body
+            .get("mappings")
+            .and_then(serde_json::Value::as_array)
+            .map_or(0, Vec::len);
+        assert_eq!(
+            loaded, expected,
+            "WireMock loaded {loaded} mappings, the bind-mounted directory declares {expected}: \
+             the mount or the path is wrong"
+        );
+    }
 
     /// The exact message observed on the rootless-Docker host this retry was
     /// written for, verbatim. If a testcontainers upgrade reshapes it, this

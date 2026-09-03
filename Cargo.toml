@@ -59,6 +59,17 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "request-id", "timeout", "limit"] }
 hyper = "1"
+# `vpay_provider::ProviderAdapter` is an async trait, and a trait with async
+# methods is not dyn-safe in Rust 1.95 — the port is held as
+# `Box<dyn ProviderAdapter>` by both binaries and by `RouterDeps`, so the
+# `async-trait` desugaring (each method returns a boxed future) is what makes
+# the port a *port* rather than a generic parameter threaded through every
+# call site. Promoted to a workspace pin because three crates now spell it
+# (`vpay-provider`, both adapters) on top of the two that already did
+# member-level (`vpay-api`, `vpay-db`, both for authkestra's `#[async_trait]`
+# stores). Already resolved at 0.1.92 in `Cargo.lock` via authkestra-op and
+# vpay-db, so this adds no package to any graph.
+async-trait = "0.1"
 
 # --- tls: rustls everywhere, never native-tls (docs/adr/0005) ---
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }

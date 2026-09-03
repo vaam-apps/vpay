@@ -103,11 +103,22 @@ fn exit_code_for(error: &anyhow::Error) -> u8 {
 ///
 /// Note what is absent here too: no stub, no fake. A stub rail is a WireMock
 /// host in configuration (`docs/adr/0006-no-mocks-in-main-processes.md`).
-fn adapters() -> Vec<Box<dyn ProviderAdapter>> {
+fn adapters(http: reqwest::Client) -> Vec<Box<dyn ProviderAdapter>> {
     vec![
-        Box::new(vpay_adapter_mtn_momo::Adapter::new()),
-        Box::new(vpay_adapter_orange_money::Adapter::new()),
+        Box::new(vpay_adapter_mtn_momo::Adapter::new(http.clone())),
+        Box::new(vpay_adapter_orange_money::Adapter::new(http)),
     ]
+}
+
+/// The rail codes this binary links, for the boot log line — the twin of
+/// `vpay_server::adapter_codes`, duplicated for the same reason
+/// [`adapters`] is.
+///
+/// A `const` list rather than "construct every adapter and ask it": a log
+/// line must not need an HTTP client. `the_codes_match_the_adapters_that_are_linked`
+/// below keeps the two from drifting.
+const fn adapter_codes() -> [&'static str; 2] {
+    ["mtn_momo", "orange_money"]
 }
 
 #[tokio::main]
@@ -164,11 +175,18 @@ async fn run() -> anyhow::Result<()> {
     // started against a config the server would have refused, and a worker
     // with its own copy of the derivation could write a row the server would
     // immediately overwrite.
-    let adapters = vpay_api::v1::boot::adapters_by_code(adapters());
-    tracing::info!(
-        rails = ?adapters.keys().collect::<Vec<_>>(),
-        "provider adapters linked"
-    );
+    tracing::info!(rails = ?adapter_codes(), "provider adapters linked");
+    // One client per process, shared by every adapter — see `vpay-server`'s
+    // `main.rs` for the full reasoning (a second client is a second
+    // connection pool, and construction is fallible so it belongs in `main`).
+    // The durations are the port's defaults; a rail's own budget rides on
+    // `ProviderConfig` and an adapter applies it per request.
+    let http = vpay_provider::http::client_with_timeouts(
+        vpay_provider::DEFAULT_CONNECT_TIMEOUT,
+        vpay_provider::DEFAULT_REQUEST_TIMEOUT,
+    )
+    .context("building the outbound HTTP client every rail adapter shares")?;
+    let adapters = vpay_api::v1::boot::adapters_by_code(adapters(http));
     let (currency_seeds, provider_seeds) = vpay_api::v1::boot::boot_seeds(&config, &adapters)?;
 
     // `--database-url` / `DATABASE_URL` stays `Option<String>` at the clap
@@ -361,7 +379,18 @@ fn env_filter(directive: &str) -> tracing_subscriber::EnvFilter {
 
 #[cfg(test)]
 mod tests {
-    use super::install_crypto_provider;
+    use super::{adapter_codes, adapters, install_crypto_provider};
+
+    /// The log line and the wiring must not drift — `adapter_codes` exists
+    /// only so the boot log needs no HTTP client, and a hand-written list is
+    /// one someone can forget to update. The twin of `vpay-server`'s test of
+    /// the same name.
+    #[test]
+    fn the_codes_match_the_adapters_that_are_linked() {
+        let http = vpay_provider::http::client().expect("the vendored-roots client builds");
+        let linked: Vec<&str> = adapters(http).iter().map(|a| a.code()).collect();
+        assert_eq!(linked, adapter_codes().to_vec());
+    }
 
     /// The provider install is idempotent and leaves a process default
     /// behind.
@@ -371,14 +400,14 @@ mod tests {
     /// time does not panic — which is the whole contract the `.ok()` on the
     /// `Err(Arc<CryptoProvider>)` relies on.
     ///
-    /// What it deliberately does **not** prove: that a `reqwest::Client`
-    /// built later in this binary succeeds. No shipping code in either
-    /// binary builds one yet (the JWKS validator is mounted on no route,
-    /// `docs/status.md`), so there is nothing honest to assert about that
-    /// here — inventing a reqwest consumer purely to observe the provider
-    /// would be a test double in a shipping process. The reqwest-side
-    /// behaviour is documented on the root `Cargo.toml`'s pins and stays
-    /// unproven until a real caller exists.
+    /// What it deliberately does **not** prove: that the `reqwest::Client`
+    /// this binary builds at boot succeeds *because of* this call. It does
+    /// not — `vpay_provider::http` hands reqwest a finished
+    /// `rustls::ClientConfig`, which takes the branch that consults neither
+    /// the process default nor the OS trust store (that module's own docs
+    /// explain why, and its tests prove it). This call remains the guard for
+    /// any *other* client construction in the graph, `authkestra-engine`'s
+    /// bare `reqwest::Client::new()` foremost.
     #[test]
     fn installing_the_crypto_provider_leaves_a_process_default_and_is_idempotent() {
         install_crypto_provider();

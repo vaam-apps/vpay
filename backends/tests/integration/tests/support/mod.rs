@@ -175,9 +175,17 @@ pub(crate) fn merchant_client_with_scopes(
 /// be proving that a confirm answers `501 not_implemented` for the reason it
 /// actually does.
 pub(crate) fn adapters_by_code() -> BTreeMap<String, Box<dyn ProviderAdapter>> {
+    // The same vendored-roots client both binaries build at boot and hand to
+    // every adapter (Step 3) — not a test-only substitute, for the same
+    // reason the adapters themselves are the real ones.
+    let http = vpay_provider::http::client_with_timeouts(
+        vpay_provider::DEFAULT_CONNECT_TIMEOUT,
+        vpay_provider::DEFAULT_REQUEST_TIMEOUT,
+    )
+    .expect("the vendored-roots client builds");
     let adapters: Vec<Box<dyn ProviderAdapter>> = vec![
-        Box::new(vpay_adapter_mtn_momo::Adapter::new()),
-        Box::new(vpay_adapter_orange_money::Adapter::new()),
+        Box::new(vpay_adapter_mtn_momo::Adapter::new(http.clone())),
+        Box::new(vpay_adapter_orange_money::Adapter::new(http)),
     ];
     adapters
         .into_iter()
@@ -201,7 +209,10 @@ pub(crate) fn router_deps(
         merchant_op,
         merchant_validator,
         adapters: Arc::new(adapters_by_code()),
-        resource_config: Arc::new(ResourceConfig::from_config(config)),
+        resource_config: Arc::new(
+            ResourceConfig::from_config(config)
+                .expect("the suite's configuration projects onto the port"),
+        ),
     }
 }
 

@@ -1,32 +1,235 @@
 {
   "mappings": [
     {
-      "name": "oauth token",
-      "request": { "method": "POST", "urlPath": "/oauth/v2/token" },
+      "name": "webpayment: accepted, with a pay_token derived from the order_id",
+      "metadata": {
+        "file": [
+          "POST {base}/v1/webpayment \u2014 the submit call. Selection is by the",
+          "body's `order_id`, which is ChargeRef::reference_id rendered as a",
+          "string, so these are the same UUIDs the MTN mappings match on",
+          "`X-Reference-Id`. See the mapping contract in the module doc of",
+          "backends/tests/conformance/tests/adapter_conformance.rs.",
+          "",
+          "The urlPathPattern keeps the /orange-money-webpay/{env} prefix loose",
+          "on purpose: `dev` in the conformance suite and in compose.yml, but",
+          "country-specific in production, and a stub that hard-coded `dev`",
+          "would stop matching the moment someone tried the real prefix.",
+          "",
+          "Commentary lives in `metadata` because WireMock fails to start on a",
+          "mapping document containing any field it does not recognise."
+        ],
+        "comment": [
+          "The happy path, and the answer to every order_id no lower-numbered",
+          "priority claims -- including the server-generated references the",
+          "integration suite's confirms send. `pay_token` is templated from the",
+          "request's own `order_id` so a captured body says which call produced",
+          "which token, and so",
+          "redirect_confirm_commits_the_rails_material_before_it_answers can",
+          "assert the exact URL a random reference yields.",
+          "--global-response-templating is on",
+          "(vpay_testkit::containers::start_wiremock).",
+          "",
+          "REF_DUPLICATE is NOT served from here: templating made the two",
+          "submits agree by construction, which is why it now has its own",
+          "scenario below.",
+          "",
+          "201 with pay_token + payment_url + notif_token, per",
+          "docs/flows/adapter-orange-money.md."
+        ]
+      },
+      "priority": 5,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/webpayment"
+      },
       "response": {
-        "status": 200,
-        "jsonBody": { "access_token": "stub-token", "token_type": "Bearer", "expires_in": 3600 }
+        "status": 201,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"pay_token\":\"pay-{{jsonPath request.body '$.order_id'}}\",\"payment_url\":\"http://localhost:8082/stub-hosted-page/pay-{{jsonPath request.body '$.order_id'}}\",\"notif_token\":\"notif-{{jsonPath request.body '$.order_id'}}\",\"status\":201}"
       }
     },
     {
-      "name": "webpayment returns a pay_token and a redirect URL",
-      "request": { "method": "POST", "urlPathPattern": "/orange-money-webpay/.*/v1/webpayment" },
+      "name": "webpayment: REF_DUPLICATE, first submit \u2014 pay-dup-1",
+      "scenarioName": "orange-duplicate-order",
+      "requiredScenarioState": "Started",
+      "newScenarioState": "resubmitted",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/webpayment",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.order_id",
+              "equalTo": "00000000-0000-0000-0000-0000000000dd"
+            }
+          }
+        ]
+      },
       "response": {
         "status": 201,
+        "headers": {
+          "Content-Type": "application/json"
+        },
         "jsonBody": {
-          "pay_token": "stub-pay-token",
-          "payment_url": "http://localhost:8082/stub-hosted-page/stub-pay-token",
-          "notif_token": "stub-notif-token",
+          "pay_token": "pay-dup-1",
+          "payment_url": "http://localhost:8082/stub-hosted-page/pay-dup-1",
+          "notif_token": "notif-dup-1",
           "status": 201
+        }
+      },
+      "metadata": {
+        "comment": [
+          "REF_DUPLICATE gets its own pair of mappings, as a WireMock SCENARIO, so that",
+          "duplicate_submit_reports_submitted_not_an_error can be decisive on this rail.",
+          "",
+          "Under the priority-5 catch-all alone the Orange half of that case was the",
+          "accepted case run twice: the catch-all templates pay_token from the request's",
+          "own order_id, so the two submits could not have disagreed however the adapter",
+          "behaved, and the assertion `both are Ok` held for a rail that had never been",
+          "asked the question. This scenario CAN answer differently on the second call --",
+          "the state advances from Started to `resubmitted` and a separate mapping serves",
+          "it -- and it deliberately answers the SAME pay_token, which is the mechanism",
+          "Orange documents: a repeated order_id re-issues the token already minted for",
+          "it (docs/flows/adapter-orange-money.md).",
+          "",
+          "Decisiveness was checked by hand: change the `resubmitted` mapping's pay_token",
+          "to pay-dup-2 and the conformance case fails on the pay_token equality",
+          "assertion. Restore it afterwards."
+        ]
+      }
+    },
+    {
+      "name": "webpayment: REF_DUPLICATE, second submit \u2014 the SAME pay-dup-1",
+      "scenarioName": "orange-duplicate-order",
+      "requiredScenarioState": "resubmitted",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/webpayment",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.order_id",
+              "equalTo": "00000000-0000-0000-0000-0000000000dd"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 201,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "pay_token": "pay-dup-1",
+          "payment_url": "http://localhost:8082/stub-hosted-page/pay-dup-1",
+          "notif_token": "notif-dup-1",
+          "status": 201
+        }
+      },
+      "metadata": {
+        "comment": [
+          "The second and every later submit of the same order_id. Each conformance case",
+          "starts its own container, so the scenario always begins in `Started` -- the",
+          "same property requesttopay-scenario.json relies on."
+        ]
+      }
+    },
+    {
+      "name": "webpayment: refused with a 400",
+      "metadata": {
+        "comment": [
+          "A refused submit. Design \u00a74 asked for this on the literal order_id",
+          "`bad-order`; that value is unreachable from the adapter, which always",
+          "sends `reference_id.to_string()` \u2014 so the reference here is a UUID,",
+          "chosen to mirror the MTN mappings' `\u20260400`. No conformance case uses",
+          "it yet: it exists so `submit`'s 4xx branch has something to be",
+          "pointed at by hand, and so a future case has a stub to bind to.",
+          "",
+          "Orange documents no error-code vocabulary for this call, so the",
+          "adapter maps it to Rejected{provider_error} carrying the raw body \u2014",
+          "'unmapped, carries the raw reason' (docs/flows/failures.md), which is",
+          "a thing to alert on rather than a settled mapping."
+        ]
+      },
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/webpayment",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.order_id",
+              "equalTo": "00000000-0000-0000-0000-000000000400"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 400,
+        "jsonBody": {
+          "code": 400,
+          "message": "Bad Request",
+          "description": "order_id is not acceptable"
         }
       }
     },
     {
-      "name": "transactionstatus: success",
-      "request": { "method": "POST", "urlPathPattern": "/orange-money-webpay/.*/v1/transactionstatus" },
+      "name": "307 whose Location must never be requested",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/webpayment",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.order_id",
+              "equalTo": "00000000-0000-0000-0000-000000000302"
+            }
+          }
+        ]
+      },
       "response": {
-        "status": 200,
-        "jsonBody": { "status": "SUCCESS", "order_id": "stub-order", "txnid": "stub-txn" }
+        "status": 307,
+        "headers": {
+          "Location": "/__never-followed/00000000-0000-0000-0000-000000000302"
+        }
+      },
+      "metadata": {
+        "comment": [
+          "REF_REDIRECT, and the reason it is a 307 rather than a 302: a 307 replays the",
+          "request BODY, and this rail's submit body carries merchant_key. reqwest's default",
+          "policy would have followed it, so vpay_provider::http builds every client with",
+          "redirect::Policy::none() and the adapter must see the 307 itself.",
+          "",
+          "The Location is a path on THIS SAME stub deliberately -- a cross-host target would",
+          "pass for the wrong reason, because an unroutable host errors out whatever the",
+          "policy is. See the mapping below, which must stay unrequested."
+        ]
+      }
+    },
+    {
+      "name": "the Location is never requested (an accepted submit if it ever is)",
+      "priority": 1,
+      "request": {
+        "urlPath": "/__never-followed/00000000-0000-0000-0000-000000000302"
+      },
+      "response": {
+        "status": 201,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"pay_token\":\"pay-followed\",\"payment_url\":\"http://localhost:8082/stub-hosted-page/pay-followed\",\"notif_token\":\"notif-followed\",\"status\":201}"
+      },
+      "metadata": {
+        "comment": [
+          "The rail's ACCEPTED answer, so a followed redirect makes submit return",
+          "Ok(Submitted) and the conformance case's expect_err fails loudly before the",
+          "request-count assertion even runs. Two independent failures for one regression."
+        ]
       }
     }
   ]

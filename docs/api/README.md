@@ -72,23 +72,57 @@ methods across four paths:
 | POST | `/v1/payment_intents` | `amount` (integer minor units, `1 ..= 2^53-1`), `currency` (lowercase, must be one this deployment configures), `payment_method_types[]` (rail codes, each enabled here), `metadata[…]` (≤50 keys, ≤40-char keys, ≤500-char values), `description` (≤1000 chars) | `200` + `payment_intent` in `requires_payment_method` (`create_then_retrieve_round_trips_through_the_sdk`) |
 | GET | `/v1/payment_intents/{id}` | | `200` + `payment_intent`, or `404 resource_missing` — **including for another merchant's id**, byte for byte (`merchant_b_cannot_read_merchant_as_intent`) |
 | GET | `/v1/payment_intents` | `limit` (default 10, capped at 100), `starting_after`, `ending_before` (ids; not both) | `200` + `list` envelope (`list_pages_forward_and_backward_with_cursors`) |
-| POST | `/v1/payment_intents/{id}/confirm` | `payment_method_data[type]`, `payment_method_data[<type>][msisdn]` (push), `return_url` (redirect) | **`501 not_implemented`** — the adapter is reached and refuses (`confirm_reaches_the_adapter_and_renders_the_documented_501`) |
+| POST | `/v1/payment_intents/{id}/confirm` | `payment_method_data[type]`, `payment_method_data[<type>][msisdn]` (push), `return_url` (redirect) | `200` + `payment_intent` in **`processing`** (push) or **`requires_action`** with `next_action.redirect_to_url` (redirect); `409 charge_declined`; `502 provider_unavailable`; `400` (see below) |
 | POST | `/v1/payment_intents/{id}/cancel` | | `200` + `payment_intent` in `canceled`, or `409 invalid_state` (`cancel_is_legal_only_from_requires_payment_method`, `a_confirmed_intent_cannot_be_canceled`) |
 
-**`confirm` never succeeds, on purpose.** It performs every write the
-lifecycle requires — a `submitting` charge row committed with its
-`provider_reference_id`, then a `provider_requests` row with no status —
-*before* calling the adapter, and the adapter answers
-`ProviderError::NotImplemented`, which is a `501`. The intent stays
-`requires_payment_method`; a second confirm is `409` because the first one's
-charge row is still there (`a_second_confirm_cannot_produce_a_second_charge`);
-and a cancel after it is `409` too, because the rail may hold a live payment.
-No rail has ever been called. See [../flows/crash-safety.md](../flows/crash-safety.md).
+**`confirm` reaches a rail, and has four outcomes.** It performs every write
+the lifecycle requires — a `submitting` charge row committed with its
+`provider_reference_id` (and, on a redirect rail, the merchant's
+`return_url`), then a `provider_requests` row with no status — *before*
+calling the adapter. Which outcome you get is decided by the rail's answer,
+never by anything the handler knows about rails:
 
-`next_action` is `null` on every intent this deployment can produce (only a
-successful redirect `submit` writes the `redirect_url` it is derived from),
-and a redirect confirm's `return_url` is validated and then dropped — there
-is no column for it yet.
+| Outcome | Answer | What moved |
+|---|---|---|
+| Push rail accepted | `200`, intent **`processing`**, `next_action: null` | charge `submitted`; the payer's handset is prompting (`a_push_confirm_the_rail_accepts_moves_the_intent_to_processing`) |
+| Redirect rail accepted | `200`, intent **`requires_action`**, `next_action.redirect_to_url` | charge `submitted` with the rail's token **and** URL, committed before this response was built (`redirect_confirm_commits_the_rails_material_before_it_answers`) |
+| Rail declined | `409` `charge_declined` | charge **`failed`** with its `failure_code`; the intent keeps `requires_payment_method` and carries `last_payment_error`. A retry is a **new** PaymentIntent (`a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read`, `credentials_the_rail_refuses_are_a_page_and_a_terminal_charge`) |
+| Rail unreachable / unreadable | `502` `provider_unavailable` | **nothing.** The charge stays `submitting` because we do not know what the rail did (`an_unreachable_rail_leaves_the_charge_where_recovery_expects_it`) |
+
+**After a `502`, retry the same call under the same `Idempotency-Key`.** If
+the first attempt did reach the rail, that retry gets a `409` whose message
+is *"A charge for this PaymentIntent is being resolved with the rail; poll
+`GET /v1/payment_intents/{id}` — do not create a new PaymentIntent."* Do
+what it says: on a push rail, opening a second intent prompts the payer's
+handset a second time for the same money. Only once the charge is
+**terminal** does the `409` say "create a new payment intent to try again".
+
+**Two `400`s happen before any charge exists**, so the intent is still
+confirmable on another rail afterwards:
+
+- the intent's `currency` is not the one the chosen rail settles in — `400`
+  naming `payment_method_data[type]`
+  (`a_rail_that_settles_in_another_currency_is_refused_before_any_charge`);
+- `return_url` is missing on a redirect rail, is not `http`/`https`, or is
+  over **2048** characters — `400` naming `return_url`
+  (`a_return_url_that_is_not_a_bounded_web_url_is_refused_before_any_charge`).
+
+A second confirm is `409` because the first one's charge row is still there
+(`a_second_confirm_cannot_produce_a_second_charge`), and a cancel after a
+confirm is `409` too, because the rail may hold a live payment. See
+[../flows/crash-safety.md](../flows/crash-safety.md).
+
+`next_action` is `null` on every intent except one in `requires_action`,
+where it is a `redirect_to_url` carrying the rail's `url` and your
+`return_url` — and the **same** `next_action` comes back from
+`GET /v1/payment_intents/{id}`, so losing the confirm's response does not
+strand the payment. There is no other `next_action` type.
+
+**No rail this deployment has ever called was a real one.** Every outcome
+above has been observed against a WireMock host; MTN and Orange have never
+been contacted. And nothing polls a `submitted` charge yet, so an intent in
+`processing` or `requires_action` stays there — `succeeded` has never
+happened. See [../status.md](../status.md).
 
 ### Bodies, and the `Idempotency-Key` header
 
@@ -127,7 +161,12 @@ branch on. Recorded in `ApiError::IdempotencyKeyInFlight`'s own doc comment.
 /`malformed_authorization_header` (401), `forbidden` (403),
 `resource_missing` (404), `unknown_route` (404), `invalid_state` (409),
 `resource_conflict` (409, a database uniqueness refusal),
-`not_implemented` (501), `service_unavailable` (503), `internal_error` (500).
+`charge_declined` (409), `provider_unavailable` (502),
+`service_unavailable` (503), `internal_error` (500). *(`not_implemented`
+(501) was on this list until 2026-09-03; the one remaining
+`NotImplemented` token is `mtn_momo::refund`, reachable only through
+`POST /v1/refunds`, which is not routed — so no `/v1` caller can provoke a
+`501` today.)*
 Every one is derived from a `Category`; see
 [../flows/errors.md](../flows/errors.md).
 

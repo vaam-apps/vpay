@@ -28,6 +28,34 @@ use uuid::Uuid;
 
 use crate::error::{DbError, classify_write};
 
+/// The `status_code` recorded for an attempt the rail **answered** when the
+/// answer's HTTP status is not something the caller can know.
+///
+/// Zero, which is not an HTTP status at all, so nobody reading this table
+/// can mistake it for one the rail sent.
+///
+/// # Why a sentinel exists rather than a `NULL` or a plausible `202`
+///
+/// `vpay_provider::Submitted` carries `ref_extra` and `redirect_url` and
+/// nothing else: the port deliberately does not expose the rail's status
+/// line, because "what the rail answered" is a transport detail the core
+/// must not branch on (ADR-0002). So a caller recording a *successful*
+/// submit has an answer but no status. Both alternatives are worse:
+///
+/// * `NULL` would satisfy the `response_is_paired` CHECK by also nulling
+///   `responded_at`, which is the encoding for **"no answer was received"** —
+///   the row a recovery sweep treats as "POST issued, response lost, go and
+///   poll" (`docs/flows/crash-safety.md`'s table). Recording a heard answer
+///   as an unheard one is the one lie this table exists to prevent.
+/// * A plausible status (MTN's 202, Orange's 201) would be a fabrication,
+///   and a per-rail one at that — this layer would have to guess which,
+///   which is precisely the rail-shaped branch the port forbids.
+///
+/// Operators tell the two answered cases apart by `error_kind`: `NULL` for a
+/// submit the rail accepted, the error's own classification code for one it
+/// declined.
+pub const STATUS_CODE_NOT_CARRIED_BY_THE_PORT: i32 = 0;
+
 /// Records that a call to a rail is about to be made, and returns the row
 /// id the answer will be recorded against.
 ///
@@ -81,6 +109,11 @@ pub async fn insert_pending(
 /// This is exactly the row the `501` from a not-implemented `submit`
 /// leaves behind, deliberately (this step's design, §4: "the submitting
 /// charge row + NULL-status provider_request row are left on purpose").
+///
+/// An attempt the rail *did* answer, but whose status the port does not
+/// carry, passes [`STATUS_CODE_NOT_CARRIED_BY_THE_PORT`] rather than `None`
+/// — see that constant for why "answered" and "unanswered" must not be
+/// spelled the same way here.
 ///
 /// # Errors
 ///

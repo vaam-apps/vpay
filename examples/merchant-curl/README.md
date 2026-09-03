@@ -1,11 +1,12 @@
 # Raw HTTP
 
-> **What runs, and what does not.** The token step, create, retrieve, list
-> and cancel below all execute against a running `vpay-server`. **Confirm
-> does not complete**: no rail adapter implements `submit` yet, so a confirm
-> reaches the rail and answers `501 not_implemented` — the response shown
-> under each confirm is the *intended* shape, not what you will get today.
-> See ../../docs/status.md and
+> **What runs, and what does not.** Every call below — including **confirm**
+> — executes against a running `vpay-server`. Confirm reaches the rail over
+> HTTP and, when the rail accepts, moves the intent to `processing` (push) or
+> `requires_action` (redirect). What is *not* built is everything after that:
+> nothing asks the rail whether the payer approved, so an intent that reaches
+> `processing` stays there until a human looks. The reconciler is a later
+> step — see ../../docs/status.md and
 > [ADR-0010](../../docs/adr/0010-merchant-auth-private-key-jwt.md).
 >
 > `/v1/refunds`, `/v1/balance` and `/v1/events` are not routed at all and
@@ -121,13 +122,14 @@ Which answers are *stored* for a replay, and which hand the key back:
   get the intent you asked for — not a 24-hour-old refusal that is no longer
   true. Nothing was written, so re-executing is exactly as if the request had
   never been made.
-- **`5xx` is not stored, and the key is released** — including the confirm
-  `501` below. "We do not know whether the rail saw it" is the only honest
-  thing to say, and freezing that for 24 hours would answer a merchant
-  retrying after the deployment was fixed with the old outage. The retry
-  therefore *re-executes*; that is safe because it is not the key that
-  prevents a double charge — the unique index behind "one charge per intent,
-  forever" is, and a re-executed confirm meets it and answers `409`.
+- **`5xx` is not stored, and the key is released** — including the `502` a
+  confirm returns when the rail could not be reached. "We do not know whether
+  the rail saw it" is the only honest thing to say, and freezing that for 24
+  hours would answer a merchant retrying after the deployment was fixed with
+  the old outage. The retry therefore *re-executes*; that is safe because it
+  is not the key that prevents a double charge — the unique index behind "one
+  charge per intent, forever" is, and a re-executed confirm meets it and
+  answers `409`.
 
 ## Create a PaymentIntent
 
@@ -200,20 +202,32 @@ curl -X POST https://api.vpay.example/v1/payment_intents/pi_xxx/confirm \
   -d "payment_method_data[mtn_momo][msisdn]=237670000000"
 ```
 
-*Intended* → `"status": "processing"`; the payer gets a prompt on their
-handset, and you wait for the webhook — **do not ship on `processing`**.
+→ `"status": "processing"`, `"next_action": null`; the payer gets a prompt on
+their handset, and you wait for the webhook — **do not ship on `processing`**.
 
-*Today* → `501`:
+The `currency` of the intent must be the one the rail settles in. vpay's own
+`config/application.yml` puts `mtn_momo` on `EUR` (its sandbox rejects XAF),
+so confirming an XAF intent on it is a `400` naming
+`payment_method_data[type]` — before any charge exists, so the intent is
+still confirmable on a rail that does settle in its currency.
 
-```json
-{ "error": { "type": "api_error", "code": "not_implemented",
-             "message": "This operation is not implemented yet." } }
-```
+Three other answers this call can give, and what each means for your
+bookkeeping:
 
-`mtn_momo::submit` is not written (`../../docs/status.md`). The request is
-real and gets that far: vpay records the charge and the attempt before
-calling the rail, so the confirm is refused rather than silently dropped. The
-intent stays `requires_payment_method`.
+| answer | what happened | what to do |
+|---|---|---|
+| `409` `charge_declined` | the rail **decided**: the charge is `failed` and the intent carries `last_payment_error` | read `last_payment_error.code` against [failures.md](../../docs/flows/failures.md); a retry is a **new** PaymentIntent |
+| `502` `provider_unavailable` | the rail could not be reached (or answered unreadably), and vpay does not know whether it saw the request. Nothing moved: the charge is still `submitting` | retry the same call under the same `Idempotency-Key`. If the first attempt did land, you get the **first** `409` below — poll, do not open a second intent |
+| `409`, message *"…is being resolved with the rail; poll `GET /v1/payment_intents/{id}` — do not create a new PaymentIntent."* | this intent already has a charge and that charge is **live** (`submitting`/`submitted`/`pending`/`unresolved`) | **do not open a second intent.** Poll the `GET`; the charge will resolve one way or the other. This is what you get when your `502` retry raced a submit the rail did receive |
+| `409`, message *"This payment intent already has a charge. One charge per intent, forever — create a new payment intent to try again."* | this intent's charge is **terminal** (`succeeded`/`failed`) | nothing is in flight; a retry is a new PaymentIntent |
+
+**Nothing polls a `processing` intent yet.** The rail has the request; the
+worker that asks it how the payment ended is a later step
+(`../../docs/status.md`). In practice that means an intent confirmed on a
+push rail stays `processing` indefinitely and **never reaches `succeeded`**
+— and no rail vpay has ever confirmed against was a real one: every outcome
+described here has been observed against a WireMock stub, not against MTN or
+Orange.
 
 ## Confirm — redirect rail (Orange)
 
@@ -225,17 +239,32 @@ curl -X POST https://api.vpay.example/v1/payment_intents/pi_xxx/confirm \
   -d "return_url=https://shop.example/order/1234/return"
 ```
 
-*Intended* → `"status": "requires_action"` with:
+→ `"status": "requires_action"` with:
 
 ```json
 { "next_action": { "type": "redirect_to_url",
-                   "redirect_to_url": { "url": "https://webpayment.orange-money.com/…" } } }
+                   "redirect_to_url": { "url": "https://webpayment.orange-money.com/…",
+                                        "return_url": "https://shop.example/order/1234/return" } } }
 ```
 
-— send the payer's browser there.
+— send the payer's browser to `url`. `return_url` is echoed back as you sent
+it; the rail returns the payer there afterwards.
 
-*Today* → the same `501` as the push rail, for the same reason
-(`orange_money::submit` is not written).
+**If you get a `url`, vpay already has it.** The rail's token and the URL are
+committed before the response is built, so a URL you were handed is one vpay
+can still query the charge by — that ordering is the whole of
+[crash-safety.md](../../docs/flows/crash-safety.md)'s redirect section. The
+same `next_action` comes back from `GET /v1/payment_intents/{id}`, so losing
+this response does not strand the payment.
+
+The same failure answers as the push rail apply, plus one shape rule: a
+redirect confirm whose `return_url` is missing, is not `http`/`https`, or is
+longer than **2048** characters is a `400` naming `return_url` — because a
+payer must not be sent somewhere they cannot come back from, and because the
+column that stores it is bounded the same way.
+
+An intent in `requires_action` also stays there: nothing polls the charge
+behind it, so it never reaches `succeeded` on its own.
 
 ## Cancel
 

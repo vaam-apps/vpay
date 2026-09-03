@@ -1,5 +1,13 @@
 //! The `charges` repository (`backends/migrations/0004_create-charges.sql`,
-//! plus the `updated_at` column added by `0014`).
+//! plus the `updated_at` column added by `0014` and `return_url` by `0019`).
+//!
+//! # Three writes, and only one of them is unguarded
+//!
+//! [`insert_for_intent`] opens the charge before the rail is called;
+//! [`mark_submitted`] and [`mark_failed`] record what the rail answered.
+//! Both of the latter are compare-and-swaps out of `submitting` rather than
+//! blind updates, so a recovery pass and a live confirm cannot overwrite
+//! each other's answer — see their own docs.
 //!
 //! # "One charge per intent, forever" is the database's job, not this
 //! module's
@@ -39,8 +47,8 @@ use crate::error::{DbError, classify_write};
 /// `payment_intents`' enums are: this crate carries Postgres enums as
 /// `String` and `vpay-core` parses them (D4).
 const COLUMNS: &str = "id, payment_intent_id, provider_code, provider_reference_id, \
-                       provider_ref_extra, redirect_url, state::TEXT AS state, amount, \
-                       currency_code, payer_ref, payer_ref_masked, \
+                       provider_ref_extra, redirect_url, return_url, state::TEXT AS state, \
+                       amount, currency_code, payer_ref, payer_ref_masked, \
                        failure_code::TEXT AS failure_code, failure_raw, created_at, updated_at";
 
 /// One `charges` row, exactly as stored.
@@ -61,6 +69,12 @@ pub struct ChargeRow {
     pub provider_ref_extra: Option<serde_json::Value>,
     /// Set only on redirect rails, and only once the rail has issued it.
     pub redirect_url: Option<String>,
+    /// Where the *merchant* asked the rail to send the payer back
+    /// (migration 0019), written before the rail is called and rendered as
+    /// `next_action.redirect_to_url.return_url` on every later read. Not
+    /// rail material — see the migration for why it is a column and not one
+    /// more key inside `provider_ref_extra`.
+    pub return_url: Option<String>,
     /// `charge_state` as text (D4). A charge starts at `submitting`.
     pub state: String,
     /// Integer minor units, carried verbatim from the intent (D2 of this
@@ -105,8 +119,15 @@ pub struct NewCharge {
     pub provider_reference_id: Uuid,
     /// Rail key material, when a previous call produced any.
     pub provider_ref_extra: Option<serde_json::Value>,
-    /// The redirect target, when one is known at insert time.
+    /// The redirect target, when one is known at insert time. Never known
+    /// at insert time today: only a rail's `submit` answer carries one.
     pub redirect_url: Option<String>,
+    /// The merchant's return destination on a redirect rail. Supplied
+    /// *here*, at insert, rather than by the later `mark_submitted`, because
+    /// it is the caller's own input and is therefore knowable before the
+    /// network call — the same write-before-network discipline the reference
+    /// itself follows (`docs/flows/crash-safety.md`).
+    pub return_url: Option<String>,
     /// Initial state — `submitting` for every charge vpay opens today. A
     /// parameter rather than a literal so the state machine stays in
     /// `vpay_core::state`.
@@ -138,9 +159,9 @@ pub async fn insert_for_intent(
 ) -> Result<ChargeRow, DbError> {
     let sql = format!(
         "INSERT INTO charges (id, payment_intent_id, provider_code, provider_reference_id, \
-         provider_ref_extra, redirect_url, state, amount, currency_code, payer_ref, \
+         provider_ref_extra, redirect_url, return_url, state, amount, currency_code, payer_ref, \
          payer_ref_masked) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7::charge_state, $8, $9, $10, $11) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::charge_state, $9, $10, $11, $12) \
          RETURNING {COLUMNS}"
     );
 
@@ -151,6 +172,7 @@ pub async fn insert_for_intent(
         .bind(new.provider_reference_id)
         .bind(new.provider_ref_extra.as_ref())
         .bind(new.redirect_url.as_deref())
+        .bind(new.return_url.as_deref())
         .bind(&new.state)
         .bind(new.amount)
         .bind(&new.currency_code)
@@ -184,4 +206,115 @@ pub async fn get_for_intent(
         .fetch_optional(pool)
         .await
         .map_err(DbError::Query)
+}
+
+/// Records what the rail answered a `submit` with, as a compare-and-swap out
+/// of `submitting`, inside the caller's transaction.
+///
+/// # Why every field moves in one statement, and why the state is a guard
+///
+/// `docs/flows/crash-safety.md`'s redirect-rail rule — "the commit is the
+/// gate on the redirect" — is a statement about *this* write: the rail's
+/// `pay_token` (`ref_extra`) and the URL the payer is sent to must become
+/// durable together, before anyone is handed the URL. Splitting them across
+/// two statements would create a window in which a crash leaves a payer
+/// stranded on the rail's page against a charge vpay cannot query.
+///
+/// `state = 'submitting'` in the `WHERE` is what makes this a state machine
+/// rather than a hope. A concurrent recovery pass (Step 4) may have already
+/// advanced the same charge; a blind `UPDATE … WHERE id = $1` would silently
+/// drag it back to `submitted` and re-open a charge the rail has already
+/// settled. Matching nothing is therefore an answer, not an error to
+/// swallow — see the `Errors` section.
+///
+/// `return_url` is deliberately absent: it is the merchant's, written at
+/// insert (see [`NewCharge::return_url`]), and a rail's answer has no
+/// business overwriting it.
+///
+/// # Errors
+///
+/// [`DbError::WriteMatchedNoRow`] if `id` names no charge in `submitting` —
+/// which is either a charge someone else already advanced or an id that does
+/// not exist. Neither is a merchant's doing, so it classifies as `Internal`
+/// (`docs/flows/errors.md`) and the caller must not retry it as if the rail
+/// had failed. [`DbError::Query`] if the write itself fails.
+pub async fn mark_submitted(
+    tx: &mut PgConnection,
+    id: &str,
+    state: &str,
+    provider_ref_extra: Option<&serde_json::Value>,
+    redirect_url: Option<&str>,
+) -> Result<ChargeRow, DbError> {
+    let sql = format!(
+        "UPDATE charges \
+         SET state = $2::charge_state, \
+             provider_ref_extra = $3, \
+             redirect_url = $4, \
+             updated_at = now() \
+         WHERE id = $1 AND state = 'submitting'::charge_state \
+         RETURNING {COLUMNS}"
+    );
+
+    sqlx::query_as::<_, ChargeRow>(&sql)
+        .bind(id)
+        .bind(state)
+        .bind(provider_ref_extra)
+        .bind(redirect_url)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(classify_write)?
+        .ok_or_else(|| DbError::WriteMatchedNoRow {
+            table: "charges",
+            key: id.to_owned(),
+        })
+}
+
+/// Fails a charge the rail declined, as the same compare-and-swap out of
+/// `submitting`, inside the caller's transaction.
+///
+/// Separate from [`mark_submitted`] rather than one function with an
+/// `Option<FailureCode>`, because the two writes are not variants of one
+/// decision: a decline moves a charge to a **terminal** state and records
+/// the taxonomy (`docs/flows/failures.md`), while a submit moves it to a
+/// live one and records the rail's key material. A single function would
+/// have to take five arguments of which three are always `None`, and the
+/// call site would stop saying which of the two happened.
+///
+/// `failure_code` is the closed vocabulary — the column is the
+/// `failure_code` Postgres enum, so a value outside it is refused by the
+/// database and not by a convention. `failure_raw` is the rail's own words,
+/// kept because `docs/flows/failures.md` requires the unmapped reason to
+/// survive; the database truncates nothing, so the caller bounds it (the
+/// `failure_raw_length` CHECK is 2000 characters).
+///
+/// # Errors
+///
+/// As [`mark_submitted`].
+pub async fn mark_failed(
+    tx: &mut PgConnection,
+    id: &str,
+    failure_code: &str,
+    failure_raw: &str,
+) -> Result<ChargeRow, DbError> {
+    let sql = format!(
+        "UPDATE charges \
+         SET state = 'failed'::charge_state, \
+             failure_code = $2::failure_code, \
+             failure_raw = $3, \
+             updated_at = now() \
+         WHERE id = $1 AND state = 'submitting'::charge_state \
+         RETURNING {COLUMNS}"
+    );
+
+    sqlx::query_as::<_, ChargeRow>(&sql)
+        .bind(id)
+        .bind(failure_code)
+        .bind(failure_raw)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(classify_write)?
+        .ok_or_else(|| DbError::WriteMatchedNoRow {
+            table: "charges",
+            key: id.to_owned(),
+        })
 }

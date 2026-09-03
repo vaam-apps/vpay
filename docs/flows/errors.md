@@ -239,7 +239,8 @@ replaced axum's own extractors on `/v1` for exactly this reason: axum's
 envelope naming the part of the request it came from
 (`a_form_rejection_is_answered_with_the_envelope_not_axums_plain_text`,
 `every_extractor_rejection_names_the_part_of_the_request_it_came_from`).
-`vpay-api` runs **160 tests** as of 2026-09-03 (`cargo nextest run -p
+`vpay-api` ran **160 tests** when this paragraph was written on 2026-09-03
+(it is 165 after Step 3 — see the note below) (`cargo nextest run -p
 vpay-api`, measured): 34 `op`, 25 `form`, 21 `v1`, 20 `error`, 20
 `resource_auth`, 15 crate-level, 10 `model`, 9 `idempotency`, 4
 `jwks_cache`, 2 `http_client`.
@@ -252,10 +253,33 @@ storage error's leaf text reaches the log and never the body
 idempotency key is never echoed past an 8-character hint, in the log only
 (`an_idempotency_key_is_never_echoed_past_its_hint`).
 
-**Not implemented, and not implied by anything above:** no job loop exists
-to call `JobError::decision()`. `Category::Rail`'s `502`
-`provider_unavailable` and `ProviderError::Rejected`'s `charge_declined`
-have never been produced by an actual rail — no HTTP call to a rail has ever
-been made — so every 5xx a `/v1` caller can currently provoke comes from
-vpay's own storage or from the honest `501`. The `NotImplemented` category
-is not a placeholder here: it is the answer `confirm` gives.
+**Updated 2026-09-03 (Step 3): two of these codes are now produced by a
+rail.** `POST …/confirm` calls a real adapter over real HTTP, so:
+
+- **`charge_declined` (409)** is what a rail's decision renders as.
+  `ProviderError::Rejected`'s `code()` is that constant on purpose, *not*
+  the `FailureCode`'s own string: `FailureCode::ProviderUnavailable` renders
+  `provider_unavailable`, which is also `Category::Rail`'s default code, and
+  a merchant branching on the envelope would otherwise see one token for
+  "the rail is down, we are retrying" (502) and "your charge was declined,
+  start a new intent" (409). The specific `FailureCode` reaches the merchant
+  through the charge's `failure_code` and through the public message
+  (`a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read`,
+  `backends/tests/integration/tests/confirm_rails.rs`).
+- **`provider_unavailable` (502)** is what an unreachable rail renders as,
+  and the accompanying `409` on a retry tells the merchant to poll rather
+  than to open a second PaymentIntent
+  (`an_unreachable_rail_leaves_the_charge_where_recovery_expects_it`).
+- `ProviderError`'s severity table is exercised in `vpay-provider`'s own 11
+  tests (`a_declines_severity_follows_the_failure_codes_own_policy`,
+  `an_unsupported_operation_answers_409_but_is_logged_as_our_bug`).
+
+**Still not implemented, and not implied by anything above:** no job loop
+exists to call `JobError::decision()`. Every rail response that produced a
+`charge_declined` or a `502` above came from a **WireMock** host, not from
+MTN or Orange — the codes are real, the rails behind them are stubs. And
+`Category::NotImplemented`/`501` is no longer what `confirm` answers: the
+one remaining `NotImplemented` token is `mtn_momo::refund`, on a route
+(`POST /v1/refunds`) that does not exist, so **no `/v1` caller can currently
+provoke a `501` at all**. `vpay-api` runs **165 tests, 165 passed, 0 skipped** as of 2026-09-03
+(`cargo nextest run -p vpay-api`, measured).

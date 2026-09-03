@@ -16,3 +16,33 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+# `ProviderAdapter` is held as `Box<dyn ProviderAdapter>` everywhere (that is
+# what makes ADR-0002's "no provider code outside an adapter" structural), and
+# a trait with a native `async fn` is not dyn-safe — see the trait's own doc
+# comment. Workspace pin; already resolved via authkestra-op and vpay-db, so
+# no new package in any graph.
+async-trait.workspace = true
+# `src/http.rs`, moved here from `vpay-api` in Step 3 so that an adapter crate
+# — which may depend on the port but never on the HTTP surface — can build the
+# vendored-roots client. Naming `reqwest::Client` in a public signature needs
+# the direct dependency; handing reqwest a finished `rustls::ClientConfig`
+# needs `tls_backend_preconfigured`, which needs `rustls`; and the roots
+# themselves come from `webpki-roots` because the `FROM scratch` runtime image
+# has no OS trust store (ADR-0004). All three are already in both binaries'
+# resolved graphs at these exact pins, so nothing new is *shipped*; what does
+# grow is this crate's own build, and that cost is stated in `src/http.rs`.
+reqwest.workspace = true
+rustls.workspace = true
+# Pinned "1" — the same requirement `sdks/rust` and (until this move)
+# `vpay-api` use, resolving to the 1.0.x already in `Cargo.lock` via sqlx's
+# `tls-rustls-ring` feature. `CDLA-Permissive-2.0` is already allowed in
+# `deny.toml` with its own justification.
+webpki-roots = "1"
+
+[dev-dependencies]
+# `src/http.rs`'s timeout test needs a loopback listener that accepts and then
+# says nothing, which is `tokio::net`. The workspace pin does not carry `net`
+# (no shipping crate here needs a listener); adding it to a dev-dependency
+# leaves every shipping binary's feature set unchanged, and reqwest/hyper
+# already enable it in the same graph.
+tokio = { workspace = true, features = ["net"] }

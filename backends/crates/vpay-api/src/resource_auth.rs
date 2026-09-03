@@ -1174,15 +1174,16 @@ mod tests {
     fn test_app(validator: JwtValidator) -> Router {
         let state = TestState {
             merchant: MerchantJwtValidator(validator),
-            resource_config: std::sync::Arc::new(crate::ResourceConfig::from_config(
-                &crate::test_fixtures::config_with(
+            resource_config: std::sync::Arc::new(
+                crate::ResourceConfig::from_config(&crate::test_fixtures::config_with(
                     crate::test_fixtures::PUBLIC_BASE_URL,
                     vec![crate::test_fixtures::merchant(
                         TOKEN_SUBJECT,
                         &["payments:write"],
                     )],
-                ),
-            )),
+                ))
+                .expect("the fixture's rails project onto the port"),
+            ),
         };
         Router::new()
             // Both methods on one path, because the scope rule is decided

@@ -42,7 +42,15 @@ services:
       # permits them. They are not secrets and must never be real ones.
       MTN_SUBSCRIPTION_KEY: wiremock-stub-subscription-key
       MTN_API_KEY: wiremock-stub-api-key
+      # Added 2026-09-03 (Step 3), when config/application.yml grew the
+      # settings and credentials the rail adapters need. A `${VAR}` in that
+      # file with no value here is exit 78 at boot for *both* services — the
+      # failure this stack has already had once — so the three new names are
+      # set on the worker below as well.
+      MTN_API_USER: 11111111-2222-3333-4444-555555555555
       ORANGE_MERCHANT_KEY: wiremock-stub-merchant-key
+      ORANGE_CLIENT_ID: wiremock-stub-client-id
+      ORANGE_CLIENT_SECRET: wiremock-stub-client-secret
       # The RS256 private key the merchant OP signs `/v1` access tokens with
       # (docs/flows/merchant-auth.md). `vpay-server` refuses to start without
       # it (exit 78). It is a *file*, never an env value, because that is how
@@ -80,7 +88,10 @@ services:
       # Same placeholders as vpay-server: the worker loads the same file.
       MTN_SUBSCRIPTION_KEY: wiremock-stub-subscription-key
       MTN_API_KEY: wiremock-stub-api-key
+      MTN_API_USER: 11111111-2222-3333-4444-555555555555
       ORANGE_MERCHANT_KEY: wiremock-stub-merchant-key
+      ORANGE_CLIENT_ID: wiremock-stub-client-id
+      ORANGE_CLIENT_SECRET: wiremock-stub-client-secret
     depends_on:
       postgres: { condition: service_healthy }
     restart: unless-stopped

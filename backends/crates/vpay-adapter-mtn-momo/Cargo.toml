@@ -13,8 +13,33 @@ workspace = true
 [dependencies]
 vpay-core.workspace = true
 vpay-provider.workspace = true
+# The port's methods are `async fn` behind `#[async_trait]`, so an
+# implementor must spell the same attribute (see `ProviderAdapter`'s docs for
+# why the port is not a native async trait).
+async-trait.workspace = true
+# The adapter owns the `reqwest::Client` the binary builds at boot
+# (`vpay_provider::http::client_with_timeouts`); naming the type needs the
+# direct dependency. No new package: `vpay-provider` already resolves it.
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+# `tokio::sync::RwLock` around the cached access token: the lock is held
+# across the `.await` that mints one, and a blocking lock held over an await
+# point parks a runtime thread on a network round trip. Only the `sync`
+# feature is used; the workspace pin carries more because the binaries need
+# it, and this adds no package to any graph.
+tokio.workspace = true
+# SHA-256 of the credentials that minted a token, so a second merchant's call
+# on the same `Adapter` cannot be served the first's bearer (see `src/token.rs`).
+sha2.workspace = true
+
+# NOT here, deliberately: `thiserror`. This crate defines no error type of its
+# own — every failure is a `vpay_provider::ProviderError`, which is already
+# classified once (ADR-0011). A second adapter-local enum would be a second
+# place to decide a category, and `cargo xtask verify-errors` would then be
+# counting a type nobody outside this crate can name. Also not here: `base64`.
+# The Basic and Bearer headers are built by `reqwest`'s own `basic_auth`/
+# `bearer_auth`, which mark the header *sensitive*; hand-rolling the encoding
+# would lose that.

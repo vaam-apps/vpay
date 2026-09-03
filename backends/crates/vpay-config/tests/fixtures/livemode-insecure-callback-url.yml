@@ -1,0 +1,25 @@
+# Fixture for `a_livemode_callback_url_that_is_not_https_is_rejected`
+# (backends/crates/vpay-config/src/config.rs). The rail host is https and not
+# stub-labelled, and every credential is a `${VAR}`, so the only thing left
+# to fail is the callback override — which is `http://`. A live rail told to
+# call back over plaintext is exactly as dangerous as a plaintext rail host,
+# so it is refused by the same rule.
+
+deployment:
+  name: prod
+  livemode: true
+  public_base_url: https://api.vpay.example
+
+providers:
+  - code: mtn_momo
+    currency: EUR
+    callback_url: http://callbacks.vpay.example/provider/mtn_momo/callback
+    host:
+      url: https://proxy.momoapi.mtn.com
+      label: mtn-cm-prod
+    settings:
+      target_environment: mtncameroon
+      api_user: 11111111-2222-3333-4444-555555555555
+    credentials:
+      subscription_key: ${MTN_SUBSCRIPTION_KEY}
+      api_key: ${MTN_API_KEY}

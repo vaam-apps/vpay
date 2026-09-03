@@ -12,16 +12,23 @@
 //!    vpay's error envelope, so the authentication boundary is real.
 //! 4. Create a PaymentIntent through the merchant SDK and read it back,
 //!    printing its id, status, amount and currency.
-//! 5. Confirm it — and print the `501 not_implemented` that comes back,
-//!    because no rail adapter implements `submit` yet.
+//! 5. Confirm it against the push rail — which now **succeeds**: the MTN
+//!    adapter submits to the WireMock rail `compose.yml` configures, and the
+//!    intent moves to `processing`.
 //!
-//! **Step 5 is the honest half, and it is not a bug.** The rail adapters are
-//! Step 3 of the production-readiness plan (`docs/status.md`); until they
-//! exist, a confirm reaches the rail, records the charge and the attempt, and
-//! is refused. This demo therefore treats a *successful* confirm as a hard
-//! failure: a `200` there would mean someone had fabricated a payment
-//! (`CLAUDE.md`, "the failure mode to avoid"). When a rail lands, step 5
-//! becomes a real charge and this file changes with it.
+//! **Step 5 changed in Step 3, and the change is the point.** It used to
+//! assert a `501 not_implemented`, because no adapter implemented `submit`
+//! and a `200` would have been a fabricated payment. The adapters landed, so
+//! it now asserts the opposite: a confirm that does *not* reach `processing`
+//! fails this demo. What has not changed is the rule — the demo asserts what
+//! the code actually does, and is the first thing to break when that stops
+//! being true.
+//!
+//! **`processing` is not `succeeded`, and nothing polls it.** The rail has
+//! the request; whether the payer approves it is a question only
+//! `query_status` can answer, and the worker that would ask is Step 4
+//! (`docs/status.md`). This demo says so out loud rather than leaving a
+//! reader to assume a payment completed.
 //!
 //! Nothing here prints a secret: not the access token, not the private key,
 //! not a rail credential. Step 4 prints the intent's own public fields.
@@ -76,14 +83,28 @@ const DEFAULT_PRIVATE_KEY_FILE: &str = ".e2e/demo-merchant/oauth-signing-key.pem
 const DEMO_INTENT_ID: &str = "pi_demo";
 
 /// The one sentence this demo exists to put on a terminal.
-const NOT_BUILT_YET: &str =
-    "the rail adapters are Step 3 — no rail can take a payment yet (docs/status.md)";
+///
+/// It is no longer about the adapters — they ship — but about what happens
+/// *after* a rail accepts a charge, which is still nothing: no worker asks
+/// the rail whether the payer approved.
+const NOT_BUILT_YET: &str = concat!(
+    "nothing polls this yet — the worker that asks the rail whether the payer ",
+    "approved is Step 4 (docs/status.md)"
+);
 
-/// The intent step 4 creates: 5,000 FCFA on the push rail. XAF is
-/// zero-decimal, so `5000` is five thousand francs and not fifty
-/// (`docs/flows/money.md`).
+/// The intent step 4 creates: 5,000 minor units on the push rail.
+///
+/// **EUR, not XAF, and that is a property of the rail rather than a
+/// preference.** `config/application.yml` configures `mtn_momo` with
+/// `currency: EUR` because MTN's sandbox rejects XAF (`docs/flows/money.md`),
+/// and `/v1` refuses a confirm whose intent currency is not the chosen
+/// rail's — before any charge exists (`vpay_api`'s `currencies_agree`). An
+/// XAF intent here would therefore be a `400` at step 5 rather than a
+/// payment, which is exactly the mistake the rule exists to catch, and
+/// exactly the wrong thing for a demo to model. EUR has two decimals, so
+/// `5000` is €50.00.
 const DEMO_AMOUNT: i64 = 5000;
-const DEMO_CURRENCY: &str = "xaf";
+const DEMO_CURRENCY: &str = "eur";
 
 /// The MSISDN step 5 would prompt. A documentation number, not anyone's.
 const DEMO_MSISDN: &str = "237670000000";
@@ -160,10 +181,38 @@ async fn run() -> anyhow::Result<()> {
         .build()
         .context("step 4 (create + retrieve): building the SDK client")?;
 
-    let intent_id = step_4_create_and_retrieve(&client).await?;
-    step_5_confirm(&client, &intent_id).await?;
+    // One id per run, shared by step 4's and step 5's idempotency keys.
+    let run = run_id()?;
+    let intent_id = step_4_create_and_retrieve(&client, &run).await?;
+    step_5_confirm(&client, &intent_id, &run).await?;
 
     Ok(())
+}
+
+/// A value unique to this run, which the two `POST`s below derive their
+/// `Idempotency-Key`s from.
+///
+/// # Why not a fixed string
+///
+/// It was one, and that was a bug the moment step 5 started succeeding. The
+/// keys are kept for 24 hours (`docs/api/README.md`), and `just demo` does
+/// not tear the database down between runs — so a second run under a fixed
+/// key *replayed* step 4's stored response, which says
+/// `requires_payment_method`, while the retrieve that follows it read the
+/// row step 5 had since moved to `processing`. The demo then failed with
+/// "the create's response and the stored row disagree", which was true and
+/// was entirely the demo's own doing.
+///
+/// A per-run key makes each run a new payment, which is what a merchant
+/// running this twice means. Wall-clock nanoseconds rather than a UUID
+/// because that would be a dependency for one line; the value only has to
+/// differ between runs on one machine, and it is never a security token.
+fn run_id() -> anyhow::Result<String> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| anyhow!("the system clock is before the unix epoch: {e}"))?
+        .as_nanos();
+    Ok(format!("demo-{nanos}"))
 }
 
 /// What step 1 learned from the server, so later steps use the OP's *own*
@@ -436,7 +485,7 @@ async fn step_3_unauthenticated(http: &reqwest::Client, base_url: &str) -> anyho
 /// property `docs/flows/merchant-auth.md` promises and the reason the header
 /// is required at all. (`just demo-down` deletes the volumes, so a fresh
 /// stack starts over.)
-async fn step_4_create_and_retrieve(client: &Client) -> anyhow::Result<String> {
+async fn step_4_create_and_retrieve(client: &Client, run: &str) -> anyhow::Result<String> {
     const STEP: &str = "step 4 (create + retrieve a payment intent)";
 
     println!();
@@ -454,7 +503,7 @@ async fn step_4_create_and_retrieve(client: &Client) -> anyhow::Result<String> {
         .payment_intents()
         .create(
             params,
-            RequestOptions::new().with_idempotency_key("merchant-demo-order-1234"),
+            RequestOptions::new().with_idempotency_key(format!("{run}-create")),
         )
         .await
         .map_err(|error| describe(STEP, "creating a payment intent", &error))?;
@@ -463,8 +512,8 @@ async fn step_4_create_and_retrieve(client: &Client) -> anyhow::Result<String> {
     println!("      id        {}", created.id);
     println!("      status    {}", status_label(created.status));
     println!(
-        "      amount    {} {}   ({} is zero-decimal, so this is {} FCFA)",
-        created.amount, created.currency, created.currency, created.amount
+        "      amount    {} {}   (minor units — {} has two decimals, so this is 50.00)",
+        created.amount, created.currency, created.currency
     );
     println!(
         "      rails     {}",
@@ -495,78 +544,94 @@ async fn step_4_create_and_retrieve(client: &Client) -> anyhow::Result<String> {
 
 // ------------------------------------------------------------------ step 5
 
-/// Confirms the intent, and shows the `501` that comes back.
+/// Confirms the intent against the push rail, which accepts it.
 ///
-/// A `501 not_implemented` is this step's success condition. The request is
-/// real and gets all the way to the rail: vpay resolves the adapter, commits
-/// the charge row with the reference it would submit under, records the
-/// attempt, and *then* calls `submit` — which is not written for either rail
-/// (`docs/status.md`). What comes back is the adapter's own refusal, rendered
-/// as the documented envelope, and the intent is left exactly where it was.
+/// `processing` is this step's success condition, and every other outcome
+/// fails the demo — including the `501` that used to be the success
+/// condition here. The request is real all the way down: vpay resolves the
+/// adapter, commits the charge row with the reference it will submit under,
+/// records the attempt, calls MTN's `requesttopay` over HTTP against the
+/// `wiremock-mtn` host `config/application.yml` names, and commits what came
+/// back before answering (`docs/flows/crash-safety.md`).
 ///
-/// A `200` here would be a fabricated payment, and this function fails the
-/// demo over it. That is the whole reason this step exists rather than being
-/// left out until a rail lands: an operator running `just demo` should be
-/// able to see, on a terminal, precisely how far vpay gets today.
-async fn step_5_confirm(client: &Client, intent_id: &str) -> anyhow::Result<()> {
-    const STEP: &str = "step 5 (confirm reaches the rail and is refused)";
+/// # What `processing` does and does not mean
+///
+/// It means the rail has the request and the payer's handset should be
+/// prompting. It does **not** mean money moved: only an authenticated
+/// `query_status` can say that, and nothing in this stack asks yet. The demo
+/// prints that sentence rather than letting a reader infer a completed
+/// payment from a green tick.
+///
+/// # Why no charge id is printed
+///
+/// There is none on the wire. `/v1` exposes payment intents, not charges —
+/// there is no `/v1/charges` and the `payment_intent` object carries no
+/// charge id (`docs/api/README.md`) — so a demo that printed one would have
+/// had to read the database behind the API it is demonstrating. What it
+/// prints instead is everything the merchant's own client can see.
+async fn step_5_confirm(client: &Client, intent_id: &str, run: &str) -> anyhow::Result<()> {
+    const STEP: &str = "step 5 (confirm reaches the rail and is accepted)";
 
     println!();
     println!("[5/5] payment_intents().confirm(\"{intent_id}\") through vpay-sdk");
 
-    let outcome = client
+    let confirmed = client
         .payment_intents()
         .confirm(
             intent_id,
             ConfirmPaymentIntentParams::mtn_momo(DEMO_MSISDN),
-            RequestOptions::new().with_idempotency_key("merchant-demo-order-1234-confirm"),
+            RequestOptions::new().with_idempotency_key(format!("{run}-confirm")),
         )
-        .await;
+        .await
+        .map_err(|error| describe(STEP, "confirming the payment intent", &error))?;
 
-    match outcome {
-        Ok(intent) => bail!(
-            "{STEP}: the confirm SUCCEEDED and returned status `{}`. No rail adapter implements \
-             `submit` (docs/status.md), so vpay cannot have taken a payment — this response is \
-             fabricated. Do not trust anything else this stack reports until you know where it \
-             came from.",
-            status_label(intent.status),
-        ),
-        Err(vpay_sdk::Error::Api {
-            status: 501,
-            ref kind,
-            ref code,
-            ref message,
-            ..
-        }) if code.as_deref() == Some("not_implemented") => {
-            println!("  ✔ HTTP 501 — the rail was reached, and answered honestly");
-            println!("      error.type     {kind}");
-            println!("      error.code     not_implemented");
-            println!("      error.message  {message}");
-        }
-        Err(other) => bail!(
-            "{STEP}: expected the 501 `not_implemented` envelope from the rail adapter, got: \
-             {other}"
-        ),
+    if confirmed.status != IntentStatus::Processing {
+        bail!(
+            "{STEP}: the rail accepted the charge and the intent is `{}` rather than \
+             `processing`. A push rail's confirm has exactly one success state \
+             (docs/flows/payment-lifecycle.md); anything else means the response and the \
+             stored row disagree about what happened.",
+            status_label(confirmed.status),
+        );
+    }
+    if confirmed.next_action.is_some() {
+        bail!(
+            "{STEP}: a push rail returned a next_action. There is nothing for a browser to do \
+             while a payer types a PIN into their own handset, so a redirect here would be \
+             pointing them somewhere invented."
+        );
     }
 
-    // The intent did not move: nothing was submitted, so nothing about the
-    // payer's world changed. Said out loud because "the confirm failed" and
-    // "the intent is still confirmable" are different claims, and only the
-    // second one makes a retry safe.
+    println!("  ✔ HTTP 200 — the rail accepted the charge");
+    println!("      id             {}", confirmed.id);
+    println!(
+        "      status         {}   (was requires_payment_method)",
+        status_label(confirmed.status)
+    );
+    println!("      next_action    null   (push rails prompt the handset)");
+    println!(
+        "      charge         not on the wire — /v1 has no charges resource; the charge row, \
+         its provider_reference_id and the provider_requests attempt are in Postgres"
+    );
+
+    // The response and the stored row agree. This is the assertion that
+    // would fail if `confirm` rendered a status it had not committed.
     let after = client
         .payment_intents()
         .retrieve(intent_id)
         .await
         .map_err(|error| describe(STEP, "re-reading the intent after the confirm", &error))?;
-    if after.status != IntentStatus::RequiresPaymentMethod {
+    if after != confirmed {
         bail!(
-            "{STEP}: the intent moved to `{}` even though nothing was submitted",
-            status_label(after.status),
+            "{STEP}: the confirm's response and a later retrieve are different objects. One of \
+             them is not what the database holds."
         );
     }
     println!(
-        "  ✔ the intent is still `{}` — nothing was submitted, so nothing moved",
-        status_label(after.status)
+        "  ✔ GET /v1/payment_intents/{intent_id} — identical object, so the `{}` a merchant \
+         was told is the `{}` vpay stored",
+        status_label(after.status),
+        status_label(after.status),
     );
     println!();
     println!("      {NOT_BUILT_YET}");

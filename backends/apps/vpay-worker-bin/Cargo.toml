@@ -33,6 +33,12 @@ clap.workspace = true
 # panics when it builds a client with no process default installed (root
 # Cargo.toml's comments on the `reqwest` and `authkestra-*` pins).
 rustls.workspace = true
+# `adapters()` names `reqwest::Client` in its signature — the one client this
+# process builds at boot (`vpay_provider::http::client_with_timeouts`) and
+# hands to every rail adapter. Already resolved in this binary's graph via
+# vpay-provider/vpay-api and the authkestra stack, at the same 0.13 pin: an
+# edge, not a new package.
+reqwest.workspace = true
 
 [dev-dependencies]
 vpay-testkit.workspace = true

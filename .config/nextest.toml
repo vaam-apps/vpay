@@ -63,5 +63,19 @@ postgres-containers = { max-threads = 1 }
 # wall-clock (each test's own container still starts and stops) and removes
 # the race entirely; the test passed alone on the next run, which is the
 # signature of exactly that flake.
-filter = 'package(vpay-tests-integration) | package(vpay-db) | package(vpay-server) | package(vpay-worker-bin)'
+# Widened again on 2026-09-03 (Step 3): `vpay-tests-conformance` now starts a
+# `wiremock/wiremock` container per rail per test, and `vpay-testkit`'s own
+# `start_wiremock` test starts one too. They contend for the same random host
+# ports as every Postgres start above — the group is "our tests that ask
+# Docker for a port", not "our tests that use Postgres", and leaving the two
+# newest members out would reintroduce exactly the race this override exists
+# to remove.
+filter = '''
+    package(vpay-tests-integration)
+  | package(vpay-tests-conformance)
+  | package(vpay-db)
+  | package(vpay-server)
+  | package(vpay-worker-bin)
+  | package(vpay-testkit)
+'''
 test-group = 'postgres-containers'

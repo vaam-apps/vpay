@@ -19,3 +19,18 @@ vpay-adapter-orange-money.workspace = true
 vpay-testkit.workspace = true
 tokio.workspace = true
 rstest.workspace = true
+# Naming `ContainerAsync<GenericImage>` — the rail stub each wire-level case
+# owns for its duration, started by `vpay_testkit::containers::start_wiremock`.
+# The container has to be *held* by the test (dropping it removes it), so the
+# type cannot stay behind the testkit's API.
+testcontainers.workspace = true
+# `ChargeRef::reference_id` is a `Uuid`, and every case selects its stubbed
+# response by reference — see the mapping contract in the suite's module doc.
+uuid.workspace = true
+
+# NOT here, deliberately: the Rust `wiremock` crate. ADR-0006 makes a rail stub
+# a WireMock *container* reached over HTTP; an in-process double would replace
+# the very transport these cases exist to exercise. `cargo xtask
+# verify-no-mocks` does not police a dev-dependency (it cannot — this whole
+# package is test-only), so this comment is the guard, along with the fact that
+# nothing here would compile against it.

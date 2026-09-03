@@ -181,14 +181,32 @@ async fn run() -> anyhow::Result<()> {
 
     init_tracing(&args.common.log_filter, args.common.log_format);
 
+    // The codes, before anything is constructed: this log line is the first
+    // thing an operator reads on a boot that later fails, and
+    // `vpay_server::adapter_codes` is a `const` list precisely so printing it
+    // cannot depend on a TLS stack having assembled.
+    tracing::info!(rails = ?vpay_server::adapter_codes(), "provider adapters linked");
+
+    // *One* outbound HTTP client for this process, handed to every adapter
+    // (clones share its connection pool). Built here rather than inside
+    // `adapters()` because construction is fallible and this is where a
+    // failure can still exit cleanly with a classified code — and because a
+    // second client would be a second pool, with no guarantee it was the
+    // vendored-roots one the `FROM scratch` image needs (ADR-0004).
+    //
+    // The durations are the port's defaults. A rail's own budget travels on
+    // `ProviderConfig::{connect_timeout,request_timeout}` and an adapter
+    // applies it per request; this bounds anything that does not.
+    let http = vpay_provider::http::client_with_timeouts(
+        vpay_provider::DEFAULT_CONNECT_TIMEOUT,
+        vpay_provider::DEFAULT_REQUEST_TIMEOUT,
+    )
+    .context("building the outbound HTTP client every rail adapter shares")?;
+
     // Built once and used twice: the boot-step-4 join below, and
     // `RouterDeps::adapters`, which is how a `/v1/payment_intents/{id}/confirm`
     // reaches a rail at all.
-    let adapters = vpay_api::v1::boot::adapters_by_code(vpay_server::adapters());
-    tracing::info!(
-        rails = ?adapters.keys().collect::<Vec<_>>(),
-        "provider adapters linked"
-    );
+    let adapters = vpay_api::v1::boot::adapters_by_code(vpay_server::adapters(http));
     // `profile` names a YAML config file, never a code path — see
     // vpay_config::cli and docs/adr/0003-yaml-configuration.md.
     tracing::info!(profile = %args.common.profile, "deployment profile (selects a config file only)");
@@ -437,7 +455,10 @@ async fn run() -> anyhow::Result<()> {
         adapters: Arc::new(adapters),
         // The projection, not the whole `Config` — see `ResourceConfig`, and
         // note this is the only way `deployment.livemode` reaches a handler.
-        resource_config: Arc::new(ResourceConfig::from_config(&config)),
+        resource_config: Arc::new(
+            ResourceConfig::from_config(&config)
+                .context("projecting the validated configuration onto the /v1 request path")?,
+        ),
     };
 
     let shutdown_grace = Duration::from_secs(args.common.shutdown_grace_seconds);

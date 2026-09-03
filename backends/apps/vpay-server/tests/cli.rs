@@ -495,7 +495,10 @@ fn the_repositorys_own_configuration_passes_the_adapter_join() {
         // gets as far as the join.
         .env("MTN_SUBSCRIPTION_KEY", "not-a-real-key")
         .env("MTN_API_KEY", "not-a-real-key")
+        .env("MTN_API_USER", "not-a-real-uuid")
         .env("ORANGE_MERCHANT_KEY", "not-a-real-key")
+        .env("ORANGE_CLIENT_ID", "not-a-real-client")
+        .env("ORANGE_CLIENT_SECRET", "not-a-real-secret")
         .output()
         .expect("spawn vpay-server");
 

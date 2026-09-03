@@ -91,8 +91,8 @@ before any `provider_requests` row; after that row and before the response;
 after the response and before the state update — and assert the recovery table
 resolves all three without double-charging.
 
-**Status: the ordering is implemented for `confirm`; the recovery is not.**
-Updated 2026-09-03 (Step 2).
+**Status: the ordering is implemented for `confirm`, on both flow shapes;
+the recovery is not.** Updated 2026-09-03 (Step 3).
 
 **What is built.** `POST /v1/payment_intents/{id}/confirm`
 (`backends/crates/vpay-api/src/v1/payment_intents.rs`) performs exactly the
@@ -108,19 +108,43 @@ ordering this document requires, and in this order:
 4. call the adapter's `submit`;
 5. record what came back on that row.
 
-**What proves it.** `confirm_reaches_the_adapter_and_renders_the_documented_501`
-(`backends/tests/integration/tests/payment_intents.rs`) asserts the rows that
-survive the refusal: a `submitting` charge with the reference, and a
-`provider_requests` row whose `error_kind` is `not_implemented`.
-`provider_requests_record_attempts_and_keep_status_and_responded_at_in_step`
-(`backends/crates/vpay-db/tests/repositories.rs`) pins the `response_is_paired`
-CHECK, so a row can never claim a status without a `responded_at`.
-`a_second_confirm_cannot_produce_a_second_charge` proves the reference is not
-regenerated — there is no second charge to regenerate it for.
+**And, since 2026-09-03, the redirect half:** the merchant's `return_url` is
+committed on the charge row at step 2 (`charges.return_url`, migration
+`0019`), and the rail's `pay_token` + `redirect_url` are committed at step 5
+in **one** transaction — after which, and only after which, `next_action` is
+built. It is built by re-reading the committed row, not from the adapter's
+return value, so there is no code path that can emit a URL the database does
+not already hold. That is "the commit is the gate on the redirect", enforced
+by construction rather than by discipline.
 
-**Those rows are deliberately left behind.** A confirm that ends in the
-adapter's `501` leaves precisely the state a crash between steps 3 and 5
-would leave. That is the point: it is what a recovery pass has to read.
+**What proves it.**
+
+- `redirect_confirm_commits_the_rails_material_before_it_answers`
+  (`backends/tests/integration/tests/confirm_rails.rs`) — the decisive one:
+  the `next_action.redirect_to_url.url` the merchant is handed is asserted
+  equal to the `redirect_url` already on the committed `charges` row, and
+  the `return_url` likewise.
+- `an_unreachable_rail_leaves_the_charge_where_recovery_expects_it` — a
+  submit that never got an answer leaves a `submitting` charge with its
+  reference and a `provider_requests` row with `status_code IS NULL`,
+  `responded_at IS NULL` and `error_kind = 'provider_unavailable'`. Retrying
+  the same confirm meets that live charge and is refused with the "poll,
+  do not create a new PaymentIntent" `409`.
+- `a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read` — the
+  answered-but-declined case: the attempt is stamped with `status_code = 0`
+  (the sentinel migration `0020` documents: *answered, but the port carries
+  no HTTP status*) and `error_kind = 'charge_declined'`, so an operator can
+  tell it apart from an unanswered attempt without reading a body.
+- `provider_requests_record_attempts_and_keep_status_and_responded_at_in_step`
+  (`backends/crates/vpay-db/tests/repositories.rs`) pins the
+  `response_is_paired` CHECK, so a row can never claim a status without a
+  `responded_at`.
+- `a_second_confirm_cannot_produce_a_second_charge` proves the reference is
+  not regenerated — there is no second charge to regenerate it for.
+
+**Those rows are deliberately left behind.** A confirm whose submit was lost
+leaves precisely the state a crash between steps 3 and 5 would leave. That is
+the point: it is what a recovery pass has to read.
 
 **What is not built, and is the whole rest of this document:**
 
@@ -129,11 +153,20 @@ would leave. That is the point: it is what a recovery pass has to read.
   loop does not exist.
 - **No retry of any kind.** The "retry with the same reference" rule is
   written down and executed by nothing.
-- **No redirect-rail ordering.** `return_url` is validated on a redirect
-  confirm and then dropped — `charges` has no column for it — because the
-  only thing that would read it is a `next_action` a successful `submit`
-  would produce, and no adapter implements `submit`.
 - **No crash tests.** The three kill points above are not exercised by
-  anything; nothing kills a process mid-confirm.
+  anything; nothing kills a process mid-confirm. What is proven is the
+  *ordering* and the rows a lost answer leaves — not that a `SIGKILL` at
+  each point resolves without a double charge.
+- **The recovery table above is read by nothing**, so the two rules it
+  states — "no `provider_requests` row → resubmit" and "row with
+  `status_code IS NULL` → poll, and require 3 consecutive `NotFound` over
+  ≥60 s before treating the request as never received" — are written down
+  and executed by no code. Step 3 shipped only the adapter API that
+  recovery needs: `query_status` returning a canonical
+  `ChargeStatus::NotFound` rather than a failure
+  (`not_found_is_never_on_its_own_a_failure`, both rails).
+
+*(The "no redirect-rail ordering" item that stood here on 2026-09-02 is
+resolved: `charges.return_url` exists, and the commit gates the redirect.)*
 
 See [../status.md](../status.md).

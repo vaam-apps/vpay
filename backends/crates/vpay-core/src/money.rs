@@ -119,10 +119,47 @@ impl Money {
         }
     }
 
+    /// The amount as an integer count of minor units, for a rail whose API
+    /// takes a JSON *number* rather than a decimal string.
+    ///
+    /// The same conversion as [`Money::to_provider_string`] in a different
+    /// encoding, not a second conversion: both read the exponent from the
+    /// currency and neither scales anything. Orange Money's `webpayment`
+    /// body sends `"amount": 5000` (`docs/flows/adapter-orange-money.md`),
+    /// while MTN's sends `"amount": "5000"` — one exponent lookup, two
+    /// renderings, which is what `docs/flows/money.md`'s "single conversion
+    /// point" rule means now that a rail needs the other encoding.
+    ///
+    /// # The mistake this can be used to make
+    ///
+    /// It returns *minor* units. Handing `5000` to a rail that expects major
+    /// units is 100× on a two-decimal currency and nothing can detect it
+    /// downstream — the number is valid, the currency is right, and the
+    /// charge succeeds. An adapter that reaches for this must have read its
+    /// rail's documentation and found the word "minor" (or a zero-decimal
+    /// currency, where the question does not arise).
+    ///
+    /// ```
+    /// use vpay_core::{Currency, Money};
+    /// // EUR is two-decimal: 50.00 EUR is five thousand *cents*.
+    /// let fifty_euro = Money::new(5_000, Currency::Eur).expect("non-negative");
+    /// assert_eq!(fifty_euro.to_provider_string(), "50.00");
+    /// assert_eq!(fifty_euro.to_provider_minor(), 5_000);
+    /// // Not 50. A rail expecting major units must be sent the string form
+    /// // or a number this function does not produce.
+    /// assert_ne!(fifty_euro.to_provider_minor(), 50);
+    /// ```
+    #[must_use]
+    pub const fn to_provider_minor(self) -> i64 {
+        self.minor
+    }
+
     /// Render for transmission to a provider, using the currency's exponent.
     ///
     /// This is the single conversion point referenced by `docs/flows/money.md`.
     /// XAF (exponent 0) renders `5000`; EUR (exponent 2) renders `50.00`.
+    /// [`Money::to_provider_minor`] is the same conversion for a rail whose
+    /// API takes a JSON number.
     #[must_use]
     pub fn to_provider_string(self) -> String {
         let exp = self.currency.exponent();
@@ -256,6 +293,43 @@ mod tests {
     fn eur_pads_the_fractional_part() {
         let m = Money::new(5_005, Currency::Eur).expect("non-negative");
         assert_eq!(m.to_provider_string(), "50.05");
+    }
+
+    /// Zero-decimal: the number a rail is sent and the string a rail is sent
+    /// are the same digits, because XAF's minor unit *is* its major unit.
+    #[test]
+    fn xaf_renders_the_same_digits_in_both_encodings() {
+        assert_eq!(xaf(5_000).to_provider_minor(), 5_000);
+        assert_eq!(
+            xaf(5_000).to_provider_string(),
+            xaf(5_000).to_provider_minor().to_string()
+        );
+    }
+
+    /// Two-decimal: they are deliberately *not* the same value. This is the
+    /// test that fails if someone "simplifies" `to_provider_minor` into
+    /// something major-unit-shaped, which would silently divide every EUR
+    /// charge by 100 on the rail that takes a number.
+    #[test]
+    fn eur_minor_units_are_not_the_major_amount() {
+        let m = Money::new(5_000, Currency::Eur).expect("non-negative");
+        assert_eq!(m.to_provider_minor(), 5_000);
+        assert_eq!(m.to_provider_string(), "50.00");
+        assert_ne!(m.to_provider_minor(), 50);
+    }
+
+    /// The invariant behind both renderings: neither scales anything, so the
+    /// number is always exactly what `Money::minor` holds, for every
+    /// currency in the table.
+    #[test]
+    fn to_provider_minor_is_the_stored_minor_for_every_currency() {
+        for currency in [Currency::Xaf, Currency::Eur] {
+            for amount in [0_i64, 1, 5_005, 9_999_999] {
+                let m = Money::new(amount, currency).expect("non-negative");
+                assert_eq!(m.to_provider_minor(), amount, "{currency:?} {amount}");
+                assert_eq!(m.to_provider_minor(), m.minor(), "{currency:?} {amount}");
+            }
+        }
     }
 
     #[test]

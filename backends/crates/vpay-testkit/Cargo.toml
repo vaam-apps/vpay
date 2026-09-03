@@ -19,6 +19,21 @@ vpay-core.workspace = true
 vpay-provider.workspace = true
 testcontainers.workspace = true
 testcontainers-modules.workspace = true
-wiremock.workspace = true
 tokio.workspace = true
 uuid.workspace = true
+
+# NOT here, deliberately: the Rust `wiremock` crate. It was declared as a
+# runtime dependency of this crate and never used by a single line of it —
+# `cargo xtask verify-no-mocks` did not see it, because that check only read
+# the two *app* manifests. ADR-0006 says a stub rail is a WireMock container
+# reached over HTTP exactly as a real rail is, never an in-process double, so
+# the one thing this crate must not offer is an easy way to write the
+# opposite. `containers::start_wiremock` starts the real image instead. The
+# check now walks `cargo metadata`, so a re-added edge fails the build rather
+# than waiting to be noticed.
+
+[dev-dependencies]
+# `containers`' own Docker-backed test reads WireMock's `/__admin/mappings`
+# and counts the mappings in the bind-mounted directory, so it parses JSON on
+# both sides. Test-only: nothing this crate *offers* needs serde_json.
+serde_json.workspace = true

@@ -13,8 +13,27 @@ workspace = true
 [dependencies]
 vpay-core.workspace = true
 vpay-provider.workspace = true
+# The port's methods are `async fn` behind `#[async_trait]`, so an
+# implementor must spell the same attribute (see `ProviderAdapter`'s docs for
+# why the port is not a native async trait).
+async-trait.workspace = true
+# The adapter owns the `reqwest::Client` the binary builds at boot
+# (`vpay_provider::http::client_with_timeouts`); naming the type needs the
+# direct dependency. No new package: `vpay-provider` already resolves it.
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+# `tokio::sync::RwLock` guards the cached rail token. The `sync` feature is
+# already on in the workspace entry; no runtime is started here, an adapter
+# runs on whichever one its caller provides.
+tokio.workspace = true
+# SHA-256 over `client_id`, so a cached token can never be handed to a second
+# merchant on the same rail (see `src/token.rs`). Already resolved by the
+# workspace; no new package.
+sha2.workspace = true
+# No `thiserror`: this crate defines no error type of its own. Everything it
+# can fail with is already a `vpay_provider::ProviderError` variant, which is
+# classified once (ADR-0011) — a leaf enum here would only add a second place
+# to decide the same thing.

@@ -55,28 +55,17 @@ tracing.workspace = true
 # workspace dependency (root Cargo.toml pins it for exactly this); added
 # here at the member level only, per docs/api/README.md's OP-3 scope.
 authkestra-resource.workspace = true
-# `src/http_client.rs`: naming `reqwest::Client` in a public signature needs a
-# direct dependency, and handing reqwest a finished `rustls::ClientConfig`
-# needs its `tls_backend_preconfigured`. Already in this crate's resolved
-# graph via authkestra-resource/-engine/-op, at the same 0.13 pin and with
-# every feature the workspace pin asks for (`json`, `charset`, `http2`,
-# `rustls-no-provider`) already enabled there — so this is a new edge, not a
-# new package and not a new feature.
+# `src/jwks_cache.rs` and `src/resource_auth.rs` name `reqwest::Client` in
+# their signatures — the client itself is built by `vpay_provider::http`,
+# which this crate re-exports as `http_client` (Step 3 moved that module to
+# the port crate so an adapter could use it too). `rustls` and `webpki-roots`
+# left with it: nothing under `src/` mentions either any more, and keeping a
+# dependency a crate does not use is how a supply-chain gate stops meaning
+# anything. Already in this crate's resolved graph via
+# authkestra-resource/-engine/-op at the same 0.13 pin, with every feature the
+# workspace pin asks for (`json`, `charset`, `http2`, `rustls-no-provider`)
+# enabled there — so this is an edge, not a new package.
 reqwest.workspace = true
-# `src/http_client.rs` builds the `ClientConfig` itself rather than letting
-# reqwest 0.13 reach for `rustls-platform-verifier` (the OS trust store),
-# which the `FROM scratch` runtime image does not have — see that module's
-# doc for the boot panic this removes. Was a `[dev-dependency]` of this crate
-# (tests install a process-wide `CryptoProvider`); it is production code now
-# because the client the server validates tokens with is production output.
-rustls.workspace = true
-# Mozilla's CA bundle, vendored, for the same reason. Pinned to "1" — the
-# same requirement `sdks/rust` uses — which resolves to the 1.0.x already in
-# `Cargo.lock` via sqlx's `tls-rustls-ring` feature (sqlx-core depends on
-# webpki-roots 0.26, which is itself a shim over 1.0). No new `[[package]]`.
-# `CDLA-Permissive-2.0` is already allowed in `deny.toml` with its own
-# justification.
-webpki-roots = "1"
 # The merchant OP itself (`/v1/oauth`, ADR-0010): the `ClientStore` trait,
 # `CompositeOpStore`, the token handler, and `SqlxOpStore` for the three
 # grant stores no `/v1` grant uses but the `OpStore` supertrait demands

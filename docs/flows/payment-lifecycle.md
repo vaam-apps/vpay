@@ -101,15 +101,40 @@ reaches a rail:**
   `cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_terminal_charge`
   in `backends/crates/vpay-db/tests/repositories.rs`).
 
-**`confirm` does not move the intent at all.** It commits a charge in
-`submitting`, records the attempt, calls the adapter, and gets
-`ProviderError::NotImplemented` — a `501`
-(`confirm_reaches_the_adapter_and_renders_the_documented_501`). The intent
-stays `requires_payment_method` on purpose: nothing was submitted, so
-claiming `processing` or `requires_action` would be the fabricated success
-`CLAUDE.md` names first. **No intent in this repository has ever reached
-`processing`, `requires_action` or `succeeded`**, and `last_payment_error`
-(columns since migration `0014`) is written by nothing. One charge per
-intent is enforced at the API level as well as by the index
-(`a_second_confirm_cannot_produce_a_second_charge`). See
-[../status.md](../status.md).
+**Updated 2026-09-03 (Step 3): `confirm` now moves the intent, because it
+now reaches a rail.** It commits a charge in `submitting`, records the
+attempt, `await`s `adapter.submit(..)`, and then does one of four things —
+which one is decided by the *error's* own classification, never by anything
+the handler knows about rails:
+
+- **push rail accepts** → charge `submitted`, intent **`processing`**,
+  `200` with `next_action: null`
+  (`a_push_confirm_the_rail_accepts_moves_the_intent_to_processing`,
+  `backends/tests/integration/tests/confirm_rails.rs`);
+- **redirect rail accepts** → charge `submitted` carrying the rail's
+  `pay_token` and `redirect_url`, intent **`requires_action`**, `200` with
+  `next_action.redirect_to_url`. The rail's material and the merchant's
+  `return_url` are committed *before* the response is built, and the
+  `next_action` is rendered **only** from the committed charge row
+  (`redirect_confirm_commits_the_rails_material_before_it_answers`);
+- **the rail declines** (`ProviderError::Rejected`) → charge `failed` with
+  its `failure_code`, intent **stays `requires_payment_method`** carrying
+  `last_payment_error`, and the merchant gets `409 charge_declined`. The
+  lifecycle has no `failed` intent status, and a retry is a new intent
+  (`a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read`,
+  `credentials_the_rail_refuses_are_a_page_and_a_terminal_charge`);
+- **anything else** (transport, malformed, misconfiguration) → **nothing
+  moves.** The charge stays `submitting` and the attempt stays unanswered,
+  because we do not know what the rail did
+  (`an_unreachable_rail_leaves_the_charge_where_recovery_expects_it`).
+
+`last_payment_error` (columns since migration `0014`) is written by the
+decline path and read back by `GET`. One charge per intent is enforced at
+the API level as well as by the index
+(`a_second_confirm_cannot_produce_a_second_charge`).
+
+**`succeeded` has still never happened, and neither has `canceled` after a
+confirm.** `processing` and `requires_action` are where a confirmed intent
+stops: nothing polls a `submitted` charge, so no intent has ever reached
+`succeeded` (or moved to `requires_payment_method` from a *post-submission*
+failure). That is Phase 5 / the worker — see [../status.md](../status.md).

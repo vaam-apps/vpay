@@ -12,6 +12,14 @@ workspace = true
 
 [dependencies]
 vpay-core.workspace = true
+# `ProviderHost::to_provider_config` returns a `vpay_provider::ProviderConfig`:
+# the projection from YAML onto what an adapter is handed lives here, on the
+# side that owns the YAML shape, so the server and the worker cannot derive a
+# rail's callback URL differently. Acyclic — `vpay-provider` depends on
+# `vpay-core` and never on this crate. It does pull reqwest/rustls into
+# *this crate's* build (the port owns `vpay_provider::http` since Step 3);
+# both binaries already resolved all three, so no binary graph changed.
+vpay-provider.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
