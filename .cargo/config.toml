@@ -5,8 +5,28 @@ xtask = "run --quiet --package xtask --"
 # Keep incremental artifacts out of each crate directory.
 target-dir = "target"
 
-# musl static builds (docs/adr/0004): no glibc in the runtime image.
+# musl static builds (docs/adr/0004, superseded in part by docs/adr/0014):
+# no glibc in the runtime image.
+#
+# Both musl triples are spelled out on purpose. `backends/Dockerfile` builds
+# the *builder's own host triple* — `x86_64-unknown-linux-musl` on an amd64
+# runner, `aarch64-unknown-linux-musl` on the `ubuntu-24.04-arm` one the
+# release workflow uses — so with only the x86_64 entry below, an arm64 build
+# would rely on rustc's default for the musl target rather than on this
+# repository's explicit flag. ADR-0014 records why that difference is not
+# acceptable to leave implicit: `+crt-static` IS the static-linking decision,
+# and a decision that only applies on one of two published architectures is
+# not a decision.
+#
+# The two entries are identical and must stay so. Spelled out per triple
+# rather than collapsed into a `cfg()` section: these are the exact strings
+# `--target` is invoked with (by `just build-dist`, and by the `rustc -vV`
+# host triple `backends/Dockerfile` computes), so a grep for the triple finds
+# the flag that applies to it.
 [target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-unknown-linux-musl]
 rustflags = ["-C", "target-feature=+crt-static"]
 
 [env]

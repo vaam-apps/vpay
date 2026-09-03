@@ -12,6 +12,13 @@ workspace = true
 
 [dependencies]
 vpay-core.workspace = true
+# The metrics facade, for the two HTTP series `router`'s
+# `track_http_metrics` middleware records and for the error/alert counters
+# `ApiError::log` increments. Names and descriptions come from
+# `vpay_core::metrics`; the recorder is installed by whichever binary served
+# the request, and with none installed every macro is a cheap no-op — which
+# is what this crate's own router tests get unless they ask for one.
+metrics.workspace = true
 vpay-provider.workspace = true
 vpay-db.workspace = true
 # `ApiError` wraps `LedgerError` too (ADR-0011: a composite `#[from]`s every
@@ -136,6 +143,13 @@ sqlx.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# Test-only, and deliberately the *shipping* exporter rather than
+# `metrics-util`'s `DebuggingRecorder`: the router tests assert on the
+# rendered Prometheus text, which is what a scrape of a pod actually
+# receives, so a label spelled wrongly fails here for the same reason a
+# dashboard would be empty. Already resolved at this exact pin by both
+# binaries, so no new package enters `Cargo.lock`.
+metrics-exporter-prometheus.workspace = true
 # Test-only: the merchant SDK, used by `op::clients`'s conformance tests to
 # mint a real `private_key_jwt` assertion and prove the registration this
 # crate builds from YAML is one the real OP verifier accepts. **Not a test

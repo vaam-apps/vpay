@@ -1,0 +1,122 @@
+{{- include "vpay.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vpay.fullname" . }}-worker
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "worker") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # More than one replica is safe — jobs are claimed with `FOR UPDATE SKIP
+  # LOCKED` under a lease (migration 0021's `lock_is_paired`,
+  # `jobs_claimable_idx`), so two workers never run the same job. One is the
+  # default because nothing has ever measured the queue under load.
+  replicas: {{ .Values.worker.replicaCount }}
+  strategy:
+    # Recreate, not RollingUpdate: during a rolling update the old and new
+    # workers both hold job leases, and while that is *safe* (every handler is
+    # a compare-and-swap, and a cut-off job's lease is handed back on drain),
+    # it makes the drain path run concurrently with a fresh claim loop for no
+    # gain — the worker serves no traffic, so there is nothing to keep
+    # available across the swap.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "vpay.componentSelectorLabels" (dict "ctx" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vpay.componentLabels" (dict "ctx" . "component" "worker") | nindent 8 }}
+      {{- if or .Values.config.createOverlayConfigMap .Values.worker.podAnnotations }}
+      annotations:
+        {{- if .Values.config.createOverlayConfigMap }}
+        checksum/config-overlay: {{ .Values.config.overlay | sha256sum }}
+        {{- end }}
+        {{- with .Values.worker.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "vpay.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.images.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "vpay.podSecurityContext" . | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: worker
+          image: {{ include "vpay.image" (dict "ctx" . "component" "worker") | quote }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          securityContext:
+            {{- include "vpay.containerSecurityContext" . | nindent 12 }}
+          ports:
+            # The worker's only HTTP listener, and its first: block A gave
+            # `vpay-worker-bin` the same `--observability-bind` socket the
+            # server has (/livez and /metrics, nothing else).
+            - name: metrics
+              containerPort: {{ .Values.observability.port }}
+              protocol: TCP
+          env:
+            {{- include "vpay.commonEnv" . | nindent 12 }}
+            - name: VPAY_WORKER_CONCURRENCY
+              value: {{ .Values.worker.concurrency | quote }}
+            {{- with .Values.worker.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.rails.existingSecret | quote }}
+          # No readiness probe: the worker backs no Service, so readiness
+          # would gate nothing. Liveness only, on the same observability
+          # listener the server probes — `vpay-worker-bin`'s own `tests/cli.rs`
+          # proves it answers there.
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.observability.livenessPath }}
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: {{ .Values.observability.livenessPath }}
+              port: metrics
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          {{- if .Values.config.createOverlayConfigMap }}
+          volumeMounts:
+            - name: config-overlay
+              mountPath: {{ include "vpay.overlayMountPath" . }}
+              subPath: {{ include "vpay.overlayFileName" . }}
+              readOnly: true
+          {{- end }}
+      # The signing key is deliberately absent here: `vpay-worker-bin` takes no
+      # `--oauth-signing-key-file`, issues no token, and mounting the Secret
+      # would widen its blast radius for no capability.
+      {{- if .Values.config.createOverlayConfigMap }}
+      volumes:
+        - name: config-overlay
+          configMap:
+            name: {{ include "vpay.overlayConfigMapName" . }}
+      {{- end }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

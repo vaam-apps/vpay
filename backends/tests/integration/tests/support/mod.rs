@@ -194,6 +194,14 @@ pub(crate) fn merchant_client_with(
 /// `confirm` reaches "an adapter" without reaching *these* adapters would not
 /// be proving that a confirm answers `501 not_implemented` for the reason it
 /// actually does.
+///
+/// Keyed through `vpay_api::v1::boot::adapters_by_code` rather than by a
+/// `.collect()` of its own, which it used to be. That function is where a
+/// rail is wrapped in `vpay_provider::Measured`, so a suite that built its
+/// own map would run against *unmeasured* adapters and `worker_e2e`'s
+/// `vpay_provider_requests_total` assertion would be asserting the absence
+/// of a metric the shipping binaries do emit. Two spellings of "the adapter
+/// map" is exactly the drift that function's own header argues against.
 pub(crate) fn adapters_by_code() -> BTreeMap<String, Box<dyn ProviderAdapter>> {
     // The same vendored-roots client both binaries build at boot and hand to
     // every adapter (Step 3) — not a test-only substitute, for the same
@@ -203,14 +211,10 @@ pub(crate) fn adapters_by_code() -> BTreeMap<String, Box<dyn ProviderAdapter>> {
         vpay_provider::DEFAULT_REQUEST_TIMEOUT,
     )
     .expect("the vendored-roots client builds");
-    let adapters: Vec<Box<dyn ProviderAdapter>> = vec![
+    vpay_api::v1::boot::adapters_by_code(vec![
         Box::new(vpay_adapter_mtn_momo::Adapter::new(http.clone())),
         Box::new(vpay_adapter_orange_money::Adapter::new(http)),
-    ];
-    adapters
-        .into_iter()
-        .map(|adapter| (adapter.code().to_owned(), adapter))
-        .collect()
+    ])
 }
 
 /// [`RouterDeps`] assembled the way `vpay-server`'s `main` assembles it.

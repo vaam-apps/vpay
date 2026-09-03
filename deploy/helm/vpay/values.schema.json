@@ -1,0 +1,302 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "vpay chart values",
+  "description": "Shape only. Helm applies this before rendering a single template, so it catches a typo'd key or a string where a number belongs. It deliberately does NOT encode the semantic rules — a grace period shorter than the drain, a PDB that blocks every eviction, a token rate limit looser than the API's: those live in templates/_validate.tpl as named `fail` guards, so the error can explain itself and so ci/guards/*.yaml can prove each one fires. A guard values file must stay schema-valid or the schema error, not the guard, is what an operator sees.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "images", "dashboard", "server", "worker", "config", "database",
+    "signingKey", "rails", "observability", "metrics", "service", "ingress",
+    "networkPolicy", "podDisruptionBudget", "serviceAccount"
+  ],
+  "properties": {
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "commonLabels": { "type": "object", "additionalProperties": { "type": "string" } },
+    "commonAnnotations": { "type": "object", "additionalProperties": { "type": "string" } },
+
+    "images": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["registry", "namespace", "pullPolicy", "server", "worker"],
+      "properties": {
+        "registry": { "type": "string", "minLength": 1 },
+        "namespace": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
+        "pullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": { "name": { "type": "string" } }
+          }
+        },
+        "server": { "$ref": "#/definitions/imageRef" },
+        "worker": { "$ref": "#/definitions/imageRef" }
+      }
+    },
+
+    "dashboard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "description": "Not templated by this chart. `enabled: true` is a named template failure, not a workload.",
+      "properties": { "enabled": { "type": "boolean" } }
+    },
+
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["replicaCount", "port", "resources"],
+      "properties": {
+        "replicaCount": { "type": "integer", "minimum": 0 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "resources": { "$ref": "#/definitions/resources" },
+        "podAnnotations": { "type": "object" },
+        "nodeSelector": { "type": "object" },
+        "tolerations": { "type": "array" },
+        "affinity": { "type": "object" },
+        "extraEnv": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["replicaCount", "concurrency", "resources"],
+      "properties": {
+        "replicaCount": { "type": "integer", "minimum": 0 },
+        "concurrency": { "type": "integer", "minimum": 1 },
+        "resources": { "$ref": "#/definitions/resources" },
+        "podAnnotations": { "type": "object" },
+        "nodeSelector": { "type": "object" },
+        "tolerations": { "type": "array" },
+        "affinity": { "type": "object" },
+        "extraEnv": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+
+    "shutdownGraceSeconds": { "type": "integer", "minimum": 1 },
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
+
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "path"],
+      "properties": {
+        "profile": { "type": "string" },
+        "path": { "type": "string", "minLength": 1 },
+        "createOverlayConfigMap": { "type": "boolean" },
+        "overlay": { "type": "string" }
+      }
+    },
+
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["existingSecret", "existingSecretKey"],
+      "properties": {
+        "existingSecret": { "type": "string" },
+        "existingSecretKey": { "type": "string" }
+      }
+    },
+
+    "signingKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["existingSecret", "key", "mountPath", "defaultMode"],
+      "properties": {
+        "existingSecret": { "type": "string" },
+        "key": { "type": "string" },
+        "mountPath": { "type": "string", "minLength": 1 },
+        "defaultMode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 511,
+          "description": "Decimal representation of the file mode. values.yaml writes it as 0440, which YAML parses as octal, i.e. 288."
+        }
+      }
+    },
+
+    "rails": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["existingSecret"],
+      "properties": { "existingSecret": { "type": "string" } }
+    },
+
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port", "livenessPath", "metricsPath", "readinessPath"],
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "livenessPath": { "type": "string", "pattern": "^/" },
+        "metricsPath": { "type": "string", "pattern": "^/" },
+        "readinessPath": { "type": "string", "pattern": "^/" }
+      }
+    },
+
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["serviceMonitor", "prometheusRule"],
+      "properties": {
+        "serviceMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "interval": { "type": "string" },
+            "scrapeTimeout": { "type": "string" },
+            "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        },
+        "prometheusRule": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+            "providerErrorRatio": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+            "providerErrorWindow": { "type": "string", "pattern": "^[0-9]+[smhd]$" },
+            "jobQueueBehindSeconds": { "type": "integer", "minimum": 1 },
+            "alertEventWindow": { "type": "string", "pattern": "^[0-9]+[smhd]$" }
+          }
+        }
+      }
+    },
+
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "port"],
+      "properties": {
+        "type": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "className", "host", "tls", "api", "token"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "host": { "type": "string" },
+        "annotations": { "type": "object", "additionalProperties": { "type": "string" } },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "clusterIssuer": { "type": "string" },
+            "secretName": { "type": "string" }
+          }
+        },
+        "api": { "$ref": "#/definitions/ingressRule" },
+        "token": { "$ref": "#/definitions/ingressRule" }
+      }
+    },
+
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ingressControllerNamespace": { "type": "string" },
+        "monitoringNamespace": { "type": "string" },
+        "dnsNamespace": { "type": "string" },
+        "database": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cidrs": { "type": "array", "items": { "type": "string" } },
+            "namespace": { "type": "string" },
+            "podSelector": { "type": "object", "additionalProperties": { "type": "string" } },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          }
+        },
+        "railsEgress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "except": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "minAvailable"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minAvailable": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "An integer, never a percentage string: the pdb-minavailable guard compares it with server.replicaCount, and a percentage would make that comparison a lie."
+        }
+      }
+    },
+
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create"],
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+
+    "logFilter": { "type": "string", "minLength": 1 },
+    "logFormat": { "type": "string", "enum": ["json", "text"] }
+  },
+
+  "definitions": {
+    "imageRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "digest": {
+          "type": "string",
+          "description": "Full digest, or empty. The exact shape is checked by the image-digest-format guard rather than here, so that the error names the guard and explains the consequence."
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": { "type": "object", "additionalProperties": { "type": ["string", "number"] } },
+        "limits": { "type": "object", "additionalProperties": { "type": ["string", "number"] } }
+      }
+    },
+    "ingressRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "pathType", "limitRps", "limitBurstMultiplier"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^/" },
+        "pathType": { "type": "string", "enum": ["Exact", "Prefix", "ImplementationSpecific"] },
+        "limitRps": { "type": "integer" },
+        "limitBurstMultiplier": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

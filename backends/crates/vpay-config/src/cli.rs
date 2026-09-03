@@ -17,6 +17,23 @@
 //! Sandbox and production are two deployments of the same image, distinguished
 //! only by which config file they load — not by a code branch. See
 //! `AGENTS.md` ("No environment branching").
+//!
+//! # `--public-base-url` is gone (step-6 decision (7))
+//!
+//! It was accepted, parsed and read by nothing. The URL that actually
+//! matters — the one the merchant OP derives its `issuer` from — is
+//! `deployment.public_base_url` in the YAML config
+//! (`vpay_api::op::issuer_for`), and it always was. Two spellings of one
+//! idea, one of them inert, is a trap: an operator who set the flag and
+//! watched the issuer not change had no way to find out why.
+//!
+//! Passing `--public-base-url` now fails at parse time, loudly, which is the
+//! answer a deployment wants. Setting `VPAY_PUBLIC_BASE_URL` does **not**
+//! fail — clap reads an environment variable only for a flag it declares, so
+//! a stale variable in a compose file or a Secret is simply ignored. Nothing
+//! in this repository sets it any more (`.env.example` dropped its row in the
+//! same change); a downstream deployment that still does will see no error
+//! and no effect, exactly as before.
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -95,6 +112,34 @@ pub struct CommonArgs {
     #[arg(long, env = "VPAY_LOG_FORMAT", value_enum, default_value = "json")]
     pub log_format: LogFormat,
 
+    /// Socket address the observability listener binds to: `GET /livez` and
+    /// `GET /metrics`, on **both** binaries.
+    ///
+    /// A second listener rather than two more routes on `--bind`, and the
+    /// separation is the point rather than an implementation detail.
+    /// `/metrics` names every rail this deployment talks to, every route it
+    /// serves and every error code it has produced — an operational map of
+    /// the system, and one that must never be reachable from the internet.
+    /// `--bind`'s port is the one behind the Ingress; this one is not
+    /// (`deploy/helm/vpay/templates/networkpolicy.yaml` admits it from the
+    /// monitoring namespace only), so keeping them apart is what makes that
+    /// policy expressible at all. `vpay_api::router` deliberately mounts
+    /// neither path, and a test in that crate fails if either appears.
+    ///
+    /// It is on `CommonArgs` — not on `ServerArgs` — because
+    /// `vpay-worker-bin` needs it *more*: the worker has no other listener,
+    /// so before this flag existed it had no liveness probe and no way to
+    /// export the queue-depth gauge that tells an operator it is falling
+    /// behind.
+    ///
+    /// Port `9090` by default, matching `deploy/helm/vpay`'s
+    /// `observability.port` and the `metrics` container port both
+    /// Deployments declare. A `:0` port is a real configuration — the
+    /// subprocess tests use it — and the bound address is logged, because
+    /// with `:0` nothing else can know it.
+    #[arg(long, env = "VPAY_OBSERVABILITY_BIND", default_value = "0.0.0.0:9090")]
+    pub observability_bind: SocketAddr,
+
     /// Seconds to wait for in-flight work to finish before a forced shutdown.
     ///
     /// Both binaries bound by this, and both exit non-zero when it elapses
@@ -133,6 +178,7 @@ impl fmt::Debug for CommonArgs {
             .field("config", &self.config)
             .field("log_filter", &self.log_filter)
             .field("log_format", &self.log_format)
+            .field("observability_bind", &self.observability_bind)
             .field("shutdown_grace_seconds", &self.shutdown_grace_seconds)
             .finish()
     }
@@ -158,13 +204,6 @@ pub struct ServerArgs {
     /// Socket address the HTTP listener binds to.
     #[arg(long, env = "VPAY_BIND", default_value = "0.0.0.0:8080")]
     pub bind: SocketAddr,
-
-    /// Public base URL this deployment is reachable at.
-    ///
-    /// Used to build redirect-rail return URLs and webhook endpoints once
-    /// those exist.
-    #[arg(long, env = "VPAY_PUBLIC_BASE_URL")]
-    pub public_base_url: Option<String>,
 
     /// Path to the file holding this deployment's RS256 signing key, as a
     /// PEM-encoded RSA private key (PKCS#8 or PKCS#1).
@@ -300,18 +339,21 @@ impl WorkerArgs {
 // above.
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+
     use clap::{CommandFactory, Parser};
 
     use super::{LogFormat, ServerArgs, WorkerArgs};
 
     /// `(arg id, expected env var)` for every option common to both
     /// binaries, i.e. every field of [`CommonArgs`](super::CommonArgs).
-    const COMMON_ENV_VARS: [(&str, &str); 6] = [
+    const COMMON_ENV_VARS: [(&str, &str); 7] = [
         ("database_url", "DATABASE_URL"),
         ("profile", "VPAY_PROFILE"),
         ("config", "VPAY_CONFIG"),
         ("log_filter", "RUST_LOG"),
         ("log_format", "VPAY_LOG_FORMAT"),
+        ("observability_bind", "VPAY_OBSERVABILITY_BIND"),
         ("shutdown_grace_seconds", "VPAY_SHUTDOWN_GRACE_SECONDS"),
     ];
 
@@ -331,9 +373,8 @@ mod tests {
     /// the Secret. `worker_command_declares_the_documented_env_vars` below
     /// would start passing if it were ever flattened into `CommonArgs`, but
     /// `the_worker_is_not_handed_the_signing_key` fails first.
-    const SERVER_ONLY_ENV_VARS: [(&str, &str); 3] = [
+    const SERVER_ONLY_ENV_VARS: [(&str, &str); 2] = [
         ("bind", "VPAY_BIND"),
-        ("public_base_url", "VPAY_PUBLIC_BASE_URL"),
         ("oauth_signing_key_file", "VPAY_OAUTH_SIGNING_KEY_FILE"),
     ];
 
@@ -469,13 +510,16 @@ mod tests {
         let args = ServerArgs::parse_from(["vpay-server"]);
 
         assert_eq!(args.bind, "0.0.0.0:8080".parse().expect("valid addr"));
-        assert_eq!(args.public_base_url, None);
         assert_eq!(args.oauth_signing_key_file, None);
         assert_eq!(args.common.database_url, None);
         assert_eq!(args.common.profile, "sandbox");
         assert_eq!(args.common.config, None);
         assert_eq!(args.common.log_filter, "info");
         assert_eq!(args.common.log_format, LogFormat::Json);
+        assert_eq!(
+            args.common.observability_bind,
+            "0.0.0.0:9090".parse().expect("valid addr")
+        );
         assert_eq!(args.common.shutdown_grace_seconds, 25);
     }
 
@@ -488,6 +532,10 @@ mod tests {
         assert_eq!(args.common.config, None);
         assert_eq!(args.common.log_filter, "info");
         assert_eq!(args.common.log_format, LogFormat::Json);
+        assert_eq!(
+            args.common.observability_bind,
+            "0.0.0.0:9090".parse().expect("valid addr")
+        );
         assert_eq!(args.common.shutdown_grace_seconds, 25);
         assert_eq!(args.worker_concurrency, 4);
     }
@@ -577,6 +625,124 @@ mod tests {
         assert_eq!(args.common.profile, "prod-config");
         assert_eq!(args.common.log_format, LogFormat::Text);
         assert_eq!(args.common.shutdown_grace_seconds, 5);
+    }
+
+    /// `--public-base-url` was removed in step 6 (decision (7)) because it
+    /// was read by nothing. This is the test that keeps it removed: adding
+    /// it back "for symmetry with the YAML" would reintroduce two spellings
+    /// of one idea, one of them inert, which is the exact confusion the
+    /// removal was for.
+    ///
+    /// Asserted on **both** commands and as a hard parse *error*, not as a
+    /// missing arg id: an operator who still passes the flag must be told,
+    /// rather than have it silently ignored.
+    #[test]
+    fn neither_binary_still_accepts_the_removed_public_base_url_flag() {
+        for cmd in [
+            <ServerArgs as CommandFactory>::command(),
+            <WorkerArgs as CommandFactory>::command(),
+        ] {
+            assert!(
+                !cmd.get_arguments()
+                    .any(|arg| arg.get_id().as_str() == "public_base_url"),
+                "`{}` still declares --public-base-url; the issuer comes from the YAML \
+                 (`deployment.public_base_url`, vpay_api::op::issuer_for) and always did",
+                cmd.get_name()
+            );
+        }
+
+        assert!(
+            ServerArgs::try_parse_from([
+                "vpay-server",
+                "--public-base-url",
+                "https://api.vpay.example"
+            ])
+            .is_err(),
+            "vpay-server must refuse the removed flag outright, not ignore it"
+        );
+        assert!(
+            WorkerArgs::try_parse_from([
+                "vpay-worker-bin",
+                "--public-base-url",
+                "https://api.vpay.example"
+            ])
+            .is_err(),
+            "vpay-worker-bin must refuse the removed flag outright, not ignore it"
+        );
+    }
+
+    /// The observability listener is a knob **both** binaries have, and its
+    /// default is the port `deploy/helm/vpay` templates its probes and its
+    /// `ServiceMonitor` against. A change to either number breaks a chart
+    /// that cannot see this crate, so the number is pinned here rather than
+    /// left to a default-value string.
+    #[test]
+    fn both_binaries_take_the_observability_bind_and_default_to_9090() {
+        let expected: SocketAddr = "0.0.0.0:9090".parse().expect("valid addr");
+        assert_eq!(
+            ServerArgs::parse_from(["vpay-server"])
+                .common
+                .observability_bind,
+            expected
+        );
+        assert_eq!(
+            WorkerArgs::parse_from(["vpay-worker-bin"])
+                .common
+                .observability_bind,
+            expected
+        );
+
+        let args = ServerArgs::parse_from(["vpay-server", "--observability-bind", "127.0.0.1:0"]);
+        assert_eq!(
+            args.common.observability_bind,
+            "127.0.0.1:0".parse::<SocketAddr>().expect("valid addr"),
+            "port 0 is a real configuration — every subprocess test binds it"
+        );
+    }
+
+    /// The two listeners must be separately addressable: `/metrics` names
+    /// every rail, route and error code this deployment has, and the
+    /// NetworkPolicy that keeps it off the Ingress can only exist because it
+    /// is on a different port from `--bind`.
+    #[test]
+    fn the_observability_bind_is_not_the_same_knob_as_the_traffic_bind() {
+        let args = ServerArgs::parse_from([
+            "vpay-server",
+            "--bind",
+            "127.0.0.1:18080",
+            "--observability-bind",
+            "127.0.0.1:19090",
+        ]);
+        assert_eq!(
+            args.bind,
+            "127.0.0.1:18080".parse::<SocketAddr>().expect("valid addr")
+        );
+        assert_eq!(
+            args.common.observability_bind,
+            "127.0.0.1:19090".parse::<SocketAddr>().expect("valid addr")
+        );
+        assert_ne!(args.bind, args.common.observability_bind);
+    }
+
+    /// The worker takes no `--bind` at all — it serves no traffic — so
+    /// `--observability-bind` is the only socket it opens. If someone ever
+    /// flattens `bind` into `CommonArgs`, this fails before anything else
+    /// notices the worker started answering `/v1`.
+    #[test]
+    fn the_worker_binds_only_the_observability_listener() {
+        let worker = <WorkerArgs as CommandFactory>::command();
+        assert!(
+            !worker
+                .get_arguments()
+                .any(|arg| arg.get_id().as_str() == "bind"),
+            "the worker serves no traffic; a --bind there would open a port nothing routes"
+        );
+        assert!(
+            worker
+                .get_arguments()
+                .any(|arg| arg.get_id().as_str() == "observability_bind"),
+            "the worker's only listener is the observability one"
+        );
     }
 
     #[test]

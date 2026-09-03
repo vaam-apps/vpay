@@ -1,0 +1,49 @@
+{{- include "vpay.validate" . -}}
+{{- if .Values.metrics.serviceMonitor.enabled }}
+{{- $fullName := include "vpay.fullname" . -}}
+# Requires the prometheus-operator CRDs. Two ServiceMonitors because there are
+# two Services: the server's, and the headless one that exists only so the
+# worker can be scraped at all.
+#
+# Both binaries serve /metrics on the observability port as of 2026-09-03
+# (step-6 blocks A and C). No Prometheus has ever scraped one, so these two
+# objects have never selected a target, and `metrics.serviceMonitor.enabled`
+# is `false` by default.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $fullName }}-server
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "vpay.componentSelectorLabels" (dict "ctx" . "component" "server") | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: {{ .Values.observability.metricsPath }}
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $fullName }}-worker
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "worker") | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "vpay.componentSelectorLabels" (dict "ctx" . "component" "worker") | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: {{ .Values.observability.metricsPath }}
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+{{- end }}

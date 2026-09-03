@@ -1,0 +1,20 @@
+{{- include "vpay.validate" . -}}
+{{- if .Values.config.createOverlayConfigMap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vpay.overlayConfigMapName" . }}
+  labels:
+    {{- include "vpay.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  # The key is the file name `vpay_config`'s `profile_overlay_path` looks for
+  # beside the baked base config: `<stem>-<profile>.<ext>`. It is mounted with
+  # `subPath`, so this key name IS the mounted file name — get it wrong and
+  # the process finds no overlay and says nothing.
+  {{ include "vpay.overlayFileName" . }}: |
+{{ .Values.config.overlay | indent 4 }}
+{{- end }}

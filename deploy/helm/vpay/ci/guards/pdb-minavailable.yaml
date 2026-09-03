@@ -1,0 +1,4 @@
+# minAvailable == replicaCount: no eviction can ever be allowed.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2

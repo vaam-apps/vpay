@@ -12,6 +12,13 @@ workspace = true
 
 [dependencies]
 vpay-core.workspace = true
+# The metrics facade, for the three `vpay_jobs_*` names this loop owns
+# (`run_loop.rs`). Names and descriptions come from `vpay_core::metrics`; the
+# recorder they land in is installed by `vpay-worker-bin` and by whatever
+# test process drives `run_loop`. With no recorder installed every macro here
+# is a cheap no-op, which is what the integration suites that do not assert
+# on metrics get.
+metrics.workspace = true
 vpay-provider.workspace = true
 # Every statement this crate runs belongs to a `vpay-db` repository function
 # — `jobs` for the queue, `settlement`/`charges`/`provider_requests` for the

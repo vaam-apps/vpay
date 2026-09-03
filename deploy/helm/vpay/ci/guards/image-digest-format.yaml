@@ -1,0 +1,6 @@
+# A digest truncated the way a copy-paste out of `docker images --digests`
+# truncates one.
+images:
+  worker:
+    name: vpay-worker
+    digest: "sha256:0000beef"

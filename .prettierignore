@@ -1,0 +1,7 @@
+# `just fmt` runs `prettier --write .` over the whole repository. Helm
+# templates are Go templates that happen to have a `.yaml` extension: a line
+# like `{{- include "vpay.validate" . -}}` is not YAML, prettier's YAML parser
+# rejects it, and anything it did manage to reformat would break the
+# indentation the templates depend on. `helm lint` is the formatter for this
+# directory.
+deploy/helm/**/templates/

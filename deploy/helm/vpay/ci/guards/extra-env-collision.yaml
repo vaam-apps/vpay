@@ -1,0 +1,9 @@
+# An `extraEnv` entry that shadows one of the variables the chart already
+# sets. `VPAY_SHUTDOWN_GRACE_SECONDS` comes from `vpay.commonEnv` and is
+# derived from `shutdownGraceSeconds`, which the "grace-period" guard checks
+# against `terminationGracePeriodSeconds` — so this override defeats that
+# guard as well as the value, and Kubernetes keeps the last entry silently.
+server:
+  extraEnv:
+    - name: VPAY_SHUTDOWN_GRACE_SECONDS
+      value: "600"

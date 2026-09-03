@@ -3554,6 +3554,241 @@ async fn apply_succeeded_settles_a_submitted_charge_and_emits_one_event() -> any
     Ok(())
 }
 
+/// **The decisive test for the `from` label on a settlement**, and therefore
+/// for the `RETURNING` sub-select `vpay_db::settlement` adds to the two
+/// statements that take a charge terminal.
+///
+/// Those statements guard on a *set* of live states, so `from` cannot come
+/// from the `WHERE` clause the way `mark_submitted`'s can. It comes from
+/// `(SELECT prev.state FROM charges prev WHERE prev.id = charges.id)` in the
+/// `RETURNING` list, which reads the statement's own snapshot and therefore
+/// the state before the update. Break that — drop the sub-select, or let it
+/// see the new row — and this reads `succeeded → succeeded`.
+///
+/// Two charges, two different starting rungs, in one recorder, so the label
+/// is proven to follow the row rather than being a constant that happens to
+/// be right once.
+///
+/// A plain `#[test]` with its own runtime, unlike every other case in this
+/// file: `metrics::with_local_recorder` installs a **thread-local** recorder
+/// and takes a synchronous closure, so the settlement has to be driven
+/// inside that closure and on that thread. `#[tokio::test]` would put the
+/// awaited work on a runtime whose worker threads cannot see the recorder,
+/// and the scrape below would be empty — a test that passed by asserting on
+/// a document nothing wrote.
+#[test]
+fn a_settlement_counts_the_transition_it_actually_made() -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("a current-thread runtime builds")?;
+    // The container's `Drop` calls `Handle::current()` to schedule its
+    // teardown, so the runtime has to be *entered* on this thread and has to
+    // outlive the container. Declaration order is what guarantees both:
+    // locals drop in reverse, so the container goes first, then this guard,
+    // then the runtime.
+    let _entered = runtime.enter();
+
+    let (_container, pool) = runtime.block_on(async {
+        let (container, pool) = migrated_postgres().await?;
+        seed_reference_data(&pool).await?;
+        live_charge(
+            &pool,
+            "pi_from_submitted",
+            "ch_from_submitted",
+            "processing",
+            "submitted",
+        )
+        .await?;
+        live_charge(
+            &pool,
+            "pi_from_pending",
+            "ch_from_pending",
+            "requires_action",
+            "pending",
+        )
+        .await?;
+        anyhow::Ok((container, pool))
+    })?;
+
+    // The shipping exporter under a *local* recorder: `set_global_recorder`
+    // succeeds once per process, and this suite is 60-odd tests in one
+    // binary under a plain `cargo test`.
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    let data = json!({ "id": "x", "object": "payment_intent", "status": "succeeded" });
+
+    let settled = metrics::with_local_recorder(&recorder, || {
+        runtime.block_on(async {
+            vpay_db::settlement::apply_succeeded(
+                &pool,
+                "ch_from_submitted",
+                None,
+                "evt_from_submitted",
+                &data,
+            )
+            .await?;
+            vpay_db::settlement::apply_failed(
+                &pool,
+                "ch_from_pending",
+                "insufficient_funds",
+                "NOT_ENOUGH_FUNDS",
+                "The payment was declined (insufficient_funds).",
+                "evt_from_pending",
+                &data,
+            )
+            .await
+        })
+    });
+    settled.context("settling must succeed")?;
+    let scrape = handle.render();
+
+    assert!(
+        scrape.contains(
+            r#"vpay_charge_transitions_total{provider="mtn_momo",from="submitted",to="succeeded"} 1"#
+        ),
+        "the previous-state sub-select must name the rung the charge came from:\n{scrape}"
+    );
+    assert!(
+        scrape.contains(
+            r#"vpay_charge_transitions_total{provider="mtn_momo",from="pending",to="failed"} 1"#
+        ),
+        "and it must follow the row rather than being a constant:\n{scrape}"
+    );
+
+    Ok(())
+}
+
+/// **The counter is a record of committed transitions.**
+/// `charges::insert_for_intent` runs inside a caller's transaction, so a
+/// second write in that transaction failing must leave
+/// `vpay_charge_transitions_total` untouched — the charge does not exist.
+///
+/// This is the exact shape of the confirm path
+/// (`vpay_api::v1::payment_intents::insert_charge`): open the charge, then
+/// enqueue its poll job in the same transaction. Here the enqueue names a
+/// `kind` outside migration 0021's `kind_is_known` CHECK, so Postgres aborts
+/// the transaction — no test double, no injected failure, a real constraint
+/// on a real database refusing a real write.
+///
+/// Both halves matter and the second is what stops this passing vacuously:
+/// the rolled-back insert counts nothing, *and* the committed one counts
+/// exactly one. Move `record_opened` back inside `insert_for_intent` and the
+/// first assertion fails; delete the call from this test's own caller and the
+/// second does.
+///
+/// The *production* caller is pinned somewhere else, and has to be: this
+/// crate cannot see `vpay_api`. Deleting `charges::record_opened` from
+/// `vpay_api::v1::payment_intents::insert_charge` — or
+/// `record_left_submitting` from `persist_submitted` — fails
+/// `a_confirmed_payment_is_driven_to_succeeded_and_the_merchant_sees_it`
+/// (`backends/tests/integration/tests/worker_e2e.rs`), which scrapes the
+/// running server's `/metrics` and asserts all four edges of one charge's
+/// walk. That is the cost of moving the recording out to the commit's owner,
+/// and it is paid rather than assumed: verified by deleting the call and
+/// watching that test fail on the `from="",to="submitting"` edge.
+///
+/// A plain `#[test]` with its own current-thread runtime, for the reason
+/// `a_settlement_counts_the_transition_it_actually_made` gives above.
+#[test]
+fn a_rolled_back_charge_insert_counts_nothing_and_a_committed_one_counts_once() -> anyhow::Result<()>
+{
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("a current-thread runtime builds")?;
+    let _entered = runtime.enter();
+
+    let (_container, pool) = runtime.block_on(async {
+        let (container, pool) = migrated_postgres().await?;
+        seed_reference_data(&pool).await?;
+        vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_rolled_back", "XAF")).await?;
+        vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_committed", "XAF")).await?;
+        anyhow::Ok((container, pool))
+    })?;
+
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+
+    let rolled_back = metrics::with_local_recorder(&recorder, || {
+        runtime.block_on(async {
+            let mut tx = pool.begin().await.context("transaction begins")?;
+            let charge = vpay_db::charges::insert_for_intent(
+                &mut tx,
+                &fixture_charge("ch_rolled_back", "pi_rolled_back"),
+            )
+            .await
+            .context("the insert itself must succeed")?;
+            // The confirm path's second write, with a kind the CHECK refuses.
+            let enqueued = vpay_db::jobs::enqueue_in_tx(
+                &mut tx,
+                "not_a_job_kind",
+                "poll:ch_rolled_back",
+                &json!({ "charge_id": "ch_rolled_back" }),
+                time::OffsetDateTime::now_utc(),
+            )
+            .await;
+            assert!(
+                enqueued.is_err(),
+                "`kind_is_known` must refuse this write, or the transaction never aborts \
+                 and this test proves nothing"
+            );
+            tx.rollback().await.context("the transaction rolls back")?;
+            anyhow::Ok(charge)
+        })
+    })?;
+    assert_eq!(rolled_back.state, "submitting");
+
+    let scrape = handle.render();
+    assert!(
+        !scrape.contains("vpay_charge_transitions_total"),
+        "a charge whose transaction rolled back must not appear in the counter:\n{scrape}"
+    );
+    assert!(
+        runtime
+            .block_on(vpay_db::charges::get_for_intent(&pool, "pi_rolled_back"))?
+            .is_none(),
+        "the rollback must have removed the row — otherwise the assertion above is \
+         about a charge that still exists"
+    );
+
+    // The committed half, in a second recorder so the first render stays a
+    // statement about the rollback alone.
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    metrics::with_local_recorder(&recorder, || {
+        runtime.block_on(async {
+            let mut tx = pool.begin().await.context("transaction begins")?;
+            let charge = vpay_db::charges::insert_for_intent(
+                &mut tx,
+                &fixture_charge("ch_committed", "pi_committed"),
+            )
+            .await?;
+            vpay_db::jobs::enqueue_in_tx(
+                &mut tx,
+                "poll_charge",
+                "poll:ch_committed",
+                &json!({ "charge_id": "ch_committed" }),
+                time::OffsetDateTime::now_utc(),
+            )
+            .await?;
+            tx.commit().await.context("transaction commits")?;
+            vpay_db::charges::record_opened(&charge);
+            anyhow::Ok(())
+        })
+    })?;
+
+    let scrape = handle.render();
+    assert!(
+        scrape.contains(
+            r#"vpay_charge_transitions_total{provider="mtn_momo",from="",to="submitting"} 1"#
+        ),
+        "a committed charge is still counted, exactly once:\n{scrape}"
+    );
+
+    Ok(())
+}
+
 /// The redirect-rail settlement: a `pending` charge on a `requires_action`
 /// intent. `requires_action → succeeded` is a legal settlement precisely
 /// because the payer acting at the rail is what the status means; the guard

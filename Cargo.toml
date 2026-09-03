@@ -55,7 +55,15 @@ print_stdout = "warn"
 [workspace.dependencies]
 # --- async runtime & http ---
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "form"] }
+# `matched-path` is on for exactly one consumer: `vpay_api`'s
+# `track_http_metrics` labels `vpay_http_requests_total` with the *route
+# pattern* (`/v1/payment_intents/{id}`) rather than the concrete path,
+# because a label whose cardinality grows with the number of payment intents
+# is a metrics store an attacker — or a busy Tuesday — gets to fill. The
+# extension the feature inserts is the only way to learn the pattern from
+# middleware. It adds no package: it is an axum-internal feature that makes
+# the router put an `Arc<str>` into each request's extensions.
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "form", "matched-path"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "request-id", "timeout", "limit"] }
 hyper = "1"
@@ -163,7 +171,39 @@ url = "2"
 # --- observability ---
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-opentelemetry = "0.27"
+
+# The metrics facade and its Prometheus text exporter (step-6 decision (6)).
+# `vpay-core::metrics` describes the names; each binary installs one recorder
+# and serves `PrometheusHandle::render()` from its own observability listener.
+#
+# Pinned exactly, the same convention the `authkestra-*` pins below use, and
+# for a reason that is specific to this pair rather than stylistic: what makes
+# these two safe here is their *transitive graph*, and a patch bump can change
+# that graph without changing this line.
+#
+# `default-features = false` is load-bearing, not tidiness. The exporter's
+# default feature set is `["http-listener", "push-gateway"]`, and:
+#
+#   * `http-listener` pulls `hyper`/`hyper-util` with `server-auto` — a second
+#     HTTP server stack in a process that already has axum's. vpay serves
+#     `/metrics` itself, from the same axum router that serves `/livez`, so
+#     the listener feature buys nothing and costs a duplicate `hyper`
+#     (`deny.toml`'s `multiple-versions = "warn"` would say so);
+#   * `push-gateway` enables `hyper-rustls/aws-lc-rs`, and `aws-lc-rs` is
+#     **banned outright** in `deny.toml` — two rustls `CryptoProvider`s in one
+#     binary are what make `install_default()` panic, which is a defect under
+#     ADR-0007. So the default feature set is not merely wasteful here, it
+#     fails `cargo deny check bans`.
+#
+# With both off, the exporter's non-optional dependencies are `base64`,
+# `evmap`, `indexmap`, `metrics-util`, `quanta` and `thiserror` — no HTTP, no
+# TLS, no runtime.
+#
+# OTLP traces are deliberately NOT here: step-6 decision (6) defers them and
+# `docs/status.md` says so, which is why the unused `opentelemetry = "0.27"`
+# pin that used to sit on this line is gone rather than kept "for later".
+metrics = "=0.24.6"
+metrics-exporter-prometheus = { version = "=0.18.3", default-features = false }
 
 # --- errors ---
 thiserror = "2"

@@ -7,6 +7,10 @@
 pub mod error;
 pub mod failure;
 pub mod ids;
+// The metric *vocabulary* — names, units, help text — and nothing that
+// installs a recorder. A library that installed one would take that decision
+// out of the binary's hands; see the module header.
+pub mod metrics;
 pub mod money;
 // The reconciler's half of the state machine, kept apart from `state` on
 // purpose: `state::Transition` is the merchant's three verbs and must stay

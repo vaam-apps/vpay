@@ -44,11 +44,14 @@
 mod support;
 
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use anyhow::Context as _;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use testcontainers::{ContainerAsync, GenericImage};
@@ -98,6 +101,43 @@ const TOLERANCE: Duration = Duration::from_secs(300);
 /// against.
 fn receiver_mappings_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../webhook-receiver/wiremock")
+}
+
+/// This test binary's Prometheus recorder, installed on first use.
+///
+/// A near-copy of `worker_e2e.rs`'s static of the same name, and duplicated
+/// rather than shared for the same reason that one gives: each file under
+/// `tests/` is its own binary, `metrics::set_global_recorder` succeeds
+/// exactly once per process, and under `cargo nextest` that is once per
+/// test — the property the exact-count assertions below rely on.
+static METRICS: LazyLock<PrometheusHandle> = LazyLock::new(|| {
+    let recorder = PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    metrics::set_global_recorder(recorder).expect("this test binary installs exactly one recorder");
+    vpay_core::metrics::describe_all();
+    handle
+});
+
+/// Serves the **shipping** observability router
+/// (`vpay_api::observability`, the same function both `main.rs` files call)
+/// on an ephemeral port, rendering [`METRICS`] — see `worker_e2e.rs`'s
+/// identical helper for why this goes through a real socket rather than
+/// `PrometheusHandle::render()` directly.
+async fn serve_metrics() -> anyhow::Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
+    let handle = METRICS.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .context("binding the observability listener")?;
+    let addr = listener.local_addr().context("reading the bound address")?;
+    let task = tokio::spawn(async move {
+        let _ = vpay_api::observability::serve(
+            listener,
+            move || handle.render(),
+            std::future::pending::<()>(),
+        )
+        .await;
+    });
+    Ok((addr, task))
 }
 
 // ------------------------------------------------------------------ harness
@@ -755,9 +795,11 @@ async fn a_rotation_signs_with_both_secrets_and_either_one_verifies() {
         "both v1= values must reach the Stripe-named header too"
     );
 
-    for secret in [SECRET, SECRET_NEXT] {
+    for (index, secret) in [SECRET, SECRET_NEXT].into_iter().enumerate() {
         let verified = vpay_sdk::webhooks::verify(&recorded.body, &signature, secret, TOLERANCE)
-            .unwrap_or_else(|error| panic!("{secret} must verify independently: {error:?}"));
+            .unwrap_or_else(|error| {
+                panic!("secrets[{index}] must verify independently: {error:?}")
+            });
         assert_eq!(verified.id, event.id);
     }
 
@@ -790,6 +832,7 @@ async fn the_ladder_walks_delivery_delay_and_then_succeeds() {
     let h = harness().await.expect("harness");
     let endpoints = h.flaky_registry();
     let http = delivery_client();
+    let (metrics_addr, metrics_task) = serve_metrics().await.expect("the metrics listener");
 
     let event = insert_event(&h.pool, MERCHANT_A, "pi_flaky")
         .await
@@ -898,6 +941,26 @@ async fn the_ladder_walks_delivery_delay_and_then_succeeds() {
         posts.iter().all(|post| post.body == first_body),
         "every attempt must send byte-identical bytes — that is what payload_sha256 asserts"
     );
+
+    // The metrics half: three failed attempts and one success, each counted
+    // at the seam in `vpay_worker::webhooks::handle_deliver` /
+    // `record_failure` after the row's write commits — the exact counts a
+    // single delivery walking three rungs and then succeeding must produce.
+    let scrape = reqwest::get(format!("http://{metrics_addr}/metrics"))
+        .await
+        .expect("scraping /metrics off the observability listener")
+        .text()
+        .await
+        .expect("reading the scrape body");
+    assert!(
+        scrape.contains(r#"vpay_webhook_deliveries_total{outcome="retry"} 3"#),
+        "three refused attempts, three retry increments:\n{scrape}"
+    );
+    assert!(
+        scrape.contains(r#"vpay_webhook_deliveries_total{outcome="succeeded"} 1"#),
+        "the fourth attempt succeeded, exactly once:\n{scrape}"
+    );
+    metrics_task.abort();
 }
 
 /// A delivery that has already failed every rung is `exhausted`, and the job
@@ -912,6 +975,7 @@ async fn the_ladder_walks_delivery_delay_and_then_succeeds() {
 async fn a_delivery_past_the_last_rung_is_exhausted_and_not_rescheduled() {
     let h = harness().await.expect("harness");
     let endpoints = h.flaky_registry();
+    let (metrics_addr, metrics_task) = serve_metrics().await.expect("the metrics listener");
 
     let event = insert_event(&h.pool, MERCHANT_A, "pi_exhausted")
         .await
@@ -957,6 +1021,18 @@ async fn a_delivery_past_the_last_rung_is_exhausted_and_not_rescheduled() {
         row.next_attempt_at, None,
         "an exhausted delivery must not claim a next attempt it will never make"
     );
+
+    let scrape = reqwest::get(format!("http://{metrics_addr}/metrics"))
+        .await
+        .expect("scraping /metrics off the observability listener")
+        .text()
+        .await
+        .expect("reading the scrape body");
+    assert!(
+        scrape.contains(r#"vpay_webhook_deliveries_total{outcome="exhausted"} 1"#),
+        "the eighth failure exhausts the ladder and must count as exhausted, not retry:\n{scrape}"
+    );
+    metrics_task.abort();
 }
 
 // -------------------------------------------------------- GET /v1/events --

@@ -25,7 +25,8 @@
 // `clippy.toml`'s `allow-expect-in-tests` is meant to cover exactly this.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use std::io::BufRead as _;
+use std::io::{BufRead as _, Read as _, Write as _};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -111,6 +112,35 @@ fn invalid_config_path() -> &'static str {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/invalid-config.yml"
     )
+}
+
+/// Binds an ephemeral port, reads its address back, then frees it by
+/// dropping the listener — the worker binds it afterwards. Mirrors
+/// `vpay-server/tests/cli.rs`'s helper of the same name; a fixed port would
+/// collide with another test or another process on the runner.
+fn free_addr() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+    listener.local_addr().expect("local_addr")
+}
+
+/// Sends one HTTP/1.1 `GET` over a fresh connection and returns
+/// `(status, whole response text)`, body unparsed. `Connection: close` so the
+/// server frames the response by closing and this file needs no HTTP client
+/// and no chunked-body parser — the same shape
+/// `vpay-server/tests/cli.rs::http_request` has.
+fn http_get(addr: SocketAddr, path: &str) -> Option<(u16, String)> {
+    let mut stream = TcpStream::connect(addr).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+    let status = response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())?;
+    Some((status, response))
 }
 
 /// Spawns `cmd` with its stdout piped, and streams that stdout line-by-line
@@ -545,6 +575,110 @@ fn an_explicit_profile_flag_wins_over_a_conflicting_env_var() {
 /// Asserting on the log line, not just the exit code, matters regardless:
 /// exit 0 alone doesn't rule out some other reason the process happened to
 /// shut down cleanly.
+/// **The worker's only listener**, end to end against the real binary.
+///
+/// Before Step 6 this process bound no socket at all: it was a `select!`
+/// over signals and a heartbeat, so a Kubernetes Deployment had no liveness
+/// probe for it and nothing could read the queue-depth gauge that says
+/// whether live charges are being driven. `--observability-bind` /
+/// `VPAY_OBSERVABILITY_BIND` is on `CommonArgs`, so it is byte-identically
+/// the flag `vpay-server` takes — which is what lets one chart template one
+/// probe path against both Deployments.
+///
+/// Three things are asserted that a router-level test cannot reach:
+///
+/// 1. the bound address is **logged**, which is the only way anything can
+///    learn the port when `:0` is configured (and `:0` is what the chart's
+///    `helm template` counterpart is not, but what every test here is);
+/// 2. `/livez` and `/metrics` answer on that address, with
+///    `vpay_build_info` actually stamped — i.e. `install_recorder()` ran;
+/// 3. the listener stops **with** the process. A detached task would keep
+///    answering `/livez` with `ok` after the drain, which is precisely the
+///    lie a liveness probe must not be told.
+#[test]
+fn the_worker_serves_livez_and_metrics_on_the_observability_port() {
+    with_live_postgres(|database_url| {
+        let addr = free_addr();
+        let mut cmd = bin();
+        cmd.env("VPAY_LOG_FORMAT", "text")
+            .env("VPAY_OBSERVABILITY_BIND", addr.to_string())
+            .env("DATABASE_URL", &database_url)
+            .env("VPAY_CONFIG", valid_config_path());
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let (mut guard, rx) = spawn_and_capture_stdout(cmd);
+
+        // The log line is the readiness signal here — the worker has no
+        // `/healthz` to poll — and it is also assertion (1): the address is
+        // printed, so a `:0` deployment is diagnosable.
+        let line = wait_for_line(
+            &rx,
+            |l| l.contains("observability listener listening"),
+            Duration::from_secs(20),
+        )
+        .expect("the worker never logged its observability listener coming up");
+        assert!(
+            line.contains(&addr.to_string()),
+            "the bound address must be in the log line, or a `:0` bind is unknowable; got: {line}"
+        );
+
+        let (code, response) =
+            http_get(addr, "/livez").expect("the observability listener answers /livez");
+        assert_eq!(code, 200, "GET /livez on {addr}:\n{response}");
+        assert!(
+            response.ends_with("ok"),
+            "/livez must answer the static body a liveness probe expects, got:\n{response}"
+        );
+
+        let (code, response) =
+            http_get(addr, "/metrics").expect("the observability listener answers /metrics");
+        assert_eq!(code, 200, "GET /metrics on {addr}:\n{response}");
+        assert!(
+            response.contains("text/plain; version=0.0.4"),
+            "a scraper decides how to parse from the Content-Type, got:\n{response}"
+        );
+        assert!(
+            response.contains("# HELP vpay_build_info"),
+            "vpay_core::metrics::describe_all() did not reach the recorder:\n{response}"
+        );
+        assert!(
+            response.contains(&format!("version=\"{}\"", env!("CARGO_PKG_VERSION"))),
+            "vpay_build_info must carry this build's version:\n{response}"
+        );
+        assert!(
+            response.contains("git_sha="),
+            "vpay_build_info must carry a git_sha label (it reads `unknown` until \
+             backends/Dockerfile passes one — see install_recorder):\n{response}"
+        );
+
+        // The API surface is not here. A `/healthz` on this port would let a
+        // probe believe a database check had happened when none did.
+        for path in ["/healthz", "/v1/payment_intents"] {
+            let (code, response) =
+                http_get(addr, path).expect("the observability listener answers something");
+            assert_eq!(
+                code, 404,
+                "{path} must not exist on the worker's observability port:\n{response}"
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            send_sigterm(&guard.0);
+            let exit = guard.0.wait().expect("wait for graceful shutdown");
+            assert!(
+                exit.success(),
+                "expected exit 0 after SIGTERM, got {exit:?}"
+            );
+
+            assert!(
+                TcpStream::connect(addr).is_err(),
+                "the observability port is still accepting after the process exited; the \
+                 listener must drain with the job loop, not outlive it"
+            );
+        }
+    });
+}
+
 #[cfg(unix)]
 #[test]
 fn sigterm_immediately_after_startup_still_triggers_graceful_shutdown() {

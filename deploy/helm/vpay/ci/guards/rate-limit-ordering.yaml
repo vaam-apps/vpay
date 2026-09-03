@@ -1,0 +1,18 @@
+# The token endpoint limited *looser* than the API it is meant to protect.
+ingress:
+  enabled: true
+  className: nginx
+  host: api.vpay.example
+  tls:
+    enabled: true
+    clusterIssuer: letsencrypt-prod
+  api:
+    path: /v1
+    pathType: Prefix
+    limitRps: 20
+    limitBurstMultiplier: 3
+  token:
+    path: /v1/oauth/token
+    pathType: Exact
+    limitRps: 200
+    limitBurstMultiplier: 2

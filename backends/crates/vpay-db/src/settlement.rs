@@ -52,6 +52,27 @@
 //! `requires_payment_method` — so a settlement lands whether or not the
 //! confirm survived long enough to move the intent.
 //!
+//! # Where the settlement's `vpay_charge_transitions_total` comes from
+//!
+//! All three writes here call `crate::charges::record_transition` — the one
+//! seam for that counter (see `crate::charges`' header). The two settlement
+//! statements need a `from` label their `WHERE` clause cannot supply, since
+//! it matches a *set* of live states rather than one, so each `RETURNING`
+//! carries an extra
+//! `(SELECT prev.state FROM charges prev WHERE prev.id = charges.id)`.
+//!
+//! That sub-select reads the statement's own snapshot — an `UPDATE` never
+//! sees its own writes — so it yields the state the charge was in *before*
+//! this statement. It changes nothing about the compare-and-swap: the
+//! `WHERE` clause is unchanged, the row lock is unchanged, and a statement
+//! that matches no row still returns no row. The one honest caveat is that
+//! the snapshot is taken at statement start while the guard is re-evaluated
+//! against the newest committed row version (Postgres' read-committed
+//! recheck), so a charge that another worker moved between the two —
+//! `submitted` → `pending`, say — can be labelled with the earlier rung.
+//! `to` and `provider` are exact either way, and they are what the alerting
+//! rules select on.
+//!
 //! # What `None` does *not* mean
 //!
 //! It never means "the intent guard refused". After the widening above, the
@@ -64,11 +85,11 @@
 //! treats as "already done". Committing the charge half and reporting success
 //! would leave the merchant's intent permanently out of step with the money.
 
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Row as _, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::charges::ChargeRow;
+use crate::charges::{ChargeRow, record_transition};
 use crate::error::{DbError, classify_write};
 use crate::events::{self, NewEvent};
 use crate::payment_intents::{self, LIVE_CHARGE_STATES, PaymentIntentRow};
@@ -87,6 +108,82 @@ use crate::payment_intents::{self, LIVE_CHARGE_STATES, PaymentIntentRow};
 /// visibility is what enforces "only ever called inside this transaction",
 /// and rustdoc refuses a public link to a private item.
 const FAILURE_RAW_MAX_CHARS: usize = 2000;
+
+/// The extra `RETURNING` expression that carries the state a settled charge
+/// was in *before* the statement that settled it.
+///
+/// A correlated sub-select rather than an `UPDATE … FROM charges prev` join:
+/// the join form changes how the statement is planned and re-checked under a
+/// concurrent update, and this is the one statement in the workspace that
+/// must not change shape for a metric label. A sub-select in `RETURNING`
+/// leaves the `WHERE` clause, the row lock and the "matched no row" answer
+/// exactly as they were and only adds a value to the output list.
+///
+/// It reads the statement's own snapshot — an `UPDATE` cannot see its own
+/// writes — which is what makes it the *previous* state. See this module's
+/// header for the one case in which that snapshot can be a rung behind.
+///
+/// Aliased away from `state` deliberately: `crate::charges::COLUMNS` already
+/// returns a column of that name, and two `state` columns in one row would
+/// make `ChargeRow`'s decode depend on which one sqlx found first.
+const PREVIOUS_STATE: &str =
+    "(SELECT prev.state::TEXT FROM charges prev WHERE prev.id = charges.id) AS previous_state";
+
+/// The `from` label used when [`PREVIOUS_STATE`] came back `NULL`.
+///
+/// Not reachable through any query this module writes — the sub-select is
+/// correlated on the row the `UPDATE` just matched, so it always finds one —
+/// which is exactly why it is a fallback and not an error. See
+/// [`decode_settled`].
+const UNKNOWN_PREVIOUS_STATE: &str = "unknown";
+
+/// Decodes a settlement row into the previous state and the settled charge.
+///
+/// Hand-written rather than a second `sqlx::FromRow` struct because the pair
+/// is not a row type anybody stores: `previous_state` exists only inside
+/// these two statements, and giving it a named struct would invite a caller
+/// to ask for it somewhere it does not exist.
+///
+/// # Why `previous_state` is decoded as `Option<String>`
+///
+/// It is `NOT NULL` in practice — [`PREVIOUS_STATE`] is correlated on the
+/// row the `UPDATE` matched, and `charges.state` is `NOT NULL` — so this
+/// branch has no known way to be taken. It is written anyway because of what
+/// the alternative costs: decoding straight into `String` makes a `NULL`
+/// (from a future rewrite of that sub-select, or a schema change) a
+/// `DbError::Query` returned from `apply_succeeded`, i.e. **a settlement
+/// that fails because a metric label could not be decoded**. The charge is
+/// already `succeeded` and committed at that point; the caller sees a
+/// storage error and retries a settlement that has happened. A `from` label
+/// reading `unknown` on a dashboard is a strictly smaller problem than that,
+/// and it is visible, which a swallowed one would not be.
+///
+/// `unwrap_or_default()` rather than `?`, so the *decode* failing is treated
+/// the same way as a `NULL`: a dropped or renamed sub-select would otherwise
+/// be `ColumnNotFound`, which is again a settlement failing over a label.
+/// That drift is not invisible — it renders as `from="unknown"`, and
+/// `a_settlement_counts_the_transition_it_actually_made` in
+/// `tests/repositories.rs` asserts the real rung and fails in CI.
+///
+/// The sub-select stays: the label is worth having, and this only decides
+/// what happens if it is ever absent.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the *charge* does not decode — which would mean
+/// `crate::charges::COLUMNS` had drifted from [`ChargeRow`], i.e. a bug here
+/// rather than anything an operator did. That one still fails: it is the
+/// settled row itself, not a label.
+fn decode_settled(row: &sqlx::postgres::PgRow) -> Result<(String, ChargeRow), DbError> {
+    use sqlx::FromRow as _;
+
+    let previous_state: Option<String> = row.try_get("previous_state").unwrap_or_default();
+    let charge = ChargeRow::from_row(row).map_err(DbError::Query)?;
+    Ok((
+        previous_state.unwrap_or_else(|| UNKNOWN_PREVIOUS_STATE.to_owned()),
+        charge,
+    ))
+}
 
 /// The `type` of the event a successful settlement emits.
 ///
@@ -183,16 +280,17 @@ pub async fn apply_succeeded(
              provider_txn_id = COALESCE($2, provider_txn_id), \
              updated_at = now() \
          WHERE id = $1 AND state IN ({LIVE_CHARGE_STATES}) \
-         RETURNING {columns}",
+         RETURNING {PREVIOUS_STATE}, {columns}",
         columns = crate::charges::COLUMNS,
     );
-    let charge = sqlx::query_as::<_, ChargeRow>(&sql)
+    let row = sqlx::query(&sql)
         .bind(charge_id)
         .bind(provider_txn_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(classify_write)?;
-    let Some(charge) = charge else {
+    let charge = row.as_ref().map(decode_settled).transpose()?;
+    let Some((previous_state, charge)) = charge else {
         // Already settled. Nothing was written, so there is nothing to
         // commit and nothing to roll back either — but the transaction is
         // closed explicitly rather than dropped, so the connection returns
@@ -211,6 +309,10 @@ pub async fn apply_succeeded(
     emit(&mut tx, EVENT_SUCCEEDED, event_id, &intent, event_data).await?;
 
     tx.commit().await.map_err(DbError::Query)?;
+
+    // After the commit, deliberately: this counter is a record of settled
+    // money, and a transaction that rolled back settled none.
+    record_transition(&charge.provider_code, &previous_state, &charge.state);
 
     Ok(Some((charge, intent)))
 }
@@ -255,17 +357,18 @@ pub async fn apply_failed(
              failure_raw = $3, \
              updated_at = now() \
          WHERE id = $1 AND state IN ({LIVE_CHARGE_STATES}) \
-         RETURNING {columns}",
+         RETURNING {PREVIOUS_STATE}, {columns}",
         columns = crate::charges::COLUMNS,
     );
-    let charge = sqlx::query_as::<_, ChargeRow>(&sql)
+    let row = sqlx::query(&sql)
         .bind(charge_id)
         .bind(code)
         .bind(&bounded_raw)
         .fetch_optional(&mut *tx)
         .await
         .map_err(classify_write)?;
-    let Some(charge) = charge else {
+    let charge = row.as_ref().map(decode_settled).transpose()?;
+    let Some((previous_state, charge)) = charge else {
         tx.rollback().await.map_err(DbError::Query)?;
         return Ok(None);
     };
@@ -281,6 +384,8 @@ pub async fn apply_failed(
     emit(&mut tx, EVENT_PAYMENT_FAILED, event_id, &intent, event_data).await?;
 
     tx.commit().await.map_err(DbError::Query)?;
+
+    record_transition(&charge.provider_code, &previous_state, &charge.state);
 
     Ok(Some((charge, intent)))
 }
@@ -343,19 +448,30 @@ pub async fn set_live_state(
     expected: &str,
     new: &str,
 ) -> Result<bool, DbError> {
-    let updated = sqlx::query(
+    let moved = sqlx::query(
         "UPDATE charges SET state = $3::charge_state, updated_at = now() \
-         WHERE id = $1 AND state = $2::charge_state",
+         WHERE id = $1 AND state = $2::charge_state \
+         RETURNING provider_code",
     )
     .bind(charge_id)
     .bind(expected)
     .bind(new)
-    .execute(pool)
+    .fetch_optional(pool)
     .await
-    .map_err(classify_write)?
-    .rows_affected();
+    .map_err(classify_write)?;
 
-    Ok(updated == 1)
+    // `RETURNING provider_code` rather than counting affected rows: the
+    // metric below needs the rail, and reading it off the row this statement
+    // wrote is the only way it cannot disagree with what was written. The
+    // `Ok(false)` case is unchanged — no row matched, nothing moved, and
+    // nothing is counted.
+    let Some(row) = moved else {
+        return Ok(false);
+    };
+    let provider_code: String = row.try_get("provider_code").map_err(DbError::Query)?;
+    record_transition(&provider_code, expected, new);
+
+    Ok(true)
 }
 
 /// The most recent `submit` attempt for a charge, or `None` if the rail was

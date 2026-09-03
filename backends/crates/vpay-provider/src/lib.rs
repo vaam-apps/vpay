@@ -9,8 +9,16 @@
 //! [`http`] is the outbound HTTP client every adapter builds on. It lives
 //! here rather than in `vpay-api` because an adapter may not depend on the
 //! HTTP surface — see that module's own docs for the move and what it costs.
+//!
+//! [`measured`] is the other thing that belongs to *every* rail rather than
+//! to any one of them: the counter and histogram a rail call is recorded on.
+//! Same argument as [`http`] in the opposite direction — an adapter must not
+//! carry a copy of a cross-rail concern, so the port carries it once.
 
 pub mod http;
+pub mod measured;
+
+pub use measured::Measured;
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;

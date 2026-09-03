@@ -33,7 +33,7 @@ use std::collections::BTreeMap;
 use vpay_config::{Config, ConfigError};
 use vpay_core::ProviderFlow;
 use vpay_db::{CurrencySeed, ProviderSeed};
-use vpay_provider::ProviderAdapter;
+use vpay_provider::{Measured, ProviderAdapter};
 
 /// A binary's linked adapters, keyed by `providers.code`.
 ///
@@ -49,13 +49,34 @@ use vpay_provider::ProviderAdapter;
 /// `vpay-server`'s `both_mvp_rails_are_linked` and by the panic-free
 /// assertion in this module's tests, not something a running deployment can
 /// cause.
+///
+/// # Every adapter comes back wrapped in [`Measured`]
+///
+/// This is where `vpay_provider_requests_total` and
+/// `vpay_provider_request_duration_seconds` get their one seam. The wrap
+/// happens here rather than in either binary's `adapters()` list because
+/// that list is deliberately duplicated per binary (Step 2's D6) and a
+/// metric mounted in a duplicated list is one the copies eventually
+/// disagree about — the same argument this module's header makes about the
+/// derivation below. Everything that resolves a rail goes through this
+/// function: both `main`s, and the integration suite's own harness.
+///
+/// [`Measured`] delegates every method to the adapter it wraps and returns
+/// it as a plain `Box<dyn ProviderAdapter>`, so no caller can tell — or
+/// branch on — whether it is holding a wrapper. It is not a substitute for
+/// a rail and adds no code path that exists only outside production
+/// (ADR-0006); it is the shipping process measuring itself.
+///
+/// The conformance suite constructs adapters directly and is therefore
+/// *not* measured, which is correct: it exercises one adapter against a
+/// stub, and its counts would say nothing about a deployment.
 #[must_use]
 pub fn adapters_by_code(
     adapters: Vec<Box<dyn ProviderAdapter>>,
 ) -> BTreeMap<String, Box<dyn ProviderAdapter>> {
     adapters
         .into_iter()
-        .map(|adapter| (adapter.code().to_owned(), adapter))
+        .map(|adapter| (adapter.code().to_owned(), Measured::wrap(adapter)))
         .collect()
 }
 
@@ -421,6 +442,65 @@ mod tests {
         );
         for (key, adapter) in &adapters {
             assert_eq!(key, adapter.code());
+        }
+    }
+
+    /// **The wiring test for `vpay_provider_requests_total`.** Every adapter
+    /// this function returns is measured, whichever binary asked for it.
+    ///
+    /// `vpay_provider::measured`'s own tests prove the decorator records the
+    /// right labels; this proves that a rail resolved the way both `main`s
+    /// and the integration harness resolve one *is* decorated. Delete the
+    /// `Measured::wrap` above and the scrape below is empty — which is
+    /// exactly what a deployment with no rail metrics looks like, and
+    /// nothing else in the tree would notice.
+    #[test]
+    fn every_adapter_this_function_returns_is_measured() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || {
+            let adapters = two_rails();
+            let adapter = adapters.get("mtn_momo").expect("the rail is in the map");
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("a current-thread runtime builds");
+            let answered = runtime.block_on(adapter.query_status(&charge(), &config()));
+            assert!(
+                answered.is_err(),
+                "TestRail refuses every call; the decorator forwards that unchanged"
+            );
+        });
+        let scrape = handle.render();
+
+        assert!(
+            scrape.contains(
+                r#"vpay_provider_requests_total{provider="mtn_momo",operation="query_status",error_kind="operation_unsupported_by_rail"} 1"#
+            ),
+            "adapters_by_code must return measured adapters: {scrape}"
+        );
+    }
+
+    /// The narrowest `ChargeRef` the port accepts. Only its existence
+    /// matters here — `TestRail` reads none of it.
+    fn charge() -> ChargeRef {
+        ChargeRef {
+            reference_id: uuid::Uuid::nil(),
+            amount: Money::new(5_000, vpay_core::Currency::Xaf).expect("5000 is non-negative"),
+            payer_ref: None,
+            ref_extra: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Likewise the narrowest `ProviderConfig`.
+    fn config() -> ProviderConfig {
+        ProviderConfig {
+            base_url: "https://rail.example".to_owned(),
+            callback_url: "https://vpay.example/provider/mtn_momo/callback".to_owned(),
+            currency: vpay_core::Currency::Xaf,
+            settings: BTreeMap::new(),
+            credentials: BTreeMap::new(),
+            connect_timeout: vpay_provider::DEFAULT_CONNECT_TIMEOUT,
+            request_timeout: vpay_provider::DEFAULT_REQUEST_TIMEOUT,
         }
     }
 }

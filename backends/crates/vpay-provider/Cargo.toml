@@ -12,6 +12,13 @@ workspace = true
 
 [dependencies]
 vpay-core.workspace = true
+# The metrics facade, for `measured.rs` — the port decorator that counts and
+# times every rail call. Names and descriptions come from
+# `vpay_core::metrics`; the recorder they land in is installed by whichever
+# binary linked this crate. With no recorder every macro is a cheap no-op, so
+# a conformance run that installs none pays nothing. Facade only: this crate
+# installs no recorder, for the reason `vpay_core::metrics`' header gives.
+metrics.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -46,3 +53,10 @@ webpki-roots = "1"
 # leaves every shipping binary's feature set unchanged, and reqwest/hyper
 # already enable it in the same graph.
 tokio = { workspace = true, features = ["net"] }
+# Test-only, and deliberately the *shipping* exporter rather than
+# `metrics-util`'s `DebuggingRecorder`: `measured.rs`'s tests assert on the
+# rendered Prometheus text, which is what a scrape of a pod actually
+# receives, and enabling metrics-util's `debugging` feature would add
+# `ordered-float` to `Cargo.lock` for a weaker assertion. Already resolved at
+# this exact pin by both binaries, so no new package enters the lockfile.
+metrics-exporter-prometheus.workspace = true

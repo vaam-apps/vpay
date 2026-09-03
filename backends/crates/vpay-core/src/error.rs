@@ -133,6 +133,24 @@ pub enum Severity {
     Page,
 }
 
+impl Severity {
+    /// The string this severity is spelled with on a metric label — the
+    /// `Debug` spelling, for the reason [`Category::as_metric_label`] gives.
+    ///
+    /// Note that `Error` and `Page` are two *labels* on one `tracing` level:
+    /// the level cannot tell them apart, which is why `vpay_alert_events_total`
+    /// exists as a separate counter rather than as a level filter.
+    #[must_use]
+    pub const fn as_metric_label(self) -> &'static str {
+        match self {
+            Self::Info => "Info",
+            Self::Warn => "Warn",
+            Self::Error => "Error",
+            Self::Page => "Page",
+        }
+    }
+}
+
 impl Category {
     /// The HTTP status a boundary answers with. Stripe's own mapping where
     /// Stripe has one (`docs/api/README.md`: the error envelope is
@@ -229,6 +247,38 @@ impl Category {
             Self::RateLimited | Self::Rail => Severity::Warn,
             Self::Storage | Self::Configuration | Self::NotImplemented => Severity::Error,
             Self::Internal => Severity::Page,
+        }
+    }
+
+    /// The string this category is spelled with on a metric label, and it
+    /// is deliberately the `Debug` spelling.
+    ///
+    /// `vpay_error_events_total{category="Internal"}` has to be joinable by
+    /// eye with the JSON log line that produced it, and that line carries
+    /// `category` through `tracing`'s `?category` — i.e. `Debug`. A
+    /// snake_case label would read better in PromQL and would mean an
+    /// operator pivoting from an alert to the logs had to translate; worse,
+    /// the two spellings could drift without anything failing.
+    /// `the_metric_label_is_the_debug_spelling` pins them together for
+    /// every variant.
+    ///
+    /// A `const fn` over an exhaustive match, so a thirteenth category is a
+    /// compile error here rather than a series that silently never appears.
+    #[must_use]
+    pub const fn as_metric_label(self) -> &'static str {
+        match self {
+            Self::InvalidRequest => "InvalidRequest",
+            Self::Authentication => "Authentication",
+            Self::Forbidden => "Forbidden",
+            Self::NotFound => "NotFound",
+            Self::Conflict => "Conflict",
+            Self::Idempotency => "Idempotency",
+            Self::RateLimited => "RateLimited",
+            Self::Rail => "Rail",
+            Self::Storage => "Storage",
+            Self::Configuration => "Configuration",
+            Self::NotImplemented => "NotImplemented",
+            Self::Internal => "Internal",
         }
     }
 
@@ -705,6 +755,29 @@ mod tests {
                 code.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'),
                 "{c:?} → {code}"
             );
+        }
+    }
+
+    /// The decisive test for `vpay_error_events_total`'s `category` and
+    /// `severity` labels: the metric spells them exactly as the JSON log
+    /// line does.
+    ///
+    /// The log lines write `category = ?category` / `severity = ?severity`,
+    /// so `Debug` *is* the wire format an operator greps for. Renaming a
+    /// variant without touching `as_metric_label` fails here rather than
+    /// producing a dashboard whose labels no log line contains.
+    #[test]
+    fn the_metric_label_is_the_debug_spelling() {
+        for c in Category::ALL {
+            assert_eq!(format!("{c:?}"), c.as_metric_label());
+        }
+        for s in [
+            Severity::Info,
+            Severity::Warn,
+            Severity::Error,
+            Severity::Page,
+        ] {
+            assert_eq!(format!("{s:?}"), s.as_metric_label());
         }
     }
 

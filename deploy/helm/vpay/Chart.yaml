@@ -1,0 +1,38 @@
+# vpay Helm chart.
+#
+# Renders the two shipping workloads — `vpay-server` and `vpay-worker` — and
+# the objects around them. It deliberately templates **no database**: ADR-0013
+# / step-6 decision (9) puts Postgres outside this chart, reached through an
+# existing Secret. See README.md.
+#
+# NOTHING IN THIS CHART HAS EVER BEEN APPLIED TO A CLUSTER. `helm lint`,
+# `helm template` and `kubeconform` are the whole of its evidence. Read the
+# Status section of README.md before you deploy it.
+apiVersion: v2
+name: vpay
+description: vpay payment gateway — API server and background worker
+type: application
+
+# Chart version. Bumped by hand; there is no release automation for the chart
+# itself yet (the container images are block A's `release.yml`, this is not).
+version: 0.1.0
+
+# The application version this chart was written against. It is NOT a pin:
+# `values.yaml`'s `images.*.tag` defaults to this string, so a chart bump and
+# an image bump are the same edit unless a tag or digest is set explicitly.
+appVersion: "0.1.0"
+
+# `seccompProfile` on a pod spec (used by both Deployments) is GA from 1.19,
+# `PodDisruptionBudget` in `policy/v1` from 1.21, and the
+# `matchLabelKeys`-free NetworkPolicy shapes used here are far older. 1.27 is
+# the floor chosen because it is the oldest release still receiving patches
+# when this chart was written (2026-09-03) — not because anything here was
+# tested against it. Nothing here has been tested against any version.
+kubeVersion: ">=1.27.0-0"
+
+home: https://github.com/vaam-store/vpay
+sources:
+  - https://github.com/vaam-store/vpay
+keywords:
+  - payments
+  - mobile-money

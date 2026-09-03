@@ -161,9 +161,20 @@ verify-errors:
 #
 # Measured 2026-09-03 after Step 5b was rebased onto Steps 4 and 5:
 # `886 tests run: 886 passed, 0 skipped`, 38 binaries.
+#
+# Re-measured 2026-09-03 after Step 6 was squashed and rebased onto that tree
+# (Steps 4, 5 and 5b) and Step 6's own webhook-delivery metric assertions
+# landed: `just verify-ignored` lists 927 total, still 38 binaries — no new
+# binary, because both new assertions (`the_ladder_walks_delivery_delay_and_
+# then_succeeds`, `a_delivery_past_the_last_rung_is_exhausted_and_not_
+# rescheduled`) extend existing tests in `webhooks.rs` rather than adding
+# one.
 expected_ignored := "0"
 expected_suites := "38"
-min_tests := "870"
+# A floor, not a target — set a little under the measured 927 rather than to
+# it, so it is not a number people bump reflexively. Bump it in the same
+# commit that legitimately adds tests, never to make a red run green.
+min_tests := "900"
 
 verify-ignored:
     #!/usr/bin/env bash
@@ -191,6 +202,207 @@ verify-ignored:
 
 # Everything CI runs, in CI's order.
 ci: fmt-check clippy verify test-rust verify-ignored lint-web test-web deny
+
+# ------------------------------------------------------------------ helm ---
+
+chart := "deploy/helm/vpay"
+
+# Everything CI's `deploy` job runs, in the same order, by calling this recipe.
+# CI runs `just helm-check` rather than a copy of these commands, so the gate
+# and the local check cannot drift.
+#
+# NOT part of `just ci`, and that is deliberate: `kubeconform` fetches its
+# schemas over HTTPS (the upstream JSON-schema mirror, plus the CRD catalog
+# for ServiceMonitor/PrometheusRule, which no `-schema-location default` can
+# know about). `just ci` is expected to run on a machine with no network, so
+# adding this to it would turn "offline" into "failing". Run it by hand before
+# opening a PR that touches the chart; CI runs it on every PR regardless.
+#
+# What it proves: the chart lints, both value sets render, the fifteen named
+# guards are exactly the fifteen on disk and each fires on its own values file
+# with a non-zero exit, and every rendered object validates against the
+# upstream schemas. What it does not prove: anything at all about a cluster.
+# Nothing here has ever been applied to one.
+helm-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for tool in helm kubeconform; do
+        command -v "$tool" >/dev/null 2>&1 || { echo "helm-check: needs '$tool' on PATH" >&2; exit 1; }
+    done
+
+    chart="{{ chart }}"
+    out="$(mktemp -d)"
+    trap 'rm -rf "$out"' EXIT
+
+    echo "==> helm lint (defaults, then ci/values-full.yaml)"
+    helm lint "$chart"
+    helm lint "$chart" -f "$chart/ci/values-full.yaml"
+
+    echo "==> helm template"
+    helm template vpay "$chart" > "$out/default.yaml"
+    helm template vpay "$chart" -f "$chart/ci/values-full.yaml" > "$out/full.yaml"
+
+    # Each file under ci/guards/ violates exactly one guard, and the file's
+    # basename IS the guard's name. A guard that stops firing — or one whose
+    # message stops naming itself — fails here, which is the only thing that
+    # keeps these from rotting into decoration.
+    #
+    # The expected set is written out rather than counted, because "13 files
+    # were found and 13 fired" is also what deleting a guard *and* its values
+    # file looks like. Adding a guard means adding its name here, its values
+    # file under ci/guards/, and the `fail` in templates/_validate.tpl — in
+    # one commit.
+    expected_guards=(
+        dashboard-not-templated
+        database-secret
+        extra-env-collision
+        grace-period
+        image-digest-format
+        ingress-host
+        networkpolicy-database
+        observability-port
+        overlay-empty
+        pdb-minavailable
+        rails-egress-except
+        rails-secret
+        rate-limit-ordering
+        signing-key-secret
+        worker-replicas
+    )
+    echo "==> template guards (each must FAIL, by name)"
+    # LC_ALL=C so the comparison does not depend on the runner's collation
+    # rules for the hyphens in these names.
+    found=($(cd "$chart/ci/guards" && for f in *.yaml; do basename "$f" .yaml; done | LC_ALL=C sort))
+    if [ "${expected_guards[*]}" != "${found[*]}" ]; then
+        echo "helm-check: FAIL — ci/guards/ holds a different set of guards than this recipe expects." >&2
+        echo "  expected: ${expected_guards[*]}" >&2
+        echo "  found:    ${found[*]}" >&2
+        exit 1
+    fi
+
+    guards=0
+    for name in "${expected_guards[@]}"; do
+        f="$chart/ci/guards/$name.yaml"
+        if message="$(helm template vpay "$chart" -f "$f" 2>&1)"; then
+            echo "helm-check: FAIL — guard '$name' did not fire; $f rendered successfully" >&2
+            exit 1
+        fi
+        if ! printf '%s' "$message" | grep -qF "guard \"$name\""; then
+            echo "helm-check: FAIL — $f failed, but not with guard '$name':" >&2
+            printf '%s\n' "$message" >&2
+            exit 1
+        fi
+        echo "    guard \"$name\" fired"
+        guards=$((guards + 1))
+    done
+    echo "    $guards guards, all fired by name (${#expected_guards[@]} expected)"
+
+    # ADR-0009 assumes a rate limit exists in front of the token endpoint.
+    # This is the only thing in the repository that checks one is configured,
+    # and it checks the RENDERED yaml, not the values — a template that stops
+    # emitting the annotation would otherwise pass every other step here.
+    echo "==> ingress rate limit"
+    token_only="$(helm template vpay "$chart" -f "$chart/ci/values-full.yaml" --show-only templates/ingress.yaml)"
+    printf '%s' "$token_only" | grep -q 'nginx.ingress.kubernetes.io/limit-rps' \
+        || { echo "helm-check: FAIL — no limit-rps annotation in the rendered Ingress" >&2; exit 1; }
+    rps=($(printf '%s\n' "$token_only" | sed -n 's/.*nginx.ingress.kubernetes.io\/limit-rps: "\([0-9]*\)".*/\1/p'))
+    if [ "${#rps[@]}" -ne 2 ]; then
+        echo "helm-check: FAIL — expected two Ingress objects each carrying limit-rps, found ${#rps[@]}" >&2
+        exit 1
+    fi
+    # Rendered in template order: the /v1 Ingress first, the token one second.
+    if [ "${rps[1]}" -gt "${rps[0]}" ]; then
+        echo "helm-check: FAIL — the token Ingress limit-rps (${rps[1]}) is looser than /v1's (${rps[0]})" >&2
+        exit 1
+    fi
+    echo "    /v1 limit-rps=${rps[0]}, /v1/oauth/token limit-rps=${rps[1]} (tighter, as intended)"
+
+    echo "==> kubeconform (downloads schemas — needs network)"
+    kubeconform -strict -summary \
+        -schema-location default \
+        -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{{{.Group}}/{{{{.ResourceKind}}_{{{{.ResourceAPIVersion}}.json' \
+        "$out/default.yaml" "$out/full.yaml"
+
+    echo "helm-check: ok — lint, render, $guards guards, rate limit, kubeconform. No cluster was involved."
+
+# --------------------------------------------------------------- release ---
+
+# What `.github/workflows/release.yml` does, minus everything that needs a
+# registry — and minus one thing that needs a runner it cannot have here.
+#
+# Builds all three images for the HOST platform ONLY. The published images are
+# multi-arch (amd64 + arm64, step-6 decision (8)), but the workflow builds each
+# architecture on a NATIVE runner — `ubuntu-latest` and `ubuntu-24.04-arm` —
+# because `backends/Dockerfile` compiles the builder's own host triple and the
+# whole point of decision (8) is not paying for `ring`'s asm and mimalloc's C
+# build under emulation. Reproducing that locally would mean QEMU, i.e. the
+# exact path the workflow was designed to avoid, at 10-30x the wall clock. So
+# this recipe does not try: a green run here says the Dockerfiles build on
+# THIS machine's architecture, and says nothing whatsoever about the other one.
+#
+# `--provenance=false --sbom=false` for the same class of reason: the
+# attestations the workflow attaches need an exporter that can carry them, and
+# the local `docker` driver cannot. They are unexercised here by construction.
+#
+# Also NOT covered, and it is most of the workflow: `push-by-digest`, the
+# `imagetools create` manifest merge, the tag set from `docker/metadata-action`,
+# GHCR authentication, and `cosign sign`. Nothing local can stand in for those.
+# The first evidence for any of them is a real run — see docs/runbooks/release.md.
+#
+# Build the three release images for the host platform, then check the chart.
+release-dry-run:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for tool in docker helm kubeconform; do
+        command -v "$tool" >/dev/null 2>&1 || { echo "release-dry-run: needs '$tool' on PATH" >&2; exit 1; }
+    done
+    docker buildx version >/dev/null 2>&1 \
+        || { echo "release-dry-run: needs 'docker buildx' (the workflow uses it for every build)" >&2; exit 1; }
+
+    # The host platform, spelled the way buildx spells it. Not read from
+    # `docker version --format` because a Go template's braces collide with
+    # just's own interpolation syntax.
+    case "$(uname -m)" in
+        x86_64|amd64)  platform=linux/amd64 ;;
+        aarch64|arm64) platform=linux/arm64 ;;
+        *) echo "release-dry-run: unknown host arch '$(uname -m)'; the release images are amd64 and arm64 only" >&2; exit 1 ;;
+    esac
+    echo "==> building for $platform only (see this recipe's comment for why not both)"
+
+    # name:dockerfile:target — the same three the release matrix builds, from
+    # the repository root, which is the context BOTH Dockerfiles require:
+    # `backends/Dockerfile` COPYs `sdks/rust` and `examples/merchant-demo`
+    # because cargo refuses to load a workspace whose `members` list names a
+    # missing directory.
+    #
+    # No `--build-arg VPAY_GIT_SHA` here, deliberately, and that is a
+    # difference from the workflow rather than an omission: a dry run is not
+    # a release, its images are never pushed, and stamping one with a real
+    # commit would produce a `vpay_build_info` label for an artefact nobody
+    # can pull. The default (`unknown`) is the true answer for these.
+    for spec in vpay-server:backends/Dockerfile:server \
+                vpay-worker:backends/Dockerfile:worker \
+                vpay-dashboard:frontends/Dockerfile:runner; do
+        IFS=: read -r name file target <<<"$spec"
+        echo "==> $name ($file, target $target)"
+        docker buildx build \
+            --platform "$platform" \
+            --file "$file" \
+            --target "$target" \
+            --tag "ghcr.io/vaam-store/$name:dry-run" \
+            --provenance=false \
+            --sbom=false \
+            --push=false \
+            .
+    done
+
+    echo "==> helm-check"
+    just helm-check
+
+    echo "release-dry-run: ok — three images built for $platform, chart checked."
+    echo "release-dry-run: NOT covered: the other architecture, provenance/SBOM,"
+    echo "release-dry-run: push-by-digest, the manifest merge, and cosign signing."
+
 
 # -------------------------------------------------------------- dev loop ---
 

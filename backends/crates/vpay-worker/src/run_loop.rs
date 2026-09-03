@@ -43,6 +43,9 @@ use time::OffsetDateTime;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
+use vpay_core::metrics::{
+    JOBS_CLAIMED_TOTAL, JOBS_COMPLETED_TOTAL, JOBS_OLDEST_CLAIMABLE_AGE_SECONDS, job_outcome,
+};
 use vpay_core::{Classify as _, Severity};
 use vpay_db::{DbError, JobRow, PgPool};
 
@@ -286,11 +289,45 @@ pub async fn run_once(
     let Some(job) = vpay_db::jobs::claim(pool, worker_id).await? else {
         return Ok(None);
     };
+    // Counted here rather than inside `vpay_db::jobs::claim`, and only on
+    // the `Some` arm: an empty claim is this loop idling, not work. The
+    // label is `jobs.kind` as written in the row — the same string the log
+    // line carries, including a kind this build cannot interpret, which is
+    // exactly the case worth being able to see on a dashboard.
+    metrics::counter!(JOBS_CLAIMED_TOTAL, "kind" => job.kind.clone()).increment(1);
 
     let result = handle(pool, adapters, rails, policy, webhooks, &job).await;
     let settled = settle(pool, worker_id, &job, result).await?;
+    // After `settle`, so the counter reflects the write that actually
+    // happened rather than the one this worker intended:
+    // `Disposition::Lost` is what a guarded write that matched no row
+    // becomes, and folding it into a neighbour would hide a lease shorter
+    // than a handler. `claimed - completed` is therefore the number of jobs
+    // in flight, and it is exact because both are incremented on this one
+    // path.
+    metrics::counter!(
+        JOBS_COMPLETED_TOTAL,
+        "kind" => settled.kind.clone(),
+        "outcome" => outcome_label(settled.disposition),
+    )
+    .increment(1);
     log_disposition(&settled);
     Ok(Some(settled))
+}
+
+/// The `outcome` label for [`JOBS_COMPLETED_TOTAL`].
+///
+/// A total function over [`Disposition`], so a fifth variant added later is
+/// a compile error here rather than a silently unlabelled series. The values
+/// themselves live in [`job_outcome`] — an alert rule matches them
+/// literally, so they are spelled once.
+const fn outcome_label(disposition: Disposition) -> &'static str {
+    match disposition {
+        Disposition::Finished => job_outcome::TERMINAL,
+        Disposition::Rescheduled(_) => job_outcome::RETRY,
+        Disposition::DeadLettered => job_outcome::DEAD_LETTER,
+        Disposition::Lost => job_outcome::LOST,
+    }
 }
 
 /// Turns a handler's answer into the one write that ends the lease.
@@ -773,6 +810,14 @@ async fn claim_loop(
                 // off exactly as for an empty queue: Postgres being briefly
                 // unreachable is not a reason to spin on it, and it is not a
                 // reason to exit the process either — the pool reconnects.
+                //
+                // Counted here as well as logged. This `DbError` never
+                // reaches `handlers::log_failure` — it is not a job's
+                // failure — so without this call a queue nobody can read
+                // would page in the JSON logs and be invisible to
+                // `VpayPageableErrorEvents`, which is the alert that exists
+                // for exactly this outage.
+                vpay_core::metrics::record_error_event(&error);
                 let level_is_page = error.severity() == Severity::Page;
                 if level_is_page {
                     tracing::error!(
@@ -906,18 +951,18 @@ async fn gauge_loop(pool: PgPool, worker_id: String, counters: Arc<Counters>) {
     loop {
         ticker.tick().await;
         let (claimed, finished, rescheduled, dead_lettered, lost) = counters.snapshot();
-        let oldest = vpay_db::jobs::oldest_runnable_run_at(&pool).await;
-        let behind_seconds = match &oldest {
-            Ok(Some(run_at)) => Some((OffsetDateTime::now_utc() - *run_at).whole_seconds()),
-            // No runnable rows at all: the queue is empty, which is a
-            // different fact from "zero seconds behind" and is reported as
-            // one by leaving the field null.
-            Ok(None) => None,
+        let read = match vpay_db::jobs::oldest_runnable_run_at(&pool).await {
+            Ok(Some(run_at)) => QueueAgeRead::Oldest(run_at),
+            Ok(None) => QueueAgeRead::Empty,
             Err(error) => {
                 tracing::warn!(error = %error, "could not read the job queue's age");
-                None
+                QueueAgeRead::Unknown
             }
         };
+        let (behind_seconds, gauge_value) = queue_age(read, OffsetDateTime::now_utc());
+        if let Some(value) = gauge_value {
+            metrics::gauge!(JOBS_OLDEST_CLAIMABLE_AGE_SECONDS).set(value);
+        }
         tracing::info!(
             worker_id = %worker_id,
             claimed,
@@ -931,9 +976,124 @@ async fn gauge_loop(pool: PgPool, worker_id: String, counters: Arc<Counters>) {
     }
 }
 
+/// What `vpay_db::jobs::oldest_runnable_run_at` said this pass — three
+/// states, because the log line and the metric treat them differently and a
+/// `Result<Option<_>, _>` threaded through both would have to be matched
+/// twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueueAgeRead {
+    /// The oldest claimable row's `run_at`.
+    Oldest(OffsetDateTime),
+    /// Nothing runnable at all.
+    Empty,
+    /// The read itself failed.
+    Unknown,
+}
+
+/// `(the log field, the gauge value)` for one queue-age reading.
+///
+/// A pure function of the reading and of `now`, so the one place the log and
+/// the metric *disagree* is testable without a database, a clock or a
+/// 60-second wait. That disagreement is deliberate and is the whole reason
+/// this is not inlined:
+///
+/// * **an empty queue logs `null` and publishes `0`.** "Nothing to do" and
+///   "caught up to the second" are different facts and the log says so. A
+///   Prometheus gauge has no null: it holds its last value until something
+///   writes another one, so *not* writing on an empty queue would leave the
+///   previous backlog's number on the series forever and page an on-call
+///   indefinitely after the backlog cleared. Zero is the lesser inaccuracy
+///   and it is the one that cannot invent an incident.
+/// * **a failed read logs `null` and publishes nothing at all**, leaving the
+///   last known value in place, because then the age is genuinely unknown —
+///   and a warning has already been logged by the caller. Writing `0` here
+///   would silence a real backlog every time Postgres hiccupped.
+///
+/// `now` is a parameter rather than `OffsetDateTime::now_utc()` inside so a
+/// test can pin an exact age instead of asserting a range.
+fn queue_age(read: QueueAgeRead, now: OffsetDateTime) -> (Option<i64>, Option<f64>) {
+    match read {
+        QueueAgeRead::Oldest(run_at) => {
+            let behind = now - run_at;
+            (Some(behind.whole_seconds()), Some(behind.as_seconds_f64()))
+        }
+        QueueAgeRead::Empty => (None, Some(0.0)),
+        QueueAgeRead::Unknown => (None, None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The one place the queue-age log field and the queue-age *metric*
+    /// deliberately disagree, pinned as three cases so the disagreement
+    /// cannot be "simplified" away by someone who reads only one of them.
+    ///
+    /// The empty case is the decisive one: making it publish `None` (i.e.
+    /// leaving the gauge untouched, which is what the log does) would look
+    /// like consistency and would mean a Prometheus alert on
+    /// `vpay_jobs_oldest_claimable_age_seconds > 300` keeps firing forever
+    /// after a backlog clears, because a gauge holds its last value.
+    #[test]
+    fn an_empty_queue_logs_nothing_and_publishes_zero_while_a_failed_read_publishes_neither() {
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::from_secs(1_000);
+
+        let (logged, gauge) = queue_age(QueueAgeRead::Oldest(now - Duration::from_secs(90)), now);
+        assert_eq!(logged, Some(90), "the log field is whole seconds behind");
+        assert_eq!(gauge, Some(90.0), "the gauge carries the same age");
+
+        let (logged, gauge) = queue_age(QueueAgeRead::Empty, now);
+        assert_eq!(
+            logged, None,
+            "an empty queue is not `0 seconds behind`, and the log says so"
+        );
+        assert_eq!(
+            gauge,
+            Some(0.0),
+            "the gauge must be written to 0, or the previous backlog's value stays on the \
+             series forever and pages an on-call after it cleared"
+        );
+
+        let (logged, gauge) = queue_age(QueueAgeRead::Unknown, now);
+        assert_eq!(logged, None);
+        assert_eq!(
+            gauge, None,
+            "a failed read leaves the last known value alone: writing 0 would silence a real \
+             backlog every time Postgres hiccupped"
+        );
+    }
+
+    /// The `outcome` label is a total function over [`Disposition`], and
+    /// `Lost` is its own value rather than folded into a neighbour — a
+    /// lease shorter than a handler is a real defect and must stay visible.
+    #[test]
+    fn every_disposition_has_its_own_outcome_label() {
+        let labels = [
+            outcome_label(Disposition::Finished),
+            outcome_label(Disposition::Rescheduled(Duration::from_secs(10))),
+            outcome_label(Disposition::DeadLettered),
+            outcome_label(Disposition::Lost),
+        ];
+        assert_eq!(
+            labels,
+            [
+                job_outcome::TERMINAL,
+                job_outcome::RETRY,
+                job_outcome::DEAD_LETTER,
+                job_outcome::LOST,
+            ]
+        );
+        let mut sorted = labels;
+        sorted.sort_unstable();
+        let mut deduped = sorted.to_vec();
+        deduped.dedup();
+        assert_eq!(
+            deduped.len(),
+            labels.len(),
+            "two dispositions sharing a label would merge two different outcomes into one series"
+        );
+    }
 
     /// The three parts, in the order an operator scans them, with the
     /// hostname first because that is what they will `kubectl logs`.

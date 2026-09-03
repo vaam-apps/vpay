@@ -36,6 +36,14 @@ vpay-worker.workspace = true
 vpay-adapter-mtn-momo.workspace = true
 vpay-adapter-orange-money.workspace = true
 vpay-testkit.workspace = true
+# `tests/worker_e2e.rs` installs a real Prometheus recorder and scrapes it
+# through the shipping `vpay_api::observability` router, so the assertion is
+# on the document a Prometheus server would actually receive rather than on
+# an in-process counter handle. Both are the same pins the two binaries use;
+# the exporter's default features are off workspace-wide (see root
+# Cargo.toml) because `push-gateway` pulls the `aws-lc-rs` `deny.toml` bans.
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
 tokio.workspace = true
 rstest.workspace = true
 sqlx.workspace = true

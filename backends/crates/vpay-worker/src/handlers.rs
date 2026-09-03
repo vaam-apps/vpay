@@ -545,7 +545,7 @@ async fn resubmit_charge(
     );
 
     let mut tx = pool.begin().await.map_err(DbError::Query)?;
-    vpay_db::charges::mark_submitted(
+    let submitted_charge = vpay_db::charges::mark_submitted(
         &mut tx,
         &charge.id,
         ChargeState::Submitted.as_wire_str(),
@@ -566,6 +566,11 @@ async fn resubmit_charge(
     )
     .await?;
     tx.commit().await.map_err(DbError::Query)?;
+
+    // After the commit: the enqueue above shares this transaction, and a
+    // resubmit whose transaction rolled back moved no charge. See
+    // `vpay_db::charges`' header.
+    vpay_db::charges::record_left_submitting(&submitted_charge);
 
     tracing::info!(
         job_id = %job.id,
@@ -1427,9 +1432,23 @@ fn stale_after() -> time::Duration {
 /// cannot attach it for the caller. `alert` is set for [`Severity::Page`] and
 /// nothing else, so an alerting rule can select pages without also firing on
 /// every rail timeout.
+///
+/// It is also where a job failure reaches `vpay_error_events_total` and —
+/// for a `Page` — `vpay_alert_events_total`, through
+/// [`vpay_core::metrics::record_error_event`]. This is the `JobError` twin
+/// of `vpay_api::ApiError::log`, and for the same reason: the counter and
+/// the `alert = true` field are one decision read off one [`Classify`] impl,
+/// so no log-scraping layer can classify the same failure differently.
+///
+/// `crate::run_loop`'s `log_disposition` reports the *same* failure again as
+/// a disposition, at a wider severity net, and deliberately does **not**
+/// increment: it would double-count this one and add others that carry no
+/// classification to label. `record_error_event`'s own docs list every
+/// `alert = true` line in the workspace that the counters do not carry.
 fn log_failure(job: &vpay_db::JobRow, error: &JobError) {
     let severity = error.severity();
     let code = error.code();
+    vpay_core::metrics::record_error_event(error);
     match severity {
         Severity::Page => tracing::error!(
             alert = true,

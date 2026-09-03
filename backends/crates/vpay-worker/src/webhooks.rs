@@ -59,6 +59,7 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use vpay_api::model::EventObject;
+use vpay_core::metrics::{WEBHOOK_DELIVERIES_TOTAL, webhook_outcome};
 use vpay_db::{DbError, EventRow, JobRow, PgPool};
 use vpay_provider::http::bounded_body;
 
@@ -977,6 +978,16 @@ pub async fn handle_deliver(
                 )
                 .await?;
                 if recorded {
+                    // After the CAS commits, and only when it actually
+                    // changed the row: a second pass over an already-settled
+                    // delivery is not a second success, and counting it would
+                    // inflate the series past the number of receivers that
+                    // ever answered 2xx.
+                    metrics::counter!(
+                        WEBHOOK_DELIVERIES_TOTAL,
+                        "outcome" => webhook_outcome::SUCCEEDED
+                    )
+                    .increment(1);
                     tracing::info!(
                         job_id = %job.id,
                         delivery_id = %delivery.id,
@@ -1074,6 +1085,18 @@ async fn record_failure(
         delay.is_none(),
     )
     .await?;
+    // After that write commits (a single `UPDATE`, autocommitted): the
+    // ladder index already decided which of the two outcomes this attempt
+    // is, so the label and the row's new `state` cannot disagree.
+    metrics::counter!(
+        WEBHOOK_DELIVERIES_TOTAL,
+        "outcome" => if delay.is_some() {
+            webhook_outcome::RETRY
+        } else {
+            webhook_outcome::EXHAUSTED
+        }
+    )
+    .increment(1);
 
     match delay {
         Some(delay) => {

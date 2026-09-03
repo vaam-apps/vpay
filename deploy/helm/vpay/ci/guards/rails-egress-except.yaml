@@ -1,0 +1,17 @@
+# A rails egress rule whose `except` list has lost 169.254.0.0/16 — the
+# link-local block holding the cloud metadata endpoint. Everything else about
+# this values file is valid, the policy renders, and kubeconform accepts it;
+# what it permits is an SSRF in a rail adapter reaching 169.254.169.254.
+networkPolicy:
+  enabled: true
+  database:
+    # TEST-NET-3 (RFC 5737), as in ci/values-full.yaml.
+    cidrs:
+      - 203.0.113.10/32
+  railsEgress:
+    enabled: true
+    port: 443
+    except:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16

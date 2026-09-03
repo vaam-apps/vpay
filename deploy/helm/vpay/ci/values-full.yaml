@@ -1,0 +1,65 @@
+# Everything this chart can render, on at once.
+#
+# CI templates the chart twice: once with the defaults (the path an operator
+# takes first) and once with this file, so that the optional objects — both
+# Ingresses, both NetworkPolicies, both ServiceMonitors, the PrometheusRule
+# and the overlay ConfigMap — are actually produced and handed to kubeconform.
+# Without it those templates would be validated by nobody.
+#
+# It is not an example production configuration. The Secret names are the
+# defaults, the digest is a real-shaped but meaningless one, and the CIDR is
+# documentation-range.
+
+images:
+  server:
+    # A well-formed digest, so the rendered reference exercises the
+    # digest-pinning path (`repo@sha256:...`) rather than the tag path. It
+    # points at nothing.
+    digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  pullSecrets:
+    - name: ghcr-pull
+
+server:
+  replicaCount: 3
+  podAnnotations:
+    example.vpay/rendered-by: ci
+worker:
+  replicaCount: 2
+  concurrency: 8
+
+config:
+  profile: production
+  createOverlayConfigMap: true
+  overlay: |
+    deployment:
+      name: vpay
+      livemode: true
+      public_base_url: https://api.vpay.example
+
+metrics:
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
+  prometheusRule:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
+
+ingress:
+  enabled: true
+  host: api.vpay.example
+  tls:
+    enabled: true
+    clusterIssuer: letsencrypt-prod
+
+networkPolicy:
+  enabled: true
+  database:
+    # TEST-NET-3 (RFC 5737), i.e. deliberately not a real address.
+    cidrs:
+      - 203.0.113.10/32
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
