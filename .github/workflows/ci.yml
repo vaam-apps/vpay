@@ -139,12 +139,19 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version-file: .nvmrc, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      # Before `typecheck`, not after it. The Node SDK is the one package
+      # whose `build` actually emits JS (`dist/`, consumed by merchants and by
+      # `just sdk-conformance-node`), so `pnpm -r typecheck` alone would not
+      # catch an emit-time failure — but it is also a *prerequisite* of the
+      # typecheck now: `sdks/stripe-compat` imports `@vpay/sdk/stripe`, whose
+      # types resolve through the package's `exports` to `dist/stripe-auth.d.ts`,
+      # and `dist/` is gitignored. Run in the old order this job failed on a
+      # clean checkout with `TS2307: Cannot find module '@vpay/sdk/stripe'`.
+      # The `e2e` job builds it for the same reason; neither job can borrow
+      # the other's artefacts.
+      - run: pnpm --filter @vpay/sdk build
       - run: pnpm -r typecheck
       - run: pnpm -r test
-      # The Node SDK is the one package whose `build` actually emits JS
-      # (`dist/`, consumed by merchants and by `just sdk-conformance-node`);
-      # `pnpm -r typecheck` alone would not catch an emit-time failure.
-      - run: pnpm --filter @vpay/sdk build
       - run: pnpm --filter @vpay/ui build-storybook
 
   e2e:
@@ -164,6 +171,19 @@ jobs:
         with:
           path: ~/.cache/Cypress
           key: cypress-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      # A Rust toolchain in the *e2e* job, which never used to need one.
+      # `just gen-demo-keys` (below) runs `cargo xtask gen-signing-key`,
+      # because generating the demo merchant's key pair also means extracting
+      # its public JWK and its RFC 7638 thumbprint — and reproducing a
+      # thumbprint in shell would be a second implementation of it. `xtask`
+      # depends on five small crates and none of the workspace, so this is a
+      # short compile, not a build of the server.
+      - id: toolchain
+        run: echo "channel=$(sed -n 's/^channel = \"\(.*\)\"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master, 2026-08-05
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+      - uses: Swatinem/rust-cache@v2
       # With `CYPRESS_INSTALL_BINARY` unset, the `cypress` package's own
       # postinstall downloads the binary during `pnpm install`. `verify` then
       # proves it is actually runnable before a stack is built for it.
@@ -175,14 +195,51 @@ jobs:
       # step is idempotent — a no-op when the binary is already there.
       - run: pnpm --filter @vpay/e2e exec cypress install
       - run: pnpm --filter @vpay/e2e exec cypress verify
-      # A throwaway RS256 signing key for the merchant OP: `vpay-server` will
-      # not start without one (compose.e2e.yml explains the mount). Generated
-      # per run, world-readable so UID 65532 inside the scratch image can
-      # read the bind mount, discarded with the runner.
-      - name: generate a throwaway OAuth signing key for the stack
-        run: just gen-e2e-signing-key
+      # The Node SDK's `dist/` — `sdks/stripe-compat` imports
+      # `@vpay/sdk/stripe`, which resolves to `dist/stripe-auth.js`. The `web`
+      # job builds it too; this job cannot borrow that job's artefacts.
+      - run: pnpm --filter @vpay/sdk build
+      # Two throwaway RS256 key pairs, not one. `gen-demo-keys` depends on
+      # `gen-e2e-signing-key`, so it still produces the merchant OP's own
+      # signing key (`vpay-server` will not start without it —
+      # compose.e2e.yml explains the mount); it *also* produces a registered
+      # merchant's key pair plus the `demo` profile overlay carrying its
+      # public JWK.
+      #
+      # That second pair is why this job now brings up `-f compose.demo.yml`
+      # as well. `config/application.yml`'s only merchant, `acme-cameroon`,
+      # has a placeholder modulus that nobody holds the private half of, so
+      # against the base file alone no client can complete the
+      # `private_key_jwt` handshake and `sdks/stripe-compat` could not make a
+      # single authenticated `/v1` call. The overlay replaces the merchant
+      # registry with one entry whose key this runner generated moments ago.
+      #
+      # Everything else the demo overlay changes is inert here: it stops
+      # publishing Postgres on the host (nothing in this job connects to it
+      # from outside a container) and it republishes `vpay-server` through
+      # `${VPAY_DEMO_PORT:-8080}`, which with the variable unset is the same
+      # `8080:8080` this job already polled.
+      #
+      # The one change that is NOT merely a port is the config overlay:
+      # compose.e2e.yml sets `VPAY_PROFILE: sandbox`, compose.demo.yml
+      # overrides it to `demo`, and vpay-config loads ONE overlay — the one
+      # the profile names. So this stack loads `config/application-demo.yml`
+      # *instead of* `config/application-sandbox.yml`, and with that,
+      # `application-sandbox.yml` is exercised by nothing in this workflow
+      # even though `sandbox` is the CLI's default profile.
+      #
+      # That is currently inert, and only currently. The sandbox overlay sets
+      # exactly two things the demo overlay does not: `deployment.name`
+      # (cosmetic) and `dashboard_client.redirect_uris`, which points the OIDC
+      # callback at `http://localhost:3000/dash/v1/callback`. The Cypress spec
+      # asserts the dashboard's scaffold notice and never starts a login, so
+      # no redirect URI is read on either profile. The day a spec signs in,
+      # this job stops covering the profile it thinks it covers — see
+      # docs/status.md's "GitHub Actions" row.
+      - name: generate throwaway OAuth keys — the OP's, and a registered merchant's
+        run: just gen-demo-keys
       - name: build both images and bring up the real stack (rails stubbed by WireMock, not in-process)
-        run: docker compose -f compose.yml -f compose.e2e.yml up -d --build
+        run: docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml up -d --build
       # `vpay-server`'s image is `FROM scratch` and carries no HEALTHCHECK
       # (see compose.e2e.yml for why), so readiness is observed from the
       # runner instead. This is also the first place in this repository's
@@ -200,8 +257,8 @@ jobs:
             sleep 1
           done
           echo "::error::vpay-server never answered 200 on /healthz (last status: '$code')"
-          docker compose -f compose.yml -f compose.e2e.yml ps
-          docker compose -f compose.yml -f compose.e2e.yml logs --no-color vpay-server
+          docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml ps
+          docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml logs --no-color vpay-server
           exit 1
       - name: wait for the dashboard to answer on :3000
         run: |
@@ -214,13 +271,38 @@ jobs:
             sleep 1
           done
           echo "::error::dashboard never answered 200 on / (last status: '$code')"
-          docker compose -f compose.yml -f compose.e2e.yml logs --no-color dashboard
+          docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml logs --no-color dashboard
           exit 1
       - run: pnpm --filter @vpay/e2e e2e
+      # The official `stripe` package, driven against this same running stack
+      # through `createStripeAuthenticator` (docs/flows/stripe-sdk-compat.md).
+      # Out of process on purpose: half of what it proves is header behaviour
+      # through the real router, which an in-process harness cannot see.
+      #
+      # It has no `test` script and so is NOT part of the `web` job's
+      # `pnpm -r test` — the same arrangement `@vpay/e2e` uses, and for the
+      # same reason: a suite that needs a stack must not be able to report
+      # green in a job that has none. It does not skip when the stack is
+      # absent either; its `globalSetup` fails the run.
+      - name: stripe-node conformance against the running stack
+        env:
+          VPAY_BASE_URL: http://localhost:8080
+          # The merchant webhook receiver, as compose.demo.yml publishes it
+          # with VPAY_DEMO_RECEIVER_PORT unset. `webhooks.compat.test.ts`
+          # reads its request journal — the merchant-side view of a delivery —
+          # and hands the recorded body and Stripe-Signature to the real
+          # `stripe` package's `constructEvent`.
+          VPAY_RECEIVER_URL: http://localhost:8083
+          VPAY_MERCHANT_CLIENT_ID: demo-merchant
+          # Absolute: `pnpm --filter` runs the script with the cwd set to the
+          # package, not to the checkout, so a relative path here would be
+          # resolved against `sdks/stripe-compat/`.
+          VPAY_MERCHANT_PRIVATE_KEY_PATH: ${{ github.workspace }}/.e2e/demo-merchant/oauth-signing-key.pem
+        run: pnpm --filter @vpay/stripe-compat compat
       - if: always()
-        run: docker compose -f compose.yml -f compose.e2e.yml logs --no-color > compose.log
+        run: docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml logs --no-color > compose.log
       - if: always()
         uses: actions/upload-artifact@v4
         with: { name: compose-logs, path: compose.log }
       - if: always()
-        run: docker compose -f compose.yml -f compose.e2e.yml down -v
+        run: docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml down -v

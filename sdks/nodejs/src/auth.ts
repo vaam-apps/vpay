@@ -16,6 +16,7 @@ import {
   boundedBodyPrefix,
 } from "./errors.js";
 import { encodeForm } from "./form.js";
+import { SDK_VERSION } from "./version.js";
 
 /** RFC 7523's fixed URN for this grant's `client_assertion_type`. */
 export const CLIENT_ASSERTION_TYPE_JWT_BEARER =
@@ -25,7 +26,22 @@ export const CLIENT_ASSERTION_TYPE_JWT_BEARER =
 export const MAX_ASSERTION_LIFETIME_SECONDS = 300;
 
 const MIN_ASSERTION_LIFETIME_SECONDS = 1;
-const DEFAULT_ASSERTION_LIFETIME_SECONDS = 60;
+
+/**
+ * Default client-assertion lifetime, in seconds. Well inside the OP's
+ * `1..=300` bound — see the README's note on why raising it is a trap.
+ */
+export const DEFAULT_ASSERTION_LIFETIME_SECONDS = 60;
+
+/**
+ * Default OAuth2 `audience` request parameter. Server-side the same string is
+ * `vpay_config::MERCHANT_AUDIENCE`; this package keeps its own copy, so the
+ * two must change together (docs/flows/merchant-auth.md, "The token request").
+ */
+export const DEFAULT_AUDIENCE = "vpay:v1";
+
+/** Default timeout for the token exchange and every resource call, in milliseconds. */
+export const DEFAULT_TIMEOUT_MS = 30_000;
 
 /** Validates a configured assertion lifetime against the OP's `1..=300` bound. */
 export function validateAssertionLifetimeSeconds(
@@ -156,7 +172,16 @@ function isTokenErrorBody(
 
 export interface TokenManagerOptions {
   clientId: string;
-  privateKey: string | KeyObject;
+  /**
+   * The signing key as a parsed {@link KeyObject}, never PEM text.
+   *
+   * {@link resolveMerchantAuth} parses it **once**, at construction: a PEM
+   * that `createPrivateKey` cannot read is a `VpayConfigError` the merchant
+   * sees at startup rather than a `crypto` exception thrown out of the first
+   * token exchange, and every later assertion signs against the same already
+   * parsed key instead of re-parsing the same text per mint.
+   */
+  privateKey: KeyObject;
   kid: string | undefined;
   tokenEndpoint: string;
   audience: string;
@@ -283,4 +308,153 @@ export class TokenManager {
     };
     return parsed.access_token;
   }
+}
+
+/**
+ * The subset of an entry point's constructor options that decides how this
+ * package authenticates: everything the {@link TokenManager} needs, plus the
+ * `baseUrl` the defaults are derived from.
+ *
+ * Shared by {@link VpayClient} and `createStripeAuthenticator` on purpose.
+ * The two entry points mint the *same* assertion against the *same* endpoint
+ * with the *same* defaults; resolving those defaults in one place is what
+ * stops them from drifting apart as one of them is edited.
+ *
+ * Every optional property is `?: T | undefined` for the
+ * `exactOptionalPropertyTypes` reason spelled out on `VpayClientOptions`.
+ */
+export interface MerchantAuthOptions {
+  /** vpay's base URL, e.g. `https://api.vpay.example`. */
+  baseUrl: string;
+  /** This merchant's registered OAuth2 `client_id`. */
+  clientId: string;
+  /** The merchant's RSA private key — PEM text or a `crypto.KeyObject`. */
+  privateKey: string | KeyObject;
+  /** Required only if the merchant registered more than one JWK. */
+  kid?: string | undefined;
+  /** Default `${baseUrl}/v1/oauth`. */
+  issuer?: string | undefined;
+  /** Default `${issuer}/token`. Also the client assertion's `aud`. */
+  tokenEndpoint?: string | undefined;
+  /** Default {@link DEFAULT_AUDIENCE}. */
+  audience?: string | undefined;
+  /** Omitted from the token request unless set. */
+  scope?: string | undefined;
+  /** Default {@link DEFAULT_ASSERTION_LIFETIME_SECONDS}. Must be an integer in `1..=300`. */
+  assertionLifetimeSeconds?: number | undefined;
+  /** Default {@link DEFAULT_TIMEOUT_MS}. */
+  timeoutMs?: number | undefined;
+  /** Injection point for tests and proxies. Defaults to the global `fetch`. */
+  fetch?: typeof fetch | undefined;
+}
+
+/** What {@link resolveMerchantAuth} hands back: a ready {@link TokenManager} and the settings it was built from. */
+export interface ResolvedMerchantAuth {
+  /** `baseUrl` with any trailing slash removed. */
+  baseUrl: string;
+  clientId: string;
+  timeoutMs: number;
+  fetchImpl: typeof fetch;
+  userAgent: string;
+  tokenManager: TokenManager;
+}
+
+function requireNonEmptyString(
+  value: string | undefined,
+  field: string,
+): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new VpayConfigError(`${field} is required`);
+  }
+  return value;
+}
+
+function stripTrailingSlash(url: string): string {
+  return url.endsWith("/") ? url.slice(0, -1) : url;
+}
+
+/**
+ * Turns a configured signing key into a {@link KeyObject}, once.
+ *
+ * Two things this buys, and both are the reason it is here rather than in
+ * {@link mintClientAssertion}'s per-call path:
+ *
+ * - **A bad key is a startup failure.** `createPrivateKey('')`, or a PEM with
+ *   a mangled header, throws an OpenSSL `Error` out of `crypto`. Left to the
+ *   first mint, that surfaced as an unrecognisable exception from the middle
+ *   of a token exchange — and, through `@vpay/sdk/stripe`, as stripe-node's
+ *   detached `unhandledRejection` (see `stripe-auth.ts`). Parsed here it is a
+ *   {@link VpayConfigError} raised by the constructor the merchant wrote.
+ * - **One parse, not one per request.** RSA PEM decoding is not free, and
+ *   nothing about it changes between mints.
+ *
+ * The message never quotes the key: the input is the merchant's private key,
+ * and a `VpayConfigError` is exactly the sort of thing that reaches a log.
+ * `cause` carries OpenSSL's own reason, which names the decoder that failed
+ * and no key material.
+ */
+function parsePrivateKey(privateKey: string | KeyObject): KeyObject {
+  if (typeof privateKey !== "string") {
+    return privateKey;
+  }
+  try {
+    return createPrivateKey(privateKey);
+  } catch (err) {
+    throw new VpayConfigError(
+      "privateKey could not be read as a private key: expected PEM text (or a crypto.KeyObject)",
+      { cause: err },
+    );
+  }
+}
+
+/**
+ * Validates {@link MerchantAuthOptions}, applies this package's defaults, and
+ * builds the {@link TokenManager} both entry points share.
+ *
+ * Every failure it can detect is detected here — at construction — rather
+ * than on the first request: a merchant with an out-of-range
+ * `assertionLifetimeSeconds` finds out at startup, not at 3am under load.
+ */
+export function resolveMerchantAuth(
+  options: MerchantAuthOptions,
+): ResolvedMerchantAuth {
+  const baseUrl = stripTrailingSlash(
+    requireNonEmptyString(options.baseUrl, "baseUrl"),
+  );
+  const clientId = requireNonEmptyString(options.clientId, "clientId");
+  if (options.privateKey === undefined || options.privateKey === null) {
+    throw new VpayConfigError("privateKey is required");
+  }
+  const privateKey = parsePrivateKey(options.privateKey);
+
+  const assertionLifetimeSeconds =
+    options.assertionLifetimeSeconds ?? DEFAULT_ASSERTION_LIFETIME_SECONDS;
+  validateAssertionLifetimeSeconds(assertionLifetimeSeconds);
+
+  const issuer = options.issuer ?? `${baseUrl}/v1/oauth`;
+  const tokenEndpoint = options.tokenEndpoint ?? `${issuer}/token`;
+  const audience = options.audience ?? DEFAULT_AUDIENCE;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const fetchImpl = options.fetch ?? fetch;
+  const userAgent = `vpay-sdk-node/${SDK_VERSION}`;
+
+  return {
+    baseUrl,
+    clientId,
+    timeoutMs,
+    fetchImpl,
+    userAgent,
+    tokenManager: new TokenManager({
+      clientId,
+      privateKey,
+      kid: options.kid,
+      tokenEndpoint,
+      audience,
+      scope: options.scope,
+      assertionLifetimeSeconds,
+      timeoutMs,
+      fetchImpl,
+      userAgent,
+    }),
+  };
 }

@@ -34,9 +34,18 @@ does not accept an `sk_live_`/`sk_test_`-style API key. It authenticates
 merchants with OAuth2 `client_credentials` + `private_key_jwt` (RFC 7523):
 each merchant is a statically registered client, holding its own private
 key, configured directly in vpay's YAML — vpay stores only the public half.
-No Stripe SDK can authenticate against vpay as a result. See
-[ADR-0010](docs/adr/0010-merchant-auth-private-key-jwt.md) for why, and
-[`examples/merchant-curl`](examples/merchant-curl/) for the resulting
+A Stripe SDK cannot do that handshake by itself, but it does not have to:
+`stripe-node` takes an arbitrary `config.authenticator`, and
+[`@vpay/sdk/stripe`](sdks/nodejs/) supplies one, so `new Stripe("", {
+authenticator, host, port, protocol })` reaches vpay with an empty key —
+proven by [`sdks/stripe-compat`](sdks/stripe-compat/), which drives the real
+`stripe` package against a real stack in CI. *(This corrects "no Stripe SDK
+can authenticate against vpay", which this README and
+[ADR-0010](docs/adr/0010-merchant-auth-private-key-jwt.md) both said until
+2026-09-03; see that ADR's amendment.)* See
+[`docs/flows/stripe-sdk-compat.md`](docs/flows/stripe-sdk-compat.md) for
+what does and does not carry over, and
+[`examples/merchant-curl`](examples/merchant-curl/) for the underlying
 two-step flow. vpay ships its own merchant SDKs that do that handshake —
 [`sdks/rust`](sdks/rust/) (`vpay-sdk`) and [`sdks/nodejs`](sdks/nodejs/)
 (`@vpay/sdk`) — implementing the wire contract in

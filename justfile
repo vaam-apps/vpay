@@ -103,7 +103,12 @@ fmt-check:
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
-lint-web:
+# Depends on `build-sdk-node` because the typecheck does: `sdks/stripe-compat`
+# imports `@vpay/sdk/stripe`, whose types resolve through that package's
+# `exports` map to `dist/stripe-auth.d.ts`, and `dist/` is gitignored. Without
+# the build this recipe fails on a clean checkout with `TS2307: Cannot find
+# module '@vpay/sdk/stripe'` — a missing artefact reported as a broken import.
+lint-web: build-sdk-node
     pnpm -r typecheck
 
 deny:
@@ -145,13 +150,20 @@ verify-errors:
 # `backends/tests/integration/tests/worker_{recovery,e2e}.rs`, the two suites
 # that are the *only* proof any job handler works (vpay_worker::handlers' own
 # module comment says why it has no unit tests); 37 -> 38 (Step 5) for
-# `backends/tests/integration/tests/webhooks.rs`. `min_tests` is a floor that
-# catches a binary vanishing, not a running total — it is set a little under
-# the measured count rather than to it, so it is not a number people bump
-# reflexively.
+# `backends/tests/integration/tests/webhooks.rs`. Step 5b added **no** binary:
+# its Rust tests land in files that already existed (`vpay-api`'s own units,
+# `backends/tests/integration/tests/payment_intents.rs`,
+# `vpay-db`'s `repositories.rs`), and its new suite is TypeScript — see
+# `sdks/stripe-compat`, which cargo does not run and this count does not
+# cover. `min_tests` is a floor that catches a binary vanishing, not a running
+# total — it is set a little under the measured count rather than to it, so it
+# is not a number people bump reflexively.
+#
+# Measured 2026-09-03 after Step 5b was rebased onto Steps 4 and 5:
+# `886 tests run: 886 passed, 0 skipped`, 38 binaries.
 expected_ignored := "0"
 expected_suites := "38"
-min_tests := "840"
+min_tests := "870"
 
 verify-ignored:
     #!/usr/bin/env bash
@@ -490,6 +502,86 @@ demo: gen-demo-keys
 # Stop the demo stack and delete its volumes.
 demo-down:
     docker compose {{demo_compose}} down -v
+
+# ------------------------------------------------------- stripe compat ----
+
+# Run `sdks/stripe-compat` — the official `stripe` package driven against a
+# REAL vpay — on the demo stack.
+#
+# Same stack, same overlay and same `demo_port` as `just demo`, deliberately:
+# the suite needs a merchant whose PUBLIC JWK the server actually holds, and
+# `gen-demo-keys` is the only thing in this repository that produces one
+# (`config/application.yml`'s `acme-cameroon` modulus is a placeholder nobody
+# has a key for). So `just demo_port=18080 stripe-compat` and `just
+# demo_port=18080 demo` share a stack, and `just demo-down` tears down either.
+#
+# It brings up SIX services rather than the whole stack: postgres, both
+# WireMock rails, the merchant webhook receiver, the server and the worker.
+# The dashboard plays no part in a `/v1` conformance run and building
+# `frontends/Dockerfile` for it costs minutes. CI's `e2e` job builds it
+# because Cypress needs it.
+#
+# `vpay-worker` and `wiremock-webhook` are not optional and were added for two
+# specific cases: the worker is what drives a confirmed intent to `succeeded`
+# (`lifecycle.compat.test.ts`), and the receiver is what records the delivery
+# `webhooks.compat.test.ts` hands to the real `stripe` package's
+# `constructEvent`. Without either, those two cases fail — deliberately, since
+# a suite that skipped them would report a green that proves less than it
+# looks like.
+#
+# `build-sdk-node` is not optional: the suite imports `@vpay/sdk/stripe`,
+# which resolves to `sdks/nodejs/dist/stripe-auth.js`.
+#
+# The stack is left UP on purpose, exactly as `just demo` leaves it — a failed
+# conformance run is when you most want to go and read
+# `docker compose logs vpay-server`. Tear down with `just demo-down`.
+stripe-compat: gen-demo-keys build-sdk-node
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for tool in docker curl pnpm cargo jq; do
+        command -v "$tool" >/dev/null 2>&1 || { echo "stripe-compat: needs '$tool' on PATH" >&2; exit 1; }
+    done
+    export VPAY_DEMO_PORT={{demo_port}}
+    export VPAY_DEMO_RECEIVER_PORT={{demo_receiver_port}}
+    docker compose {{demo_compose}} up -d --build \
+        postgres wiremock-mtn wiremock-orange wiremock-webhook vpay-server vpay-worker
+
+    # `vpay-server`'s image is FROM scratch and carries no healthcheck, so
+    # readiness is observed from outside — the same way `just demo` and CI do
+    # it. The suite's own preflight would fail with a good message anyway;
+    # this loop exists so that "the stack is still booting" does not read as
+    # "the stack is broken".
+    echo "stripe-compat: waiting for http://localhost:{{demo_port}}/healthz"
+    deadline=$((SECONDS + 120))
+    until curl -fsS -o /dev/null http://localhost:{{demo_port}}/healthz; do
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            echo "stripe-compat: FAIL — /healthz did not answer within 120s. Last 80 log lines:" >&2
+            docker compose {{demo_compose}} ps >&2
+            docker compose {{demo_compose}} logs --tail 80 vpay-server >&2
+            exit 1
+        fi
+        sleep 2
+    done
+    echo "stripe-compat: /healthz answered"
+    echo
+
+    set +e
+    # VPAY_RECEIVER_URL is the webhook case's view of the merchant side: it
+    # reads the receiver's own request journal rather than vpay's tables. The
+    # secret is left to the suite's default, which is the placeholder
+    # compose.e2e.yml gives both binaries — set MERCHANT_WEBHOOK_SECRET here
+    # too if you have changed it there.
+    VPAY_BASE_URL=http://localhost:{{demo_port}} \
+    VPAY_RECEIVER_URL=http://localhost:{{demo_receiver_port}} \
+    VPAY_MERCHANT_CLIENT_ID=demo-merchant \
+    VPAY_MERCHANT_PRIVATE_KEY_PATH="$PWD/.e2e/demo-merchant/oauth-signing-key.pem" \
+      pnpm --filter @vpay/stripe-compat compat
+    status=$?
+    set -e
+
+    echo
+    echo "  tear down with: just demo-down"
+    exit $status
 
 storybook:
     pnpm --filter @vpay/ui storybook

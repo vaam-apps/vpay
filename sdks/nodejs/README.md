@@ -5,8 +5,8 @@ The Node.js merchant SDK for vpay's `/v1` API. Implements the wire contract in
 `private_key_jwt` client assertions, `client_credentials` token exchange and
 caching, the form-encoded resource calls, and outbound-webhook verification.
 
-**This package is `private: true` and is not published.** Publishing waits for
-a server that actually serves `/v1` — see "Status" below.
+**This package is `private: true` and is not published.** See "Status" below
+for what the server it talks to actually serves.
 
 ## Install
 
@@ -229,6 +229,260 @@ createServer((req, res) => {
 }).listen(4242);
 ```
 
+## Using the official Stripe SDK
+
+vpay's `/v1` surface is Stripe-shaped, and the official
+[`stripe`](https://www.npmjs.com/package/stripe) Node SDK can talk to it —
+with an **empty API key** and a `config.authenticator` that performs the
+`private_key_jwt` handshake above. `@vpay/sdk/stripe` is that authenticator:
+
+```js
+import { readFileSync } from "node:fs";
+import Stripe from "stripe";
+import { createStripeAuthenticator } from "@vpay/sdk/stripe";
+
+const authenticator = createStripeAuthenticator({
+  baseUrl: "http://localhost:8080",
+  clientId: "acme-cameroon",
+  privateKey: readFileSync("./merchant-key.pem", "utf8"),
+  kid: "acme-cameroon-2026-08",
+});
+
+const stripe = new Stripe("", {
+  authenticator,
+  host: "localhost",
+  port: "8080",
+  protocol: "http",
+  maxNetworkRetries: 2,
+  timeout: 30_000,
+  telemetry: false,
+});
+
+const intent = await stripe.paymentIntents.create({
+  amount: 5000,
+  currency: "xaf",
+  payment_method_types: ["mtn_momo"],
+});
+```
+
+`host`, `port` and `protocol` are not optional. The authenticator is bound to
+`baseUrl`'s origin: a request addressed anywhere else throws `VpayConfigError`
+before a token is minted. Omit them and stripe-node addresses
+`api.stripe.com:443`, which is exactly the case this refusal exists to stop.
+Behind a reverse proxy, or on split-horizon DNS, set `baseUrl` to the origin
+this client actually connects to rather than the public one — both the token
+exchange and the binding follow `baseUrl`, so a mismatch either mints the
+token against an unreachable endpoint or refuses every request as addressed
+elsewhere.
+
+`stripe` is an **optional peer dependency** of this package: install it
+yourself if you want this entry point, and `@vpay/sdk`'s core entry never
+imports it. This package itself still has **zero runtime dependencies**.
+
+The empty first argument is not a trick — stripe-node's `_setAuthenticator`
+refuses only *both* an API key and an authenticator, or *neither*. The token
+cache, its single-flight refresh and its `expires_in` safety margin are the
+same ones `VpayClient` uses, not a second implementation.
+
+`authenticator.invalidate()` discards the cached token. You need it because an
+authenticator runs *before* a request and its promise settles before any
+status code exists — it cannot see a `401` and re-auth the way `VpayClient`
+does:
+
+```js
+try {
+  await stripe.paymentIntents.retrieve(id);
+} catch (err) {
+  if (err instanceof Stripe.errors.StripeAuthenticationError) {
+    authenticator.invalidate();
+  }
+  throw err;
+}
+```
+
+### Where vpay diverges from Stripe
+
+- **No API keys, ever.** `sk_live_…` means nothing here; authentication is the
+  OAuth2 `client_credentials` + `private_key_jwt` handshake above
+  ([ADR-0010](../../docs/adr/0010-merchant-auth-private-key-jwt.md)). There is
+  no publishable key and no Connect equivalent.
+- **`Idempotency-Key` is mandatory on every `/v1` POST**, not optional as at
+  Stripe. This costs you nothing: stripe-node puts a
+  `stripe-node-retry-<uuid>` key on every v1 POST unconditionally — *including*
+  when `maxNetworkRetries` is `0`. Pass your own with
+  `{ idempotencyKey: "order_1234_attempt_1" }` when you want the retry window
+  to span more than one process.
+- **XAF and EUR only.** XAF is zero-decimal: `amount: 5000` is 5,000 FCFA, not
+  50.00 (see [docs/flows/money.md](../../docs/flows/money.md)).
+- **`payment_method_types` is required and non-empty**, and must name an
+  enabled vpay rail. A copy-pasted `automatic_payment_methods: { enabled: true }`
+  gets a `400` naming `payment_method_types`.
+- **No `confirm: true` on create, no `search`, no Connect.** Confirm with a
+  second call to `stripe.paymentIntents.confirm(id, …)`: `confirm: true` on
+  create is **refused** with `param: "confirm"` and a message naming the
+  confirm route. `stripe.paymentIntents.search(…)` and every `stripeAccount` /
+  Connect parameter have no vpay counterpart.
+- **The fields that decide where or when money moves are refused, not
+  ignored.** `capture_method` with any value other than `automatic`,
+  `application_fee_amount`, `transfer_data` and `on_behalf_of` come back as a
+  `400` naming the field in `error.param`. vpay has no authorise-now /
+  capture-later split — confirming *is* the charge — and no Connect, so
+  ignoring any of them would move a merchant's money somewhere, or at a time,
+  they did not ask for and could not see in the response.
+
+  Everything else Stripe sends and vpay does not implement is **accepted and
+  ignored**, because none of it changes that: `setup_future_usage`,
+  `confirmation_method`, `receipt_email`, `statement_descriptor`, `customer`,
+  `expand` and `metadata` (`metadata` is actually stored) all leave the
+  payment exactly as requested. Nothing is expandable, so an `expand` request
+  simply produces no expanded field — visible in the response itself.
+- **Rail codes are vpay's, not Stripe's.** `payment_method_types` entries and
+  `payment_method_data.type` are `mtn_momo` / `orange_money`; stripe-node's
+  TypeScript types enumerate Stripe's own rails and reject them, so a cast is
+  needed at those call sites — the values are right, the *type* is Stripe's:
+
+  ```ts
+  await stripe.paymentIntents.confirm(id, {
+    payment_method_data: {
+      type: "mtn_momo",
+      mtn_momo: { msisdn: "237670000000" },
+    },
+  } as unknown as Stripe.PaymentIntentConfirmParams);
+  ```
+
+- **`429` is never emitted.** Nothing in vpay constructs a rate-limit
+  category, so `Stripe.errors.StripeRateLimitError` cannot occur. Do not build
+  a backoff path around it.
+- **`client_secret` is absent** from vpay's PaymentIntent today, along with
+  `amount_received`, `capture_method` and `confirmation_method`. stripe-node's
+  TypeScript types declare all four as present — it casts responses, it never
+  validates them — so these read as `undefined` at runtime while the type says
+  otherwise. There is no client-side confirmation flow to use a
+  `client_secret` with.
+- **`Stripe-Version`, `Stripe-Account`, `Stripe-Context` and the
+  `X-Stripe-Client-*` headers are accepted and ignored.** vpay advertises no
+  dated API version, so `obj.lastResponse.apiVersion` is `undefined` and
+  pinning `apiVersion` has no effect.
+
+### Webhooks
+
+vpay signs outbound deliveries with the same construction Stripe uses —
+`t=<unix>,v1=<lowercase hex HMAC-SHA256 of "<t>.<raw body>">` — so
+`stripe.webhooks.constructEvent(rawBody, header, secret)` verifies a vpay
+delivery byte for byte. Read the header value, not the request object, and
+give it the **raw** body:
+
+```js
+const event = stripe.webhooks.constructEvent(
+  rawBody,
+  req.headers["stripe-signature"],
+  process.env.VPAY_WEBHOOK_SECRET,
+);
+```
+
+**Either header works, and that snippet is observed rather than argued.**
+`vpay_worker`'s deliverer sends `Vpay-Signature` and `Stripe-Signature`
+carrying the same string, byte for byte, and
+`sdks/stripe-compat`'s `webhooks.compat.test.ts` takes a delivery out of a
+WireMock receiver's request journal and puts it through
+`stripe.webhooks.constructEvent` exactly as written above — then requires the
+same call to throw `StripeSignatureVerificationError` for a body with one byte
+flipped and for the right body with the wrong secret.
+
+`Stripe-Signature` exists only so that a copy-pasted Stripe recipe needs no
+edit at all. Code written from scratch should read the authoritative name
+instead — the same call, one word changed, verifying the same bytes:
+
+```js
+const event = stripe.webhooks.constructEvent(
+  rawBody,
+  req.headers["vpay-signature"],
+  process.env.VPAY_WEBHOOK_SECRET,
+);
+```
+
+**`Vpay-Signature` is the authoritative name** whatever else is added beside
+it — prefer it in code you write from scratch, and use this package's own
+`verifyWebhook` if you are not otherwise using stripe-node.
+
+### A stripe-node defect you will hit if your key is wrong
+
+**Measured against `stripe@22.6.1`, not inferred.** When the vpay handshake
+fails — a bad key, an unregistered `client_id`, vpay unreachable — the
+authenticator rejects, as it must. stripe-node builds the right error from it
+(`StripeError: Unable to authenticate the request`, with the underlying
+`VpayAuthError` at `err.raw.exception`) but **throws it inside a detached
+promise chain that never calls its own callback**. The result: the error
+arrives as a process-level `unhandledRejection`, and the promise you awaited
+**never settles at all** — not even after `timeout`, because no HTTP request
+was ever started for a timeout to fire against.
+
+Two of the ways a key can be wrong no longer reach that path at all. A
+`privateKey` that `node:crypto` cannot read, and a `baseUrl` that is not an
+absolute URL, are both `VpayConfigError` thrown by `createStripeAuthenticator`
+**at construction** — before a `Stripe` instance exists, on the line the
+merchant wrote. What is left for the warning below is the set of failures only
+the OP can report: an unregistered `client_id`, a key whose public half vpay
+does not hold, a clock too far out, vpay unreachable.
+
+Until stripe-node fixes this, do not rely on `try`/`catch` around a call to
+surface a handshake failure. Two things that do work:
+
+- **Verify the handshake at startup**, where a rejection is yours to catch.
+  The authenticator is a plain function, so call it once against a throwaway
+  request object and let it throw before you serve traffic — a `VpayAuthError`
+  there names the OAuth2 reason (`invalid_client`, …) directly:
+
+  ```js
+  await authenticator({ headers: {} });
+  ```
+
+- **Install a process-level guard** so a mid-flight handshake failure is at
+  least logged and alerted on rather than silently hanging a request:
+  `process.on("unhandledRejection", …)`.
+
+`src/stripe-auth.test.ts` pins this behaviour, so if a future `stripe` release
+routes the failure to the caller the test fails and this warning gets deleted.
+
+### Status
+
+`createStripeAuthenticator` is **built and tested**. Its tests run against a
+real `node:http` server and, for the end-to-end case, drive the **real
+`stripe` package**: `new Stripe("", { authenticator, host, port, protocol })`
+creating a PaymentIntent, with the stub asserting the `Authorization` header
+the authenticator minted, the form-encoded body, and stripe-node's
+auto-generated `Idempotency-Key`. The type-level assertion that the returned
+function is assignable to `Stripe.StripeConfig["authenticator"]` is checked by
+`pnpm --filter @vpay/sdk typecheck`.
+
+What is **not** proven here:
+
+- **Nothing in this package has run against a real `vpay-server`.** The
+  end-to-end test's server is a stub in this repository. What *has* run
+  against a real one is
+  [`sdks/stripe-compat`](../stripe-compat/) — the official `stripe` package
+  driven through this authenticator against a live compose stack, 25 cases,
+  run by CI's `e2e (compose)` job. It is a separate package on purpose: it
+  needs a stack, and a suite that needs a stack must not be able to report
+  green in a job that has none.
+- **Every webhook verified so far was delivered to a WireMock receiver on a
+  compose network.** The *signature* is now proven three ways — against this
+  package's own `verifyWebhook`, against `vpay_sdk::webhooks::verify_at`, and
+  against the official `stripe` package's `constructEvent` — but **no merchant
+  endpoint has ever been POSTed to**, and there is no SSRF protection on the
+  destination ([`docs/flows/webhooks.md`](../../docs/flows/webhooks.md)).
+- **The `stripe` peer range (`^22.6.1`) is asserted, not derived.** It is the
+  current major at the time of writing, tested against exactly `22.6.1`.
+  Nothing pins vpay against a future `stripe` release; a dependency bump is
+  what will surface a break.
+- **The server-side compatibility work is not in this package**, though it
+  has now landed beside it: the `request-id` response header stripe-node
+  reads, `stripe-should-retry` derived from `Classify::retry`, and refusing
+  `confirm: true` on create rather than ignoring it are all in `vpay-api`,
+  with their own unit and integration tests, and are exercised end to end by
+  `sdks/stripe-compat`. See
+  [`docs/flows/stripe-sdk-compat.md`](../../docs/flows/stripe-sdk-compat.md).
+
 ## `scripts/mint-assertion.mjs`
 
 Mints one assertion and prints it, alongside the public JWK derived from the
@@ -246,18 +500,33 @@ VPAY_AUDIENCE=https://api.vpay.example/v1/oauth/token \
 
 ## Status
 
-**Half of the server side of this contract exists.** `vpay-server` mounts the
-merchant OP — `POST /v1/oauth/token`, `GET /v1/oauth/jwks.json`,
-`GET /v1/oauth/.well-known/openid-configuration` — and puts a bearer-token
-boundary in front of every other `/v1` path. What it does **not** have is a
-single `/v1` resource route: past the boundary, `payment_intents`, `refunds`,
-`events` and `balance` all answer a Stripe-shaped `404 unknown_route`. So the
-authentication half of this SDK has a real server to talk to and the resource
-half does not, and no test in this package has ever talked to either — the
-end-to-end proof that exists is the Rust SDK's
-(`backends/tests/integration/tests/merchant_token_flow.rs`), not this one's.
-See [`docs/status.md`](../../docs/status.md) and
-[`docs/flows/merchant-auth.md`](../../docs/flows/merchant-auth.md).
+**Corrected 2026-09-03.** This section used to say "what it does **not**
+have is a single `/v1` resource route" — true when it was written on
+2026-09-02, and false since Step 2 landed the next day.
+
+`vpay-server` mounts the merchant OP — `POST /v1/oauth/token`,
+`GET /v1/oauth/jwks.json`,
+`GET /v1/oauth/.well-known/openid-configuration` — puts a bearer-token
+boundary in front of every other `/v1` path, and **serves four
+payment-intent routes past it**: create, retrieve and list on
+`/v1/payment_intents`, plus `/{id}`, `/{id}/confirm` and `/{id}/cancel`. A
+confirm reaches a real rail adapter over HTTP and moves the intent to
+`processing`, and `vpay-worker` then polls the rail and settles it, so an
+intent does reach **`succeeded`** — `sdks/stripe-compat` watches one do so
+through `paymentIntents.retrieve` and nothing else. `/v1/events` is served
+(Step 5); `/v1/refunds` and `/v1/balance` are still the honest
+`404 unknown_route`. **This package has no client method for any of that
+beyond the payment-intent routes it already wraps.**
+
+**No test in *this package* has ever talked to a vpay** — every server in
+these tests is a `node:http` stub started by the test. What has talked to a
+real one is `sdks/stripe-compat`, which drives the official `stripe` package
+through this package's own `createStripeAuthenticator` against a live
+compose stack (25 cases, CI's `e2e (compose)` job), and the Rust SDK's
+`backends/tests/integration/tests/merchant_token_flow.rs`. See
+[`docs/status.md`](../../docs/status.md),
+[`docs/flows/merchant-auth.md`](../../docs/flows/merchant-auth.md) and
+[`docs/flows/stripe-sdk-compat.md`](../../docs/flows/stripe-sdk-compat.md).
 
 What the tests in this package **do** prove. Everything that touches HTTP
 runs against a real `node:http` server started by the test (never a mocked

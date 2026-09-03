@@ -25,12 +25,13 @@
 //! exception is `/healthz`, which answers plain text for the reasons given
 //! in [`error`]'s module docs.
 //!
-//! [`router`] mounts a four-layer middleware stack — a caller-supplied id
-//! vetted, request id in, span around the handler, request id back out —
-//! described on that function. It is the mechanism `error`'s "No
+//! [`router`] mounts a five-layer middleware stack — a caller-supplied id
+//! vetted, request id in, the same id mirrored onto the response under
+//! Stripe's `request-id` spelling, span around the handler, request id back
+//! out — described on that function. It is the mechanism `error`'s "No
 //! `request_id` field here, deliberately" section defers to, and it is what
 //! makes `Category::Internal`'s "Contact support with the request id"
-//! something a merchant can actually do.
+//! something a merchant can actually do — through either header name.
 
 use std::borrow::Cow;
 
@@ -39,7 +40,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{FromRef, State};
-use axum::http::{Method, Request, Uri};
+use axum::http::{HeaderName, Method, Request, Uri};
 use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::{Router, http::StatusCode, routing::get, routing::post};
@@ -98,6 +99,31 @@ use resource_auth::extract_bearer_token;
 /// layers and [`make_request_span`] all spell it through this constant, so
 /// they cannot drift onto different headers.
 const REQUEST_ID_HEADER: &str = "x-request-id";
+
+/// The *second* name the same request id goes out under, for the benefit of
+/// clients that only look for Stripe's spelling.
+///
+/// stripe-node reads `response.headers['request-id']` and nothing else when
+/// it populates `err.requestId` and `obj.lastResponse.requestId`
+/// (`RequestSender.ts`). A merchant driving vpay with the official Stripe
+/// SDK — the point of `docs/plans/2026-09-03-step5b-stripe-sdk.md` — would
+/// otherwise hold an `undefined` request id while
+/// [`Category::Internal`](vpay_core::Category::Internal)'s public sentence
+/// tells them to contact support with it.
+///
+/// **Response-only, and deliberately not a second id.** The request is
+/// correlated by `x-request-id` alone: that is the name a reverse proxy
+/// sets, the name [`make_request_span`] records, and the name
+/// [`discard_unusable_request_id`] vets. This header is a copy of that one
+/// value on the way out, so the two can never name different requests. It is
+/// not accepted as *input* for the same reason — a caller who set both would
+/// otherwise be asking which one wins.
+///
+/// A `HeaderName` rather than a `&str` like its sibling above because it is
+/// only ever *written*: `HeaderMap::insert` wants the name, and
+/// `HeaderName::from_static` in a `const` makes an invalid spelling a
+/// compile error instead of a runtime panic (ADR-0007).
+const STRIPE_REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("request-id");
 
 /// Stripe's error envelope, so SDK clients surface `.message` correctly.
 ///
@@ -429,6 +455,37 @@ async fn discard_unusable_request_id(mut request: Request<Body>, next: Next) -> 
     next.run(request).await
 }
 
+/// Copies the request id onto the response a second time, under
+/// [`STRIPE_REQUEST_ID_HEADER`].
+///
+/// **Why not a second [`PropagateRequestIdLayer`].** That layer reads the
+/// header it is named with *off the request* and writes it back under the
+/// same name (tower-http `request_id.rs`); no request carries `request-id`,
+/// so a `PropagateRequestIdLayer::new("request-id")` would find nothing and
+/// propagate nothing. The only way to get tower-http to emit it would be a
+/// second [`SetRequestIdLayer`], which mints its own UUID — two headers
+/// naming two different requests, which is worse than one header.
+///
+/// So the value is read from the request's `x-request-id` rather than from
+/// the response's: mounted below [`SetRequestIdLayer`] the request always
+/// carries one, and taking it from the same place [`make_request_span`] does
+/// is what makes the log line, `x-request-id` and `request-id` provably the
+/// same string rather than three things that happen to agree.
+///
+/// `insert`, not `append`: a handler that had already set `request-id` would
+/// be answering with an id this router did not mint, and exactly one value
+/// is what a client reading `headers['request-id']` can act on.
+async fn mirror_request_id_header(request: Request<Body>, next: Next) -> Response {
+    let request_id = request.headers().get(REQUEST_ID_HEADER).cloned();
+    let mut response = next.run(request).await;
+    if let Some(request_id) = request_id {
+        response
+            .headers_mut()
+            .insert(STRIPE_REQUEST_ID_HEADER, request_id);
+    }
+    response
+}
+
 /// The `/v1` authentication **and authorisation** boundary: validates the
 /// bearer token once, checks it carries a scope for what is being asked, and
 /// puts what it learned on the request.
@@ -644,7 +701,7 @@ const V1_BODY_LIMIT_BYTES: usize = 64 * 1024;
 ///
 /// `ServiceBuilder` applies layers outside-in, so the list below is the
 /// order a *request* traverses them, and the reverse of the order a response
-/// does. All four are load-bearing in that order:
+/// does. All five are load-bearing in that order:
 ///
 /// 1. `discard_unusable_request_id` (private, just above this function in
 ///    the source) — removes a caller's `x-request-id` unless it is short and
@@ -657,11 +714,20 @@ const V1_BODY_LIMIT_BYTES: usize = 64 * 1024;
 ///    [`MakeRequestUuid`]) on the request, **unless the caller already sent
 ///    one that step 1 kept**, in which case theirs is kept. Everything below
 ///    reads the header it sets.
-/// 3. [`TraceLayer`] — opens `make_request_span` (private, just above this
+/// 3. `mirror_request_id_header` (private, just above this function in the
+///    source) — copies the id step 2 settled on onto the response a second
+///    time, as `request-id`, because that is the only spelling stripe-node
+///    reads (see `STRIPE_REQUEST_ID_HEADER`, private, above this function in
+///    the source — not linked, because a public item cannot link to it).
+///    Below step 2 because it
+///    reads the request header step 2 guarantees is there; above step 5
+///    only because nothing makes the order between them matter — both take
+///    the value from the request, so neither can observe the other.
+/// 4. [`TraceLayer`] — opens `make_request_span` (private, just above this
 ///    function in the source) around the handler, so the id is on the span
 ///    before any handler, extractor or error renderer runs, and every event
 ///    they emit inherits it.
-/// 4. [`PropagateRequestIdLayer`] — innermost, so it sees the id step 2 set and
+/// 5. [`PropagateRequestIdLayer`] — innermost, so it sees the id step 2 set and
 ///    is the first layer to touch the response on the way out; it copies the request's id onto the
 ///    response, which is what makes `Category::Internal`'s "Contact support
 ///    with the request id" a promise a merchant can actually act on.
@@ -726,6 +792,7 @@ pub fn router(deps: RouterDeps) -> Router {
             ServiceBuilder::new()
                 .layer(from_fn(discard_unusable_request_id))
                 .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+                .layer(from_fn(mirror_request_id_header))
                 .layer(TraceLayer::new_for_http().make_span_with(make_request_span))
                 .layer(PropagateRequestIdLayer::x_request_id()),
         )
@@ -997,6 +1064,77 @@ mod tests {
         // other string, would pass an emptiness check and fail this one.
         uuid::Uuid::parse_str(id)
             .unwrap_or_else(|e| panic!("generated request id {id:?} is not a uuid: {e}"));
+    }
+
+    /// The value under `request-id`, the header stripe-node reads.
+    fn stripe_request_id_of(response: &Response) -> &str {
+        response
+            .headers()
+            .get(STRIPE_REQUEST_ID_HEADER)
+            .expect("every response carries a request-id header")
+            .to_str()
+            .expect("the request id is ascii")
+    }
+
+    /// Every response carries the request id under **both** names, with one
+    /// value.
+    ///
+    /// The equality is the assertion, not the presence: a `request-id`
+    /// header alone would also be produced by a second `SetRequestIdLayer`,
+    /// which mints its own UUID — two headers naming two different requests,
+    /// and a merchant quoting the one support cannot find. It is what fails
+    /// if `mirror_request_id_header` is replaced by anything that does not
+    /// read the id `x-request-id` settled on.
+    ///
+    /// Both the minted and the caller-supplied cases, because the layer that
+    /// settles the id differs between them (`SetRequestIdLayer` mints only
+    /// when the header is absent) and the mirror has to sit below both.
+    #[tokio::test]
+    async fn a_response_carries_the_request_id_under_both_names() {
+        for supplied in [None, Some("abc-123")] {
+            let response = router(deps())
+                .oneshot(a_request(supplied))
+                .await
+                .expect("router does not fail to serve");
+
+            let x_request_id = request_id_of(&response).to_owned();
+            assert_eq!(
+                stripe_request_id_of(&response),
+                x_request_id,
+                "the two headers must carry one value (supplied: {supplied:?})"
+            );
+            if let Some(supplied) = supplied {
+                assert_eq!(x_request_id, supplied);
+            } else {
+                uuid::Uuid::parse_str(&x_request_id)
+                    .unwrap_or_else(|e| panic!("{x_request_id:?} is not a uuid: {e}"));
+            }
+        }
+    }
+
+    /// A caller cannot choose the id by sending `request-id`: the mirror is
+    /// an output, and `x-request-id` remains the one input.
+    ///
+    /// Without this, "two spellings of one header" would quietly become "two
+    /// ways in", and a caller sending both would be asking which wins.
+    #[tokio::test]
+    async fn a_caller_supplied_stripe_request_id_header_is_not_honoured() {
+        let request = Request::builder()
+            .uri(UNROUTED_PATH)
+            .header(STRIPE_REQUEST_ID_HEADER, "chosen-by-the-caller")
+            .body(Body::empty())
+            .expect("valid request");
+
+        let response = router(deps())
+            .oneshot(request)
+            .await
+            .expect("router does not fail to serve");
+
+        let id = request_id_of(&response).to_owned();
+        assert_ne!(id, "chosen-by-the-caller");
+        assert_eq!(stripe_request_id_of(&response), id);
+        uuid::Uuid::parse_str(&id)
+            .unwrap_or_else(|e| panic!("a minted id was expected, got {id:?}: {e}"));
     }
 
     #[tokio::test]

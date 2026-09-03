@@ -1267,6 +1267,7 @@ async fn reusing_an_idempotency_key_with_a_different_request_is_a_mismatch() -> 
             first,
             200,
             &json!({"id": "pi_1"}),
+            None,
         )
         .await
         .context("storing the first response must succeed")?,
@@ -1331,9 +1332,17 @@ async fn a_completed_idempotency_key_replays_its_stored_response() -> anyhow::Re
 
     let body = json!({"id": "pi_replayed", "object": "payment_intent", "amount": 5000});
     assert_eq!(
-        vpay_db::idempotency::store(&pool, "merchant_a", "key-replayed", claim_id, 200, &body)
-            .await
-            .context("storing the response must succeed")?,
+        vpay_db::idempotency::store(
+            &pool,
+            "merchant_a",
+            "key-replayed",
+            claim_id,
+            200,
+            &body,
+            None,
+        )
+        .await
+        .context("storing the response must succeed")?,
         vpay_db::IdempotencyStoreOutcome::Stored
     );
 
@@ -1369,6 +1378,7 @@ async fn a_completed_idempotency_key_replays_its_stored_response() -> anyhow::Re
         claim_id,
         500,
         &json!({"error": "would clobber the answer already given"}),
+        Some("false"),
     )
     .await
     .expect_err("completing an already-complete key must be refused, not silently applied");
@@ -1394,6 +1404,99 @@ async fn a_completed_idempotency_key_replays_its_stored_response() -> anyhow::Re
     .await
     .context("re-reading the stored response must succeed")?;
     assert_eq!(status, Some(200));
+
+    Ok(())
+}
+
+/// The `stripe-should-retry` advisory survives a round trip through
+/// `idempotency_keys`, and migration `0025`'s CHECK refuses anything that is
+/// not one of the header's two values.
+///
+/// Both halves matter, and for different reasons. The round trip is what
+/// makes `v1::payment_intents::replay` able to re-emit the advisory the
+/// original response carried instead of working it out again from the stored
+/// status — the drift ADR-0011 exists to prevent. The CHECK is what stops
+/// that column from becoming a place a caller can put arbitrary text that
+/// would then be written into a response header.
+///
+/// `None` is asserted separately from `'false'` because they are different
+/// answers: a stored `2xx` never passed through the error renderer and its
+/// replay must emit no header at all, which `NOT NULL DEFAULT 'false'` would
+/// have quietly turned into "do retry your successful create".
+#[tokio::test]
+async fn the_retry_advisory_round_trips_and_0025_refuses_anything_else() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    for (key, hash, status, advisory) in [
+        ("key-advice-false", 0x51_u8, 409_u16, Some("false")),
+        ("key-advice-true", 0x52, 400, Some("true")),
+        ("key-advice-none", 0x53, 200, None),
+    ] {
+        let claim_id = fresh_claim_id(
+            &vpay_db::idempotency::claim(
+                &pool,
+                "merchant_a",
+                key,
+                "POST",
+                "/v1/payment_intents",
+                &fixture_hash(hash),
+            )
+            .await?,
+        )?;
+        assert_eq!(
+            vpay_db::idempotency::store(
+                &pool,
+                "merchant_a",
+                key,
+                claim_id,
+                status,
+                &json!({"stored": key}),
+                advisory,
+            )
+            .await
+            .context("storing the response must succeed")?,
+            vpay_db::IdempotencyStoreOutcome::Stored
+        );
+
+        match vpay_db::idempotency::claim(
+            &pool,
+            "merchant_a",
+            key,
+            "POST",
+            "/v1/payment_intents",
+            &fixture_hash(hash),
+        )
+        .await?
+        {
+            vpay_db::IdempotencyClaim::Replay(record) => {
+                assert_eq!(record.response_status, Some(status.cast_signed()));
+                assert_eq!(
+                    record.response_retry.as_deref(),
+                    advisory,
+                    "{key}: the advisory a replay reads back must be the one that was stored"
+                );
+            }
+            other => panic!("{key}: a completed key must replay, got {other:?}"),
+        }
+    }
+
+    // The CHECK, proven by making it fire. `'maybe'` is what a re-derivation
+    // from some future third `Retry` variant would most plausibly try to
+    // write; the column refuses it rather than letting it reach a header.
+    let refused = sqlx::query(
+        "UPDATE idempotency_keys SET response_retry = 'maybe' \
+         WHERE merchant_id = 'merchant_a' AND idempotency_key = 'key-advice-false'",
+    )
+    .execute(&pool)
+    .await
+    .expect_err("response_retry_is_an_advisory must refuse a third value");
+    assert!(
+        refused
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::constraint)
+            .is_some_and(|name| name == "response_retry_is_an_advisory"),
+        "expected the named CHECK to fire, got {refused}"
+    );
 
     Ok(())
 }
@@ -1534,7 +1637,7 @@ async fn release_hands_back_an_in_flight_key_and_never_a_completed_one() -> anyh
     // A key that completed: release must not touch it.
     let done = fresh_claim_id(&claim("key-done").await?)?;
     let body = json!({"id": "pi_stored"});
-    vpay_db::idempotency::store(&pool, "merchant_a", "key-done", done, 200, &body)
+    vpay_db::idempotency::store(&pool, "merchant_a", "key-done", done, 200, &body, None)
         .await
         .context("storing the response must succeed")?;
     assert_eq!(
@@ -1639,6 +1742,7 @@ async fn a_reclaimed_key_is_not_writable_by_the_claim_it_replaced() -> anyhow::R
             r1,
             200,
             &json!({"id": "pi_r1", "note": "R1's answer, under R2's claim"}),
+            None,
         )
         .await
         .context("a stale store must not be an error")?,
@@ -1670,6 +1774,7 @@ async fn a_reclaimed_key_is_not_writable_by_the_claim_it_replaced() -> anyhow::R
             r2,
             201,
             &json!({"id": "pi_r2"}),
+            None,
         )
         .await
         .context("the live claim must still be able to store its response")?,

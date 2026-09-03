@@ -58,8 +58,9 @@ from.
 ## Status
 
 **Both transactions are real, and a signed webhook has been delivered to a
-WireMock receiver and verified with both shipping SDKs. No merchant endpoint
-has ever been POSTed to.** Updated 2026-09-03 (Step 5). The receiver is a host
+WireMock receiver and verified with both shipping SDKs — and, since Step 5b,
+with the official `stripe` package. No merchant endpoint has ever been POSTed
+to.** Updated 2026-09-03 (Step 5, then Step 5b). The receiver is a host
 in configuration, reached over HTTP exactly as a merchant's endpoint would be
 (ADR-0006) — which is the same limit the rails carry, and the reason
 [../status.md](../status.md)'s Webhooks row is 🟡.
@@ -122,10 +123,16 @@ bytes and POSTs them with `Content-Type`, `Vpay-Signature`, `Stripe-Signature`
 and `Vpay-Event-Id`. **`Stripe-Signature` carries the same string as
 `Vpay-Signature`, byte for byte, in Stripe's documented `t=…,v1=…` grammar** —
 an integration test asserts both, that the two headers are equal and that the
-value parses as that grammar. What is **not** done in this step is verifying it
-with the real `stripe` package: that is Step 5b, and until then "a Stripe-shaped
-handler works unmodified" is an argument from the scheme being identical, not an
-observation. The body is not stored; `payload_sha256` is written on the
+value parses as that grammar. **Since Step 5b it is also verified with the real
+`stripe` package**: `sdks/stripe-compat`'s `webhooks.compat.test.ts` makes a
+payment against the compose stack, waits for the worker to settle it, pulls the
+resulting delivery out of the WireMock receiver's own request journal, and hands
+the recorded bytes and `Stripe-Signature` to
+`stripe.webhooks.constructEvent` — then flips one byte of the payload, and a
+second time uses the wrong secret, and requires
+`StripeSignatureVerificationError` for both. So "a Stripe-shaped handler works
+unmodified" is an observation now, not an argument from the scheme being
+identical. The body is not stored; `payload_sha256` is written on the
 first attempt and compared on every later one, and a mismatch is
 `JobError::Poisoned`. Non-2xx and transport failures walk
 `vpay_worker::delivery_delay` — the seven rungs above, rung by rung — and the
@@ -151,6 +158,20 @@ built `@vpay/sdk` in a `node` subprocess
 rather than skips when `node` is missing; CI sets `VPAY_REQUIRE_NODE=1`). Two
 configured secrets produce exactly two `v1=` values and either one verifies
 (`a_rotation_signs_with_both_secrets_and_either_one_verifies`).
+
+**And against the SDK vpay does not ship.** Step 5b added
+`sdks/stripe-compat`'s `webhooks.compat.test.ts`, which runs out of process
+against the compose stack: it makes a payment through the official `stripe`
+package, waits for the worker to settle it, reads the delivery out of the
+WireMock receiver's request journal (`GET /__admin/requests` — the
+merchant-side view, not vpay's own tables) and calls
+`stripe.webhooks.constructEvent(body, headers['stripe-signature'], secret)`.
+The recorded bytes go in verbatim; a parse-and-reprint would be verifying a
+body vpay never sent. Both refusals are asserted too — one flipped byte of the
+payload, and the right body with the wrong secret — because a verifier that
+accepted everything would have accepted the delivery as well. That is what
+retires the "byte-identical by construction, unobserved in practice" caveat
+this section used to carry.
 
 **Endpoints are configuration, never a resource.** `merchant_clients[].webhooks[]`
 in YAML (ADR-0003), keyed for fan-out on `merchant_id` and not on `client_id`;

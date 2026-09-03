@@ -86,6 +86,17 @@ pub struct IdempotencyRecord {
     /// The exact JSON body to replay — the bytes that were sent, not a
     /// re-render from today's code.
     pub response_body: Option<Value>,
+    /// The `stripe-should-retry` value the stored response carried, verbatim
+    /// (`"true"` or `"false"` — migration `0025`'s
+    /// `response_retry_is_an_advisory` CHECK), or `None` if it carried none.
+    ///
+    /// `None` is a real answer and not a missing one: only
+    /// `vpay_api::error::ApiError::into_response` emits the header, so a
+    /// stored `2xx` never had one and its replay must not invent one. Kept
+    /// as text rather than a `bool` so that a replay re-emits the bytes the
+    /// original response carried instead of rendering the advisory a second
+    /// time — see the migration for why that matters under ADR-0011.
+    pub response_retry: Option<String>,
 }
 
 /// What [`claim`] found, and therefore what the caller must do next.
@@ -133,7 +144,9 @@ pub enum IdempotencyClaim {
 /// **forever**: nothing else in the system ever moves such a row, so the
 /// merchant's key would be unusable for the life of the deployment rather
 /// than for the 24 hours the table's `expires_at` promises. The reclaim
-/// resets the whole row (method, path, hash, state, response, timestamps),
+/// resets the whole row (method, path, hash, state, all three response
+/// columns — status, body and the `response_retry` advisory — and the
+/// timestamps),
 /// because what it is doing is starting a new request under a key that has
 /// expired — keeping the old hash would make a genuinely different retry
 /// look like a [`IdempotencyClaim::Mismatch`]. The reset includes a fresh
@@ -171,6 +184,7 @@ pub async fn claim(
                  state = 'in_flight', \
                  response_status = NULL, \
                  response_body = NULL, \
+                 response_retry = NULL, \
                  completed_at = NULL, \
                  created_at = now(), \
                  expires_at = now() + INTERVAL '24 hours' \
@@ -194,7 +208,8 @@ pub async fn claim(
     }
 
     let existing = sqlx::query_as::<_, IdempotencyRecord>(
-        "SELECT request_hash, state, response_status, response_body FROM idempotency_keys \
+        "SELECT request_hash, state, response_status, response_body, response_retry \
+         FROM idempotency_keys \
          WHERE merchant_id = $1 AND idempotency_key = $2",
     )
     .bind(merchant_id)
@@ -281,6 +296,18 @@ pub enum IdempotencyStoreOutcome {
 /// [`DbError::WriteMatchedNoRow`] rather than silently wrapping into a
 /// negative number.
 ///
+/// # `retry`
+///
+/// The `stripe-should-retry` value the response being stored actually
+/// carried, read off its own `HeaderMap` by the caller — never re-derived
+/// here from `status`. That is the whole point of the column (migration
+/// `0025`): the advisory comes from `Classify::retry` in exactly one place,
+/// and a replay re-emits what was sent rather than making a second decision
+/// about it (ADR-0011). `None` for a response that carried no advisory, and
+/// the database's `response_retry_is_an_advisory` CHECK refuses anything
+/// that is neither `"true"` nor `"false"` — so a caller inventing a third
+/// value fails loudly rather than storing a header nothing can read.
+///
 /// # Errors
 ///
 /// [`DbError::WriteMatchedNoRow`] if this claim's row is already complete,
@@ -292,6 +319,7 @@ pub async fn store(
     claim_id: Uuid,
     status: u16,
     body: &Value,
+    retry: Option<&str>,
 ) -> Result<IdempotencyStoreOutcome, DbError> {
     let Ok(status) = i16::try_from(status) else {
         return Err(DbError::WriteMatchedNoRow {
@@ -302,7 +330,8 @@ pub async fn store(
 
     let affected = sqlx::query(
         "UPDATE idempotency_keys \
-         SET state = 'complete', response_status = $4, response_body = $5, completed_at = now() \
+         SET state = 'complete', response_status = $4, response_body = $5, \
+             response_retry = $6, completed_at = now() \
          WHERE merchant_id = $1 AND idempotency_key = $2 AND claim_id = $3 \
            AND state = 'in_flight'",
     )
@@ -311,6 +340,7 @@ pub async fn store(
     .bind(claim_id)
     .bind(status)
     .bind(body)
+    .bind(retry)
     .execute(pool)
     .await
     .map_err(DbError::Query)?
