@@ -230,7 +230,14 @@ jobs:
       # then let a later install skip cypress's postinstall entirely. This
       # step is idempotent — a no-op when the binary is already there.
       - run: pnpm --filter @vpay/e2e exec cypress install
+      # `cypress verify` runs the Electron binary's smoke test with a 30 s
+      # default budget. On a cold runner Cypress 15's binary has exceeded it
+      # (master run 33789060261 after PR #23, minutes after the same step passed
+      # on the PR) while the specs themselves are unaffected, so the budget is
+      # raised: a genuinely broken binary still fails, just later.
       - run: pnpm --filter @vpay/e2e exec cypress verify
+        env:
+          CYPRESS_VERIFY_TIMEOUT: "120000"
       # The Node SDK's `dist/` — `sdks/stripe-compat` imports
       # `@vpay/sdk/stripe`, which resolves to `dist/stripe-auth.js`. The `web`
       # job builds it too; this job cannot borrow that job's artefacts.
