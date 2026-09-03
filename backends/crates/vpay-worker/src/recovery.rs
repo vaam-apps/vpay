@@ -1,26 +1,17 @@
 //! Recovering a charge stuck in `submitting`, and the policy numbers that
 //! decision reads.
 //!
-//! This is `docs/flows/crash-safety.md`'s "Recovering a `submitting` charge"
-//! table, transcribed into one pure function. The whole of it is a
-//! disambiguation: `submitting` covers two physically different situations —
-//! "we crashed before the POST" and "the POST went out and the answer was
-//! lost" — and `provider_requests` is the only evidence that tells them apart.
-//!
-//! # Why the flow shape decides first
-//!
-//! On a redirect rail the payer cannot act until they are handed a URL, and
-//! the URL is handed over only *after* the rail's key material is committed
-//! (`docs/flows/crash-safety.md`, "the commit is the gate on the redirect").
-//! So a redirect charge still in `submitting` is one nobody could have paid,
-//! and — because the `pay_token` needed to ask the rail about it was in the
-//! response we lost — one nobody can ever ask about either. That reference is
-//! dead: fail it and let the merchant open a new PaymentIntent. Polling it
-//! instead produces `ProviderError::Config` on every rung of the ladder
-//! forever, which is a dead letter dressed up as an outage.
+//! [`recovery_step`] is `docs/flows/crash-safety.md`'s "Recovering a
+//! `submitting` charge" table as one pure function. The whole of it is a
+//! disambiguation: `submitting` covers "we crashed before the POST" and "the
+//! POST went out and the answer was lost", and `provider_requests` is the only
+//! evidence that tells them apart.
 //!
 //! The branch is on [`ProviderFlow`], a capability *value*, never on a rail
-//! code (ADR-0002): a rail that changes shape changes branch.
+//! code (ADR-0002). `docs/reference/vpay-worker.md` §"Recovering a
+//! `submitting` charge" says why the flow shape decides first, why the
+//! precondition is a precondition, and why [`RecoveryPolicy`] is a plain
+//! struct rather than a test seam.
 
 use std::time::Duration;
 
@@ -30,52 +21,35 @@ use vpay_core::ProviderFlow;
 /// The knobs the recovery table reads, constructed once in `main` and passed
 /// down to every handler.
 ///
-/// A plain struct with a [`Default`], deliberately not a `#[cfg(test)]` seam:
-/// AGENTS.md's first rule is that no test double may be reachable from a
-/// shipping binary, and "the tests override the policy" is only honest if the
-/// tests override the *same* value production uses. An integration test asking
-/// for `not_found_window: 50 ms` then exercises the identical code path a
-/// deployment runs at 60 s, with no sleeps.
+/// A plain struct with a [`Default`], deliberately not a `#[cfg(test)]` seam —
+/// see `docs/reference/vpay-worker.md` §"Recovering a `submitting` charge".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecoveryPolicy {
     /// How many consecutive `NotFound` answers count as "the rail never
     /// received it". Three, per `docs/flows/crash-safety.md`.
     ///
-    /// A count alone is not enough — three polls can happen in under a second
-    /// on the first rungs of the ladder, and a rail that is merely slow to
-    /// index a new charge would look identical to one that never got it. It is
-    /// paired with [`Self::not_found_window`], and both must be satisfied.
+    /// Paired with [`Self::not_found_window`], and both must be satisfied: a
+    /// count alone cannot tell a rail that never got the charge from one that
+    /// is merely slow to index it.
     pub not_found_streak: u32,
     /// How long those `NotFound` answers must have been going on. Sixty
     /// seconds, per the same table's "3 consecutive `NotFound` over ≥60s".
     pub not_found_window: Duration,
-    /// How long a claimed job may stay claimed before the sweeper hands it
-    /// back.
-    ///
-    /// Five minutes: at least four times `vpay_provider::DEFAULT_REQUEST_TIMEOUT`
-    /// (20 s), so a worker that is merely waiting on a slow rail never has its
-    /// job stolen and run twice.
+    /// How long a claimed job may stay claimed before the reaper hands it
+    /// back. At least four times `vpay_provider::DEFAULT_REQUEST_TIMEOUT`, so
+    /// a worker merely waiting on a slow rail never has its job stolen and run
+    /// twice.
     pub lease: Duration,
     /// How long a charge may stay live before it is escalated to `unresolved`
     /// and a human is alerted. Twenty-four hours, per
     /// `docs/flows/reconciler.md`.
     ///
-    /// Escalation is not a give-up, and it is not a decision to stop asking:
-    /// past this horizon a poll that reaches the rail still queries it, and a
-    /// terminal answer settles the charge through the ordinary path. "A late
-    /// success — minute 40, or hour 30 from `unresolved` — is the normal
-    /// transition".
-    ///
-    /// What re-raises the alert is every outcome short of a settlement: an
-    /// answer short of terminal, a rail that will not answer at all, and —
-    /// since the review that found it — a `submitting` charge the recovery
-    /// table wants to resubmit, which is resolved by neither the rail nor the
-    /// ladder and used to ride the fifteen-minute rung forever
-    /// (`crate::handlers::resubmit_then_escalate_if_late`). Two things
-    /// deliberately do *not* reach the rail past the horizon and so do not
-    /// alert either, because both are settlements rather than open questions:
-    /// a charge that is already terminal, and a redirect charge abandoned as a
-    /// dead order.
+    /// Escalation is not a give-up and not a decision to stop asking: past
+    /// this horizon a poll still queries the rail, and a terminal answer
+    /// settles the charge through the ordinary path. What re-raises the alert
+    /// is every outcome short of a settlement —
+    /// `docs/reference/vpay-worker.md` §"One poll" lists them, and the two
+    /// that deliberately do not.
     pub unresolved_after: Duration,
 }
 
@@ -84,6 +58,22 @@ impl Default for RecoveryPolicy {
     /// for. Spelled as arithmetic on `from_secs` rather than as raw second
     /// counts so a reader checks them against the documents without a
     /// calculator.
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use vpay_worker::RecoveryPolicy;
+    ///
+    /// let policy = RecoveryPolicy::default();
+    /// // docs/flows/crash-safety.md: 3 consecutive NotFound over >= 60s.
+    /// assert_eq!(policy.not_found_streak, 3);
+    /// assert_eq!(policy.not_found_window, Duration::from_secs(60));
+    /// // A lease of at least four rail request timeouts, so a worker merely
+    /// // waiting on a slow rail never has its job stolen and run twice.
+    /// assert_eq!(policy.lease, Duration::from_secs(5 * 60));
+    /// assert!(policy.lease >= 4 * vpay_provider::DEFAULT_REQUEST_TIMEOUT);
+    /// // docs/flows/reconciler.md: the 24-hour horizon.
+    /// assert_eq!(policy.unresolved_after, Duration::from_secs(24 * 60 * 60));
+    /// ```
     fn default() -> Self {
         Self {
             not_found_streak: 3,
@@ -98,11 +88,10 @@ impl Default for RecoveryPolicy {
 /// this charge.
 ///
 /// Three values because the recovery table has three rows, and the middle one
-/// is the reason the table exists at all: an attempt row with
-/// `status_code IS NULL` is the encoding for "the POST was issued and no
-/// answer was received" (migration 0016's `response_is_paired` CHECK keeps
-/// that honest), which is materially different from both "we never sent
-/// anything" and "the rail answered".
+/// is the reason the table exists at all: `status_code IS NULL` is the
+/// encoding for "the POST was issued and no answer was received" (migration
+/// 0016's `response_is_paired` CHECK keeps that honest), which is materially
+/// different from both "we never sent anything" and "the rail answered".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubmitAttempt {
     /// No `provider_requests` row with `operation = 'submit'` for this
@@ -145,21 +134,86 @@ pub enum RecoveryAction {
 ///
 /// # Precondition: the charge is in `submitting`
 ///
-/// This decides *only* the crash-recovery case, which is the one
-/// `docs/flows/crash-safety.md` scopes its table to. It must not be used for a
-/// charge that has reached `submitted`, and the reason is
-/// [`RecoveryAction::FailDeadOrder`]: on a redirect rail that answer is
-/// correct only while the payer has not been handed a URL. Once the charge is
-/// `submitted` the URL has been handed over, the payer may have paid, and
-/// failing the charge would discard a live payment. A `NotFound` on a
-/// `submitted` charge is therefore handled as an ordinary pending answer by
-/// the caller (`vpay_core::settle` returns
-/// [`vpay_core::Settlement::Stay`] for the states past this one), not by this
-/// function.
+/// It must not be used for a charge that has reached `submitted`, and the
+/// reason is [`RecoveryAction::FailDeadOrder`] — see
+/// `docs/reference/vpay-worker.md` §"Recovering a `submitting` charge". A
+/// `NotFound` past `submitting` is handled as an ordinary pending answer by
+/// the caller, through [`vpay_core::Settlement::Stay`].
 ///
 /// `now` and `first_not_found_at` are parameters rather than a call to the
-/// clock so that this stays pure and the table test below can pin the window
+/// clock so that this stays pure and the table below can pin the window
 /// boundary exactly.
+///
+/// ```
+/// use time::{Duration, OffsetDateTime};
+/// use vpay_core::ProviderFlow;
+/// use vpay_worker::{RecoveryAction, RecoveryPolicy, SubmitAttempt, recovery_step};
+///
+/// let policy = RecoveryPolicy::default();
+/// let now = OffsetDateTime::UNIX_EPOCH + Duration::hours(1);
+///
+/// // The flow shape decides first and unconditionally: on a redirect rail
+/// // the payer was never handed a URL, so the order is dead whatever the
+/// // attempt row says.
+/// assert_eq!(
+///     recovery_step(
+///         ProviderFlow::Redirect,
+///         SubmitAttempt::Answered(200),
+///         0,
+///         None,
+///         now,
+///         &policy,
+///     ),
+///     RecoveryAction::FailDeadOrder,
+/// );
+///
+/// // Push rail, nothing was ever sent: same reference, second attempt.
+/// assert_eq!(
+///     recovery_step(ProviderFlow::Push, SubmitAttempt::Never, 0, None, now, &policy),
+///     RecoveryAction::Resubmit,
+/// );
+///
+/// // The rail answered; only our own bookkeeping is behind.
+/// assert_eq!(
+///     recovery_step(
+///         ProviderFlow::Push,
+///         SubmitAttempt::Answered(0),
+///         0,
+///         None,
+///         now,
+///         &policy,
+///     ),
+///     RecoveryAction::Advance(0),
+/// );
+///
+/// // The POST went out and the answer was lost. The streak and the window
+/// // are both required, never either: three denials inside a minute is a
+/// // rail that is merely slow to index, so the answer is still "ask again".
+/// let recent = now - Duration::seconds(30);
+/// assert_eq!(
+///     recovery_step(
+///         ProviderFlow::Push,
+///         SubmitAttempt::Unanswered,
+///         policy.not_found_streak,
+///         Some(recent),
+///         now,
+///         &policy,
+///     ),
+///     RecoveryAction::Poll,
+/// );
+/// let old = now - Duration::seconds(90);
+/// assert_eq!(
+///     recovery_step(
+///         ProviderFlow::Push,
+///         SubmitAttempt::Unanswered,
+///         policy.not_found_streak,
+///         Some(old),
+///         now,
+///         &policy,
+///     ),
+///     RecoveryAction::Resubmit,
+/// );
+/// ```
 #[must_use]
 pub fn recovery_step(
     flow: ProviderFlow,

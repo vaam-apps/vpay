@@ -69,6 +69,7 @@ use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::LoadedSigningKey;
 use vpay_api::resource_auth::{JwtValidator, MerchantJwtValidator, Surface};
 use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
+use vpay_db::Repositories;
 use vpay_sdk::{
     ConfirmPaymentIntentParams, CreatePaymentIntentParams, Credentials, IntentStatus,
     PaymentMethodType, RequestOptions,
@@ -191,6 +192,9 @@ struct Harness {
     _postgres: ContainerAsync<PostgresImage>,
     _mtn: ContainerAsync<GenericImage>,
     server: tokio::task::JoinHandle<()>,
+    repositories: Arc<dyn Repositories>,
+    /// The plain `sqlx` pool, for the fixtures that read or force schema
+    /// state no repository method owns.
     pool: PgPool,
     base_url: String,
     pem_a: String,
@@ -218,7 +222,7 @@ impl Harness {
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> vpay_worker::LoopReport {
         vpay_worker::run_loop(
-            &self.pool,
+            Arc::clone(&self.repositories),
             Arc::clone(&self.adapters),
             Arc::clone(&self.rails),
             policy,
@@ -284,7 +288,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
 async fn harness() -> anyhow::Result<Harness> {
     ensure_crypto_provider_installed();
 
-    let (postgres, pool) = migrated_postgres().await?;
+    let (postgres, repositories, pool) = migrated_postgres().await?;
     let mtn = vpay_testkit::containers::start_wiremock(&mappings_dir("mtn"))
         .await
         .context("the MTN stub container starts")?;
@@ -308,14 +312,18 @@ async fn harness() -> anyhow::Result<Harness> {
     let signing_key =
         LoadedSigningKey::from_pem(&server_pem, &issuer).context("loading the signing key")?;
     signing_key
-        .ensure_active_in_database(&pool)
+        .ensure_active_in_database(repositories.as_ref())
         .await
         .context("announcing the signing key in oauth_signing_keys")?;
 
     let config = config_with(&base_url, &mtn_url, jwks_a);
-    reconcile_from_config(&pool, &config).await?;
+    reconcile_from_config(repositories.as_ref(), &config).await?;
 
-    let merchant_op = Arc::new(MerchantOp::new(&config, signing_key.clone(), pool.clone()));
+    let merchant_op = Arc::new(MerchantOp::new(
+        &config,
+        signing_key.clone(),
+        Arc::clone(&repositories),
+    ));
     let merchant_validator = MerchantJwtValidator(
         JwtValidator::new(
             format!("{base_url}/v1/oauth/jwks.json"),
@@ -326,7 +334,12 @@ async fn harness() -> anyhow::Result<Harness> {
         .expect("the vendored-roots JWKS client builds"),
     );
 
-    let deps = router_deps(pool.clone(), merchant_op, merchant_validator, &config);
+    let deps = router_deps(
+        Arc::clone(&repositories),
+        merchant_op,
+        merchant_validator,
+        &config,
+    );
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, vpay_api::router(deps)).await;
     });
@@ -335,6 +348,7 @@ async fn harness() -> anyhow::Result<Harness> {
         _postgres: postgres,
         _mtn: mtn,
         server,
+        repositories,
         pool,
         base_url,
         pem_a,
@@ -609,12 +623,12 @@ async fn a_confirmed_payment_is_driven_to_succeeded_and_the_merchant_sees_it() -
 
     // The loop the binary runs, stopped once the merchant has seen the answer.
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let pool = h.pool.clone();
+    let repositories = Arc::clone(&h.repositories);
     let adapters = Arc::clone(&h.adapters);
     let rails = Arc::clone(&h.rails);
     let worker = tokio::spawn(async move {
         vpay_worker::run_loop(
-            &pool,
+            repositories,
             adapters,
             rails,
             RecoveryPolicy::default(),
@@ -839,7 +853,7 @@ async fn a_decline_after_submission_returns_the_intent_to_requires_payment_metho
     let endpoints = support::no_webhook_endpoints();
     let http = support::webhook_client();
     let settled = vpay_worker::run_once(
-        &h.pool,
+        h.repositories.as_ref(),
         &h.adapters,
         &h.rails,
         &RecoveryPolicy::default(),
@@ -993,7 +1007,7 @@ async fn a_drain_that_runs_out_of_grace_releases_every_lease_it_still_holds() ->
 
     for _ in 0..JOBS {
         let intent = confirmed_intent(
-            &h.pool,
+            h.repositories.as_ref(),
             MERCHANT_A,
             RAIL,
             AMOUNT,
@@ -1001,7 +1015,7 @@ async fn a_drain_that_runs_out_of_grace_releases_every_lease_it_still_holds() ->
         )
         .await?;
         let charge = crashed_charge(
-            &h.pool,
+            h.repositories.as_ref(),
             &intent,
             RAIL,
             SLOW_REF,
@@ -1013,7 +1027,9 @@ async fn a_drain_that_runs_out_of_grace_releases_every_lease_it_still_holds() ->
         // Past the recovery branch, so the handler goes straight to the slow
         // status query rather than concluding anything from an absent attempt
         // row.
-        vpay_db::settlement::set_live_state(&h.pool, &charge, "submitting", "submitted").await?;
+        h.repositories
+            .set_live_state(&charge, "submitting", "submitted")
+            .await?;
     }
 
     // Long enough for the first `CONCURRENCY` claims to be in flight against

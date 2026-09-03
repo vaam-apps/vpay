@@ -1,44 +1,14 @@
-//! The public ids vpay's objects are named by: `pi_…`, `ch_…`, `re_…`,
-//! `evt_…`.
+//! The public ids vpay's objects are named by — `pi_…`, `ch_…`, `re_…`,
+//! `evt_…` — and the `client_secret` a payer's browser presents.
 //!
-//! An id is a *merchant-visible, permanent* name. It appears in URLs, in
-//! logs, in support tickets, in a merchant's own database, and — because
-//! `docs/api/README.md` promises Stripe's shape — in code merchants wrote
-//! against Stripe. That fixes four properties, and each one is a test below:
+//! An id is a *merchant-visible, permanent* name: it carries a prefix that
+//! says what it names, a body of `[a-z0-9]` only, no information about the
+//! deployment that minted it, and a length every id column's
+//! `CHECK (char_length(id) BETWEEN 1 AND 64)` accepts.
 //!
-//! * **A prefix says what it names.** `pi_` on a charge id is a bug an
-//!   operator can see at a glance instead of one they have to look up.
-//! * **The body is `[a-z0-9]` only.** So the id survives a URL path segment,
-//!   a query string, a form body, a shell argument and a filename unchanged
-//!   — [`crate::ids`]'s own test proves `encodeURIComponent` (which is what
-//!   both SDKs escape path segments with, `sdks/rust/src/form.rs`) is the
-//!   identity on it. A `+` or a `/` from a base64 id would be re-encoded by
-//!   one client and not another, and the two would then address different
-//!   URLs.
-//! * **It carries no information.** Not a sequence, not a timestamp, not a
-//!   merchant id: an id that leaks how many payments a deployment has taken
-//!   is a business fact given away to anyone holding one id, and a guessable
-//!   id is an enumeration attack against a tenant-scoped API.
-//! * **It fits.** 3 or 4 prefix characters plus 24 body characters is 27–28
-//!   characters, comfortably inside the `CHECK (char_length(id) BETWEEN 1
-//!   AND 64)` the schema puts on every id column, with room for a longer
-//!   prefix later.
-//!
-//! # Why Crockford base32 and not hex or base62
-//!
-//! Hex would need 32 characters for the same entropy and reads as a hash,
-//! which invites people to try to invert it. Base62 is mixed-case, and a
-//! mixed-case id in a case-insensitive place (a Windows filename, an email
-//! subject line someone lower-cased, a `LIKE` in a merchant's own database)
-//! becomes two different ids. Crockford's alphabet is lower-cased here and
-//! drops `i`, `l`, `o` and `u`, so an id read aloud or copied out of a
-//! screenshot cannot become a *different valid-looking* id — which matters
-//! because these end up in support tickets.
-//!
-//! The alphabet is Crockford's; the *encoding* deliberately is not. Crockford
-//! specifies check symbols and case-insensitive decoding with `i`/`l` → `1`
-//! and `o` → `0`; vpay decodes nothing (an id is an opaque key, looked up
-//! whole) so none of that applies. Only the character set is borrowed.
+//! Why each of those four properties, why Crockford's alphabet rather than
+//! hex or base62, and where a client secret's entropy comes from:
+//! [docs/reference/vpay-core.md § ids](../../../../docs/reference/vpay-core.md#ids).
 
 use uuid::Uuid;
 
@@ -47,16 +17,8 @@ use uuid::Uuid;
 /// `the_alphabet_is_crockfords_and_every_five_bit_value_maps_into_it`.
 const ALPHABET: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
 
-/// How many alphabet characters follow the prefix.
-///
-/// 24 x 5 = 120 bits, taken from the top 120 bits of a v4 UUID. Six of those
-/// are the version and variant bits RFC 9562 fixes, so an id carries 114 bits
-/// of randomness: a deployment would need on the order of 2^57 (≈1.4 x 10^17)
-/// ids before a collision became an even bet, against a system that will
-/// issue perhaps 10^9 in its life. The 8 dropped low bits are simply the
-/// difference between 128 bits and a whole number of base32 characters; they
-/// are dropped rather than folded in because a fold would be extra
-/// arithmetic nobody could check by eye for zero practical benefit.
+/// How many alphabet characters follow the prefix: 24, for 114 bits of
+/// randomness out of a v4 UUID's top 120.
 const BODY_CHARS: usize = 24;
 
 /// How many bits one alphabet character carries.
@@ -65,10 +27,9 @@ const BITS_PER_CHAR: usize = 5;
 /// The prefix on a PaymentIntent id.
 ///
 /// Public because a *caller-supplied* id has to be checked against it before
-/// it is used as a list cursor: an id the shape check would have caught
-/// resolves to `NULL` in `vpay_db::payment_intents::list_page`'s cursor
-/// subquery and comes back as an empty page, so without a boundary check a
-/// typo pages a merchant into silence instead of into a `400`.
+/// it is used as a list cursor: an id the shape check would have caught pages
+/// a merchant into silence rather than into a `400`. See
+/// [`is_well_formed`].
 pub const PAYMENT_INTENT_PREFIX: &str = "pi_";
 
 /// The prefix on a Charge id.
@@ -81,20 +42,29 @@ pub const REFUND_PREFIX: &str = "re_";
 pub const EVENT_PREFIX: &str = "evt_";
 
 /// Whether `id` is shaped like an id this module would have minted under
-/// `prefix`: the prefix, then exactly `BODY_CHARS` characters, every one
-/// of them in the alphabet above.
+/// `prefix`: the prefix, then exactly 24 characters, every one of them in the
+/// alphabet.
 ///
-/// A *shape* check and deliberately nothing more. It says nothing about
-/// whether the object exists, belongs to the caller, or ever existed — the
-/// merchant-scoped query is what answers that, and it must stay the only
-/// thing that does, or this function becomes an existence oracle. What it is
-/// for is the case where a malformed id would otherwise produce a *silent*
-/// wrong answer rather than an error (see [`PAYMENT_INTENT_PREFIX`]).
+/// A *shape* check and deliberately nothing more — it must never become an
+/// existence oracle, and it is case-sensitive because the ids are. Both
+/// reasons, and the silent-wrong-answer case it exists for, are in
+/// [docs/reference/vpay-core.md § ids](../../../../docs/reference/vpay-core.md#is_well_formed-is-a-shape-check-and-not-an-existence-oracle).
 ///
-/// Case-sensitive, because the ids are: the alphabet is lower-cased
-/// (see this module's docs) and an uppercase copy of a real id is not that
-/// id anywhere else in the system either, so accepting it here would be the
-/// one place that disagreed.
+/// ```
+/// use vpay_core::ids::{self, CHARGE_PREFIX, PAYMENT_INTENT_PREFIX};
+///
+/// let id = ids::payment_intent_id();
+/// assert!(ids::is_well_formed(PAYMENT_INTENT_PREFIX, &id));
+///
+/// // Another resource's prefix, a truncated copy, and the letters the
+/// // alphabet deliberately drops are all refused.
+/// assert!(!ids::is_well_formed(CHARGE_PREFIX, &id));
+/// assert!(!ids::is_well_formed(PAYMENT_INTENT_PREFIX, &id[..id.len() - 1]));
+/// assert!(!ids::is_well_formed(
+///     PAYMENT_INTENT_PREFIX,
+///     "pi_iiiiiiiiiiiiiiiiiiiiiiii"
+/// ));
+/// ```
 #[must_use]
 pub fn is_well_formed(prefix: &str, id: &str) -> bool {
     let Some(body) = id.strip_prefix(prefix) else {
@@ -109,14 +79,11 @@ pub fn is_well_formed(prefix: &str, id: &str) -> bool {
 /// Builds one id: `prefix` followed by `BODY_CHARS` alphabet characters.
 ///
 /// Private because the prefix vocabulary is closed — the four functions below
-/// are the whole of it. A `pub fn new_id(prefix: &str)` would let a call site
-/// invent a fifth prefix (or misspell one of these) without review noticing,
-/// and the prefix is the part an operator reads.
+/// are the whole of it, and the prefix is the part an operator reads.
 fn new_id(prefix: &str) -> String {
-    // `new_v4` draws from the OS CSPRNG (`getrandom`), which is the property
-    // that matters here: a v7 UUID would embed a timestamp, and a timestamp
-    // in a public id tells a holder when the object was created and roughly
-    // how busy the deployment was — see the module doc.
+    // `new_v4` draws from the OS CSPRNG (`getrandom`). A v7 UUID would embed a
+    // timestamp, and a timestamp in a public id tells a holder when the object
+    // was created and roughly how busy the deployment was.
     let bits = Uuid::new_v4().as_u128() >> (128 - BODY_CHARS * BITS_PER_CHAR);
 
     let mut id = String::with_capacity(prefix.len() + BODY_CHARS);
@@ -128,26 +95,31 @@ fn new_id(prefix: &str) -> String {
 /// Appends the low `chars * BITS_PER_CHAR` bits of `value` to `out` as base32
 /// digits, most significant first.
 ///
-/// Shared by [`new_id`] and [`client_secret_suffix`] rather than written
-/// twice: an id and a secret that disagreed about which characters are legal
-/// would put a `client_secret` on the wire that this module's own alphabet
-/// rules do not describe, and the URL-safety property the module doc rests on
-/// would then hold for only one of the two.
+/// Shared by [`new_id`] and [`client_secret_suffix`] so an id and a secret
+/// cannot disagree about which characters are legal.
 fn push_base32(out: &mut String, value: u128, chars: usize) {
     for position in (0..chars).rev() {
         let index = ((value >> (position * BITS_PER_CHAR)) & 0x1f) as usize;
         // `index` is five bits masked, so it is 0..=31 and `ALPHABET` has 32
-        // entries — the `.get()` cannot be `None`. It is written as a total
-        // expression rather than an index (`clippy::indexing_slicing`) or an
-        // `expect` (ADR-0007 denies panics), and the unreachable branch is
-        // *proved* unreachable by the alphabet-length test below rather than
-        // merely asserted here.
+        // entries — the `.get()` cannot be `None`. Written as a total
+        // expression rather than an index or an `expect` (ADR-0007), and the
+        // unreachable branch is *proved* unreachable by the alphabet-length
+        // test below rather than merely asserted here.
         let digit = ALPHABET.get(index).copied().unwrap_or(b'0');
         out.push(char::from(digit));
     }
 }
 
 /// A new PaymentIntent id, `pi_…`.
+///
+/// ```
+/// use vpay_core::ids::{self, PAYMENT_INTENT_PREFIX};
+///
+/// let id = ids::payment_intent_id();
+/// assert!(id.starts_with(PAYMENT_INTENT_PREFIX));
+/// assert_eq!(id.len(), PAYMENT_INTENT_PREFIX.len() + 24);
+/// assert_ne!(id, ids::payment_intent_id());
+/// ```
 #[must_use]
 pub fn payment_intent_id() -> String {
     new_id(PAYMENT_INTENT_PREFIX)
@@ -158,13 +130,25 @@ pub fn payment_intent_id() -> String {
 /// A charge is not a merchant-facing object in this API — one charge per
 /// intent, forever, and merchants address the intent — but it is the row an
 /// operator traces a rail submission through, so it gets a real id rather
-/// than a bare UUID for the same readability reasons.
+/// than a bare UUID.
+///
+/// ```
+/// use vpay_core::ids::{self, CHARGE_PREFIX};
+///
+/// assert!(ids::is_well_formed(CHARGE_PREFIX, &ids::charge_id()));
+/// ```
 #[must_use]
 pub fn charge_id() -> String {
     new_id(CHARGE_PREFIX)
 }
 
 /// A new Refund id, `re_…`.
+///
+/// ```
+/// use vpay_core::ids::{self, REFUND_PREFIX};
+///
+/// assert!(ids::is_well_formed(REFUND_PREFIX, &ids::refund_id()));
+/// ```
 #[must_use]
 pub fn refund_id() -> String {
     new_id(REFUND_PREFIX)
@@ -175,6 +159,13 @@ pub fn refund_id() -> String {
 /// Webhook delivery is at-least-once and merchants are told to dedupe on this
 /// value (`docs/flows/webhooks.md`), so it must be unique per *event*, never
 /// per delivery attempt.
+///
+/// ```
+/// use vpay_core::ids::{self, EVENT_PREFIX};
+///
+/// assert!(ids::is_well_formed(EVENT_PREFIX, &ids::event_id()));
+/// assert_ne!(ids::event_id(), ids::event_id());
+/// ```
 #[must_use]
 pub fn event_id() -> String {
     new_id(EVENT_PREFIX)
@@ -182,47 +173,36 @@ pub fn event_id() -> String {
 
 /// What joins an object id to its secret suffix: `pi_…` + this + the suffix.
 ///
-/// Public because it is a **wire contract**, not an implementation detail:
-/// `@vpay/stripe-js` splits a `clientSecret` on this exact string to recover
-/// the id it must build a URL from (`sdks/stripe-js/src/client.ts`'s
-/// `SECRET_SEPARATOR`), and Stripe's own client secrets are spelled the same
-/// way — a merchant who has integrated against Stripe recognises it. Spelled
-/// once here so the minting side and any Rust-side parser cannot drift from
-/// each other the way two literals would.
+/// Public because it is a **wire contract**: `@vpay/stripe-js` splits a
+/// `clientSecret` on this exact string (`sdks/stripe-js/src/client.ts`'s
+/// `SECRET_SEPARATOR`), and Stripe spells its own client secrets the same
+/// way. Spelled once here so the minting side and any Rust-side parser cannot
+/// drift the way two literals would.
 pub const CLIENT_SECRET_INFIX: &str = "_secret_";
 
-/// How many alphabet characters a client-secret suffix carries.
-///
-/// 32 x 5 = 160 bits, which is the number `docs/plans/2026-09-03-step5c-stripejs.md`
-/// §4 commits to and the floor `client_secret_suffix_length` (migration
-/// `0026`) enforces in the database. Deliberately more than an id's 120: an
-/// id names an object and is *meant* to be quotable in a support ticket,
-/// while this is the credential that authorises a stranger's browser to
-/// confirm a payment, and the only thing standing between a guesser and a
-/// live intent is how many bits it holds.
+/// How many alphabet characters a client-secret suffix carries: 32, for 160
+/// bits of which 148 are unpredictable.
 const CLIENT_SECRET_SUFFIX_CHARS: usize = 32;
 
-/// A fresh client-secret suffix — the half of a `client_secret` that is
-/// stored (`payment_intents.client_secret_suffix`, migration `0026`).
+/// A fresh client-secret suffix — the half of a `client_secret` that is stored
+/// (`payment_intents.client_secret_suffix`, migration `0026`).
 ///
-/// # Why two UUID draws
+/// Why two UUID draws, and why 160 bits rather than an id's 120:
+/// [docs/reference/vpay-core.md § client secrets](../../../../docs/reference/vpay-core.md#client-secrets).
 ///
-/// One v4 UUID is 128 bits and this needs 160, so a single draw could not
-/// supply them however it were sliced. Two draws contribute the **top 80
-/// bits** each; `Uuid::new_v4` is `getrandom`-backed (the OS CSPRNG), which
-/// is the property that matters, and it is already how every id in this
-/// module is minted — adding a second RNG crate to this dependency-light
-/// crate would be a second thing to audit for the same guarantee.
+/// ```
+/// let suffix = vpay_core::ids::client_secret_suffix();
 ///
-/// Of the 160 bits, **148 are unpredictable**: RFC 9562 fixes four version
-/// bits and two variant bits in each draw's top 80, and this function does
-/// not fold them out because folding would be arithmetic nobody could check
-/// by eye for a fraction of a bit of collision margin. 148 bits is far past
-/// the point where guessing is the attack anyone would choose.
-///
-/// The result is base32 in the same alphabet as an id, so a `client_secret`
-/// survives a query string, a form body and a filename unchanged — which it
-/// must, since `@vpay/stripe-js` sends it as a query parameter on every poll.
+/// // Migration 0026's `client_secret_suffix_length` CHECK is `BETWEEN 32 AND
+/// // 128`; this is at its lower bound.
+/// assert_eq!(suffix.len(), 32);
+/// // Same alphabet as an id, so a `client_secret` survives a query string.
+/// assert!(
+///     suffix
+///         .chars()
+///         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+/// );
+/// ```
 #[must_use]
 pub fn client_secret_suffix() -> String {
     // Halves rather than 32 characters from one draw plus 0 from the other:
@@ -240,16 +220,24 @@ pub fn client_secret_suffix() -> String {
 /// Joins an object id and its stored suffix into the credential a payer's
 /// browser presents: `pi_…_secret_…`.
 ///
-/// **The one place the two halves are joined**, on both the minting side and
-/// the checking side — `vpay_api::browser::authenticate` rebuilds the
-/// expected secret with this function and compares that, rather than parsing
-/// what the caller sent. A parser would have to decide what to do with a
-/// value carrying two separators or none, and every such decision is a place
-/// where "which secret did we actually compare?" stops being obvious.
+/// **The one place the two halves are joined**, on the minting side and the
+/// checking side both — `vpay_api::browser::authenticate` rebuilds the
+/// expected secret with this function rather than parsing what the caller
+/// sent, so "which secret did we actually compare?" has one answer.
 ///
-/// Takes the id rather than deriving it, because the caller always has the
-/// row: a function that took only a suffix could not produce the value the
-/// database and the browser agree on.
+/// ```
+/// use vpay_core::ids::{CLIENT_SECRET_INFIX, client_secret};
+///
+/// let id = "pi_0123456789abcdefghjkmnpq";
+/// let secret = client_secret(id, "wxyz0123456789abcdefghjkmnpqrstv");
+/// assert_eq!(
+///     secret,
+///     "pi_0123456789abcdefghjkmnpq_secret_wxyz0123456789abcdefghjkmnpqrstv"
+/// );
+///
+/// // What `@vpay/stripe-js` does to recover the id it builds a URL from.
+/// assert_eq!(secret.split_once(CLIENT_SECRET_INFIX), Some((id, "wxyz0123456789abcdefghjkmnpqrstv")));
+/// ```
 #[must_use]
 pub fn client_secret(id: &str, suffix: &str) -> String {
     format!("{id}{CLIENT_SECRET_INFIX}{suffix}")

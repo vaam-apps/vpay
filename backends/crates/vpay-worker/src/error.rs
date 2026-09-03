@@ -395,7 +395,7 @@ mod tests {
             },
             Case {
                 name: "Provider(Transport) — Rail is severity Warn: rides the ladder, wakes nobody",
-                error: JobError::Provider(ProviderError::Transport("connection reset".to_owned())),
+                error: JobError::Provider(ProviderError::transport("connection reset".to_owned())),
                 at_0: retry_quietly(FIRST_RUNG),
                 at_6: retry_quietly(FLAT_RUNG),
                 severity: Severity::Warn,

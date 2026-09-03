@@ -26,16 +26,19 @@ vpay-provider.workspace = true
 # job loop and the API can never disagree about whether a Postgres failure is
 # transient: both read `Classify::retry` off the same leaf.
 #
-# **No `sqlx` under `[dependencies]`, and that is a rule and not an
-# oversight.** Where two writes must commit together this crate calls
-# `PgPool::begin` and passes the transaction straight through, so no `sqlx`
-# *path* is written here: the pool arrives as `vpay_db::PgPool` and the
-# transaction is handed back to `vpay-db` unread. That is not the same as the
-# type being absent — `vpay_db::PgPool` is `sqlx::PgPool` one re-export away,
-# and pretending otherwise would make this comment the thing that is wrong
-# rather than the code. The rule is about where *statements* live: the moment
-# `sqlx` is a dependency here, one can be written outside `vpay-db`, which is
-# how the API and the worker would end up with two spellings of the same
+# **No `sqlx` under `[dependencies]`, and since Step 7 that is structural
+# rather than a rule this file asks people to keep.** Postgres is reached
+# through `&dyn vpay_db::Repositories`, and where two writes must commit
+# together this crate calls `UnitOfWork::transaction` and writes through the
+# `&mut dyn TxRepositories` the closure is handed. No `sqlx` type is
+# nameable in production code now: `vpay_db` no longer re-exports `PgPool`,
+# and the open transaction is an opaque `PendingTransaction` with no public
+# method.
+# `sqlx` is still a `[dev-dependency]` (below), where the classification
+# tests construct a real `DbError::Connect(sqlx::Error::PoolTimedOut)`.
+# The rule was always about where *statements* live — the moment `sqlx` is a
+# dependency here, one can be written outside `vpay-db`, which is how the API
+# and the worker would end up with two spellings of the same
 # compare-and-swap.
 vpay-db.workspace = true
 # `JobError` also wraps `LedgerError` (ADR-0011: a composite `#[from]`s every

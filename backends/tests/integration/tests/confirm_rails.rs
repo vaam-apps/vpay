@@ -87,9 +87,11 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use serde_json::Value;
 use sqlx::PgPool;
+use std::sync::Arc;
 use testcontainers::{ContainerAsync, GenericImage};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
+use vpay_db::Repositories;
 use vpay_sdk::{
     ConfirmPaymentIntentParams, CreatePaymentIntentParams, Credentials, IntentStatus,
     PaymentMethodType, RequestOptions,
@@ -162,6 +164,9 @@ struct Harness {
     _mtn: ContainerAsync<GenericImage>,
     _orange: ContainerAsync<GenericImage>,
     server: tokio::task::JoinHandle<()>,
+    repositories: Arc<dyn Repositories>,
+    /// The plain `sqlx` pool, for the fixtures that read or force schema
+    /// state no repository method owns.
     pool: PgPool,
     base_url: String,
     /// Where each rail's stub is listening, for the second servers below.
@@ -288,7 +293,7 @@ fn config_with(base_url: &str, jwks_a: Value, mtn: &RailSetup, orange: &RailSetu
 async fn harness() -> anyhow::Result<Harness> {
     ensure_crypto_provider_installed();
 
-    let (postgres, pool) = migrated_postgres().await?;
+    let (postgres, repositories, pool) = migrated_postgres().await?;
 
     let mtn = vpay_testkit::containers::start_wiremock(&mappings_dir("mtn"))
         .await
@@ -320,7 +325,7 @@ async fn harness() -> anyhow::Result<Harness> {
     let mtn_setup = RailSetup::working(&mtn_url);
     let orange_setup = RailSetup::working(&orange_url);
     let jwks_for_server = jwks_a.clone();
-    let served = serve(&pool, &server_pem, |base_url| {
+    let served = serve(&repositories, &server_pem, |base_url| {
         config_with(base_url, jwks_for_server, &mtn_setup, &orange_setup)
     })
     .await?;
@@ -330,6 +335,7 @@ async fn harness() -> anyhow::Result<Harness> {
         _mtn: mtn,
         _orange: orange,
         server: served.server,
+        repositories,
         pool,
         base_url: served.base_url,
         mtn_url,
@@ -726,7 +732,7 @@ async fn credentials_the_rail_refuses_are_a_page_and_a_terminal_charge() -> anyh
     rejected.subscription_key = REJECTED_SUBSCRIPTION_KEY.to_owned();
     let orange = RailSetup::working(&harness.orange_url);
     let jwks_a = harness.jwks_a.clone();
-    let served = serve(&harness.pool, &harness.server_pem, |base_url| {
+    let served = serve(&harness.repositories, &harness.server_pem, |base_url| {
         config_with(base_url, jwks_a, &rejected, &orange)
     })
     .await?;
@@ -1053,7 +1059,7 @@ async fn an_unreachable_rail_leaves_the_charge_where_recovery_expects_it() -> an
     let unreachable = RailSetup::working(UNREACHABLE_RAIL);
     let orange = RailSetup::working(&harness.orange_url);
     let jwks_a = harness.jwks_a.clone();
-    let served = serve(&harness.pool, &harness.server_pem, |base_url| {
+    let served = serve(&harness.repositories, &harness.server_pem, |base_url| {
         config_with(base_url, jwks_a, &unreachable, &orange)
     })
     .await?;
@@ -1181,7 +1187,7 @@ async fn a_rail_that_settles_in_another_currency_is_refused_before_any_charge() 
     let mut eur_orange = RailSetup::working(&harness.orange_url);
     eur_orange.currency = "EUR".to_owned();
     let jwks_a = harness.jwks_a.clone();
-    let served = serve(&harness.pool, &harness.server_pem, |base_url| {
+    let served = serve(&harness.repositories, &harness.server_pem, |base_url| {
         config_with(base_url, jwks_a, &mtn, &eur_orange)
     })
     .await?;

@@ -86,12 +86,12 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use vpay_db::Repositories;
 
 use anyhow::Context;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
-use sqlx::PgPool;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_api::op::MerchantOp;
@@ -130,7 +130,7 @@ struct Harness {
     /// via [`Harness::shutdown`]'s `JoinHandle`, so a failing assertion
     /// cannot leave a listener behind.
     server: tokio::task::JoinHandle<()>,
-    pool: PgPool,
+    repositories: Arc<dyn Repositories>,
     /// `http://127.0.0.1:{port}` — what a merchant would configure as their
     /// vpay base URL, and what every endpoint below is derived from by the
     /// *same* rules the SDK and `MerchantOp` each apply independently.
@@ -196,7 +196,7 @@ async fn harness() -> anyhow::Result<Harness> {
 async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
     ensure_crypto_provider_installed();
 
-    let (container, pool) = migrated_postgres().await?;
+    let (container, repositories, _pool) = migrated_postgres().await?;
 
     // Bind before building anything that needs to know the URL: the issuer,
     // the assertion audience the SDK signs, and the JWKS URL the validator
@@ -212,7 +212,7 @@ async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
     let signing_key =
         LoadedSigningKey::from_pem(&server_pem, &issuer).context("loading the signing key")?;
     signing_key
-        .ensure_active_in_database(&pool)
+        .ensure_active_in_database(repositories.as_ref())
         .await
         .context("announcing the signing key in oauth_signing_keys")?;
 
@@ -238,7 +238,11 @@ async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
         dashboard_client: None,
     };
 
-    let merchant_op = Arc::new(MerchantOp::new(&config, signing_key.clone(), pool.clone()));
+    let merchant_op = Arc::new(MerchantOp::new(
+        &config,
+        signing_key.clone(),
+        Arc::clone(&repositories),
+    ));
     let merchant_validator = MerchantJwtValidator(
         JwtValidator::new(
             format!("http://{bound}/v1/oauth/jwks.json"),
@@ -249,7 +253,12 @@ async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
         .expect("the vendored-roots JWKS client builds"),
     );
 
-    let deps = router_deps(pool.clone(), merchant_op, merchant_validator, &config);
+    let deps = router_deps(
+        Arc::clone(&repositories),
+        merchant_op,
+        merchant_validator,
+        &config,
+    );
     let server = tokio::spawn(async move {
         // A serve error here is not something a test can assert on
         // meaningfully — the assertions below fail on a refused connection
@@ -260,7 +269,7 @@ async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
     Ok(Harness {
         _container: container,
         server,
-        pool,
+        repositories,
         base_url,
         merchant_pem,
         signing_key,
@@ -523,7 +532,9 @@ async fn a_disabled_client_is_refused_with_invalid_client_and_401() -> anyhow::R
         .await
         .expect_err("the honest 404 for a missing id — see the case (a) test");
 
-    vpay_db::disable_client(&harness.pool, CLIENT_ID, Some("integration test"))
+    harness
+        .repositories
+        .disable_client(CLIENT_ID, Some("integration test"))
         .await
         .context("flipping the kill switch")?;
 

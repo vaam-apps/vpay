@@ -113,12 +113,76 @@ Exit codes follow `sysexits.h` where one fits (`EX_CONFIG` 78,
 | | `UniqueViolation` (SQLSTATE `23505`) | `Conflict`, code `resource_conflict` | **not** `invalid_state`: the object is not in a forbidden *state*, it already exists. A merchant must be able to tell "you already did this" from "this intent cannot be cancelled now" (`integrity_violations_are_the_callers_problem_not_a_storage_outage`) |
 | | `ForeignKeyViolation` (SQLSTATE `23503`) | `InvalidRequest`, code `invalid_reference` | the request named a currency, provider or object that does not exist; no retry of the same request can succeed |
 | | `WriteMatchedNoRow` | `Internal` | a compare-and-swap this crate's own caller set up matched nothing — nobody outside vpay can cause it (`the_two_invariant_refusals_classify_as_ours_not_the_callers`) |
-| `ProviderError` | `Transport`, `Malformed` | `Rail` | retried by the poll ladder |
+| `ProviderError` | `Transport { context, source }`, `Malformed { context, source }` | `Rail` | retried by the poll ladder. **Changed 2026-09-03 (Step 7): both are struct variants** carrying the adapter's own sentence in `context` and the library error underneath as a real `#[source]` (`RailFailure::Http(reqwest::Error)` / `RailFailure::Body(HttpBodyError)`), instead of one `String` both adapters used to `format!` the foreign error into. `Display` still renders `context` alone, so the body cap and the rail's name stay in the one-line message; the leaf reaches a log through `vpay_core::error::source_chain` and a caller through `Error::source()` — see below |
+| `RailFailure` | `Http(reqwest::Error)`, `Body(HttpBodyError)` | `Rail` | the cause a `Transport`/`Malformed` was raised from; classified so `verify-errors` can check it, never consulted on its own. `Http` is a send that never completed, `Body` a read that failed or ran past `MAX_RAIL_BODY_BYTES` — the two the port's own `read_rail_body` distinguishes |
 | | `Rejected { code, .. }` | `Conflict` with `Retry::NewAttempt`; envelope `code` is the constant `charge_declined`; severity from the `FailureCode`'s own policy (`provider_account_blocked` pages, `provider_unavailable`/`provider_error` warn, the rest info) | a rail *decision*, not a rail failure — see below. The `FailureCode` itself is in the public message, never reused as the envelope `code`, because `provider_unavailable` already means "502, retrying" when `Transport` emits it |
 | | `Config` | `Configuration` | |
 | | `Unsupported` | `Conflict`, severity `Error` | 409 because the request cannot proceed; logged at `Error` because reaching it means the core skipped the capability check it is supposed to branch on |
 | | `NotImplemented(..)` | `NotImplemented` | |
 | `AuthRejection` | all three | `Authentication` | one category, one status, one `type`; the three codes/messages say only whether a header was present and well-formed, never anything about the token — not an oracle |
+
+**A rail failure keeps its cause.** Before Step 7, `ProviderError::Transport`
+and `Malformed` were `Transport(String)`/`Malformed(String)`, so every
+adapter flattened `reqwest`'s error with `format!`. `reqwest`'s own `Display`
+for a timeout is *"error sending request for url (…)"* — the word *timeout*
+is one link further down the chain — so MTN's log line named the URL and not
+the fault. Orange had noticed and hand-walked `Error::source()` into a
+`String`, which is the same information rebuilt by hand at one of the two
+adapters. Both now attach the error itself:
+
+```rust
+ProviderError::transport_from("mtn_momo: the request to the rail failed", error)
+```
+
+and the chain is rendered once, at the boundary that logs it
+(`ApiError::log`'s `source_chain` field, and `vpay_worker`'s
+`jobs.last_error`), through `vpay_core::error::source_chain`. What an
+operator sees for a timeout is now
+`sending the request: error sending request for url (…): operation timed
+out`. `a_transport_failures_source_chain_reaches_the_reqwest_error`
+(`vpay-adapter-mtn-momo`) fails if anyone goes back to `format!`.
+
+A `serde_json` parse failure is deliberately *not* attached as a source: its
+own text is the whole diagnostic and belongs in `context`, where a one-line
+log shows it.
+
+Two constructors per variant, and which one a call site reaches for is the
+whole of the decision: `transport`/`malformed` when the rail *answered*
+(badly) and there is no library error to attach, `transport_from`/
+`malformed_from` when there is. All four carry a doctest asserting that
+`Display` renders `context` alone while the cause stays reachable through
+`Error::source()` — the property that would silently die the day someone goes
+back to `format!`.
+
+**Which variant each port operation may raise is a table, in the port's own
+rustdoc.** `ProviderAdapter`'s trait doc carries it and each of the four
+methods carries an `# Errors` section naming its own set;
+`#![warn(clippy::missing_errors_doc)]` on `vpay-provider` makes a method that
+loses one fail `cargo clippy -- -D warnings` (it covers trait *definition*
+methods, verified by deleting one). The three rows worth knowing without
+reading it:
+
+- `parse_callback` raises `Malformed` and nothing else. It touches no
+  network, holds no credential and reads no configuration, so there is no
+  transport to fail and no decision to relay.
+- `query_status` raises `Rejected` **only** when the rail refuses *our*
+  partner credentials. A declined charge is `Ok(ChargeStatus::Failed)` and a
+  rail with no record is `Ok(ChargeStatus::NotFound)` — neither is an error.
+- `submit` never raises `Unsupported`: a rail that cannot take a payment is
+  not a rail. `Unsupported` belongs to `refund` alone, where it is the
+  permanent capability answer rather than unbuilt work.
+
+There is deliberately **no** `ProviderError::retryable()`. Retry policy is
+`Classify::retry` and a second oracle beside it is what ADR-0011 exists to
+prevent; the worker reads `Classify` exclusively.
+
+**A body that fails mid-stream now says so.** Both adapters used to map
+`HttpBodyError::Read(reqwest::Error)` onto `RailFailure::Http`, whose
+`Display` is *"sending the request"* — describing a stage that had already
+succeeded. `vpay_provider::http::read_rail_body`, which is now the one
+bounded read both adapters call, keeps the `HttpBodyError` and the chain
+reads *"reading the response"*. Both classify `Category::Rail`; only the text
+an operator reads changed.
 
 **`ProviderError::Rejected` is the seam between system errors and business
 outcomes.** A rail declining a charge is not a system failure: the worker
@@ -193,6 +257,7 @@ dead database is still a config problem), and exits with
 |---|---|---|
 | A new error type forgets `impl Classify` | `cargo xtask verify-errors` fails `just verify`: it finds every `pub` type in `backends/crates` that derives `thiserror::Error` **or** is named `*Error`/`*Rejection`, outside `#[cfg(test)]` blocks and `tests/` directories, and requires an impl in the same crate that is itself outside test code | nothing unclassified reaches a boundary — within that scan; the SDKs and `backends/apps` are outside it by design |
 | A library crate adds `anyhow` to `[dependencies]` | same check | `anyhow` stays at the edge |
+| A composite grows a `#[from]` leaf and an existing `_ =>` arm answers for it | same check, extended 2026-09-03 (Step 7): for every `#[from]` variant, each `Classify` method that *discriminates* on `self` must name `Self::<Variant>` explicitly. Five spellings count as discriminating — `match self`, `match *self`, `match &self`, `if let Self::`, `matches!(self` — because searching only for `match self` made the rule opt-out: an `if let` ladder's trailing `else` answers for an unnamed leaf exactly as a `_ =>` arm does. Proven live by deleting `ApiError`'s `Self::Db(e) => e.code()` arm and watching `verify-errors` refuse, and by `a_from_variant_swallowed_by_an_if_let_ladder_is_reported`, which fails if the list is narrowed back | composites do not re-classify — the leaf's own `code`/`retry`/`severity`/`public_message` reach the boundary instead of the category default |
 | A handler hand-builds an envelope with the wrong status | the renderers are `pub(crate)` to `vpay-api`, so code outside the crate cannot call them at all; inside the crate, `error_envelope_with_param` has one production caller (`ApiError::into_response`) and a second is a review finding | one status per category |
 | A leaf's `Display` includes a secret | the existing redaction tests (`Debug` on `ProviderHost`, `CommonArgs`, SDK `Credentials`) — extend them when adding a payload that could carry one | secrets never reach a log |
 | A `public_message()` override leaks a table or host name | test in `vpay-core` for the generic messages; add one per override | merchants see nothing internal |
@@ -201,12 +266,17 @@ dead database is still a config problem), and exits with
 ## How to add an error
 
 1. Add the variant to the crate's existing enum, or a new `thiserror` enum
-   if it is a new concern. Keep `#[source]` on wrapped errors.
+   if it is a new concern. Keep `#[source]` on wrapped errors — a foreign
+   error is attached, never `format!`ed into the message, so the leaf is
+   still reachable from the boundary that logs it
+   (`vpay_core::error::source_chain`).
 2. Classify it: extend the crate's `impl Classify`. If the category's
    defaults are wrong for it, override `code`/`retry`/`severity`/
    `public_message` with a comment saying why.
 3. If a composite needs to carry it, add a `#[from]` variant there and
-   delegate in its `Classify` impl.
+   delegate in its `Classify` impl — in **every** method that discriminates
+   on `self` (`match`, `if let Self::`, `matches!`), which `verify-errors`
+   now checks rather than trusting.
 4. `just verify` — `verify-errors` checks the impl exists; `verify-status`
    still checks any `NotImplemented` token.
 5. Test the classification if it overrides a default — the override is the
@@ -283,3 +353,18 @@ one remaining `NotImplemented` token is `mtn_momo::refund`, on a route
 (`POST /v1/refunds`) that does not exist, so **no `/v1` caller can currently
 provoke a `501` at all**. `vpay-api` runs **165 tests, 165 passed, 0 skipped** as of 2026-09-03
 (`cargo nextest run -p vpay-api`, measured).
+
+**Updated 2026-09-03 (Step 7, Phase A): the rail failures carry their
+cause.** `ProviderError::{Transport, Malformed}` are struct variants with a
+`context: String` and an optional `#[source] RailFailure`; the two adapters
+attach the `reqwest`/body error instead of `format!`ing it into a message,
+and Orange's hand-rolled `Error::source()` walk is gone — the walk is the
+logger's now (`vpay_core::error::source_chain`, used by `ApiError::log` and
+by `vpay_worker`'s job settlement, so `jobs.last_error` keeps the leaf it
+would otherwise have lost). `verify-errors` counts **14 error types, all
+classified** (13 until Step 7's lane 3 added `vpay_api::BootError`), and additionally checks that each of the **14 `#[from]`
+variants** is named explicitly in every `Classify` method that discriminates
+on `self` — a count that is now derived from the variants that passed rather
+than from per-file arithmetic. Nothing about the wire changed: the 26 conformance cases still pass,
+and three of their assertions were adapted to the struct shape (Step 7
+decision 14) without changing what they assert.

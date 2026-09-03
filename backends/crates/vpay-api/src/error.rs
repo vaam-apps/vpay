@@ -74,8 +74,6 @@
 //! route whose failure must not depend on this module working. Every other
 //! response in this crate goes through [`ApiError`].
 
-use std::error::Error as StdError;
-
 use axum::Json;
 use axum::extract::rejection::{FormRejection, JsonRejection, PathRejection, QueryRejection};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
@@ -477,13 +475,7 @@ impl ApiError {
     /// when the error has no source.
     #[must_use]
     pub fn source_chain(&self) -> String {
-        let mut parts = Vec::new();
-        let mut current = StdError::source(self);
-        while let Some(error) = current {
-            parts.push(error.to_string());
-            current = error.source();
-        }
-        parts.join(": ")
+        vpay_core::error::source_chain(self)
     }
 
     /// Emits the operator-facing half of this error, at the level its
@@ -952,7 +944,7 @@ mod tests {
             ),
             // vpay-provider: Rail → 502.
             (
-                || ApiError::Provider(ProviderError::Transport("connect timed out".into())),
+                || ApiError::Provider(ProviderError::transport("connect timed out")),
                 502,
                 "api_error",
                 "provider_unavailable",
@@ -1323,7 +1315,7 @@ mod tests {
         );
 
         let (_, rail) = with_captured_log(|| {
-            ApiError::Provider(ProviderError::Transport("timeout".into())).log();
+            ApiError::Provider(ProviderError::transport("timeout")).log();
         });
         assert!(rail.contains("WARN"), "a rail timeout warns: {rail}");
 

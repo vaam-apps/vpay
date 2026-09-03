@@ -15,7 +15,7 @@
 //! The one thing that is **not** shared is which id prefix a cursor must
 //! carry: that is per-resource and is passed in, because accepting a `pi_…`
 //! where an `evt_…` was meant is precisely the mistake the shape check
-//! exists to catch (see [`validated_cursor`]).
+//! exists to catch (see [`crate::v1::paging::validated_cursor`]).
 
 use vpay_db::ListPage;
 
@@ -23,12 +23,12 @@ use crate::error::ApiError;
 
 /// The two cursor parameters, named once so the `param` a caller is told to
 /// fix cannot drift from the field they sent.
-pub(crate) const STARTING_AFTER: &str = "starting_after";
-pub(crate) const ENDING_BEFORE: &str = "ending_before";
+pub const STARTING_AFTER: &str = "starting_after";
+pub const ENDING_BEFORE: &str = "ending_before";
 
 /// Page size when a caller names none, and the ceiling it is capped to.
-pub(crate) const DEFAULT_LIMIT: i64 = 10;
-pub(crate) const MAX_LIMIT: i64 = 100;
+pub const DEFAULT_LIMIT: i64 = 10;
+pub const MAX_LIMIT: i64 = 100;
 
 /// One resource's paging vocabulary: the id prefix its cursors carry, and
 /// the noun a refusal names.
@@ -37,11 +37,11 @@ pub(crate) const MAX_LIMIT: i64 = 100;
 /// sentence a merchant reads ("A cursor must be an event id…") is copy, not
 /// a mechanical transform of `evt_`.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct CursorKind {
+pub struct CursorKind {
     /// `vpay_core::ids`' prefix for this resource, e.g. `evt_`.
-    pub(crate) prefix: &'static str,
+    pub prefix: &'static str,
     /// How the refusal names the object, e.g. `an event id`.
-    pub(crate) noun: &'static str,
+    pub noun: &'static str,
 }
 
 /// Builds the repository's [`ListPage`] from the three raw query values,
@@ -104,7 +104,54 @@ pub(crate) fn list_page(
 /// # Errors
 ///
 /// [`ApiError::InvalidParam`] naming `param`.
-pub(crate) fn validated_cursor(
+/// # Examples
+///
+/// Absent, empty and whitespace-only all mean "no cursor", not "bad cursor" —
+/// `?starting_after=` is what a client templating an optional field emits when
+/// it has none:
+///
+/// ```
+/// use vpay_api::v1::paging::{CursorKind, STARTING_AFTER, validated_cursor};
+///
+/// const EVENTS: CursorKind = CursorKind {
+///     prefix: vpay_core::ids::EVENT_PREFIX,
+///     noun: "an event id",
+/// };
+///
+/// assert_eq!(validated_cursor(STARTING_AFTER, None, EVENTS).expect("no cursor"), None);
+/// assert_eq!(
+///     validated_cursor(STARTING_AFTER, Some("   ".to_owned()), EVENTS).expect("no cursor"),
+///     None,
+/// );
+/// ```
+///
+/// A cursor from the *other* resource is refused, which is the whole reason the
+/// prefix is a parameter rather than a constant in here:
+///
+/// ```
+/// use vpay_api::v1::paging::{CursorKind, STARTING_AFTER, validated_cursor};
+///
+/// const EVENTS: CursorKind = CursorKind {
+///     prefix: vpay_core::ids::EVENT_PREFIX,
+///     noun: "an event id",
+/// };
+///
+/// let event = vpay_core::ids::event_id();
+/// assert_eq!(
+///     validated_cursor(STARTING_AFTER, Some(event.clone()), EVENTS).expect("its own prefix"),
+///     Some(event),
+/// );
+/// assert!(
+///     validated_cursor(
+///         STARTING_AFTER,
+///         Some(vpay_core::ids::payment_intent_id()),
+///         EVENTS,
+///     )
+///     .is_err(),
+///     "a pi_… cursor is not an event cursor",
+/// );
+/// ```
+pub fn validated_cursor(
     param: &'static str,
     raw: Option<String>,
     kind: CursorKind,
@@ -137,7 +184,23 @@ pub(crate) fn validated_cursor(
 ///
 /// [`ApiError::InvalidParam`] naming `limit` for a value that is not a
 /// whole number, or is below 1.
-pub(crate) fn parse_limit(raw: Option<&str>) -> Result<i64, ApiError> {
+/// # Examples
+///
+/// ```
+/// use vpay_api::v1::paging::{DEFAULT_LIMIT, MAX_LIMIT, parse_limit};
+///
+/// assert_eq!(parse_limit(None).expect("absent means the default"), DEFAULT_LIMIT);
+/// assert_eq!(parse_limit(Some("3")).expect("in range"), 3);
+/// assert_eq!(parse_limit(Some(" 7 ")).expect("trimmed"), 7);
+///
+/// // A ceiling, not a validation rule: asking for more is answered with a full
+/// // page and `has_more: true`, not a refusal.
+/// assert_eq!(parse_limit(Some("1000")).expect("capped"), MAX_LIMIT);
+///
+/// assert!(parse_limit(Some("0")).is_err(), "below 1 is a refusal");
+/// assert!(parse_limit(Some("2.5")).is_err(), "not a whole number");
+/// ```
+pub fn parse_limit(raw: Option<&str>) -> Result<i64, ApiError> {
     let Some(raw) = raw else {
         return Ok(DEFAULT_LIMIT);
     };

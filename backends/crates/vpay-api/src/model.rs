@@ -80,6 +80,7 @@ object_tag!(
 /// Stripe's own `next_action.redirect_to_url` shape, so a merchant's existing
 /// redirect handling works unchanged (`docs/flows/payment-lifecycle.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct RedirectToUrl {
     /// The rail's hosted page. Opaque to us — never parsed or rewritten.
     pub url: String,
@@ -94,6 +95,49 @@ pub struct RedirectToUrl {
 /// while a payer types a PIN into their own handset, so `next_action` stays
 /// `null` there. The externally-tagged-by-`type` shape matches Stripe's and
 /// `sdks/rust/src/model.rs`'s `NextAction` exactly.
+/// # Examples
+///
+/// The externally-tagged shape a merchant's existing Stripe redirect handling
+/// already reads:
+///
+/// ```
+/// use serde_json::json;
+/// use vpay_api::model::{NextAction, RedirectToUrl};
+///
+/// let action = NextAction::RedirectToUrl {
+///     redirect_to_url: RedirectToUrl {
+///         url: "https://rail.example/pay/abc".to_owned(),
+///         return_url: Some("https://merchant.example/done".to_owned()),
+///     },
+/// };
+/// assert_eq!(
+///     serde_json::to_value(&action).expect("a wire DTO always serialises"),
+///     json!({
+///         "type": "redirect_to_url",
+///         "redirect_to_url": {
+///             "url": "https://rail.example/pay/abc",
+///             "return_url": "https://merchant.example/done",
+///         },
+///     }),
+/// );
+/// ```
+///
+/// A rail that was given no `return_url` renders `null`, not a missing key —
+/// an SDK reading `redirect_to_url.return_url` gets an answer either way:
+///
+/// ```
+/// use serde_json::json;
+/// use vpay_api::model::{NextAction, RedirectToUrl};
+///
+/// let action = NextAction::RedirectToUrl {
+///     redirect_to_url: RedirectToUrl {
+///         url: "https://rail.example/pay/abc".to_owned(),
+///         return_url: None,
+///     },
+/// };
+/// let rendered = serde_json::to_value(&action).expect("a wire DTO always serialises");
+/// assert_eq!(rendered["redirect_to_url"]["return_url"], json!(null));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NextAction {
@@ -113,7 +157,26 @@ pub enum NextAction {
 /// DTO, not an error: it is *rendered*, never returned, and classifying it
 /// would put a meaningless entry into the check that keeps real error types
 /// honest.
+/// # Examples
+///
+/// ```
+/// use serde_json::json;
+/// use vpay_api::model::LastPaymentErrorObject;
+///
+/// let refusal = LastPaymentErrorObject {
+///     code: "insufficient_funds".to_owned(),
+///     message: "The payer's account does not hold enough to cover this charge.".to_owned(),
+/// };
+/// assert_eq!(
+///     serde_json::to_value(&refusal).expect("a wire DTO always serialises"),
+///     json!({
+///         "code": "insufficient_funds",
+///         "message": "The payer's account does not hold enough to cover this charge.",
+///     }),
+/// );
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct LastPaymentErrorObject {
     /// A code from `docs/flows/failures.md`'s closed vocabulary.
     ///
@@ -131,6 +194,7 @@ pub struct LastPaymentErrorObject {
 /// A `payment_intent`, exactly as `docs/api/README.md`'s object table and
 /// `sdks/rust/tests/support/mod.rs`'s fixture describe it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct PaymentIntentObject {
     /// `pi_…` — `vpay_core::ids::payment_intent_id`.
     pub id: String,
@@ -234,6 +298,7 @@ impl PaymentIntentObject {
 /// memory (every other type here carries either no secret or, on
 /// [`PaymentIntentRow`](vpay_db::PaymentIntentRow), only the stored suffix).
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct PaymentIntentWithSecret {
     /// The twelve documented keys, unchanged and rendered by the same code
     /// every other surface uses.
@@ -299,6 +364,7 @@ impl PaymentIntentWithSecret {
 /// (`docs/api/README.md`), and a second hand-written copy of these four keys
 /// is how `has_more` ends up meaning different things on different endpoints.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct ListObject<T> {
     /// Always `"list"`.
     pub object: ListTag,
@@ -317,6 +383,23 @@ pub struct ListObject<T> {
 impl<T> ListObject<T> {
     /// Builds the envelope. The only constructor, so `object` is always
     /// `"list"` and `url` is always supplied by the route that served it.
+    /// # Examples
+    ///
+    /// ```
+    /// use serde_json::json;
+    /// use vpay_api::model::ListObject;
+    ///
+    /// let page = ListObject::new(vec!["pi_a", "pi_b"], true, "/v1/payment_intents");
+    /// assert_eq!(
+    ///     serde_json::to_value(&page).expect("a wire DTO always serialises"),
+    ///     json!({
+    ///         "object": "list",
+    ///         "data": ["pi_a", "pi_b"],
+    ///         "has_more": true,
+    ///         "url": "/v1/payment_intents",
+    ///     }),
+    /// );
+    /// ```
     #[must_use]
     pub fn new(data: Vec<T>, has_more: bool, url: impl Into<String>) -> Self {
         Self {
@@ -410,6 +493,7 @@ fn last_payment_error_of(
 /// event that put the payload directly under `data` would fail to decode in
 /// every merchant's client while still looking plausible in a log.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct EventDataObject {
     /// The object the event is about, verbatim from `events.data` — the
     /// snapshot taken when the transition happened, never a re-read of
@@ -448,6 +532,7 @@ pub struct EventDataObject {
 /// the digest depend on JSON parse order — see
 /// `the_rendered_bytes_are_stable_whatever_order_the_data_was_built_in`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct EventObject {
     /// `evt_…`. Delivery is at-least-once, so this is the id merchants
     /// dedupe on (`docs/flows/webhooks.md`).

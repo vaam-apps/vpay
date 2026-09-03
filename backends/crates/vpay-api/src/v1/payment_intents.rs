@@ -6,39 +6,15 @@
 //! answering — so a `200` here is a payment a rail is genuinely working on,
 //! not a rendered optimism (`docs/status.md`, `AGENTS.md`'s second rule).
 //!
-//! # Three orderings this file exists to get right
-//!
 //! **Tenancy.** Every query takes the [`MerchantScope`] the authentication
 //! middleware resolved, and there is no code path here that reads a payment
 //! intent without one. A merchant asking for another merchant's `pi_…` gets
 //! the same 404, byte for byte, as one asking for an id that never existed —
 //! see [`ApiError::NotFound`].
 //!
-//! **Idempotency.** Every `POST` needs an `Idempotency-Key` (D7). The key is
-//! claimed *atomically* — one `INSERT … ON CONFLICT`, in
-//! `vpay_db::idempotency::claim` — so two concurrent requests carrying one
-//! key cannot both proceed, and the loser is told "in progress" rather than
-//! being allowed to create a second intent. A claim is always ended, on
-//! every path: stored (the response is replayable) or released (the retry
-//! must re-execute) — see `PostRequest::finish` below for which is which,
-//! and why a key that is merely left behind is the dangerous third option.
-//! "Every path" is meant literally, including the ones that fail *after* the
-//! work was done: a body that cannot be read back, a body that is not JSON,
-//! and a failed write to `idempotency_keys` each release before returning,
-//! because the alternative is the key staying `in_flight` until it expires
-//! and every retry under it being answered "still in progress".
-//!
-//! The claim is carried as the `claim_id` `vpay_db::idempotency::claim`
-//! minted, never as the key alone: an expired claim is reclaimable, so
-//! addressing the row by key would let a request that stalled past its
-//! window overwrite or delete the claim that replaced it.
-//!
-//! **Write before network.** `confirm` commits the charge row, with the
-//! `provider_reference_id` it will submit under, *before* the adapter is
-//! called, and records the attempt in `provider_requests` before that call
-//! too. `docs/flows/crash-safety.md`: never let a payer act on a transaction
-//! you cannot name. The rows left behind by a submission that never happened
-//! are deliberate — they are what a recovery pass will find.
+//! The other two orderings this file exists to get right — idempotency, and
+//! write-before-network — are in
+//! [docs/reference/vpay-api.md § the confirm path](../../../../../docs/reference/vpay-api.md#the-confirm-path).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -56,8 +32,8 @@ use uuid::Uuid;
 use vpay_core::state::{IntentStatus, Transition, next_status};
 use vpay_core::{Currency, Money, ProviderFlow, ids};
 use vpay_db::{
-    ChargeRow, IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome, NewCharge,
-    NewPaymentIntent, PgPool, charges, idempotency, payment_intents, provider_requests,
+    ChargeRow, Idempotency, IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome,
+    NewCharge, NewPaymentIntent, PaymentIntents, Repositories, TxOutcome, UnitOfWork as _,
 };
 use vpay_provider::{ChargeRef, ProviderAdapter, ProviderError, Submitted};
 
@@ -123,6 +99,7 @@ pub(crate) const CURSOR: CursorKind = CursorKind {
 /// name `amount` and say what is wrong with it, which is the whole point of
 /// Stripe's `param` field.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 struct CreateParams {
     amount: Option<String>,
     currency: Option<String>,
@@ -200,6 +177,7 @@ struct CreateParams {
 /// rails. Nothing here branches on a provider code, and adding a rail does
 /// not change this list.
 #[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
 struct UnsupportedStripeParams {
     /// Text like every other form field. Only `automatic` is accepted.
     capture_method: Option<String>,
@@ -295,14 +273,14 @@ impl UnsupportedStripeParams {
 /// true. Nothing has been written at that point, so re-executing is exactly
 /// equivalent to the request never having been made.
 pub(crate) async fn create(
-    State(pool): State<PgPool>,
+    State(repositories): State<Arc<dyn Repositories>>,
     State(config): State<Arc<ResourceConfig>>,
     scope: MerchantScope,
     request: Request,
 ) -> Result<Response, ApiError> {
     let post = PostRequest::read(request).await?;
 
-    let claim_id = match post.claim_or_answer(&pool, &scope).await? {
+    let claim_id = match post.claim_or_answer(repositories.as_ref(), &scope).await? {
         ClaimOutcome::Owned(claim_id) => claim_id,
         ClaimOutcome::Answered(response) => return Ok(response),
     };
@@ -313,7 +291,7 @@ pub(crate) async fn create(
     let validated = match validate_create(&post, &config).await {
         Ok(validated) => validated,
         Err(error) => {
-            post.release(&pool, &scope, claim_id).await;
+            post.release(repositories.as_ref(), &scope, claim_id).await;
             return Err(error);
         }
     };
@@ -353,7 +331,8 @@ pub(crate) async fn create(
         created_at: OffsetDateTime::now_utc(),
     };
 
-    let outcome = payment_intents::insert(&pool, &new)
+    let outcome = repositories
+        .insert(&new)
         .await
         .map_err(ApiError::from)
         // The one response that carries the credential a merchant's page
@@ -362,7 +341,8 @@ pub(crate) async fn create(
         // saw it here has nothing to put on the page.
         .and_then(|row| object_response(&row, SecretRendering::Include));
 
-    post.finish(&pool, &scope, claim_id, outcome).await
+    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
+        .await
 }
 
 /// A create request that has passed every rule, in the types the insert
@@ -430,18 +410,19 @@ async fn validate_create(
 /// intent itself (`0014`), rendered by
 /// [`PaymentIntentObject::try_from`].
 pub(crate) async fn retrieve(
-    State(pool): State<PgPool>,
+    State(repositories): State<Arc<dyn Repositories>>,
     scope: MerchantScope,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let row = payment_intents::get_for_merchant(&pool, scope.merchant_id(), &id)
+    let row = repositories
+        .get_for_merchant(scope.merchant_id(), &id)
         .await?
         .ok_or_else(|| not_found(&id))?;
     // The merchant surface renders the credential too, so a merchant who
     // lost the create response can recover it without creating a second
     // intent. Their token is what authorises this read; the browser route
     // reaches the same function with a `client_secret` instead.
-    rendered_intent(&pool, &row, SecretRendering::Include).await
+    rendered_intent(repositories.as_ref(), &row, SecretRendering::Include).await
 }
 
 /// A stored intent as a `200`, with `next_action` attached when the status
@@ -456,7 +437,7 @@ pub(crate) async fn retrieve(
 /// in the `rendering` they pass — and today both pass
 /// [`SecretRendering::Include`].
 pub(crate) async fn rendered_intent(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     row: &vpay_db::PaymentIntentRow,
     rendering: SecretRendering,
 ) -> Result<Response, ApiError> {
@@ -465,7 +446,7 @@ pub(crate) async fn rendered_intent(
         return intent_response(row, object, rendering);
     }
 
-    let charge = charges::get_for_intent(pool, &row.id).await?;
+    let charge = repositories.get_for_intent(&row.id).await?;
     let next_action = charge.as_ref().and_then(next_action_of);
     if next_action.is_none() {
         // `requires_action` means "the payer has somewhere to go". An intent
@@ -508,6 +489,7 @@ fn next_action_of(charge: &ChargeRow) -> Option<NextAction> {
 /// `GET /v1/payment_intents`'s query parameters — text for the same reason
 /// [`CreateParams`]'s fields are.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) struct ListParams {
     limit: Option<String>,
     starting_after: Option<String>,
@@ -516,7 +498,7 @@ pub(crate) struct ListParams {
 
 /// `GET /v1/payment_intents`.
 pub(crate) async fn list(
-    State(pool): State<PgPool>,
+    State(repositories): State<Arc<dyn Repositories>>,
     scope: MerchantScope,
     VpayQuery(params): VpayQuery<ListParams>,
 ) -> Result<Response, ApiError> {
@@ -527,7 +509,8 @@ pub(crate) async fn list(
         CURSOR,
     )?;
 
-    let (rows, has_more) = payment_intents::list_page(&pool, scope.merchant_id(), &page).await?;
+    let (rows, has_more) =
+        PaymentIntents::list_page(repositories.as_ref(), scope.merchant_id(), &page).await?;
     let data = rows
         .iter()
         .map(PaymentIntentObject::try_from)
@@ -558,23 +541,28 @@ pub(crate) async fn list(
 /// what turns it into the right answer: 404 if there is no such intent for
 /// this merchant, and one of two 409s otherwise.
 pub(crate) async fn cancel(
-    State(pool): State<PgPool>,
+    State(repositories): State<Arc<dyn Repositories>>,
     scope: MerchantScope,
     Path(id): Path<String>,
     request: Request,
 ) -> Result<Response, ApiError> {
     let post = PostRequest::read(request).await?;
-    let claim_id = match post.claim_or_answer(&pool, &scope).await? {
+    let claim_id = match post.claim_or_answer(repositories.as_ref(), &scope).await? {
         ClaimOutcome::Owned(claim_id) => claim_id,
         ClaimOutcome::Answered(response) => return Ok(response),
     };
 
-    let outcome = cancel_once(&pool, &scope, &id).await;
-    post.finish(&pool, &scope, claim_id, outcome).await
+    let outcome = cancel_once(repositories.as_ref(), &scope, &id).await;
+    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
+        .await
 }
 
-async fn cancel_once(pool: &PgPool, scope: &MerchantScope, id: &str) -> Result<Response, ApiError> {
-    if let Some(row) = payment_intents::cancel(pool, scope.merchant_id(), id).await? {
+async fn cancel_once(
+    repositories: &dyn Repositories,
+    scope: &MerchantScope,
+    id: &str,
+) -> Result<Response, ApiError> {
+    if let Some(row) = repositories.cancel(scope.merchant_id(), id).await? {
         return object_response(&row, SecretRendering::Omit);
     }
 
@@ -584,7 +572,8 @@ async fn cancel_once(pool: &PgPool, scope: &MerchantScope, id: &str) -> Result<R
     // intent that is *still* `requires_payment_method` can only have been
     // refused by the other one — the live charge. Anything else is the
     // status.
-    let current = payment_intents::get_for_merchant(pool, scope.merchant_id(), id)
+    let current = repositories
+        .get_for_merchant(scope.merchant_id(), id)
         .await?
         .ok_or_else(|| not_found(id))?;
     if current.status == IntentStatus::INITIAL.as_wire_str() {
@@ -633,6 +622,7 @@ fn charge_in_flight() -> ApiError {
 /// [`ConfirmParams::from_payer`], which is the type-level statement of "a
 /// payer may influence these two fields and nothing else".
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) struct ConfirmParams {
     payment_method_data: Option<Map<String, Value>>,
     return_url: Option<String>,
@@ -670,41 +660,19 @@ impl ConfirmParams {
 
 /// `POST /v1/payment_intents/{id}/confirm`.
 ///
-/// The six steps are the order `docs/flows/crash-safety.md` requires, and
-/// their order is the whole safety property:
+/// Reads and refuses the body, claims the `Idempotency-Key`, then runs
+/// [`confirm_once`] and ends the claim with whatever it answered. The six
+/// ordered steps of the confirm itself, and the three shapes step 6 takes, are
+/// in
+/// [docs/reference/vpay-api.md § the confirm path](../../../../../docs/reference/vpay-api.md#the-confirm-path).
 ///
-/// 1. load the intent for this merchant (404), refuse a status that forbids
-///    a confirm (409), refuse an intent that already has a charge (409, and
-///    **before** any insert — "one charge per intent, forever");
-/// 2. resolve the rail from `payment_method_data[type]` and branch on its
-///    [`vpay_provider::Capabilities::flow`] only, never on its code;
-/// 3. mint the `provider_reference_id` and commit the charge row in
-///    `submitting`, so the reference is durable before anything is sent;
-/// 4. record the attempt in `provider_requests` with no status;
-/// 5. call the adapter — `submit` is `async`, so the `.await` is what
-///    actually sends the request;
-/// 6. record what came back and answer.
+/// # Errors
 ///
-/// Step 6 has three shapes, and which one runs is decided by the *error's*
-/// own classification rather than by anything this file knows about rails:
-///
-/// * **the rail accepted it** — one transaction moves the charge to
-///   `submitted` with the rail's key material and the intent to
-///   `processing`/`requires_action`, it commits, and only then is a response
-///   built (`persist_submitted`, and `docs/flows/crash-safety.md`'s "the
-///   commit is the gate on the redirect");
-/// * **the rail declined it** (`ProviderError::Rejected`) — one transaction
-///   fails the charge with its `failure_code` and stamps
-///   `last_payment_error` on the intent, which stays
-///   `requires_payment_method` because the lifecycle has no `failed` status;
-///   the merchant gets the `409` `charge_declined`;
-/// * **anything else** — we do not know what the rail did, so *nothing*
-///   moves. The `submitting` charge row and the status-less
-///   `provider_requests` row stay behind on purpose: they are exactly the
-///   state a crash between steps 4 and 6 would leave, and are what the
-///   recovery pass will read (Step 4 — `docs/status.md`).
+/// [`ApiError::InvalidParam`] for a missing or unusable `Idempotency-Key` or a
+/// refused Stripe parameter, [`ApiError::Conflict`] for a key still in flight,
+/// and everything [`confirm_once`] can answer.
 pub(crate) async fn confirm(
-    State(pool): State<PgPool>,
+    State(repositories): State<Arc<dyn Repositories>>,
     State(config): State<Arc<ResourceConfig>>,
     State(adapters): State<Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>>,
     scope: MerchantScope,
@@ -727,7 +695,7 @@ pub(crate) async fn confirm(
     // the wire), because the field is refused before the key is looked at.
     params.unsupported.reject_unsupported()?;
 
-    let claim_id = match post.claim_or_answer(&pool, &scope).await? {
+    let claim_id = match post.claim_or_answer(repositories.as_ref(), &scope).await? {
         ClaimOutcome::Owned(claim_id) => claim_id,
         ClaimOutcome::Answered(response) => return Ok(response),
     };
@@ -736,7 +704,7 @@ pub(crate) async fn confirm(
     // merchant already holds the credential from `create`. Rendering it again
     // here would put it on a response no browser reads (D2).
     let outcome = confirm_once(
-        &pool,
+        repositories.as_ref(),
         &config,
         &adapters,
         &scope,
@@ -745,49 +713,66 @@ pub(crate) async fn confirm(
         SecretRendering::Omit,
     )
     .await;
-    post.finish(&pool, &scope, claim_id, outcome).await
+    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
+        .await
 }
 
 /// The `payment_method_data[type]` key, and the `param` a caller sees when
 /// something about the instrument is wrong.
 const PMD_TYPE_PARAM: &str = "payment_method_data[type]";
 
+/// Everything step 2 resolves about a confirm: which rail, how that rail takes
+/// a payer, and what the charge row is about to say.
+///
+/// Borrowed rather than owned, so `code` stays tied to the request body it came
+/// out of and `rail`/`adapter` to this deployment's own tables — nothing is
+/// copied here for the sake of a shorter signature.
+struct ConfirmTarget<'a> {
+    /// `payment_method_data[type]`, which is also `providers.code`.
+    code: &'a str,
+    rail: &'a RailConfig,
+    adapter: &'a dyn ProviderAdapter,
+    flow: ProviderFlow,
+    /// The payer's number on a push rail, `None` on a redirect rail.
+    payer_ref: Option<String>,
+    /// The merchant's `return_url` on a redirect rail, `None` on a push rail.
+    return_url: Option<String>,
+    amount: Money,
+}
+
+/// What steps 3 and 4 leave behind before the rail is called: the durable
+/// charge row, and the `provider_requests` row that says a call was made.
+///
+/// Both exist *before* [`submit_to_rail`] runs, which is the whole crash-safety
+/// property — see
+/// [docs/reference/vpay-api.md § the confirm path](../../../../../docs/reference/vpay-api.md#the-confirm-path).
+struct SubmitAttempt {
+    charge: ChargeRow,
+    /// `provider_requests.id`, answered in step 6.
+    request_id: i64,
+    /// The `provider_reference_id` this charge is submitted under.
+    reference: Uuid,
+}
+
 /// Every step of a confirm, from loading the intent to answering — shared
 /// verbatim by `POST /v1/payment_intents/{id}/confirm` and
 /// `POST /v1/browser/payment_intents/{id}/confirm`.
 ///
-/// `pub(crate)` since Step 5c. The browser route calls **this**, not
-/// [`confirm`]: the idempotency machinery around that handler
-/// (`PostRequest::read`) requires an `Idempotency-Key`, which a browser
-/// cannot send without turning a CORS simple request into a preflighted one
-/// (§0 S4). What protects a double-submit here is the same thing that
-/// protects it for a merchant who omitted the key's protection anyway — the
-/// pre-insert charge check plus the `one_charge_per_intent` unique index,
-/// which answers the second confirm a `409`.
-///
-/// The `scope` a browser call passes is minted from a `PayerScope`, so the
-/// tenancy filter on every query below is the merchant the *publishable key*
-/// named — see [`crate::browser::authenticate`].
-///
-/// # Why seven loose arguments and not a struct
-///
-/// Each one is a distinct dependency of the six steps — the pool, the
-/// deployment's rails, the linked adapters, the tenant, the object, the
-/// payer's instrument, and what the response renders — and the two callers
-/// pass different values for every one of them. A parameter struct would put
-/// a constructor between the two surfaces and this function, which is exactly
-/// the place a browser-specific default could hide unnoticed. It sits at
-/// clippy's threshold, deliberately: an eighth would be the signal that the
-/// confirm has grown a second responsibility.
+/// The body is the six steps and nothing else, in five named functions below
+/// — [`open_attempt`] is steps 3 and 4 together, one durable write — and
+/// their order is the safety property. See
+/// [docs/reference/vpay-api.md § the confirm path](../../../../../docs/reference/vpay-api.md#the-confirm-path)
+/// for what each step guarantees, why the arguments are loose rather than a
+/// struct, and why the browser surface calls this rather than [`confirm`].
 ///
 /// # Errors
 ///
-/// Everything the six steps below can answer: `404` for an intent this scope
-/// cannot see, `409` for a status or a charge that forbids the confirm,
-/// `400` for an instrument this deployment or this intent will not take, and
-/// the rail's own classification for anything the adapter returns.
+/// Everything the six steps can answer: `404` for an intent this scope cannot
+/// see, `409` for a status or a charge that forbids the confirm, `400` for an
+/// instrument this deployment or this intent will not take, and the rail's own
+/// classification for anything the adapter returns.
 pub(crate) async fn confirm_once(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     config: &ResourceConfig,
     adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
     scope: &MerchantScope,
@@ -795,8 +780,49 @@ pub(crate) async fn confirm_once(
     params: ConfirmParams,
     rendering: SecretRendering,
 ) -> Result<Response, ApiError> {
-    // --- step 1: the intent, this merchant's, in a status that allows it
-    let intent = payment_intents::get_for_merchant(pool, scope.merchant_id(), id)
+    let intent = load_confirmable_intent(repositories, scope, id).await?;
+    let target = resolve_rail(config, adapters, &intent, &params)?;
+    let attempt = open_attempt(repositories, &intent, &target).await?;
+    let submitted = submit_to_rail(&target, &attempt).await;
+    finish_confirm(
+        repositories,
+        scope,
+        &intent,
+        &attempt,
+        &target,
+        submitted,
+        rendering,
+    )
+    .await
+}
+
+/// Step 1: the intent, this merchant's, in a status that allows a confirm and
+/// with no charge on it yet.
+///
+/// The rail is deliberately not resolved yet, so none of these three refusals
+/// can depend on which rail was asked for. Whether a confirm is legal is a
+/// property of the *status* alone — `next_status` routes both flows through the
+/// same arm, and `confirm_legality_does_not_depend_on_the_rails_flow` is what
+/// keeps that true.
+///
+/// The charge check runs before anything is inserted, so a second confirm
+/// cannot even attempt a second charge. The unique index `one_charge_per_intent`
+/// is what actually enforces "one charge per intent, forever"; this check is
+/// what turns the race's loser into a `409` instead of a `500`.
+///
+/// # Errors
+///
+/// `404` for an id this scope cannot see; `409` for a status the lifecycle
+/// forbids a confirm from (`vpay_core::state`, `docs/flows/payment-lifecycle.md`)
+/// or for an intent that already carries a charge; [`ApiError::Internal`] for a
+/// stored status that is not an [`IntentStatus`].
+async fn load_confirmable_intent(
+    repositories: &dyn Repositories,
+    scope: &MerchantScope,
+    id: &str,
+) -> Result<vpay_db::PaymentIntentRow, ApiError> {
+    let intent = repositories
+        .get_for_merchant(scope.merchant_id(), id)
         .await?
         .ok_or_else(|| not_found(id))?;
     let status = IntentStatus::from_wire(&intent.status).ok_or_else(|| {
@@ -805,13 +831,6 @@ pub(crate) async fn confirm_once(
             intent.status
         ))
     })?;
-    // The lifecycle rule comes from `vpay_core::state`, never from a literal
-    // here (`docs/flows/payment-lifecycle.md`). The rail is deliberately not
-    // resolved yet, so this 409 cannot depend on which rail was asked for —
-    // and it does not need to: whether a confirm is legal is a property of
-    // the *status* alone, since `next_status` routes both flows through the
-    // same arm. `confirm_legality_does_not_depend_on_the_rails_flow` below
-    // is what keeps that true.
     if next_status(status, Transition::Confirm(ProviderFlow::Push)).is_none() {
         return Err(ApiError::Conflict {
             message: format!(
@@ -822,15 +841,33 @@ pub(crate) async fn confirm_once(
             ),
         });
     }
-    // Checked before anything is inserted, so a second confirm cannot even
-    // attempt a second charge. The unique index `one_charge_per_intent` is
-    // what actually enforces it — this check is what turns the race's loser
-    // into a 409 instead of a 500.
-    if let Some(existing) = charges::get_for_intent(pool, &intent.id).await? {
+    if let Some(existing) = repositories.get_for_intent(&intent.id).await? {
         return Err(already_charged(&intent.id, Some(&existing)));
     }
+    Ok(intent)
+}
 
-    // --- step 2: the rail, resolved from the request and branched on by flow
+/// Step 2: the rail, resolved from the request and branched on by *flow*.
+///
+/// The `match` on [`ProviderFlow`] is the only branch on the rail in this file,
+/// and it is on the flow shape, never on the code (ADR-0002). A redirect rail's
+/// `return_url` is carried out of here so step 3 can commit it *before* the rail
+/// is called — `next_action.redirect_to_url.return_url` has to be reproducible
+/// on every later read of the intent (see [`retrieve`]).
+///
+/// # Errors
+///
+/// [`ApiError::InvalidParam`] for a rail this deployment does not offer, a rail
+/// this intent was not created with, a missing or empty instrument, or a
+/// `return_url` a redirect rail cannot be given; [`ApiError::Config`] for a rail
+/// the YAML offers and this binary links no adapter for (ours, not the
+/// caller's); whatever `currencies_agree` and [`Money::new`] answer.
+fn resolve_rail<'a>(
+    config: &'a ResourceConfig,
+    adapters: &'a BTreeMap<String, Box<dyn ProviderAdapter>>,
+    intent: &vpay_db::PaymentIntentRow,
+    params: &'a ConfirmParams,
+) -> Result<ConfirmTarget<'a>, ApiError> {
     let data = params
         .payment_method_data
         .as_ref()
@@ -866,19 +903,49 @@ pub(crate) async fn confirm_once(
         ));
     }
 
-    // The rail's own settlement currency against the intent's. Checked
-    // *before* anything is written, so a mismatch costs no charge row: see
-    // [`refuse_a_currency_the_rail_does_not_settle`].
+    // Checked *before* anything is written, so a mismatch costs no charge row:
+    // see [`refuse_a_currency_the_rail_does_not_settle`].
     currencies_agree(rail, &intent.currency_code)?;
 
     let flow = adapter.capabilities().flow;
-    // The *only* branch on the rail in this file, and it is on the flow
-    // shape, never on the code (ADR-0002).
-    // The redirect rail's `return_url` is carried into the charge row and
-    // committed *before* the rail is called (`charges.return_url`, migration
-    // 0019), because `next_action.redirect_to_url.return_url` has to be
-    // reproducible on every later read of the intent — see [`retrieve`].
-    let (payer_ref, return_url) = match flow {
+    let (payer_ref, return_url) = payer_instrument(flow, code, data, params)?;
+    let currency = Currency::from_code(&intent.currency_code)?;
+    let amount = Money::new(intent.amount, currency)?;
+
+    Ok(ConfirmTarget {
+        code,
+        rail,
+        adapter: adapter.as_ref(),
+        flow,
+        payer_ref,
+        return_url,
+        amount,
+    })
+}
+
+/// What the payer supplied, read according to the rail's [`ProviderFlow`] and
+/// nothing else.
+///
+/// This is the *only* branch on a rail in this file, and it is on the flow
+/// shape, never on the code (ADR-0002). Adding a third rail with a push flow
+/// adds no arm here.
+///
+/// The two returned values are `(payer_ref, return_url)`: a push rail knows the
+/// payer's number and has no browser step, a redirect rail knows the merchant's
+/// `return_url` and may never learn who the payer was.
+///
+/// # Errors
+///
+/// [`ApiError::InvalidParam`] naming `payment_method_data` for a push rail with
+/// no usable `msisdn`, or `return_url` for a redirect rail with none — or
+/// whatever [`checked_return_url`] refuses that URL for.
+fn payer_instrument(
+    flow: ProviderFlow,
+    code: &str,
+    data: &Map<String, Value>,
+    params: &ConfirmParams,
+) -> Result<(Option<String>, Option<String>), ApiError> {
+    match flow {
         ProviderFlow::Push => {
             let msisdn = data
                 .get(code)
@@ -893,7 +960,7 @@ pub(crate) async fn confirm_once(
                          `payment_method_data[<type>][msisdn]`.",
                     )
                 })?;
-            (Some(msisdn.to_owned()), None)
+            Ok((Some(msisdn.to_owned()), None))
         }
         ProviderFlow::Redirect => {
             let return_url = params
@@ -909,70 +976,133 @@ pub(crate) async fn confirm_once(
                     )
                 })?;
             checked_return_url(return_url)?;
-            (None, Some(return_url.to_owned()))
+            Ok((None, Some(return_url.to_owned())))
         }
-    };
-    let currency = Currency::from_code(&intent.currency_code)?;
-    let amount = Money::new(intent.amount, currency)?;
+    }
+}
 
-    // --- step 3: the reference, durable before anything is submitted
+/// Steps 3 and 4: the reference and the charge row, durable before anything is
+/// submitted, then the attempt recorded before the call.
+///
+/// Both writes are committed here rather than after the rail answers, because
+/// `docs/flows/crash-safety.md` forbids letting a payer act on a transaction we
+/// cannot name.
+///
+/// # Errors
+///
+/// `409` if the `one_charge_per_intent` index refuses a concurrent second
+/// charge (see [`insert_charge`]); [`ApiError::Db`] if either write fails.
+async fn open_attempt(
+    repositories: &dyn Repositories,
+    intent: &vpay_db::PaymentIntentRow,
+    target: &ConfirmTarget<'_>,
+) -> Result<SubmitAttempt, ApiError> {
     let reference = Uuid::new_v4();
     let charge = insert_charge(
-        pool,
+        repositories,
         &NewCharge {
             id: ids::charge_id(),
             payment_intent_id: intent.id.clone(),
-            provider_code: code.to_owned(),
+            provider_code: target.code.to_owned(),
             provider_reference_id: reference,
             provider_ref_extra: None,
             // Nothing a rail said, because nothing has been asked yet. The
             // merchant's own `return_url` *is* known and is written now.
             redirect_url: None,
-            return_url: return_url.clone(),
+            return_url: target.return_url.clone(),
             state: vpay_core::ChargeState::INITIAL.as_wire_str().to_owned(),
             amount: intent.amount,
             // The intent's currency, verbatim: no conversion (Step 2's D2).
-            // `currencies_agree` above has already refused the case where the
-            // rail settles in a different one.
+            // `currencies_agree` has already refused the case where the rail
+            // settles in a different one.
             currency_code: intent.currency_code.clone(),
-            payer_ref: payer_ref.clone(),
+            payer_ref: target.payer_ref.clone(),
             payer_ref_masked: None,
         },
     )
     .await?;
 
-    // --- step 4: the attempt, recorded before the call
-    let attempt =
-        provider_requests::insert_pending(pool, &charge.id, code, "submit", reference, 1).await?;
+    let request_id = repositories
+        .insert_pending(&charge.id, target.code, "submit", reference, 1)
+        .await?;
 
-    // --- step 5: the rail. `submit` is `async` as of Step 3 (the port's
-    // methods return boxed futures via `#[async_trait]`), so the `.await` is
-    // load-bearing: without it this binds a future and step 6 below would be
-    // matching on a `Pin<Box<..>>` that never ran — a "submit" that never
-    // reached the rail while the charge row already said `submitting`.
+    Ok(SubmitAttempt {
+        charge,
+        request_id,
+        reference,
+    })
+}
+
+/// Step 5: the rail.
+///
+/// `submit` is `async` as of Step 3 (the port's methods return boxed futures via
+/// `#[async_trait]`), so the `.await` is load-bearing: without it this binds a
+/// future and step 6 would be matching on a `Pin<Box<..>>` that never ran — a
+/// "submit" that never reached the rail while the charge row already said
+/// `submitting`.
+///
+/// # Errors
+///
+/// Whatever the adapter answers, unclassified and unmapped: deciding what a
+/// [`ProviderError`] means to this API is [`finish_confirm`]'s job.
+async fn submit_to_rail(
+    target: &ConfirmTarget<'_>,
+    attempt: &SubmitAttempt,
+) -> Result<Submitted, ProviderError> {
     let charge_ref = ChargeRef {
-        reference_id: reference,
-        amount,
-        payer_ref,
+        reference_id: attempt.reference,
+        amount: target.amount,
+        payer_ref: target.payer_ref.clone(),
         ref_extra: BTreeMap::new(),
     };
-    let submitted = adapter.submit(&charge_ref, &rail.provider_config()).await;
+    target
+        .adapter
+        .submit(&charge_ref, &target.rail.provider_config())
+        .await
+}
 
-    // --- step 6: what came back
+/// Step 6: what came back, in the three shapes
+/// [docs/reference/vpay-api.md § the confirm path](../../../../../docs/reference/vpay-api.md#the-confirm-path)
+/// describes.
+///
+/// Which shape runs is decided by the *error's* own classification, never by
+/// anything this file knows about rails.
+///
+/// # Errors
+///
+/// `409` `charge_declined` for a [`ProviderError::Rejected`]; the rail error's
+/// own classification for anything else; [`ApiError::Db`] if the bookkeeping
+/// write fails, which leaves the recovery state behind rather than an answer.
+async fn finish_confirm(
+    repositories: &dyn Repositories,
+    scope: &MerchantScope,
+    intent: &vpay_db::PaymentIntentRow,
+    attempt: &SubmitAttempt,
+    target: &ConfirmTarget<'_>,
+    submitted: Result<Submitted, ProviderError>,
+    rendering: SecretRendering,
+) -> Result<Response, ApiError> {
     match submitted {
         Ok(submitted) => {
             // The rail answered, so the attempt is answered — before any
             // state moves, and with a status that does not pretend to be an
             // HTTP one (`STATUS_CODE_NOT_CARRIED_BY_THE_PORT`).
-            provider_requests::record_response(
-                pool,
-                attempt,
-                Some(provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT),
-                None,
+            repositories
+                .record_response(
+                    attempt.request_id,
+                    Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT),
+                    None,
+                )
+                .await?;
+            let (intent, charge) = persist_submitted(
+                repositories,
+                scope,
+                intent,
+                &attempt.charge,
+                target.flow,
+                &submitted,
             )
             .await?;
-            let (intent, charge) =
-                persist_submitted(pool, scope, &intent, &charge, flow, &submitted).await?;
             submitted_response(&intent, &charge, rendering)
         }
         Err(error) => {
@@ -981,50 +1111,37 @@ pub(crate) async fn confirm_once(
                 // The charge is terminal, and the intent goes back to the
                 // status it never left, now carrying why.
                 ProviderError::Rejected { code, message } => {
-                    provider_requests::record_response(
-                        pool,
-                        attempt,
-                        Some(provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT),
-                        Some(error_kind(&error)),
-                    )
-                    .await?;
+                    repositories
+                        .record_response(
+                            attempt.request_id,
+                            Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT),
+                            Some(error_kind(&error)),
+                        )
+                        .await?;
                     persist_decline(
-                        pool,
+                        repositories,
                         scope,
                         &intent.id,
-                        &charge.id,
+                        &attempt.charge.id,
                         *code,
                         message,
                         &vpay_core::Classify::public_message(&error),
                     )
                     .await?;
                 }
-                // Everything else means we do not know what the rail did
-                // with the request, so nothing moves: the charge stays
-                // `submitting`, which is the recovery state, and the
-                // attempt keeps `status_code IS NULL`, which is how a
-                // recovery pass tells "no answer" from "answered"
-                // (`docs/flows/crash-safety.md`'s table).
-                //
-                // `Malformed` is the one arm where "no answer" is not
-                // literally true — bytes came back, they just did not parse
-                // — and it is grouped here deliberately. What the table
-                // decides is whether to go and *ask the rail*, and an
-                // unparseable answer is exactly as unknown as a lost one:
-                // "every ambiguity resolves toward 'find out', never 'give
-                // up'".
-                ProviderError::Transport(_)
-                | ProviderError::Malformed(_)
+                // Everything else means we do not know what the rail did with
+                // the request, so nothing moves: the charge stays `submitting`,
+                // which is the recovery state, and the attempt keeps
+                // `status_code IS NULL`, which is how a recovery pass tells "no
+                // answer" from "answered" (`docs/flows/crash-safety.md`).
+                ProviderError::Transport { .. }
+                | ProviderError::Malformed { .. }
                 | ProviderError::Config(_)
                 | ProviderError::Unsupported
                 | ProviderError::NotImplemented(_) => {
-                    provider_requests::record_response(
-                        pool,
-                        attempt,
-                        None,
-                        Some(error_kind(&error)),
-                    )
-                    .await?;
+                    repositories
+                        .record_response(attempt.request_id, None, Some(error_kind(&error)))
+                        .await?;
                 }
             }
             Err(ApiError::from(error))
@@ -1059,7 +1176,7 @@ pub(crate) async fn confirm_once(
 /// transaction back — leaving the `submitting` charge and the answered
 /// attempt for a recovery pass, which is the honest state.
 async fn persist_submitted(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     scope: &MerchantScope,
     intent: &vpay_db::PaymentIntentRow,
     charge: &ChargeRow,
@@ -1080,8 +1197,6 @@ async fn persist_submitted(
         ))
     })?;
 
-    let mut tx = pool.begin().await.map_err(vpay_db::DbError::Query)?;
-
     // Written even when it is empty — a push rail returns no key material,
     // and `{}` says "the rail answered and there was none" where NULL would
     // be indistinguishable from a charge that was never submitted.
@@ -1092,42 +1207,61 @@ async fn persist_submitted(
             .map(|(key, value)| (key.clone(), Value::String(value.clone())))
             .collect(),
     );
-    let charge = charges::mark_submitted(
-        &mut tx,
-        &charge.id,
-        vpay_core::ChargeState::Submitted.as_wire_str(),
-        Some(&ref_extra),
-        submitted.redirect_url.as_deref(),
-    )
-    .await?;
 
-    let intent = payment_intents::transition_in_tx(
-        &mut tx,
-        scope.merchant_id(),
-        &intent.id,
-        IntentStatus::RequiresPaymentMethod.as_wire_str(),
-        next.as_wire_str(),
-    )
-    .await?
-    .ok_or_else(|| {
-        // Unreachable while `cancel` refuses an intent with a live charge
-        // (`vpay_db::payment_intents::cancel`'s `NOT EXISTS`), and loud
-        // rather than quiet because if it ever fires, a rail is holding a
-        // payment for an intent that says it is not being paid.
-        ApiError::Internal(format!(
-            "the rail accepted charge {} but payment intent {} was no longer `{}`; \
-             the rail may hold a live payment",
-            charge.id,
-            intent.id,
-            IntentStatus::RequiresPaymentMethod.as_wire_str(),
-        ))
-    })?;
+    // `Abandon` rather than an error out of the closure: the intent write
+    // matching nothing is an invariant violation this layer reports as a
+    // `500`, and the sentence names both rows — which the closure cannot
+    // build, because it does not own the ids the caller passed in. So the
+    // transaction is rolled back with the fact, and the caller raises it.
+    let outcome = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let charge = tx
+                    .mark_submitted(
+                        &charge.id,
+                        vpay_core::ChargeState::Submitted.as_wire_str(),
+                        Some(&ref_extra),
+                        submitted.redirect_url.as_deref(),
+                    )
+                    .await?;
 
-    tx.commit().await.map_err(vpay_db::DbError::Query)?;
+                let updated = tx
+                    .transition_in_tx(
+                        scope.merchant_id(),
+                        &intent.id,
+                        IntentStatus::RequiresPaymentMethod.as_wire_str(),
+                        next.as_wire_str(),
+                    )
+                    .await?;
+
+                Ok::<_, vpay_db::DbError>(match updated {
+                    Some(updated) => TxOutcome::Commit((updated, charge)),
+                    None => TxOutcome::Abandon((intent.clone(), charge)),
+                })
+            })
+        })
+        .await?;
+
+    let (intent, charge) = match outcome {
+        TxOutcome::Commit(committed) => committed,
+        TxOutcome::Abandon((_, charge)) => {
+            // Unreachable while `cancel` refuses an intent with a live charge
+            // (`vpay_db::PaymentIntents::cancel`'s `NOT EXISTS`), and loud
+            // rather than quiet because if it ever fires, a rail is holding a
+            // payment for an intent that says it is not being paid.
+            return Err(ApiError::Internal(format!(
+                "the rail accepted charge {} but payment intent {} was no longer `{}`; \
+                 the rail may hold a live payment",
+                charge.id,
+                intent.id,
+                IntentStatus::RequiresPaymentMethod.as_wire_str(),
+            )));
+        }
+    };
 
     // After the commit — the intent write above shares this transaction, and
     // a charge whose submit was rolled back is not a submitted charge.
-    charges::record_left_submitting(&charge);
+    repositories.record_left_submitting(&charge);
     Ok((intent, charge))
 }
 
@@ -1182,7 +1316,7 @@ fn submitted_response(
 /// error here: the charge is failed either way, and an intent that moved on
 /// simply does not get the error stamped onto it — see the body.
 async fn persist_decline(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     scope: &MerchantScope,
     intent_id: &str,
     charge_id: &str,
@@ -1190,43 +1324,48 @@ async fn persist_decline(
     rail_message: &str,
     public_message: &str,
 ) -> Result<(), ApiError> {
-    let mut tx = pool.begin().await.map_err(vpay_db::DbError::Query)?;
+    let charge = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let charge = tx
+                    .mark_failed(
+                        charge_id,
+                        code.as_str(),
+                        &bounded(rail_message, FAILURE_RAW_MAX_CHARS),
+                    )
+                    .await?;
 
-    let charge = charges::mark_failed(
-        &mut tx,
-        charge_id,
-        code.as_str(),
-        &bounded(rail_message, FAILURE_RAW_MAX_CHARS),
-    )
-    .await?;
+                let updated = tx
+                    .record_payment_error(
+                        scope.merchant_id(),
+                        intent_id,
+                        IntentStatus::RequiresPaymentMethod.as_wire_str(),
+                        code.as_str(),
+                        &bounded(public_message, LAST_PAYMENT_ERROR_MAX_CHARS),
+                    )
+                    .await?;
+                if updated.is_none() {
+                    // The intent moved while the rail was deciding. The charge
+                    // is still failed — that write is about the rail's answer
+                    // and is true whatever the intent says — and the missing
+                    // half is logged rather than turned into a `500`, because
+                    // the merchant's answer is the decline, which is accurate.
+                    tracing::warn!(
+                        merchant_id = %scope.merchant_id(),
+                        payment_intent_id = %intent_id,
+                        "a rail declined a charge whose intent was no longer \
+                         requires_payment_method; last_payment_error was not recorded"
+                    );
+                }
 
-    let updated = payment_intents::record_payment_error(
-        &mut tx,
-        scope.merchant_id(),
-        intent_id,
-        IntentStatus::RequiresPaymentMethod.as_wire_str(),
-        code.as_str(),
-        &bounded(public_message, LAST_PAYMENT_ERROR_MAX_CHARS),
-    )
-    .await?;
-    if updated.is_none() {
-        // The intent moved while the rail was deciding. The charge is still
-        // failed — that write is about the rail's answer and is true
-        // whatever the intent says — and the missing half is logged rather
-        // than turned into a `500`, because the merchant's answer is the
-        // decline, which is accurate.
-        tracing::warn!(
-            merchant_id = %scope.merchant_id(),
-            payment_intent_id = %intent_id,
-            "a rail declined a charge whose intent was no longer requires_payment_method; \
-             last_payment_error was not recorded"
-        );
-    }
-
-    tx.commit().await.map_err(vpay_db::DbError::Query)?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(charge))
+            })
+        })
+        .await?
+        .into_inner();
 
     // After the commit, as in `persist_submitted`.
-    charges::record_left_submitting(&charge);
+    repositories.record_left_submitting(&charge);
     Ok(())
 }
 
@@ -1327,55 +1466,72 @@ const POLL_CHARGE_KIND: &str = "poll_charge";
 /// charge id was generated moments ago — but a `false` return is not treated
 /// as an error anywhere, because the same key is enqueued by the worker's
 /// backstop scan and by `resubmit_charge`.
-async fn insert_charge(pool: &PgPool, new: &NewCharge) -> Result<ChargeRow, ApiError> {
-    let mut tx = pool.begin().await.map_err(vpay_db::DbError::Query)?;
-    let charge = match charges::insert_for_intent(&mut tx, new).await {
-        Ok(charge) => charge,
-        // The unique index is the enforcement; this arm is the race the
-        // read in step 1 cannot close. Same 409 either way, so a merchant
-        // cannot tell a race from a sequential second confirm — and does not
-        // need to.
-        Err(vpay_db::DbError::UniqueViolation { constraint, .. })
-            if constraint == "one_charge_per_intent" =>
-        {
-            // Re-read so the 409 can say which of the two sentences applies
-            // — and a read that fails must not turn the merchant's 409 into
-            // a 503, so its own error is dropped in favour of `None`, which
-            // `already_charged` treats as "assume the rail may hold it".
-            // One extra query on a path that is already a lost race — taken
-            // on a *second* pool connection, so the aborted transaction is
-            // released first rather than held while this read waits for a
-            // connection under a saturated pool (review finding, 2026-09-03).
-            drop(tx);
-            let existing = charges::get_for_intent(pool, &new.payment_intent_id)
+async fn insert_charge(
+    repositories: &dyn Repositories,
+    new: &NewCharge,
+) -> Result<ChargeRow, ApiError> {
+    let outcome = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let charge = match tx.insert_for_intent(new).await {
+                    Ok(charge) => charge,
+                    // The unique index is the enforcement; this arm is the
+                    // race the read in step 1 cannot close. Same 409 either
+                    // way, so a merchant cannot tell a race from a sequential
+                    // second confirm — and does not need to.
+                    Err(vpay_db::DbError::UniqueViolation { constraint, .. })
+                        if constraint == "one_charge_per_intent" =>
+                    {
+                        // Abandoned rather than returned as an error: the
+                        // re-read below has to happen *outside* this
+                        // transaction, on a second pool connection, so the
+                        // aborted transaction is released first rather than
+                        // held while the read waits for a connection under a
+                        // saturated pool (review finding, 2026-09-03).
+                        return Ok(TxOutcome::Abandon(None));
+                    }
+                    Err(error) => return Err(error),
+                };
+
+                // The payload is the minimal one
+                // `vpay_worker::jobs::PollChargePayload` defaults the ladder
+                // fields from: the confirm path has no `NotFound` streak to
+                // carry, and writing zeroes for one would be this handler
+                // asserting something about a rail it has not yet called.
+                tx.enqueue_in_tx(
+                    POLL_CHARGE_KIND,
+                    &poll_dedupe_key(&charge.id),
+                    &serde_json::json!({ "charge_id": charge.id }),
+                    OffsetDateTime::now_utc(),
+                )
+                .await?;
+
+                Ok(TxOutcome::Commit(Some(charge)))
+            })
+        })
+        .await?;
+
+    let charge = match outcome {
+        TxOutcome::Commit(Some(charge)) => charge,
+        // Re-read so the 409 can say which of the two sentences applies — and
+        // a read that fails must not turn the merchant's 409 into a 503, so
+        // its own error is dropped in favour of `None`, which
+        // `already_charged` treats as "assume the rail may hold it".
+        TxOutcome::Abandon(_) | TxOutcome::Commit(None) => {
+            let existing = repositories
+                .get_for_intent(&new.payment_intent_id)
                 .await
                 .ok()
                 .flatten();
             return Err(already_charged(&new.payment_intent_id, existing.as_ref()));
         }
-        Err(error) => return Err(error.into()),
     };
-
-    // The payload is the minimal one `vpay_worker::jobs::PollChargePayload`
-    // defaults the ladder fields from: the confirm path has no `NotFound`
-    // streak to carry, and writing zeroes for one would be this handler
-    // asserting something about a rail it has not yet called.
-    vpay_db::jobs::enqueue_in_tx(
-        &mut tx,
-        POLL_CHARGE_KIND,
-        &poll_dedupe_key(&charge.id),
-        &serde_json::json!({ "charge_id": charge.id }),
-        OffsetDateTime::now_utc(),
-    )
-    .await?;
-
-    tx.commit().await.map_err(vpay_db::DbError::Query)?;
 
     // After the commit, and only here: `insert_for_intent` runs inside this
     // transaction, so an enqueue that failed below would have rolled the
     // charge back with the counter already incremented. See
     // `vpay_db::charges`' header.
-    charges::record_opened(&charge);
+    repositories.record_opened(&charge);
     Ok(charge)
 }
 
@@ -1847,11 +2003,11 @@ impl PostRequest {
 
     async fn claim(
         &self,
-        pool: &PgPool,
+        repositories: &dyn Repositories,
         scope: &MerchantScope,
     ) -> Result<IdempotencyClaim, ApiError> {
-        idempotency::claim(
-            pool,
+        Idempotency::claim(
+            repositories,
             scope.merchant_id(),
             self.key.as_str(),
             self.parts.method.as_str(),
@@ -1872,10 +2028,10 @@ impl PostRequest {
     /// compile, and would then have nothing to end the claim with.
     async fn claim_or_answer(
         &self,
-        pool: &PgPool,
+        repositories: &dyn Repositories,
         scope: &MerchantScope,
     ) -> Result<ClaimOutcome, ApiError> {
-        match self.claim(pool, scope).await? {
+        match self.claim(repositories, scope).await? {
             IdempotencyClaim::Fresh { claim_id } => Ok(ClaimOutcome::Owned(claim_id)),
             IdempotencyClaim::Replay(record) => replay(&record).map(ClaimOutcome::Answered),
             // Its own variant rather than a `Conflict` with a hand-written
@@ -1956,7 +2112,7 @@ impl PostRequest {
     /// [`IdempotencyStoreOutcome::StaleClaim`]: vpay_db::IdempotencyStoreOutcome::StaleClaim
     async fn finish(
         self,
-        pool: &PgPool,
+        repositories: &dyn Repositories,
         scope: &MerchantScope,
         claim_id: Uuid,
         outcome: Result<Response, ApiError>,
@@ -1967,7 +2123,7 @@ impl PostRequest {
         };
         let status = response.status();
         if status.is_server_error() {
-            self.release(pool, scope, claim_id).await;
+            self.release(repositories, scope, claim_id).await;
             return Ok(response);
         }
 
@@ -1988,7 +2144,7 @@ impl PostRequest {
         let bytes = match axum::body::to_bytes(body, crate::V1_BODY_LIMIT_BYTES).await {
             Ok(bytes) => bytes,
             Err(error) => {
-                self.release(pool, scope, claim_id).await;
+                self.release(repositories, scope, claim_id).await;
                 return Err(ApiError::Internal(format!(
                     "reading a response body back to store it: {error}"
                 )));
@@ -1997,23 +2153,23 @@ impl PostRequest {
         let value: Value = match serde_json::from_slice(&bytes) {
             Ok(value) => value,
             Err(error) => {
-                self.release(pool, scope, claim_id).await;
+                self.release(repositories, scope, claim_id).await;
                 return Err(ApiError::Internal(format!(
                     "a /v1 response body was not JSON and could not be stored for replay: {error}"
                 )));
             }
         };
 
-        match idempotency::store(
-            pool,
-            scope.merchant_id(),
-            self.key.as_str(),
-            claim_id,
-            status.as_u16(),
-            &value,
-            retry.as_deref(),
-        )
-        .await
+        match repositories
+            .store(
+                scope.merchant_id(),
+                self.key.as_str(),
+                claim_id,
+                status.as_u16(),
+                &value,
+                retry.as_deref(),
+            )
+            .await
         {
             Ok(IdempotencyStoreOutcome::Stored) => {}
             Ok(IdempotencyStoreOutcome::StaleClaim) => {
@@ -2024,7 +2180,7 @@ impl PostRequest {
                 );
             }
             Err(error) => {
-                self.release(pool, scope, claim_id).await;
+                self.release(repositories, scope, claim_id).await;
                 return Err(ApiError::from(error));
             }
         }
@@ -2046,9 +2202,15 @@ impl PostRequest {
     /// Deleting nothing is also not a failure: `claim_id` scopes the delete
     /// to *this* claim, so a request whose claim has already been reclaimed
     /// leaves the new owner's row alone — which is the point.
-    async fn release(&self, pool: &PgPool, scope: &MerchantScope, claim_id: Uuid) {
-        if let Err(error) =
-            idempotency::release(pool, scope.merchant_id(), self.key.as_str(), claim_id).await
+    async fn release(
+        &self,
+        repositories: &dyn Repositories,
+        scope: &MerchantScope,
+        claim_id: Uuid,
+    ) {
+        if let Err(error) = repositories
+            .release(scope.merchant_id(), self.key.as_str(), claim_id)
+            .await
         {
             tracing::warn!(
                 %error,
@@ -2336,7 +2498,7 @@ mod tests {
             "not_implemented"
         );
         assert_eq!(
-            error_kind(&ProviderError::Transport("connection refused".to_owned())),
+            error_kind(&ProviderError::transport("connection refused".to_owned())),
             "provider_unavailable"
         );
         assert_eq!(

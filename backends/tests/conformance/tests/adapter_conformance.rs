@@ -744,7 +744,7 @@ async fn an_unavailable_rail_is_a_transport_error_never_a_decline(#[case] rail: 
         // merchant starts a new intent. A rail that is down must never look
         // like a payer who was declined.
         assert!(
-            matches!(error, ProviderError::Transport(_)),
+            matches!(error, ProviderError::Transport { .. }),
             "{what} must be a Transport error, got {error:?}"
         );
         assert_eq!(error.category(), Category::Rail);
@@ -944,7 +944,7 @@ async fn redirects_are_refused_and_never_followed(#[case] rail: RailUnderTest) {
         .expect_err("a redirect is not an accepted charge; the rail pointed elsewhere");
 
     assert!(
-        matches!(error, ProviderError::Malformed(_)),
+        matches!(error, ProviderError::Malformed { .. }),
         "a 3xx must not be read as a decline, an acceptance, or a retryable transport \
          failure. `Transport` is the category the worker retries on a ladder, and a rail \
          answering redirects is one to stop and look at — its charge's fate is unknown, \
@@ -985,8 +985,9 @@ async fn an_oversized_rail_body_is_refused_at_the_cap(#[case] rail: RailUnderTes
         .await
         .expect_err("a body past the cap must not be buffered and parsed");
 
+    let message = error.to_string();
     match &error {
-        ProviderError::Malformed(message) => assert!(
+        ProviderError::Malformed { .. } => assert!(
             message.contains(&vpay_provider::http::MAX_RAIL_BODY_BYTES.to_string()),
             "the refusal must name the cap it hit, so an operator can tell it from any \
              other parse failure: {message}"

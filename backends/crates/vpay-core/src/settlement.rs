@@ -1,18 +1,11 @@
 //! What a rail's status answer means for a charge that is still live.
 //!
-//! This is the reconciler's half of the state machine, and it is deliberately
-//! *not* part of [`crate::state::Transition`]. That enum is "one of the three
-//! verbs a **merchant** can apply", and [`crate::state::next_status`] answers
-//! `None` for every rail-driven edge on purpose: adding a variant for
-//! `processing → succeeded` would make that edge reachable from an HTTP
-//! handler, which is the single thing that enum exists to prevent. So the
-//! rail-driven edges live here, in a sibling function with its own vocabulary,
-//! and the two cannot be confused at a call site.
-//!
-//! The table is `docs/flows/reconciler.md` plus the recovery table of
-//! `docs/flows/crash-safety.md`, transcribed. It is pure and total: a new
-//! [`ChargeState`] or a new [`StatusKind`] fails to compile here rather than
-//! falling into a wildcard.
+//! The reconciler's half of the state machine, deliberately kept out of
+//! [`crate::state::Transition`] so a rail-driven edge can never be reached
+//! from an HTTP handler. The table is `docs/flows/reconciler.md` plus the
+//! recovery table of `docs/flows/crash-safety.md`, transcribed; why it is a
+//! sibling module rather than three more `Transition` variants is in
+//! [docs/reference/vpay-core.md § settlement](../../../../docs/reference/vpay-core.md#settlement).
 
 use crate::failure::FailureCode;
 use crate::state::ChargeState;
@@ -20,19 +13,11 @@ use crate::state::ChargeState;
 /// A rail's status answer, stripped of everything the decision does not
 /// depend on.
 ///
-/// A near-copy of `vpay_provider::ChargeStatus`, and that duplication is
-/// deliberate: this crate knows nothing about any payment rail
-/// (`vpay-provider` depends on *it*, never the other way round), so the port's
-/// type cannot appear in this signature. The caller maps one onto the other —
-/// a four-arm `match` in `vpay_worker::handlers` — and drops the two payloads
-/// no state decision may read: the rail's transaction id (a reconciliation
-/// field, not an input to a state machine) and, for a decline, the rail's raw
-/// reason string (which belongs in `charges.failure_raw`, never in a branch).
-///
-/// [`Self::Failed`] keeps its [`FailureCode`] because the decision *result*
-/// carries it: the taxonomy code is written to the charge in the same
-/// statement that fails it, so it has to travel through this function rather
-/// than be re-derived beside it.
+/// A near-copy of `vpay_provider::ChargeStatus`, deliberately: this crate
+/// knows nothing about any payment rail, so the port's type cannot appear in
+/// this signature. The caller maps one onto the other and drops the two
+/// payloads no state decision may read — the rail's transaction id and, for a
+/// decline, its raw reason string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusKind {
     /// The rail has the charge and has not finished with it.
@@ -40,7 +25,9 @@ pub enum StatusKind {
     /// The rail says the money moved.
     Succeeded,
     /// The rail refused, with a code from the closed taxonomy
-    /// (`docs/flows/failures.md`).
+    /// (`docs/flows/failures.md`). The code travels through [`settle`]
+    /// because it is written to the charge in the same statement that fails
+    /// it.
     Failed(FailureCode),
     /// The rail has no record of the reference. **Never on its own grounds
     /// to fail a charge** — see [`Settlement::Recover`].
@@ -49,24 +36,21 @@ pub enum StatusKind {
 
 /// What the reconciler does to a charge, given what the rail just said.
 ///
-/// The variants are the four physically different outcomes, not four spellings
-/// of "update the row": three of them write, one of them does not, and one of
-/// them is not a state at all.
+/// The variants are the four physically different outcomes, not four
+/// spellings of "update the row": three of them write, one does not, and one
+/// is not a state at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Settlement {
-    /// Nothing changes. The charge is already in the right live state and
-    /// the poll ladder simply runs again.
-    ///
-    /// Distinct from `None` (see [`settle`]) because `Stay` means "still
-    /// live, keep polling" while `None` means "terminal, stop".
+    /// Nothing changes. The charge is already in the right live state and the
+    /// poll ladder simply runs again — distinct from [`settle`]'s `None`,
+    /// which means "terminal, stop".
     Stay,
     /// Move the charge to another **live** state, and leave the intent alone.
     ///
-    /// Carries a [`ChargeState`] rather than being one variant per state so
-    /// the caller's write is one compare-and-swap parameterised by this
-    /// value; the type does not stop a terminal state being named here, but
-    /// no arm of [`settle`] produces one and the terminal edges have their
-    /// own variants precisely so they cannot be reached by accident.
+    /// Carries a [`ChargeState`] so the caller's write is one
+    /// compare-and-swap parameterised by this value. No arm of [`settle`]
+    /// ever names a terminal state here; the terminal edges have their own
+    /// variants precisely so they cannot be reached by accident.
     Live(ChargeState),
     /// The money moved: charge terminal, intent `succeeded`,
     /// `payment_intent.succeeded` emitted — one transaction.
@@ -74,9 +58,6 @@ pub enum Settlement {
     /// The rail refused: charge terminal with this taxonomy code, intent back
     /// to `requires_payment_method` carrying `last_payment_error`,
     /// `payment_intent.payment_failed` emitted — one transaction.
-    ///
-    /// `docs/flows/payment-lifecycle.md`: "a rail-reported failure is the
-    /// only thing that fails a payment".
     Failed(FailureCode),
     /// Not a state at all: the rail's "I have no record" on a charge that may
     /// never have reached it. Hand this to the recovery table
@@ -84,10 +65,9 @@ pub enum Settlement {
     /// which decides between polling again and resubmitting the *same*
     /// reference.
     ///
-    /// This variant exists so that "the rail has never heard of this" cannot
-    /// be spelled the same way as any state: a `NotFound` that fell into
-    /// [`Self::Failed`] would fail a charge a payer may already have paid,
-    /// which is the one conclusion the whole recovery design refuses to draw.
+    /// It is a variant of its own so that "the rail has never heard of this"
+    /// cannot be spelled like any state: a `NotFound` folded into
+    /// [`Self::Failed`] would fail a charge a payer may already have paid.
     Recover,
 }
 
@@ -96,14 +76,52 @@ pub enum Settlement {
 ///
 /// `None` is "this charge is terminal, so no rail answer moves it" — the same
 /// shape of answer, and the same reason, as [`crate::state::next_status`]
-/// returning `None`: the caller learns that the edge is not available rather
-/// than being handed a plausible one. A poll that lands on a terminal charge
-/// is not an error (a duplicate job, a callback arriving after the answer);
+/// returning `None`. A poll that lands on a terminal charge is not an error;
 /// it is simply finished.
 ///
-/// A `const fn` and total, with no wildcard in either dimension, so the table
-/// below *is* the specification — adding a [`ChargeState`] or a
-/// [`StatusKind`] is a compile error here, not a silent default.
+/// A `const fn`, total, with no wildcard in either dimension, so the table
+/// *is* the specification: adding a [`ChargeState`] or a [`StatusKind`] is a
+/// compile error here rather than a silent default.
+///
+/// ```
+/// use vpay_core::{ChargeState, FailureCode, Settlement, StatusKind, settle};
+///
+/// // The rail acknowledged a charge we had only sent: it advances.
+/// assert_eq!(
+///     settle(StatusKind::Pending, ChargeState::Submitted),
+///     Some(Settlement::Live(ChargeState::Pending))
+/// );
+/// // …and once it is `pending`, the same answer changes nothing.
+/// assert_eq!(
+///     settle(StatusKind::Pending, ChargeState::Pending),
+///     Some(Settlement::Stay)
+/// );
+///
+/// // "No record" on an unanswered submission is the crash-safety case, and
+/// // is never a failure.
+/// assert_eq!(
+///     settle(StatusKind::NotFound, ChargeState::Submitting),
+///     Some(Settlement::Recover)
+/// );
+/// // On a charge the rail already acknowledged it is the rail losing track:
+/// // keep polling, do not resubmit.
+/// assert_eq!(
+///     settle(StatusKind::NotFound, ChargeState::Pending),
+///     Some(Settlement::Stay)
+/// );
+///
+/// // The taxonomy code is carried through, never re-derived.
+/// assert_eq!(
+///     settle(
+///         StatusKind::Failed(FailureCode::InsufficientFunds),
+///         ChargeState::Pending
+///     ),
+///     Some(Settlement::Failed(FailureCode::InsufficientFunds))
+/// );
+///
+/// // A settled charge is never moved by the rail.
+/// assert_eq!(settle(StatusKind::Succeeded, ChargeState::Failed), None);
+/// ```
 #[must_use]
 pub const fn settle(status: StatusKind, charge: ChargeState) -> Option<Settlement> {
     match charge {
@@ -132,10 +150,7 @@ pub const fn settle(status: StatusKind, charge: ChargeState) -> Option<Settlemen
             StatusKind::Failed(code) => Some(Settlement::Failed(code)),
             // The rail *did* accept this charge — that is what `pending`
             // records — so "no record" here is the rail losing track, not
-            // evidence we never sent it. Treated exactly as `Pending`: keep
-            // polling. The caller still counts the streak, because a rising
-            // one is worth an operator's attention, but no resubmit follows
-            // from a charge the rail has already acknowledged.
+            // evidence we never sent it.
             StatusKind::NotFound => Some(Settlement::Stay),
         },
     }
@@ -143,32 +158,35 @@ pub const fn settle(status: StatusKind, charge: ChargeState) -> Option<Settlemen
 
 /// Does the rail's answer *disagree* with a charge that is already terminal?
 ///
-/// [`settle`] answers `None` for every terminal charge, which is right — no
-/// rail answer moves one — but `None` folds two very different situations
-/// into one word. Usually it means the charge settled a moment ago and this
-/// poll is simply late: the rail says `SUCCESSFUL`, the charge already says
-/// `succeeded`, and there is nothing to do. Sometimes it means the rail is
+/// [`settle`] answers `None` for every terminal charge, which folds two very
+/// different situations into one word: a poll that is simply late, and a rail
 /// telling us the money went the *other* way from what we recorded and told
-/// the merchant.
+/// the merchant. vpay must not act on the second — a charge is settled once —
+/// but discarding it silently is how a real double-charge goes unnoticed
+/// until the rail's monthly statement, so the caller finishes the job and
+/// raises an alert (`docs/runbooks/unresolved-charges.md`).
 ///
-/// That second case is the one that has to reach a human. vpay must not act
-/// on it — a charge is settled once, and flipping `failed` to `succeeded`
-/// from a poll would make the settlement transaction's compare-and-swap
-/// meaningless — but discarding it silently is how a real double-charge, or a
-/// payment a merchant was told had failed, goes unnoticed until the rail's
-/// monthly statement. So the caller keeps the job finished and raises an
-/// alert (`docs/runbooks/unresolved-charges.md` is the reconciliation this
-/// starts).
+/// Only the two money-bearing disagreements count; see
+/// [docs/reference/vpay-core.md § contradictions](../../../../docs/reference/vpay-core.md#contradictions)
+/// for why `Pending` and `NotFound` deliberately do not.
 ///
-/// Only the two money-bearing disagreements count. `Pending` against a
-/// terminal charge is a rail that has not caught up with itself, and
-/// `NotFound` is never on its own grounds for any conclusion
-/// (`docs/flows/crash-safety.md`) — neither says the money moved differently
-/// than recorded, and alerting on them would bury the two that do.
+/// ```
+/// use vpay_core::{ChargeState, FailureCode, StatusKind, contradiction};
 ///
-/// Total and wildcard-free in both dimensions, like [`settle`]: a new
-/// [`ChargeState`] or [`StatusKind`] is a compile error here rather than a
-/// silent `false`.
+/// // The two that reach a human.
+/// assert!(contradiction(
+///     StatusKind::Failed(FailureCode::PayerDeclined),
+///     ChargeState::Succeeded
+/// ));
+/// assert!(contradiction(StatusKind::Succeeded, ChargeState::Failed));
+///
+/// // A rail that has not caught up with itself is not a contradiction, and
+/// // neither is "no record" — alerting on either would bury the two above.
+/// assert!(!contradiction(StatusKind::Pending, ChargeState::Succeeded));
+/// assert!(!contradiction(StatusKind::NotFound, ChargeState::Failed));
+/// // Nothing is recorded yet for a live charge to disagree with.
+/// assert!(!contradiction(StatusKind::Succeeded, ChargeState::Pending));
+/// ```
 #[must_use]
 pub const fn contradiction(status: StatusKind, charge: ChargeState) -> bool {
     match charge {

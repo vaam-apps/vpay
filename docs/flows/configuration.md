@@ -115,7 +115,7 @@ that had been false since 2026-08-11.* The deployment consequence is real:
 `backends/Dockerfile` bakes `config/` into the image and sets `VPAY_CONFIG`,
 and `compose.e2e.yml` supplies every `${VAR}` the file names, because a
 process without them does not start.
-**Step 4 now exists** (`vpay_db::config_reconcile::reconcile`, 2026-09-03):
+**Step 4 now exists** (`vpay_db::ConfigReconcile::reconcile`, 2026-09-03):
 both binaries make `currencies` and `providers` match the deployment's own
 configuration in **one transaction**, opened by taking the
 `pg_advisory_xact_lock` `lock_keys::CONFIG_RECONCILE` so that N replicas and
@@ -173,7 +173,7 @@ pins it, empty string included.
    request.
 4. Connect to Postgres and run migrations. Unreachable → exit `69`.
 5. **Reconcile `currencies` and `providers` from configuration**
-   (`vpay_db::config_reconcile::reconcile`, one transaction, advisory-locked
+   (`vpay_db::ConfigReconcile::reconcile`, one transaction, advisory-locked
    — step 4 above). Fatal on failure. The seeds were derived back at step 2b
    (`boot_seeds`, which is why a rail with no adapter exits `78` before
    Postgres is even contacted). `vpay-worker-bin` does the same thing, from
@@ -345,7 +345,7 @@ of the spelling.
 
 **New 2026-09-03 (Step 2), and the reason this section's "Not started" list
 shrank:** boot step 4's reconciliation half is implemented
-(`vpay_db::config_reconcile::reconcile`, one advisory-locked transaction,
+(`vpay_db::ConfigReconcile::reconcile`, one advisory-locked transaction,
 called by both binaries), the YAML↔adapter join that feeds it is implemented
 (`vpay_api::v1::boot::boot_seeds`, exit `78` for a rail with no adapter), and
 `merchant_clients` gained a required, unique `merchant_id` while `providers`

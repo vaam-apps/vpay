@@ -1,38 +1,21 @@
 //! The job loop: claim, run, settle — and the bounded drain that stops it.
 //!
 //! [`handle`] says what one job *did*; this module owns the row it did it to.
-//! That split is deliberate and is why [`crate::handlers`] returns an
-//! [`Outcome`] instead of writing to `jobs` itself: a handler that could
-//! delete its own row could delete one it had not finished, and a handler
-//! that could park a row could dead-letter a charge by returning `Ok`.
-//! Everything that ends a lease is in this file, and every one of those
-//! writes is guarded on `locked_by` (`vpay_db::jobs`), so a worker whose
-//! lease was reaped mid-run discards its answer instead of stamping it over
-//! whoever holds the job now.
+//! Everything that ends a lease is in this file, and every one of those writes
+//! is guarded on `locked_by` (`vpay_db::jobs`), so a worker whose lease was
+//! reaped mid-run discards its answer instead of stamping it over whoever
+//! holds the job now.
 //!
-//! # Why the loop is a function and not the binary's `main`
+//! What this module does **not** decide: the retry policy (that is
+//! [`JobError::decision`], derived from `Classify` — ADR-0011), the poll
+//! ladder ([`crate::poll_delay`]), or what a rail's answer means
+//! (`vpay_core::settle`). It maps a [`Decision`] onto one of three writes and
+//! counts how often each happened.
 //!
-//! `vpay-worker-bin` calls [`run_loop`] and so does
-//! `backends/tests/integration/tests/worker_e2e.rs`. There is no second
-//! implementation, no `#[cfg(test)]` variant and no injected clock: the
-//! integration suite drives *this* loop, against a real Postgres and a real
-//! WireMock rail, which is the only way a claim/settle protocol can be
-//! proven at all — `SKIP LOCKED`, the `locked_by` guard and the drain are
-//! properties of Postgres and of concurrency, not of Rust types.
-//!
-//! [`run_once`] is public for the same reason and is not a seam: it is the
-//! loop's own body, called by [`run_loop`] N times per task. A test that
-//! wants to observe exactly one job's disposition calls it directly rather
-//! than racing a background loop and scraping logs for the answer.
-//!
-//! # What this module does not decide
-//!
-//! Not the retry policy — that is [`JobError::decision`], derived from
-//! `Classify` so the worker and the API cannot disagree about whether a
-//! Postgres failure is transient (ADR-0011). Not the poll ladder — that is
-//! [`crate::poll_delay`]. Not what a rail's answer means — that is
-//! `vpay_core::settle`. This module maps a [`Decision`] onto one of three
-//! writes and counts how often each happened.
+//! `docs/reference/vpay-worker.md` §"The job loop" carries the reasoning: why
+//! the handler cannot write to `jobs`, why [`run_loop`] and [`run_once`] are
+//! public rather than seams, how the drain is bounded, why there are two lease
+//! reapers, and why a failure is logged twice.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -47,7 +30,7 @@ use vpay_core::metrics::{
     JOBS_CLAIMED_TOTAL, JOBS_COMPLETED_TOTAL, JOBS_OLDEST_CLAIMABLE_AGE_SECONDS, job_outcome,
 };
 use vpay_core::{Classify as _, Severity};
-use vpay_db::{DbError, JobRow, PgPool};
+use vpay_db::{DbError, JobRow, Jobs, Repositories, TxOutcome, UnitOfWork as _};
 
 use crate::error::{Decision, JobError};
 use crate::handlers::{Adapters, RailConfigs, WebhookContext, handle};
@@ -220,26 +203,17 @@ impl Counters {
     }
 }
 
-/// A name for this process's leases, unique enough that two workers can
-/// never share one.
+/// A name for this process's leases, unique enough that two workers can never
+/// share one: `{hostname}/{pid}/{random}`.
 ///
-/// Three parts, each covering a way the others collide: the hostname (two
-/// pods), the pid (two processes in one container, which
-/// `docker compose run` makes easy), and a random suffix (a pod restarting
-/// onto the same name and pid, which is not exotic in a container with a
-/// fixed hostname and pid 1).
+/// Each part covers a way the others collide — two pods, two processes in one
+/// container, and a pod restarting onto the same name and pid. The random part
+/// carries the guarantee; the other two are why this is not simply a UUID,
+/// because `locked_by` is read by a human deciding which pod to look at.
 ///
-/// The random part is what actually carries the guarantee, and it is why
-/// this is not simply a UUID: `locked_by` is read by a human deciding
-/// whether a stuck job belongs to a worker that is still alive, and
-/// `vpay-worker-7f4c/1/9e21ab7c` tells them which pod to look at while a
-/// bare UUID tells them nothing.
-///
-/// `HOSTNAME` rather than a `hostname` crate: the value is a label in a log
-/// line and in a column, never an address anything connects to, so a
-/// deployment that does not export it loses nothing but the hint. Reading an
-/// environment variable is safe; only *setting* one is `unsafe` in edition
-/// 2024, which is why this is a read and the tests do not try to control it.
+/// `HOSTNAME` rather than a `hostname` crate: the value is a log label and a
+/// column, never an address anything connects to, so a deployment that does
+/// not export it loses nothing but the hint.
 #[must_use]
 pub fn worker_id() -> String {
     let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown-host".to_owned());
@@ -265,10 +239,9 @@ pub fn worker_id() -> String {
 ///    the [`Outcome`] or from [`JobError::decision`], each guarded on this
 ///    worker's `locked_by`.
 ///
-/// There is no step between 2 and 3. A job whose handler committed a
-/// settlement and then failed to write to `jobs` is re-run, and every
-/// handler is a compare-and-swap for that reason — the second run matches no
-/// rows and answers [`Outcome::Done`].
+/// There is no step between 2 and 3, which is why every handler is a
+/// compare-and-swap: [docs/reference/vpay-worker.md § the job
+/// loop](../../../../docs/reference/vpay-worker.md#the-job-loop).
 ///
 /// # Errors
 ///
@@ -279,14 +252,14 @@ pub fn worker_id() -> String {
 /// different questions, and a caller that could not tell them apart would
 /// back off from the queue every time a rail timed out.
 pub async fn run_once(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     adapters: &Adapters,
     rails: &RailConfigs,
     policy: &RecoveryPolicy,
     webhooks: &WebhookContext<'_>,
     worker_id: &str,
 ) -> Result<Option<Settled>, DbError> {
-    let Some(job) = vpay_db::jobs::claim(pool, worker_id).await? else {
+    let Some(job) = Jobs::claim(repositories, worker_id).await? else {
         return Ok(None);
     };
     // Counted here rather than inside `vpay_db::jobs::claim`, and only on
@@ -296,8 +269,8 @@ pub async fn run_once(
     // exactly the case worth being able to see on a dashboard.
     metrics::counter!(JOBS_CLAIMED_TOTAL, "kind" => job.kind.clone()).increment(1);
 
-    let result = handle(pool, adapters, rails, policy, webhooks, &job).await;
-    let settled = settle(pool, worker_id, &job, result).await?;
+    let result = handle(repositories, adapters, rails, policy, webhooks, &job).await;
+    let settled = settle(repositories, worker_id, &job, result).await?;
     // After `settle`, so the counter reflects the write that actually
     // happened rather than the one this worker intended:
     // `Disposition::Lost` is what a guarded write that matched no row
@@ -342,14 +315,14 @@ const fn outcome_label(disposition: Disposition) -> &'static str {
 /// previous rung's rail timeout sitting in the column for an operator to
 /// read as current.
 async fn settle(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     worker_id: &str,
     job: &JobRow,
     result: Result<Outcome, JobError>,
 ) -> Result<Settled, DbError> {
     let error = match result {
         Ok(Outcome::Done) => {
-            let wrote = vpay_db::jobs::finish(pool, job.id, worker_id).await?;
+            let wrote = repositories.finish(job.id, worker_id).await?;
             return Ok(settled(
                 job,
                 disposition(wrote, Disposition::Finished),
@@ -358,7 +331,9 @@ async fn settle(
             ));
         }
         Ok(Outcome::RescheduleAfter(delay)) => {
-            let wrote = vpay_db::jobs::reschedule(pool, job.id, worker_id, delay, None).await?;
+            let wrote = repositories
+                .reschedule(job.id, worker_id, delay, None)
+                .await?;
             return Ok(settled(
                 job,
                 disposition(wrote, Disposition::Rescheduled(delay)),
@@ -369,11 +344,17 @@ async fn settle(
         Err(error) => error,
     };
 
-    let text = error.to_string();
+    // Display *and* the chain below it: `ProviderError::Transport` carries
+    // the `reqwest` error as a `#[source]` rather than folding it into its
+    // own message (ADR-0011), so `jobs.last_error` would otherwise say "the
+    // request to the rail failed" and never "operation timed out". `vpay_db`
+    // bounds the text against `jobs`' `last_error_length` CHECK.
+    let text = vpay_core::error::display_with_chain(&error);
     match error.decision(attempt_index(job)) {
         Decision::RetryAfter { delay, alert } => {
-            let wrote =
-                vpay_db::jobs::reschedule(pool, job.id, worker_id, delay, Some(&text)).await?;
+            let wrote = repositories
+                .reschedule(job.id, worker_id, delay, Some(&text))
+                .await?;
             Ok(settled(
                 job,
                 disposition(wrote, Disposition::Rescheduled(delay)),
@@ -382,7 +363,7 @@ async fn settle(
             ))
         }
         Decision::Terminal => {
-            let wrote = vpay_db::jobs::finish(pool, job.id, worker_id).await?;
+            let wrote = repositories.finish(job.id, worker_id).await?;
             Ok(settled(
                 job,
                 disposition(wrote, Disposition::Finished),
@@ -391,7 +372,7 @@ async fn settle(
             ))
         }
         Decision::DeadLetter => {
-            let wrote = vpay_db::jobs::dead_letter(pool, job.id, worker_id, &text).await?;
+            let wrote = repositories.dead_letter(job.id, worker_id, &text).await?;
             Ok(settled(
                 job,
                 disposition(wrote, Disposition::DeadLettered),
@@ -436,18 +417,11 @@ fn attempt_index(job: &JobRow) -> u32 {
 /// The per-job log line: what happened to the row.
 ///
 /// Distinct from `crate::handlers`' own failure line, which reports the
-/// *error* at `Classify::severity` and flags `Severity::Page`. This one
-/// reports the *disposition* and carries `alert` from
-/// [`Decision::RetryAfter`], which fires at `Severity::Error` and above — a
-/// wider net, and the one the 24-hour `unresolved` escalation needs
-/// (`JobError::Exhausted` is `Severity::Error`, not `Page`, so the handler's
-/// line does not flag it and this one must).
-///
-/// The consequence, stated so nobody has to rediscover it: a `Page`-severity
-/// failure produces two events carrying `alert = true` — the error and its
-/// disposition. That is deliberate. They say different things ("the rail
-/// refused our credentials" and "so this job is parked forever"), and an
-/// alerting rule that deduplicates on `job_id` sees one incident either way.
+/// *error*. This one reports the *disposition* and carries `alert` from
+/// [`Decision::RetryAfter`], a wider severity net — and the one the 24-hour
+/// `unresolved` escalation needs. `docs/reference/vpay-worker.md` §"Where a
+/// job failure is logged" says why both lines exist and why a `Page` produces
+/// two `alert = true` events.
 fn log_disposition(settled: &Settled) {
     let Some(error) = settled.error.as_deref() else {
         tracing::debug!(
@@ -488,115 +462,91 @@ fn log_disposition(settled: &Settled) {
 /// Seeds the four singleton jobs this deployment always wants running.
 ///
 /// `sweep_expired`, `scan_live_charges`, `fan_out_events` and
-/// `scan_deliveries` are not enqueued by anything that creates work — there is
-/// no request that produces a sweep, and the settlement transaction writes an
-/// `events` row without knowing a drain exists — so they are seeded at boot
-/// and reschedule themselves for as long as the deployment lives.
-/// `ON CONFLICT (dedupe_key) DO NOTHING` (`jobs::enqueue_in_tx`) is what makes
-/// N workers all doing this produce one row each, and what stops a restart
-/// from dragging a job that is already scheduled an hour out back to now.
+/// `scan_deliveries` are not enqueued by anything that creates work, so they
+/// are seeded at boot and reschedule themselves for as long as the deployment
+/// lives. `ON CONFLICT (dedupe_key) DO NOTHING` is what makes N workers doing
+/// this produce one row each, and what stops a restart dragging a job already
+/// scheduled an hour out back to now.
 ///
-/// One transaction for all four because they are one fact ("this deployment
-/// runs its own background work"), and a partial seed is worse than none: the
-/// sweep without the scan is a deployment whose backstop is silently absent,
-/// and a deployment without `fan_out_events` settles payments and tells no
-/// merchant about any of them — every `events` row it writes stays
-/// `fanout_state = 'pending'`, which looks exactly like a healthy deployment
-/// until somebody reads the backlog.
+/// One transaction for all four, because a partial seed is worse than none: a
+/// deployment without `fan_out_events` settles payments and tells no merchant
+/// about any of them, which looks exactly like a healthy deployment until
+/// somebody reads the backlog.
 ///
-/// This is **not** where lease recovery happens. `sweep_expired` also reaps
-/// expired leases, but a worker that has just booted after a crash cannot
-/// wait an hour for that — and if the crashed worker was holding the
-/// `sweep:expired` row itself, the sweep is exactly the job that can never
-/// run. See [`run_loop`], which reaps before it seeds and again on its own
-/// timer.
+/// This is **not** where lease recovery happens — see
+/// `docs/reference/vpay-worker.md` §"Two lease reapers, on purpose".
 ///
 /// # Errors
 ///
 /// [`DbError`] if the write or the commit fails.
-pub async fn seed_singletons(pool: &PgPool) -> Result<(), DbError> {
+pub async fn seed_singletons(repositories: &dyn Repositories) -> Result<(), DbError> {
     let now = OffsetDateTime::now_utc();
     let empty = serde_json::Value::Object(serde_json::Map::new());
 
-    let mut tx = pool.begin().await.map_err(DbError::Query)?;
-    vpay_db::jobs::enqueue_in_tx(
-        &mut tx,
-        JobKind::SweepExpired.as_wire_str(),
-        SWEEP_DEDUPE_KEY,
-        &empty,
-        now,
-    )
-    .await?;
-    vpay_db::jobs::enqueue_in_tx(
-        &mut tx,
-        JobKind::ScanLiveCharges.as_wire_str(),
-        SCAN_DEDUPE_KEY,
-        &empty,
-        now,
-    )
-    .await?;
-    // The outbox drain. `run_at = now` rather than a delay: an event written
-    // before this process started is already waiting, and the first thing a
-    // freshly-booted worker should do about a settled payment nobody was
-    // told about is tell them.
-    vpay_db::jobs::enqueue_in_tx(
-        &mut tx,
-        JobKind::FanOutEvents.as_wire_str(),
-        FANOUT_DEDUPE_KEY,
-        &empty,
-        now,
-    )
-    .await?;
-    // The delivery backstop (migration 0023). Seeded here rather than left
-    // out because "the queue owns every delivery" is only true while no job
-    // is ever deleted, dead-lettered or lost with the table — and a
-    // deployment that drops this seed looks exactly like a healthy one until
-    // a merchant asks why they never heard about a payment.
-    vpay_db::jobs::enqueue_in_tx(
-        &mut tx,
-        JobKind::ScanDeliveries.as_wire_str(),
-        SCAN_DELIVERIES_DEDUPE_KEY,
-        &empty,
-        now,
-    )
-    .await?;
-    tx.commit().await.map_err(DbError::Query)?;
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.enqueue_in_tx(
+                    JobKind::SweepExpired.as_wire_str(),
+                    SWEEP_DEDUPE_KEY,
+                    &empty,
+                    now,
+                )
+                .await?;
+                tx.enqueue_in_tx(
+                    JobKind::ScanLiveCharges.as_wire_str(),
+                    SCAN_DEDUPE_KEY,
+                    &empty,
+                    now,
+                )
+                .await?;
+                // The outbox drain. `run_at = now` rather than a delay: an
+                // event written before this process started is already
+                // waiting, and the first thing a freshly-booted worker should
+                // do about a settled payment nobody was told about is tell
+                // them.
+                tx.enqueue_in_tx(
+                    JobKind::FanOutEvents.as_wire_str(),
+                    FANOUT_DEDUPE_KEY,
+                    &empty,
+                    now,
+                )
+                .await?;
+                // The delivery backstop (migration 0023). Seeded here rather
+                // than left out because "the queue owns every delivery" is
+                // only true while no job is ever deleted, dead-lettered or
+                // lost with the table — and a deployment that drops this seed
+                // looks exactly like a healthy one until a merchant asks why
+                // they never heard about a payment.
+                tx.enqueue_in_tx(
+                    JobKind::ScanDeliveries.as_wire_str(),
+                    SCAN_DELIVERIES_DEDUPE_KEY,
+                    &empty,
+                    now,
+                )
+                .await?;
+                Ok::<_, DbError>(TxOutcome::Commit(()))
+            })
+        })
+        .await?;
     Ok(())
 }
 
 /// Runs `concurrency` claim/settle tasks until `shutdown` resolves, then
 /// drains them within `grace`.
 ///
-/// # The drain, and why a timed-out one hands leases back
-///
-/// On shutdown the tasks stop *claiming*; each finishes the job it is on.
-/// That is the whole of a clean drain, and it is why [`LoopReport::released`]
-/// is zero on one: a task only re-checks shutdown between jobs, so a claimed
-/// job is always settled before its task exits, and there is no lease left
-/// to hand back.
-///
-/// When `grace` elapses first the remaining tasks are aborted and
-/// `vpay_db::jobs::release_all` clears every lease this worker still holds.
-/// Without that call those rows stay leased until a reaper frees them — at
-/// best half a lease (`reap_interval`), and only if a worker is running at
-/// all — of a live charge going undriven for no reason other than that a pod
-/// was rolled. The release is safe against the aborted tasks rather than
-/// racing them: every
-/// write that ends a lease is guarded on `locked_by`, so an abort that lands
-/// mid-flight either committed before the release (and its guarded write
-/// matched) or after it (and matched nothing, leaving the job for another
-/// worker to re-run — which every handler is a compare-and-swap to make
-/// safe).
+/// It reaps stranded leases and seeds the singleton jobs before it starts
+/// claiming, and on shutdown it lets each task finish the job it is on. A
+/// clean drain hands back no lease, by construction; a timed-out one aborts
+/// and releases. `docs/reference/vpay-worker.md` §"The drain" and §"Two lease
+/// reapers, on purpose" carry both arguments.
 ///
 /// # Errors
 ///
 /// None: this returns a [`LoopReport`] and not a `Result`, because after the
-/// seed there is nothing left whose failure should stop a worker. A claim
-/// that fails is logged and retried after [`IDLE_SLEEP`] — Postgres being
-/// briefly unreachable is the case the retry exists for, and exiting the
-/// process instead would turn a blip into a restart loop. A seed that fails
-/// is logged with `alert` and the loop starts anyway: the deployment loses
-/// its sweeps, which matters, but the charges it is driving matter more.
+/// seed there is nothing left whose failure should stop a worker. A claim that
+/// fails is logged and retried after [`IDLE_SLEEP`]; a seed that fails is
+/// logged with `alert` and the loop starts anyway.
 #[expect(
     clippy::too_many_arguments,
     reason = "every argument is a distinct thing the loop needs from its caller, and the \
@@ -604,7 +554,7 @@ pub async fn seed_singletons(pool: &PgPool) -> Result<(), DbError> {
               for each; a config struct would hide which of them a given test varies"
 )]
 pub async fn run_loop(
-    pool: &PgPool,
+    repositories: Arc<dyn Repositories>,
     adapters: Arc<Adapters>,
     rails: Arc<RailConfigs>,
     policy: RecoveryPolicy,
@@ -615,27 +565,7 @@ pub async fn run_loop(
     worker_id: String,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> LoopReport {
-    // **Before the seed, and unconditionally.** A worker that was SIGKILLed
-    // leaves every job it held with `locked_at` set, and `jobs::claim`
-    // matches only `locked_at IS NULL` (that predicate is what makes
-    // `jobs_claimable_idx` exact). So until something reaps those leases the
-    // charges behind them are undriven — and if the dead worker was holding
-    // `sweep:expired`, the job that used to be the only reaper is itself
-    // among them, which is a deadlock the queue cannot leave on its own. The
-    // reap uses `policy.lease`, so a *co-running* worker's fresh leases are
-    // untouched; only a lease older than a worker could legitimately hold is
-    // freed.
-    reap_leases(pool, policy.lease, &worker_id).await;
-
-    if let Err(error) = seed_singletons(pool).await {
-        tracing::error!(
-            alert = true,
-            error = %error,
-            "could not seed the housekeeping jobs; this deployment will not sweep expired \
-             idempotency keys, client-assertion jtis or stale job leases until a worker \
-             starts that can"
-        );
-    }
+    recover_and_seed(repositories.as_ref(), policy.lease, &worker_id).await;
 
     let (tx, rx) = watch::channel(false);
     let signal: JoinHandle<()> = tokio::spawn(async move {
@@ -647,7 +577,7 @@ pub async fn run_loop(
 
     let counters = Arc::new(Counters::default());
     let gauge = tokio::spawn(gauge_loop(
-        pool.clone(),
+        Arc::clone(&repositories),
         worker_id.clone(),
         Arc::clone(&counters),
     ));
@@ -658,12 +588,16 @@ pub async fn run_loop(
     // reaped job should wait to be picked up again, and it cannot free a
     // lease that is merely young: `reap_expired_leases` still compares
     // against `policy.lease`.
-    let reaper = tokio::spawn(reaper_loop(pool.clone(), policy.lease, worker_id.clone()));
+    let reaper = tokio::spawn(reaper_loop(
+        Arc::clone(&repositories),
+        policy.lease,
+        worker_id.clone(),
+    ));
 
     let tasks: Vec<JoinHandle<()>> = (0..concurrency)
         .map(|_| {
             tokio::spawn(claim_loop(
-                pool.clone(),
+                Arc::clone(&repositories),
                 Arc::clone(&adapters),
                 Arc::clone(&rails),
                 policy,
@@ -686,6 +620,80 @@ pub async fn run_loop(
         "job loop running"
     );
 
+    wait_for_shutdown(&rx).await;
+    tracing::info!(worker_id = %worker_id, "shutdown signalled; draining in-flight jobs");
+    let (drain, released) = drain_tasks(tasks, grace, repositories.as_ref(), &worker_id).await;
+
+    gauge.abort();
+    reaper.abort();
+    signal.abort();
+
+    report(&counters, drain, released, &worker_id)
+}
+
+/// Frees the leases a dead worker left behind, then seeds the singleton jobs.
+///
+/// **The reap is before the seed, and unconditional.** A worker that was
+/// SIGKILLed leaves every job it held with `locked_at` set, and
+/// [`vpay_db::Jobs::claim`] matches only `locked_at IS NULL`. So until
+/// something reaps those leases the charges behind them are undriven — and if
+/// the dead worker was holding `sweep:expired`, the job that used to be the
+/// only reaper is itself among them, which is a deadlock the queue cannot
+/// leave on its own. The reap uses `policy.lease`, so a *co-running* worker's
+/// fresh leases are untouched.
+///
+/// A seed that fails is logged with `alert` and the loop starts anyway: the
+/// deployment loses its sweeps, which matters, but the charges it is driving
+/// matter more.
+async fn recover_and_seed(repositories: &dyn Repositories, lease: Duration, worker_id: &str) {
+    reap_leases(repositories, lease, worker_id).await;
+
+    if let Err(error) = seed_singletons(repositories).await {
+        tracing::error!(
+            alert = true,
+            error = %error,
+            "could not seed the housekeeping jobs; this deployment will not sweep expired \
+             idempotency keys, client-assertion jtis or stale job leases until a worker \
+             starts that can"
+        );
+    }
+}
+
+/// Waits until the shutdown signal has been observed.
+///
+/// **The grace clock starts when this returns, not at boot.** Waiting here
+/// rather than racing `timeout(grace, …)` from the start is the whole
+/// difference between a bounded drain and a worker that aborts every
+/// in-flight job `grace` seconds after it started, forever. The shape mirrors
+/// `vpay-server`'s `grace_clock`, which waits for draining to have *begun*
+/// before it sleeps, for the same reason.
+async fn wait_for_shutdown(rx: &watch::Receiver<bool>) {
+    let mut signalled = rx.clone();
+    while !*signalled.borrow_and_update() {
+        // `Err` means the sender is gone. Only the signal task holds it, and
+        // it drops it after sending, so this is "shutdown happened and we
+        // missed the edge" — proceed to drain either way.
+        if signalled.changed().await.is_err() {
+            break;
+        }
+    }
+}
+
+/// Waits `grace` for the claim tasks to finish the jobs they are on, then
+/// aborts what is left and hands its leases back.
+///
+/// A clean drain releases nothing by construction: a task only re-checks
+/// shutdown between jobs, so a claimed job is always settled before its task
+/// exits and there is no lease left to hand back. `docs/reference/vpay-worker.md`
+/// §"The drain" says why a timed-out one must release rather than wait for a
+/// reaper, and why the release is safe against the aborted tasks rather than
+/// racing them.
+async fn drain_tasks(
+    tasks: Vec<JoinHandle<()>>,
+    grace: Duration,
+    repositories: &dyn Repositories,
+    worker_id: &str,
+) -> (Drain, u64) {
     let aborts: Vec<tokio::task::AbortHandle> = tasks
         .iter()
         .map(tokio::task::JoinHandle::abort_handle)
@@ -698,57 +706,39 @@ pub async fn run_loop(
         }
     };
 
-    // **The grace clock starts when the signal arrives, not at boot.** Waiting
-    // here rather than racing `timeout(grace, drain_all)` from the start is
-    // the whole difference between a bounded drain and a worker that aborts
-    // every in-flight job `grace` seconds after it started, forever. The
-    // shape mirrors `vpay-server`'s `grace_clock`, which waits for draining to
-    // have *begun* before it sleeps, for the same reason.
-    let mut signalled = rx.clone();
-    while !*signalled.borrow_and_update() {
-        // `Err` means the sender is gone. Only the signal task holds it, and
-        // it drops it after sending, so this is "shutdown happened and we
-        // missed the edge" — proceed to drain either way.
-        if signalled.changed().await.is_err() {
-            break;
-        }
+    if tokio::time::timeout(grace, drain_all).await.is_ok() {
+        return (Drain::Clean, 0);
     }
-    tracing::info!(worker_id = %worker_id, "shutdown signalled; draining in-flight jobs");
 
-    let (drain, released) = match tokio::time::timeout(grace, drain_all).await {
-        Ok(()) => (Drain::Clean, 0),
-        Err(_) => {
-            for abort in &aborts {
-                abort.abort();
-            }
-            let released = match vpay_db::jobs::release_all(pool, &worker_id).await {
-                Ok(released) => released,
-                Err(error) => {
-                    tracing::error!(
-                        alert = true,
-                        worker_id = %worker_id,
-                        error = %error,
-                        "could not hand back this worker's job leases on a timed-out drain; \
-                         they stay held until a worker's lease reaper frees them"
-                    );
-                    0
-                }
-            };
-            tracing::warn!(
+    for abort in &aborts {
+        abort.abort();
+    }
+    let released = match repositories.release_all(worker_id).await {
+        Ok(released) => released,
+        Err(error) => {
+            tracing::error!(
+                alert = true,
                 worker_id = %worker_id,
-                shutdown_grace_seconds = grace.as_secs(),
-                released,
-                "the shutdown grace period elapsed before in-flight jobs finished; stopped \
-                 waiting for them and handed their leases back"
+                error = %error,
+                "could not hand back this worker's job leases on a timed-out drain; \
+                 they stay held until a worker's lease reaper frees them"
             );
-            (Drain::TimedOut, released)
+            0
         }
     };
+    tracing::warn!(
+        worker_id = %worker_id,
+        shutdown_grace_seconds = grace.as_secs(),
+        released,
+        "the shutdown grace period elapsed before in-flight jobs finished; stopped \
+         waiting for them and handed their leases back"
+    );
+    (Drain::TimedOut, released)
+}
 
-    gauge.abort();
-    reaper.abort();
-    signal.abort();
-
+/// This run's tallies, as the binary's exit code and a test's assertions read
+/// them — and as the last line in the log.
+fn report(counters: &Counters, drain: Drain, released: u64, worker_id: &str) -> LoopReport {
     let (claimed, finished, rescheduled, dead_lettered, lost) = counters.snapshot();
     let report = LoopReport {
         drain,
@@ -784,7 +774,7 @@ pub async fn run_loop(
               here would only move the arguments to whatever constructs it"
 )]
 async fn claim_loop(
-    pool: PgPool,
+    repositories: Arc<dyn Repositories>,
     adapters: Arc<Adapters>,
     rails: Arc<RailConfigs>,
     policy: RecoveryPolicy,
@@ -802,7 +792,16 @@ async fn claim_loop(
         http: &http,
     };
     while !*shutdown.borrow() {
-        match run_once(&pool, &adapters, &rails, &policy, &webhooks, &worker_id).await {
+        match run_once(
+            repositories.as_ref(),
+            &adapters,
+            &rails,
+            &policy,
+            &webhooks,
+            &worker_id,
+        )
+        .await
+        {
             Ok(Some(settled)) => counters.record(&settled),
             Ok(None) => idle(&mut shutdown).await,
             Err(error) => {
@@ -877,14 +876,14 @@ const fn reap_interval(lease: Duration) -> Duration {
 /// Separate from `sweep_expired` (which still reaps, along with its two
 /// deletes) for the reason [`run_loop`]'s boot reap exists: the sweep is a
 /// job, and a job cannot recover the lease on itself.
-async fn reaper_loop(pool: PgPool, lease: Duration, worker_id: String) {
+async fn reaper_loop(repositories: Arc<dyn Repositories>, lease: Duration, worker_id: String) {
     let mut ticker = tokio::time::interval(reap_interval(lease));
     // The first tick fires immediately and would duplicate the boot reap.
     ticker.tick().await;
 
     loop {
         ticker.tick().await;
-        reap_leases(&pool, lease, &worker_id).await;
+        reap_leases(repositories.as_ref(), lease, &worker_id).await;
     }
 }
 
@@ -895,8 +894,8 @@ async fn reaper_loop(pool: PgPool, lease: Duration, worker_id: String) {
 /// A non-zero count is a `warn` because in a deployment that only ever shuts
 /// down gracefully it is zero — every non-zero one is a worker that died or a
 /// handler that outran the lease.
-async fn reap_leases(pool: &PgPool, lease: Duration, worker_id: &str) {
-    match vpay_db::jobs::reap_expired_leases(pool, lease).await {
+async fn reap_leases(repositories: &dyn Repositories, lease: Duration, worker_id: &str) {
+    match repositories.reap_expired_leases(lease).await {
         Ok(0) => {}
         Ok(reaped) => tracing::warn!(
             worker_id = %worker_id,
@@ -915,35 +914,24 @@ async fn reap_leases(pool: &PgPool, lease: Duration, worker_id: &str) {
 
 /// The periodic gauge line: this worker's tallies, and the queue's age.
 ///
-/// The tallies are cumulative rather than per-interval so a scrape that
-/// misses a line loses nothing, and the age comes from
-/// `vpay_db::jobs::oldest_runnable_run_at` because it is a property of the
-/// table and of every worker against it, not of this one.
+/// The tallies are cumulative rather than per-interval so a scrape that misses
+/// a line loses nothing, and they carry `worker_id` because every field but
+/// the queue age is *this process's* — two replicas' lines sum into a number
+/// that describes neither. The age comes from
+/// [`vpay_db::Jobs::oldest_runnable_run_at`] because it is a property of the
+/// table and of every worker against it; an age drifting steadily into the
+/// past is the backlog signal `--worker-concurrency` exists to move.
 ///
-/// An age drifting steadily into the past is the backlog signal — jobs whose
-/// time has come with nobody taking them — and it is the number
-/// `--worker-concurrency` (or another replica) exists to move.
-///
-/// `worker_id` is on the line because every other field except the queue age
-/// is *this process's* tally: two replicas emit two of these a minute, and
-/// without the identity they sum into a number that describes neither.
-///
-/// # Two fields are not named what the design named them
-///
-/// `docs/plans/2026-09-03-step4-worker.md` §5 asks for "claimed / succeeded /
-/// rescheduled / dead-lettered / oldest `run_at`". This line writes
-/// `finished` where that says `succeeded`, and `queue_behind_seconds` where
-/// it says oldest `run_at`. Both are deliberate and both are drift worth
-/// naming rather than quietly reconciling:
-///
-/// * `finished` is [`Disposition::Finished`], which counts a *declined*
-///   charge too — the queue is done with it either way. Calling that
-///   `succeeded` would read as a payment count, and an operator watching it
-///   would be watching the wrong number.
-/// * `queue_behind_seconds` is a duration, not an instant. A timestamp would
-///   have to be diffed against now by whoever read the line, and the field
-///   that alerting actually thresholds is the difference.
-async fn gauge_loop(pool: PgPool, worker_id: String, counters: Arc<Counters>) {
+/// Two field names deliberately differ from the Step 4 design's:
+/// `finished` rather than "succeeded", because [`Disposition::Finished`]
+/// counts a *declined* charge too and "succeeded" would read as a payment
+/// count; and `queue_behind_seconds` rather than the oldest `run_at`, because
+/// the difference is what alerting thresholds.
+async fn gauge_loop(
+    repositories: Arc<dyn Repositories>,
+    worker_id: String,
+    counters: Arc<Counters>,
+) {
     let mut ticker = tokio::time::interval(GAUGE_INTERVAL);
     // The first tick fires immediately and would report an empty run.
     ticker.tick().await;
@@ -951,7 +939,7 @@ async fn gauge_loop(pool: PgPool, worker_id: String, counters: Arc<Counters>) {
     loop {
         ticker.tick().await;
         let (claimed, finished, rescheduled, dead_lettered, lost) = counters.snapshot();
-        let read = match vpay_db::jobs::oldest_runnable_run_at(&pool).await {
+        let read = match repositories.oldest_runnable_run_at().await {
             Ok(Some(run_at)) => QueueAgeRead::Oldest(run_at),
             Ok(None) => QueueAgeRead::Empty,
             Err(error) => {

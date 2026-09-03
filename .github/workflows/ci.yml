@@ -59,6 +59,13 @@ jobs:
       - run: cargo xtask verify-status
       - name: verify-errors (ADR-0011)
         run: cargo xtask verify-errors
+      # A report, not a gate — it exits 0 whatever it finds (Step 7,
+      # decision (4)). It is here so `justfile`'s claim that this job runs
+      # exactly what `just verify` runs stays true, and so the doc-volume,
+      # long-function and ```ignore-fence numbers are on the record for every
+      # pull request rather than only on whichever machine last ran it.
+      - name: verify-docs (a report; never fails)
+        run: cargo xtask verify-docs
 
   rust:
     name: rust
@@ -114,10 +121,18 @@ jobs:
       # silently skip. This job is the evidence for those suites; see
       # docs/status.md, "Last verified".
       - run: cargo nextest run --workspace
+      # nextest runs NO doctests, so until 2026-09-03 (Step 7) the step above
+      # was the whole of this job's Rust testing and the workspace's doctests
+      # — one, `vpay_core::money` — had never been compiled by CI at all. An
+      # example in a doc comment that nothing compiles is a claim about the
+      # code that nothing checks. `just test-doc`, not a copy of its command,
+      # so the gate and the local recipe cannot drift.
+      - run: just test-doc
       # A new `#[ignore]` must not quietly shrink coverage, and a whole test
       # binary dropping out of the workspace must not read as "fewer tests,
       # still green". The recipe pins both numbers; bump them in the same
-      # commit that legitimately changes them.
+      # commit that legitimately changes them. It counts what nextest lists,
+      # which does not include the doctests the step above runs.
       - run: just verify-ignored
 
   deny:

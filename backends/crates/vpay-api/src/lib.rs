@@ -67,7 +67,7 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 use tower_http::trace::TraceLayer;
 use tracing::Span;
 use vpay_core::metrics::{HTTP_REQUEST_DURATION_SECONDS, HTTP_REQUESTS_TOTAL};
-use vpay_db::PgPool;
+use vpay_db::Repositories;
 use vpay_provider::ProviderAdapter;
 
 pub mod browser;
@@ -104,6 +104,13 @@ pub use vpay_provider::http as http_client;
 pub use browser::{BROWSER_ROUTES, PayerScope};
 pub use error::ApiError;
 pub use resource_auth::MerchantJwtValidator;
+/// The boot steps both binaries call, under the name to call them by.
+///
+/// The module itself is [`v1::boot`] for historical reasons; nothing about
+/// keying adapters, loading YAML, migrating or reconciling belongs to the `/v1`
+/// wire surface, and a boot path spelled `vpay_api::v1::boot` reads as if it
+/// did.
+pub use v1::boot;
 pub use v1::{
     MerchantScope, ResourceConfig, SCOPE_PAYMENTS_READ, SCOPE_PAYMENTS_WRITE, V1_ROUTES, V1Route,
     WebhookEndpointConfig, required_scopes,
@@ -221,14 +228,18 @@ pub(crate) fn error_envelope_with_param(
 ///
 /// `Debug` is derived and safe: every field formats through its own impl,
 /// and all three redact — `MerchantOp` shows only its public metadata,
-/// `JwtValidator` only its validation policy, and sqlx's `PgPool` prints no
-/// connection string.
+/// `JwtValidator` only its validation policy, and `vpay_db`'s repository
+/// handle names its own type and nothing else.
 #[derive(Debug)]
 pub struct RouterDeps {
-    /// The database pool. `/healthz` probes it, `/v1/oauth/jwks.json` reads
-    /// the published key set from it, and the OP's client store consults
-    /// `disabled_clients` through it.
-    pub pool: PgPool,
+    /// Everything this router may ask Postgres to do (`vpay_db`). `/healthz`
+    /// probes it, `/v1/oauth/jwks.json` reads the published key set from it,
+    /// and the OP's client store consults `disabled_clients` through it.
+    ///
+    /// A trait object, so this crate names no `sqlx` type on the request
+    /// path and a handler can be read without knowing which table family a
+    /// query belongs to — the method says.
+    pub repositories: Arc<dyn Repositories>,
     /// The assembled merchant OP — see [`op::MerchantOp::new`]. `Arc`
     /// because axum clones router state per request and the OP holds a
     /// signing key and a trait-object store that must not be duplicated.
@@ -278,19 +289,19 @@ pub struct RouterDeps {
 /// entirely.
 #[derive(Clone)]
 pub(crate) struct AppState {
-    pool: PgPool,
+    repositories: Arc<dyn Repositories>,
     merchant_op: std::sync::Arc<op::MerchantOp>,
     merchant_validator: MerchantJwtValidator,
     adapters: Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>,
     resource_config: Arc<ResourceConfig>,
 }
 
-/// So [`op::jwks::jwks_handler`] can take `State<PgPool>` and stay
-/// independent of how this router is assembled — its own doc comment names
-/// this impl as the assembler's side of that contract.
-impl FromRef<AppState> for PgPool {
+/// So [`op::jwks::jwks_handler`] can take `State<Arc<dyn Repositories>>` and
+/// stay independent of how this router is assembled — its own doc comment
+/// names this impl as the assembler's side of that contract.
+impl FromRef<AppState> for Arc<dyn Repositories> {
     fn from_ref(state: &AppState) -> Self {
-        state.pool.clone()
+        Arc::clone(&state.repositories)
     }
 }
 
@@ -357,7 +368,7 @@ impl FromRef<AppState> for Arc<BTreeMap<String, Box<dyn ProviderAdapter>>> {
 /// current meaning, and moving the DB check off it would break them
 /// silently.
 async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
-    match vpay_db::check_connection(&state.pool).await {
+    match state.repositories.check_connection().await {
         Ok(()) => (StatusCode::OK, "ok"),
         Err(error) => {
             tracing::error!(%error, "healthz: database unreachable");
@@ -807,152 +818,35 @@ const V1_BODY_LIMIT_BYTES: usize = 64 * 1024;
 
 /// Builds the application router from [`RouterDeps`].
 ///
-/// # Route tree
+/// Three route groups, and which group a path falls into is the whole security
+/// boundary of this process: the unauthenticated ones (`/healthz`, the whole
+/// `/v1/oauth` OP subtree, the two `/v1/browser` payer routes), everything else
+/// under `/v1` behind [`require_merchant_token`], and the honest 404 for
+/// anything else. `/livez` and `/metrics` are **not** served here at all — they
+/// belong to [`observability`], on a different port, because `/metrics` names
+/// every rail, route pattern and error code this deployment has.
 ///
-/// Three groups, and which group a path falls into is the whole security
-/// boundary of this process:
+/// Both nested routers carry their own `.fallback(not_found)`. That is
+/// load-bearing rather than decorative: without it axum flattens the nest into
+/// the outer path table and an unmatched `/v1/oauth/...` path matches
+/// `/v1/{*rest}` — the *authenticated* nest — and answers 401 to a caller whose
+/// entire reason for being there is that it has no token yet.
+/// `the_oauth_nest_answers_its_own_404` fails with `left: 401, right: 404` if
+/// the fallback is removed.
 ///
-/// | Path | Auth | Why |
-/// |---|---|---|
-/// | `GET /healthz` | none | A probe must answer before anything is configured, and it reveals only whether Postgres is reachable. It is the *readiness* probe; liveness is `/livez` on the observability port ([`observability`]). |
-/// | `POST /v1/oauth/token` | none | The credential *is* the request body (RFC 7523 `client_assertion`). Requiring a bearer token to get a bearer token is circular. |
-/// | `GET /v1/oauth/.well-known/openid-configuration` | none | How a client that has never spoken to vpay finds the token endpoint. |
-/// | `GET /v1/oauth/jwks.json` | none | How a verifier that has never spoken to vpay learns the public keys. Same circularity. |
-/// | **anything else under `/v1/oauth`** | none | The OP subtree is public by design; its own `.fallback(not_found)` answers the honest 404 rather than letting the path escape to the outer router. |
-/// | `GET /v1/browser/payment_intents/{id}` | none | A payer's browser has no merchant credential. The payment intent's own `client_secret` is what authorises it — see [`browser`]. |
-/// | `POST /v1/browser/payment_intents/{id}/confirm` | none | The same. |
-/// | **anything else under `/v1/browser`** | none | Its own `.fallback(not_found)`, for the OP nest's reason: without one the path would match `/v1/{*rest}` and answer 401 to a caller that can never hold a token. |
-/// | **everything else under `/v1`** | `AuthenticatedMerchant` | The merchant API. |
-/// | anything else | none | The honest 404. |
+/// Five middleware layers wrap everything, and their order is load-bearing:
+/// vet the caller's own `x-request-id`, mint one if none survived, mirror it
+/// onto the response under Stripe's `request-id` spelling, open the span, then
+/// propagate. That is what makes [`vpay_core::Category::Internal`]'s "Contact
+/// support with the request id" a promise a merchant can act on.
 ///
-/// `/livez` and `/metrics` are **not** in that table and are not served by
-/// this router at all. They belong to [`observability`], on
-/// `--observability-bind` (default `0.0.0.0:9090`), because `/metrics` names
-/// every rail, route pattern and error code this deployment has and must not
-/// be reachable from whatever fronts the traffic port. The chart's
-/// NetworkPolicy encodes that, and it can only do so because the two are
-/// different ports.
-///
-/// `/v1/browser` is the only nest carrying a [`CorsLayer`], and the merchant
-/// `/v1` nest deliberately carries none — see the mount below.
-///
-/// The `/v1` nest mounts [`v1::V1_ROUTES`] and a 404 fallback for
-/// everything else, which is the production behaviour and not a
-/// placeholder: `/v1/payment_intents` and `/v1/events` are real, and
-/// `/v1/refunds` and `/v1/balance` are not implemented and are therefore not
-/// routed (`docs/status.md`). The boundary is observable in three answers —
-///
-/// - `GET /v1/payment_intents/pi_x` with no bearer token → **401**, the
-///   [`ApiError::Auth`] envelope;
-/// - the same request with a valid merchant token, for an id this merchant
-///   has no intent under → **404**, the `resource_missing` envelope;
-/// - `GET /v1/balance` with a valid token → **404**, the `unknown_route`
-///   envelope.
-///
-/// — which is exactly what a merchant integrating against this deployment
-/// should get. Inventing a `/v1/balance` so the third answer could be a
-/// `200` is the failure mode `CLAUDE.md` names first.
-///
-/// The authentication layer is [`require_merchant_token`] via
-/// [`from_fn_with_state`] (Step 2's D3 — that function's docs say why it is
-/// not `from_extractor_with_state`), mounted with `Router::layer` on the
-/// nested router so that it wraps that router's fallback too. `route_layer`
-/// is the wrong tool and axum says so: it does not apply to a fallback by
-/// design, so an unmatched `/v1/...` path would answer an *unauthenticated*
-/// 404 and tell an anonymous caller which `/v1` resources exist. When this
-/// nest had no routes at all, axum refused that spelling outright ("Adding a
-/// route_layer before any routes is a no-op"); now that it has routes, the
-/// swap would compile and be silently wrong, which is why the choice is
-/// written down here rather than left to the compiler —
-/// `an_unauthenticated_v1_request_is_401_not_404` is what actually catches
-/// it.
-///
-/// A path under `/v1/oauth` that matches no OP route (say
-/// `/v1/oauth/authorize`, which vpay does not serve) answers an
-/// unauthenticated 404 — and does so from the OP router's **own**
-/// `.fallback(not_found)`, mounted below. That outcome is intended: the
-/// whole `/v1/oauth` subtree is public by design, so a 404 there leaks
-/// nothing a merchant could not learn from the discovery document.
-///
-/// **The fallback is load-bearing, not decoration, and this paragraph used
-/// to say the opposite.** It previously claimed that an unmatched
-/// `/v1/oauth/...` path "falls through to the outer router's fallback and
-/// answers an unauthenticated 404". Measured, it did not: with no fallback
-/// on the OP router, axum flattens that nest's three routes into the outer
-/// path table and registers no `/v1/oauth/{*rest}` entry at all, so
-/// `GET /v1/oauth/not_a_route` matched `/v1/{*rest}` — the *authenticated*
-/// nest — and answered **401**. Removing the `.fallback(not_found)` below
-/// reproduces it, and `the_oauth_nest_answers_its_own_404` fails with
-/// `left: 401, right: 404`.
-///
-/// A 401 there is the wrong answer twice over: it tells an integrator who
-/// mistyped an OP path to present a bearer token, on the one subtree whose
-/// entire purpose is handing out bearer tokens to callers that do not have
-/// one yet — and it made "which router serves this path" depend on an axum
-/// flattening detail rather than on anything written here. With the
-/// fallback the OP router is closed over its own prefix: every
-/// `/v1/oauth/...` path is served by the OP router, unmatched ones included,
-/// and that is a property a test checks rather than an accident of
-/// registration order.
-///
-/// A *known* OP path with the wrong method — `GET /v1/oauth/token` — gets
-/// axum's own bare `405`, not this crate's envelope. Left as-is
-/// deliberately: 405 is the correct status, and turning it into the 404
-/// envelope would tell an integrator the path does not exist when it does.
-/// The gap is that its body is empty rather than the Stripe envelope; that
-/// is worth fixing when a `method_not_allowed` renderer exists for the
-/// whole surface, not one route at a time.
-///
-/// # Middleware order
-///
-/// `ServiceBuilder` applies layers outside-in, so the list below is the
-/// order a *request* traverses them, and the reverse of the order a response
-/// does. All five are load-bearing in that order:
-///
-/// 1. `discard_unusable_request_id` (private, just above this function in
-///    the source) — removes a caller's `x-request-id` unless it is short and
-///    plain enough to carry (`is_usable_request_id`, above it again). It
-///    must be first, and above the minting layer specifically: step 2 only
-///    mints when the header is *absent*, so this step's removal is exactly
-///    what causes a fresh id to be minted for a caller whose own id was not
-///    usable.
-/// 2. [`SetRequestIdLayer`] — mints an `x-request-id` (a v4 UUID, via
-///    [`MakeRequestUuid`]) on the request, **unless the caller already sent
-///    one that step 1 kept**, in which case theirs is kept. Everything below
-///    reads the header it sets.
-/// 3. `mirror_request_id_header` (private, just above this function in the
-///    source) — copies the id step 2 settled on onto the response a second
-///    time, as `request-id`, because that is the only spelling stripe-node
-///    reads (see `STRIPE_REQUEST_ID_HEADER`, private, above this function in
-///    the source — not linked, because a public item cannot link to it).
-///    Below step 2 because it
-///    reads the request header step 2 guarantees is there; above step 5
-///    only because nothing makes the order between them matter — both take
-///    the value from the request, so neither can observe the other.
-/// 4. [`TraceLayer`] — opens `make_request_span` (private, just above this
-///    function in the source) around the handler, so the id is on the span
-///    before any handler, extractor or error renderer runs, and every event
-///    they emit inherits it.
-/// 5. [`PropagateRequestIdLayer`] — innermost, so it sees the id step 2 set and
-///    is the first layer to touch the response on the way out; it copies the request's id onto the
-///    response, which is what makes `Category::Internal`'s "Contact support
-///    with the request id" a promise a merchant can actually act on.
-///
-/// Step 1 is [`axum::middleware::from_fn`] rather than
-/// `tower::util::MapRequestLayer`: `MapRequestLayer` sits behind tower's
-/// `util` feature, which the workspace pin (`tower = "0.5"`, no feature
-/// list) does not enable — it is on today only through feature unification
-/// from an unrelated transitive dependency, so using it would make this
-/// stack compile by accident. `from_fn` needs no feature axum does not
-/// already have.
-///
-/// Mounted on the outermost router, so it wraps every group above —
-/// including the 401 an unauthenticated `/v1` request gets, which is the
-/// response most likely to be the one a confused integrator is holding, and
-/// which therefore needs a request id on it more than any other.
+/// The full route table, the three answers that make the auth boundary
+/// observable, why `Router::layer` and not `route_layer`, and what each
+/// middleware layer must sit above:
+/// [docs/reference/vpay-api.md § the router](../../../../docs/reference/vpay-api.md#the-router).
 pub fn router(deps: RouterDeps) -> Router {
     let state = AppState {
-        pool: deps.pool,
+        repositories: deps.repositories,
         merchant_op: deps.merchant_op,
         merchant_validator: deps.merchant_validator,
         adapters: deps.adapters,

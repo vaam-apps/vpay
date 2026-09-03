@@ -14,6 +14,18 @@
 //! token that gates a payer's redirect is in the log stream. `pub(crate)`
 //! types are exempt from `missing_debug_implementations`, so the lint does not
 //! push back — the omission is deliberate, not an oversight.
+//!
+//! # No `#[serde(rename_all = "snake_case")]` in this file, ever
+//!
+//! The workspace convention is that every type modelling *vpay's own* wire or
+//! config carries it, so a field added as `payTo` fails review instead of
+//! shipping. These types model **Orange's** wire. Orange happens to spell its
+//! fields in snake_case today, which is exactly what makes the attribute
+//! dangerous here rather than harmless: it would read as a promise that these
+//! names are ours to normalise, and the day Orange sends one that is not
+//! snake_case the attribute would rename it away from the rail's own
+//! spelling. A rail's casing is the rail's; ours is `rename_all`'s. The same
+//! goes for `TokenResponse` below, which models OAuth 2's.
 
 use serde::{Deserialize, Serialize};
 

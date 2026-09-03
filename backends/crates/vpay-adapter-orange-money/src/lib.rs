@@ -3,31 +3,17 @@
 //! Implements `submit`, `query_status` and `parse_callback` against the three
 //! calls transcribed in `docs/flows/adapter-orange-money.md`. `refund` is not
 //! overridden: Orange documents no refund API for Web Payment, so the port's
-//! default [`ProviderError::Unsupported`] is the permanent, correct answer and
-//! [`Capabilities::supports_refunds`] is what the core branches on (ADR-0002).
-//! It is deliberately *not* `NotImplemented` — there is nothing to build.
+//! default [`ProviderError::Unsupported`] is the permanent, correct answer
+//! and [`Capabilities::supports_refunds`] is what the core branches on
+//! (ADR-0002). It is deliberately *not* `NotImplemented` — there is nothing
+//! to build.
 //!
-//! # What is proven, and by what
-//!
-//! The pure halves — URL derivation, status mapping, body shape, callback
-//! parsing — are unit-tested in this crate. The wire behaviour is proven only
-//! by `backends/tests/conformance`, against a real `wiremock/wiremock` host
-//! reached over HTTP exactly as the rail is (ADR-0006). This crate has no
-//! in-process HTTP double and must not grow one.
-//!
-//! # Sourcing caveat
-//!
-//! The flow doc this is written from is reconstructed from Orange Developer's
-//! public overview and community SDKs, not from a vendor specification. The
-//! error-body shapes in particular are inferred; see that doc's "To confirm
-//! with Orange Cameroun" list and this crate's `docs/flows` Status section.
-//!
-//! # Credentials and tokens never reach a log
-//!
-//! No type in this crate that holds a credential, a bearer or a `pay_token`
-//! derives `Debug`, no error message quotes a success body, and the bearer is
-//! sent through `RequestBuilder::bearer_auth`/`basic_auth`, which mark the
-//! header sensitive.
+//! **That flow doc is reconstructed from Orange Developer's public overview
+//! and community SDKs, not from a vendor specification**, and the error-body
+//! shapes in particular are inferred. `docs/reference/rails.md` says what is
+//! proven and by what, why nothing in the `wire` module derives `Debug`, and
+//! why a missing `pay_token` is a configuration error rather than
+//! [`ChargeStatus::NotFound`].
 
 mod mapping;
 mod token;
@@ -46,7 +32,7 @@ use vpay_provider::{
     ProviderError, RefExtra, Submitted,
 };
 
-use crate::token::{CachedToken, fingerprint, token_url};
+use crate::token::{cache_entry, fingerprint, token_url};
 use crate::wire::{CallbackBody, TokenResponse, TransactionStatusRequest, WebPaymentRequest};
 
 /// The client-credentials grant, as a fixed form body.
@@ -76,12 +62,10 @@ const MAX_RAIL_REASON_CHARS: usize = 256;
 
 /// The adapter, owning the outbound HTTP client and its cached rail token.
 ///
-/// Neither `Copy` nor `Default`, and that is the point: a rail adapter is a
-/// thing with a connection pool and a bearer, not a unit struct. `Default` in
-/// particular would have to invent a client, and the only correct client in a
-/// `FROM scratch` image is the vendored-roots one a binary builds once at boot
-/// (`vpay_provider::http`) — inventing a second here is how a process ends up
-/// with two connection pools and one of them panicking on the trust store.
+/// Neither `Copy` nor `Default`, and that is the point: `Default` would have
+/// to invent a client, and the only correct client in a `FROM scratch` image
+/// is the vendored-roots one a binary builds once at boot
+/// (`vpay_provider::http`).
 #[derive(Debug)]
 pub struct Adapter {
     /// Built once per process by the binary and cloned in
@@ -92,12 +76,29 @@ pub struct Adapter {
     /// a 401 writes. Two concurrent misses may both mint; that costs one
     /// redundant token call and is strictly better than serialising every
     /// rail call behind a single lock holder.
-    token: RwLock<Option<CachedToken>>,
+    token: RwLock<Option<vpay_provider::token::CachedToken>>,
 }
 
 impl Adapter {
     /// Takes the process's one client rather than building its own — see the
     /// struct's doc comment.
+    ///
+    /// ```
+    /// use vpay_core::ProviderFlow;
+    /// use vpay_provider::ProviderAdapter;
+    ///
+    /// let client = vpay_provider::http::client().expect("the vendored-roots client builds");
+    /// let adapter = vpay_adapter_orange_money::Adapter::new(client);
+    ///
+    /// assert_eq!(adapter.code(), "orange_money");
+    /// // A redirect rail: the payer authenticates with Orange, so `submit`
+    /// // returns a hosted-page URL and a `pay_token` the core must commit
+    /// // before that URL reaches anyone.
+    /// assert_eq!(adapter.capabilities().flow, ProviderFlow::Redirect);
+    /// // Orange documents no refund API for Web Payment, so the port's
+    /// // default `Unsupported` is the permanent, correct answer.
+    /// assert!(!adapter.capabilities().supports_refunds);
+    /// ```
     #[must_use]
     pub fn new(http: reqwest::Client) -> Self {
         Self {
@@ -116,7 +117,11 @@ impl Adapter {
         );
         {
             let cached = self.token.read().await;
-            if let Some(value) = cached.as_ref().and_then(|token| token.usable(&fingerprint)) {
+            let now = Instant::now();
+            if let Some(value) = cached
+                .as_ref()
+                .and_then(|token| token.usable(now, &fingerprint))
+            {
                 return Ok(value.to_owned());
             }
         }
@@ -158,7 +163,7 @@ impl Adapter {
             .timeout(config.request_timeout)
             .send()
             .await
-            .map_err(|error| transport("requesting an access token", &error))?;
+            .map_err(|error| transport("requesting an access token", error))?;
 
         let (status, body) = bounded(response, "reading the token response").await?;
 
@@ -174,7 +179,7 @@ impl Adapter {
             });
         }
         if status.is_server_error() {
-            return Err(ProviderError::Transport(format!(
+            return Err(ProviderError::transport(format!(
                 "orange_money: the token endpoint answered HTTP {}",
                 status.as_u16()
             )));
@@ -184,7 +189,7 @@ impl Adapter {
             // `redirect::Policy::none()`, so a 3xx arrives here instead of
             // being followed — with the Basic credentials replayed at
             // whatever host the `Location` named. Refusing it is the point.
-            return Err(ProviderError::Malformed(format!(
+            return Err(ProviderError::malformed(format!(
                 "orange_money: the token endpoint answered a redirect (HTTP {}), which is not \
                  followed; check providers[].host.url",
                 status.as_u16()
@@ -200,12 +205,12 @@ impl Adapter {
         }
 
         let parsed: TokenResponse = serde_json::from_slice(&body).map_err(|error| {
-            ProviderError::Malformed(format!(
+            ProviderError::malformed(format!(
                 "orange_money: the token response is not the documented JSON: {error}"
             ))
         })?;
         if parsed.access_token.trim().is_empty() {
-            return Err(ProviderError::Malformed(
+            return Err(ProviderError::malformed(
                 "orange_money: the token response carries an empty access_token".to_owned(),
             ));
         }
@@ -217,7 +222,7 @@ impl Adapter {
         // rail that has never been observed to omit the field.
         if let Some(seconds) = parsed.expires_in {
             let mut cache = self.token.write().await;
-            *cache = Some(CachedToken::new(
+            *cache = Some(cache_entry(
                 parsed.access_token.clone(),
                 minted_at,
                 std::time::Duration::from_secs(seconds),
@@ -263,13 +268,10 @@ impl Adapter {
 
     /// One authenticated POST, bounded in time and in memory.
     ///
-    /// Takes the whole `ProviderConfig` rather than just a URL because the
-    /// deadline is a property of the *rail*, not of the process: one
-    /// `reqwest::Client` is shared by every rail, so a client-level timeout
-    /// could only ever be one rail's. This call carried none at all until
-    /// the Step 3 security review — MTN applied `request_timeout` per
-    /// request and Orange silently did not, so a black-holed Orange host
-    /// held a worker task for as long as the shared client allowed.
+    /// Takes the whole `ProviderConfig` because the deadline is the *rail's*,
+    /// not the process's — see `docs/reference/rails.md`. This call carried
+    /// none at all until the Step 3 security review, so a black-holed Orange
+    /// host held a worker task for as long as the shared client allowed.
     async fn post_once<B: serde::Serialize>(
         &self,
         config: &ProviderConfig,
@@ -286,41 +288,31 @@ impl Adapter {
             .timeout(config.request_timeout)
             .send()
             .await
-            .map_err(|error| transport(what, &error))?;
+            .map_err(|error| transport(what, error))?;
         bounded(response, what).await
     }
 }
 
-/// Reads a rail response, refusing to buffer more than
-/// [`vpay_provider::http::MAX_RAIL_BODY_BYTES`] of it.
+/// The rail's answer, bounded, as bytes.
 ///
-/// Every body this adapter reads goes through here rather than through
-/// `Response::bytes()`, which reads to end of stream and so lets the peer
-/// decide how much memory a worker task allocates. Orange's documented
-/// bodies are a few hundred bytes; what this bounds is the undocumented
-/// case — a gateway's HTML error page, or a host that is not Orange at all.
+/// A thin naming of [`vpay_provider::http::read_rail_body`] so that every
+/// call site says `orange_money: {what}` the same way. Every body this
+/// adapter reads goes through it rather than through `Response::bytes()`,
+/// which reads to end of stream and so lets the peer decide how much memory
+/// a worker task allocates.
 ///
 /// # Errors
 ///
-/// [`ProviderError::Malformed`] when the body exceeds the cap, carrying the
-/// cap in the message so an operator can see the limit was ours and what it
-/// is. `Malformed` and not a decline: an oversize answer says nothing about
-/// whether the payment happened, and `docs/flows/crash-safety.md` resolves
-/// an unknown fate by asking again. [`ProviderError::Transport`] if the
-/// stream fails part-way.
+/// As [`vpay_provider::http::read_rail_body`]:
+/// [`ProviderError::Malformed`] naming the cap when the body exceeds it, and
+/// [`ProviderError::Transport`] if the stream fails part-way. Never a
+/// decline — an oversize or truncated answer says nothing about whether the
+/// payment happened.
 async fn bounded(
     response: reqwest::Response,
     what: &str,
 ) -> Result<(StatusCode, Vec<u8>), ProviderError> {
-    use vpay_provider::http::{HttpBodyError, MAX_RAIL_BODY_BYTES, bounded_body};
-
-    match bounded_body(response, MAX_RAIL_BODY_BYTES).await {
-        Ok(answered) => Ok(answered),
-        Err(error @ HttpBodyError::TooLarge { .. }) => Err(ProviderError::Malformed(format!(
-            "orange_money: {what}: {error}"
-        ))),
-        Err(HttpBodyError::Read(error)) => Err(transport(what, &error)),
-    }
+    vpay_provider::http::read_rail_body(response, &format!("orange_money: {what}")).await
 }
 
 #[async_trait]
@@ -397,16 +389,9 @@ impl ProviderAdapter for Adapter {
 
     /// `POST {base_url}/v1/transactionstatus`.
     ///
-    /// # Why a missing `pay_token` is a configuration error
-    ///
-    /// The rail will not answer for an `order_id` alone, so there is nothing
-    /// to ask. Reporting [`ChargeStatus::NotFound`] instead would be a lie
-    /// with consequences: `NotFound` is the answer the recovery path treats as
-    /// "the rail never saw this, it is safe to conclude nothing yet"
-    /// (`docs/flows/crash-safety.md`), and a charge whose `pay_token` we lost
-    /// is the opposite case — the rail may well have it, and a payer may
-    /// already have paid. [`ProviderError::Config`] stops the poll ladder and
-    /// puts it in front of a human, which is the only correct outcome.
+    /// A missing `pay_token` is a [`ProviderError::Config`] and deliberately
+    /// not [`ChargeStatus::NotFound`] — `docs/reference/rails.md` says why
+    /// the difference decides whether a payer's money is looked for.
     ///
     /// # Errors
     ///
@@ -464,7 +449,7 @@ impl ProviderAdapter for Adapter {
             });
         }
         if status.is_server_error() {
-            return Err(ProviderError::Transport(format!(
+            return Err(ProviderError::transport(format!(
                 "orange_money: the rail answered HTTP {} to a status query: {}",
                 status.as_u16(),
                 rail_reason(&response_body)
@@ -475,7 +460,7 @@ impl ProviderAdapter for Adapter {
             // is an answer to refuse rather than a hop to take — and taking
             // it would have replayed the bearer and the `pay_token` at
             // whatever host the `Location` named.
-            return Err(ProviderError::Malformed(format!(
+            return Err(ProviderError::malformed(format!(
                 "orange_money: the rail answered a redirect (HTTP {}) to a status query, which \
                  is not followed; check providers[].host.url",
                 status.as_u16()
@@ -495,16 +480,12 @@ impl ProviderAdapter for Adapter {
     /// Identifiers only, and fails closed.
     ///
     /// The body's `status` is read by nothing here — `CallbackBody` has no
-    /// field for it. A `notif_token` is *required*: it is the only thing that
-    /// distinguishes Orange's notification from an unauthenticated POST by
-    /// anyone who can guess an `order_id`, and the comparison against the
-    /// stored one is the caller's (this adapter holds no state). Returning a
-    /// `CallbackRef` with nothing to compare would hand the caller a hint it
-    /// cannot check, which is worse than refusing to parse.
-    ///
-    /// `pay_token` is carried through when present so a callback can repair a
-    /// charge whose `ref_extra` write was lost. Whether Orange actually sends
-    /// it is item 1 of the flow doc's "To confirm" list, hence "when present".
+    /// field for it. A `notif_token` is *required*, and
+    /// `docs/reference/rails.md` says why refusing to parse beats handing a
+    /// caller a hint it cannot check. `pay_token` is carried through when
+    /// present so a callback can repair a charge whose `ref_extra` write was
+    /// lost; whether Orange actually sends it is item 1 of the flow doc's
+    /// "To confirm" list.
     ///
     /// # Errors
     ///
@@ -513,18 +494,18 @@ impl ProviderAdapter for Adapter {
     /// generated, or carries no `notif_token`.
     fn parse_callback(&self, body: &[u8]) -> Result<CallbackRef, ProviderError> {
         let parsed: CallbackBody = serde_json::from_slice(body).map_err(|error| {
-            ProviderError::Malformed(format!(
+            ProviderError::malformed(format!(
                 "orange_money: the notification body is not JSON: {error}"
             ))
         })?;
 
         let order_id = parsed.order_id.ok_or_else(|| {
-            ProviderError::Malformed(
+            ProviderError::malformed(
                 "orange_money: the notification carries no order_id".to_owned(),
             )
         })?;
         let reference_id = Uuid::parse_str(order_id.trim()).map_err(|error| {
-            ProviderError::Malformed(format!(
+            ProviderError::malformed(format!(
                 "orange_money: the notification's order_id is not a reference we generated: {error}"
             ))
         })?;
@@ -532,7 +513,7 @@ impl ProviderAdapter for Adapter {
             .notif_token
             .filter(|token| !token.trim().is_empty())
             .ok_or_else(|| {
-                ProviderError::Malformed(
+                ProviderError::malformed(
                     "orange_money: the notification carries no notif_token; refusing to parse an \
                      unverifiable callback"
                         .to_owned(),
@@ -609,7 +590,7 @@ fn submit_error(status: StatusCode, body: &[u8]) -> ProviderError {
         };
     }
     if status.is_server_error() {
-        return ProviderError::Transport(format!(
+        return ProviderError::transport(format!(
             "orange_money: the rail answered HTTP {} to a submit: {reason}",
             status.as_u16()
         ));
@@ -629,7 +610,7 @@ fn submit_error(status: StatusCode, body: &[u8]) -> ProviderError {
         // 307/308 would have replayed this request body, `merchant_key` and
         // all, at whatever host the `Location` named — so it arrives here,
         // and it leaves the charge's fate unknown, which is `Malformed`.
-        return ProviderError::Malformed(format!(
+        return ProviderError::malformed(format!(
             "orange_money: the rail answered a redirect (HTTP {}) to a submit, which is not \
              followed; check providers[].host.url",
             status.as_u16()
@@ -663,20 +644,18 @@ fn rail_reason(body: &[u8]) -> String {
     }
 }
 
-/// A `reqwest` failure as [`ProviderError::Transport`], with its source chain.
+/// A `reqwest` failure as [`ProviderError::Transport`], carrying the error
+/// itself as the `#[source]`.
 ///
 /// The chain matters: reqwest's own `Display` for a timeout is "error sending
 /// request for url (…)", and the word "timeout" only appears on the source.
-/// An operator diagnosing a rail from a log line needs the leaf.
-fn transport(what: &str, error: &reqwest::Error) -> ProviderError {
-    let mut message = format!("orange_money: {what}: {error}");
-    let mut source = std::error::Error::source(error);
-    while let Some(cause) = source {
-        message.push_str(": ");
-        message.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    ProviderError::Transport(message)
+/// An operator diagnosing a rail from a log line needs the leaf. This used to
+/// walk `Error::source()` by hand and concatenate the result into a `String`,
+/// because the variant could not hold a source; it can now, so the walk is
+/// the *logger's* (`vpay_core::error::source_chain`) and the structure
+/// survives all the way to it.
+fn transport(what: &str, error: reqwest::Error) -> ProviderError {
+    ProviderError::transport_from(format!("orange_money: {what}"), error)
 }
 
 #[cfg(test)]
@@ -934,7 +913,10 @@ mod tests {
         let error = adapter()
             .parse_callback(body.as_bytes())
             .expect_err("an unverifiable callback must not parse");
-        assert!(matches!(error, ProviderError::Malformed(_)), "{error:?}");
+        assert!(
+            matches!(error, ProviderError::Malformed { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -948,7 +930,10 @@ mod tests {
         let error = adapter()
             .parse_callback(br#"{"order_id":"ORDER-42","notif_token":"nt"}"#)
             .expect_err("an order_id we did not generate identifies nothing");
-        assert!(matches!(error, ProviderError::Malformed(_)), "{error:?}");
+        assert!(
+            matches!(error, ProviderError::Malformed { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -956,7 +941,10 @@ mod tests {
         let error = adapter()
             .parse_callback(b"{}")
             .expect_err("no identifiers, no CallbackRef");
-        assert!(matches!(error, ProviderError::Malformed(_)), "{error:?}");
+        assert!(
+            matches!(error, ProviderError::Malformed { .. }),
+            "{error:?}"
+        );
         assert!(adapter().parse_callback(b"not json").is_err());
     }
 
@@ -983,7 +971,10 @@ mod tests {
         use vpay_core::{Category, Classify as _};
 
         let error = submit_error(StatusCode::SERVICE_UNAVAILABLE, b"upstream down");
-        assert!(matches!(error, ProviderError::Transport(_)), "{error:?}");
+        assert!(
+            matches!(error, ProviderError::Transport { .. }),
+            "{error:?}"
+        );
         assert_eq!(error.category(), Category::Rail);
     }
 

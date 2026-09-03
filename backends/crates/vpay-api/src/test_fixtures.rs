@@ -28,7 +28,7 @@ use std::time::Duration;
 use rsa::pkcs1::{EncodeRsaPrivateKey as _, LineEnding};
 use vpay_config::oauth::{GrantType, MerchantClient};
 use vpay_config::{Config, Deployment, MERCHANT_AUDIENCE};
-use vpay_db::PgPool;
+use vpay_db::Repositories;
 
 use crate::RouterDeps;
 use crate::op::MerchantOp;
@@ -46,7 +46,8 @@ pub(crate) const PUBLIC_BASE_URL: &str = "https://api.vpay.test";
 /// test.
 pub(crate) const ISSUER: &str = "https://api.vpay.test/v1/oauth";
 
-/// A pool that has never opened a connection — see the module docs.
+/// Repositories over a pool that has never opened a connection — see the
+/// module docs and [`vpay_db::connect_lazy`].
 ///
 /// Port 1 rather than 5432: a developer running `compose.yml` locally has a
 /// real Postgres on 5432, and a fixture that could silently connect to it
@@ -60,11 +61,12 @@ pub(crate) const ISSUER: &str = "https://api.vpay.test/v1/oauth";
 /// test is which answer an unreachable database produces, not how long the
 /// failure took to arrive — the same reasoning `op::clients`'s own fixture
 /// records.
-pub(crate) fn lazy_pool() -> PgPool {
-    sqlx::postgres::PgPoolOptions::new()
-        .acquire_timeout(Duration::from_millis(500))
-        .connect_lazy("postgres://vpay:vpay@127.0.0.1:1/does-not-exist")
-        .expect("connect_lazy performs no I/O and only fails on a malformed URL")
+pub(crate) fn lazy_repositories() -> Arc<dyn Repositories> {
+    vpay_db::connect_lazy(
+        "postgres://vpay:vpay@127.0.0.1:1/does-not-exist",
+        Duration::from_millis(500),
+    )
+    .expect("connect_lazy performs no I/O and only fails on a malformed URL")
 }
 
 /// One real 2048-bit RSA key for the whole test binary.
@@ -163,7 +165,11 @@ pub(crate) fn config() -> Config {
 
 /// A fully assembled OP over [`config`], the generated key and a lazy pool.
 pub(crate) fn merchant_op() -> Arc<MerchantOp> {
-    Arc::new(MerchantOp::new(&config(), signing_key(), lazy_pool()))
+    Arc::new(MerchantOp::new(
+        &config(),
+        signing_key(),
+        lazy_repositories(),
+    ))
 }
 
 /// The same [`RouterDeps`] `vpay-server`'s `main` builds, with a
@@ -180,7 +186,7 @@ pub(crate) fn merchant_op() -> Arc<MerchantOp> {
 /// `backends/tests/integration/tests/merchant_token_flow.rs`.
 pub(crate) fn deps() -> RouterDeps {
     RouterDeps {
-        pool: lazy_pool(),
+        repositories: lazy_repositories(),
         merchant_op: merchant_op(),
         // Empty, and correct: `vpay-api` links no adapter crate at all
         // (ADR-0002) — the map is built by each binary from its own

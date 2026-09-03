@@ -4,6 +4,10 @@
 #   * no test double is reachable from a shipping binary
 #   * every unimplemented item is declared in docs/status.md
 #   * every error type is classified (ADR-0011) and anyhow stays in the binaries
+#
+# `just verify` prints a fourth thing that is NOT an invariant and never fails
+# the build: `verify-docs`, a report on doc-comment volume, long functions,
+# ```ignore fences and #[allow]s (Step 7, decision 4).
 
 set shell := ["bash", "-uc"]
 
@@ -46,7 +50,7 @@ build-dist:
 
 # ------------------------------------------------------------------ test ---
 
-test: test-rust test-web
+test: test-rust test-doc test-web
 
 test-rust:
     cargo nextest run --workspace
@@ -55,6 +59,26 @@ test-rust:
 # Expect failures; this is for seeing what is NOT covered, not for CI.
 test-rust-all:
     cargo nextest run --workspace --run-ignored all
+
+# Doctests — a SECOND test runner, not a flag on the first one.
+#
+# `cargo nextest` does not run doctests at all, so from this repository's
+# first commit until 2026-09-03 (Step 7) neither `just test-rust` nor CI's
+# `rust` job ever compiled one. There was exactly one to miss
+# (`vpay_core::money`), which is the point: an example in a doc comment that
+# nothing compiles is a claim about the code that nothing checks, and this
+# repo's whole discipline is that a claim nobody checks decays. `just ci` and
+# CI's `rust` job both run this recipe now, and `just test` above depends on
+# it so that "I ran the tests" means the doctests too.
+#
+# `--workspace`, so `sdks/rust` and `.xtask` are covered as well as
+# `backends/`. It compiles the workspace a second time under rustdoc, which
+# is why it is its own recipe and its own CI step: a doctest failure should
+# be reported by the step whose job it is.
+#
+# Run the workspace's doctests (nextest does not).
+test-doc:
+    cargo test --doc --workspace
 
 test-web:
     pnpm -r test
@@ -186,9 +210,16 @@ audit-web:
 
 # ---------------------------------------------------- self-verification ----
 
-# The checks that keep this repository honest. CI runs exactly this.
-verify: verify-no-mocks verify-status verify-errors
-    @echo "verify: ok"
+# The checks that keep this repository honest, plus one report. CI's
+# `self-checks` job runs exactly this list, in this order.
+#
+# `verify-docs` is last and is NOT a check: it exits 0 whatever it finds, so
+# the "verify: ok" below means the three gates passed and says nothing about
+# the numbers printed above it.
+#
+# The three self-checks, plus the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-docs
+    @echo "verify: ok — the three gates above passed; the verify-docs report is advisory"
 
 verify-no-mocks:
     cargo xtask verify-no-mocks
@@ -200,6 +231,20 @@ verify-status:
 # vpay_core::error::Classify, and anyhow stays in backends/apps.
 verify-errors:
     cargo xtask verify-errors
+
+# A REPORT, not a gate: doc-comment lines against code lines per crate, the
+# production functions of 80 lines or more, every ```ignore doctest fence and
+# every #[allow]/#[expect] in production code. It exits 0 whatever it finds.
+#
+# Step 7's decision (4), and the reasoning is worth keeping where the recipe
+# is: the cheapest way to pass a doc-ratio gate is to delete the `# Errors`
+# and `# Panics` sections ADR-0011 and rustdoc depend on. A number that is
+# read is worth more here than a number that is enforced. Nothing in `just ci`
+# can fail because of it.
+#
+# Report doc volume, long functions, ```ignore fences and #[allow]s.
+verify-docs:
+    cargo xtask verify-docs
 
 # Pins how much of the suite is `#[ignore]`d, how many test binaries exist,
 # and how big the suite is, so a new `#[ignore]` cannot quietly shrink
@@ -256,12 +301,32 @@ verify-errors:
 # 927 for the sum of Step 5c's own new tests (including
 # `a_browser_get_is_counted_under_its_own_route_pattern`, added while
 # resolving this rebase) landing on top of Step 6's 927.
+#
+# Step 7 Phase A (the `vpay-db` repository seam and the `ProviderError` source
+# chain) measured **976** on the same 39 binaries — 969 plus four tests from
+# the review remediation and three from the pass itself. That figure lived
+# only in docs/status.md and never reached this comment, which is why the
+# sequence below is written out in full rather than continued from 969.
+#
+# Re-measured 2026-09-03 with all five Step 7 lanes landed (doctests, the
+# doc externalisation, the shared rail token cache, the tooling in this file):
+# `just verify-ignored` lists **999 total, 39 test binaries, 0
+# ignored**. Still 39: every test the lanes added landed in a file that
+# already existed, and none of them added a `#[ignore]`. The doctests Step 7
+# built are **not** in that number and cannot be — `cargo nextest list` does
+# not see doctests at all, which is the whole reason `just test-doc` exists as
+# a separate recipe and a separate CI step. Their count is in docs/status.md.
 expected_ignored := "0"
 expected_suites := "39"
-# A floor, not a target — set a little under the measured 969 rather than to
-# it, so it is not a number people bump reflexively. Bump it in the same
-# commit that legitimately adds tests, never to make a red run green.
-min_tests := "900"
+# A floor, not a target — set a little under the measured 999
+# rather than to it, so it is not a number people bump reflexively. Bump it in
+# the same commit that legitimately adds tests, never to make a red run green.
+#
+# 900 -> 950 on 2026-09-03 (Step 7): 900 was set against Step 5c's 969
+# and the suite has grown by 30 since, so the old floor had drifted
+# far enough below the count that a whole crate's unit tests could vanish
+# under it.
+min_tests := "950"
 
 verify-ignored:
     #!/usr/bin/env bash
@@ -288,7 +353,11 @@ verify-ignored:
     fi
 
 # Everything CI runs, in CI's order.
-ci: fmt-check clippy verify test-rust verify-ignored lint-web test-web deny
+#
+# `test-doc` sits between `test-rust` and `verify-ignored` here and in the
+# `rust` job, because nextest runs no doctests and `verify-ignored`'s counts
+# do not cover them: three different questions, three steps.
+ci: fmt-check clippy verify test-rust test-doc verify-ignored lint-web test-web deny
 
 # ------------------------------------------------------------------ helm ---
 

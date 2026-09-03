@@ -3,54 +3,18 @@
 //!
 //! Two handlers implementing `docs/flows/webhooks.md`'s two-step outbox.
 //! [`handle_fan_out`] turns the `events` backlog into `webhook_deliveries`
-//! rows and `deliver_webhook` jobs; [`handle_deliver`] renders, signs and
-//! sends one of them. `docs/status.md` is the record of what is actually
-//! wired up — a handler no loop calls is not a webhook anyone receives.
+//! rows and `deliver_webhook` jobs, one transaction per event;
+//! [`handle_deliver`] renders, signs and sends one of them;
+//! [`handle_scan_deliveries`] is the backstop behind both.
 //!
-//! # Why the fan-out is a second step at all
+//! Delivery has its own retry ladder ([`crate::delivery_delay`]) and never
+//! consults `Classify`: a merchant's `500` is not a `ProviderError`.
 //!
-//! `docs/flows/webhooks.md`: fan-out inline with the state change would make
-//! the settlement transaction depend on reading the endpoint table, and
-//! fan-out with no `fanout_state` column would leave no way to *find* events
-//! that were never fanned out. Either mistake produces a succeeded payment
-//! with no webhook, which is the failure this whole file exists to prevent.
-//!
-//! # The two idempotency mechanisms, and what each one covers
-//!
-//! Delivery is at-least-once and merchants dedupe on `event.id`. Inside vpay,
-//! two database objects carry the weight:
-//!
-//! * `webhook_deliveries_event_endpoint`, the unique index, means a re-run of
-//!   a fan-out pass creates no second row;
-//! * `jobs_dedupe_key` with [`crate::jobs::webhook_dedupe_key`] means it
-//!   enqueues no second job.
-//!
-//! Both are absorbed *inside one transaction per event* together with
-//! [`vpay_db::webhook_deliveries::mark_fanned_out_in_tx`], so a crash at any
-//! point leaves the event `pending` and the next pass redoes the whole of it.
-//! Nothing here compensates, retries by hand, or reads-then-writes.
-//!
-//! # Delivery has its own retry ladder and does not consult `Classify`
-//!
-//! [`crate::delivery_delay`], not [`crate::JobError::decision`]. A merchant's
-//! `500` is not a `ProviderError` and has no ADR-0011 classification;
-//! pushing it through the poll ladder's decision table would give a webhook
-//! receiver the *rail's* escalation policy. See `delivery_delay`'s own doc
-//! comment and `docs/flows/reconciler.md`'s Status.
-//!
-//! # How these are tested
-//!
-//! The pure parts — the ladder, the signature ([`crate::signing`]), the
-//! rendering and digest below, and [`EndpointRegistry`] — are unit-tested
-//! here and beside them. The two handlers are **not**, deliberately and for
-//! the reason [`crate::handlers`] gives: proving them in-process would need a
-//! fake pool and a fake receiver, and AGENTS.md's first rule forbids a test
-//! double reachable from a shipping binary (ADR-0006 — the stub receiver is a
-//! WireMock host in configuration, reached over HTTP exactly as a merchant's
-//! endpoint is). Their proofs are the integration tests in
-//! `backends/tests/integration/tests/`, which drive *these functions* against
-//! a Postgres container and a WireMock receiver and read the deliveries back
-//! from `GET /__admin/requests`.
+//! The process — both transactions, the abandonment after five passes, the
+//! alert-once property, and what the backstop does not recover — is
+//! `docs/flows/webhooks.md`. Why this module is shaped the way it is, and how
+//! it is tested, is `docs/reference/vpay-worker.md` §"The outbox drain" and
+//! §"Delivering one webhook".
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -60,27 +24,22 @@ use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use vpay_api::model::EventObject;
 use vpay_core::metrics::{WEBHOOK_DELIVERIES_TOTAL, webhook_outcome};
-use vpay_db::{DbError, EventRow, JobRow, PgPool};
+use vpay_db::{DeliveryRow, EventRow, JobRow, Repositories, TxOutcome, UnitOfWork as _};
 use vpay_provider::http::bounded_body;
 
 use crate::error::JobError;
 use crate::jobs::{DeliverWebhookPayload, JobKind, Outcome, webhook_dedupe_key};
 use crate::signing::signature_header;
 
-/// How many backlog events one drain pass claims.
-///
-/// Bounded so a deployment that accumulated a backlog drains it over several
-/// passes rather than holding one enormous read; the pass reschedules
-/// immediately when it comes back full, so a backlog drains at full speed
-/// without any single pass being unbounded. The same shape as
-/// `handlers::SCAN_BATCH`.
+/// How many backlog events one drain pass claims. Bounded, so a backlog
+/// drains over several passes rather than in one enormous read; the pass
+/// reschedules immediately when it comes back full.
 const FAN_OUT_PAGE: i64 = 100;
 
-/// How long the drain waits when the backlog is empty.
+/// How long the drain waits when the backlog is empty — the whole latency
+/// budget between a payment settling and its webhook being *enqueued*.
 ///
-/// Five seconds is the whole latency budget between a payment settling and
-/// its webhook being *enqueued* — the send itself follows immediately. It is
-/// a poll rather than a `LISTEN/NOTIFY` because the drain must also pick up
+/// A poll rather than a `LISTEN/NOTIFY` because the drain must also pick up
 /// events written by a process that has since died, which a notification
 /// would not deliver.
 const FAN_OUT_IDLE: Duration = Duration::from_secs(5);
@@ -88,70 +47,39 @@ const FAN_OUT_IDLE: Duration = Duration::from_secs(5);
 /// How many failed fan-out passes an event gets before the drain abandons it
 /// (`events.fanout_state = 'failed'`, migration 0024).
 ///
-/// Five, and the number is chosen against two failures rather than tuned:
-///
-/// * **A transient failure must survive it.** Five passes at the module's
-///   five-second idle interval
-///   is about 25 seconds of Postgres being unavailable or a unique index
-///   being contended, and the drain returns `JobError::Db` — not a per-event
-///   failure — for anything that stops the *page* being read, so what this
-///   ceiling counts is a failure specific to one event. A number of 1 would
-///   abandon an event on a single serialisation failure.
-/// * **A permanent failure must not be unbounded.** An event that cannot be
-///   fanned out is `pending` forever, so it heads every subsequent page
-///   ([`vpay_db::events::pending_page`] orders by `seq`): it re-raises its
-///   alert on every pass — every five seconds — and holds one of the
-///   hundred slots in a drain page. A hundred of them stop every
-///   merchant's webhooks. Five is small enough that a poisoned page clears in
-///   under a minute.
-///
-/// The cost is stated where it is paid: a `failed` event is a webhook the
-/// merchant will never receive, nothing retries it, and re-arming one is a
-/// deliberate `UPDATE` (`docs/runbooks/webhook-delivery-failures.md`). That is
-/// the same trade `vpay_db::jobs::dead_letter` makes, for the same reason —
-/// a poisoned row that resurrects itself is a hot loop.
+/// Five: large enough that ~25 seconds of Postgres being unavailable does not
+/// abandon anything, small enough that a poisoned page clears in under a
+/// minute. A `failed` event is a webhook the merchant will never receive and
+/// nothing retries it — `docs/flows/webhooks.md` states that cost and
+/// `docs/runbooks/webhook-delivery-failures.md` is how one is re-armed.
 pub const FANOUT_MAX_ATTEMPTS: i32 = 5;
 
 /// How long a webhook delivery waits to *connect* to a merchant's receiver.
 ///
-/// Five seconds, and deliberately shorter than a rail's connect budget: a
-/// receiver that cannot be reached is retried on [`crate::delivery_delay`]
-/// within seconds, so holding a worker task open longer buys nothing. The
-/// number is `docs/plans/2026-09-03-step5-webhooks.md` §4's.
+/// Deliberately shorter than a rail's connect budget: a receiver that cannot
+/// be reached is retried on [`crate::delivery_delay`] within seconds, so
+/// holding a worker task open longer buys nothing.
 ///
-/// # Why the budgets live here and not in the binary
-///
-/// The client is built by `vpay-worker-bin` (this crate must not build one —
-/// see [`crate::handlers::WebhookContext`]), so the constants sat there and
-/// the integration suite's two helpers wrote them out again. Three copies of
-/// a number nothing pins together: a change to the binary's pair would leave
-/// every test exercising a client that no longer ships, and the suite would
-/// stay green saying so. They live beside the handler that spends them
-/// instead, and the binary and both helpers read them from here.
+/// The client itself is built by `vpay-worker-bin` — this crate must not build
+/// one, see [`crate::handlers::WebhookContext`] — but the budget lives beside
+/// the handler that spends it, for the reason
+/// `docs/reference/vpay-worker.md` §"Two retry ladders" gives.
 pub const WEBHOOK_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long a webhook delivery waits for the whole request/response.
 ///
-/// Ten seconds. A merchant handler that takes longer than this has not
-/// acknowledged anything a sender can rely on, and the delivery is retried —
-/// which is why `docs/flows/webhooks.md` tells merchants to acknowledge first
-/// and work afterwards. Pairing a *bounded* read with this module's 8 KiB
-/// `MAX_ACK_BODY_BYTES`
-/// is what stops one slow or chatty receiver occupying a worker task
-/// indefinitely.
+/// A merchant handler that takes longer has not acknowledged anything a sender
+/// can rely on, and the delivery is retried — which is why
+/// `docs/flows/webhooks.md` tells merchants to acknowledge first and work
+/// afterwards. Paired with `MAX_ACK_BODY_BYTES`, it is what stops one slow or
+/// chatty receiver occupying a worker task indefinitely.
 ///
 /// Single-sourced for [`WEBHOOK_CONNECT_TIMEOUT`]'s reason.
 pub const WEBHOOK_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How often the delivery backstop scans, and how many rows one pass
-/// re-enqueues.
-///
-/// Ten minutes and 500, the same pair `crate::handlers`' `scan_live_charges`
-/// uses and for the same reasons: it is a *backstop*, so a healthy
-/// deployment's pass finds nothing, and a bounded batch means a deployment
-/// that somehow accumulated a backlog re-enqueues it over several passes
-/// rather than writing an unbounded number of rows in one transaction. The
-/// scan repeats, so a backlog drains rather than being dropped.
+/// How often the delivery backstop scans — the same interval
+/// `handlers::scan_live_charges` uses for charges, and a *backstop*, so a
+/// healthy deployment's pass finds nothing.
 const SCAN_DELIVERIES_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 /// How many outstanding deliveries one backstop pass re-enqueues.
@@ -193,12 +121,11 @@ const EVENT_ID_HEADER: &str = "Vpay-Event-Id";
 
 /// One configured webhook endpoint: where to send, and what to sign with.
 ///
-/// Mirrors `vpay_config::oauth::WebhookEndpoint` rather than being it. The
-/// worker's handlers must not depend on the shape of a YAML document — the
+/// Mirrors `vpay_config::oauth::WebhookEndpoint` rather than being it — the
 /// binary projects configuration into this type at boot, exactly as it
-/// projects rails into [`crate::RailConfigs`] — and this way a delivery
-/// cannot accidentally read some *other* field of a merchant's client
-/// registration.
+/// projects rails into [`crate::RailConfigs`], so a handler cannot depend on
+/// the shape of a YAML document or read some *other* field of a merchant's
+/// client registration.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Endpoint {
     /// The operator-authored id, unique within a merchant, stored on every
@@ -206,23 +133,17 @@ pub struct Endpoint {
     /// must not orphan the delivery history (migration 0022).
     pub id: String,
     /// The absolute URL to POST to. Validated at **boot**
-    /// (`vpay_config`'s `validate_host`: https-only under livemode, no stub
-    /// markers), never here — see this module's `handle_deliver`.
+    /// (`vpay_config::validate_webhook_url`), never here — see
+    /// [`handle_deliver`].
     pub url: String,
     /// The signing secrets, in configuration order. One normally; two during
     /// a rotation, which is why this is a `Vec` and not a `String`.
     pub secrets: Vec<String>,
 }
 
-/// Redacts [`Endpoint::secrets`] down to a count.
-///
-/// The registry is held by the worker's job loop for the process's whole
-/// life, so it lands in any `{:?}` of the loop's state — a panic message, a
-/// `tracing` field, an operator's debug print. A webhook secret in a log is a
-/// forged webhook: anyone holding it can sign a `payment_intent.succeeded`
-/// the merchant's handler will believe. The *count* is kept because "is this
-/// endpoint mid-rotation?" is a real question a runbook asks, and answering
-/// it needs no secret.
+/// Redacts [`Endpoint::secrets`] down to a count: a webhook secret in a log is
+/// a forged webhook. `docs/reference/vpay-worker.md` §"Delivering one webhook"
+/// says why the count survives.
 impl fmt::Debug for Endpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Endpoint")
@@ -236,23 +157,19 @@ impl fmt::Debug for Endpoint {
     }
 }
 
-/// Every merchant's webhook endpoints, by `events.merchant_id`.
-///
-/// Keyed on `merchant_id` and **not** on `client_id`, which is the key
-/// `vpay_api::v1::ResourceConfig` uses: `events.merchant_id` is the fan-out
-/// key, one merchant may hold several OAuth clients, and a registry keyed the
-/// other way would silently fan out to the endpoints of whichever client
-/// happened to be looked up.
+/// Every merchant's webhook endpoints, by `events.merchant_id` — and
+/// deliberately not by `client_id`, which is the key
+/// `vpay_api::v1::ResourceConfig` uses. `docs/reference/vpay-worker.md`
+/// §"Delivering one webhook" says what the other key would fan out to.
 #[derive(Clone, PartialEq, Eq)]
 pub struct EndpointRegistry {
     by_merchant_id: BTreeMap<String, Vec<Endpoint>>,
 }
 
-/// Redacts every secret, for [`Endpoint`]'s reason. Endpoint ids and URLs
-/// stay visible: they are in the delivery rows, in the runbook and in the
-/// merchant's own configuration, and an operator debugging "why did this
-/// merchant get no webhook?" needs to see the registry the worker actually
-/// built.
+/// Redacts every secret, for [`Endpoint`]'s reason. Ids and URLs stay visible:
+/// they are already in the delivery rows and in the operator's own
+/// configuration, and debugging "why did this merchant get no webhook?" needs
+/// the registry the worker actually built.
 impl fmt::Debug for EndpointRegistry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EndpointRegistry")
@@ -265,20 +182,14 @@ impl EndpointRegistry {
     /// Builds the registry from `(merchant_id, endpoints)` pairs — what the
     /// worker binary projects out of `merchant_clients[].webhooks[]` at boot.
     ///
-    /// Pairs rather than a map because the source is a *list* of merchant
-    /// clients and two of them may name the same `merchant_id`: a merchant
-    /// with a second OAuth client still has one set of endpoints, so the
-    /// pairs are merged rather than overwriting each other. A map parameter
-    /// would push that merge onto every caller, and the caller that got it
-    /// wrong would drop one client's endpoints without a word.
+    /// Pairs rather than a map because two merchant clients may name the same
+    /// `merchant_id` and still share one set of endpoints, so the pairs are
+    /// merged here rather than by every caller.
     ///
     /// Within a merchant the endpoints are sorted by id and duplicates are
-    /// dropped, keeping the first. That is **defence in depth, not the
-    /// guard**: a duplicate `id` is a configuration error and boot-time
-    /// validation is what must refuse it. It matters here only because the
-    /// alternative is worse — two endpoints sharing an id collide on
-    /// `webhook_deliveries_event_endpoint`, so exactly one of them would be
-    /// delivered to and *which one* would depend on iteration order.
+    /// dropped, keeping the first — defence in depth, not the guard; boot-time
+    /// validation refuses a duplicate `id`. See
+    /// `docs/reference/vpay-worker.md` §"Delivering one webhook".
     #[must_use]
     pub fn from_pairs(pairs: impl IntoIterator<Item = (String, Vec<Endpoint>)>) -> Self {
         let mut by_merchant_id: BTreeMap<String, Vec<Endpoint>> = BTreeMap::new();
@@ -298,9 +209,8 @@ impl EndpointRegistry {
     /// This merchant's endpoints, in id order, or an empty slice.
     ///
     /// An empty slice is a *normal* answer, not a missing entry: a merchant
-    /// who has configured no webhooks still has their events fanned out (to
-    /// nothing) and marked done, because the alternative is a backlog index
-    /// that grows forever.
+    /// who has configured no webhooks still has their events fanned out to
+    /// nothing and marked done, or the backlog index grows forever.
     #[must_use]
     pub fn for_merchant(&self, merchant_id: &str) -> &[Endpoint] {
         self.by_merchant_id
@@ -310,11 +220,11 @@ impl EndpointRegistry {
 
     /// One endpoint by (merchant, id) — the delivery handler's lookup.
     ///
-    /// `None` means the endpoint has been removed from configuration since
-    /// the delivery row was created. `webhook_deliveries.endpoint_id`
-    /// references no table on purpose (endpoints are YAML, ADR-0003), so this
-    /// is a real and expected state rather than a broken join; see
-    /// [`handle_deliver`] for what it does about it.
+    /// `None` means configuration no longer describes the endpoint. That is a
+    /// real and expected state rather than a broken join —
+    /// `webhook_deliveries.endpoint_id` references no table on purpose,
+    /// because endpoints are YAML (ADR-0003) — and [`handle_deliver`] records an
+    /// ordinary failed attempt for it.
     #[must_use]
     pub fn find(&self, merchant_id: &str, endpoint_id: &str) -> Option<&Endpoint> {
         self.for_merchant(merchant_id)
@@ -326,10 +236,7 @@ impl EndpointRegistry {
 /// The exact bytes vpay signs and sends for one event.
 ///
 /// Rendered through `vpay_api::model::EventObject`, which is also what
-/// `GET /v1/events` serves. That sharing is the point and not an economy: a
-/// merchant who missed a webhook is told to re-read the event from the API,
-/// and two renderers would let the fallback answer a different question from
-/// the one the webhook asked.
+/// `GET /v1/events` serves — sharing that is the point and not an economy.
 ///
 /// # Errors
 ///
@@ -349,13 +256,9 @@ pub fn event_bytes(row: &EventRow) -> Result<Vec<u8>, vpay_api::ApiError> {
 /// Lowercase hex SHA-256 of the bytes that were signed.
 ///
 /// Written to `webhook_deliveries.payload_sha256` on the first attempt that
-/// **rendered and signed a body** — not necessarily attempt 1, since an
-/// attempt abandoned before rendering (no endpoint in configuration, no
-/// signing secret) stores nothing — and compared on every later one. The
-/// *body* is deliberately not stored: this is what makes "we sent exactly
-/// what we signed, on every attempt" an observable invariant rather than a
-/// hope, at the cost of one 64-character column instead of a copy of every
-/// event body per endpoint.
+/// **rendered and signed a body** — not necessarily attempt 1 — and compared
+/// on every later one. The body itself is deliberately not stored; see
+/// `docs/reference/vpay-worker.md` §"Delivering one webhook".
 #[must_use]
 pub fn payload_sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -364,96 +267,49 @@ pub fn payload_sha256(bytes: &[u8]) -> String {
 /// Drains the event backlog into delivery rows and delivery jobs.
 ///
 /// One transaction *per event* — never one for the page — containing every
-/// [`vpay_db::webhook_deliveries::create_in_tx`], its
-/// [`vpay_db::jobs::enqueue_in_tx`], and the
-/// [`vpay_db::webhook_deliveries::mark_fanned_out_in_tx`] that closes it. A
-/// crash mid-page therefore loses nothing and duplicates nothing: the events
-/// already committed are `done`, the one in flight rolls back whole, and the
-/// rest are still `pending`.
+/// [`vpay_db::TxRepositories::create_in_tx`], its
+/// [`vpay_db::TxRepositories::enqueue_in_tx`], and the
+/// [`vpay_db::TxRepositories::mark_fanned_out_in_tx`] that closes it. A crash
+/// mid-page therefore loses nothing and duplicates nothing.
 ///
 /// An event whose merchant has **no** configured endpoints is still marked
-/// `done`, with zero deliveries. Leaving it `pending` so that "someone might
-/// configure an endpoint later" would grow `events_pending_idx` without
-/// bound and re-scan the same rows forever.
+/// `done`, with zero deliveries: leaving it `pending` would grow
+/// `events_pending_idx` without bound and re-scan the same rows forever.
 ///
-/// The pass reschedules itself: immediately when the page came back full and
-/// something drained (so a backlog drains at full speed), otherwise after
-/// five seconds.
+/// The pass reschedules itself immediately when the page came back full *and*
+/// something drained, otherwise after the module's idle interval —
+/// conditional on progress, because a page of 100 events that all fail is a
+/// tight loop against Postgres rather than a backlog draining at full speed.
 ///
-/// # One event's failure does not stop the page
-///
-/// This is a **shared** drain: one singleton job carries every merchant's
-/// backlog, ordered by `events.seq` across all of them
-/// ([`vpay_db::events::pending_page`]). Propagating the first event's error
-/// out of the loop therefore made one merchant's bad row a total outage for
-/// every merchant behind it in the queue — and permanently, because the
-/// failing event stays `pending` and heads the very next page. A single
-/// endpoint id past `webhook_deliveries`' `endpoint_id_length` CHECK was
-/// enough to do it.
-///
-/// So each event is attempted independently. That event's transaction rolled
-/// back whole, so it is still `pending`; the failure is counted against it
-/// ([`vpay_db::events::record_fanout_failure`]) and the pass moves on. The
-/// pass's own answer carries the count in its summary log line rather than in
-/// [`Outcome`], which has exactly two variants on purpose (see its docs).
-///
-/// # An event that can *never* be fanned out is abandoned, and alerts once
-///
-/// Isolating the failure is not enough on its own, because a `pending` event
-/// is at the head of every subsequent page. Left alone, a permanently
-/// unfannable event alerts on every pass — every `FAN_OUT_IDLE` — and holds
-/// one of `FAN_OUT_PAGE`'s hundred slots forever; a hundred of them stop
-/// the drain for every merchant. So the failure is counted in the database
-/// and [`FANOUT_MAX_ATTEMPTS`] of them set `fanout_state = 'failed'`
-/// (migration 0024).
-///
-/// The logging follows the count exactly, and this is the part that matters
-/// operationally:
-///
-/// * before the ceiling, `warn!` and **no** `alert` — a fan-out that will be
-///   retried in five seconds is not something to wake anyone for;
-/// * at the transition, one `error!(alert = true, …)`, because the event is
-///   now a webhook the merchant will never receive and nothing else will ever
-///   say so. It is emitted once and only once: the flip is a compare-and-swap
-///   on `fanout_state = 'pending'`, so of two workers failing on the same
-///   event exactly one observes the transition, and a `failed` event never
-///   comes back to a page.
-///
-/// A page of 99 poisoned events therefore costs 99 alerts in total rather
-/// than 99 per pass, and after five passes those events are out of the way.
-/// Re-arming one is a deliberate `UPDATE` after the cause is fixed
-/// (`docs/runbooks/webhook-delivery-failures.md`); nothing here resurrects
-/// one, for [`FANOUT_MAX_ATTEMPTS`]'s reason.
-///
-/// The immediate reschedule is conditional on **progress**, not only on a
-/// full page: a page of 100 events that all fail is not a backlog draining at
-/// full speed, it is a tight loop against Postgres. With no progress the pass
-/// waits the module's `FAN_OUT_IDLE` like any other, which is also long enough for a
-/// deploy to fix the configuration that caused it.
+/// One event's failure does not stop the page: it is counted against that
+/// event ([`vpay_db::Events::record_fanout_failure`]) and the pass moves on,
+/// and [`FANOUT_MAX_ATTEMPTS`] of them abandon it with exactly one alert.
+/// `docs/flows/webhooks.md` states both properties in operator terms and
+/// `docs/reference/vpay-worker.md` §"The outbox drain" says why the code is
+/// arranged to keep them.
 ///
 /// # Errors
 ///
 /// [`JobError::Db`] only for a failure to *read* the backlog — there is
 /// nothing to isolate at that point and the page is still there to retry. A
 /// per-event failure is logged and swallowed, never returned; so is a failure
-/// to record one, which is logged at `warn` and leaves the event `pending`
-/// with its old count (the next pass counts again).
+/// to record one, which leaves the event `pending` with its old count.
 pub async fn handle_fan_out(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     endpoints: &EndpointRegistry,
     job: &JobRow,
 ) -> Result<Outcome, JobError> {
-    let backlog = vpay_db::events::pending_page(pool, FAN_OUT_PAGE).await?;
+    let backlog = repositories.pending_page(FAN_OUT_PAGE).await?;
     let page_was_full = i64::try_from(backlog.len()).unwrap_or(i64::MAX) >= FAN_OUT_PAGE;
 
     let mut drained = 0_usize;
     let mut failed = 0_usize;
     for event in &backlog {
-        match fan_out_one(pool, endpoints, job, event).await {
+        match fan_out_one(repositories, endpoints, job, event).await {
             Ok(()) => drained = drained.saturating_add(1),
             Err(error) => {
                 failed = failed.saturating_add(1);
-                record_fan_out_failure(pool, job, event, &error).await;
+                record_fan_out_failure(repositories, job, event, &error).await;
             }
         }
     }
@@ -494,7 +350,7 @@ enum FanOutDisposition {
     Claimed,
 }
 
-/// Reads [`vpay_db::events::record_fanout_failure`]'s answer as a
+/// Reads [`vpay_db::Events::record_fanout_failure`]'s answer as a
 /// disposition.
 ///
 /// Split out of [`handle_fan_out`] because it decides *whether an operator is
@@ -516,7 +372,7 @@ fn fan_out_disposition(recorded: Option<&vpay_db::events::FanoutFailure>) -> Fan
 /// Counts one event's fan-out failure and says so at the right volume.
 ///
 /// The count is a separate statement on purpose — see
-/// [`vpay_db::events::record_fanout_failure`]: the transaction whose failure
+/// [`vpay_db::Events::record_fanout_failure`]: the transaction whose failure
 /// is being counted has rolled back, so a counter inside it would roll back
 /// too and the event would be retried forever at zero.
 ///
@@ -524,23 +380,30 @@ fn fan_out_disposition(recorded: Option<&vpay_db::events::FanoutFailure>) -> Fan
 /// (see [`handle_fan_out`]), and a failure to *count* a failure must not
 /// become the thing that stops the drain — it is logged and the event keeps
 /// its old count, so the next pass counts again.
-async fn record_fan_out_failure(pool: &PgPool, job: &JobRow, event: &EventRow, error: &JobError) {
-    let recorded =
-        match vpay_db::events::record_fanout_failure(pool, &event.id, FANOUT_MAX_ATTEMPTS).await {
-            Ok(recorded) => recorded,
-            Err(count_error) => {
-                tracing::warn!(
-                    job_id = %job.id,
-                    event_id = %event.id,
-                    merchant_id = %event.merchant_id,
-                    error = %error,
-                    count_error = %count_error,
-                    "an event could not be fanned out, and the failure could not be counted \
-                     against it; it stays pending with its previous count"
-                );
-                return;
-            }
-        };
+async fn record_fan_out_failure(
+    repositories: &dyn Repositories,
+    job: &JobRow,
+    event: &EventRow,
+    error: &JobError,
+) {
+    let recorded = match repositories
+        .record_fanout_failure(&event.id, FANOUT_MAX_ATTEMPTS)
+        .await
+    {
+        Ok(recorded) => recorded,
+        Err(count_error) => {
+            tracing::warn!(
+                job_id = %job.id,
+                event_id = %event.id,
+                merchant_id = %event.merchant_id,
+                error = %error,
+                count_error = %count_error,
+                "an event could not be fanned out, and the failure could not be counted \
+                 against it; it stays pending with its previous count"
+            );
+            return;
+        }
+    };
 
     match fan_out_disposition(recorded.as_ref()) {
         FanOutDisposition::Abandoned => {
@@ -595,47 +458,53 @@ async fn record_fan_out_failure(pool: &PgPool, job: &JobRow, event: &EventRow, e
 
 /// One event's transaction: every delivery, every job, and the flip.
 async fn fan_out_one(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     endpoints: &EndpointRegistry,
     job: &JobRow,
     event: &EventRow,
 ) -> Result<(), JobError> {
-    let mut tx = pool.begin().await.map_err(DbError::Query)?;
+    let outcome = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let mut created = 0_usize;
+                for endpoint in endpoints.for_merchant(&event.merchant_id) {
+                    let delivery_id = tx
+                        .create_in_tx(&event.id, &endpoint.id, &endpoint.url)
+                        .await?;
+                    // `None` means another pass already created this row. It
+                    // cannot be one of *our* earlier passes — a pass that got
+                    // this far and committed also flipped `fanout_state`, so
+                    // the event would not be in the backlog — so it is a
+                    // concurrent drain, and the `mark_fanned_out_in_tx` below
+                    // will tell us to roll back.
+                    let Some(delivery_id) = delivery_id else {
+                        continue;
+                    };
+                    tx.enqueue_in_tx(
+                        JobKind::DeliverWebhook.as_wire_str(),
+                        &webhook_dedupe_key(delivery_id),
+                        &encode(job, &DeliverWebhookPayload::new(delivery_id))?,
+                        OffsetDateTime::now_utc(),
+                    )
+                    .await?;
+                    created = created.saturating_add(1);
+                }
 
-    let mut created = 0_usize;
-    for endpoint in endpoints.for_merchant(&event.merchant_id) {
-        let delivery_id = vpay_db::webhook_deliveries::create_in_tx(
-            &mut tx,
-            &event.id,
-            &endpoint.id,
-            &endpoint.url,
-        )
+                // The compare-and-swap that makes the whole transaction safe
+                // to replay: `false` means another drain claimed this event
+                // while we were building ours, so everything above it was
+                // computed against a backlog entry that is no longer ours to
+                // claim — abandoned, and that is not a failure.
+                Ok::<_, JobError>(if tx.mark_fanned_out_in_tx(&event.id).await? {
+                    TxOutcome::Commit(created)
+                } else {
+                    TxOutcome::Abandon(created)
+                })
+            })
+        })
         .await?;
-        // `None` means another pass already created this row. It cannot be
-        // one of *our* earlier passes — a pass that got this far and
-        // committed also flipped `fanout_state`, so the event would not be in
-        // the backlog — so it is a concurrent drain, and the
-        // `mark_fanned_out_in_tx` below will tell us to roll back.
-        let Some(delivery_id) = delivery_id else {
-            continue;
-        };
-        vpay_db::jobs::enqueue_in_tx(
-            &mut tx,
-            JobKind::DeliverWebhook.as_wire_str(),
-            &webhook_dedupe_key(delivery_id),
-            &encode(job, &DeliverWebhookPayload::new(delivery_id))?,
-            OffsetDateTime::now_utc(),
-        )
-        .await?;
-        created = created.saturating_add(1);
-    }
 
-    // The compare-and-swap that makes the whole transaction safe to replay:
-    // `false` means another drain claimed this event while we were building
-    // ours, so everything above it was computed against a backlog entry that
-    // is no longer ours to claim.
-    if vpay_db::webhook_deliveries::mark_fanned_out_in_tx(&mut tx, &event.id).await? {
-        tx.commit().await.map_err(DbError::Query)?;
+    if let TxOutcome::Commit(created) = outcome {
         tracing::debug!(
             job_id = %job.id,
             event_id = %event.id,
@@ -643,8 +512,6 @@ async fn fan_out_one(
             deliveries = created,
             "event fanned out"
         );
-    } else {
-        tx.rollback().await.map_err(DbError::Query)?;
     }
 
     Ok(())
@@ -653,83 +520,38 @@ async fn fan_out_one(
 /// Re-enqueues a `deliver_webhook` job for every outstanding delivery nothing
 /// appears to be driving.
 ///
-/// A backstop, never the mechanism — exactly `crate::handlers`'
-/// `scan_live_charges`, one queue over.
-/// [`vpay_db::webhook_deliveries::create_in_tx`] and
-/// [`vpay_db::jobs::enqueue_in_tx`] share the fan-out's per-event
-/// transaction, so every delivery is *born* with a job. This covers only what
-/// that transaction cannot keep true afterwards: a job an operator deleted,
-/// or one lost with the `jobs` table during an incident. Without this pass
-/// such a delivery is owed an attempt nothing will ever make, and the payment
-/// behind it is one the merchant is never told about.
+/// A backstop, never the mechanism — exactly `handlers::scan_live_charges`,
+/// one queue over. Every delivery is *born* with a job inside the fan-out's
+/// transaction; this covers only what that transaction cannot keep true
+/// afterwards, a job an operator deleted or one lost with the `jobs` table.
+/// Every insert is `ON CONFLICT (dedupe_key) DO NOTHING`, so a delivery that
+/// already has a job is untouched.
 ///
-/// Every insert is `ON CONFLICT (dedupe_key) DO NOTHING` against
-/// [`webhook_dedupe_key`], so a delivery that already has a job is untouched
-/// — including one scheduled a day out on the last rung of the ladder. That
-/// is what makes this safe to run beside the queue rather than in place of
-/// it.
+/// It deliberately does **not** resurrect a delivery whose job was
+/// *dead-lettered*: the parked row still holds the `dedupe_key`, and a
+/// `deliver_webhook` job is parked only for reasons no retry fixes. What this
+/// pass does instead is name those deliveries in one `warn!` per pass.
+/// `docs/flows/webhooks.md` carries both statements and the manual un-park.
 ///
-/// # What this does **not** recover: a dead-lettered delivery job
-///
-/// [`vpay_db::jobs::dead_letter`] does not delete the row. It parks it at
-/// `run_at = 'infinity'` and **keeps its `dedupe_key`**, deliberately — that
-/// is what stops a scan re-creating the same broken work every ten minutes.
-/// So this pass's `ON CONFLICT (dedupe_key) DO NOTHING` insert is a no-op for
-/// exactly those rows: a `pending` delivery whose job was dead-lettered stays
-/// `pending` and is *not* resurrected here, however many passes run.
-///
-/// That is the intended behaviour and not an oversight. A `deliver_webhook`
-/// job is dead-lettered for a [`JobError::Poisoned`] reason — a payload that
-/// will not decode, an event that does not exist or will not render, a body
-/// whose digest no longer matches the one the first signed attempt produced —
-/// and none of them
-/// is fixed by trying again. Un-parking one automatically would be the hot
-/// loop `vpay_db::jobs`' own module comment refuses.
-///
-/// What this pass does instead is *say so*: one `warn!` per pass naming the
-/// deliveries whose job it found parked, so the state has an observer other
-/// than an operator who happens to run
-/// `SELECT * FROM jobs WHERE run_at = 'infinity'`. Un-parking is a manual
-/// `UPDATE` after the cause is fixed —
-/// `docs/runbooks/webhook-delivery-failures.md` carries the statement.
-///
-/// `lease` is `RecoveryPolicy::lease`, and it is what keeps the
-/// never-attempted arm of [`vpay_db::webhook_deliveries::pending_due`] from
-/// racing the queue: a delivery created moments ago has a job that has simply
-/// not been claimed yet.
-///
-/// Logged at `warn` when it finds anything, and at nothing at all when it
-/// does not: in a healthy deployment the number is zero, and any other number
-/// means a delivery job went missing.
+/// `lease` is `RecoveryPolicy::lease`, which is what keeps the
+/// never-attempted arm of [`vpay_db::WebhookDeliveries::pending_due`] from
+/// racing the queue on a delivery created moments ago.
 ///
 /// # Errors
 ///
-/// [`JobError::Db`] for any Postgres failure, and [`JobError::Poisoned`] for
-/// a payload that will not encode. Unlike [`handle_fan_out`] there is nothing
-/// to isolate — but *not* because sharing one transaction across the page is
-/// safe. It is because the schema gives this pass no per-row failure mode to
-/// isolate: the read is one statement, and every enqueue writes the same
-/// three fixed shapes — a `kind` from [`JobKind`], a `dedupe_key` built from
-/// a `Uuid` (and `jobs.dedupe_key` carries no length CHECK), and a
-/// two-field payload. There is no operator-authored value in any of them, so
-/// there is no equivalent of the 65-character `endpoint_id` that made one
-/// merchant's configuration a total outage for the fan-out. If a row-shaped
-/// CHECK is ever added to `jobs`, that argument stops holding and this pass
-/// needs the fan-out's per-row isolation.
-///
+/// [`JobError::Db`] for any Postgres failure and [`JobError::Poisoned`] for a
+/// payload that will not encode. Unlike [`handle_fan_out`] there is nothing to
+/// isolate — see `docs/reference/vpay-worker.md` §"The outbox drain" for why
+/// this pass may share one transaction across its page and the drain may not.
 /// A pass that fails is logged with `alert = true` before the error is
-/// returned. The loop's own disposition line reports the *job*
-/// (`crate::run_loop::log_disposition`); this one reports what the failure
-/// means — the backstop behind every webhook delivery is not running — and a
-/// backstop nobody notices has stopped is a backstop that is not there. The
-/// error is still returned, so `Classify::retry`'s `Retry::AfterBackoff`
-/// reschedules the pass as it always did.
+/// returned; the error still propagates, so `Classify::retry` reschedules the
+/// pass as it always did.
 pub async fn handle_scan_deliveries(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     lease: Duration,
     job: &JobRow,
 ) -> Result<Outcome, JobError> {
-    match scan_deliveries_pass(pool, lease, job).await {
+    match scan_deliveries_pass(repositories, lease, job).await {
         Ok(outcome) => Ok(outcome),
         Err(error) => {
             tracing::error!(
@@ -748,38 +570,49 @@ pub async fn handle_scan_deliveries(
 /// every one of its `?`s reaches the alert above — an early return added
 /// later cannot bypass it.
 async fn scan_deliveries_pass(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     lease: Duration,
     job: &JobRow,
 ) -> Result<Outcome, JobError> {
-    let outstanding =
-        vpay_db::webhook_deliveries::pending_due(pool, lease, SCAN_DELIVERIES_BATCH).await?;
+    let outstanding = repositories
+        .pending_due(lease, SCAN_DELIVERIES_BATCH)
+        .await?;
 
     let mut enqueued = 0_usize;
     let mut untouched: Vec<String> = Vec::new();
     if !outstanding.is_empty() {
         let now = OffsetDateTime::now_utc();
-        let mut tx = pool.begin().await.map_err(DbError::Query)?;
-        for delivery in &outstanding {
-            let dedupe_key = webhook_dedupe_key(delivery.id);
-            let inserted = vpay_db::jobs::enqueue_in_tx(
-                &mut tx,
-                JobKind::DeliverWebhook.as_wire_str(),
-                &dedupe_key,
-                &encode(job, &DeliverWebhookPayload::new(delivery.id))?,
-                now,
-            )
-            .await?;
-            if inserted {
-                enqueued = enqueued.saturating_add(1);
-            } else {
-                // The key was taken. Usually by a perfectly healthy job this
-                // pass raced; sometimes by a parked one, which is the case
-                // below.
-                untouched.push(dedupe_key);
-            }
-        }
-        tx.commit().await.map_err(DbError::Query)?;
+        (enqueued, untouched) = repositories
+            .transaction(|tx| {
+                // Borrowed, not moved: the log lines below read `outstanding`.
+                let outstanding = &outstanding;
+                Box::pin(async move {
+                    let mut enqueued = 0_usize;
+                    let mut untouched: Vec<String> = Vec::new();
+                    for delivery in outstanding {
+                        let dedupe_key = webhook_dedupe_key(delivery.id);
+                        let inserted = tx
+                            .enqueue_in_tx(
+                                JobKind::DeliverWebhook.as_wire_str(),
+                                &dedupe_key,
+                                &encode(job, &DeliverWebhookPayload::new(delivery.id))?,
+                                now,
+                            )
+                            .await?;
+                        if inserted {
+                            enqueued = enqueued.saturating_add(1);
+                        } else {
+                            // The key was taken. Usually by a perfectly
+                            // healthy job this pass raced; sometimes by a
+                            // parked one, which is the case below.
+                            untouched.push(dedupe_key);
+                        }
+                    }
+                    Ok::<_, JobError>(TxOutcome::Commit((enqueued, untouched)))
+                })
+            })
+            .await?
+            .into_inner();
     }
 
     if enqueued > 0 {
@@ -795,7 +628,7 @@ async fn scan_deliveries_pass(
     // transaction has committed: a parked row is a permanent state, so
     // reading it a moment later costs nothing and keeps the write path one
     // transaction.
-    let parked = vpay_db::jobs::parked_dedupe_keys(pool, &untouched).await?;
+    let parked = repositories.parked_dedupe_keys(&untouched).await?;
     if !parked.is_empty() {
         let named: Vec<&str> = parked
             .iter()
@@ -826,30 +659,16 @@ const PARKED_NAMED_IN_LOG: usize = 20;
 
 /// Renders, signs and POSTs one delivery, then records what happened.
 ///
-/// The order is the one that makes an attempt auditable: the body is rendered
-/// and hashed *before* the request, the digest is compared against the one
-/// the first attempt that rendered and signed a body stored, and the outcome
-/// is written whether the receiver
-/// answered or not. A transport failure is recorded with `status_code = NULL`,
-/// which is how the row says "the request went out and nothing came back" —
-/// distinct from a heard refusal, and the one distinction this row must never
-/// blur.
+/// The order is what makes an attempt auditable: render and hash the body
+/// *before* the request, compare that digest against the one the first signed
+/// attempt stored, and record the outcome whether the receiver answered or
+/// not. A transport failure is recorded with `status_code = NULL` — "the
+/// request went out and nothing came back", distinct from a heard refusal,
+/// and the one distinction this row must never blur.
 ///
-/// # What is *not* checked here
-///
-/// The URL. `docs/plans/2026-09-03-step5-webhooks.md`'s decision 4: validation
-/// is boot-time (`validate_host` — https-only under livemode, no stub markers)
-/// and there is **no runtime private/link-local filtering**, so a livemode
-/// operator who configures `https://169.254.169.254/…` gets exactly that. A
-/// resolve-then-connect check is TOCTOU unless reqwest is given a custom
-/// connector, so the honest options were "nothing" or "a custom connector",
-/// and the second is out of scope. Stated here rather than left to be
-/// discovered.
-///
-/// Redirects are refused by the client, not by this function
-/// (`vpay_provider::http`): a 3xx therefore arrives as an ordinary non-2xx
-/// and becomes a failed attempt, instead of replaying a signed event body at
-/// a host the operator never configured.
+/// The URL is deliberately not checked here and redirects are refused by the
+/// client rather than by this function. `docs/reference/vpay-worker.md`
+/// §"Delivering one webhook" states what that leaves possible and why.
 ///
 /// # Errors
 ///
@@ -858,34 +677,79 @@ const PARKED_NAMED_IN_LOG: usize = 20;
 /// exist, an event that will not render, and — the one that matters — a
 /// rendered body whose digest differs from the one stored by the first
 /// attempt that rendered and signed a body. That last case means a renderer
-/// changed under a live delivery,
-/// which a merchant would see as a webhook whose signature does not verify;
-/// dead-lettering it is the only answer that does not send bytes nobody can
-/// check.
+/// changed under a live delivery, which a merchant would see as a webhook
+/// whose signature does not verify; dead-lettering it is the only answer that
+/// does not send bytes nobody can check.
 ///
 /// A receiver that refuses is **not** an error: it is a recorded failed
 /// attempt and `Ok(RescheduleAfter)`, or `Ok(Done)` once the ladder is spent.
 pub async fn handle_deliver(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     http: &reqwest::Client,
     endpoints: &EndpointRegistry,
     job: &JobRow,
 ) -> Result<Outcome, JobError> {
     let payload: DeliverWebhookPayload = decode(job)?;
-
-    let Some(delivery) = vpay_db::webhook_deliveries::get(pool, payload.delivery_id).await? else {
-        // The row is gone. Not a failure to retry: there is nothing left to
-        // deliver, and the job's only referent has been removed.
+    let Some((delivery, event)) = owed_delivery(repositories, job, payload.delivery_id).await?
+    else {
         return Ok(Outcome::Done);
     };
+
+    let body = event_bytes(&event)
+        .map_err(|error| poisoned(job, format!("event `{}`: {error}", event.id)))?;
+    let sha = payload_sha256(&body);
+    refuse_a_re_rendered_body(job, &delivery, &event, &sha)?;
+
+    let Some(endpoint) = signing_endpoint(endpoints, &event, &delivery) else {
+        return record_unsigned(repositories, job, &delivery, &event).await;
+    };
+
+    match signed_post(http, &delivery, &event, endpoint, body)
+        .send()
+        .await
+    {
+        Ok(response) => {
+            record_receiver_answer(
+                repositories,
+                job,
+                &delivery,
+                &event,
+                endpoint,
+                &sha,
+                response,
+            )
+            .await
+        }
+        Err(error) => record_no_response(repositories, job, &delivery, &sha, &error).await,
+    }
+}
+
+/// The delivery this job names together with the event behind it, or `None`
+/// when nothing is owed.
+///
+/// `None` twice over, and neither is a failure: the row is gone (the job's
+/// only referent has been removed), or the delivery is already settled — by
+/// an earlier run of this job whose delete was lost, or by a second worker
+/// after a lease was reaped. The compare-and-swap writes make those
+/// indistinguishable on purpose.
+///
+/// # Errors
+///
+/// [`JobError::Db`] for a Postgres failure, and [`JobError::Poisoned`] for a
+/// delivery naming an event that does not exist.
+async fn owed_delivery(
+    repositories: &dyn Repositories,
+    job: &JobRow,
+    delivery_id: uuid::Uuid,
+) -> Result<Option<(DeliveryRow, EventRow)>, JobError> {
+    let Some(delivery) = repositories.get(delivery_id).await? else {
+        return Ok(None);
+    };
     if delivery.state != "pending" {
-        // Already settled — by an earlier run of this job whose delete was
-        // lost, or by a second worker after a lease was reaped. The
-        // compare-and-swap writes make those indistinguishable on purpose.
-        return Ok(Outcome::Done);
+        return Ok(None);
     }
 
-    let Some(event) = vpay_db::events::get_unscoped(pool, &delivery.event_id).await? else {
+    let Some(event) = repositories.get_unscoped(&delivery.event_id).await? else {
         return Err(poisoned(
             job,
             format!(
@@ -894,17 +758,28 @@ pub async fn handle_deliver(
             ),
         ));
     };
+    Ok(Some((delivery, event)))
+}
 
-    let body = event_bytes(&event)
-        .map_err(|error| poisoned(job, format!("event `{}`: {error}", event.id)))?;
-    let sha = payload_sha256(&body);
-
-    // The invariant the column exists for. `payload_sha256` is written on the
-    // first attempt that rendered and signed a body and `COALESCE`d
-    // thereafter, so a difference here means this build renders the event
-    // differently from the build that signed it. `None` is the ordinary
-    // answer for a delivery whose only attempts so far were abandoned before
-    // rendering, and there is nothing to compare against.
+/// The invariant `webhook_deliveries.payload_sha256` exists for: every attempt
+/// sends the bytes the first signed attempt signed.
+///
+/// The digest is written by the first attempt that rendered and signed a body
+/// and `COALESCE`d thereafter, so a difference means this build renders the
+/// event differently from the build that signed it. `None` is the ordinary
+/// answer for a delivery whose only attempts so far were abandoned before
+/// rendering, and there is nothing to compare against.
+///
+/// # Errors
+///
+/// [`JobError::Poisoned`], which dead-letters: no retry re-renders the body
+/// the merchant's receiver was promised.
+fn refuse_a_re_rendered_body(
+    job: &JobRow,
+    delivery: &DeliveryRow,
+    event: &EventRow,
+    sha: &str,
+) -> Result<(), JobError> {
     if let Some(stored) = delivery.payload_sha256.as_deref()
         && stored != sha
     {
@@ -918,148 +793,218 @@ pub async fn handle_deliver(
             ),
         ));
     }
+    Ok(())
+}
 
-    let endpoint = endpoints
+/// The endpoint this delivery may be signed with, if configuration still
+/// describes one and it carries a secret.
+///
+/// An endpoint with no secret is treated exactly as a missing one: sending
+/// unsigned is not an option, because an unsigned webhook is one no receiver
+/// may act on.
+fn signing_endpoint<'a>(
+    endpoints: &'a EndpointRegistry,
+    event: &EventRow,
+    delivery: &DeliveryRow,
+) -> Option<&'a Endpoint> {
+    endpoints
         .find(&event.merchant_id, &delivery.endpoint_id)
-        .filter(|endpoint| !endpoint.secrets.is_empty());
-    let Some(endpoint) = endpoint else {
-        // Configuration no longer describes this endpoint, or describes it
-        // with no secret. Recorded as an ordinary failed attempt rather than
-        // exhausted on the spot: a rollout that briefly serves an older
-        // configuration then heals, and a removal that is permanent
-        // exhausts through the ladder anyway. Sending unsigned is not an
-        // option — an unsigned webhook is one no receiver may act on.
-        tracing::warn!(
-            job_id = %job.id,
-            delivery_id = %delivery.id,
-            event_id = %event.id,
-            endpoint_id = %delivery.endpoint_id,
-            merchant_id = %event.merchant_id,
-            "webhook endpoint is not configured, or has no signing secret; \
-             the delivery cannot be signed and will retry"
-        );
-        // `None` for the digest, deliberately: nothing was sent, so there is
-        // no "the bytes we sent" for `payload_sha256` to be the digest of
-        // (`vpay_db::webhook_deliveries::record_attempt`). Recording `sha`
-        // here would stamp the column on an attempt that never left the
-        // process, and every later attempt's mismatch check would then be
-        // against a body no receiver ever saw.
-        return record_failure(
-            pool,
-            job,
-            &delivery,
-            None,
-            None,
-            Some("endpoint is not configured with a signing secret"),
-        )
-        .await;
-    };
+        .filter(|endpoint| !endpoint.secrets.is_empty())
+}
 
+/// Records the one failed attempt that never rendered or signed anything.
+///
+/// An ordinary failed attempt rather than an exhaustion on the spot: a
+/// rollout that briefly serves an older configuration then heals, and a
+/// removal that is permanent exhausts through the ladder anyway.
+///
+/// `None` for the digest, deliberately: nothing was sent, so there is no "the
+/// bytes we sent" for `payload_sha256` to be the digest of. Recording `sha`
+/// here would stamp the column on an attempt that never left the process, and
+/// every later attempt's mismatch check would then be against a body no
+/// receiver ever saw.
+///
+/// # Errors
+///
+/// [`JobError::Db`] for a Postgres failure.
+async fn record_unsigned(
+    repositories: &dyn Repositories,
+    job: &JobRow,
+    delivery: &DeliveryRow,
+    event: &EventRow,
+) -> Result<Outcome, JobError> {
+    tracing::warn!(
+        job_id = %job.id,
+        delivery_id = %delivery.id,
+        event_id = %event.id,
+        endpoint_id = %delivery.endpoint_id,
+        merchant_id = %event.merchant_id,
+        "webhook endpoint is not configured, or has no signing secret; \
+         the delivery cannot be signed and will retry"
+    );
+    record_failure(
+        repositories,
+        job,
+        delivery,
+        None,
+        None,
+        Some("endpoint is not configured with a signing secret"),
+    )
+    .await
+}
+
+/// The request as it goes on the wire: the signed body, the signature under
+/// both header names, and the event id.
+///
+/// Takes the body by value because those bytes are what is signed *and* what
+/// is sent — see [`crate::signing`], which refuses to re-serialise.
+fn signed_post(
+    http: &reqwest::Client,
+    delivery: &DeliveryRow,
+    event: &EventRow,
+    endpoint: &Endpoint,
+    body: Vec<u8>,
+) -> reqwest::RequestBuilder {
     let header = signature_header(&body, OffsetDateTime::now_utc(), &endpoint.secrets);
-    let request = http
-        .post(&delivery.url)
+    http.post(&delivery.url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header(SIGNATURE_HEADER, header.clone())
         .header(STRIPE_SIGNATURE_HEADER, header)
         .header(EVENT_ID_HEADER, &event.id)
-        .body(body);
+        .body(body)
+}
 
-    match request.send().await {
-        Ok(response) => {
-            let status = response.status();
-            let excerpt = ack_excerpt(response).await;
-            if status.is_success() {
-                let recorded = vpay_db::webhook_deliveries::record_success(
-                    pool,
-                    delivery.id,
-                    i32::from(status.as_u16()),
-                    excerpt.as_deref(),
-                    &sha,
-                )
-                .await?;
-                if recorded {
-                    // After the CAS commits, and only when it actually
-                    // changed the row: a second pass over an already-settled
-                    // delivery is not a second success, and counting it would
-                    // inflate the series past the number of receivers that
-                    // ever answered 2xx.
-                    metrics::counter!(
-                        WEBHOOK_DELIVERIES_TOTAL,
-                        "outcome" => webhook_outcome::SUCCEEDED
-                    )
-                    .increment(1);
-                    tracing::info!(
-                        job_id = %job.id,
-                        delivery_id = %delivery.id,
-                        event_id = %event.id,
-                        endpoint_id = %endpoint.id,
-                        status = status.as_u16(),
-                        "webhook delivered"
-                    );
-                }
-                Ok(Outcome::Done)
-            } else {
-                record_failure(
-                    pool,
-                    job,
-                    &delivery,
-                    Some(&sha),
-                    Some(i32::from(status.as_u16())),
-                    excerpt.as_deref(),
-                )
-                .await
-            }
-        }
-        // No answer at all: DNS, connect, TLS, or the request deadline. The
-        // error's `Display` names the host and the cause and never the body,
-        // which is why it is safe to store; `reqwest` does not put a request
-        // body into it.
-        //
-        // `Some(&sha)` and not `None`: the body was rendered and signed above,
-        // and this arm only means nothing came *back*. The digest records what
-        // was signed, not what was received — the unconfigured-endpoint arm is
-        // the one that signs nothing and therefore stores nothing.
-        Err(error) => {
-            record_failure(
-                pool,
-                job,
-                &delivery,
-                Some(&sha),
-                None,
-                Some(&format!("no response: {error}")),
-            )
-            .await
-        }
+/// Records what the receiver said: a 2xx settles the delivery, anything else
+/// is one more failed attempt on the ladder.
+///
+/// # Errors
+///
+/// [`JobError::Db`] for a Postgres failure.
+async fn record_receiver_answer(
+    repositories: &dyn Repositories,
+    job: &JobRow,
+    delivery: &DeliveryRow,
+    event: &EventRow,
+    endpoint: &Endpoint,
+    sha: &str,
+    response: reqwest::Response,
+) -> Result<Outcome, JobError> {
+    let status = response.status();
+    let excerpt = ack_excerpt(response).await;
+    if !status.is_success() {
+        return record_failure(
+            repositories,
+            job,
+            delivery,
+            Some(sha),
+            Some(i32::from(status.as_u16())),
+            excerpt.as_deref(),
+        )
+        .await;
     }
+
+    let recorded = repositories
+        .record_success(
+            delivery.id,
+            i32::from(status.as_u16()),
+            excerpt.as_deref(),
+            sha,
+        )
+        .await?;
+    if recorded {
+        // After the CAS commits, and only when it actually changed the row: a
+        // second pass over an already-settled delivery is not a second
+        // success, and counting it would inflate the series past the number
+        // of receivers that ever answered 2xx.
+        metrics::counter!(
+            WEBHOOK_DELIVERIES_TOTAL,
+            "outcome" => webhook_outcome::SUCCEEDED
+        )
+        .increment(1);
+        tracing::info!(
+            job_id = %job.id,
+            delivery_id = %delivery.id,
+            event_id = %event.id,
+            endpoint_id = %endpoint.id,
+            status = status.as_u16(),
+            "webhook delivered"
+        );
+    }
+    Ok(Outcome::Done)
+}
+
+/// Records an attempt that got no answer at all: DNS, connect, TLS, or the
+/// request deadline.
+///
+/// `Some(sha)` and not `None`: the body was rendered and signed before the
+/// request, and this arm only means nothing came *back*. The digest records
+/// what was signed, not what was received — [`record_unsigned`] is the arm
+/// that signs nothing and therefore stores nothing.
+///
+/// # Errors
+///
+/// [`JobError::Db`] for a Postgres failure.
+async fn record_no_response(
+    repositories: &dyn Repositories,
+    job: &JobRow,
+    delivery: &DeliveryRow,
+    sha: &str,
+    error: &reqwest::Error,
+) -> Result<Outcome, JobError> {
+    record_failure(
+        repositories,
+        job,
+        delivery,
+        Some(sha),
+        None,
+        Some(&no_response_excerpt(error)),
+    )
+    .await
+}
+
+/// What `webhook_deliveries.response_excerpt` says when nothing came back.
+///
+/// [`vpay_core::error::display_with_chain`], exactly as `jobs.last_error`
+/// renders a job failure (`crate::run_loop`, ADR-0011's amendment): a
+/// `reqwest::Error` renders as "error sending request for url (…)" and keeps
+/// "connection refused" or "dns error" in its `source()`, so the excerpt
+/// without the chain repeats a URL the operator already has and omits the only
+/// part that says what went wrong.
+///
+/// Safe to store: the error's `Display` names the host and the cause and never
+/// the request body — `reqwest` does not put one into it. Bounded by
+/// `vpay_db`'s own excerpt truncation against migration 0022's
+/// `excerpt_length` CHECK, which no chain a transport failure produces comes
+/// near.
+///
+/// Takes `&dyn Error` rather than `&reqwest::Error` so the rendering is
+/// testable without a socket.
+fn no_response_excerpt(error: &dyn std::error::Error) -> String {
+    format!(
+        "no response: {}",
+        vpay_core::error::display_with_chain(error)
+    )
 }
 
 /// Records one failed attempt and says when — or whether — to try again.
 ///
 /// The ladder index is the delivery's **pre-increment** `attempt`, which
 /// counts failures so far: after the first failure the wait is
-/// `delivery_delay(0)` = 10s, which is `docs/flows/webhooks.md`'s first rung.
-/// So a delivery that has already failed seven times (`attempt = 7`) has
-/// walked the whole documented ladder — 10s, 30s, 2m, 10m, 1h, 6h, 24h — and
-/// the eighth failure exhausts it.
+/// `delivery_delay(0)` = 10s, `docs/flows/webhooks.md`'s first rung, and the
+/// eighth failure exhausts the ladder.
 ///
 /// `sha` is `None` for the one failure that never rendered or signed
-/// anything — an endpoint configuration no longer describes, or describes
-/// without a secret. It is not a convenience: `payload_sha256` is the digest
-/// of the bytes that were **rendered and signed**, and stamping it on an
-/// attempt that produced no signed body would make the column say something
-/// untrue about a delivery that has still never been signed.
+/// anything, and `Some` for a transport failure — the bytes were signed and
+/// only the answer is missing. `docs/reference/vpay-worker.md` §"Delivering
+/// one webhook" says what the column would otherwise claim.
 ///
-/// The transport-failure arm passes `Some` and that is deliberate: DNS,
-/// connect, TLS and the request deadline all happen *after* the body has been
-/// rendered and the `Vpay-Signature` computed over it, so those bytes were
-/// signed whether or not the socket ever opened. The column's later use — is
-/// this build still rendering the same body? — is exactly as meaningful for
-/// them. What it is not is a claim that anyone received them; `status_code IS
-/// NULL AND responded_at IS NULL` is the column pair that says that.
+/// # Errors
+///
+/// [`JobError::Db`] for a Postgres failure.
 async fn record_failure(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     job: &JobRow,
-    delivery: &vpay_db::DeliveryRow,
+    delivery: &DeliveryRow,
     sha: Option<&str>,
     status: Option<i32>,
     excerpt: Option<&str>,
@@ -1075,16 +1020,16 @@ async fn record_failure(
             .map(|delay| OffsetDateTime::now_utc().saturating_add(delay))
     });
 
-    vpay_db::webhook_deliveries::record_attempt(
-        pool,
-        delivery.id,
-        status,
-        excerpt,
-        sha,
-        next_attempt_at,
-        delay.is_none(),
-    )
-    .await?;
+    repositories
+        .record_attempt(
+            delivery.id,
+            status,
+            excerpt,
+            sha,
+            next_attempt_at,
+            delay.is_none(),
+        )
+        .await?;
     // After that write commits (a single `UPDATE`, autocommitted): the
     // ladder index already decided which of the two outcomes this attempt
     // is, so the label and the row's new `state` cannot disagree.
@@ -1188,8 +1133,31 @@ mod tests {
 
     use super::{
         Endpoint, EndpointRegistry, FANOUT_MAX_ATTEMPTS, FanOutDisposition, event_bytes,
-        fan_out_disposition, payload_sha256,
+        fan_out_disposition, no_response_excerpt, payload_sha256,
     };
+
+    /// An error with a source, shaped like the `reqwest::Error` a delivery
+    /// that never reached its receiver produces: the outer message names the
+    /// URL, the inner one says what actually failed.
+    #[derive(Debug)]
+    struct Layered {
+        message: &'static str,
+        source: Option<Box<Layered>>,
+    }
+
+    impl std::fmt::Display for Layered {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.message)
+        }
+    }
+
+    impl std::error::Error for Layered {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.source
+                .as_deref()
+                .map(|source| source as &(dyn std::error::Error + 'static))
+        }
+    }
 
     fn endpoint(id: &str, url: &str, secrets: &[&str]) -> Endpoint {
         Endpoint {
@@ -1422,6 +1390,44 @@ mod tests {
         assert_eq!(
             payload_sha256(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+    /// The excerpt carries the whole chain, not just the outermost sentence.
+    /// Without it `webhook_deliveries.response_excerpt` repeats the URL an
+    /// operator already has and omits "connection refused" — the same loss
+    /// `jobs.last_error` fixed in Phase A (ADR-0011's amendment).
+    #[test]
+    fn a_delivery_that_got_no_answer_records_the_whole_source_chain() {
+        let error = Layered {
+            message: "error sending request for url (https://merchant.example/hook)",
+            source: Some(Box::new(Layered {
+                message: "client error (Connect)",
+                source: Some(Box::new(Layered {
+                    message: "tcp connect error: Connection refused (os error 111)",
+                    source: None,
+                })),
+            })),
+        };
+
+        assert_eq!(
+            no_response_excerpt(&error),
+            "no response: error sending request for url \
+             (https://merchant.example/hook): client error (Connect): tcp connect \
+             error: Connection refused (os error 111)"
+        );
+    }
+
+    /// An error with nothing under it renders exactly as it always did, with
+    /// no trailing separator.
+    #[test]
+    fn an_error_with_no_source_records_only_its_own_words() {
+        let error = Layered {
+            message: "operation timed out",
+            source: None,
+        };
+        assert_eq!(
+            no_response_excerpt(&error),
+            "no response: operation timed out"
         );
     }
 }

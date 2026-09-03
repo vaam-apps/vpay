@@ -1,70 +1,28 @@
-//! The OAuth token MTN's Collections API wants on every call, and the cache
-//! that keeps one request from becoming two.
+//! The OAuth token MTN's Collections API wants on every call, and this
+//! rail's half of the cache that keeps one request from becoming two.
 //!
-//! MTN's `POST /collection/token/` mints a bearer token from HTTP Basic
-//! credentials (`api_user:api_key`) plus a subscription key, and says how
-//! long it lives (`expires_in`, an hour in practice). Minting one per rail
-//! call would double every request this adapter makes, so the token is
-//! cached in memory — never in the database, because a bearer at rest is a
-//! bearer to protect, and re-minting after a restart costs one round trip.
+//! `POST /collection/token/` mints a bearer from HTTP Basic credentials
+//! (`api_user:api_key`) plus a subscription key. The cache entry itself is
+//! [`vpay_provider::token::CachedToken`]; what is MTN's alone is
+//! [`REFRESH_MARGIN`], [`ASSUMED_LIFETIME`] (MTN may omit `expires_in`), and
+//! the fields [`Credentials::fingerprint`] hashes.
 //!
-//! # Why the cache is keyed at all
+//! `docs/reference/rails.md` has the rest: why the cache is keyed by a
+//! credential digest at all, why the margin is per-rail rather than shared,
+//! and the two invariants — `minted_at` read before the send, the secret half
+//! in the fingerprint — that were each a real defect once.
 //!
-//! [`ProviderAdapter`](vpay_provider::ProviderAdapter) takes
-//! `&ProviderConfig` *per call*: one `Adapter` value can therefore be handed
-//! two different merchants' credentials for the same rail. A cache keyed by
-//! nothing would hand merchant B the token minted for merchant A — a
-//! cross-tenant credential leak that no test of a single-merchant deployment
-//! would ever show. [`Credentials::fingerprint`] is what makes that
-//! structurally impossible: a token is only reused when the SHA-256 of the
-//! credentials that minted it matches the ones being used now.
-//!
-//! # Secrets
-//!
-//! Nothing in this module renders a credential or a token. [`CachedToken`]'s
-//! `Debug` redacts its value, the two header values are marked *sensitive* so
-//! `http`'s own logging elides them, and every error message names the
-//! configuration *key* that was wrong, never its value.
-//!
-//! # Why this cache is duplicated in the Orange adapter
-//!
-//! `vpay-adapter-orange-money`'s `token` module holds a second `CachedToken`
-//! with the same shape, and that duplication is deliberate for now rather
-//! than an oversight. The two token endpoints agree on almost nothing that a
-//! shared type could absorb: MTN mints from HTTP Basic
-//! (`api_user:api_key`) *plus* a subscription-key header against a path
-//! under the configured base URL and answers `expires_in` as an optional
-//! field, while Orange posts OAuth2 client-credentials to the *host root*
-//! (`/oauth/v2/token`, see that module's `token_url`) and answers a
-//! differently-shaped body. A shared `CachedToken` in `vpay-provider` is the
-//! right end state, and the follow-up is worth doing once a third rail
-//! exists to show which parts are actually common — generalising from two
-//! examples would fix the wrong axis.
-//!
-//! Until then, two properties MUST stay aligned across both modules, because
-//! each was a real defect in one of them and a divergence is silent:
-//!
-//! 1. **`minted_at` is recorded before the token request is sent**, never
-//!    from the clock after the response arrives. The rail's `expires_in`
-//!    counts from the rail's mint, so measuring from arrival grants the
-//!    token the round trip as extra life — on a slow rail, the whole of the
-//!    refresh margin. See [`expiry`] and [`CachedToken::new`].
-//! 2. **The secret half of the credentials is in the fingerprint**
-//!    ([`Credentials::fingerprint`] hashes `api_key`, not just `api_user`).
-//!    A rotated secret must evict the cache immediately; hashing only the
-//!    non-secret identifier leaves a bearer minted from a revoked credential
-//!    in use until it ages out. Orange's fingerprint had exactly that bug
-//!    until the Step 3 security review.
-//!
-//! Change either property here and change it there in the same commit.
+//! Nothing here renders a credential or a token: the header values are marked
+//! *sensitive*, `CachedToken`'s `Debug` redacts its value, and every error
+//! message names the configuration *key* that was wrong, never its value.
 
 use std::fmt;
 use std::time::{Duration, Instant};
 
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::Deserialize;
-use sha2::{Digest as _, Sha256};
 use vpay_core::FailureCode;
+use vpay_provider::token::CachedToken;
 use vpay_provider::{ProviderConfig, ProviderError};
 
 /// MTN's per-product API-gateway key. Lowercase because
@@ -141,34 +99,15 @@ impl<'a> Credentials<'a> {
         })
     }
 
-    /// A digest of the credentials that mint a token, used as the cache key.
-    ///
-    /// Each field is length-prefixed before hashing so that two different
-    /// pairs cannot produce one digest by concatenating differently
-    /// (`("ab", "c")` and `("a", "bc")`): the whole point of the key is that
-    /// distinct credentials are distinct, and a concatenation collision
-    /// would defeat it in exactly the case it exists for.
+    /// The cache key: a digest of the credentials that mint a token.
     ///
     /// `api_key` is hashed in **because** it is the token's password, not
-    /// despite it. Leaving it out — as this did until the Step 3 security
-    /// review — meant a deployment that rotated only the API key kept
-    /// serving calls with the bearer minted from the *old* one: the
-    /// fingerprint still matched, so the cache still hit, and the rotation
-    /// took effect only when the cached token aged out (up to an hour) or
-    /// the rail answered 401. A key is rotated precisely when it must stop
-    /// working immediately, which is the case that behaviour broke.
-    ///
-    /// The digest is what makes that safe to hold: the cache key is a
-    /// SHA-256, never the credential, so including a secret here does not
-    /// put one anywhere it was not already.
+    /// despite it — leaving it out meant a deployment that rotated only the
+    /// API key kept serving calls with the bearer minted from the old one
+    /// until it aged out. `docs/reference/rails.md` records the tenancy
+    /// argument for the other fields and why a digest is safe to hold.
     pub(crate) fn fingerprint(&self) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        for field in [self.subscription_key, self.api_key, self.api_user] {
-            let len = u64::try_from(field.len()).unwrap_or(u64::MAX);
-            hasher.update(len.to_be_bytes());
-            hasher.update(field.as_bytes());
-        }
-        hasher.finalize().into()
+        vpay_provider::token::fingerprint(&[self.subscription_key, self.api_key, self.api_user])
     }
 
     pub(crate) const fn target_environment(&self) -> &'a str {
@@ -208,75 +147,47 @@ impl fmt::Debug for Credentials<'_> {
     }
 }
 
-/// A bearer token together with the moment it stops being usable and the
-/// fingerprint of the credentials that produced it.
-pub(crate) struct CachedToken {
-    value: String,
-    /// Already reduced by [`REFRESH_MARGIN`]. An [`Instant`], not a wall
-    /// clock: a token's remaining life is elapsed time, and a machine whose
-    /// wall clock steps backwards must not resurrect an expired token.
-    expires_at: Instant,
-    fingerprint: [u8; 32],
-}
-
-impl CachedToken {
-    /// Builds the cache entry for a freshly minted token.
-    pub(crate) fn new(
-        value: String,
-        fingerprint: [u8; 32],
-        minted_at: Instant,
-        expires_in: Option<u64>,
-    ) -> Self {
-        Self {
-            value,
-            expires_at: expiry(minted_at, expires_in),
-            fingerprint,
-        }
-    }
-
-    /// The token as minted, whatever its age.
-    ///
-    /// Only for the caller that just minted it: everything reading the
-    /// *cache* goes through [`CachedToken::usable`], which cannot hand back a
-    /// value without having asked both questions first.
-    pub(crate) fn value(&self) -> &str {
-        &self.value
-    }
-
-    /// The token, if it is still valid *and* was minted from these
-    /// credentials.
-    ///
-    /// Returning an `Option<&str>` rather than a `bool` is what keeps the two
-    /// checks together: a caller cannot read the value without having asked
-    /// both questions.
-    pub(crate) fn usable(&self, now: Instant, fingerprint: &[u8; 32]) -> Option<&str> {
-        (self.fingerprint == *fingerprint && now < self.expires_at).then_some(self.value.as_str())
-    }
-}
-
-/// Redacted on purpose: a `Debug` that prints a bearer token turns any
-/// `tracing` call that formats the adapter into a credential disclosure.
-impl fmt::Debug for CachedToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CachedToken")
-            .field("value", &"<redacted>")
-            .field("expires_at", &self.expires_at)
-            .finish_non_exhaustive()
-    }
-}
-
-/// When a token minted at `minted_at` should stop being used.
+/// The cache entry for a token MTN has just minted.
 ///
-/// Split out and `pub(crate)` so the arithmetic can be proven without a
-/// network: the interesting cases are a lifetime *shorter* than the margin
-/// (which must not underflow into a token that never expires) and a missing
-/// `expires_in`.
-pub(crate) fn expiry(minted_at: Instant, expires_in: Option<u64>) -> Instant {
-    let lifetime = expires_in.map_or(ASSUMED_LIFETIME, Duration::from_secs);
-    minted_at + lifetime.saturating_sub(REFRESH_MARGIN)
+/// Named rather than a bare [`CachedToken::new`] at each call site, because
+/// everything MTN-specific about a cached token is here: [`REFRESH_MARGIN`],
+/// and [`ASSUMED_LIFETIME`] for the rail that states none. Neither is the
+/// shared type's to know.
+pub(crate) fn cache_entry(
+    value: String,
+    fingerprint: [u8; 32],
+    minted_at: Instant,
+    expires_in: Option<u64>,
+) -> CachedToken {
+    CachedToken::new(
+        value,
+        minted_at,
+        lifetime(expires_in),
+        REFRESH_MARGIN,
+        fingerprint,
+    )
+}
+
+/// The lifetime to credit a token with, from what the rail said — or did not.
+const fn lifetime(expires_in: Option<u64>) -> Duration {
+    match expires_in {
+        Some(seconds) => Duration::from_secs(seconds),
+        None => ASSUMED_LIFETIME,
+    }
 }
 
 /// What MTN answers a token request with. Extra fields are ignored.
+///
+/// No `#[serde(rename_all = "snake_case")]` here, ever: that attribute is the
+/// workspace convention for types that model *vpay's own* wire or config, so
+/// a field added as `payTo` fails review instead of shipping. This type
+/// models **MTN's** response, which is already camelCase-free by coincidence
+/// (`access_token`, `expires_in`) — adding the attribute anyway would read as
+/// a claim that these names are ours to normalise, and the day MTN sends a
+/// field that is not already snake_case it would quietly rename it away from
+/// the rail's own spelling. See `docs/reference/rails.md`'s "serde:
+/// `rename_all` is for *our* wire, never a rail's" for the same rule as it
+/// applies to `wire.rs` in both adapters.
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
@@ -351,12 +262,12 @@ pub(crate) async fn mint(
     if status.is_success() {
         let parsed: TokenResponse = serde_json::from_str(&body).map_err(|e| {
             // The body is *not* included: it contains the token.
-            ProviderError::Malformed(format!(
+            ProviderError::malformed(format!(
                 "mtn_momo: token response is not the documented shape: {e}"
             ))
         })?;
         tracing::debug!(rail = "mtn_momo", "minted a collections access token");
-        return Ok(CachedToken::new(
+        return Ok(cache_entry(
             parsed.access_token,
             credentials.fingerprint(),
             minted_at,
@@ -370,17 +281,17 @@ pub(crate) async fn mint(
             message: format!("mtn_momo: the rail refused our credentials (HTTP {status})"),
         },
         _ if status.is_server_error() => {
-            ProviderError::Transport(format!("mtn_momo: token endpoint answered HTTP {status}"))
+            ProviderError::transport(format!("mtn_momo: token endpoint answered HTTP {status}"))
         }
         // Redirects are not followed (`vpay_provider::http`), so a 3xx on
         // the token call is a refusal, not a hop — and the hop is the one
         // that would have replayed the Basic credentials at whatever host
         // the `Location` named.
-        _ if status.is_redirection() => ProviderError::Malformed(format!(
+        _ if status.is_redirection() => ProviderError::malformed(format!(
             "mtn_momo: token endpoint answered a redirect (HTTP {status}), which is not \
              followed; check base_url"
         )),
-        _ => ProviderError::Malformed(format!(
+        _ => ProviderError::malformed(format!(
             "mtn_momo: token endpoint answered an unexpected HTTP {status}"
         )),
     })
@@ -542,10 +453,70 @@ mod tests {
         );
     }
 
+    /// A fingerprint no `Credentials` in this file produces, for the tests
+    /// that are about the clock and not about tenancy.
+    const ANY: [u8; 32] = [7_u8; 32];
+
+    /// The deadline `cache_entry` gives a token, read back through the only
+    /// thing that consumes it. Asserting on `usable` rather than on the
+    /// arithmetic means these tests exercise the path that ships.
+    fn is_usable_at(expires_in: Option<u64>, minted_at: Instant, now: Instant) -> bool {
+        cache_entry("t".to_owned(), ANY, minted_at, expires_in)
+            .usable(now, &ANY)
+            .is_some()
+    }
+
     #[test]
     fn a_token_expires_a_minute_before_the_rail_says_it_does() {
         let now = Instant::now();
-        assert_eq!(expiry(now, Some(3_600)), now + Duration::from_secs(3_540));
+        assert!(is_usable_at(
+            Some(3_600),
+            now,
+            now + Duration::from_secs(3_540) - Duration::from_millis(1)
+        ));
+        assert!(!is_usable_at(
+            Some(3_600),
+            now,
+            now + Duration::from_secs(3_540)
+        ));
+    }
+
+    /// MTN's margin, named and pinned in its own right.
+    ///
+    /// The margin is the one number the two adapters' token caches must not
+    /// share: MTN's and Orange's are separately reasoned constants that
+    /// happen to agree today. Every other assertion in this file would still
+    /// pass if this adapter silently started using the other one's, so this
+    /// test asserts the constant itself, both arithmetic branches that
+    /// consume it, and the fact that it is subtracted from the rail's stated
+    /// lifetime rather than added to it.
+    #[test]
+    fn the_refresh_margin_mtn_applies_is_sixty_seconds_of_the_rails_own_lifetime() {
+        assert_eq!(REFRESH_MARGIN, Duration::from_secs(60));
+
+        let now = Instant::now();
+        let stated = Duration::from_secs(3_600);
+        assert!(
+            !is_usable_at(Some(3_600), now, now + stated - REFRESH_MARGIN),
+            "a stated lifetime is reduced by MTN's margin, never extended by it"
+        );
+        assert!(
+            is_usable_at(
+                Some(3_600),
+                now,
+                now + stated - REFRESH_MARGIN - Duration::from_millis(1)
+            ),
+            "a millisecond earlier it is still the rail's to honour"
+        );
+        assert!(
+            !is_usable_at(None, now, now + ASSUMED_LIFETIME - REFRESH_MARGIN),
+            "the assumed lifetime is reduced by the same margin"
+        );
+        assert!(is_usable_at(
+            None,
+            now,
+            now + ASSUMED_LIFETIME - REFRESH_MARGIN - Duration::from_millis(1)
+        ));
     }
 
     /// A stated lifetime shorter than the margin must clamp to "already
@@ -553,17 +524,19 @@ mod tests {
     #[test]
     fn a_lifetime_shorter_than_the_margin_expires_immediately() {
         let now = Instant::now();
-        assert_eq!(expiry(now, Some(30)), now);
-        assert_eq!(expiry(now, Some(0)), now);
+        assert!(!is_usable_at(Some(30), now, now));
+        assert!(!is_usable_at(Some(0), now, now));
     }
 
     #[test]
     fn a_rail_that_states_no_lifetime_gets_a_short_one() {
         let now = Instant::now();
-        let assumed = expiry(now, None);
-        assert!(assumed > now, "an unstated lifetime must still be usable");
         assert!(
-            assumed < now + Duration::from_secs(3_600),
+            is_usable_at(None, now, now),
+            "an unstated lifetime must still be usable"
+        );
+        assert!(
+            !is_usable_at(None, now, now + Duration::from_secs(3_600)),
             "an unstated lifetime must not be assumed to be an hour"
         );
     }
@@ -573,7 +546,7 @@ mod tests {
         let now = Instant::now();
         let mine = [1_u8; 32];
         let theirs = [2_u8; 32];
-        let token = CachedToken::new("secret".to_owned(), mine, now, Some(3_600));
+        let token = cache_entry("secret".to_owned(), mine, now, Some(3_600));
 
         assert_eq!(token.usable(now, &mine), Some("secret"));
         assert_eq!(
@@ -605,7 +578,7 @@ mod tests {
     fn debugging_a_token_does_not_print_it() {
         let rendered = format!(
             "{:?}",
-            CachedToken::new("super-secret".to_owned(), [0_u8; 32], Instant::now(), None)
+            cache_entry("super-secret".to_owned(), [0_u8; 32], Instant::now(), None)
         );
         assert!(!rendered.contains("super-secret"), "{rendered}");
     }

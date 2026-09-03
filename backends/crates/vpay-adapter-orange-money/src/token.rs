@@ -1,44 +1,22 @@
 //! The OAuth2 client-credentials token, and where to ask for it.
 //!
 //! Two things live here because they are the two things about Orange's auth
-//! that are easy to get quietly wrong: the token endpoint is not under the
-//! configured base URL, and the token must not be re-minted per call nor
-//! shared between merchants.
+//! that are easy to get quietly wrong: the token endpoint is at the host root
+//! and not under the configured base URL ([`token_url`]), and the token must
+//! not be re-minted per call nor shared between merchants ([`cache_entry`],
+//! [`fingerprint`]).
 //!
-//! # Why this cache is duplicated in the MTN adapter
-//!
-//! `vpay-adapter-mtn-momo`'s `token` module holds a second [`CachedToken`]
-//! with the same shape, and that duplication is deliberate for now rather
-//! than an oversight. The two token endpoints agree on almost nothing that a
-//! shared type could absorb: this one posts OAuth2 client-credentials to the
-//! *host root* ([`TOKEN_PATH`], derived by [`token_url`] rather than
-//! appended to the configured base URL) and answers a body carrying
-//! `expires_in` as a required field, while MTN mints from HTTP Basic
-//! (`api_user:api_key`) plus a subscription-key header, on a path *under*
-//! its base URL, and may omit the lifetime entirely. A shared `CachedToken`
-//! in `vpay-provider` is the right end state, and the follow-up is worth
-//! doing once a third rail exists to show which parts are actually common —
-//! generalising from two examples would fix the wrong axis.
-//!
-//! Until then, two properties MUST stay aligned across both modules, because
-//! each was a real defect in one of them and a divergence is silent:
-//!
-//! 1. **`minted_at` is recorded before the token request is sent**, never
-//!    from the clock after the response arrives — see
-//!    [`CachedToken::new`], which takes it as a parameter for that reason.
-//!    This module did not do it until the Step 3 security review.
-//! 2. **The secret half of the credentials is in the fingerprint**
-//!    ([`fingerprint`] hashes `client_secret`, not just `client_id`), so a
-//!    rotation evicts the cache immediately instead of leaving a bearer
-//!    minted from a revoked secret in use until it ages out.
-//!
-//! Change either property here and change it there in the same commit.
+//! The cache entry itself is [`vpay_provider::token::CachedToken`]; what is
+//! Orange's alone is [`EXPIRY_MARGIN`] and the two fields the fingerprint
+//! hashes. `docs/reference/rails.md` has the rest: why the cache is keyed by
+//! a credential digest, why the margin is per-rail rather than shared, and
+//! the two invariants — `minted_at` read before the send, the secret half in
+//! the fingerprint — that were each a real defect in this module once.
 
-use std::fmt;
 use std::time::{Duration, Instant};
 
-use sha2::{Digest, Sha256};
 use vpay_provider::ProviderError;
+use vpay_provider::token::CachedToken;
 
 /// The token endpoint's path, at the host root — *not* under
 /// `/orange-money-webpay/{env}`. See [`token_url`].
@@ -58,14 +36,11 @@ const EXPIRY_MARGIN: Duration = Duration::from_secs(60);
 ///
 /// Orange puts the environment in the *path* of the payment API but serves
 /// OAuth from the host root, so the two URLs cannot both be derived by
-/// appending. Deriving the token URL from the same configured value — rather
-/// than adding a second YAML key — means a deployment cannot point its
-/// payments at one host and its tokens at another, which is a
-/// misconfiguration that would only surface as a 401 storm in production.
-///
-/// Scheme, host, port and any userinfo are kept; path, query and fragment are
-/// replaced. `Url::join` of a path-absolute reference is exactly that
-/// operation, per RFC 3986 §5.3.
+/// appending. Deriving both from one configured value — rather than adding a
+/// second YAML key — is what stops a deployment pointing its payments at one
+/// host and its tokens at another. Scheme, host, port and userinfo are kept;
+/// path, query and fragment are replaced, which is exactly `Url::join` of a
+/// path-absolute reference (RFC 3986 §5.3).
 ///
 /// # Errors
 ///
@@ -86,96 +61,32 @@ pub(crate) fn token_url(base: &str) -> Result<String, ProviderError> {
     Ok(token.into())
 }
 
-/// A SHA-256 over **both** halves of the client credentials a token was
-/// minted for.
+/// The cache key: a digest over **both** halves of the client credentials a
+/// token was minted for.
 ///
-/// Two distinct jobs, and it took the Step 3 security review to notice that
-/// the second was not being done:
-///
-/// 1. *Tenancy.* The port hands `&ProviderConfig` to every call, so one
-///    `Adapter` value can legitimately serve two merchants on the same rail.
-///    Caching a token without recording whose it is would send merchant B's
-///    charges under merchant A's credentials — money moving on the wrong
-///    account, and no test would see it because both configurations are
-///    valid. `client_id` alone answers this one.
-/// 2. *Rotation.* A `client_secret` is rotated precisely when the old one
-///    must stop working **now**. Hashing only the `client_id` meant the
-///    fingerprint still matched after a rotation, so the cache still hit and
-///    the bearer minted from the revoked secret kept being sent until it
-///    aged out (up to an hour) or the rail answered 401. Including the
-///    secret makes the eviction immediate and automatic.
-///
-/// A digest rather than the values themselves, so the cache holds no
-/// credential material at rest — which is what makes hashing a secret in
-/// here safe. Each field is length-prefixed so `("ab", "c")` and
-/// `("a", "bc")` cannot collide by concatenating differently; the whole
-/// point of the key is that distinct credentials are distinct.
+/// `client_secret` is in it and not just `client_id`, which is the half that
+/// took a security review to notice: a rotated secret must evict the bearer
+/// minted from the old one on the *next* call, not when it ages out.
+/// `docs/reference/rails.md` records the tenancy argument for the other half.
 pub(crate) fn fingerprint(client_id: &str, client_secret: &str) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    for field in [client_id, client_secret] {
-        let length = u64::try_from(field.len()).unwrap_or(u64::MAX);
-        hasher.update(length.to_be_bytes());
-        hasher.update(field.as_bytes());
-    }
-    hasher.finalize().into()
+    vpay_provider::token::fingerprint(&[client_id, client_secret])
 }
 
-/// One rail token, in memory only.
+/// The cache entry for a token Orange has just minted.
 ///
-/// Never persisted: a token is short-lived, re-mintable from the credentials
-/// we already hold, and writing it to the database would put a bearer for a
-/// merchant's payment account into backups and replicas for no benefit.
-pub(crate) struct CachedToken {
+/// Named rather than a bare [`CachedToken::new`] at the one call site,
+/// because the one Orange-specific thing about a cached token is
+/// [`EXPIRY_MARGIN`] — subtracted here rather than at the read site so no
+/// caller can forget it. `minted_at` is the caller's and must be read
+/// **before** the token request was sent; `docs/reference/rails.md` says what
+/// goes wrong when it is not.
+pub(crate) fn cache_entry(
     value: String,
-    expires_at: Instant,
+    minted_at: Instant,
+    lifetime: Duration,
     fingerprint: [u8; 32],
-}
-
-/// Hand-written so the bearer cannot reach a log line through a `?token`
-/// field on the enclosing `Adapter`'s derived `Debug`.
-impl fmt::Debug for CachedToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CachedToken")
-            .field("value", &"<redacted>")
-            .field("expires_at", &self.expires_at)
-            .finish_non_exhaustive()
-    }
-}
-
-impl CachedToken {
-    /// `lifetime` is the rail's `expires_in`; [`EXPIRY_MARGIN`] is subtracted
-    /// here rather than at the read site so no caller can forget it.
-    ///
-    /// `minted_at` is the caller's, taken **before** the token request was
-    /// sent rather than read from the clock here. The rail's `expires_in`
-    /// counts from the moment the rail minted the token, so measuring from
-    /// the moment the response finished arriving silently grants it the
-    /// round trip as extra life — which on a slow rail is the whole of
-    /// [`EXPIRY_MARGIN`]. MTN's adapter has always done this; this one did
-    /// not until the Step 3 security review.
-    pub(crate) fn new(
-        value: String,
-        minted_at: Instant,
-        lifetime: Duration,
-        fingerprint: [u8; 32],
-    ) -> Self {
-        let usable_for = lifetime.saturating_sub(EXPIRY_MARGIN);
-        Self {
-            value,
-            // `Instant + Duration` panics on overflow, and a rail answering an
-            // absurd `expires_in` must not be able to bring down a worker. An
-            // overflow yields "already expired", which costs a re-mint.
-            expires_at: minted_at.checked_add(usable_for).unwrap_or(minted_at),
-            fingerprint,
-        }
-    }
-
-    /// The token, iff it was minted for these credentials and is still inside
-    /// its margin.
-    pub(crate) fn usable(&self, fingerprint: &[u8; 32]) -> Option<&str> {
-        (self.fingerprint == *fingerprint && Instant::now() < self.expires_at)
-            .then_some(self.value.as_str())
-    }
+) -> CachedToken {
+    CachedToken::new(value, minted_at, lifetime, EXPIRY_MARGIN, fingerprint)
 }
 
 #[cfg(test)]
@@ -245,16 +156,16 @@ mod tests {
     fn a_token_is_only_reused_for_the_credentials_it_was_minted_for() {
         let a = fingerprint("merchant-a-client-id", "merchant-a-secret");
         let b = fingerprint("merchant-b-client-id", "merchant-b-secret");
-        let cached = CachedToken::new(
+        let cached = cache_entry(
             "secret-bearer".to_owned(),
             Instant::now(),
             Duration::from_secs(3600),
             a,
         );
 
-        assert_eq!(cached.usable(&a), Some("secret-bearer"));
+        assert_eq!(cached.usable(Instant::now(), &a), Some("secret-bearer"));
         assert_eq!(
-            cached.usable(&b),
+            cached.usable(Instant::now(), &b),
             None,
             "a second merchant on the same rail must not borrow the first's token"
         );
@@ -268,16 +179,19 @@ mod tests {
     fn rotating_only_the_secret_evicts_the_cached_bearer() {
         let before = fingerprint("client", "old-secret");
         let after = fingerprint("client", "new-secret");
-        let cached = CachedToken::new(
+        let cached = cache_entry(
             "bearer-from-the-old-secret".to_owned(),
             Instant::now(),
             Duration::from_secs(3600),
             before,
         );
 
-        assert_eq!(cached.usable(&before), Some("bearer-from-the-old-secret"));
         assert_eq!(
-            cached.usable(&after),
+            cached.usable(Instant::now(), &before),
+            Some("bearer-from-the-old-secret")
+        );
+        assert_eq!(
+            cached.usable(Instant::now(), &after),
             None,
             "a rotated client_secret must evict the token minted from the old one on the very \
              next call, not when it ages out"
@@ -302,7 +216,8 @@ mod tests {
             .checked_sub(Duration::from_secs(3_600))
             .expect("a loopback-scale instant arithmetic does not underflow");
         assert_eq!(
-            CachedToken::new("t".to_owned(), long_ago, Duration::from_secs(3_600), fp).usable(&fp),
+            cache_entry("t".to_owned(), long_ago, Duration::from_secs(3_600), fp)
+                .usable(Instant::now(), &fp),
             None,
             "an hour-old token with an hour of stated life is spent, whatever the clock said \
              when the response arrived"
@@ -316,26 +231,65 @@ mod tests {
         let fp = fingerprint("client", "secret");
         let now = Instant::now();
         assert_eq!(
-            CachedToken::new("t".to_owned(), now, Duration::from_secs(30), fp).usable(&fp),
+            cache_entry("t".to_owned(), now, Duration::from_secs(30), fp)
+                .usable(Instant::now(), &fp),
             None
         );
         assert_eq!(
-            CachedToken::new("t".to_owned(), now, Duration::from_secs(3600), fp).usable(&fp),
+            cache_entry("t".to_owned(), now, Duration::from_secs(3600), fp)
+                .usable(Instant::now(), &fp),
             Some("t")
+        );
+    }
+
+    /// Orange's margin, named and pinned in its own right.
+    ///
+    /// The margin is the one number the two adapters' token caches must not
+    /// share: Orange's and MTN's are separately reasoned constants that
+    /// happen to agree today. Every other assertion in this file would still
+    /// pass if this adapter silently started using the other one's, so this
+    /// test asserts the constant itself and the boundary it puts on a token
+    /// minted with a known lifetime.
+    ///
+    /// The five-second step is what makes this a statement about *sixty*
+    /// seconds rather than about any margin at all: at the boundary the token
+    /// is spent, five seconds earlier it is not.
+    #[test]
+    fn the_expiry_margin_orange_applies_is_sixty_seconds_of_the_rails_own_lifetime() {
+        assert_eq!(EXPIRY_MARGIN, Duration::from_secs(60));
+
+        let fp = fingerprint("client", "secret");
+        let lifetime = Duration::from_secs(3_600);
+        let spent_at = Instant::now()
+            .checked_sub(lifetime - EXPIRY_MARGIN)
+            .expect("a process-scale instant does not underflow");
+        assert_eq!(
+            cache_entry("t".to_owned(), spent_at, lifetime, fp).usable(Instant::now(), &fp),
+            None,
+            "the margin is subtracted from the rail's stated lifetime, never added to it"
+        );
+
+        let inside = spent_at
+            .checked_add(Duration::from_secs(5))
+            .expect("a process-scale instant does not overflow");
+        assert_eq!(
+            cache_entry("t".to_owned(), inside, lifetime, fp).usable(Instant::now(), &fp),
+            Some("t"),
+            "five seconds before the boundary the token is still the rail's to honour"
         );
     }
 
     #[test]
     fn an_absurd_lifetime_does_not_panic() {
         let fp = fingerprint("client", "secret");
-        let cached = CachedToken::new("t".to_owned(), Instant::now(), Duration::MAX, fp);
+        let cached = cache_entry("t".to_owned(), Instant::now(), Duration::MAX, fp);
         // Either answer is acceptable; not panicking is the assertion.
-        let _ = cached.usable(&fp);
+        let _ = cached.usable(Instant::now(), &fp);
     }
 
     #[test]
     fn debug_never_prints_the_bearer() {
-        let cached = CachedToken::new(
+        let cached = cache_entry(
             "super-secret-bearer".to_owned(),
             Instant::now(),
             Duration::from_secs(3600),

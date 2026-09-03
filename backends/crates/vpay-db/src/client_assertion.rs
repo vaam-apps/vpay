@@ -23,42 +23,6 @@ use time::OffsetDateTime;
 
 use crate::error::DbError;
 
-/// Deletes every `jti` whose assertion has already expired, returning how
-/// many rows went.
-///
-/// **This is a boot-time stopgap, not the cleanup job this table needs.**
-/// Migration `0011`'s own header records the gap ("there is no cleanup job
-/// for expired rows"), and `docs/status.md`'s "Client-assertion replay
-/// protection" row says the same: vpay's worker job loop does not exist yet,
-/// so nothing in this repository runs scheduled work. Calling this once per
-/// process start bounds the table at roughly "assertions since the last
-/// restart" instead of "assertions forever" — which is strictly better than
-/// unbounded growth and strictly worse than a periodic sweep. When the job
-/// loop lands, this function is what it should call on a timer; it is not
-/// meant to be replaced then, only scheduled properly.
-///
-/// Deleting an expired row is safe with respect to replay protection, and
-/// that is the whole reason `expires_at` is stored: an assertion past its
-/// `exp` is refused by `verify_client_assertion` before any store is
-/// consulted, so a `jti` whose row this removes can never be accepted again
-/// on the strength of the row being gone. `< now()` is evaluated by the
-/// database, not by the caller, so a replica with a skewed clock cannot
-/// delete a row that is still live.
-///
-/// # Errors
-///
-/// Returns [`DbError::Query`] if the delete fails. A caller at boot should
-/// treat that as non-fatal — failing to prune is not a reason to refuse to
-/// serve traffic — and log it.
-pub async fn delete_expired_client_assertion_jtis(pool: &PgPool) -> Result<u64, DbError> {
-    let result = sqlx::query("DELETE FROM oauth_client_assertion_jtis WHERE expires_at < now()")
-        .execute(pool)
-        .await
-        .map_err(DbError::Query)?;
-
-    Ok(result.rows_affected())
-}
-
 /// Postgres-backed [`ClientAssertionStore`], durable and shared across every
 /// vpay replica.
 ///
@@ -155,5 +119,50 @@ impl ClientAssertionStore for SqlClientAssertionStore {
         })?;
 
         Ok(result.rows_affected() == 1)
+    }
+}
+
+#[async_trait::async_trait]
+pub trait ClientAssertions: Send + Sync {
+    /// Deletes every `jti` whose assertion has already expired, returning how
+    /// many rows went.
+    ///
+    /// **This is a boot-time stopgap, not the cleanup job this table needs.**
+    /// Migration `0011`'s own header records the gap ("there is no cleanup job
+    /// for expired rows"), and `docs/status.md`'s "Client-assertion replay
+    /// protection" row says the same: vpay's worker job loop does not exist yet,
+    /// so nothing in this repository runs scheduled work. Calling this once per
+    /// process start bounds the table at roughly "assertions since the last
+    /// restart" instead of "assertions forever" — which is strictly better than
+    /// unbounded growth and strictly worse than a periodic sweep. When the job
+    /// loop lands, this function is what it should call on a timer; it is not
+    /// meant to be replaced then, only scheduled properly.
+    ///
+    /// Deleting an expired row is safe with respect to replay protection, and
+    /// that is the whole reason `expires_at` is stored: an assertion past its
+    /// `exp` is refused by `verify_client_assertion` before any store is
+    /// consulted, so a `jti` whose row this removes can never be accepted again
+    /// on the strength of the row being gone. `< now()` is evaluated by the
+    /// database, not by the caller, so a replica with a skewed clock cannot
+    /// delete a row that is still live.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if the delete fails. A caller at boot should
+    /// treat that as non-fatal — failing to prune is not a reason to refuse to
+    /// serve traffic — and log it.
+    async fn delete_expired_client_assertion_jtis(&self) -> Result<u64, DbError>;
+}
+
+#[async_trait::async_trait]
+impl ClientAssertions for crate::repository::PgRepositories {
+    async fn delete_expired_client_assertion_jtis(&self) -> Result<u64, DbError> {
+        let result =
+            sqlx::query("DELETE FROM oauth_client_assertion_jtis WHERE expires_at < now()")
+                .execute(&self.pool)
+                .await
+                .map_err(DbError::Query)?;
+
+        Ok(result.rows_affected())
     }
 }

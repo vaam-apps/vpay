@@ -31,15 +31,22 @@ use serde_json::json;
 use sqlx::PgPool;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
+use vpay_db::{
+    Charges, Events, Idempotency, Jobs, PaymentIntents, Repositories, TxOutcome, UnitOfWork as _,
+};
 
-/// Starts a fresh, migrated Postgres 16 container and returns a pool bound
-/// to it. The returned container guard must be kept alive for as long as the
-/// pool is used — dropping it stops and removes the container.
+/// Starts a fresh, migrated Postgres 16 container and returns the
+/// repositories bound to it, plus a plain `sqlx` pool for the assertions that
+/// read the schema itself (column lists, index definitions, CHECK
+/// violations) — statements no repository method owns, and none should. The
+/// returned container guard must be kept alive for as long as either is used
+/// — dropping it stops and removes the container.
 ///
 /// The image request and its host-port-collision retry live in
 /// `vpay_testkit::containers` — see that module for why the tag is pinned and
 /// which errors are retried.
-async fn migrated_postgres() -> anyhow::Result<(ContainerAsync<PostgresImage>, PgPool)> {
+async fn migrated_postgres()
+-> anyhow::Result<(ContainerAsync<PostgresImage>, Arc<dyn Repositories>, PgPool)> {
     let container = vpay_testkit::containers::start_postgres_with_retry()
         .await
         .context("postgres:16-alpine container starts (it is cached locally on this machine)")?;
@@ -51,14 +58,152 @@ async fn migrated_postgres() -> anyhow::Result<(ContainerAsync<PostgresImage>, P
         .context("container port")?;
     let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
 
-    let pool = vpay_db::connect(&url)
+    let repositories = vpay_db::connect(&url)
         .await
         .context("connects to the freshly started container")?;
-    vpay_db::run_migrations(&pool)
+    repositories
+        .run_migrations()
         .await
         .context("every migration under backends/migrations applies cleanly")?;
+    let pool = PgPool::connect(&url)
+        .await
+        .context("the raw-SQL pool connects to the same container")?;
 
-    Ok((container, pool))
+    Ok((container, repositories, pool))
+}
+
+/// The transactional writes, each in its own committed transaction.
+///
+/// `vpay_db` offers no pooled variant of any of them, deliberately: every one
+/// exists to commit *beside* another write, and a caller that could run one
+/// on its own is the bug [`vpay_db::UnitOfWork`] closes. A test building a
+/// fixture has no such second write to be in step with, so it opens a
+/// transaction of its own — which is all these are. The tests that are
+/// *about* a transaction boundary (atomicity, a deliberate rollback, the
+/// metrics that must not be counted for a rolled-back insert) spell the
+/// closure out inline instead.
+mod one_tx {
+    use vpay_db::{DbError, Repositories, TxOutcome, UnitOfWork as _};
+
+    pub(super) async fn insert_for_intent(
+        repositories: &dyn Repositories,
+        new: &vpay_db::NewCharge,
+    ) -> Result<vpay_db::ChargeRow, DbError> {
+        repositories
+            .transaction(|tx| {
+                Box::pin(async move {
+                    Ok::<_, DbError>(TxOutcome::Commit(tx.insert_for_intent(new).await?))
+                })
+            })
+            .await
+            .map(TxOutcome::into_inner)
+    }
+
+    pub(super) async fn mark_submitted(
+        repositories: &dyn Repositories,
+        id: &str,
+        state: &str,
+        provider_ref_extra: Option<&serde_json::Value>,
+        redirect_url: Option<&str>,
+    ) -> Result<vpay_db::ChargeRow, DbError> {
+        repositories
+            .transaction(|tx| {
+                Box::pin(async move {
+                    Ok::<_, DbError>(TxOutcome::Commit(
+                        tx.mark_submitted(id, state, provider_ref_extra, redirect_url)
+                            .await?,
+                    ))
+                })
+            })
+            .await
+            .map(TxOutcome::into_inner)
+    }
+
+    pub(super) async fn insert_in_tx(
+        repositories: &dyn Repositories,
+        new: &vpay_db::NewEvent,
+    ) -> Result<vpay_db::EventRow, DbError> {
+        repositories
+            .transaction(|tx| {
+                Box::pin(
+                    async move { Ok::<_, DbError>(TxOutcome::Commit(tx.insert_in_tx(new).await?)) },
+                )
+            })
+            .await
+            .map(TxOutcome::into_inner)
+    }
+
+    pub(super) async fn enqueue_in_tx(
+        repositories: &dyn Repositories,
+        kind: &str,
+        dedupe_key: &str,
+        payload: &serde_json::Value,
+        run_at: time::OffsetDateTime,
+    ) -> Result<bool, DbError> {
+        repositories
+            .transaction(|tx| {
+                Box::pin(async move {
+                    Ok::<_, DbError>(TxOutcome::Commit(
+                        tx.enqueue_in_tx(kind, dedupe_key, payload, run_at).await?,
+                    ))
+                })
+            })
+            .await
+            .map(TxOutcome::into_inner)
+    }
+
+    pub(super) async fn record_payment_error(
+        repositories: &dyn Repositories,
+        merchant_id: &str,
+        id: &str,
+        expected: &str,
+        code: &str,
+        message: &str,
+    ) -> Result<Option<vpay_db::PaymentIntentRow>, DbError> {
+        repositories
+            .transaction(|tx| {
+                Box::pin(async move {
+                    Ok::<_, DbError>(TxOutcome::Commit(
+                        tx.record_payment_error(merchant_id, id, expected, code, message)
+                            .await?,
+                    ))
+                })
+            })
+            .await
+            .map(TxOutcome::into_inner)
+    }
+
+    pub(super) async fn create_in_tx(
+        repositories: &dyn Repositories,
+        event_id: &str,
+        endpoint_id: &str,
+        url: &str,
+    ) -> Result<Option<uuid::Uuid>, DbError> {
+        repositories
+            .transaction(|tx| {
+                Box::pin(async move {
+                    Ok::<_, DbError>(TxOutcome::Commit(
+                        tx.create_in_tx(event_id, endpoint_id, url).await?,
+                    ))
+                })
+            })
+            .await
+            .map(TxOutcome::into_inner)
+    }
+
+    pub(super) async fn mark_fanned_out_in_tx(
+        repositories: &dyn Repositories,
+        event_id: &str,
+    ) -> Result<bool, DbError> {
+        repositories
+            .transaction(|tx| {
+                Box::pin(async move {
+                    Ok::<_, DbError>(TxOutcome::Commit(tx.mark_fanned_out_in_tx(event_id).await?))
+                })
+            })
+            .await
+            .map(TxOutcome::into_inner)
+    }
 }
 
 // --- SqlClientAssertionStore -----------------------------------------------
@@ -69,8 +214,8 @@ async fn migrated_postgres() -> anyhow::Result<(ContainerAsync<PostgresImage>, P
 /// contract.
 #[tokio::test]
 async fn a_client_assertion_jti_is_fresh_once_then_replayed() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    let store = vpay_db::SqlClientAssertionStore::new(pool);
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let store = vpay_db::SqlClientAssertionStore::new(repositories.op_store_pool());
     let expires_at = Utc::now() + chrono::Duration::seconds(60);
 
     let first = store
@@ -103,8 +248,10 @@ async fn a_client_assertion_jti_is_fresh_once_then_replayed() -> anyhow::Result<
 #[tokio::test]
 async fn concurrent_record_jti_calls_for_the_same_jti_yield_exactly_one_fresh_result()
 -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    let store = Arc::new(vpay_db::SqlClientAssertionStore::new(pool));
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let store = Arc::new(vpay_db::SqlClientAssertionStore::new(
+        repositories.op_store_pool(),
+    ));
     let expires_at = Utc::now() + chrono::Duration::seconds(60);
 
     const ATTEMPTS: usize = 10;
@@ -148,18 +295,23 @@ async fn concurrent_record_jti_calls_for_the_same_jti_yield_exactly_one_fresh_re
 /// `enable_client` all observe the same underlying table consistently.
 #[tokio::test]
 async fn disabled_client_lookup_reflects_disable_and_enable() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
 
     assert!(
-        !vpay_db::is_client_disabled(&pool, "merchant_never_disabled").await?,
+        !repositories
+            .is_client_disabled("merchant_never_disabled")
+            .await?,
         "a client_id with no disabled_clients row must report not-disabled"
     );
 
-    vpay_db::disable_client(&pool, "merchant_never_disabled", Some("key compromised"))
+    repositories
+        .disable_client("merchant_never_disabled", Some("key compromised"))
         .await
         .context("disabling a client must succeed")?;
     assert!(
-        vpay_db::is_client_disabled(&pool, "merchant_never_disabled").await?,
+        repositories
+            .is_client_disabled("merchant_never_disabled")
+            .await?,
         "a client_id with a disabled_clients row must report disabled"
     );
 
@@ -167,26 +319,31 @@ async fn disabled_client_lookup_reflects_disable_and_enable() -> anyhow::Result<
     // already-disabled client must not error (the module's own doc comment
     // argues for INSERT ... ON CONFLICT DO UPDATE specifically so an
     // operator re-running "disable this client" never has to check first).
-    vpay_db::disable_client(
-        &pool,
-        "merchant_never_disabled",
-        Some("re-confirmed compromised"),
-    )
-    .await
-    .context("a second disable of the same client_id must not error")?;
-    assert!(vpay_db::is_client_disabled(&pool, "merchant_never_disabled").await?);
+    repositories
+        .disable_client("merchant_never_disabled", Some("re-confirmed compromised"))
+        .await
+        .context("a second disable of the same client_id must not error")?;
+    assert!(
+        repositories
+            .is_client_disabled("merchant_never_disabled")
+            .await?
+    );
 
-    vpay_db::enable_client(&pool, "merchant_never_disabled")
+    repositories
+        .enable_client("merchant_never_disabled")
         .await
         .context("re-enabling a client must succeed")?;
     assert!(
-        !vpay_db::is_client_disabled(&pool, "merchant_never_disabled").await?,
+        !repositories
+            .is_client_disabled("merchant_never_disabled")
+            .await?,
         "a client_id must report not-disabled again after enable_client removes its row"
     );
 
     // enable_client on a client_id that was never disabled must be a no-op,
     // not an error.
-    vpay_db::enable_client(&pool, "merchant_was_never_disabled_at_all")
+    repositories
+        .enable_client("merchant_was_never_disabled_at_all")
         .await
         .context("enabling a client with no disabled_clients row must not error")?;
 
@@ -227,7 +384,7 @@ fn microsecond_precision(instant: time::OffsetDateTime) -> time::OffsetDateTime 
 #[tokio::test]
 async fn publishable_signing_keys_includes_active_and_unexpired_retired_but_excludes_expired()
 -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
 
     sqlx::query(
         "INSERT INTO oauth_signing_keys (kid, public_jwk, active) VALUES ($1, $2::jsonb, true)",
@@ -266,7 +423,8 @@ async fn publishable_signing_keys_includes_active_and_unexpired_retired_but_excl
     .context("inserting the soon-to-expire key must succeed")?;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let mut kids: Vec<String> = vpay_db::publishable_signing_keys(&pool)
+    let mut kids: Vec<String> = repositories
+        .publishable_signing_keys()
         .await
         .context("publishable_signing_keys query must succeed")?
         .into_iter()
@@ -294,39 +452,39 @@ async fn publishable_signing_keys_includes_active_and_unexpired_retired_but_excl
 /// comment explains the statement ordering around) before and after.
 #[tokio::test]
 async fn rotate_signing_key_leaves_exactly_one_active_key() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
 
     // Bootstrap case first: rotating with no key currently active must not
     // error (the UPDATE affects zero rows and the INSERT becomes an
     // ordinary bootstrap insert, per the function's own doc comment).
-    vpay_db::rotate_signing_key(
-        &pool,
-        "key_v1",
-        &fixture_public_jwk("v1"),
-        time::OffsetDateTime::now_utc() + time::Duration::minutes(30),
-    )
-    .await
-    .context("rotating with no prior active key (bootstrap) must succeed")?;
+    repositories
+        .rotate_signing_key(
+            "key_v1",
+            &fixture_public_jwk("v1"),
+            time::OffsetDateTime::now_utc() + time::Duration::minutes(30),
+        )
+        .await
+        .context("rotating with no prior active key (bootstrap) must succeed")?;
 
     assert_eq!(
-        vpay_db::active_signing_key_kid(&pool).await?,
+        repositories.active_signing_key_kid().await?,
         Some("key_v1".to_string()),
         "after the bootstrap rotation, key_v1 must be the sole active key"
     );
 
     // Real rotation: an active key already exists (key_v1); rotating to
     // key_v2 must retire key_v1 and leave key_v2 as the only active row.
-    vpay_db::rotate_signing_key(
-        &pool,
-        "key_v2",
-        &fixture_public_jwk("v2"),
-        time::OffsetDateTime::now_utc() + time::Duration::minutes(30),
-    )
-    .await
-    .context("rotating from an existing active key must succeed")?;
+    repositories
+        .rotate_signing_key(
+            "key_v2",
+            &fixture_public_jwk("v2"),
+            time::OffsetDateTime::now_utc() + time::Duration::minutes(30),
+        )
+        .await
+        .context("rotating from an existing active key must succeed")?;
 
     assert_eq!(
-        vpay_db::active_signing_key_kid(&pool).await?,
+        repositories.active_signing_key_kid().await?,
         Some("key_v2".to_string()),
         "after rotation, key_v2 must be the sole active key"
     );
@@ -342,7 +500,8 @@ async fn rotate_signing_key_leaves_exactly_one_active_key() -> anyhow::Result<()
          one_active_signing_key invariant intact"
     );
 
-    let retired_kids: Vec<String> = vpay_db::publishable_signing_keys(&pool)
+    let retired_kids: Vec<String> = repositories
+        .publishable_signing_keys()
         .await
         .context("publishable_signing_keys after rotation must succeed")?
         .into_iter()
@@ -370,7 +529,7 @@ async fn rotate_signing_key_leaves_exactly_one_active_key() -> anyhow::Result<()
 #[tokio::test]
 async fn ensure_active_signing_key_bootstraps_is_idempotent_then_rotates_once() -> anyhow::Result<()>
 {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
     // Truncated to whole microseconds before it is written: `TIMESTAMPTZ`
     // stores microseconds, so a nanosecond-precision instant would never
     // compare equal to what Postgres hands back. This is the exact
@@ -378,14 +537,10 @@ async fn ensure_active_signing_key_bootstraps_is_idempotent_then_rotates_once() 
     let retire_at =
         microsecond_precision(time::OffsetDateTime::now_utc() + time::Duration::hours(24));
 
-    let first = vpay_db::ensure_active_signing_key(
-        &pool,
-        "kid_boot_v1",
-        &fixture_public_jwk("boot-v1"),
-        retire_at,
-    )
-    .await
-    .context("bootstrapping an empty table must succeed")?;
+    let first = repositories
+        .ensure_active_signing_key("kid_boot_v1", &fixture_public_jwk("boot-v1"), retire_at)
+        .await
+        .context("bootstrapping an empty table must succeed")?;
     assert_eq!(
         first,
         vpay_db::ActivationOutcome::Rotated { previous: None },
@@ -400,14 +555,10 @@ async fn ensure_active_signing_key_bootstraps_is_idempotent_then_rotates_once() 
 
     // The second replica, holding the identical PEM and therefore the
     // identical thumbprint `kid`.
-    let second = vpay_db::ensure_active_signing_key(
-        &pool,
-        "kid_boot_v1",
-        &fixture_public_jwk("boot-v1"),
-        retire_at,
-    )
-    .await
-    .context("a second replica presenting the same kid must not error")?;
+    let second = repositories
+        .ensure_active_signing_key("kid_boot_v1", &fixture_public_jwk("boot-v1"), retire_at)
+        .await
+        .context("a second replica presenting the same kid must not error")?;
     assert_eq!(
         second,
         vpay_db::ActivationOutcome::AlreadyActive,
@@ -432,14 +583,10 @@ async fn ensure_active_signing_key_bootstraps_is_idempotent_then_rotates_once() 
 
     // A deploy with a new Secret: a different thumbprint, so exactly one
     // rotation, naming the key it displaced.
-    let third = vpay_db::ensure_active_signing_key(
-        &pool,
-        "kid_boot_v2",
-        &fixture_public_jwk("boot-v2"),
-        retire_at,
-    )
-    .await
-    .context("rotating to a new kid must succeed")?;
+    let third = repositories
+        .ensure_active_signing_key("kid_boot_v2", &fixture_public_jwk("boot-v2"), retire_at)
+        .await
+        .context("rotating to a new kid must succeed")?;
     assert_eq!(
         third,
         vpay_db::ActivationOutcome::Rotated {
@@ -449,7 +596,7 @@ async fn ensure_active_signing_key_bootstraps_is_idempotent_then_rotates_once() 
     );
 
     assert_eq!(
-        vpay_db::active_signing_key_kid(&pool).await?,
+        repositories.active_signing_key_kid().await?,
         Some("kid_boot_v2".to_string())
     );
     let retired_expires_at: Option<time::OffsetDateTime> =
@@ -481,7 +628,7 @@ async fn ensure_active_signing_key_bootstraps_is_idempotent_then_rotates_once() 
 #[tokio::test]
 async fn concurrent_ensure_active_signing_key_calls_with_the_same_kid_rotate_exactly_once()
 -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
     // Truncated to whole microseconds before it is written: `TIMESTAMPTZ`
     // stores microseconds, so a nanosecond-precision instant would never
     // compare equal to what Postgres hands back. This is the exact
@@ -495,15 +642,15 @@ async fn concurrent_ensure_active_signing_key_calls_with_the_same_kid_rotate_exa
     const REPLICAS: usize = 8;
     let mut handles = Vec::with_capacity(REPLICAS);
     for _ in 0..REPLICAS {
-        let pool = pool.clone();
+        let repositories = Arc::clone(&repositories);
         handles.push(tokio::spawn(async move {
-            vpay_db::ensure_active_signing_key(
-                &pool,
-                "kid_all_replicas_share",
-                &fixture_public_jwk("shared"),
-                retire_at,
-            )
-            .await
+            repositories
+                .ensure_active_signing_key(
+                    "kid_all_replicas_share",
+                    &fixture_public_jwk("shared"),
+                    retire_at,
+                )
+                .await
         }));
     }
 
@@ -556,7 +703,7 @@ async fn concurrent_ensure_active_signing_key_calls_with_the_same_kid_rotate_exa
 /// would have gone on passing while the crash loop stayed.
 #[tokio::test]
 async fn ensure_active_signing_key_refuses_to_reactivate_a_retired_kid() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
     // Truncated to whole microseconds before it is written: `TIMESTAMPTZ`
     // stores microseconds, so a nanosecond-precision instant would never
     // compare equal to what Postgres hands back. This is the exact
@@ -564,16 +711,18 @@ async fn ensure_active_signing_key_refuses_to_reactivate_a_retired_kid() -> anyh
     let retire_at =
         microsecond_precision(time::OffsetDateTime::now_utc() + time::Duration::hours(24));
 
-    vpay_db::ensure_active_signing_key(&pool, "kid_old", &fixture_public_jwk("old"), retire_at)
+    repositories
+        .ensure_active_signing_key("kid_old", &fixture_public_jwk("old"), retire_at)
         .await
         .context("bootstrapping the old key must succeed")?;
-    vpay_db::ensure_active_signing_key(&pool, "kid_new", &fixture_public_jwk("new"), retire_at)
+    repositories
+        .ensure_active_signing_key("kid_new", &fixture_public_jwk("new"), retire_at)
         .await
         .context("rotating to the new key must succeed")?;
 
-    let rolled_back =
-        vpay_db::ensure_active_signing_key(&pool, "kid_old", &fixture_public_jwk("old"), retire_at)
-            .await;
+    let rolled_back = repositories
+        .ensure_active_signing_key("kid_old", &fixture_public_jwk("old"), retire_at)
+        .await;
     let error = rolled_back.expect_err(
         "re-activating a retired kid is not supported and must fail loudly at boot, not silently \
          republish a deliberately retired key",
@@ -610,7 +759,7 @@ async fn ensure_active_signing_key_refuses_to_reactivate_a_retired_kid() -> anyh
     // The failed transaction must have rolled back whole: the new key is
     // still the active one, and the database is not left with zero.
     assert_eq!(
-        vpay_db::active_signing_key_kid(&pool).await?,
+        repositories.active_signing_key_kid().await?,
         Some("kid_new".to_string()),
         "a failed rollback attempt must leave the previously active key untouched"
     );
@@ -630,26 +779,26 @@ async fn ensure_active_signing_key_refuses_to_reactivate_a_retired_kid() -> anyh
 /// production path (`config_reconcile::reconcile`) rather than by hand-rolled
 /// `INSERT`s — so a test that passes is evidence about the code that ships,
 /// not about a fixture that resembles it.
-async fn seed_reference_data(pool: &PgPool) -> anyhow::Result<()> {
-    vpay_db::config_reconcile::reconcile(
-        pool,
-        &[vpay_db::CurrencySeed {
-            code: "XAF".to_owned(),
-            exponent: 0,
-        }],
-        &[vpay_db::ProviderSeed {
-            code: "mtn_momo".to_owned(),
-            display_name: "MTN MoMo".to_owned(),
-            flow: "push".to_owned(),
-            supports_refunds: false,
-            supports_partial_refunds: false,
-            delivers_callbacks: true,
-            requires_ip_allowlist: false,
-            enabled: true,
-        }],
-    )
-    .await
-    .context("seeding currencies and providers must succeed")?;
+async fn seed_reference_data(repositories: &dyn Repositories) -> anyhow::Result<()> {
+    repositories
+        .reconcile(
+            &[vpay_db::CurrencySeed {
+                code: "XAF".to_owned(),
+                exponent: 0,
+            }],
+            &[vpay_db::ProviderSeed {
+                code: "mtn_momo".to_owned(),
+                display_name: "MTN MoMo".to_owned(),
+                flow: "push".to_owned(),
+                supports_refunds: false,
+                supports_partial_refunds: false,
+                delivers_callbacks: true,
+                requires_ip_allowlist: false,
+                enabled: true,
+            }],
+        )
+        .await
+        .context("seeding currencies and providers must succeed")?;
     Ok(())
 }
 
@@ -722,7 +871,7 @@ const fn fixture_hash(seed: u8) -> [u8; 32] {
 #[tokio::test]
 async fn migration_0014_replaces_last_payment_error_and_0015_to_0018_create_their_tables()
 -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, _repositories, pool) = migrated_postgres().await?;
 
     let columns: Vec<String> = sqlx::query_scalar(
         "SELECT column_name::TEXT FROM information_schema.columns \
@@ -817,30 +966,32 @@ async fn migration_0014_replaces_last_payment_error_and_0015_to_0018_create_thei
 #[tokio::test]
 async fn a_second_charge_for_one_intent_is_refused_as_a_named_unique_violation()
 -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
 
-    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_one_charge", "XAF"))
+    repositories
+        .insert(&fixture_intent("pi_one_charge", "XAF"))
         .await
         .context("inserting the intent must succeed")?;
 
-    let mut tx = pool.begin().await.context("first transaction begins")?;
-    let charge =
-        vpay_db::charges::insert_for_intent(&mut tx, &fixture_charge("ch_1", "pi_one_charge"))
-            .await
-            .context("the first charge for an intent must be accepted")?;
-    tx.commit().await.context("first transaction commits")?;
+    let charge = one_tx::insert_for_intent(
+        repositories.as_ref(),
+        &fixture_charge("ch_1", "pi_one_charge"),
+    )
+    .await
+    .context("the first charge for an intent must be accepted")?;
     assert_eq!(charge.state, "submitting");
     assert_eq!(
         charge.currency_code, "XAF",
         "D2: the charge carries the intent's currency verbatim"
     );
 
-    let mut tx = pool.begin().await.context("second transaction begins")?;
-    let error =
-        vpay_db::charges::insert_for_intent(&mut tx, &fixture_charge("ch_2", "pi_one_charge"))
-            .await
-            .expect_err("a second charge for the same intent must be refused by the database");
+    let error = one_tx::insert_for_intent(
+        repositories.as_ref(),
+        &fixture_charge("ch_2", "pi_one_charge"),
+    )
+    .await
+    .expect_err("a second charge for the same intent must be refused by the database");
 
     match &error {
         vpay_db::DbError::UniqueViolation { constraint, .. } => assert_eq!(
@@ -858,7 +1009,6 @@ async fn a_second_charge_for_one_intent_is_refused_as_a_named_unique_violation()
     assert_eq!(vpay_core::Classify::retry(&error), vpay_core::Retry::Never);
 
     // The rolled-back attempt must leave exactly the one charge behind.
-    drop(tx);
     let charges: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM charges")
         .fetch_one(&pool)
         .await
@@ -887,20 +1037,20 @@ async fn a_second_charge_for_one_intent_is_refused_as_a_named_unique_violation()
 /// to violate is a constraint nobody knows still exists.
 #[tokio::test]
 async fn a_charges_url_columns_refuse_a_scheme_a_browser_would_execute() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
 
-    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_urls", "XAF")).await?;
+    repositories
+        .insert(&fixture_intent("pi_urls", "XAF"))
+        .await?;
 
     // The happy path first, so the refusals below cannot be passing because
     // the insert was broken for some unrelated reason.
-    let mut tx = pool.begin().await.context("transaction begins")?;
     let mut good = fixture_charge("ch_urls", "pi_urls");
     good.return_url = Some("https://shop.example/return".to_owned());
-    vpay_db::charges::insert_for_intent(&mut tx, &good)
+    one_tx::insert_for_intent(repositories.as_ref(), &good)
         .await
         .context("an http(s) return_url must be accepted")?;
-    tx.commit().await.context("transaction commits")?;
 
     let violations: [(&str, &str, &str); 5] = [
         (
@@ -976,12 +1126,13 @@ async fn a_charges_url_columns_refuse_a_scheme_a_browser_would_execute() -> anyh
 #[tokio::test]
 async fn an_intent_in_an_unseeded_currency_is_a_named_foreign_key_violation() -> anyhow::Result<()>
 {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
 
     // Shape-valid (three uppercase letters, so `code_is_iso4217_shape` is
     // not what rejects it) but absent from `currencies`.
-    let error = vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_bad_ccy", "ZZZ"))
+    let error = repositories
+        .insert(&fixture_intent("pi_bad_ccy", "ZZZ"))
         .await
         .expect_err("an intent in a currency this deployment does not know must be refused");
 
@@ -1012,14 +1163,16 @@ async fn an_intent_in_an_unseeded_currency_is_a_named_foreign_key_violation() ->
 /// requests raced.
 #[tokio::test]
 async fn a_transition_from_a_stale_expected_status_changes_nothing() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
 
-    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_cas", "XAF"))
+    repositories
+        .insert(&fixture_intent("pi_cas", "XAF"))
         .await
         .context("inserting the intent must succeed")?;
 
-    let cancelled = vpay_db::payment_intents::cancel(&pool, "merchant_a", "pi_cas")
+    let cancelled = repositories
+        .cancel("merchant_a", "pi_cas")
         .await
         .context("cancelling a requires_payment_method intent must succeed")?
         .context("cancel must return the updated row")?;
@@ -1027,21 +1180,22 @@ async fn a_transition_from_a_stale_expected_status_changes_nothing() -> anyhow::
 
     // The stale write: whoever issues it still believes the intent is
     // `requires_payment_method`.
-    let stale = vpay_db::payment_intents::transition(
-        &pool,
-        "merchant_a",
-        "pi_cas",
-        "requires_payment_method",
-        "processing",
-    )
-    .await
-    .context("a stale transition must not error — it simply must not fire")?;
+    let stale = repositories
+        .transition(
+            "merchant_a",
+            "pi_cas",
+            "requires_payment_method",
+            "processing",
+        )
+        .await
+        .context("a stale transition must not error — it simply must not fire")?;
     assert_eq!(
         stale, None,
         "a compare-and-swap whose expected status no longer holds must report that it did nothing"
     );
 
-    let after = vpay_db::payment_intents::get_for_merchant(&pool, "merchant_a", "pi_cas")
+    let after = repositories
+        .get_for_merchant("merchant_a", "pi_cas")
         .await?
         .context("the intent must still exist")?;
     assert_eq!(
@@ -1051,17 +1205,14 @@ async fn a_transition_from_a_stale_expected_status_changes_nothing() -> anyhow::
 
     // The same guard must also refuse a foreign merchant, and must not
     // reveal that the intent exists at all.
-    let foreign = vpay_db::payment_intents::transition(
-        &pool,
-        "merchant_b",
-        "pi_cas",
-        "canceled",
-        "processing",
-    )
-    .await?;
+    let foreign = repositories
+        .transition("merchant_b", "pi_cas", "canceled", "processing")
+        .await?;
     assert_eq!(foreign, None);
     assert_eq!(
-        vpay_db::payment_intents::get_for_merchant(&pool, "merchant_b", "pi_cas").await?,
+        repositories
+            .get_for_merchant("merchant_b", "pi_cas")
+            .await?,
         None,
         "another merchant's intent must read as missing, not as forbidden"
     );
@@ -1086,20 +1237,23 @@ async fn a_transition_from_a_stale_expected_status_changes_nothing() -> anyhow::
 #[tokio::test]
 async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_terminal_charge()
 -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
 
-    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_in_flight", "XAF"))
+    repositories
+        .insert(&fixture_intent("pi_in_flight", "XAF"))
         .await
         .context("inserting the intent must succeed")?;
 
-    let mut tx = pool.begin().await.context("the transaction begins")?;
-    vpay_db::charges::insert_for_intent(&mut tx, &fixture_charge("ch_live", "pi_in_flight"))
-        .await
-        .context("the charge a confirm commits before submitting")?;
-    tx.commit().await.context("the transaction commits")?;
+    one_tx::insert_for_intent(
+        repositories.as_ref(),
+        &fixture_charge("ch_live", "pi_in_flight"),
+    )
+    .await
+    .context("the charge a confirm commits before submitting")?;
 
-    let before = vpay_db::payment_intents::get_for_merchant(&pool, "merchant_a", "pi_in_flight")
+    let before = repositories
+        .get_for_merchant("merchant_a", "pi_in_flight")
         .await?
         .context("the intent must exist")?;
     assert_eq!(
@@ -1108,11 +1262,12 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
     );
 
     assert_eq!(
-        vpay_db::payment_intents::cancel(&pool, "merchant_a", "pi_in_flight").await?,
+        repositories.cancel("merchant_a", "pi_in_flight").await?,
         None,
         "an intent whose charge may be live must not be cancellable"
     );
-    let after = vpay_db::payment_intents::get_for_merchant(&pool, "merchant_a", "pi_in_flight")
+    let after = repositories
+        .get_for_merchant("merchant_a", "pi_in_flight")
         .await?
         .context("the intent must still exist")?;
     assert_eq!(after, before, "not one column may have moved");
@@ -1125,7 +1280,7 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
             .await
             .context("moving the charge must succeed")?;
         assert_eq!(
-            vpay_db::payment_intents::cancel(&pool, "merchant_a", "pi_in_flight").await?,
+            repositories.cancel("merchant_a", "pi_in_flight").await?,
             None,
             "a charge in `{state}` is still one the rail may act on"
         );
@@ -1137,7 +1292,8 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
         .execute(&pool)
         .await
         .context("failing the charge must succeed")?;
-    let cancelled = vpay_db::payment_intents::cancel(&pool, "merchant_a", "pi_in_flight")
+    let cancelled = repositories
+        .cancel("merchant_a", "pi_in_flight")
         .await?
         .context("an intent whose only charge has failed must still be cancellable")?;
     assert_eq!(cancelled.status, "canceled");
@@ -1146,11 +1302,11 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
     // status guard: neither may be reached from another merchant, and a
     // second cancel does nothing.
     assert_eq!(
-        vpay_db::payment_intents::cancel(&pool, "merchant_b", "pi_in_flight").await?,
+        repositories.cancel("merchant_b", "pi_in_flight").await?,
         None
     );
     assert_eq!(
-        vpay_db::payment_intents::cancel(&pool, "merchant_a", "pi_in_flight").await?,
+        repositories.cancel("merchant_a", "pi_in_flight").await?,
         None
     );
 
@@ -1185,16 +1341,16 @@ fn fresh_claim_id(claim: &vpay_db::IdempotencyClaim) -> anyhow::Result<uuid::Uui
 /// snapshot, and the payer is charged eight times.
 #[tokio::test]
 async fn concurrent_claims_of_one_idempotency_key_yield_exactly_one_fresh() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
 
     // Eight, not more: `vpay_db::connect`'s pool caps at ten connections.
     const RETRIES: usize = 8;
     let mut handles = Vec::with_capacity(RETRIES);
     for _ in 0..RETRIES {
-        let pool = pool.clone();
+        let repositories = Arc::clone(&repositories);
         handles.push(tokio::spawn(async move {
-            vpay_db::idempotency::claim(
-                &pool,
+            Idempotency::claim(
+                repositories.as_ref(),
                 "merchant_a",
                 "key-raced",
                 "POST",
@@ -1250,10 +1406,10 @@ async fn concurrent_claims_of_one_idempotency_key_yield_exactly_one_fresh() -> a
 /// the merchant would believe their second, different request succeeded.
 #[tokio::test]
 async fn reusing_an_idempotency_key_with_a_different_request_is_a_mismatch() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
 
-    let first = vpay_db::idempotency::claim(
-        &pool,
+    let first = Idempotency::claim(
+        repositories.as_ref(),
         "merchant_a",
         "key-reused",
         "POST",
@@ -1264,23 +1420,23 @@ async fn reusing_an_idempotency_key_with_a_different_request_is_a_mismatch() -> 
     let first = fresh_claim_id(&first)?;
 
     assert_eq!(
-        vpay_db::idempotency::store(
-            &pool,
-            "merchant_a",
-            "key-reused",
-            first,
-            200,
-            &json!({"id": "pi_1"}),
-            None,
-        )
-        .await
-        .context("storing the first response must succeed")?,
+        repositories
+            .store(
+                "merchant_a",
+                "key-reused",
+                first,
+                200,
+                &json!({"id": "pi_1"}),
+                None,
+            )
+            .await
+            .context("storing the first response must succeed")?,
         vpay_db::IdempotencyStoreOutcome::Stored
     );
 
     // Same key, same merchant, different body — so a different hash.
-    let second = vpay_db::idempotency::claim(
-        &pool,
+    let second = Idempotency::claim(
+        repositories.as_ref(),
         "merchant_a",
         "key-reused",
         "POST",
@@ -1297,8 +1453,8 @@ async fn reusing_an_idempotency_key_with_a_different_request_is_a_mismatch() -> 
 
     // The key is scoped per merchant: the same key and the same *different*
     // body is simply a fresh claim for someone else.
-    let other_merchant = vpay_db::idempotency::claim(
-        &pool,
+    let other_merchant = Idempotency::claim(
+        repositories.as_ref(),
         "merchant_b",
         "key-reused",
         "POST",
@@ -1320,11 +1476,11 @@ async fn reusing_an_idempotency_key_with_a_different_request_is_a_mismatch() -> 
 /// today would differ from the one it got a moment ago under the same key.
 #[tokio::test]
 async fn a_completed_idempotency_key_replays_its_stored_response() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
 
     let claim_id = fresh_claim_id(
-        &vpay_db::idempotency::claim(
-            &pool,
+        &Idempotency::claim(
+            repositories.as_ref(),
             "merchant_a",
             "key-replayed",
             "POST",
@@ -1336,22 +1492,15 @@ async fn a_completed_idempotency_key_replays_its_stored_response() -> anyhow::Re
 
     let body = json!({"id": "pi_replayed", "object": "payment_intent", "amount": 5000});
     assert_eq!(
-        vpay_db::idempotency::store(
-            &pool,
-            "merchant_a",
-            "key-replayed",
-            claim_id,
-            200,
-            &body,
-            None,
-        )
-        .await
-        .context("storing the response must succeed")?,
+        repositories
+            .store("merchant_a", "key-replayed", claim_id, 200, &body, None,)
+            .await
+            .context("storing the response must succeed")?,
         vpay_db::IdempotencyStoreOutcome::Stored
     );
 
-    let replay = vpay_db::idempotency::claim(
-        &pool,
+    let replay = Idempotency::claim(
+        repositories.as_ref(),
         "merchant_a",
         "key-replayed",
         "POST",
@@ -1375,17 +1524,17 @@ async fn a_completed_idempotency_key_replays_its_stored_response() -> anyhow::Re
     // The *same* claim id: this is the caller completing one key twice,
     // which is its own invariant breaking — not the stale-claim case, which
     // the ABA test below covers and which is deliberately not an error.
-    let twice = vpay_db::idempotency::store(
-        &pool,
-        "merchant_a",
-        "key-replayed",
-        claim_id,
-        500,
-        &json!({"error": "would clobber the answer already given"}),
-        Some("false"),
-    )
-    .await
-    .expect_err("completing an already-complete key must be refused, not silently applied");
+    let twice = repositories
+        .store(
+            "merchant_a",
+            "key-replayed",
+            claim_id,
+            500,
+            &json!({"error": "would clobber the answer already given"}),
+            Some("false"),
+        )
+        .await
+        .expect_err("completing an already-complete key must be refused, not silently applied");
     match &twice {
         vpay_db::DbError::WriteMatchedNoRow { table, .. } => {
             assert_eq!(*table, "idempotency_keys");
@@ -1429,7 +1578,7 @@ async fn a_completed_idempotency_key_replays_its_stored_response() -> anyhow::Re
 /// have quietly turned into "do retry your successful create".
 #[tokio::test]
 async fn the_retry_advisory_round_trips_and_0025_refuses_anything_else() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
 
     for (key, hash, status, advisory) in [
         ("key-advice-false", 0x51_u8, 409_u16, Some("false")),
@@ -1437,8 +1586,8 @@ async fn the_retry_advisory_round_trips_and_0025_refuses_anything_else() -> anyh
         ("key-advice-none", 0x53, 200, None),
     ] {
         let claim_id = fresh_claim_id(
-            &vpay_db::idempotency::claim(
-                &pool,
+            &Idempotency::claim(
+                repositories.as_ref(),
                 "merchant_a",
                 key,
                 "POST",
@@ -1448,22 +1597,22 @@ async fn the_retry_advisory_round_trips_and_0025_refuses_anything_else() -> anyh
             .await?,
         )?;
         assert_eq!(
-            vpay_db::idempotency::store(
-                &pool,
-                "merchant_a",
-                key,
-                claim_id,
-                status,
-                &json!({"stored": key}),
-                advisory,
-            )
-            .await
-            .context("storing the response must succeed")?,
+            repositories
+                .store(
+                    "merchant_a",
+                    key,
+                    claim_id,
+                    status,
+                    &json!({"stored": key}),
+                    advisory,
+                )
+                .await
+                .context("storing the response must succeed")?,
             vpay_db::IdempotencyStoreOutcome::Stored
         );
 
-        match vpay_db::idempotency::claim(
-            &pool,
+        match Idempotency::claim(
+            repositories.as_ref(),
             "merchant_a",
             key,
             "POST",
@@ -1521,12 +1670,12 @@ async fn the_retry_advisory_round_trips_and_0025_refuses_anything_else() -> anyh
 /// one key, which is the exact double-charge the table exists to prevent.
 #[tokio::test]
 async fn an_expired_in_flight_key_is_reclaimable_and_a_live_one_is_not() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
 
     for key in ["key-abandoned", "key-running"] {
         fresh_claim_id(
-            &vpay_db::idempotency::claim(
-                &pool,
+            &Idempotency::claim(
+                repositories.as_ref(),
                 "merchant_a",
                 key,
                 "POST",
@@ -1552,8 +1701,8 @@ async fn an_expired_in_flight_key_is_reclaimable_and_a_live_one_is_not() -> anyh
     // hash that differs in all 32 bytes. It must be `Fresh` and not
     // `Mismatch` — the reclaim starts a new request, so the row it leaves
     // has to describe that request rather than the abandoned one.
-    let reclaim = vpay_db::idempotency::claim(
-        &pool,
+    let reclaim = Idempotency::claim(
+        repositories.as_ref(),
         "merchant_a",
         "key-abandoned",
         "POST",
@@ -1569,8 +1718,8 @@ async fn an_expired_in_flight_key_is_reclaimable_and_a_live_one_is_not() -> anyh
 
     // The row still `in_flight` inside its window is untouched by any of it.
     assert_eq!(
-        vpay_db::idempotency::claim(
-            &pool,
+        Idempotency::claim(
+            repositories.as_ref(),
             "merchant_a",
             "key-running",
             "POST",
@@ -1608,13 +1757,13 @@ async fn an_expired_in_flight_key_is_reclaimable_and_a_live_one_is_not() -> anyh
 /// correct, non-erroring answer there.
 #[tokio::test]
 async fn release_hands_back_an_in_flight_key_and_never_a_completed_one() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
 
     let claim = |key: &'static str| {
-        let pool = pool.clone();
+        let repositories = Arc::clone(&repositories);
         async move {
-            vpay_db::idempotency::claim(
-                &pool,
+            Idempotency::claim(
+                repositories.as_ref(),
                 "merchant_a",
                 key,
                 "POST",
@@ -1627,7 +1776,9 @@ async fn release_hands_back_an_in_flight_key_and_never_a_completed_one() -> anyh
 
     let failed = fresh_claim_id(&claim("key-failed").await?)?;
     assert_eq!(
-        vpay_db::idempotency::release(&pool, "merchant_a", "key-failed", failed).await?,
+        repositories
+            .release("merchant_a", "key-failed", failed)
+            .await?,
         1,
         "releasing an in-flight key must delete exactly its row"
     );
@@ -1641,11 +1792,12 @@ async fn release_hands_back_an_in_flight_key_and_never_a_completed_one() -> anyh
     // A key that completed: release must not touch it.
     let done = fresh_claim_id(&claim("key-done").await?)?;
     let body = json!({"id": "pi_stored"});
-    vpay_db::idempotency::store(&pool, "merchant_a", "key-done", done, 200, &body, None)
+    repositories
+        .store("merchant_a", "key-done", done, 200, &body, None)
         .await
         .context("storing the response must succeed")?;
     assert_eq!(
-        vpay_db::idempotency::release(&pool, "merchant_a", "key-done", done).await?,
+        repositories.release("merchant_a", "key-done", done).await?,
         0,
         "a completed key is not in flight and must survive a release"
     );
@@ -1660,7 +1812,8 @@ async fn release_hands_back_an_in_flight_key_and_never_a_completed_one() -> anyh
     // And a key nobody ever claimed. The id is arbitrary because there is
     // no row for it to match — which is the answer being asserted.
     assert_eq!(
-        vpay_db::idempotency::release(&pool, "merchant_a", "never-seen", uuid::Uuid::new_v4())
+        repositories
+            .release("merchant_a", "never-seen", uuid::Uuid::new_v4())
             .await?,
         0
     );
@@ -1690,11 +1843,11 @@ async fn release_hands_back_an_in_flight_key_and_never_a_completed_one() -> anyh
 /// `vpay_db::idempotency` and exactly one of the two halves fails.
 #[tokio::test]
 async fn a_reclaimed_key_is_not_writable_by_the_claim_it_replaced() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
 
     let r1 = fresh_claim_id(
-        &vpay_db::idempotency::claim(
-            &pool,
+        &Idempotency::claim(
+            repositories.as_ref(),
             "merchant_a",
             "key-aba",
             "POST",
@@ -1713,8 +1866,8 @@ async fn a_reclaimed_key_is_not_writable_by_the_claim_it_replaced() -> anyhow::R
     .context("ageing R1's claim past its window must succeed")?;
 
     let r2 = fresh_claim_id(
-        &vpay_db::idempotency::claim(
-            &pool,
+        &Idempotency::claim(
+            repositories.as_ref(),
             "merchant_a",
             "key-aba",
             "POST",
@@ -1730,7 +1883,7 @@ async fn a_reclaimed_key_is_not_writable_by_the_claim_it_replaced() -> anyhow::R
 
     // R1 wakes up. Its release must not delete R2's claim...
     assert_eq!(
-        vpay_db::idempotency::release(&pool, "merchant_a", "key-aba", r1).await?,
+        repositories.release("merchant_a", "key-aba", r1).await?,
         0,
         "a superseded claim must delete nothing; deleting R2's row would let a third request run \
          under this key at the same time as R2"
@@ -1739,17 +1892,17 @@ async fn a_reclaimed_key_is_not_writable_by_the_claim_it_replaced() -> anyhow::R
     // ...and its store must not overwrite R2's row, nor claim to have
     // stored anything.
     assert_eq!(
-        vpay_db::idempotency::store(
-            &pool,
-            "merchant_a",
-            "key-aba",
-            r1,
-            200,
-            &json!({"id": "pi_r1", "note": "R1's answer, under R2's claim"}),
-            None,
-        )
-        .await
-        .context("a stale store must not be an error")?,
+        repositories
+            .store(
+                "merchant_a",
+                "key-aba",
+                r1,
+                200,
+                &json!({"id": "pi_r1", "note": "R1's answer, under R2's claim"}),
+                None,
+            )
+            .await
+            .context("a stale store must not be an error")?,
         vpay_db::IdempotencyStoreOutcome::StaleClaim,
         "a superseded claim must be told its claim is stale, never that the write succeeded"
     );
@@ -1771,21 +1924,21 @@ async fn a_reclaimed_key_is_not_writable_by_the_claim_it_replaced() -> anyhow::R
     // And R2 can still complete normally — the guard narrows the write to
     // the live claim, it does not disable it.
     assert_eq!(
-        vpay_db::idempotency::store(
-            &pool,
-            "merchant_a",
-            "key-aba",
-            r2,
-            201,
-            &json!({"id": "pi_r2"}),
-            None,
-        )
-        .await
-        .context("the live claim must still be able to store its response")?,
+        repositories
+            .store(
+                "merchant_a",
+                "key-aba",
+                r2,
+                201,
+                &json!({"id": "pi_r2"}),
+                None,
+            )
+            .await
+            .context("the live claim must still be able to store its response")?,
         vpay_db::IdempotencyStoreOutcome::Stored
     );
-    match vpay_db::idempotency::claim(
-        &pool,
+    match Idempotency::claim(
+        repositories.as_ref(),
         "merchant_a",
         "key-aba",
         "POST",
@@ -1815,12 +1968,12 @@ async fn a_reclaimed_key_is_not_writable_by_the_claim_it_replaced() -> anyhow::R
 /// the next retry of a request already running would be told `Fresh`.
 #[tokio::test]
 async fn sweep_expired_removes_only_the_rows_past_their_window() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
 
     for key in ["key-old", "key-fresh"] {
         fresh_claim_id(
-            &vpay_db::idempotency::claim(
-                &pool,
+            &Idempotency::claim(
+                repositories.as_ref(),
                 "merchant_a",
                 key,
                 "POST",
@@ -1842,7 +1995,8 @@ async fn sweep_expired_removes_only_the_rows_past_their_window() -> anyhow::Resu
     .await
     .context("ageing the row must succeed")?;
 
-    let swept = vpay_db::idempotency::sweep_expired(&pool)
+    let swept = repositories
+        .sweep_expired()
         .await
         .context("the sweep must succeed")?;
     assert_eq!(swept, 1, "exactly the expired row may be deleted");
@@ -1855,7 +2009,7 @@ async fn sweep_expired_removes_only_the_rows_past_their_window() -> anyhow::Resu
     assert_eq!(remaining, vec!["key-fresh".to_owned()]);
 
     // A second sweep with nothing expired must delete nothing.
-    assert_eq!(vpay_db::idempotency::sweep_expired(&pool).await?, 0);
+    assert_eq!(repositories.sweep_expired().await?, 0);
 
     Ok(())
 }
@@ -1871,8 +2025,8 @@ async fn sweep_expired_removes_only_the_rows_past_their_window() -> anyhow::Resu
 /// operation rather than an approximation.
 #[tokio::test]
 async fn list_page_walks_forward_and_backward_over_twenty_five_intents() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
 
     // Inserted oldest-first, so `page_fixture_id(24)` is the newest and every
     // page below is expressed against that order. The ids are computed
@@ -1880,16 +2034,16 @@ async fn list_page_walks_forward_and_backward_over_twenty_five_intents() -> anyh
     // directly, without indexing a Vec (which `clippy::indexing_slicing`
     // denies, tests included).
     for n in 0..25 {
-        let row =
-            vpay_db::payment_intents::insert(&pool, &fixture_intent(&page_fixture_id(n), "XAF"))
-                .await
-                .context("inserting a page fixture must succeed")?;
+        let row = repositories
+            .insert(&fixture_intent(&page_fixture_id(n), "XAF"))
+            .await
+            .context("inserting a page fixture must succeed")?;
         assert_eq!(row.id, page_fixture_id(n));
     }
     // Another merchant's intents must never appear in any page below.
     let mut other = fixture_intent("pi_other_merchant", "XAF");
     other.merchant_id = "merchant_b".to_owned();
-    vpay_db::payment_intents::insert(&pool, &other).await?;
+    repositories.insert(&other).await?;
 
     let ids = |rows: &[vpay_db::PaymentIntentRow]| -> Vec<String> {
         rows.iter().map(|r| r.id.clone()).collect()
@@ -1903,7 +2057,8 @@ async fn list_page_walks_forward_and_backward_over_twenty_five_intents() -> anyh
         starting_after: None,
         ending_before: None,
     };
-    let (first, has_more) = vpay_db::payment_intents::list_page(&pool, "merchant_a", &page).await?;
+    let (first, has_more) =
+        PaymentIntents::list_page(repositories.as_ref(), "merchant_a", &page).await?;
     assert_eq!(
         ids(&first),
         newest_first(15, 24),
@@ -1917,7 +2072,7 @@ async fn list_page_walks_forward_and_backward_over_twenty_five_intents() -> anyh
         ending_before: None,
     };
     let (second, has_more) =
-        vpay_db::payment_intents::list_page(&pool, "merchant_a", &page).await?;
+        PaymentIntents::list_page(repositories.as_ref(), "merchant_a", &page).await?;
     assert_eq!(ids(&second), newest_first(5, 14));
     assert!(has_more);
 
@@ -1926,7 +2081,8 @@ async fn list_page_walks_forward_and_backward_over_twenty_five_intents() -> anyh
         starting_after: Some(page_fixture_id(5)),
         ending_before: None,
     };
-    let (third, has_more) = vpay_db::payment_intents::list_page(&pool, "merchant_a", &page).await?;
+    let (third, has_more) =
+        PaymentIntents::list_page(repositories.as_ref(), "merchant_a", &page).await?;
     assert_eq!(ids(&third), newest_first(0, 4));
     assert!(
         !has_more,
@@ -1940,7 +2096,8 @@ async fn list_page_walks_forward_and_backward_over_twenty_five_intents() -> anyh
         starting_after: None,
         ending_before: Some(page_fixture_id(4)),
     };
-    let (back, has_more) = vpay_db::payment_intents::list_page(&pool, "merchant_a", &page).await?;
+    let (back, has_more) =
+        PaymentIntents::list_page(repositories.as_ref(), "merchant_a", &page).await?;
     assert_eq!(
         ids(&back),
         ids(&second),
@@ -1956,7 +2113,8 @@ async fn list_page_walks_forward_and_backward_over_twenty_five_intents() -> anyh
         starting_after: None,
         ending_before: Some(page_fixture_id(15)),
     };
-    let (tail, has_more) = vpay_db::payment_intents::list_page(&pool, "merchant_a", &page).await?;
+    let (tail, has_more) =
+        PaymentIntents::list_page(repositories.as_ref(), "merchant_a", &page).await?;
     assert_eq!(ids(&tail), newest_first(16, 24));
     assert!(
         !has_more,
@@ -1970,7 +2128,8 @@ async fn list_page_walks_forward_and_backward_over_twenty_five_intents() -> anyh
         starting_after: Some("pi_does_not_exist".to_owned()),
         ending_before: None,
     };
-    let (none, has_more) = vpay_db::payment_intents::list_page(&pool, "merchant_a", &page).await?;
+    let (none, has_more) =
+        PaymentIntents::list_page(repositories.as_ref(), "merchant_a", &page).await?;
     assert!(none.is_empty() && !has_more);
 
     let page = vpay_db::ListPage {
@@ -1978,7 +2137,7 @@ async fn list_page_walks_forward_and_backward_over_twenty_five_intents() -> anyh
         starting_after: None,
         ending_before: None,
     };
-    let (others, _) = vpay_db::payment_intents::list_page(&pool, "merchant_b", &page).await?;
+    let (others, _) = PaymentIntents::list_page(repositories.as_ref(), "merchant_b", &page).await?;
     assert_eq!(
         ids(&others),
         vec!["pi_other_merchant".to_owned()],
@@ -2012,7 +2171,7 @@ async fn provider_snapshot(pool: &PgPool) -> anyhow::Result<Vec<(String, String,
 /// reinterpret every amount already stored.
 #[tokio::test]
 async fn reconcile_is_idempotent_and_disables_a_dropped_provider_code() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
 
     let currencies = vec![
         vpay_db::CurrencySeed {
@@ -2045,7 +2204,8 @@ async fn reconcile_is_idempotent_and_disables_a_dropped_provider_code() -> anyho
         enabled: true,
     };
 
-    vpay_db::config_reconcile::reconcile(&pool, &currencies, &[mtn.clone(), orange.clone()])
+    repositories
+        .reconcile(&currencies, &[mtn.clone(), orange.clone()])
         .await
         .context("the first reconcile must succeed")?;
 
@@ -2060,7 +2220,8 @@ async fn reconcile_is_idempotent_and_disables_a_dropped_provider_code() -> anyho
         ]
     );
 
-    vpay_db::config_reconcile::reconcile(&pool, &currencies, &[mtn.clone(), orange.clone()])
+    repositories
+        .reconcile(&currencies, &[mtn.clone(), orange.clone()])
         .await
         .context("a second, identical reconcile must succeed")?;
     assert_eq!(
@@ -2080,7 +2241,8 @@ async fn reconcile_is_idempotent_and_disables_a_dropped_provider_code() -> anyho
     );
 
     // The rail is removed from the deployment's configuration.
-    vpay_db::config_reconcile::reconcile(&pool, &currencies, std::slice::from_ref(&mtn))
+    repositories
+        .reconcile(&currencies, std::slice::from_ref(&mtn))
         .await
         .context("reconciling a shortened provider list must succeed")?;
     assert_eq!(
@@ -2106,7 +2268,8 @@ async fn reconcile_is_idempotent_and_disables_a_dropped_provider_code() -> anyho
         code: "XAF".to_owned(),
         exponent: 2,
     }];
-    let error = vpay_db::config_reconcile::reconcile(&pool, &wrong, std::slice::from_ref(&mtn))
+    let error = repositories
+        .reconcile(&wrong, std::slice::from_ref(&mtn))
         .await
         .expect_err("changing a stored currency exponent must be refused at boot");
     match &error {
@@ -2188,7 +2351,7 @@ async fn reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_released() ->
 {
     use std::time::Duration;
 
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
     let (mtn, orange) = reconcile_rails();
     let currencies = vec![vpay_db::CurrencySeed {
         code: "XAF".to_owned(),
@@ -2208,10 +2371,10 @@ async fn reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_released() ->
         .context("taking the reconcile lock must succeed")?;
 
     let mut reconciling = tokio::spawn({
-        let pool = pool.clone();
+        let repositories = Arc::clone(&repositories);
         let providers = vec![mtn.clone(), orange.clone()];
         let currencies = currencies.clone();
-        async move { vpay_db::config_reconcile::reconcile(&pool, &currencies, &providers).await }
+        async move { repositories.reconcile(&currencies, &providers).await }
     });
 
     // Long enough that a reconcile which did not wait would have finished
@@ -2278,7 +2441,7 @@ async fn reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_released() ->
 #[tokio::test]
 async fn two_concurrent_reconciles_with_the_seeds_in_opposite_orders_both_succeed_and_converge()
 -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
     let (mtn, orange) = reconcile_rails();
 
     // Also in opposite orders, and with a currency each list mentions, so
@@ -2300,8 +2463,8 @@ async fn two_concurrent_reconciles_with_the_seeds_in_opposite_orders_both_succee
     let reverse = vec![orange.clone(), mtn.clone()];
 
     let (left, right) = tokio::join!(
-        vpay_db::config_reconcile::reconcile(&pool, &forward_currencies, &forward),
-        vpay_db::config_reconcile::reconcile(&pool, &reverse_currencies, &reverse),
+        repositories.reconcile(&forward_currencies, &forward),
+        repositories.reconcile(&reverse_currencies, &reverse),
     );
     left.context("the forward-ordered reconcile must succeed")?;
     right.context("the reverse-ordered reconcile must succeed")?;
@@ -2340,27 +2503,29 @@ async fn two_concurrent_reconciles_with_the_seeds_in_opposite_orders_both_succee
 #[tokio::test]
 async fn provider_requests_record_attempts_and_keep_status_and_responded_at_in_step()
 -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
 
-    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_attempts", "XAF")).await?;
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let charge =
-        vpay_db::charges::insert_for_intent(&mut tx, &fixture_charge("ch_attempts", "pi_attempts"))
-            .await
-            .context("opening the charge must succeed")?;
-    tx.commit().await.context("transaction commits")?;
-
-    let first = vpay_db::provider_requests::insert_pending(
-        &pool,
-        &charge.id,
-        "mtn_momo",
-        "submit",
-        charge.provider_reference_id,
-        1,
+    repositories
+        .insert(&fixture_intent("pi_attempts", "XAF"))
+        .await?;
+    let charge = one_tx::insert_for_intent(
+        repositories.as_ref(),
+        &fixture_charge("ch_attempts", "pi_attempts"),
     )
     .await
-    .context("recording the pending attempt must succeed")?;
+    .context("opening the charge must succeed")?;
+
+    let first = repositories
+        .insert_pending(
+            &charge.id,
+            "mtn_momo",
+            "submit",
+            charge.provider_reference_id,
+            1,
+        )
+        .await
+        .context("recording the pending attempt must succeed")?;
 
     let pending: (Option<i32>, Option<time::OffsetDateTime>, Option<String>) = sqlx::query_as(
         "SELECT status_code, responded_at, error_kind FROM provider_requests WHERE id = $1",
@@ -2376,7 +2541,8 @@ async fn provider_requests_record_attempts_and_keep_status_and_responded_at_in_s
     );
 
     // The not-implemented adapter: a failure with no HTTP status at all.
-    vpay_db::provider_requests::record_response(&pool, first, None, Some("not_implemented"))
+    repositories
+        .record_response(first, None, Some("not_implemented"))
         .await
         .context("recording a status-less failure must succeed")?;
     let after: (Option<i32>, Option<time::OffsetDateTime>, Option<String>) = sqlx::query_as(
@@ -2396,19 +2562,20 @@ async fn provider_requests_record_attempts_and_keep_status_and_responded_at_in_s
 
     // A second attempt for the same charge: this table is one row per
     // attempt, never one per charge.
-    let second = vpay_db::provider_requests::insert_pending(
-        &pool,
-        &charge.id,
-        "mtn_momo",
-        "query_status",
-        charge.provider_reference_id,
-        2,
-    )
-    .await
-    .context("a second attempt for the same charge must be accepted")?;
+    let second = repositories
+        .insert_pending(
+            &charge.id,
+            "mtn_momo",
+            "query_status",
+            charge.provider_reference_id,
+            2,
+        )
+        .await
+        .context("a second attempt for the same charge must be accepted")?;
     assert_ne!(first, second);
 
-    vpay_db::provider_requests::record_response(&pool, second, Some(200), None)
+    repositories
+        .record_response(second, Some(200), None)
         .await
         .context("recording a real response must succeed")?;
     let answered: (Option<i32>, Option<time::OffsetDateTime>) =
@@ -2425,7 +2592,8 @@ async fn provider_requests_record_attempts_and_keep_status_and_responded_at_in_s
 
     // Recording against an id that does not exist is vpay's invariant
     // breaking, not a merchant's mistake.
-    let missing = vpay_db::provider_requests::record_response(&pool, 9_999_999, Some(200), None)
+    let missing = repositories
+        .record_response(9_999_999, Some(200), None)
         .await
         .expect_err("completing an attempt that was never opened must be refused");
     assert_eq!(
@@ -2470,28 +2638,31 @@ async fn provider_requests_record_attempts_and_keep_status_and_responded_at_in_s
 /// caller rather than a bug that is reachable today.
 #[tokio::test]
 async fn mark_submitted_merges_ref_extra_and_never_erases_it() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
-    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_merge", "XAF")).await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    repositories
+        .insert(&fixture_intent("pi_merge", "XAF"))
+        .await?;
 
     // A charge that already holds a rail's key material when the write lands
     // — the shape a callback repair, or a second attempt on a redirect rail,
     // would present.
     let mut with_token = fixture_charge("ch_merge", "pi_merge");
     with_token.provider_ref_extra = Some(json!({ "pay_token": "tok_abc" }));
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    vpay_db::charges::insert_for_intent(&mut tx, &with_token)
+    one_tx::insert_for_intent(repositories.as_ref(), &with_token)
         .await
         .context("opening the charge must succeed")?;
-    tx.commit().await.context("transaction commits")?;
 
     // The empty answer a push rail gives a resubmit.
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let merged =
-        vpay_db::charges::mark_submitted(&mut tx, "ch_merge", "submitted", Some(&json!({})), None)
-            .await
-            .context("recording the resubmit's answer must succeed")?;
-    tx.commit().await.context("transaction commits")?;
+    let merged = one_tx::mark_submitted(
+        repositories.as_ref(),
+        "ch_merge",
+        "submitted",
+        Some(&json!({})),
+        None,
+    )
+    .await
+    .context("recording the resubmit's answer must succeed")?;
     assert_eq!(
         merged.provider_ref_extra,
         Some(json!({ "pay_token": "tok_abc" })),
@@ -2503,16 +2674,24 @@ async fn mark_submitted_merges_ref_extra_and_never_erases_it() -> anyhow::Result
     // an erasure.
     let mut none_arg = fixture_charge("ch_merge_none", "pi_merge_none");
     none_arg.provider_ref_extra = Some(json!({ "pay_token": "tok_xyz" }));
-    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_merge_none", "XAF")).await?;
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    vpay_db::charges::insert_for_intent(&mut tx, &none_arg)
-        .await
-        .context("opening the charge must succeed")?;
-    let untouched =
-        vpay_db::charges::mark_submitted(&mut tx, "ch_merge_none", "submitted", None, None)
-            .await
-            .context("recording an answer with no key material must succeed")?;
-    tx.commit().await.context("transaction commits")?;
+    repositories
+        .insert(&fixture_intent("pi_merge_none", "XAF"))
+        .await?;
+    let untouched = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.insert_for_intent(&none_arg)
+                    .await
+                    .context("opening the charge must succeed")?;
+                let untouched = tx
+                    .mark_submitted("ch_merge_none", "submitted", None, None)
+                    .await
+                    .context("recording an answer with no key material must succeed")?;
+                Ok::<_, anyhow::Error>(TxOutcome::Commit(untouched))
+            })
+        })
+        .await?
+        .into_inner();
     assert_eq!(
         untouched.provider_ref_extra,
         Some(json!({ "pay_token": "tok_xyz" })),
@@ -2523,21 +2702,29 @@ async fn mark_submitted_merges_ref_extra_and_never_erases_it() -> anyhow::Result
     // to write.
     let mut fresh = fixture_charge("ch_merge_new", "pi_merge_new");
     fresh.provider_ref_extra = Some(json!({ "pay_token": "tok_old", "keep": "me" }));
-    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_merge_new", "XAF")).await?;
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    vpay_db::charges::insert_for_intent(&mut tx, &fresh)
-        .await
-        .context("opening the charge must succeed")?;
-    let replaced = vpay_db::charges::mark_submitted(
-        &mut tx,
-        "ch_merge_new",
-        "submitted",
-        Some(&json!({ "pay_token": "tok_new" })),
-        None,
-    )
-    .await
-    .context("recording a fresh token must succeed")?;
-    tx.commit().await.context("transaction commits")?;
+    repositories
+        .insert(&fixture_intent("pi_merge_new", "XAF"))
+        .await?;
+    let replaced = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.insert_for_intent(&fresh)
+                    .await
+                    .context("opening the charge must succeed")?;
+                let replaced = tx
+                    .mark_submitted(
+                        "ch_merge_new",
+                        "submitted",
+                        Some(&json!({ "pay_token": "tok_new" })),
+                        None,
+                    )
+                    .await
+                    .context("recording a fresh token must succeed")?;
+                Ok::<_, anyhow::Error>(TxOutcome::Commit(replaced))
+            })
+        })
+        .await?
+        .into_inner();
     assert_eq!(
         replaced.provider_ref_extra,
         Some(json!({ "pay_token": "tok_new", "keep": "me" })),
@@ -2564,22 +2751,31 @@ async fn mark_submitted_merges_ref_extra_and_never_erases_it() -> anyhow::Result
 /// means one charge can only take this write once.
 #[tokio::test]
 async fn mark_submitted_never_erases_the_redirect_url() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
 
     // A charge that already carries the rail's URL when a second answer
     // lands — the shape a resubmit on a redirect rail would present.
-    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_url_keep", "XAF")).await?;
+    repositories
+        .insert(&fixture_intent("pi_url_keep", "XAF"))
+        .await?;
     let mut holding_url = fixture_charge("ch_url_keep", "pi_url_keep");
     holding_url.redirect_url = Some("https://pay.example/abc".to_owned());
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    vpay_db::charges::insert_for_intent(&mut tx, &holding_url)
-        .await
-        .context("opening the charge must succeed")?;
-    let kept = vpay_db::charges::mark_submitted(&mut tx, "ch_url_keep", "submitted", None, None)
-        .await
-        .context("recording an answer with no URL must succeed")?;
-    tx.commit().await.context("transaction commits")?;
+    let kept = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.insert_for_intent(&holding_url)
+                    .await
+                    .context("opening the charge must succeed")?;
+                let kept = tx
+                    .mark_submitted("ch_url_keep", "submitted", None, None)
+                    .await
+                    .context("recording an answer with no URL must succeed")?;
+                Ok::<_, anyhow::Error>(TxOutcome::Commit(kept))
+            })
+        })
+        .await?
+        .into_inner();
     assert_eq!(
         kept.redirect_url.as_deref(),
         Some("https://pay.example/abc"),
@@ -2587,23 +2783,31 @@ async fn mark_submitted_never_erases_the_redirect_url() -> anyhow::Result<()> {
     );
 
     // A real answer still wins: this is a merge, not a refusal to write.
-    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_url_new", "XAF")).await?;
+    repositories
+        .insert(&fixture_intent("pi_url_new", "XAF"))
+        .await?;
     let mut replacing = fixture_charge("ch_url_new", "pi_url_new");
     replacing.redirect_url = Some("https://pay.example/old".to_owned());
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    vpay_db::charges::insert_for_intent(&mut tx, &replacing)
-        .await
-        .context("opening the charge must succeed")?;
-    let replaced = vpay_db::charges::mark_submitted(
-        &mut tx,
-        "ch_url_new",
-        "submitted",
-        None,
-        Some("https://pay.example/new"),
-    )
-    .await
-    .context("recording a fresh URL must succeed")?;
-    tx.commit().await.context("transaction commits")?;
+    let replaced = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.insert_for_intent(&replacing)
+                    .await
+                    .context("opening the charge must succeed")?;
+                let replaced = tx
+                    .mark_submitted(
+                        "ch_url_new",
+                        "submitted",
+                        None,
+                        Some("https://pay.example/new"),
+                    )
+                    .await
+                    .context("recording a fresh URL must succeed")?;
+                Ok::<_, anyhow::Error>(TxOutcome::Commit(replaced))
+            })
+        })
+        .await?
+        .into_inner();
     assert_eq!(
         replaced.redirect_url.as_deref(),
         Some("https://pay.example/new"),
@@ -2612,16 +2816,24 @@ async fn mark_submitted_never_erases_the_redirect_url() -> anyhow::Result<()> {
 
     // And the ordinary push-rail confirm: nothing stored, nothing answered,
     // nothing written.
-    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_url_none", "XAF")).await?;
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    vpay_db::charges::insert_for_intent(&mut tx, &fixture_charge("ch_url_none", "pi_url_none"))
-        .await
-        .context("opening the charge must succeed")?;
-    let still_none =
-        vpay_db::charges::mark_submitted(&mut tx, "ch_url_none", "submitted", None, None)
-            .await
-            .context("recording a push rail's answer must succeed")?;
-    tx.commit().await.context("transaction commits")?;
+    repositories
+        .insert(&fixture_intent("pi_url_none", "XAF"))
+        .await?;
+    let still_none = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.insert_for_intent(&fixture_charge("ch_url_none", "pi_url_none"))
+                    .await
+                    .context("opening the charge must succeed")?;
+                let still_none = tx
+                    .mark_submitted("ch_url_none", "submitted", None, None)
+                    .await
+                    .context("recording a push rail's answer must succeed")?;
+                Ok::<_, anyhow::Error>(TxOutcome::Commit(still_none))
+            })
+        })
+        .await?
+        .into_inner();
     assert_eq!(
         still_none.redirect_url, None,
         "a push rail has no URL and must not acquire one"
@@ -2642,19 +2854,19 @@ async fn mark_submitted_never_erases_the_redirect_url() -> anyhow::Result<()> {
 #[tokio::test]
 async fn a_submitted_charge_records_the_rails_material_and_only_from_submitting()
 -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
 
-    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_submitted", "XAF")).await?;
-    let mut tx = pool.begin().await.context("transaction begins")?;
+    repositories
+        .insert(&fixture_intent("pi_submitted", "XAF"))
+        .await?;
     let mut new = fixture_charge("ch_submitted", "pi_submitted");
     // The merchant's own return destination, written before the rail is
     // called (migration 0019).
     new.return_url = Some("https://shop.example/order/1234/return".to_owned());
-    let charge = vpay_db::charges::insert_for_intent(&mut tx, &new)
+    let charge = one_tx::insert_for_intent(repositories.as_ref(), &new)
         .await
         .context("opening the charge must succeed")?;
-    tx.commit().await.context("transaction commits")?;
     assert_eq!(
         charge.return_url.as_deref(),
         Some("https://shop.example/order/1234/return"),
@@ -2663,9 +2875,8 @@ async fn a_submitted_charge_records_the_rails_material_and_only_from_submitting(
     assert_eq!(charge.redirect_url, None, "no rail has answered yet");
 
     let ref_extra = json!({ "pay_token": "tok_abc" });
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let submitted = vpay_db::charges::mark_submitted(
-        &mut tx,
+    let submitted = one_tx::mark_submitted(
+        repositories.as_ref(),
         &charge.id,
         "submitted",
         Some(&ref_extra),
@@ -2673,7 +2884,6 @@ async fn a_submitted_charge_records_the_rails_material_and_only_from_submitting(
     )
     .await
     .context("recording the rail's answer must succeed")?;
-    tx.commit().await.context("transaction commits")?;
 
     assert_eq!(submitted.state, "submitted");
     assert_eq!(submitted.provider_ref_extra, Some(ref_extra));
@@ -2692,16 +2902,14 @@ async fn a_submitted_charge_records_the_rails_material_and_only_from_submitting(
 
     // Second time round the charge is no longer `submitting`, and the guard
     // is in the statement.
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let refused = vpay_db::charges::mark_submitted(
-        &mut tx,
+    let refused = one_tx::mark_submitted(
+        repositories.as_ref(),
         &charge.id,
         "submitted",
         Some(&json!({ "pay_token": "tok_second" })),
         Some("https://webpayment.example/pay/tok_second"),
     )
     .await;
-    tx.rollback().await.context("transaction rolls back")?;
     assert!(
         matches!(
             refused,
@@ -2739,38 +2947,46 @@ async fn a_submitted_charge_records_the_rails_material_and_only_from_submitting(
 /// here rather than assumed.
 #[tokio::test]
 async fn a_declined_charge_is_terminal_and_the_intent_keeps_its_status() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
 
-    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_declined", "XAF")).await?;
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let charge =
-        vpay_db::charges::insert_for_intent(&mut tx, &fixture_charge("ch_declined", "pi_declined"))
-            .await
-            .context("opening the charge must succeed")?;
-    tx.commit().await.context("transaction commits")?;
-
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let failed = vpay_db::charges::mark_failed(
-        &mut tx,
-        &charge.id,
-        "insufficient_funds",
-        "NOT_ENOUGH_FUNDS",
+    repositories
+        .insert(&fixture_intent("pi_declined", "XAF"))
+        .await?;
+    let charge = one_tx::insert_for_intent(
+        repositories.as_ref(),
+        &fixture_charge("ch_declined", "pi_declined"),
     )
     .await
-    .context("failing the charge must succeed")?;
-    let intent = vpay_db::payment_intents::record_payment_error(
-        &mut tx,
-        "merchant_a",
-        "pi_declined",
-        "requires_payment_method",
-        "insufficient_funds",
-        "The payment was declined (insufficient_funds).",
-    )
-    .await
-    .context("recording the payment error must succeed")?
-    .context("the intent is still requires_payment_method, so the guard must have matched")?;
-    tx.commit().await.context("transaction commits")?;
+    .context("opening the charge must succeed")?;
+
+    let (failed, intent) = repositories
+        .transaction(|tx| {
+            let charge = &charge;
+            Box::pin(async move {
+                let failed = tx
+                    .mark_failed(&charge.id, "insufficient_funds", "NOT_ENOUGH_FUNDS")
+                    .await
+                    .context("failing the charge must succeed")?;
+                let intent = tx
+                    .record_payment_error(
+                        "merchant_a",
+                        "pi_declined",
+                        "requires_payment_method",
+                        "insufficient_funds",
+                        "The payment was declined (insufficient_funds).",
+                    )
+                    .await
+                    .context("recording the payment error must succeed")?
+                    .context(
+                        "the intent is still requires_payment_method, so the guard must have \
+                         matched",
+                    )?;
+                Ok::<_, anyhow::Error>(TxOutcome::Commit((failed, intent)))
+            })
+        })
+        .await?
+        .into_inner();
 
     assert_eq!(failed.state, "failed");
     assert_eq!(failed.failure_code.as_deref(), Some("insufficient_funds"));
@@ -2795,9 +3011,8 @@ async fn a_declined_charge_is_terminal_and_the_intent_keeps_its_status() -> anyh
 
     // The status is a guard here too: an intent that has moved on does not
     // get a payment error stamped onto it.
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let stale = vpay_db::payment_intents::record_payment_error(
-        &mut tx,
+    let stale = one_tx::record_payment_error(
+        repositories.as_ref(),
         "merchant_a",
         "pi_declined",
         "processing",
@@ -2806,16 +3021,14 @@ async fn a_declined_charge_is_terminal_and_the_intent_keeps_its_status() -> anyh
     )
     .await
     .context("a guarded write that matches nothing is not an error")?;
-    tx.commit().await.context("transaction commits")?;
     assert!(
         stale.is_none(),
         "the intent is not `processing`, so the write must match nothing"
     );
 
     // A foreign merchant cannot stamp an error onto someone else's intent.
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let foreign = vpay_db::payment_intents::record_payment_error(
-        &mut tx,
+    let foreign = one_tx::record_payment_error(
+        repositories.as_ref(),
         "merchant_b",
         "pi_declined",
         "requires_payment_method",
@@ -2824,7 +3037,6 @@ async fn a_declined_charge_is_terminal_and_the_intent_keeps_its_status() -> anyh
     )
     .await
     .context("a tenancy-scoped write that matches nothing is not an error")?;
-    tx.commit().await.context("transaction commits")?;
     assert!(foreign.is_none(), "every write in this module is scoped");
 
     Ok(())
@@ -2841,39 +3053,45 @@ async fn a_declined_charge_is_terminal_and_the_intent_keeps_its_status() -> anyh
 /// `backends/tests/integration/tests/confirm_rails.rs`.
 #[tokio::test]
 async fn the_charge_and_the_intent_move_together_or_not_at_all() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
 
-    vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_atomic", "XAF")).await?;
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let charge =
-        vpay_db::charges::insert_for_intent(&mut tx, &fixture_charge("ch_atomic", "pi_atomic"))
-            .await
-            .context("opening the charge must succeed")?;
-    tx.commit().await.context("transaction commits")?;
-
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    vpay_db::charges::mark_submitted(
-        &mut tx,
-        &charge.id,
-        "submitted",
-        Some(&json!({ "pay_token": "tok_rolled_back" })),
-        Some("https://webpayment.example/pay/tok_rolled_back"),
+    repositories
+        .insert(&fixture_intent("pi_atomic", "XAF"))
+        .await?;
+    let charge = one_tx::insert_for_intent(
+        repositories.as_ref(),
+        &fixture_charge("ch_atomic", "pi_atomic"),
     )
     .await
-    .context("the charge update must succeed inside the transaction")?;
-    vpay_db::payment_intents::transition_in_tx(
-        &mut tx,
-        "merchant_a",
-        "pi_atomic",
-        "requires_payment_method",
-        "requires_action",
-    )
-    .await
-    .context("the intent transition must succeed inside the transaction")?
-    .context("the guard must have matched")?;
-    // The crash: everything above is discarded.
-    tx.rollback().await.context("transaction rolls back")?;
+    .context("opening the charge must succeed")?;
+
+    repositories
+        .transaction(|tx| {
+            let charge = &charge;
+            Box::pin(async move {
+                tx.mark_submitted(
+                    &charge.id,
+                    "submitted",
+                    Some(&json!({ "pay_token": "tok_rolled_back" })),
+                    Some("https://webpayment.example/pay/tok_rolled_back"),
+                )
+                .await
+                .context("the charge update must succeed inside the transaction")?;
+                tx.transition_in_tx(
+                    "merchant_a",
+                    "pi_atomic",
+                    "requires_payment_method",
+                    "requires_action",
+                )
+                .await
+                .context("the intent transition must succeed inside the transaction")?
+                .context("the guard must have matched")?;
+                // The crash: everything above is discarded.
+                Ok::<_, anyhow::Error>(TxOutcome::Abandon(()))
+            })
+        })
+        .await?;
 
     let (state, redirect_url): (String, Option<String>) =
         sqlx::query_as("SELECT state::TEXT, redirect_url FROM charges WHERE id = $1")
@@ -2913,7 +3131,7 @@ async fn the_charge_and_the_intent_move_together_or_not_at_all() -> anyhow::Resu
 /// away), and the invariant-violating pairs a broken database could present.
 /// Reaching those through the API would test the API.
 async fn live_charge(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     intent_id: &str,
     charge_id: &str,
     intent_status: &str,
@@ -2921,17 +3139,16 @@ async fn live_charge(
 ) -> anyhow::Result<()> {
     let mut intent = fixture_intent(intent_id, "XAF");
     intent.status = intent_status.to_owned();
-    vpay_db::payment_intents::insert(pool, &intent)
+    repositories
+        .insert(&intent)
         .await
         .context("inserting the intent must succeed")?;
 
     let mut charge = fixture_charge(charge_id, intent_id);
     charge.state = charge_state.to_owned();
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    vpay_db::charges::insert_for_intent(&mut tx, &charge)
+    one_tx::insert_for_intent(repositories, &charge)
         .await
         .context("opening the charge must succeed")?;
-    tx.commit().await.context("transaction commits")?;
 
     Ok(())
 }
@@ -2942,14 +3159,13 @@ async fn live_charge(
 /// bug that module exists to prevent. A test setting up a queue has no such
 /// work to be in step with.
 async fn enqueue(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     kind: &str,
     dedupe_key: &str,
     run_at: time::OffsetDateTime,
 ) -> anyhow::Result<bool> {
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let inserted = vpay_db::jobs::enqueue_in_tx(
-        &mut tx,
+    let inserted = one_tx::enqueue_in_tx(
+        repositories,
         kind,
         dedupe_key,
         &json!({ "charge_id": "ch_x" }),
@@ -2957,7 +3173,6 @@ async fn enqueue(
     )
     .await
     .context("enqueueing must succeed")?;
-    tx.commit().await.context("transaction commits")?;
     Ok(inserted)
 }
 
@@ -2988,32 +3203,32 @@ async fn charge_state(pool: &PgPool, charge_id: &str) -> anyhow::Result<String> 
 /// decorative: every rescheduled job would be claimed again immediately.
 #[tokio::test]
 async fn claim_takes_the_earliest_runnable_job_and_leaves_the_future_one() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
     let now = time::OffsetDateTime::now_utc();
 
     enqueue(
-        &pool,
+        repositories.as_ref(),
         "poll_charge",
         "poll:newer",
         now - time::Duration::seconds(10),
     )
     .await?;
     enqueue(
-        &pool,
+        repositories.as_ref(),
         "poll_charge",
         "poll:older",
         now - time::Duration::seconds(60),
     )
     .await?;
     enqueue(
-        &pool,
+        repositories.as_ref(),
         "poll_charge",
         "poll:future",
         now + time::Duration::hours(1),
     )
     .await?;
 
-    let first = vpay_db::jobs::claim(&pool, "worker-1")
+    let first = Jobs::claim(repositories.as_ref(), "worker-1")
         .await?
         .context("a runnable job must be claimable")?;
     assert_eq!(
@@ -3023,13 +3238,15 @@ async fn claim_takes_the_earliest_runnable_job_and_leaves_the_future_one() -> an
     assert_eq!(first.attempts, 1, "the claim itself counts the attempt");
     assert_eq!(first.locked_by.as_deref(), Some("worker-1"));
 
-    let second = vpay_db::jobs::claim(&pool, "worker-1")
+    let second = Jobs::claim(repositories.as_ref(), "worker-1")
         .await?
         .context("the second runnable job must be claimable")?;
     assert_eq!(second.dedupe_key, "poll:newer");
 
     assert!(
-        vpay_db::jobs::claim(&pool, "worker-1").await?.is_none(),
+        Jobs::claim(repositories.as_ref(), "worker-1")
+            .await?
+            .is_none(),
         "a job scheduled an hour out must not be claimable now"
     );
 
@@ -3041,9 +3258,9 @@ async fn claim_takes_the_earliest_runnable_job_and_leaves_the_future_one() -> an
 /// other into the settlement transaction.
 #[tokio::test]
 async fn eight_concurrent_claims_over_one_job_yield_exactly_one_claim() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
     enqueue(
-        &pool,
+        repositories.as_ref(),
         "poll_charge",
         "poll:contended",
         time::OffsetDateTime::now_utc(),
@@ -3053,9 +3270,9 @@ async fn eight_concurrent_claims_over_one_job_yield_exactly_one_claim() -> anyho
     const WORKERS: usize = 8;
     let mut handles = Vec::with_capacity(WORKERS);
     for worker in 0..WORKERS {
-        let pool = pool.clone();
+        let repositories = Arc::clone(&repositories);
         handles.push(tokio::spawn(async move {
-            vpay_db::jobs::claim(&pool, &format!("worker-{worker}")).await
+            Jobs::claim(repositories.as_ref(), &format!("worker-{worker}")).await
         }));
     }
 
@@ -3087,13 +3304,13 @@ async fn eight_concurrent_claims_over_one_job_yield_exactly_one_claim() -> anyho
 /// past one worker, and this is the test that catches it.
 #[tokio::test]
 async fn eight_concurrent_claims_over_eight_jobs_take_eight_distinct_jobs() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
     let now = time::OffsetDateTime::now_utc();
 
     const WORKERS: usize = 8;
     for n in 0..WORKERS {
         enqueue(
-            &pool,
+            repositories.as_ref(),
             "poll_charge",
             &format!("poll:{n}"),
             now - time::Duration::seconds(i64::try_from(n).unwrap_or(0)),
@@ -3103,9 +3320,9 @@ async fn eight_concurrent_claims_over_eight_jobs_take_eight_distinct_jobs() -> a
 
     let mut handles = Vec::with_capacity(WORKERS);
     for worker in 0..WORKERS {
-        let pool = pool.clone();
+        let repositories = Arc::clone(&repositories);
         handles.push(tokio::spawn(async move {
-            vpay_db::jobs::claim(&pool, &format!("worker-{worker}")).await
+            Jobs::claim(repositories.as_ref(), &format!("worker-{worker}")).await
         }));
     }
 
@@ -3143,29 +3360,31 @@ async fn eight_concurrent_claims_over_eight_jobs_take_eight_distinct_jobs() -> a
 /// claim predicate cannot pass by accident.
 #[tokio::test]
 async fn a_leased_job_is_invisible_to_claim() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
     enqueue(
-        &pool,
+        repositories.as_ref(),
         "sweep_expired",
         "sweep:expired",
         time::OffsetDateTime::now_utc(),
     )
     .await?;
 
-    let job = vpay_db::jobs::claim(&pool, "worker-1")
+    let job = Jobs::claim(repositories.as_ref(), "worker-1")
         .await?
         .context("the job must be claimable once")?;
 
     assert!(
-        vpay_db::jobs::claim(&pool, "worker-2").await?.is_none(),
+        Jobs::claim(repositories.as_ref(), "worker-2")
+            .await?
+            .is_none(),
         "a job another worker holds must not be claimable"
     );
 
     assert!(
-        vpay_db::jobs::release_all(&pool, "worker-1").await? == 1,
+        repositories.release_all("worker-1").await? == 1,
         "the drain path must hand the lease back"
     );
-    let reclaimed = vpay_db::jobs::claim(&pool, "worker-2")
+    let reclaimed = Jobs::claim(repositories.as_ref(), "worker-2")
         .await?
         .context("a released job must be claimable again")?;
     assert_eq!(reclaimed.id, job.id);
@@ -3183,21 +3402,21 @@ async fn a_leased_job_is_invisible_to_claim() -> anyhow::Result<()> {
 /// running — that is the ABA the `locked_by` guard closes.
 #[tokio::test]
 async fn finish_with_the_wrong_worker_id_deletes_nothing() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
     enqueue(
-        &pool,
+        repositories.as_ref(),
         "poll_charge",
         "poll:aba",
         time::OffsetDateTime::now_utc(),
     )
     .await?;
 
-    let job = vpay_db::jobs::claim(&pool, "worker-1")
+    let job = Jobs::claim(repositories.as_ref(), "worker-1")
         .await?
         .context("the job must be claimable")?;
 
     assert!(
-        !vpay_db::jobs::finish(&pool, job.id, "worker-2").await?,
+        !repositories.finish(job.id, "worker-2").await?,
         "a worker that does not hold the lease must not be told it finished the job"
     );
     let survivors: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE id = $1")
@@ -3208,7 +3427,7 @@ async fn finish_with_the_wrong_worker_id_deletes_nothing() -> anyhow::Result<()>
     assert_eq!(survivors, 1, "the job must still be there");
 
     assert!(
-        vpay_db::jobs::finish(&pool, job.id, "worker-1").await?,
+        repositories.finish(job.id, "worker-1").await?,
         "the lease holder finishes it"
     );
     let survivors: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE id = $1")
@@ -3227,41 +3446,41 @@ async fn finish_with_the_wrong_worker_id_deletes_nothing() -> anyhow::Result<()>
 /// with nothing saying why it did not finish.
 #[tokio::test]
 async fn reschedule_clears_the_lease_and_moves_run_at_into_the_future() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
     enqueue(
-        &pool,
+        repositories.as_ref(),
         "poll_charge",
         "poll:ladder",
         time::OffsetDateTime::now_utc(),
     )
     .await?;
 
-    let job = vpay_db::jobs::claim(&pool, "worker-1")
+    let job = Jobs::claim(repositories.as_ref(), "worker-1")
         .await?
         .context("the job must be claimable")?;
 
     let over_long = "e".repeat(3_000);
     assert!(
-        !vpay_db::jobs::reschedule(
-            &pool,
-            job.id,
-            "worker-2",
-            std::time::Duration::from_secs(60),
-            Some(&over_long)
-        )
-        .await?,
+        !repositories
+            .reschedule(
+                job.id,
+                "worker-2",
+                std::time::Duration::from_secs(60),
+                Some(&over_long)
+            )
+            .await?,
         "a worker that does not hold the lease must not be able to reschedule the job"
     );
 
     assert!(
-        vpay_db::jobs::reschedule(
-            &pool,
-            job.id,
-            "worker-1",
-            std::time::Duration::from_secs(60),
-            Some(&over_long)
-        )
-        .await?,
+        repositories
+            .reschedule(
+                job.id,
+                "worker-1",
+                std::time::Duration::from_secs(60),
+                Some(&over_long)
+            )
+            .await?,
         "the lease holder reschedules it"
     );
 
@@ -3289,7 +3508,9 @@ async fn reschedule_clears_the_lease_and_moves_run_at_into_the_future() -> anyho
     );
 
     assert!(
-        vpay_db::jobs::claim(&pool, "worker-1").await?.is_none(),
+        Jobs::claim(repositories.as_ref(), "worker-1")
+            .await?
+            .is_none(),
         "the rescheduled job must not be claimable before its new run_at"
     );
 
@@ -3300,21 +3521,21 @@ async fn reschedule_clears_the_lease_and_moves_run_at_into_the_future() -> anyho
 /// a lease that is merely slow hands a running job to a second worker.
 #[tokio::test]
 async fn reap_expired_leases_frees_only_the_stale_lease() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
     let now = time::OffsetDateTime::now_utc();
     enqueue(
-        &pool,
+        repositories.as_ref(),
         "poll_charge",
         "poll:stale",
         now - time::Duration::seconds(60),
     )
     .await?;
-    enqueue(&pool, "poll_charge", "poll:fresh", now).await?;
+    enqueue(repositories.as_ref(), "poll_charge", "poll:fresh", now).await?;
 
-    let stale = vpay_db::jobs::claim(&pool, "worker-dead")
+    let stale = Jobs::claim(repositories.as_ref(), "worker-dead")
         .await?
         .context("the stale job must be claimable")?;
-    let fresh = vpay_db::jobs::claim(&pool, "worker-alive")
+    let fresh = Jobs::claim(repositories.as_ref(), "worker-alive")
         .await?
         .context("the fresh job must be claimable")?;
 
@@ -3327,7 +3548,8 @@ async fn reap_expired_leases_frees_only_the_stale_lease() -> anyhow::Result<()> 
         .await
         .context("backdating the lease must succeed")?;
 
-    let reaped = vpay_db::jobs::reap_expired_leases(&pool, std::time::Duration::from_secs(300))
+    let reaped = repositories
+        .reap_expired_leases(std::time::Duration::from_secs(300))
         .await
         .context("reaping must succeed")?;
     assert_eq!(
@@ -3375,11 +3597,12 @@ async fn reap_expired_leases_frees_only_the_stale_lease() -> anyhow::Result<()> 
 /// acts differently on each.
 #[tokio::test]
 async fn oldest_runnable_run_at_ignores_leased_future_and_parked_jobs() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
     let now = time::OffsetDateTime::now_utc();
 
     assert_eq!(
-        vpay_db::jobs::oldest_runnable_run_at(&pool)
+        repositories
+            .oldest_runnable_run_at()
             .await
             .context("an empty queue must be readable, not an error")?,
         None,
@@ -3389,11 +3612,29 @@ async fn oldest_runnable_run_at_ignores_leased_future_and_parked_jobs() -> anyho
     let parked_at = now - time::Duration::hours(3);
     let leased_at = now - time::Duration::hours(2);
     let runnable_at = now - time::Duration::hours(1);
-    enqueue(&pool, "poll_charge", "poll:parked", parked_at).await?;
-    enqueue(&pool, "poll_charge", "poll:leased", leased_at).await?;
-    enqueue(&pool, "poll_charge", "poll:runnable", runnable_at).await?;
     enqueue(
-        &pool,
+        repositories.as_ref(),
+        "poll_charge",
+        "poll:parked",
+        parked_at,
+    )
+    .await?;
+    enqueue(
+        repositories.as_ref(),
+        "poll_charge",
+        "poll:leased",
+        leased_at,
+    )
+    .await?;
+    enqueue(
+        repositories.as_ref(),
+        "poll_charge",
+        "poll:runnable",
+        runnable_at,
+    )
+    .await?;
+    enqueue(
+        repositories.as_ref(),
         "poll_charge",
         "poll:later",
         now + time::Duration::hours(1),
@@ -3403,28 +3644,25 @@ async fn oldest_runnable_run_at_ignores_leased_future_and_parked_jobs() -> anyho
     // The oldest row of all, parked by the same write the loop uses — so the
     // exclusion is asserted against `dead_letter`'s own output rather than
     // against a hand-written `'infinity'`.
-    let parked = vpay_db::jobs::claim(&pool, "worker-parking")
+    let parked = Jobs::claim(repositories.as_ref(), "worker-parking")
         .await?
         .context("the oldest job must be claimable")?;
     assert_eq!(parked.dedupe_key, "poll:parked");
     assert!(
-        vpay_db::jobs::dead_letter(
-            &pool,
-            parked.id,
-            "worker-parking",
-            "poisoned: no such charge"
-        )
-        .await?,
+        repositories
+            .dead_letter(parked.id, "worker-parking", "poisoned: no such charge")
+            .await?,
         "the lease holder parks it"
     );
 
     // The next-oldest, held by a worker that is still working on it.
-    let leased = vpay_db::jobs::claim(&pool, "worker-busy")
+    let leased = Jobs::claim(repositories.as_ref(), "worker-busy")
         .await?
         .context("the next job must be claimable")?;
     assert_eq!(leased.dedupe_key, "poll:leased");
 
-    let oldest = vpay_db::jobs::oldest_runnable_run_at(&pool)
+    let oldest = repositories
+        .oldest_runnable_run_at()
         .await
         .context("reading the queue age must succeed")?
         .context("three of the four rows are excluded, but `poll:runnable` is not")?;
@@ -3445,7 +3683,7 @@ async fn oldest_runnable_run_at_ignores_leased_future_and_parked_jobs() -> anyho
         .await
         .context("removing the claimable rows must succeed")?;
     assert_eq!(
-        vpay_db::jobs::oldest_runnable_run_at(&pool).await?,
+        repositories.oldest_runnable_run_at().await?,
         None,
         "a parked job and a leased one are not a backlog"
     );
@@ -3458,17 +3696,16 @@ async fn oldest_runnable_run_at_ignores_leased_future_and_parked_jobs() -> anyho
 /// to drag a job already scheduled an hour out back to now.
 #[tokio::test]
 async fn enqueue_in_tx_dedupes_on_dedupe_key() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
     let later = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
 
     assert!(
-        enqueue(&pool, "poll_charge", "poll:ch_once", later).await?,
+        enqueue(repositories.as_ref(), "poll_charge", "poll:ch_once", later).await?,
         "the first enqueue inserts"
     );
 
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let inserted = vpay_db::jobs::enqueue_in_tx(
-        &mut tx,
+    let inserted = one_tx::enqueue_in_tx(
+        repositories.as_ref(),
         "resubmit_charge",
         "poll:ch_once",
         &json!({ "charge_id": "ch_other" }),
@@ -3476,7 +3713,6 @@ async fn enqueue_in_tx_dedupes_on_dedupe_key() -> anyhow::Result<()> {
     )
     .await
     .context("a duplicate enqueue must not error")?;
-    tx.commit().await.context("transaction commits")?;
     assert!(
         !inserted,
         "the second enqueue of the same work inserts nothing"
@@ -3504,21 +3740,23 @@ async fn enqueue_in_tx_dedupes_on_dedupe_key() -> anyhow::Result<()> {
 /// fan-out.
 #[tokio::test]
 async fn apply_succeeded_settles_a_submitted_charge_and_emits_one_event() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
-    live_charge(&pool, "pi_push", "ch_push", "processing", "submitted").await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    live_charge(
+        repositories.as_ref(),
+        "pi_push",
+        "ch_push",
+        "processing",
+        "submitted",
+    )
+    .await?;
 
     let data = json!({ "id": "pi_push", "object": "payment_intent", "status": "succeeded" });
-    let (charge, intent) = vpay_db::settlement::apply_succeeded(
-        &pool,
-        "ch_push",
-        Some("MTN-TXN-4242"),
-        "evt_push_succeeded",
-        &data,
-    )
-    .await
-    .context("settling must succeed")?
-    .context("a live charge must settle")?;
+    let (charge, intent) = repositories
+        .apply_succeeded("ch_push", Some("MTN-TXN-4242"), "evt_push_succeeded", &data)
+        .await
+        .context("settling must succeed")?
+        .context("a live charge must settle")?;
 
     assert_eq!(charge.state, "succeeded");
     assert_eq!(charge.provider_txn_id.as_deref(), Some("MTN-TXN-4242"));
@@ -3536,7 +3774,8 @@ async fn apply_succeeded_settles_a_submitted_charge_and_emits_one_event() -> any
     );
     assert_eq!(event_count(&pool, "pi_push").await?, 1);
 
-    let pending = vpay_db::events::pending_page(&pool, 10)
+    let pending = repositories
+        .pending_page(10)
         .await
         .context("the fan-out backlog must be readable")?;
     let event = pending
@@ -3593,11 +3832,11 @@ fn a_settlement_counts_the_transition_it_actually_made() -> anyhow::Result<()> {
     // then the runtime.
     let _entered = runtime.enter();
 
-    let (_container, pool) = runtime.block_on(async {
-        let (container, pool) = migrated_postgres().await?;
-        seed_reference_data(&pool).await?;
+    let (_container, repositories, _pool) = runtime.block_on(async {
+        let (container, repositories, pool) = migrated_postgres().await?;
+        seed_reference_data(repositories.as_ref()).await?;
         live_charge(
-            &pool,
+            repositories.as_ref(),
             "pi_from_submitted",
             "ch_from_submitted",
             "processing",
@@ -3605,14 +3844,14 @@ fn a_settlement_counts_the_transition_it_actually_made() -> anyhow::Result<()> {
         )
         .await?;
         live_charge(
-            &pool,
+            repositories.as_ref(),
             "pi_from_pending",
             "ch_from_pending",
             "requires_action",
             "pending",
         )
         .await?;
-        anyhow::Ok((container, pool))
+        anyhow::Ok((container, repositories, pool))
     })?;
 
     // The shipping exporter under a *local* recorder: `set_global_recorder`
@@ -3624,24 +3863,19 @@ fn a_settlement_counts_the_transition_it_actually_made() -> anyhow::Result<()> {
 
     let settled = metrics::with_local_recorder(&recorder, || {
         runtime.block_on(async {
-            vpay_db::settlement::apply_succeeded(
-                &pool,
-                "ch_from_submitted",
-                None,
-                "evt_from_submitted",
-                &data,
-            )
-            .await?;
-            vpay_db::settlement::apply_failed(
-                &pool,
-                "ch_from_pending",
-                "insufficient_funds",
-                "NOT_ENOUGH_FUNDS",
-                "The payment was declined (insufficient_funds).",
-                "evt_from_pending",
-                &data,
-            )
-            .await
+            repositories
+                .apply_succeeded("ch_from_submitted", None, "evt_from_submitted", &data)
+                .await?;
+            repositories
+                .apply_failed(
+                    "ch_from_pending",
+                    "insufficient_funds",
+                    "NOT_ENOUGH_FUNDS",
+                    "The payment was declined (insufficient_funds).",
+                    "evt_from_pending",
+                    &data,
+                )
+                .await
         })
     });
     settled.context("settling must succeed")?;
@@ -3703,12 +3937,16 @@ fn a_rolled_back_charge_insert_counts_nothing_and_a_committed_one_counts_once() 
         .context("a current-thread runtime builds")?;
     let _entered = runtime.enter();
 
-    let (_container, pool) = runtime.block_on(async {
-        let (container, pool) = migrated_postgres().await?;
-        seed_reference_data(&pool).await?;
-        vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_rolled_back", "XAF")).await?;
-        vpay_db::payment_intents::insert(&pool, &fixture_intent("pi_committed", "XAF")).await?;
-        anyhow::Ok((container, pool))
+    let (_container, repositories, _pool) = runtime.block_on(async {
+        let (container, repositories, pool) = migrated_postgres().await?;
+        seed_reference_data(repositories.as_ref()).await?;
+        repositories
+            .insert(&fixture_intent("pi_rolled_back", "XAF"))
+            .await?;
+        repositories
+            .insert(&fixture_intent("pi_committed", "XAF"))
+            .await?;
+        anyhow::Ok((container, repositories, pool))
     })?;
 
     let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
@@ -3716,28 +3954,33 @@ fn a_rolled_back_charge_insert_counts_nothing_and_a_committed_one_counts_once() 
 
     let rolled_back = metrics::with_local_recorder(&recorder, || {
         runtime.block_on(async {
-            let mut tx = pool.begin().await.context("transaction begins")?;
-            let charge = vpay_db::charges::insert_for_intent(
-                &mut tx,
-                &fixture_charge("ch_rolled_back", "pi_rolled_back"),
-            )
-            .await
-            .context("the insert itself must succeed")?;
-            // The confirm path's second write, with a kind the CHECK refuses.
-            let enqueued = vpay_db::jobs::enqueue_in_tx(
-                &mut tx,
-                "not_a_job_kind",
-                "poll:ch_rolled_back",
-                &json!({ "charge_id": "ch_rolled_back" }),
-                time::OffsetDateTime::now_utc(),
-            )
-            .await;
+            let charge = repositories
+                .transaction(|tx| {
+                    Box::pin(async move {
+                        let charge = tx
+                            .insert_for_intent(&fixture_charge("ch_rolled_back", "pi_rolled_back"))
+                            .await
+                            .context("the insert itself must succeed")?;
+                        // The confirm path's second write, with a kind the
+                        // CHECK refuses.
+                        let enqueued = tx
+                            .enqueue_in_tx(
+                                "not_a_job_kind",
+                                "poll:ch_rolled_back",
+                                &json!({ "charge_id": "ch_rolled_back" }),
+                                time::OffsetDateTime::now_utc(),
+                            )
+                            .await;
             assert!(
                 enqueued.is_err(),
                 "`kind_is_known` must refuse this write, or the transaction never aborts \
                  and this test proves nothing"
             );
-            tx.rollback().await.context("the transaction rolls back")?;
+                        Ok::<_, anyhow::Error>(TxOutcome::Abandon(charge))
+                    })
+                })
+                .await?
+                .into_inner();
             anyhow::Ok(charge)
         })
     })?;
@@ -3750,7 +3993,7 @@ fn a_rolled_back_charge_insert_counts_nothing_and_a_committed_one_counts_once() 
     );
     assert!(
         runtime
-            .block_on(vpay_db::charges::get_for_intent(&pool, "pi_rolled_back"))?
+            .block_on(repositories.get_for_intent("pi_rolled_back"))?
             .is_none(),
         "the rollback must have removed the row — otherwise the assertion above is \
          about a charge that still exists"
@@ -3762,22 +4005,25 @@ fn a_rolled_back_charge_insert_counts_nothing_and_a_committed_one_counts_once() 
     let handle = recorder.handle();
     metrics::with_local_recorder(&recorder, || {
         runtime.block_on(async {
-            let mut tx = pool.begin().await.context("transaction begins")?;
-            let charge = vpay_db::charges::insert_for_intent(
-                &mut tx,
-                &fixture_charge("ch_committed", "pi_committed"),
-            )
-            .await?;
-            vpay_db::jobs::enqueue_in_tx(
-                &mut tx,
-                "poll_charge",
-                "poll:ch_committed",
-                &json!({ "charge_id": "ch_committed" }),
-                time::OffsetDateTime::now_utc(),
-            )
-            .await?;
-            tx.commit().await.context("transaction commits")?;
-            vpay_db::charges::record_opened(&charge);
+            let charge = repositories
+                .transaction(|tx| {
+                    Box::pin(async move {
+                        let charge = tx
+                            .insert_for_intent(&fixture_charge("ch_committed", "pi_committed"))
+                            .await?;
+                        tx.enqueue_in_tx(
+                            "poll_charge",
+                            "poll:ch_committed",
+                            &json!({ "charge_id": "ch_committed" }),
+                            time::OffsetDateTime::now_utc(),
+                        )
+                        .await?;
+                        Ok::<_, anyhow::Error>(TxOutcome::Commit(charge))
+                    })
+                })
+                .await?
+                .into_inner();
+            repositories.record_opened(&charge);
             anyhow::Ok(())
         })
     })?;
@@ -3800,10 +4046,10 @@ fn a_rolled_back_charge_insert_counts_nothing_and_a_committed_one_counts_once() 
 #[tokio::test]
 async fn apply_succeeded_settles_a_pending_charge_from_a_requires_action_intent()
 -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
     live_charge(
-        &pool,
+        repositories.as_ref(),
         "pi_redirect",
         "ch_redirect",
         "requires_action",
@@ -3811,15 +4057,15 @@ async fn apply_succeeded_settles_a_pending_charge_from_a_requires_action_intent(
     )
     .await?;
 
-    let (charge, intent) = vpay_db::settlement::apply_succeeded(
-        &pool,
-        "ch_redirect",
-        None,
-        "evt_redirect_succeeded",
-        &json!({ "id": "pi_redirect" }),
-    )
-    .await?
-    .context("a pending charge on a requires_action intent must settle")?;
+    let (charge, intent) = repositories
+        .apply_succeeded(
+            "ch_redirect",
+            None,
+            "evt_redirect_succeeded",
+            &json!({ "id": "pi_redirect" }),
+        )
+        .await?
+        .context("a pending charge on a requires_action intent must settle")?;
 
     assert_eq!(charge.state, "succeeded");
     assert_eq!(
@@ -3838,29 +4084,36 @@ async fn apply_succeeded_settles_a_pending_charge_from_a_requires_action_intent(
 /// must not queue a second webhook.
 #[tokio::test]
 async fn a_second_apply_succeeded_returns_none_and_writes_no_second_event() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
-    live_charge(&pool, "pi_twice", "ch_twice", "processing", "submitted").await?;
-
-    vpay_db::settlement::apply_succeeded(
-        &pool,
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    live_charge(
+        repositories.as_ref(),
+        "pi_twice",
         "ch_twice",
-        Some("TXN-1"),
-        "evt_first",
-        &json!({ "id": "pi_twice" }),
+        "processing",
+        "submitted",
     )
-    .await?
-    .context("the first settlement must fire")?;
+    .await?;
 
-    let second = vpay_db::settlement::apply_succeeded(
-        &pool,
-        "ch_twice",
-        Some("TXN-2"),
-        "evt_second",
-        &json!({ "id": "pi_twice" }),
-    )
-    .await
-    .context("a re-run must not error — it is a normal outcome, not a failure")?;
+    repositories
+        .apply_succeeded(
+            "ch_twice",
+            Some("TXN-1"),
+            "evt_first",
+            &json!({ "id": "pi_twice" }),
+        )
+        .await?
+        .context("the first settlement must fire")?;
+
+    let second = repositories
+        .apply_succeeded(
+            "ch_twice",
+            Some("TXN-2"),
+            "evt_second",
+            &json!({ "id": "pi_twice" }),
+        )
+        .await
+        .context("a re-run must not error — it is a normal outcome, not a failure")?;
     assert!(
         second.is_none(),
         "an already-settled charge reports nothing to do"
@@ -3895,21 +4148,28 @@ async fn a_second_apply_succeeded_returns_none_and_writes_no_second_event() -> a
 #[tokio::test]
 async fn apply_failed_returns_the_intent_to_requires_payment_method_with_the_error_pair()
 -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
-    live_charge(&pool, "pi_declined", "ch_declined", "processing", "pending").await?;
-
-    let (charge, intent) = vpay_db::settlement::apply_failed(
-        &pool,
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    live_charge(
+        repositories.as_ref(),
+        "pi_declined",
         "ch_declined",
-        "payer_declined",
-        "PAYER_REJECTED: the payer declined the prompt",
-        "The payer declined the payment request.",
-        "evt_declined",
-        &json!({ "id": "pi_declined", "status": "requires_payment_method" }),
+        "processing",
+        "pending",
     )
-    .await?
-    .context("a live charge must be failable")?;
+    .await?;
+
+    let (charge, intent) = repositories
+        .apply_failed(
+            "ch_declined",
+            "payer_declined",
+            "PAYER_REJECTED: the payer declined the prompt",
+            "The payer declined the payment request.",
+            "evt_declined",
+            &json!({ "id": "pi_declined", "status": "requires_payment_method" }),
+        )
+        .await?
+        .context("a live charge must be failable")?;
 
     assert_eq!(charge.state, "failed");
     assert_eq!(charge.failure_code.as_deref(), Some("payer_declined"));
@@ -3933,7 +4193,7 @@ async fn apply_failed_returns_the_intent_to_requires_payment_method_with_the_err
     );
     assert_eq!(intent.amount_received, 0, "nothing was collected");
 
-    let pending = vpay_db::events::pending_page(&pool, 10).await?;
+    let pending = repositories.pending_page(10).await?;
     let event = pending
         .first()
         .context("the failure must be queued for fan-out")?;
@@ -3941,17 +4201,17 @@ async fn apply_failed_returns_the_intent_to_requires_payment_method_with_the_err
     assert_eq!(event_count(&pool, "pi_declined").await?, 1);
 
     assert!(
-        vpay_db::settlement::apply_failed(
-            &pool,
-            "ch_declined",
-            "payer_declined",
-            "raw",
-            "message",
-            "evt_declined_again",
-            &json!({ "id": "pi_declined" }),
-        )
-        .await?
-        .is_none(),
+        repositories
+            .apply_failed(
+                "ch_declined",
+                "payer_declined",
+                "raw",
+                "message",
+                "evt_declined_again",
+                &json!({ "id": "pi_declined" }),
+            )
+            .await?
+            .is_none(),
         "a charge that is already terminal reports nothing to do"
     );
     assert_eq!(event_count(&pool, "pi_declined").await?, 1);
@@ -3983,10 +4243,10 @@ async fn apply_failed_returns_the_intent_to_requires_payment_method_with_the_err
 /// exists, and only a confirm writes one.
 #[tokio::test]
 async fn a_settlement_after_a_crashed_confirm_still_moves_the_intent() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
     live_charge(
-        &pool,
+        repositories.as_ref(),
         "pi_crashed",
         "ch_crashed",
         "requires_payment_method",
@@ -3994,16 +4254,16 @@ async fn a_settlement_after_a_crashed_confirm_still_moves_the_intent() -> anyhow
     )
     .await?;
 
-    let (charge, intent) = vpay_db::settlement::apply_succeeded(
-        &pool,
-        "ch_crashed",
-        Some("TXN-CRASHED"),
-        "evt_crashed",
-        &json!({ "id": "pi_crashed", "status": "succeeded" }),
-    )
-    .await
-    .context("a crashed confirm's charge must be settleable, not a WriteMatchedNoRow")?
-    .context("the live charge must settle")?;
+    let (charge, intent) = repositories
+        .apply_succeeded(
+            "ch_crashed",
+            Some("TXN-CRASHED"),
+            "evt_crashed",
+            &json!({ "id": "pi_crashed", "status": "succeeded" }),
+        )
+        .await
+        .context("a crashed confirm's charge must be settleable, not a WriteMatchedNoRow")?
+        .context("the live charge must settle")?;
 
     assert_eq!(charge.state, "succeeded");
     assert_eq!(charge.provider_txn_id.as_deref(), Some("TXN-CRASHED"));
@@ -4038,10 +4298,10 @@ async fn a_settlement_after_a_crashed_confirm_still_moves_the_intent() -> anyhow
 #[tokio::test]
 async fn a_decline_after_a_crashed_confirm_stamps_the_error_without_moving_the_status()
 -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
     live_charge(
-        &pool,
+        repositories.as_ref(),
         "pi_crash_declined",
         "ch_crash_declined",
         "requires_payment_method",
@@ -4049,18 +4309,18 @@ async fn a_decline_after_a_crashed_confirm_stamps_the_error_without_moving_the_s
     )
     .await?;
 
-    let (charge, intent) = vpay_db::settlement::apply_failed(
-        &pool,
-        "ch_crash_declined",
-        "insufficient_funds",
-        "NOT_ENOUGH_FUNDS",
-        "The payer's account did not have enough funds.",
-        "evt_crash_declined",
-        &json!({ "id": "pi_crash_declined", "status": "requires_payment_method" }),
-    )
-    .await
-    .context("a crashed confirm's decline must apply, not raise WriteMatchedNoRow")?
-    .context("the live charge must fail")?;
+    let (charge, intent) = repositories
+        .apply_failed(
+            "ch_crash_declined",
+            "insufficient_funds",
+            "NOT_ENOUGH_FUNDS",
+            "The payer's account did not have enough funds.",
+            "evt_crash_declined",
+            &json!({ "id": "pi_crash_declined", "status": "requires_payment_method" }),
+        )
+        .await
+        .context("a crashed confirm's decline must apply, not raise WriteMatchedNoRow")?
+        .context("the live charge must fail")?;
 
     assert_eq!(charge.state, "failed");
     assert_eq!(charge.failure_code.as_deref(), Some("insufficient_funds"));
@@ -4095,22 +4355,29 @@ async fn a_decline_after_a_crashed_confirm_stamps_the_error_without_moving_the_s
 /// queued — so a retry finds exactly the state it expects.
 #[tokio::test]
 async fn apply_succeeded_refuses_a_canceled_intent_and_commits_nothing() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
     // Not reachable through the API (cancel refuses while a charge is live) —
     // which is the point: this is the shape a bug elsewhere would present,
     // and it must not settle.
-    live_charge(&pool, "pi_broken", "ch_broken", "canceled", "submitted").await?;
-
-    let error = vpay_db::settlement::apply_succeeded(
-        &pool,
+    live_charge(
+        repositories.as_ref(),
+        "pi_broken",
         "ch_broken",
-        Some("TXN-BROKEN"),
-        "evt_broken",
-        &json!({ "id": "pi_broken" }),
+        "canceled",
+        "submitted",
     )
-    .await
-    .expect_err("settling against a canceled intent must not report success");
+    .await?;
+
+    let error = repositories
+        .apply_succeeded(
+            "ch_broken",
+            Some("TXN-BROKEN"),
+            "evt_broken",
+            &json!({ "id": "pi_broken" }),
+        )
+        .await
+        .expect_err("settling against a canceled intent must not report success");
     assert!(
         matches!(
             error,
@@ -4148,24 +4415,37 @@ async fn apply_succeeded_refuses_a_canceled_intent_and_commits_nothing() -> anyh
 /// cannot walk a charge backwards.
 #[tokio::test]
 async fn set_live_state_moves_a_charge_only_from_the_expected_state() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
-    live_charge(&pool, "pi_live", "ch_live", "processing", "submitted").await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    live_charge(
+        repositories.as_ref(),
+        "pi_live",
+        "ch_live",
+        "processing",
+        "submitted",
+    )
+    .await?;
 
     assert!(
-        !vpay_db::settlement::set_live_state(&pool, "ch_live", "pending", "unresolved").await?,
+        !repositories
+            .set_live_state("ch_live", "pending", "unresolved")
+            .await?,
         "a swap from a state the charge is not in must not fire"
     );
     assert_eq!(charge_state(&pool, "ch_live").await?, "submitted");
 
     assert!(
-        vpay_db::settlement::set_live_state(&pool, "ch_live", "submitted", "pending").await?,
+        repositories
+            .set_live_state("ch_live", "submitted", "pending")
+            .await?,
         "the expected state swaps"
     );
     assert_eq!(charge_state(&pool, "ch_live").await?, "pending");
 
     assert!(
-        !vpay_db::settlement::set_live_state(&pool, "ch_live", "submitted", "pending").await?,
+        !repositories
+            .set_live_state("ch_live", "submitted", "pending")
+            .await?,
         "re-running the same swap is a no-op, not a second move"
     );
 
@@ -4178,10 +4458,10 @@ async fn set_live_state_moves_a_charge_only_from_the_expected_state() -> anyhow:
 #[tokio::test]
 async fn latest_submit_attempt_returns_the_newest_submit_and_ignores_query_status()
 -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
     live_charge(
-        &pool,
+        repositories.as_ref(),
         "pi_attempts",
         "ch_attempts",
         "processing",
@@ -4190,48 +4470,50 @@ async fn latest_submit_attempt_returns_the_newest_submit_and_ignores_query_statu
     .await?;
 
     assert!(
-        vpay_db::settlement::latest_submit_attempt(&pool, "ch_attempts")
+        repositories
+            .latest_submit_attempt("ch_attempts")
             .await?
             .is_none(),
         "a charge whose rail was never called has no attempt — the resubmit branch"
     );
 
-    let charge = vpay_db::charges::get_by_id(&pool, "ch_attempts")
+    let charge = Charges::get_by_id(repositories.as_ref(), "ch_attempts")
         .await?
         .context("the charge must be readable by its own id")?;
 
-    vpay_db::provider_requests::insert_pending(
-        &pool,
-        "ch_attempts",
-        "mtn_momo",
-        "submit",
-        charge.provider_reference_id,
-        1,
-    )
-    .await?;
-    let second = vpay_db::provider_requests::insert_pending(
-        &pool,
-        "ch_attempts",
-        "mtn_momo",
-        "submit",
-        charge.provider_reference_id,
-        2,
-    )
-    .await?;
+    repositories
+        .insert_pending(
+            "ch_attempts",
+            "mtn_momo",
+            "submit",
+            charge.provider_reference_id,
+            1,
+        )
+        .await?;
+    let second = repositories
+        .insert_pending(
+            "ch_attempts",
+            "mtn_momo",
+            "submit",
+            charge.provider_reference_id,
+            2,
+        )
+        .await?;
     // Inserted *last*, and must still not win: the recovery table asks about
     // submits, and a poll of a charge that was never answered would otherwise
     // hide the unanswered submit behind its own row.
-    vpay_db::provider_requests::insert_pending(
-        &pool,
-        "ch_attempts",
-        "mtn_momo",
-        "query_status",
-        charge.provider_reference_id,
-        1,
-    )
-    .await?;
+    repositories
+        .insert_pending(
+            "ch_attempts",
+            "mtn_momo",
+            "query_status",
+            charge.provider_reference_id,
+            1,
+        )
+        .await?;
 
-    let latest = vpay_db::settlement::latest_submit_attempt(&pool, "ch_attempts")
+    let latest = repositories
+        .latest_submit_attempt("ch_attempts")
         .await?
         .context("the submit attempts must be visible")?;
     assert_eq!(latest.id, second, "the newest submit wins");
@@ -4243,8 +4525,11 @@ async fn latest_submit_attempt_returns_the_newest_submit_and_ignores_query_statu
         "no answer was received — the pair the poll branch keys on"
     );
 
-    vpay_db::provider_requests::record_response(&pool, second, Some(202), None).await?;
-    let answered = vpay_db::settlement::latest_submit_attempt(&pool, "ch_attempts")
+    repositories
+        .record_response(second, Some(202), None)
+        .await?;
+    let answered = repositories
+        .latest_submit_attempt("ch_attempts")
         .await?
         .context("the attempt must still be there")?;
     assert_eq!(answered.status_code, Some(202));
@@ -4261,13 +4546,41 @@ async fn latest_submit_attempt_returns_the_newest_submit_and_ignores_query_statu
 #[tokio::test]
 async fn live_charges_stale_since_honours_the_cutoff_and_the_live_state_set() -> anyhow::Result<()>
 {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
 
-    live_charge(&pool, "pi_a", "ch_stale_old", "processing", "submitted").await?;
-    live_charge(&pool, "pi_b", "ch_stale_older", "processing", "pending").await?;
-    live_charge(&pool, "pi_c", "ch_terminal", "succeeded", "succeeded").await?;
-    live_charge(&pool, "pi_d", "ch_recent", "processing", "submitted").await?;
+    live_charge(
+        repositories.as_ref(),
+        "pi_a",
+        "ch_stale_old",
+        "processing",
+        "submitted",
+    )
+    .await?;
+    live_charge(
+        repositories.as_ref(),
+        "pi_b",
+        "ch_stale_older",
+        "processing",
+        "pending",
+    )
+    .await?;
+    live_charge(
+        repositories.as_ref(),
+        "pi_c",
+        "ch_terminal",
+        "succeeded",
+        "succeeded",
+    )
+    .await?;
+    live_charge(
+        repositories.as_ref(),
+        "pi_d",
+        "ch_recent",
+        "processing",
+        "submitted",
+    )
+    .await?;
 
     for (id, minutes) in [
         ("ch_stale_old", 20),
@@ -4285,7 +4598,7 @@ async fn live_charges_stale_since_honours_the_cutoff_and_the_live_state_set() ->
     }
 
     let cutoff = time::OffsetDateTime::now_utc() - time::Duration::minutes(10);
-    let stale = vpay_db::settlement::live_charges_stale_since(&pool, cutoff, 10).await?;
+    let stale = repositories.live_charges_stale_since(cutoff, 10).await?;
 
     assert_eq!(
         stale,
@@ -4295,7 +4608,7 @@ async fn live_charges_stale_since_honours_the_cutoff_and_the_live_state_set() ->
     );
 
     assert_eq!(
-        vpay_db::settlement::live_charges_stale_since(&pool, cutoff, 1).await?,
+        repositories.live_charges_stale_since(cutoff, 1).await?,
         vec!["ch_stale_older".to_owned()],
         "the limit bounds the page"
     );
@@ -4311,20 +4624,27 @@ async fn live_charges_stale_since_honours_the_cutoff_and_the_live_state_set() ->
 #[tokio::test]
 async fn provider_txn_id_round_trips_and_its_check_refuses_empty_and_over_long()
 -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
-    live_charge(&pool, "pi_txn", "ch_txn", "processing", "submitted").await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    live_charge(
+        repositories.as_ref(),
+        "pi_txn",
+        "ch_txn",
+        "processing",
+        "submitted",
+    )
+    .await?;
 
     for bad in ["", &"9".repeat(129)] {
-        let error = vpay_db::settlement::apply_succeeded(
-            &pool,
-            "ch_txn",
-            Some(bad),
-            "evt_txn_bad",
-            &json!({ "id": "pi_txn" }),
-        )
-        .await
-        .expect_err("the CHECK must refuse this transaction id");
+        let error = repositories
+            .apply_succeeded(
+                "ch_txn",
+                Some(bad),
+                "evt_txn_bad",
+                &json!({ "id": "pi_txn" }),
+            )
+            .await
+            .expect_err("the CHECK must refuse this transaction id");
         assert!(
             matches!(error, vpay_db::DbError::Query(_)),
             "a CHECK violation is a vpay bug, not a merchant's: {error}"
@@ -4337,17 +4657,17 @@ async fn provider_txn_id_round_trips_and_its_check_refuses_empty_and_over_long()
         assert_eq!(event_count(&pool, "pi_txn").await?, 0);
     }
 
-    vpay_db::settlement::apply_succeeded(
-        &pool,
-        "ch_txn",
-        Some("0123456789"),
-        "evt_txn_ok",
-        &json!({ "id": "pi_txn" }),
-    )
-    .await?
-    .context("a well-formed transaction id must settle")?;
+    repositories
+        .apply_succeeded(
+            "ch_txn",
+            Some("0123456789"),
+            "evt_txn_ok",
+            &json!({ "id": "pi_txn" }),
+        )
+        .await?
+        .context("a well-formed transaction id must settle")?;
 
-    let charge = vpay_db::charges::get_by_id(&pool, "ch_txn")
+    let charge = Charges::get_by_id(repositories.as_ref(), "ch_txn")
         .await?
         .context("the charge must be readable")?;
     assert_eq!(charge.provider_txn_id.as_deref(), Some("0123456789"));
@@ -4361,10 +4681,10 @@ async fn provider_txn_id_round_trips_and_its_check_refuses_empty_and_over_long()
 /// the caller turns that into a poisoned job with a name in it.
 #[tokio::test]
 async fn payment_intents_get_by_id_reads_without_a_merchant_scope() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    seed_reference_data(&pool).await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
     live_charge(
-        &pool,
+        repositories.as_ref(),
         "pi_unscoped",
         "ch_unscoped",
         "processing",
@@ -4372,7 +4692,7 @@ async fn payment_intents_get_by_id_reads_without_a_merchant_scope() -> anyhow::R
     )
     .await?;
 
-    let row = vpay_db::payment_intents::get_by_id(&pool, "pi_unscoped")
+    let row = PaymentIntents::get_by_id(repositories.as_ref(), "pi_unscoped")
         .await?
         .context("the worker must be able to read the intent its charge names")?;
     assert_eq!(row.id, "pi_unscoped");
@@ -4380,7 +4700,7 @@ async fn payment_intents_get_by_id_reads_without_a_merchant_scope() -> anyhow::R
     assert_eq!(row.merchant_id, "merchant_a");
 
     assert!(
-        vpay_db::payment_intents::get_by_id(&pool, "pi_does_not_exist")
+        PaymentIntents::get_by_id(repositories.as_ref(), "pi_does_not_exist")
             .await?
             .is_none(),
         "an id that names nothing is None, not an error"
@@ -4394,26 +4714,30 @@ async fn payment_intents_get_by_id_reads_without_a_merchant_scope() -> anyhow::R
 /// other write that follows a claim.
 #[tokio::test]
 async fn set_payload_writes_only_for_the_lease_holder() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
     enqueue(
-        &pool,
+        repositories.as_ref(),
         "poll_charge",
         "poll:streak",
         time::OffsetDateTime::now_utc(),
     )
     .await?;
 
-    let job = vpay_db::jobs::claim(&pool, "worker-1")
+    let job = Jobs::claim(repositories.as_ref(), "worker-1")
         .await?
         .context("the job must be claimable")?;
     let updated = json!({ "charge_id": "ch_x", "not_found_streak": 2 });
 
     assert!(
-        !vpay_db::jobs::set_payload(&pool, job.id, "worker-2", &updated).await?,
+        !repositories
+            .set_payload(job.id, "worker-2", &updated)
+            .await?,
         "a worker that does not hold the lease must not rewrite the payload"
     );
     assert!(
-        vpay_db::jobs::set_payload(&pool, job.id, "worker-1", &updated).await?,
+        repositories
+            .set_payload(job.id, "worker-1", &updated)
+            .await?,
         "the lease holder records its bookkeeping"
     );
 
@@ -4460,12 +4784,13 @@ fn fixture_event(id: &str, merchant_id: &str) -> vpay_db::NewEvent {
 /// pooled variant on purpose (an event must commit with the transition it
 /// describes); a test setting up a backlog has no such transition to be in
 /// step with.
-async fn insert_event(pool: &PgPool, new: &vpay_db::NewEvent) -> anyhow::Result<vpay_db::EventRow> {
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let row = vpay_db::events::insert_in_tx(&mut tx, new)
+async fn insert_event(
+    repositories: &dyn Repositories,
+    new: &vpay_db::NewEvent,
+) -> anyhow::Result<vpay_db::EventRow> {
+    let row = one_tx::insert_in_tx(repositories, new)
         .await
         .context("inserting the event must succeed")?;
-    tx.commit().await.context("transaction commits")?;
     Ok(row)
 }
 
@@ -4473,16 +4798,14 @@ async fn insert_event(pool: &PgPool, new: &vpay_db::NewEvent) -> anyhow::Result<
 /// fan-out pass would — and returns exactly what `create_in_tx` said, so a
 /// caller can assert on the `None` that means "already fanned out".
 async fn create_delivery(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     event_id: &str,
     endpoint_id: &str,
     url: &str,
 ) -> anyhow::Result<Option<uuid::Uuid>> {
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let created = vpay_db::webhook_deliveries::create_in_tx(&mut tx, event_id, endpoint_id, url)
+    let created = one_tx::create_in_tx(repositories, event_id, endpoint_id, url)
         .await
         .context("creating the delivery must succeed")?;
-    tx.commit().await.context("transaction commits")?;
     Ok(created)
 }
 
@@ -4490,8 +4813,12 @@ async fn create_delivery(
 /// through this rather than through the `bool` a writer returned, because
 /// "the statement matched a row" and "the row now holds what it should" are
 /// different claims and only the second one is the contract.
-async fn delivery(pool: &PgPool, id: uuid::Uuid) -> anyhow::Result<vpay_db::DeliveryRow> {
-    vpay_db::webhook_deliveries::get(pool, id)
+async fn delivery(
+    repositories: &dyn Repositories,
+    id: uuid::Uuid,
+) -> anyhow::Result<vpay_db::DeliveryRow> {
+    repositories
+        .get(id)
         .await
         .context("reading the delivery must succeed")?
         .context("the delivery must still exist")
@@ -4547,35 +4874,55 @@ fn event_page_id(n: usize) -> String {
 #[tokio::test]
 async fn migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states() -> anyhow::Result<()>
 {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
     let now = time::OffsetDateTime::now_utc();
 
     for kind in ["fan_out_events", "deliver_webhook"] {
         assert!(
-            enqueue(&pool, kind, &format!("dedupe:{kind}"), now).await?,
+            enqueue(repositories.as_ref(), kind, &format!("dedupe:{kind}"), now).await?,
             "0022 must make {kind} enqueueable — the handlers land in this step"
         );
     }
     // And 0021's four are untouched by the drop-and-re-add.
-    assert!(enqueue(&pool, "poll_charge", "poll:ch_still_ok", now).await?);
+    assert!(
+        enqueue(
+            repositories.as_ref(),
+            "poll_charge",
+            "poll:ch_still_ok",
+            now
+        )
+        .await?
+    );
 
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let refused =
-        vpay_db::jobs::enqueue_in_tx(&mut tx, "deliver_webhooks", "webhook:typo", &json!({}), now)
-            .await;
+    let refused = one_tx::enqueue_in_tx(
+        repositories.as_ref(),
+        "deliver_webhooks",
+        "webhook:typo",
+        &json!({}),
+        now,
+    )
+    .await;
     assert!(
         matches!(refused, Err(vpay_db::DbError::Query(_))),
         "a kind no handler exists for must still be refused by the database, not merely by \
          convention: {refused:?}"
     );
-    tx.rollback().await.context("transaction rolls back")?;
 
     // The delivery table exists, and its own vocabulary is closed too — a
     // state outside `state_is_known` is as unrunnable as a job kind is.
-    let event = insert_event(&pool, &fixture_event("evt_state_check", "merchant_a")).await?;
-    let id = create_delivery(&pool, &event.id, "ep_live", "https://example.test/hook")
-        .await?
-        .context("the first delivery for a pair must be created")?;
+    let event = insert_event(
+        repositories.as_ref(),
+        &fixture_event("evt_state_check", "merchant_a"),
+    )
+    .await?;
+    let id = create_delivery(
+        repositories.as_ref(),
+        &event.id,
+        "ep_live",
+        "https://example.test/hook",
+    )
+    .await?
+    .context("the first delivery for a pair must be created")?;
 
     let bad_state = sqlx::query("UPDATE webhook_deliveries SET state = 'retrying' WHERE id = $1")
         .bind(id)
@@ -4588,9 +4935,8 @@ async fn migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states() -
 
     // A delivery for an event that does not exist is refused by the foreign
     // key, so a fan-out bug cannot leave a delivery pointing at nothing.
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let dangling = vpay_db::webhook_deliveries::create_in_tx(
-        &mut tx,
+    let dangling = one_tx::create_in_tx(
+        repositories.as_ref(),
         "evt_nonexistent",
         "ep_live",
         "https://example.test/hook",
@@ -4600,7 +4946,6 @@ async fn migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states() -
         matches!(dangling, Err(vpay_db::DbError::ForeignKeyViolation { .. })),
         "event_id is a real foreign key: {dangling:?}"
     );
-    tx.rollback().await.context("transaction rolls back")?;
 
     Ok(())
 }
@@ -4616,11 +4961,17 @@ async fn migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states() -
 #[tokio::test]
 async fn migration_0023_opens_scan_deliveries_and_keeps_the_vocabulary_closed() -> anyhow::Result<()>
 {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
     let now = time::OffsetDateTime::now_utc();
 
     assert!(
-        enqueue(&pool, "scan_deliveries", "scan:deliveries", now).await?,
+        enqueue(
+            repositories.as_ref(),
+            "scan_deliveries",
+            "scan:deliveries",
+            now
+        )
+        .await?,
         "0023 must make scan_deliveries enqueueable — the backstop handler lands with it"
     );
     for kind in [
@@ -4632,14 +4983,19 @@ async fn migration_0023_opens_scan_deliveries_and_keeps_the_vocabulary_closed() 
         "deliver_webhook",
     ] {
         assert!(
-            enqueue(&pool, kind, &format!("still-known:{kind}"), now).await?,
+            enqueue(
+                repositories.as_ref(),
+                kind,
+                &format!("still-known:{kind}"),
+                now
+            )
+            .await?,
             "the drop-and-re-add must not have lost {kind}"
         );
     }
 
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let refused = vpay_db::jobs::enqueue_in_tx(
-        &mut tx,
+    let refused = one_tx::enqueue_in_tx(
+        repositories.as_ref(),
         "scan_delivery",
         "scan:deliveries:typo",
         &json!({}),
@@ -4650,7 +5006,6 @@ async fn migration_0023_opens_scan_deliveries_and_keeps_the_vocabulary_closed() 
         matches!(refused, Err(vpay_db::DbError::Query(_))),
         "a kind no handler exists for must still be refused by the database: {refused:?}"
     );
-    tx.rollback().await.context("transaction rolls back")?;
 
     Ok(())
 }
@@ -4664,12 +5019,15 @@ async fn migration_0023_opens_scan_deliveries_and_keeps_the_vocabulary_closed() 
 /// rather than assumed from the migration's text.
 #[tokio::test]
 async fn a_delivery_outside_the_length_checks_is_refused_by_the_database() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    let event = insert_event(&pool, &fixture_event("evt_bounds", "merchant_a")).await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let event = insert_event(
+        repositories.as_ref(),
+        &fixture_event("evt_bounds", "merchant_a"),
+    )
+    .await?;
 
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let too_long_id = vpay_db::webhook_deliveries::create_in_tx(
-        &mut tx,
+    let too_long_id = one_tx::create_in_tx(
+        repositories.as_ref(),
         &event.id,
         &"p".repeat(65),
         "https://example.test/hook",
@@ -4679,11 +5037,9 @@ async fn a_delivery_outside_the_length_checks_is_refused_by_the_database() -> an
         matches!(too_long_id, Err(vpay_db::DbError::Query(_))),
         "endpoint_id_length caps endpoint_id at 64 characters: {too_long_id:?}"
     );
-    tx.rollback().await.context("transaction rolls back")?;
 
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let too_long_url = vpay_db::webhook_deliveries::create_in_tx(
-        &mut tx,
+    let too_long_url = one_tx::create_in_tx(
+        repositories.as_ref(),
         &event.id,
         "ep_bounds",
         &format!("https://example.test/{}", "p".repeat(2049)),
@@ -4693,7 +5049,6 @@ async fn a_delivery_outside_the_length_checks_is_refused_by_the_database() -> an
         matches!(too_long_url, Err(vpay_db::DbError::Query(_))),
         "url_length caps url at 2048 characters: {too_long_url:?}"
     );
-    tx.rollback().await.context("transaction rolls back")?;
 
     Ok(())
 }
@@ -4709,13 +5064,28 @@ async fn a_delivery_outside_the_length_checks_is_refused_by_the_database() -> an
 /// already queued.
 #[tokio::test]
 async fn a_second_delivery_for_one_event_and_endpoint_is_not_created() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    let event = insert_event(&pool, &fixture_event("evt_dedupe", "merchant_a")).await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let event = insert_event(
+        repositories.as_ref(),
+        &fixture_event("evt_dedupe", "merchant_a"),
+    )
+    .await?;
 
-    let first = create_delivery(&pool, &event.id, "ep_one", "https://example.test/one")
-        .await?
-        .context("the first fan-out pass must create the delivery")?;
-    let second = create_delivery(&pool, &event.id, "ep_one", "https://example.test/one").await?;
+    let first = create_delivery(
+        repositories.as_ref(),
+        &event.id,
+        "ep_one",
+        "https://example.test/one",
+    )
+    .await?
+    .context("the first fan-out pass must create the delivery")?;
+    let second = create_delivery(
+        repositories.as_ref(),
+        &event.id,
+        "ep_one",
+        "https://example.test/one",
+    )
+    .await?;
     assert!(
         second.is_none(),
         "a re-run of the fan-out must report that it created nothing, so the caller enqueues no \
@@ -4723,12 +5093,17 @@ async fn a_second_delivery_for_one_event_and_endpoint_is_not_created() -> anyhow
     );
 
     // A *different* endpoint is different work, and is created.
-    let other = create_delivery(&pool, &event.id, "ep_two", "https://example.test/two")
-        .await?
-        .context("a second endpoint is a second delivery")?;
+    let other = create_delivery(
+        repositories.as_ref(),
+        &event.id,
+        "ep_two",
+        "https://example.test/two",
+    )
+    .await?
+    .context("a second endpoint is a second delivery")?;
     assert_ne!(first, other);
 
-    let rows = vpay_db::webhook_deliveries::for_event(&pool, &event.id).await?;
+    let rows = repositories.for_event(&event.id).await?;
     assert_eq!(
         rows.iter()
             .map(|row| row.endpoint_id.clone())
@@ -4759,31 +5134,40 @@ async fn a_second_delivery_for_one_event_and_endpoint_is_not_created() -> anyhow
 #[tokio::test]
 async fn record_attempt_bounds_the_excerpt_moves_the_ladder_and_then_exhausts() -> anyhow::Result<()>
 {
-    let (_container, pool) = migrated_postgres().await?;
-    let event = insert_event(&pool, &fixture_event("evt_attempts", "merchant_a")).await?;
-    let id = create_delivery(&pool, &event.id, "ep_one", "https://example.test/one")
-        .await?
-        .context("the delivery must be created")?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let event = insert_event(
+        repositories.as_ref(),
+        &fixture_event("evt_attempts", "merchant_a"),
+    )
+    .await?;
+    let id = create_delivery(
+        repositories.as_ref(),
+        &event.id,
+        "ep_one",
+        "https://example.test/one",
+    )
+    .await?
+    .context("the delivery must be created")?;
 
     // A receiver answering 500 with a long, multi-byte error page: the
     // excerpt has to survive as *something*, bounded to `excerpt_length`.
     let overlong = "é".repeat(2500);
     let due = time::OffsetDateTime::now_utc() + time::Duration::seconds(10);
     assert!(
-        vpay_db::webhook_deliveries::record_attempt(
-            &pool,
-            id,
-            Some(500),
-            Some(&overlong),
-            Some("sha-first"),
-            Some(due),
-            false,
-        )
-        .await?,
+        repositories
+            .record_attempt(
+                id,
+                Some(500),
+                Some(&overlong),
+                Some("sha-first"),
+                Some(due),
+                false,
+            )
+            .await?,
         "the first attempt must match the pending row"
     );
 
-    let row = delivery(&pool, id).await?;
+    let row = delivery(repositories.as_ref(), id).await?;
     assert_eq!(row.attempt, 1, "attempt counts failures");
     assert_eq!(
         row.state, "pending",
@@ -4818,18 +5202,11 @@ async fn record_attempt_bounds_the_excerpt_moves_the_ladder_and_then_exhausts() 
 
     // A transport failure: the request went out, nothing came back.
     assert!(
-        vpay_db::webhook_deliveries::record_attempt(
-            &pool,
-            id,
-            None,
-            None,
-            Some("sha-second"),
-            Some(due),
-            false,
-        )
-        .await?
+        repositories
+            .record_attempt(id, None, None, Some("sha-second"), Some(due), false,)
+            .await?
     );
-    let row = delivery(&pool, id).await?;
+    let row = delivery(repositories.as_ref(), id).await?;
     assert_eq!(row.attempt, 2);
     assert_eq!(row.status_code, None);
     assert_eq!(
@@ -4847,18 +5224,11 @@ async fn record_attempt_bounds_the_excerpt_moves_the_ladder_and_then_exhausts() 
 
     // The ladder runs out.
     assert!(
-        vpay_db::webhook_deliveries::record_attempt(
-            &pool,
-            id,
-            Some(500),
-            None,
-            Some("sha"),
-            None,
-            true
-        )
-        .await?
+        repositories
+            .record_attempt(id, Some(500), None, Some("sha"), None, true)
+            .await?
     );
-    let row = delivery(&pool, id).await?;
+    let row = delivery(repositories.as_ref(), id).await?;
     assert_eq!(row.state, "exhausted");
     assert_eq!(row.attempt, 3);
     assert!(
@@ -4868,19 +5238,12 @@ async fn record_attempt_bounds_the_excerpt_moves_the_ladder_and_then_exhausts() 
 
     // And nothing can walk it further: the guard is `state = 'pending'`.
     assert!(
-        !vpay_db::webhook_deliveries::record_attempt(
-            &pool,
-            id,
-            Some(500),
-            None,
-            Some("sha"),
-            None,
-            true
-        )
-        .await?,
+        !repositories
+            .record_attempt(id, Some(500), None, Some("sha"), None, true)
+            .await?,
         "a replayed job must not be able to keep incrementing an exhausted delivery"
     );
-    assert_eq!(delivery(&pool, id).await?.attempt, 3);
+    assert_eq!(delivery(repositories.as_ref(), id).await?.attempt, 3);
 
     Ok(())
 }
@@ -4896,32 +5259,43 @@ async fn record_attempt_bounds_the_excerpt_moves_the_ladder_and_then_exhausts() 
 #[tokio::test]
 async fn record_success_settles_a_delivery_once_and_a_second_call_writes_nothing()
 -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    let event = insert_event(&pool, &fixture_event("evt_success", "merchant_a")).await?;
-    let id = create_delivery(&pool, &event.id, "ep_one", "https://example.test/one")
-        .await?
-        .context("the delivery must be created")?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let event = insert_event(
+        repositories.as_ref(),
+        &fixture_event("evt_success", "merchant_a"),
+    )
+    .await?;
+    let id = create_delivery(
+        repositories.as_ref(),
+        &event.id,
+        "ep_one",
+        "https://example.test/one",
+    )
+    .await?
+    .context("the delivery must be created")?;
 
     // One failure first, so the success has something to clear.
     let due = time::OffsetDateTime::now_utc() + time::Duration::seconds(10);
     assert!(
-        vpay_db::webhook_deliveries::record_attempt(
-            &pool,
-            id,
-            Some(503),
-            Some("busy"),
-            Some("sha-body"),
-            Some(due),
-            false,
-        )
-        .await?
+        repositories
+            .record_attempt(
+                id,
+                Some(503),
+                Some("busy"),
+                Some("sha-body"),
+                Some(due),
+                false,
+            )
+            .await?
     );
 
     assert!(
-        vpay_db::webhook_deliveries::record_success(&pool, id, 200, Some("ok"), "sha-body").await?,
+        repositories
+            .record_success(id, 200, Some("ok"), "sha-body")
+            .await?,
         "the first 2xx must settle the delivery"
     );
-    let row = delivery(&pool, id).await?;
+    let row = delivery(repositories.as_ref(), id).await?;
     assert_eq!(row.state, "succeeded");
     assert_eq!(row.status_code, Some(200));
     assert_eq!(row.response_excerpt.as_deref(), Some("ok"));
@@ -4935,11 +5309,12 @@ async fn record_success_settles_a_delivery_once_and_a_second_call_writes_nothing
     );
 
     assert!(
-        !vpay_db::webhook_deliveries::record_success(&pool, id, 201, Some("again"), "sha-body")
+        !repositories
+            .record_success(id, 201, Some("again"), "sha-body")
             .await?,
         "a second worker running the same job must change nothing"
     );
-    let row = delivery(&pool, id).await?;
+    let row = delivery(repositories.as_ref(), id).await?;
     assert_eq!(
         row.status_code,
         Some(200),
@@ -4959,19 +5334,19 @@ async fn record_success_settles_a_delivery_once_and_a_second_call_writes_nothing
 /// index would stand between the merchant and two of every webhook.
 #[tokio::test]
 async fn mark_fanned_out_flips_a_pending_event_once() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    let event = insert_event(&pool, &fixture_event("evt_fanout", "merchant_a")).await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let event = insert_event(
+        repositories.as_ref(),
+        &fixture_event("evt_fanout", "merchant_a"),
+    )
+    .await?;
     assert_eq!(fanout_state(&pool, &event.id).await?, "pending");
 
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let flipped = vpay_db::webhook_deliveries::mark_fanned_out_in_tx(&mut tx, &event.id).await?;
-    tx.commit().await.context("transaction commits")?;
+    let flipped = one_tx::mark_fanned_out_in_tx(repositories.as_ref(), &event.id).await?;
     assert!(flipped, "the first pass claims the backlog entry");
     assert_eq!(fanout_state(&pool, &event.id).await?, "done");
 
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let again = vpay_db::webhook_deliveries::mark_fanned_out_in_tx(&mut tx, &event.id).await?;
-    tx.rollback().await.context("transaction rolls back")?;
+    let again = one_tx::mark_fanned_out_in_tx(repositories.as_ref(), &event.id).await?;
     assert!(
         !again,
         "an event already fanned out must refuse the second claim rather than silently agreeing"
@@ -4980,14 +5355,11 @@ async fn mark_fanned_out_flips_a_pending_event_once() -> anyhow::Result<()> {
     // An event that does not exist is the same quiet `false`, not an error:
     // a drain reading a page whose event was removed underneath it has
     // nothing to do, and nothing to page anyone about.
-    let mut tx = pool.begin().await.context("transaction begins")?;
-    let missing =
-        vpay_db::webhook_deliveries::mark_fanned_out_in_tx(&mut tx, "evt_not_here").await?;
-    tx.rollback().await.context("transaction rolls back")?;
+    let missing = one_tx::mark_fanned_out_in_tx(repositories.as_ref(), "evt_not_here").await?;
     assert!(!missing);
 
     // And the backlog query agrees: nothing is pending any more.
-    assert!(vpay_db::events::pending_page(&pool, 10).await?.is_empty());
+    assert!(repositories.pending_page(10).await?.is_empty());
 
     Ok(())
 }
@@ -5010,8 +5382,12 @@ async fn mark_fanned_out_flips_a_pending_event_once() -> anyhow::Result<()> {
 /// the queue on every delivery the fan-out had just created.
 #[tokio::test]
 async fn pending_due_returns_the_deliveries_nothing_is_driving() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-    let event = insert_event(&pool, &fixture_event("evt_due", "merchant_a")).await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let event = insert_event(
+        repositories.as_ref(),
+        &fixture_event("evt_due", "merchant_a"),
+    )
+    .await?;
     let now = time::OffsetDateTime::now_utc();
     // `RecoveryPolicy::lease`'s five minutes, transcribed: this crate cannot
     // see `vpay-worker`, and the caller passes exactly that value.
@@ -5027,9 +5403,14 @@ async fn pending_due_returns_the_deliveries_nothing_is_driving() -> anyhow::Resu
     ] {
         ids.push((
             endpoint,
-            create_delivery(&pool, &event.id, endpoint, "https://example.test/hook")
-                .await?
-                .context("the delivery must be created")?,
+            create_delivery(
+                repositories.as_ref(),
+                &event.id,
+                endpoint,
+                "https://example.test/hook",
+            )
+            .await?
+            .context("the delivery must be created")?,
         ));
     }
     let id_of = |name: &str| -> anyhow::Result<uuid::Uuid> {
@@ -5040,40 +5421,40 @@ async fn pending_due_returns_the_deliveries_nothing_is_driving() -> anyhow::Resu
     };
 
     // Due an hour ago.
-    vpay_db::webhook_deliveries::record_attempt(
-        &pool,
-        id_of("ep_due")?,
-        Some(500),
-        None,
-        Some("sha"),
-        Some(now - time::Duration::hours(1)),
-        false,
-    )
-    .await?;
+    repositories
+        .record_attempt(
+            id_of("ep_due")?,
+            Some(500),
+            None,
+            Some("sha"),
+            Some(now - time::Duration::hours(1)),
+            false,
+        )
+        .await?;
     // Not due for another hour.
-    vpay_db::webhook_deliveries::record_attempt(
-        &pool,
-        id_of("ep_later")?,
-        Some(500),
-        None,
-        Some("sha"),
-        Some(now + time::Duration::hours(1)),
-        false,
-    )
-    .await?;
+    repositories
+        .record_attempt(
+            id_of("ep_later")?,
+            Some(500),
+            None,
+            Some("sha"),
+            Some(now + time::Duration::hours(1)),
+            false,
+        )
+        .await?;
     // Overdue on paper but already settled. Written by hand rather than
     // through `record_success`, which would also clear `next_attempt_at` —
     // this is the row that isolates the `state` half of the predicate.
-    vpay_db::webhook_deliveries::record_attempt(
-        &pool,
-        id_of("ep_settled")?,
-        Some(500),
-        None,
-        Some("sha"),
-        Some(now - time::Duration::hours(1)),
-        false,
-    )
-    .await?;
+    repositories
+        .record_attempt(
+            id_of("ep_settled")?,
+            Some(500),
+            None,
+            Some("sha"),
+            Some(now - time::Duration::hours(1)),
+            false,
+        )
+        .await?;
     sqlx::query("UPDATE webhook_deliveries SET state = 'succeeded' WHERE id = $1")
         .bind(id_of("ep_settled")?)
         .execute(&pool)
@@ -5094,7 +5475,7 @@ async fn pending_due_returns_the_deliveries_nothing_is_driving() -> anyhow::Resu
     .await
     .context("ageing the stranded fixture must succeed")?;
 
-    let due = vpay_db::webhook_deliveries::pending_due(&pool, lease, 10).await?;
+    let due = repositories.pending_due(lease, 10).await?;
     let endpoints: Vec<String> = due.iter().map(|row| row.endpoint_id.clone()).collect();
     assert_eq!(
         endpoints.len(),
@@ -5129,13 +5510,21 @@ async fn pending_due_returns_the_deliveries_nothing_is_driving() -> anyhow::Resu
 #[tokio::test]
 async fn events_list_page_walks_forward_and_backward_over_twenty_five_events() -> anyhow::Result<()>
 {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
 
     for n in 0..25 {
-        let row = insert_event(&pool, &fixture_event(&event_page_id(n), "merchant_a")).await?;
+        let row = insert_event(
+            repositories.as_ref(),
+            &fixture_event(&event_page_id(n), "merchant_a"),
+        )
+        .await?;
         assert_eq!(row.id, event_page_id(n));
     }
-    let other = insert_event(&pool, &fixture_event("evt_other_merchant", "merchant_b")).await?;
+    let other = insert_event(
+        repositories.as_ref(),
+        &fixture_event("evt_other_merchant", "merchant_b"),
+    )
+    .await?;
 
     let ids = |rows: &[vpay_db::EventRow]| -> Vec<String> {
         rows.iter().map(|row| row.id.clone()).collect()
@@ -5148,7 +5537,7 @@ async fn events_list_page_walks_forward_and_backward_over_twenty_five_events() -
         starting_after: None,
         ending_before: None,
     };
-    let (first, has_more) = vpay_db::events::list_page(&pool, "merchant_a", &page).await?;
+    let (first, has_more) = Events::list_page(repositories.as_ref(), "merchant_a", &page).await?;
     assert_eq!(
         ids(&first),
         newest_first(15, 24),
@@ -5161,7 +5550,7 @@ async fn events_list_page_walks_forward_and_backward_over_twenty_five_events() -
         starting_after: Some(event_page_id(15)),
         ending_before: None,
     };
-    let (second, has_more) = vpay_db::events::list_page(&pool, "merchant_a", &page).await?;
+    let (second, has_more) = Events::list_page(repositories.as_ref(), "merchant_a", &page).await?;
     assert_eq!(ids(&second), newest_first(5, 14));
     assert!(has_more);
 
@@ -5170,7 +5559,7 @@ async fn events_list_page_walks_forward_and_backward_over_twenty_five_events() -
         starting_after: Some(event_page_id(5)),
         ending_before: None,
     };
-    let (third, has_more) = vpay_db::events::list_page(&pool, "merchant_a", &page).await?;
+    let (third, has_more) = Events::list_page(repositories.as_ref(), "merchant_a", &page).await?;
     assert_eq!(ids(&third), newest_first(0, 4));
     assert!(
         !has_more,
@@ -5182,7 +5571,7 @@ async fn events_list_page_walks_forward_and_backward_over_twenty_five_events() -
         starting_after: None,
         ending_before: Some(event_page_id(4)),
     };
-    let (back, has_more) = vpay_db::events::list_page(&pool, "merchant_a", &page).await?;
+    let (back, has_more) = Events::list_page(repositories.as_ref(), "merchant_a", &page).await?;
     assert_eq!(
         ids(&back),
         ids(&second),
@@ -5196,7 +5585,7 @@ async fn events_list_page_walks_forward_and_backward_over_twenty_five_events() -
         starting_after: None,
         ending_before: Some(event_page_id(15)),
     };
-    let (tail, has_more) = vpay_db::events::list_page(&pool, "merchant_a", &page).await?;
+    let (tail, has_more) = Events::list_page(repositories.as_ref(), "merchant_a", &page).await?;
     assert_eq!(ids(&tail), newest_first(16, 24));
     assert!(
         !has_more,
@@ -5211,7 +5600,8 @@ async fn events_list_page_walks_forward_and_backward_over_twenty_five_events() -
         starting_after: Some(other.id.clone()),
         ending_before: None,
     };
-    let (foreign_cursor, has_more) = vpay_db::events::list_page(&pool, "merchant_a", &page).await?;
+    let (foreign_cursor, has_more) =
+        Events::list_page(repositories.as_ref(), "merchant_a", &page).await?;
     assert!(foreign_cursor.is_empty() && !has_more);
 
     let page = vpay_db::ListPage {
@@ -5219,7 +5609,7 @@ async fn events_list_page_walks_forward_and_backward_over_twenty_five_events() -
         starting_after: Some("evt_does_not_exist".to_owned()),
         ending_before: None,
     };
-    let (unknown, has_more) = vpay_db::events::list_page(&pool, "merchant_a", &page).await?;
+    let (unknown, has_more) = Events::list_page(repositories.as_ref(), "merchant_a", &page).await?;
     assert!(unknown.is_empty() && !has_more);
 
     let page = vpay_db::ListPage {
@@ -5227,7 +5617,7 @@ async fn events_list_page_walks_forward_and_backward_over_twenty_five_events() -
         starting_after: None,
         ending_before: None,
     };
-    let (others, _) = vpay_db::events::list_page(&pool, "merchant_b", &page).await?;
+    let (others, _) = Events::list_page(repositories.as_ref(), "merchant_b", &page).await?;
     assert_eq!(
         ids(&others),
         vec!["evt_other_merchant".to_owned()],
@@ -5245,24 +5635,32 @@ async fn events_list_page_walks_forward_and_backward_over_twenty_five_events() -
 /// across the whole deployment, and an unscoped read hands them the payload.
 #[tokio::test]
 async fn events_get_by_id_is_merchant_scoped() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
 
-    let mine = insert_event(&pool, &fixture_event("evt_mine", "merchant_a")).await?;
-    let theirs = insert_event(&pool, &fixture_event("evt_theirs", "merchant_b")).await?;
+    let mine = insert_event(
+        repositories.as_ref(),
+        &fixture_event("evt_mine", "merchant_a"),
+    )
+    .await?;
+    let theirs = insert_event(
+        repositories.as_ref(),
+        &fixture_event("evt_theirs", "merchant_b"),
+    )
+    .await?;
 
-    let found = vpay_db::events::get_by_id(&pool, "merchant_a", &mine.id)
+    let found = Events::get_by_id(repositories.as_ref(), "merchant_a", &mine.id)
         .await?
         .context("a merchant must be able to read their own event")?;
     assert_eq!(found, mine);
 
     assert!(
-        vpay_db::events::get_by_id(&pool, "merchant_a", &theirs.id)
+        Events::get_by_id(repositories.as_ref(), "merchant_a", &theirs.id)
             .await?
             .is_none(),
         "another merchant's event must read as absent, not as forbidden"
     );
     assert!(
-        vpay_db::events::get_by_id(&pool, "merchant_a", "evt_does_not_exist")
+        Events::get_by_id(repositories.as_ref(), "merchant_a", "evt_does_not_exist")
             .await?
             .is_none()
     );
@@ -5270,7 +5668,7 @@ async fn events_get_by_id_is_merchant_scoped() -> anyhow::Result<()> {
     // theirs, so the assertion above is about the filter and not about a
     // fixture that failed to insert.
     assert_eq!(
-        vpay_db::events::get_by_id(&pool, "merchant_b", &theirs.id).await?,
+        Events::get_by_id(repositories.as_ref(), "merchant_b", &theirs.id).await?,
         Some(theirs)
     );
 

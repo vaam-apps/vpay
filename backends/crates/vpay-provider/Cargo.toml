@@ -21,6 +21,12 @@ vpay-core.workspace = true
 metrics.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# `src/token.rs`'s cache key: a SHA-256 over the credentials a rail token was
+# minted from, so a second merchant on the same adapter cannot be served the
+# first's bearer. Moved here from both adapters, which each had a copy of the
+# same length-prefixed digest; already resolved at this pin in every graph
+# that links an adapter, so nothing new is shipped.
+sha2.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 # `ProviderAdapter` is held as `Box<dyn ProviderAdapter>` everywhere (that is

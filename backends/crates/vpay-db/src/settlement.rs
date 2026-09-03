@@ -1,91 +1,19 @@
 //! Settlement: the single transaction that takes a charge terminal, and the
 //! two reads the worker's recovery table needs before it can decide to.
 //!
-//! # One transaction, three rows, no half-settled state
+//! [`Settlement::apply_succeeded`] and [`Settlement::apply_failed`] each move
+//! the charge, move the intent and insert the `events` row a merchant will be
+//! told about, inside **one** transaction — every way of splitting them is a
+//! lie a merchant can observe. Both are idempotent by compare-and-swap on the
+//! charge still being live, so a re-run after a commit writes nothing and
+//! answers `Ok(None)`.
 //!
-//! A rail answering `SUCCESSFUL` moves three things: the charge to
-//! `succeeded`, the intent to `succeeded` with `amount_received` filled in,
-//! and an `events` row a merchant will be told about. [`apply_succeeded`]
-//! and [`apply_failed`] each write all three inside one transaction, because
-//! every way of splitting them is a lie a merchant can observe:
-//!
-//! * charge without intent — `GET /v1/payment_intents/{id}` says the payment
-//!   is still processing while the money has moved;
-//! * intent without event — the merchant's webhook never fires for a
-//!   payment that succeeded, and nothing retries it, because nothing knows
-//!   it was missed;
-//! * event without the rows — a webhook for a payment that did not settle.
-//!
-//! # Idempotent by compare-and-swap, not by a flag
-//!
-//! Both functions guard the charge `UPDATE` on the charge still being in a
-//! *live* state (`payment_intents::LIVE_CHARGE_STATES`). A re-run
-//! after a commit — the poll job was rescheduled because the worker died
-//! between committing and deleting the job, which is a normal outcome, not
-//! an error — matches zero rows and returns `Ok(None)`. The caller finishes
-//! the job. Nothing is written twice, and in particular no second `events`
-//! row is written, so at-least-once job execution does not become
-//! at-least-twice webhook delivery for distinct event ids.
-//!
-//! That guard has to be in the statement. A `SELECT` that checked the state
-//! first would leave a window in which two workers — one holding a stale
-//! lease, one that just claimed the reaped job — both see a live charge and
-//! both settle it.
-//!
-//! # The charge is the record of a confirm; the intent may lag it
-//!
-//! A confirm does **not** move the charge and the intent together. It commits
-//! the charge (and its poll job) in one transaction *before* calling the
-//! rail, and moves the intent only afterwards, in a second transaction, once
-//! the rail has answered (`vpay_api::v1::payment_intents`,
-//! `docs/flows/crash-safety.md`). All three of that document's kill points
-//! therefore leave a **live charge against an intent still reading
-//! `requires_payment_method`** — that is not a corrupt database, it is the
-//! ordinary state a crashed confirm leaves and the one the recovery pass
-//! exists to resolve.
-//!
-//! So the question these functions answer is never "does the intent's status
-//! agree that a confirm happened". The charge answers that: the compare-and-
-//! swap above has already matched a row in `LIVE_CHARGE_STATES`, and only a
-//! confirm writes one. The intent write follows, over
-//! `payment_intents::SETTLEABLE_STATUSES` — the two confirmed statuses *and*
-//! `requires_payment_method` — so a settlement lands whether or not the
-//! confirm survived long enough to move the intent.
-//!
-//! # Where the settlement's `vpay_charge_transitions_total` comes from
-//!
-//! All three writes here call `crate::charges::record_transition` — the one
-//! seam for that counter (see `crate::charges`' header). The two settlement
-//! statements need a `from` label their `WHERE` clause cannot supply, since
-//! it matches a *set* of live states rather than one, so each `RETURNING`
-//! carries an extra
-//! `(SELECT prev.state FROM charges prev WHERE prev.id = charges.id)`.
-//!
-//! That sub-select reads the statement's own snapshot — an `UPDATE` never
-//! sees its own writes — so it yields the state the charge was in *before*
-//! this statement. It changes nothing about the compare-and-swap: the
-//! `WHERE` clause is unchanged, the row lock is unchanged, and a statement
-//! that matches no row still returns no row. The one honest caveat is that
-//! the snapshot is taken at statement start while the guard is re-evaluated
-//! against the newest committed row version (Postgres' read-committed
-//! recheck), so a charge that another worker moved between the two —
-//! `submitted` → `pending`, say — can be labelled with the earlier rung.
-//! `to` and `provider` are exact either way, and they are what the alerting
-//! rules select on.
-//!
-//! # What `None` does *not* mean
-//!
-//! It never means "the intent guard refused". After the widening above, the
-//! only statuses left outside it are `succeeded` and `canceled`, and neither
-//! can coexist with a live charge (`cancel` refuses to run while one exists,
-//! and "one charge per intent, forever" means a settled intent cannot acquire
-//! another). Either of them appearing here is a broken invariant, and it is
-//! reported as [`DbError::WriteMatchedNoRow`] — `Category::Internal`, which
-//! pages — rather than being folded into the idempotent `None` a caller
-//! treats as "already done". Committing the charge half and reporting success
-//! would leave the merchant's intent permanently out of step with the money.
+//! `docs/reference/vpay-db.md` §"`settlement`" carries the reasoning: what each
+//! split would produce, why the intent guard is deliberately wider than the
+//! charge's, where the `from` transition label comes from, and why `None` never
+//! means "the intent guard refused".
 
-use sqlx::{PgPool, Postgres, Row as _, Transaction};
+use sqlx::{Postgres, Row as _, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -112,20 +40,13 @@ const FAILURE_RAW_MAX_CHARS: usize = 2000;
 /// The extra `RETURNING` expression that carries the state a settled charge
 /// was in *before* the statement that settled it.
 ///
-/// A correlated sub-select rather than an `UPDATE … FROM charges prev` join:
-/// the join form changes how the statement is planned and re-checked under a
-/// concurrent update, and this is the one statement in the workspace that
-/// must not change shape for a metric label. A sub-select in `RETURNING`
-/// leaves the `WHERE` clause, the row lock and the "matched no row" answer
-/// exactly as they were and only adds a value to the output list.
-///
-/// It reads the statement's own snapshot — an `UPDATE` cannot see its own
-/// writes — which is what makes it the *previous* state. See this module's
-/// header for the one case in which that snapshot can be a rung behind.
-///
-/// Aliased away from `state` deliberately: `crate::charges::COLUMNS` already
-/// returns a column of that name, and two `state` columns in one row would
-/// make `ChargeRow`'s decode depend on which one sqlx found first.
+/// A correlated sub-select in `RETURNING`, so the `WHERE` clause, the row lock
+/// and the "matched no row" answer are exactly as they were and only a value
+/// is added to the output list. It reads the statement's own snapshot — an
+/// `UPDATE` cannot see its own writes — which is what makes it the *previous*
+/// state, and `docs/reference/vpay-db.md` §"The `from` label degrades rather
+/// than failing a settlement" says why it is a sub-select and why it is
+/// aliased away from `state`.
 const PREVIOUS_STATE: &str =
     "(SELECT prev.state::TEXT FROM charges prev WHERE prev.id = charges.id) AS previous_state";
 
@@ -140,33 +61,14 @@ const UNKNOWN_PREVIOUS_STATE: &str = "unknown";
 /// Decodes a settlement row into the previous state and the settled charge.
 ///
 /// Hand-written rather than a second `sqlx::FromRow` struct because the pair
-/// is not a row type anybody stores: `previous_state` exists only inside
-/// these two statements, and giving it a named struct would invite a caller
-/// to ask for it somewhere it does not exist.
+/// is not a row type anybody stores: `previous_state` exists only inside these
+/// two statements.
 ///
-/// # Why `previous_state` is decoded as `Option<String>`
-///
-/// It is `NOT NULL` in practice — [`PREVIOUS_STATE`] is correlated on the
-/// row the `UPDATE` matched, and `charges.state` is `NOT NULL` — so this
-/// branch has no known way to be taken. It is written anyway because of what
-/// the alternative costs: decoding straight into `String` makes a `NULL`
-/// (from a future rewrite of that sub-select, or a schema change) a
-/// `DbError::Query` returned from `apply_succeeded`, i.e. **a settlement
-/// that fails because a metric label could not be decoded**. The charge is
-/// already `succeeded` and committed at that point; the caller sees a
-/// storage error and retries a settlement that has happened. A `from` label
-/// reading `unknown` on a dashboard is a strictly smaller problem than that,
-/// and it is visible, which a swallowed one would not be.
-///
-/// `unwrap_or_default()` rather than `?`, so the *decode* failing is treated
-/// the same way as a `NULL`: a dropped or renamed sub-select would otherwise
-/// be `ColumnNotFound`, which is again a settlement failing over a label.
-/// That drift is not invisible — it renders as `from="unknown"`, and
-/// `a_settlement_counts_the_transition_it_actually_made` in
-/// `tests/repositories.rs` asserts the real rung and fails in CI.
-///
-/// The sub-select stays: the label is worth having, and this only decides
-/// what happens if it is ever absent.
+/// The label is decoded leniently — `Option<String>` and
+/// `unwrap_or_default()`, so a `NULL` *or* a failed decode renders as
+/// `from="unknown"` rather than failing a settlement that has already
+/// committed. `docs/reference/vpay-db.md` §"The `from` label degrades rather
+/// than failing a settlement" says what the strict version would cost.
 ///
 /// # Errors
 ///
@@ -210,7 +112,7 @@ const EVENT_PAYMENT_FAILED: &str = "payment_intent.payment_failed";
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct AttemptRow {
     /// The attempt's own identity, and the tiebreak that makes "the latest
-    /// submit" a total order — see [`latest_submit_attempt`].
+    /// submit" a total order — see [`Settlement::latest_submit_attempt`].
     pub id: i64,
     /// The charge this attempt belongs to.
     pub charge_id: String,
@@ -234,160 +136,6 @@ pub struct AttemptRow {
     /// When the answer arrived. `NULL` exactly when `status_code` is
     /// (`response_is_paired`), which is what makes the pair trustworthy.
     pub responded_at: Option<OffsetDateTime>,
-}
-
-/// Settles a charge the rail reported as paid: charge → `succeeded`, intent
-/// → `succeeded` with `amount_received = amount`, and one
-/// `payment_intent.succeeded` event — in one transaction.
-///
-/// Returns the charge and intent rows as they now stand, or `Ok(None)` if
-/// the charge was no longer live, which means this settlement already
-/// happened. See the module comment for why that is a normal answer and not
-/// an error.
-///
-/// `provider_txn_id` is written with `COALESCE`, so an answer that carries
-/// no identifier does not erase one an earlier write recorded. Nothing
-/// writes that column before this function today; the `COALESCE` is what
-/// keeps that true if a callback repair ever does.
-///
-/// `event_data` is the wire object as it was at settlement time
-/// (`vpay-api`'s shape — this crate does not know it), and `event_id` is a
-/// caller-generated `evt_…` ([`crate::events::event_id`]).
-///
-/// # Errors
-///
-/// [`DbError::WriteMatchedNoRow`] on `payment_intents` if the charge was
-/// live but its intent was outside
-/// `payment_intents::SETTLEABLE_STATUSES` — i.e. `succeeded` or
-/// `canceled`, a broken invariant, which pages rather than being reported as
-/// a merchant's problem. [`DbError::UniqueViolation`] if `event_id` was
-/// already emitted.
-/// [`DbError::Query`] if any statement or the commit fails; the transaction
-/// is rolled back, so a failure leaves the charge exactly where a retry
-/// expects it.
-pub async fn apply_succeeded(
-    pool: &PgPool,
-    charge_id: &str,
-    provider_txn_id: Option<&str>,
-    event_id: &str,
-    event_data: &serde_json::Value,
-) -> Result<Option<(ChargeRow, PaymentIntentRow)>, DbError> {
-    let mut tx = pool.begin().await.map_err(DbError::Query)?;
-
-    let sql = format!(
-        "UPDATE charges \
-         SET state = 'succeeded'::charge_state, \
-             provider_txn_id = COALESCE($2, provider_txn_id), \
-             updated_at = now() \
-         WHERE id = $1 AND state IN ({LIVE_CHARGE_STATES}) \
-         RETURNING {PREVIOUS_STATE}, {columns}",
-        columns = crate::charges::COLUMNS,
-    );
-    let row = sqlx::query(&sql)
-        .bind(charge_id)
-        .bind(provider_txn_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(classify_write)?;
-    let charge = row.as_ref().map(decode_settled).transpose()?;
-    let Some((previous_state, charge)) = charge else {
-        // Already settled. Nothing was written, so there is nothing to
-        // commit and nothing to roll back either — but the transaction is
-        // closed explicitly rather than dropped, so the connection returns
-        // to the pool without waiting for a background rollback.
-        tx.rollback().await.map_err(DbError::Query)?;
-        return Ok(None);
-    };
-
-    let intent = payment_intents::succeed_after_submission(&mut tx, &charge.payment_intent_id)
-        .await?
-        .ok_or_else(|| DbError::WriteMatchedNoRow {
-            table: "payment_intents",
-            key: charge.payment_intent_id.clone(),
-        })?;
-
-    emit(&mut tx, EVENT_SUCCEEDED, event_id, &intent, event_data).await?;
-
-    tx.commit().await.map_err(DbError::Query)?;
-
-    // After the commit, deliberately: this counter is a record of settled
-    // money, and a transaction that rolled back settled none.
-    record_transition(&charge.provider_code, &previous_state, &charge.state);
-
-    Ok(Some((charge, intent)))
-}
-
-/// Settles a charge the rail declined after it was submitted: charge →
-/// `failed` with the failure pair, intent back to `requires_payment_method`
-/// carrying `last_payment_error`, and one `payment_intent.payment_failed`
-/// event — in one transaction.
-///
-/// `code` is the closed vocabulary (`vpay_core::FailureCode`) as text, and
-/// the column is the `failure_code` Postgres enum, so a value outside it is
-/// refused by the database rather than by convention. `raw` is the rail's own
-/// words for the charge row, truncated to `FAILURE_RAW_MAX_CHARS`; `message`
-/// is what the merchant is shown on the intent, truncated to 512 by
-/// `payment_intents::fail_after_submission`. They are two arguments and not
-/// one because they have two audiences — the raw text is for an operator
-/// reconciling against the rail, the message is on the wire.
-///
-/// `Ok(None)`, and the errors, mean exactly what they do in
-/// [`apply_succeeded`].
-///
-/// # Errors
-///
-/// As [`apply_succeeded`].
-pub async fn apply_failed(
-    pool: &PgPool,
-    charge_id: &str,
-    code: &str,
-    raw: &str,
-    message: &str,
-    event_id: &str,
-    event_data: &serde_json::Value,
-) -> Result<Option<(ChargeRow, PaymentIntentRow)>, DbError> {
-    let bounded_raw: String = raw.chars().take(FAILURE_RAW_MAX_CHARS).collect();
-
-    let mut tx = pool.begin().await.map_err(DbError::Query)?;
-
-    let sql = format!(
-        "UPDATE charges \
-         SET state = 'failed'::charge_state, \
-             failure_code = $2::failure_code, \
-             failure_raw = $3, \
-             updated_at = now() \
-         WHERE id = $1 AND state IN ({LIVE_CHARGE_STATES}) \
-         RETURNING {PREVIOUS_STATE}, {columns}",
-        columns = crate::charges::COLUMNS,
-    );
-    let row = sqlx::query(&sql)
-        .bind(charge_id)
-        .bind(code)
-        .bind(&bounded_raw)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(classify_write)?;
-    let charge = row.as_ref().map(decode_settled).transpose()?;
-    let Some((previous_state, charge)) = charge else {
-        tx.rollback().await.map_err(DbError::Query)?;
-        return Ok(None);
-    };
-
-    let intent =
-        payment_intents::fail_after_submission(&mut tx, &charge.payment_intent_id, code, message)
-            .await?
-            .ok_or_else(|| DbError::WriteMatchedNoRow {
-                table: "payment_intents",
-                key: charge.payment_intent_id.clone(),
-            })?;
-
-    emit(&mut tx, EVENT_PAYMENT_FAILED, event_id, &intent, event_data).await?;
-
-    tx.commit().await.map_err(DbError::Query)?;
-
-    record_transition(&charge.provider_code, &previous_state, &charge.state);
-
-    Ok(Some((charge, intent)))
 }
 
 /// Appends the settlement's event inside the settlement's own transaction.
@@ -419,139 +167,333 @@ async fn emit(
     Ok(())
 }
 
-/// Moves a charge between two *live* states, as a compare-and-swap, and
-/// reports whether it fired.
-///
-/// This is every non-terminal rung of the poll ladder: `submitting` or
-/// `submitted` → `pending` when the rail says the payer has been prompted,
-/// `pending` → `unresolved` when the ladder gives up waiting. It deliberately
-/// cannot settle a charge — `succeeded` and `failed` move an intent and emit
-/// an event, and a function that could write those labels without doing
-/// either would make the settlement transaction optional. Passing a terminal
-/// label as `new` is refused by the caller's own state machine
-/// (`vpay_core::settlement`), and if one ever reached here the charge would
-/// move with no intent and no event; that is why the two operations are
-/// different functions rather than one with a `new` parameter that means
-/// everything.
-///
-/// `Ok(false)` means the charge was not in `expected` — someone else has
-/// already moved it, which for a job that may be running twice is
-/// information, not an error.
-///
-/// # Errors
-///
-/// Returns [`DbError::Query`] if the write fails, including a label outside
-/// the `charge_state` enum.
-pub async fn set_live_state(
-    pool: &PgPool,
-    charge_id: &str,
-    expected: &str,
-    new: &str,
-) -> Result<bool, DbError> {
-    let moved = sqlx::query(
-        "UPDATE charges SET state = $3::charge_state, updated_at = now() \
-         WHERE id = $1 AND state = $2::charge_state \
-         RETURNING provider_code",
-    )
-    .bind(charge_id)
-    .bind(expected)
-    .bind(new)
-    .fetch_optional(pool)
-    .await
-    .map_err(classify_write)?;
+#[async_trait::async_trait]
+pub trait Settlement: Send + Sync {
+    /// Settles a charge the rail reported as paid: charge → `succeeded`, intent
+    /// → `succeeded` with `amount_received = amount`, and one
+    /// `payment_intent.succeeded` event — in one transaction.
+    ///
+    /// Returns the charge and intent rows as they now stand, or `Ok(None)` if
+    /// the charge was no longer live, which means this settlement already
+    /// happened. See the module comment for why that is a normal answer and not
+    /// an error.
+    ///
+    /// `provider_txn_id` is written with `COALESCE`, so an answer that carries
+    /// no identifier does not erase one an earlier write recorded. Nothing
+    /// writes that column before this function today; the `COALESCE` is what
+    /// keeps that true if a callback repair ever does.
+    ///
+    /// `event_data` is the wire object as it was at settlement time
+    /// (`vpay-api`'s shape — this crate does not know it), and `event_id` is a
+    /// caller-generated `evt_…` ([`crate::events::event_id`]).
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::WriteMatchedNoRow`] on `payment_intents` if the charge was
+    /// live but its intent was outside
+    /// `payment_intents::SETTLEABLE_STATUSES` — i.e. `succeeded` or
+    /// `canceled`, a broken invariant, which pages rather than being reported as
+    /// a merchant's problem. [`DbError::UniqueViolation`] if `event_id` was
+    /// already emitted.
+    /// [`DbError::Query`] if any statement or the commit fails; the transaction
+    /// is rolled back, so a failure leaves the charge exactly where a retry
+    /// expects it.
+    async fn apply_succeeded(
+        &self,
+        charge_id: &str,
+        provider_txn_id: Option<&str>,
+        event_id: &str,
+        event_data: &serde_json::Value,
+    ) -> Result<Option<(ChargeRow, PaymentIntentRow)>, DbError>;
 
-    // `RETURNING provider_code` rather than counting affected rows: the
-    // metric below needs the rail, and reading it off the row this statement
-    // wrote is the only way it cannot disagree with what was written. The
-    // `Ok(false)` case is unchanged — no row matched, nothing moved, and
-    // nothing is counted.
-    let Some(row) = moved else {
-        return Ok(false);
-    };
-    let provider_code: String = row.try_get("provider_code").map_err(DbError::Query)?;
-    record_transition(&provider_code, expected, new);
+    /// Settles a charge the rail declined after it was submitted: charge →
+    /// `failed` with the failure pair, intent back to `requires_payment_method`
+    /// carrying `last_payment_error`, and one `payment_intent.payment_failed`
+    /// event — in one transaction.
+    ///
+    /// `code` is the closed vocabulary (`vpay_core::FailureCode`) as text, and
+    /// the column is the `failure_code` Postgres enum, so a value outside it is
+    /// refused by the database rather than by convention. `raw` is the rail's own
+    /// words for the charge row, truncated to `FAILURE_RAW_MAX_CHARS`; `message`
+    /// is what the merchant is shown on the intent, truncated to 512 by
+    /// `payment_intents::fail_after_submission`. They are two arguments and not
+    /// one because they have two audiences — the raw text is for an operator
+    /// reconciling against the rail, the message is on the wire.
+    ///
+    /// `Ok(None)`, and the errors, mean exactly what they do in
+    /// [`Settlement::apply_succeeded`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Settlement::apply_succeeded`].
+    async fn apply_failed(
+        &self,
+        charge_id: &str,
+        code: &str,
+        raw: &str,
+        message: &str,
+        event_id: &str,
+        event_data: &serde_json::Value,
+    ) -> Result<Option<(ChargeRow, PaymentIntentRow)>, DbError>;
 
-    Ok(true)
+    /// Moves a charge between two *live* states, as a compare-and-swap, and
+    /// reports whether it fired.
+    ///
+    /// This is every non-terminal rung of the poll ladder: `submitting` or
+    /// `submitted` → `pending` when the rail says the payer has been prompted,
+    /// `pending` → `unresolved` when the ladder gives up waiting. It deliberately
+    /// cannot settle a charge — `succeeded` and `failed` move an intent and emit
+    /// an event, and a function that could write those labels without doing
+    /// either would make the settlement transaction optional. Passing a terminal
+    /// label as `new` is refused by the caller's own state machine
+    /// (`vpay_core::settlement`), and if one ever reached here the charge would
+    /// move with no intent and no event; that is why the two operations are
+    /// different functions rather than one with a `new` parameter that means
+    /// everything.
+    ///
+    /// `Ok(false)` means the charge was not in `expected` — someone else has
+    /// already moved it, which for a job that may be running twice is
+    /// information, not an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if the write fails, including a label outside
+    /// the `charge_state` enum.
+    async fn set_live_state(
+        &self,
+        charge_id: &str,
+        expected: &str,
+        new: &str,
+    ) -> Result<bool, DbError>;
+
+    /// The most recent `submit` attempt for a charge, or `None` if the rail was
+    /// never called.
+    ///
+    /// This is the read the crash-safety recovery table branches on
+    /// (`docs/flows/crash-safety.md`): no row at all means the process died
+    /// before it could even record the intention to call, so the charge is
+    /// resubmitted under its existing reference; a row with `status_code IS
+    /// NULL` means the call was issued and no answer came back, so the charge is
+    /// polled; a row with a status means the answer is already recorded and the
+    /// ladder advances from the charge's own state.
+    ///
+    /// Ordered `sent_at DESC, id DESC` rather than by `sent_at` alone, which is
+    /// a deliberate deviation from the design's sketch of this query: `sent_at`
+    /// defaults to `now()`, which is *transaction* time in Postgres, so two
+    /// attempts recorded inside one transaction share it exactly and "the
+    /// latest" would be whichever the planner happened to return. The identity
+    /// primary key is monotone per insert, so the pair is a total order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if the read fails.
+    async fn latest_submit_attempt(&self, charge_id: &str) -> Result<Option<AttemptRow>, DbError>;
+
+    /// The ids of live charges that have not moved since `cutoff`, oldest first,
+    /// at most `limit` of them.
+    ///
+    /// The `scan_live_charges` backstop, and **only** a backstop: the poll job
+    /// for a charge is enqueued in the same transaction that opens the charge,
+    /// so recovery does not depend on this scan finding anything. What it covers
+    /// is the two cases that transaction cannot — rows written before the queue
+    /// existed, and a job lost to operator error (a `DELETE FROM jobs`). If this
+    /// query ever returns a steady stream in a healthy deployment, the enqueue
+    /// is broken and that is the bug to fix, not this interval.
+    ///
+    /// The live set is `LIVE_CHARGE_STATES`, which is also the predicate of
+    /// `charges_live_idx` (migration 0014) — the index that exists for exactly
+    /// this query.
+    ///
+    /// Ordered by `updated_at` so a backlog is worked oldest-first: the charge
+    /// that has been waiting longest is the one a payer is most likely already
+    /// asking about.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if the read fails.
+    async fn live_charges_stale_since(
+        &self,
+        cutoff: OffsetDateTime,
+        limit: i64,
+    ) -> Result<Vec<String>, DbError>;
 }
 
-/// The most recent `submit` attempt for a charge, or `None` if the rail was
-/// never called.
-///
-/// This is the read the crash-safety recovery table branches on
-/// (`docs/flows/crash-safety.md`): no row at all means the process died
-/// before it could even record the intention to call, so the charge is
-/// resubmitted under its existing reference; a row with `status_code IS
-/// NULL` means the call was issued and no answer came back, so the charge is
-/// polled; a row with a status means the answer is already recorded and the
-/// ladder advances from the charge's own state.
-///
-/// Ordered `sent_at DESC, id DESC` rather than by `sent_at` alone, which is
-/// a deliberate deviation from the design's sketch of this query: `sent_at`
-/// defaults to `now()`, which is *transaction* time in Postgres, so two
-/// attempts recorded inside one transaction share it exactly and "the
-/// latest" would be whichever the planner happened to return. The identity
-/// primary key is monotone per insert, so the pair is a total order.
-///
-/// # Errors
-///
-/// Returns [`DbError::Query`] if the read fails.
-pub async fn latest_submit_attempt(
-    pool: &PgPool,
-    charge_id: &str,
-) -> Result<Option<AttemptRow>, DbError> {
-    sqlx::query_as::<_, AttemptRow>(
-        "SELECT id, charge_id, provider_code, provider_reference_id, attempt, status_code, \
+#[async_trait::async_trait]
+impl Settlement for crate::repository::PgRepositories {
+    async fn apply_succeeded(
+        &self,
+        charge_id: &str,
+        provider_txn_id: Option<&str>,
+        event_id: &str,
+        event_data: &serde_json::Value,
+    ) -> Result<Option<(ChargeRow, PaymentIntentRow)>, DbError> {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+
+        let sql = format!(
+            "UPDATE charges \
+         SET state = 'succeeded'::charge_state, \
+             provider_txn_id = COALESCE($2, provider_txn_id), \
+             updated_at = now() \
+         WHERE id = $1 AND state IN ({LIVE_CHARGE_STATES}) \
+         RETURNING {PREVIOUS_STATE}, {columns}",
+            columns = crate::charges::COLUMNS,
+        );
+        let row = sqlx::query(&sql)
+            .bind(charge_id)
+            .bind(provider_txn_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(classify_write)?;
+        let charge = row.as_ref().map(decode_settled).transpose()?;
+        let Some((previous_state, charge)) = charge else {
+            // Already settled. Nothing was written, so there is nothing to
+            // commit and nothing to roll back either — but the transaction is
+            // closed explicitly rather than dropped, so the connection returns
+            // to the pool without waiting for a background rollback.
+            tx.rollback().await.map_err(DbError::Query)?;
+            return Ok(None);
+        };
+
+        let intent = payment_intents::succeed_after_submission(&mut tx, &charge.payment_intent_id)
+            .await?
+            .ok_or_else(|| DbError::WriteMatchedNoRow {
+                table: "payment_intents",
+                key: charge.payment_intent_id.clone(),
+            })?;
+
+        emit(&mut tx, EVENT_SUCCEEDED, event_id, &intent, event_data).await?;
+
+        tx.commit().await.map_err(DbError::Query)?;
+
+        // After the commit, deliberately: this counter is a record of settled
+        // money, and a transaction that rolled back settled none.
+        record_transition(&charge.provider_code, &previous_state, &charge.state);
+
+        Ok(Some((charge, intent)))
+    }
+
+    async fn apply_failed(
+        &self,
+        charge_id: &str,
+        code: &str,
+        raw: &str,
+        message: &str,
+        event_id: &str,
+        event_data: &serde_json::Value,
+    ) -> Result<Option<(ChargeRow, PaymentIntentRow)>, DbError> {
+        let bounded_raw: String = raw.chars().take(FAILURE_RAW_MAX_CHARS).collect();
+
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+
+        let sql = format!(
+            "UPDATE charges \
+         SET state = 'failed'::charge_state, \
+             failure_code = $2::failure_code, \
+             failure_raw = $3, \
+             updated_at = now() \
+         WHERE id = $1 AND state IN ({LIVE_CHARGE_STATES}) \
+         RETURNING {PREVIOUS_STATE}, {columns}",
+            columns = crate::charges::COLUMNS,
+        );
+        let row = sqlx::query(&sql)
+            .bind(charge_id)
+            .bind(code)
+            .bind(&bounded_raw)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(classify_write)?;
+        let charge = row.as_ref().map(decode_settled).transpose()?;
+        let Some((previous_state, charge)) = charge else {
+            tx.rollback().await.map_err(DbError::Query)?;
+            return Ok(None);
+        };
+
+        let intent = payment_intents::fail_after_submission(
+            &mut tx,
+            &charge.payment_intent_id,
+            code,
+            message,
+        )
+        .await?
+        .ok_or_else(|| DbError::WriteMatchedNoRow {
+            table: "payment_intents",
+            key: charge.payment_intent_id.clone(),
+        })?;
+
+        emit(&mut tx, EVENT_PAYMENT_FAILED, event_id, &intent, event_data).await?;
+
+        tx.commit().await.map_err(DbError::Query)?;
+
+        record_transition(&charge.provider_code, &previous_state, &charge.state);
+
+        Ok(Some((charge, intent)))
+    }
+
+    async fn set_live_state(
+        &self,
+        charge_id: &str,
+        expected: &str,
+        new: &str,
+    ) -> Result<bool, DbError> {
+        let moved = sqlx::query(
+            "UPDATE charges SET state = $3::charge_state, updated_at = now() \
+         WHERE id = $1 AND state = $2::charge_state \
+         RETURNING provider_code",
+        )
+        .bind(charge_id)
+        .bind(expected)
+        .bind(new)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(classify_write)?;
+
+        // `RETURNING provider_code` rather than counting affected rows: the
+        // metric below needs the rail, and reading it off the row this statement
+        // wrote is the only way it cannot disagree with what was written. The
+        // `Ok(false)` case is unchanged — no row matched, nothing moved, and
+        // nothing is counted.
+        let Some(row) = moved else {
+            return Ok(false);
+        };
+        let provider_code: String = row.try_get("provider_code").map_err(DbError::Query)?;
+        record_transition(&provider_code, expected, new);
+
+        Ok(true)
+    }
+
+    async fn latest_submit_attempt(&self, charge_id: &str) -> Result<Option<AttemptRow>, DbError> {
+        sqlx::query_as::<_, AttemptRow>(
+            "SELECT id, charge_id, provider_code, provider_reference_id, attempt, status_code, \
          error_kind, sent_at, responded_at \
          FROM provider_requests \
          WHERE charge_id = $1 AND operation = 'submit' \
          ORDER BY sent_at DESC, id DESC \
          LIMIT 1",
-    )
-    .bind(charge_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(DbError::Query)
-}
+        )
+        .bind(charge_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(DbError::Query)
+    }
 
-/// The ids of live charges that have not moved since `cutoff`, oldest first,
-/// at most `limit` of them.
-///
-/// The `scan_live_charges` backstop, and **only** a backstop: the poll job
-/// for a charge is enqueued in the same transaction that opens the charge,
-/// so recovery does not depend on this scan finding anything. What it covers
-/// is the two cases that transaction cannot — rows written before the queue
-/// existed, and a job lost to operator error (a `DELETE FROM jobs`). If this
-/// query ever returns a steady stream in a healthy deployment, the enqueue
-/// is broken and that is the bug to fix, not this interval.
-///
-/// The live set is `LIVE_CHARGE_STATES`, which is also the predicate of
-/// `charges_live_idx` (migration 0014) — the index that exists for exactly
-/// this query.
-///
-/// Ordered by `updated_at` so a backlog is worked oldest-first: the charge
-/// that has been waiting longest is the one a payer is most likely already
-/// asking about.
-///
-/// # Errors
-///
-/// Returns [`DbError::Query`] if the read fails.
-pub async fn live_charges_stale_since(
-    pool: &PgPool,
-    cutoff: OffsetDateTime,
-    limit: i64,
-) -> Result<Vec<String>, DbError> {
-    let limit = limit.max(1);
-    let sql = format!(
-        "SELECT id FROM charges \
+    async fn live_charges_stale_since(
+        &self,
+        cutoff: OffsetDateTime,
+        limit: i64,
+    ) -> Result<Vec<String>, DbError> {
+        let limit = limit.max(1);
+        let sql = format!(
+            "SELECT id FROM charges \
          WHERE state IN ({LIVE_CHARGE_STATES}) AND updated_at < $1 \
          ORDER BY updated_at \
          LIMIT $2"
-    );
+        );
 
-    sqlx::query_scalar::<_, String>(&sql)
-        .bind(cutoff)
-        .bind(limit)
-        .fetch_all(pool)
-        .await
-        .map_err(DbError::Query)
+        sqlx::query_scalar::<_, String>(&sql)
+            .bind(cutoff)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(DbError::Query)
+    }
 }

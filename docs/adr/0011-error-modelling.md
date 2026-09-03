@@ -143,3 +143,44 @@ through the API or the worker.
   `ApiError`; `AuthRejection` gains a `Classify` impl and a conversion; the
   binaries' `main` gains an exit-code mapping; ten leaf enums gain a
   `Classify` impl each. No wire format changes.
+
+---
+
+## Amendment, 2026-09-03 (Step 7, Phase A) — the rail failures carry a typed cause
+
+Appended rather than superseded: nothing above is reversed, and the shape
+below is what the ADR already asked for, applied to the two variants that
+were not following it.
+
+`ProviderError::Transport(String)` and `ProviderError::Malformed(String)`
+flattened `reqwest`'s and the bounded-body reader's errors with `format!` at
+roughly forty call sites — the *"never flattened to a `String`"* rule, broken
+in the one place a payment path most needs the leaf. They are now struct
+variants:
+
+```rust
+Transport { context: String, #[source] source: Option<RailFailure> }
+Malformed { context: String, #[source] source: Option<RailFailure> }
+```
+
+`RailFailure` is a closed enum (`Http(reqwest::Error)`, `Body(HttpBodyError)`)
+rather than `Box<dyn Error>`, because this ADR forbids the box; it costs no
+dependency, since both types are already in every adapter's graph. It carries
+its own `impl Classify` (`Category::Rail`) so `verify-errors` can see it, and
+it is never consulted on its own — a `ProviderError` is what a boundary
+classifies.
+
+`Display` renders `context` only. The chain is rendered where an operator
+reads it, by the new `vpay_core::error::source_chain`, which `ApiError::log`
+already did privately and `vpay_worker`'s job settlement now does too (so
+`jobs.last_error` keeps the leaf).
+
+`cargo xtask verify-errors` gains the check §"Tier 2" always implied: for
+every `#[from]` variant, each `Classify` method whose body matches on `self`
+must name `Self::<Variant>` explicitly, so a new leaf cannot be answered for
+by an existing `_ =>` arm. Methods that do not match on `self` are exempt —
+there is no wildcard to hide in.
+
+**Not changed:** the three tiers, the `Classify` seam, `anyhow` at the edge,
+`ProviderError::NotImplemented`'s literal, and every wire-visible status,
+`type`, `code` and message.

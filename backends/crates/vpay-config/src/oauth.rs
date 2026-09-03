@@ -1,58 +1,19 @@
 //! Statically registered OAuth2/OIDC clients (ADR-0010,
-//! `docs/flows/dashboard-auth.md`).
+//! [docs/flows/dashboard-auth.md](../../../../docs/flows/dashboard-auth.md)).
 //!
-//! Two kinds, both loaded from YAML (ADR-0003) and both, structurally,
-//! carrying no client secret:
+//! Two kinds, both loaded from YAML (ADR-0003) and both, structurally, carrying
+//! no client secret: [`MerchantClient`] (a merchant's `/v1` credential —
+//! `client_credentials` plus `private_key_jwt`, so vpay only ever holds the
+//! **public** JWK set) and [`DashboardClient`] (the single `/dash/v1` client —
+//! authorization-code plus PKCE, one read-only scope).
 //!
-//! - [`MerchantClient`] — a merchant's `/v1` credential: `client_credentials`
-//!   plus `private_key_jwt` (RFC 7523). vpay never sees a merchant's
-//!   private key, only the **public** JWK set that verifies the assertion
-//!   it signs.
-//! - [`DashboardClient`] — the single `/dash/v1` client: authorization-code
-//!   plus PKCE, a public client with no secret at all, requesting exactly
-//!   one read-only scope (`docs/flows/dashboard-auth.md`'s "Scope"
-//!   section).
+//! Both carry a `client_secret: Option<String>` whose only legitimate value is
+//! `None`: it exists so a config that accidentally carries a secret is *refused*
+//! at boot rather than silently ignored. Never populate it.
 //!
-//! # Why these types, and not `authkestra_op::client::ClientRegistration`
-//! # directly
-//!
-//! `vpay-config` deliberately does not depend on `authkestra-op` — that
-//! crate, and the `ClientStore` that converts these types into a real
-//! `ClientRegistration`, belong to the auth-wiring work that owns
-//! `backends/crates/vpay-api/**`, not to config loading. These types are
-//! shaped to make that conversion mechanical:
-//!
-//! | This type | `ClientRegistration` field | Fixed by client kind, not YAML |
-//! |---|---|---|
-//! | `MerchantClient::client_id` / `DashboardClient::client_id` | `client_id` | |
-//! | `MerchantClient::jwks` | `jwks` (wrapped in `Some`) | |
-//! | `MerchantClient::grant_types` | `grant_types` | |
-//! | `MerchantClient::scopes` | `scopes` | |
-//! | `MerchantClient::allowed_audiences` | `allowed_audiences` | |
-//! | `DashboardClient::redirect_uris` | `redirect_uris` | |
-//! | `DashboardClient::scope` | `scopes` (wrapped in a single-element `vec![]`) | |
-//! | — | `client_secret_hash` | always `None` — see "No secret, ever" below |
-//! | — | `token_endpoint_auth_method` | `PrivateKeyJwt` for merchants, `NoAuth` for the dashboard (RFC 7523 / public client) |
-//! | — | `require_pkce` | always `false` for merchants (server-to-server, no browser step), always `true` for the dashboard |
-//!
-//! `token_endpoint_auth_method` and `require_pkce` are not YAML fields on
-//! purpose: they are invariants of *being* a merchant client or *being* the
-//! dashboard client, never a per-deployment choice, so there is nothing for
-//! an operator to configure — or misconfigure — there. `grant_types` stays a
-//! real YAML field on [`MerchantClient`] specifically because ADR-0010 needs
-//! something to enforce *against*: "declares any grant other than
-//! `client_credentials` is fatal" is a validation rule over a value an
-//! operator could actually type, not a tautology over a hardcoded constant.
-//!
-//! # No secret, ever
-//!
-//! Both types carry a `client_secret: Option<String>` field whose only
-//! legitimate value is `None`. It exists so a config that accidentally
-//! carries a secret is refused at boot ([`crate::ConfigError::ClientSecretPresent`],
-//! checked in `Config::validate_all`) rather than silently ignored — the
-//! field would otherwise just vanish into "unknown YAML key" territory,
-//! which is not the fail-fast story ADR-0003 promises. Never populate it in
-//! a real config; it is a trap, not a feature.
+//! Why these types rather than `authkestra_op::client::ClientRegistration`
+//! directly, and the field-by-field map onto it:
+//! [docs/reference/vpay-config.md § OAuth client shapes](../../../../docs/reference/vpay-config.md#oauth-client-shapes).
 
 use std::fmt;
 
@@ -126,6 +87,7 @@ pub enum GrantType {
 /// `webhook_deliveries_event_endpoint`, and exactly one of them would ever
 /// be delivered to.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct WebhookEndpoint {
     /// The operator-authored name for this endpoint, stored on every
     /// delivery row and read back in runbooks.
@@ -209,6 +171,7 @@ impl fmt::Debug for WebhookEndpoint {
 /// what a plaintext `client_secret` here means (nothing good; refuse to
 /// boot).
 #[derive(Clone, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
 pub struct MerchantClient {
     /// Public client identifier. Must be unique across every merchant and
     /// dashboard client combined — checked in `Config::validate_all`, not
@@ -398,6 +361,7 @@ impl fmt::Debug for MerchantClient {
 /// exactly one read-only scope — the dashboard observes, it does not
 /// administer (ADR-0008).
 #[derive(Clone, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
 pub struct DashboardClient {
     /// Public client identifier. Must be unique across every merchant and
     /// dashboard client combined — see [`MerchantClient::client_id`]'s doc

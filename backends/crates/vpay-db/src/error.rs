@@ -23,12 +23,12 @@ pub enum DbError {
 
     /// A migration failed to apply — a broken migration file, a conflicting
     /// schema already present, or a lost connection mid-run. Surfaced by
-    /// [`crate::run_migrations`].
+    /// [`crate::Migrations::run_migrations`].
     #[error("failed to run database migrations: {0}")]
     Migrate(#[source] sqlx::migrate::MigrateError),
 
     /// The liveness query itself failed — the pool exists but the database
-    /// is not answering right now. Surfaced by [`crate::check_connection`].
+    /// is not answering right now. Surfaced by [`crate::Health::check_connection`].
     #[error("database healthcheck query failed: {0}")]
     Healthcheck(#[source] sqlx::Error),
 

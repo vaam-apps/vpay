@@ -1,46 +1,19 @@
 //! MTN MoMo Cameroon adapter: a push rail, in the sense
 //! `docs/flows/provider-port.md` gives the word — the payer is prompted on
-//! their own handset, and both preconditions hold, so a charge is always
-//! nameable and always re-queryable.
+//! their own handset, we supply the reference (`X-Reference-Id`) so a submit
+//! is idempotent on an id that exists in our database *before* the call, and
+//! status stays queryable by that same reference indefinitely, which is what
+//! the poll ladder is built on.
 //!
-//! * We supply the reference (`X-Reference-Id`), so a submit is idempotent on
-//!   an id that exists in our database *before* the call
-//!   (`docs/flows/crash-safety.md`).
-//! * Status is queryable by that same reference, indefinitely, which is what
-//!   the reconciler's poll ladder is built on.
+//! The wire, the failure mapping and the environment values are in
+//! `docs/flows/adapter-mtn-momo.md`; the `mapping` module transcribes its table.
+//! `docs/reference/rails.md` has the three answers this adapter reads against
+//! the grain — a 409 is a success, a 500 is not automatically retryable, a
+//! 404 is not a failure — and why [`Adapter::refund`] is
+//! [`ProviderError::NotImplemented`] rather than
+//! [`ProviderError::Unsupported`].
 //!
-//! Wire details, the failure mapping and the environment values live in
-//! `docs/flows/adapter-mtn-momo.md`; `mapping` transcribes its table.
-//!
-//! # The three things this adapter is careful about
-//!
-//! **A 409 is a success.** MTN answers `RESOURCE_ALREADY_EXIST` when it has
-//! already seen our reference. That is the rail confirming the charge exists,
-//! which is exactly what a retry after a crash needs to hear — reporting it
-//! as an error would turn a safe retry into a lost payment.
-//!
-//! **A 500 is not automatically retryable.** Several *logical* errors arrive
-//! as HTTP 500 with a `code` in the body, three of which are our own
-//! misconfiguration and will never succeed. The body's `code` is read before
-//! anything is decided, and no 500 is ever blindly retried here.
-//!
-//! **A 404 is not a failure.** "I have no record of that reference" is
-//! [`ChargeStatus::NotFound`], never [`ChargeStatus::Failed`]: a push rail can
-//! answer 404 for a charge it is about to accept, and failing it here would
-//! lose a payment that is still in flight.
-//!
-//! # Credentials
-//!
-//! Never logged, never rendered. See `token` for the cache, the
-//! fingerprinting that stops one merchant's token being used for another's
-//! call, and the redaction.
-//!
-//! # What is not built
-//!
-//! [`Adapter::refund`] — MTN refunds are the *Disbursements* product, with a
-//! different subscription key and a separately-scoped token that no
-//! deployment of this system has. It keeps its `NotImplemented` token; see
-//! `docs/status.md`.
+//! Credentials are never logged and never rendered; see the `token` module.
 
 mod mapping;
 mod token;
@@ -56,7 +29,7 @@ use vpay_provider::{
     ProviderError, RefExtra, Submitted,
 };
 
-use crate::token::{CachedToken, Credentials, SUBSCRIPTION_KEY_HEADER, TARGET_ENVIRONMENT_HEADER};
+use crate::token::{Credentials, SUBSCRIPTION_KEY_HEADER, TARGET_ENVIRONMENT_HEADER};
 
 /// The reference *we* generate. It is MTN's transaction id, which is what
 /// makes a same-reference resubmission idempotent rather than a second
@@ -71,13 +44,10 @@ const CALLBACK_URL_HEADER: HeaderName = HeaderName::from_static("x-callback-url"
 /// The adapter, owning the outbound HTTP client it makes rail calls with and
 /// the access token those calls carry.
 ///
-/// Neither `Copy` nor `Default`, and that is the point: a rail adapter is a
-/// thing with a connection pool and a cached OAuth token, not a unit struct.
-/// `Default` in particular would have to invent a client, and the only
-/// correct client in a `FROM scratch` image is the vendored-roots one a
-/// binary builds once at boot (`vpay_provider::http`) — inventing a second
-/// here is how a process ends up with two connection pools and one of them
-/// panicking on the trust store.
+/// Neither `Copy` nor `Default`, and that is the point: `Default` would have
+/// to invent a client, and the only correct client in a `FROM scratch` image
+/// is the vendored-roots one a binary builds once at boot
+/// (`vpay_provider::http`).
 #[derive(Debug)]
 pub struct Adapter {
     /// Built once per process by the binary and cloned in
@@ -85,24 +55,31 @@ pub struct Adapter {
     http: reqwest::Client,
     /// The cached bearer token, or `None` before the first call.
     ///
-    /// An async `RwLock` rather than a `std` one because it is held across
-    /// the `.await` that mints a token: a blocking lock held over an await
-    /// point parks a runtime thread on a network round trip. Reads are the
-    /// common case (every call after the first), which is what the
-    /// reader/writer split buys.
-    ///
-    /// A single slot rather than a map keyed by fingerprint: today one
-    /// `Adapter` serves one configured host, and a map would be an unbounded,
-    /// never-evicted cache of bearer tokens keyed by credentials — a worse
-    /// thing to hold in memory than one token that is re-minted when the
-    /// configuration it belongs to changes. The fingerprint is what makes the
-    /// single slot *safe* (see `token`); it is not what makes it fast.
-    token: RwLock<Option<CachedToken>>,
+    /// An async `RwLock` because it is held across the `.await` that mints a
+    /// token, and a blocking lock over an await point parks a runtime thread
+    /// on a network round trip. One slot, not a map keyed by fingerprint —
+    /// `docs/reference/rails.md` says why that is safe *and* why a map would
+    /// be worse.
+    token: RwLock<Option<vpay_provider::token::CachedToken>>,
 }
 
 impl Adapter {
     /// Takes the process's one client rather than building its own — see the
     /// struct's doc comment.
+    ///
+    /// ```
+    /// use vpay_core::ProviderFlow;
+    /// use vpay_provider::ProviderAdapter;
+    ///
+    /// let client = vpay_provider::http::client().expect("the vendored-roots client builds");
+    /// let adapter = vpay_adapter_mtn_momo::Adapter::new(client);
+    ///
+    /// assert_eq!(adapter.code(), "mtn_momo", "the code is the payment_method_types value");
+    /// // A push rail: the payer is prompted on their handset, so there is
+    /// // nowhere to redirect anyone and `submit` returns no URL.
+    /// assert_eq!(adapter.capabilities().flow, ProviderFlow::Push);
+    /// assert!(adapter.capabilities().is_coherent());
+    /// ```
     #[must_use]
     pub fn new(http: reqwest::Client) -> Self {
         Self {
@@ -134,16 +111,17 @@ impl Adapter {
     /// cached copy has to go with it or every subsequent call repeats the
     /// same 401.
     ///
-    /// Two concurrent callers can both mint here — the lock is taken to
-    /// *store*, not around the round trip. That is deliberate: holding the
-    /// write lock across the mint would serialise every rail call behind it,
-    /// and the cost of the race is one redundant token, not a wrong one.
-    ///
-    /// The freshly minted token is used for *this* call even if it is already
-    /// inside the refresh margin (a rail minting sub-minute tokens): the
+    /// The lock is taken to *store*, not around the round trip, so two
+    /// concurrent callers can both mint. Holding the write lock across the
+    /// mint would serialise every rail call behind it, and the cost of the
+    /// race is one redundant token, not a wrong one. The fresh token is used
+    /// for this call even if it is already inside the refresh margin: the
     /// alternative is refusing a call over a token the rail just said is
-    /// good. It simply will not be reused, so such a rail costs one mint per
-    /// call and stays visible in the token endpoint's own metrics.
+    /// good.
+    ///
+    /// # Errors
+    ///
+    /// As [`token::mint`].
     async fn mint(
         &self,
         config: &ProviderConfig,
@@ -221,46 +199,42 @@ pub(crate) fn base_url(config: &ProviderConfig) -> &str {
 /// finish talking to must never be reported as a payer being declined, and
 /// `Category::Rail` is what tells the poll ladder to resolve it rather than
 /// the merchant to start a new intent.
+///
+/// The `reqwest::Error` is attached as the `#[source]`, not folded into the
+/// message. `reqwest`'s own `Display` for a timeout is "error sending
+/// request for url (…)" and the word *timeout* is one link further down the
+/// chain — flattening kept the first line and threw the diagnosis away.
 pub(crate) fn transport(error: reqwest::Error) -> ProviderError {
-    ProviderError::Transport(format!("mtn_momo: {error}"))
+    ProviderError::transport_from("mtn_momo: the request to the rail failed", error)
 }
 
-/// Reads a rail response, refusing to buffer more than
-/// [`vpay_provider::http::MAX_RAIL_BODY_BYTES`] of it.
+/// The rail's answer, bounded, as text.
 ///
-/// Every body this adapter reads goes through here rather than through
+/// [`vpay_provider::http::read_rail_body`] does the bounding and the error
+/// mapping — every body this adapter reads goes through it rather than
 /// `Response::text()`, which reads to end of stream and so lets the peer
-/// choose how much memory a worker task allocates. MTN's documented bodies
-/// are a few hundred bytes; what this bounds is the undocumented case — a
-/// gateway's HTML error page, or a host that is not MTN at all.
+/// choose how much memory a worker task allocates.
 ///
 /// The bytes are decoded lossily rather than by the response's charset:
-/// every branch downstream either parses JSON (which is UTF-8 by
-/// definition) or truncates the text into a diagnostic, and a body that is
-/// not valid UTF-8 must produce a readable error rather than a second,
-/// different failure.
+/// every branch downstream either parses JSON (which is UTF-8 by definition)
+/// or truncates the text into a diagnostic, and a body that is not valid
+/// UTF-8 must produce a readable error rather than a second, different
+/// failure.
 ///
 /// # Errors
 ///
-/// [`ProviderError::Malformed`] when the body exceeds the cap — carrying
-/// the cap in the message, because "the rail sent too much" is only
-/// actionable if an operator can see how much was too much. `Malformed`
-/// rather than `Rejected`: an oversize answer says nothing about whether
-/// the payment happened, and `docs/flows/crash-safety.md` resolves an
-/// unknown fate by asking again, never by failing the charge.
-/// [`ProviderError::Transport`] if the stream fails part-way.
+/// As [`vpay_provider::http::read_rail_body`]:
+/// [`ProviderError::Malformed`] naming the cap when the body exceeds it, and
+/// [`ProviderError::Transport`] if the stream fails part-way. Never a
+/// decline — an oversize or truncated answer says nothing about whether the
+/// payment happened.
 pub(crate) async fn read_body(
     response: reqwest::Response,
 ) -> Result<(StatusCode, String), ProviderError> {
-    use vpay_provider::http::{HttpBodyError, MAX_RAIL_BODY_BYTES, bounded_body};
-
-    match bounded_body(response, MAX_RAIL_BODY_BYTES).await {
-        Ok((status, body)) => Ok((status, String::from_utf8_lossy(&body).into_owned())),
-        Err(error @ HttpBodyError::TooLarge { .. }) => {
-            Err(ProviderError::Malformed(format!("mtn_momo: {error}")))
-        }
-        Err(HttpBodyError::Read(error)) => Err(transport(error)),
-    }
+    let (status, body) =
+        vpay_provider::http::read_rail_body(response, "mtn_momo: reading the rail's response")
+            .await?;
+    Ok((status, String::from_utf8_lossy(&body).into_owned()))
 }
 
 /// The rail refusing *our* partner credentials, in the one shape
@@ -316,7 +290,7 @@ fn submit_outcome(status: StatusCode, body: &str) -> Result<Submitted, ProviderE
             wire::ApiError::parse(body).code.as_deref(),
             &truncated(body),
         )),
-        _ if status.is_server_error() => Err(ProviderError::Transport(format!(
+        _ if status.is_server_error() => Err(ProviderError::transport(format!(
             "mtn_momo: requesttopay answered HTTP {status}"
         ))),
         // A 404 here is the endpoint, not the charge: the URL is wrong.
@@ -329,11 +303,11 @@ fn submit_outcome(status: StatusCode, body: &str) -> Result<Submitted, ProviderE
         // of being followed with our subscription key, target environment,
         // reference and — on a 307/308 — the request body. It is
         // `Malformed`, never a decline: the charge's fate is unknown.
-        _ if status.is_redirection() => Err(ProviderError::Malformed(format!(
+        _ if status.is_redirection() => Err(ProviderError::malformed(format!(
             "mtn_momo: requesttopay answered a redirect (HTTP {status}), which is not followed; \
              check base_url"
         ))),
-        _ => Err(ProviderError::Malformed(format!(
+        _ => Err(ProviderError::malformed(format!(
             "mtn_momo: requesttopay answered an unexpected HTTP {status}"
         ))),
     }
@@ -345,7 +319,7 @@ fn status_outcome(status: StatusCode, body: &str) -> Result<ChargeStatus, Provid
     match status.as_u16() {
         200 => {
             let parsed: wire::StatusResponse = serde_json::from_str(body)
-                .map_err(|e| ProviderError::Malformed(format!("mtn_momo: status response: {e}")))?;
+                .map_err(|e| ProviderError::malformed(format!("mtn_momo: status response: {e}")))?;
             match parsed.status.to_ascii_uppercase().as_str() {
                 "PENDING" => Ok(ChargeStatus::Pending),
                 "SUCCESSFUL" => Ok(ChargeStatus::Succeeded {
@@ -369,7 +343,7 @@ fn status_outcome(status: StatusCode, body: &str) -> Result<ChargeStatus, Provid
                         raw,
                     })
                 }
-                other => Err(ProviderError::Malformed(format!(
+                other => Err(ProviderError::malformed(format!(
                     "mtn_momo: unknown status {other}"
                 ))),
             }
@@ -378,16 +352,16 @@ fn status_outcome(status: StatusCode, body: &str) -> Result<ChargeStatus, Provid
         // not `Failed`.
         404 => Ok(ChargeStatus::NotFound),
         401 | 403 => Err(rail_credentials_refused(status)),
-        _ if status.is_server_error() => Err(ProviderError::Transport(format!(
+        _ if status.is_server_error() => Err(ProviderError::transport(format!(
             "mtn_momo: status query answered HTTP {status}"
         ))),
         // See `submit_outcome`: redirects are not followed, so a 3xx is an
         // answer to refuse rather than a hop to take.
-        _ if status.is_redirection() => Err(ProviderError::Malformed(format!(
+        _ if status.is_redirection() => Err(ProviderError::malformed(format!(
             "mtn_momo: status query answered a redirect (HTTP {status}), which is not followed; \
              check base_url"
         ))),
-        _ => Err(ProviderError::Malformed(format!(
+        _ => Err(ProviderError::malformed(format!(
             "mtn_momo: status query answered an unexpected HTTP {status}"
         ))),
     }
@@ -442,7 +416,7 @@ impl ProviderAdapter for Adapter {
 
         let (subscription, environment) = Adapter::common_headers(&credentials)?;
         let reference = HeaderValue::from_str(&charge.reference_id.to_string()).map_err(|_| {
-            ProviderError::Malformed("mtn_momo: reference_id is not a header value".to_owned())
+            ProviderError::malformed("mtn_momo: reference_id is not a header value".to_owned())
         })?;
         let callback = HeaderValue::from_str(&config.callback_url).map_err(|_| {
             ProviderError::Config(
@@ -538,7 +512,7 @@ impl ProviderAdapter for Adapter {
     /// field is used and why.
     fn parse_callback(&self, body: &[u8]) -> Result<CallbackRef, ProviderError> {
         let parsed: wire::CallbackBody = serde_json::from_slice(body).map_err(|e| {
-            ProviderError::Malformed(format!("mtn_momo: callback body is not JSON: {e}"))
+            ProviderError::malformed(format!("mtn_momo: callback body is not JSON: {e}"))
         })?;
         Ok(CallbackRef {
             reference_id: parsed.reference()?,
@@ -705,11 +679,11 @@ mod tests {
     fn a_500_with_a_body_that_is_not_json_is_a_transport_error() {
         assert!(matches!(
             submit_outcome(StatusCode::INTERNAL_SERVER_ERROR, "<html>oops</html>"),
-            Err(ProviderError::Transport(_))
+            Err(ProviderError::Transport { .. })
         ));
         assert!(matches!(
             submit_outcome(StatusCode::SERVICE_UNAVAILABLE, ""),
-            Err(ProviderError::Transport(_))
+            Err(ProviderError::Transport { .. })
         ));
     }
 
@@ -742,8 +716,9 @@ mod tests {
     #[test]
     fn a_rails_error_body_is_bounded_before_it_reaches_a_message() {
         let huge = "x".repeat(10_000);
-        let Err(ProviderError::Transport(message)) =
-            submit_outcome(StatusCode::INTERNAL_SERVER_ERROR, &huge)
+        let Err(ProviderError::Transport {
+            context: message, ..
+        }) = submit_outcome(StatusCode::INTERNAL_SERVER_ERROR, &huge)
         else {
             panic!("expected a transport error")
         };
@@ -815,7 +790,10 @@ mod tests {
 
         for status in [StatusCode::SERVICE_UNAVAILABLE, StatusCode::BAD_GATEWAY] {
             let error = status_outcome(status, "").expect_err("5xx is an error");
-            assert!(matches!(error, ProviderError::Transport(_)), "{error:?}");
+            assert!(
+                matches!(error, ProviderError::Transport { .. }),
+                "{error:?}"
+            );
             assert_eq!(error.category(), Category::Rail);
         }
     }
@@ -824,7 +802,7 @@ mod tests {
     fn a_status_the_rail_has_never_documented_is_not_guessed_at() {
         assert!(matches!(
             status_outcome(StatusCode::OK, r#"{"status":"WHAT"}"#),
-            Err(ProviderError::Malformed(_))
+            Err(ProviderError::Malformed { .. })
         ));
     }
 
@@ -838,7 +816,7 @@ mod tests {
         let adapter = adapter();
         let config = config();
         let credentials = Credentials::from_config(&config).expect("a complete configuration");
-        *adapter.token.write().await = Some(CachedToken::new(
+        *adapter.token.write().await = Some(token::cache_entry(
             "cached-token".to_owned(),
             credentials.fingerprint(),
             std::time::Instant::now(),
@@ -870,7 +848,7 @@ mod tests {
         );
 
         let credentials = Credentials::from_config(&mine).expect("complete");
-        *adapter.token.write().await = Some(CachedToken::new(
+        *adapter.token.write().await = Some(token::cache_entry(
             "cached-token".to_owned(),
             credentials.fingerprint(),
             std::time::Instant::now(),
@@ -880,8 +858,51 @@ mod tests {
         let other = Credentials::from_config(&theirs).expect("complete");
         let outcome = adapter.bearer(&theirs, &other).await;
         assert!(
-            matches!(outcome, Err(ProviderError::Transport(_))),
+            matches!(outcome, Err(ProviderError::Transport { .. })),
             "the second configuration must mint its own token, not reuse one: {outcome:?}"
+        );
+    }
+
+    /// The `#[source]` chain, not just the sentence.
+    ///
+    /// `ProviderError::Transport` carries the `reqwest::Error` structurally
+    /// (ADR-0011) instead of folding it into its own message, and that is
+    /// only worth anything if the leaf is still reachable from a boundary
+    /// that wants to log or match on it. This test fails the moment anyone
+    /// goes back to `format!("{error}")`: the chain would be empty and the
+    /// downcast would find nothing.
+    ///
+    /// The request goes to a closed port, so the failure is a real
+    /// `reqwest::Error` and not a constructed one.
+    #[tokio::test]
+    async fn a_transport_failures_source_chain_reaches_the_reqwest_error() {
+        let adapter = adapter();
+        let config = config();
+        let credentials = Credentials::from_config(&config).expect("complete");
+
+        let error = adapter
+            .bearer(&config, &credentials)
+            .await
+            .expect_err("nothing is listening on the configured port");
+
+        let stage = std::error::Error::source(&error)
+            .expect("a Transport must carry the failure it was raised from");
+        let leaf = stage
+            .source()
+            .expect("RailFailure::Http must carry the reqwest error itself");
+        assert!(
+            leaf.downcast_ref::<reqwest::Error>().is_some(),
+            "the chain must reach the reqwest error, not a string that once described it: \
+             {leaf}"
+        );
+        assert!(
+            !error.to_string().contains("error sending request"),
+            "the reqwest text belongs on the source, not flattened into the message: {error}"
+        );
+        assert!(
+            vpay_core::error::source_chain(&error).contains("sending the request"),
+            "the chain is what an operator sees: {}",
+            vpay_core::error::source_chain(&error)
         );
     }
 
@@ -892,7 +913,7 @@ mod tests {
         let adapter = adapter();
         let config = config();
         let credentials = Credentials::from_config(&config).expect("complete");
-        *adapter.token.write().await = Some(CachedToken::new(
+        *adapter.token.write().await = Some(token::cache_entry(
             "cached-token".to_owned(),
             credentials.fingerprint(),
             std::time::Instant::now() - Duration::from_secs(3_600),
@@ -901,7 +922,7 @@ mod tests {
 
         assert!(matches!(
             adapter.bearer(&config, &credentials).await,
-            Err(ProviderError::Transport(_))
+            Err(ProviderError::Transport { .. })
         ));
     }
 
@@ -959,11 +980,11 @@ mod tests {
     fn a_callback_that_names_no_charge_is_refused() {
         assert!(matches!(
             adapter().parse_callback(b"{}"),
-            Err(ProviderError::Malformed(_))
+            Err(ProviderError::Malformed { .. })
         ));
         assert!(matches!(
             adapter().parse_callback(b"not json at all"),
-            Err(ProviderError::Malformed(_))
+            Err(ProviderError::Malformed { .. })
         ));
     }
 
@@ -974,7 +995,7 @@ mod tests {
         let adapter = adapter();
         let config = config();
         let credentials = Credentials::from_config(&config).expect("complete");
-        *adapter.token.write().await = Some(CachedToken::new(
+        *adapter.token.write().await = Some(token::cache_entry(
             "super-secret-token".to_owned(),
             credentials.fingerprint(),
             std::time::Instant::now(),

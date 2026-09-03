@@ -56,7 +56,7 @@ WHERE locked_at IS NULL AND run_at <= now() AND run_at < 'infinity';
 ### What it means
 
 The loop parked the job at `run_at = 'infinity'` with its lease cleared and the
-reason in `last_error` (`vpay_db::jobs::dead_letter`). A park means
+reason in `last_error` (`vpay_db::Jobs::dead_letter`). A park means
 `JobError::decision` answered `DeadLetter`, i.e. the error's classification is
 `Retry::Never`: a poisoned row (a payload that does not deserialise, a
 `charge_id` naming no charge, a `charges.state` outside the enum), an
@@ -120,7 +120,7 @@ logged only when it freed something), or a job that is claimed and not moving.
 
 A worker that was `SIGKILL`ed — or that outlived its grace period without
 handing its leases back — leaves rows with `locked_at`/`locked_by` set.
-`vpay_db::jobs::claim` matches only `locked_at IS NULL`, so those rows are
+`vpay_db::Jobs::claim` matches only `locked_at IS NULL`, so those rows are
 unclaimable until a reaper frees them.
 
 **In a healthy deployment you do not have to do anything.** A running worker
@@ -217,7 +217,7 @@ reconciliation can start from it alone.
    ```
 
    `provider_txn_id` (migration `0021`) is written only by
-   `vpay_db::settlement::apply_succeeded`, so a `succeeded` charge that has one
+   `vpay_db::Settlement::apply_succeeded`, so a `succeeded` charge that has one
    is the identifier to quote to the rail.
 2. Read the `provider_requests` timeline for the charge — steps 2 and 3 of
    [unresolved-charges.md](unresolved-charges.md) apply unchanged.

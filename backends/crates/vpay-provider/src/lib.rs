@@ -6,17 +6,24 @@
 //!
 //! See `docs/adr/0002-provider-port.md` and `docs/flows/provider-port.md`.
 //!
-//! [`http`] is the outbound HTTP client every adapter builds on. It lives
-//! here rather than in `vpay-api` because an adapter may not depend on the
-//! HTTP surface — see that module's own docs for the move and what it costs.
+//! Three modules carry what belongs to *every* rail rather than to any one
+//! of them, so that no adapter holds a copy of a cross-rail concern:
+//! [`http`] (the outbound client and the bounded body read), [`token`] (the
+//! bearer cache and its credential fingerprint) and [`measured`] (the counter
+//! and histogram a rail call is recorded on). `docs/reference/rails.md` says
+//! why each lives here and what each adapter deliberately keeps for itself.
 //!
-//! [`measured`] is the other thing that belongs to *every* rail rather than
-//! to any one of them: the counter and histogram a rail call is recorded on.
-//! Same argument as [`http`] in the opposite direction — an adapter must not
-//! carry a copy of a cross-rail concern, so the port carries it once.
+//! `#[warn(clippy::missing_errors_doc)]` is on the crate rather than in
+//! `Cargo.toml`: cargo refuses `[lints.clippy]` beside `[lints] workspace =
+//! true` ("cannot override `workspace.lints` in `lints`"), and copying the
+//! workspace's thirteen lints in here to add a fourteenth is how the two
+//! sets drift. Every public fallible item in this crate therefore carries an
+//! `# Errors` section, and `cargo clippy -- -D warnings` fails if one stops.
+#![warn(clippy::missing_errors_doc)]
 
 pub mod http;
 pub mod measured;
+pub mod token;
 
 pub use measured::Measured;
 
@@ -32,7 +39,14 @@ use vpay_core::{FailureCode, Money, ProviderFlow};
 /// Static declaration of what a rail can do.
 ///
 /// The core reads these instead of special-casing a provider code.
+///
+/// `rename_all` because this is *vpay's* own shape, not a rail's: it is
+/// projected into `/v1` responses and into configuration, and the attribute
+/// is what keeps a field added as `supportsRefunds` from becoming public
+/// API. The adapters' `wire.rs` types carry the opposite rule, for the
+/// opposite reason — see either one's module header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct Capabilities {
     pub flow: ProviderFlow,
     pub supports_refunds: bool,
@@ -106,14 +120,61 @@ pub struct CallbackRef {
     pub ref_extra: RefExtra,
 }
 
+/// The foreign error an adapter is holding when it gives up on a rail.
+///
+/// A closed enum, not `Box<dyn Error>`: ADR-0011 says a foreign error is
+/// wrapped with `#[source]` and never boxed, and there are exactly two an
+/// adapter can be holding at that point.
+///
+/// Each variant's `Display` names *which stage* failed and nothing else —
+/// deliberately not `#[error(transparent)]`, which would forward `source()`
+/// past the library error and put it out of reach of a downcast. Rendered
+/// through [`vpay_core::error::source_chain`] a timeout reads "sending the
+/// request: error sending request for url (…): operation timed out", where
+/// `reqwest`'s own `Display` stops at the first of those.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum RailFailure {
+    /// DNS, connect, TLS, or a deadline from [`ProviderConfig`].
+    #[error("sending the request")]
+    Http(#[from] reqwest::Error),
+    /// The response body could not be read within its bound.
+    #[error("reading the response")]
+    Body(#[from] http::HttpBodyError),
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
-    #[error("transport error talking to the rail: {0}")]
-    Transport(String),
+    /// The rail could not be reached, or could not be finished with.
+    ///
+    /// `context` is the adapter's own sentence — which rail, which
+    /// operation, which status — and is what `Display` renders. `source` is
+    /// the library error underneath, when there is one; a rail that
+    /// *answered* `HTTP 500` produces no foreign error and leaves it `None`.
+    #[error("transport error talking to the rail: {context}")]
+    Transport {
+        /// Which rail, doing what. Never a secret.
+        context: String,
+        /// The `reqwest`/body error this was raised from, if any.
+        #[source]
+        source: Option<RailFailure>,
+    },
     #[error("rail rejected the request: {code} — {message}")]
     Rejected { code: FailureCode, message: String },
-    #[error("could not parse the rail's response: {0}")]
-    Malformed(String),
+    /// The rail answered something this adapter cannot act on.
+    ///
+    /// Same two fields, same rule, as [`ProviderError::Transport`].
+    #[error("could not parse the rail's response: {context}")]
+    Malformed {
+        /// What could not be parsed, and by which rail. Never a secret.
+        context: String,
+        /// The body error this was raised from, if any. A `serde_json`
+        /// failure is *not* one: the parse error's own text is already the
+        /// whole diagnostic and belongs in `context`, where an operator
+        /// reading a log line sees it.
+        #[source]
+        source: Option<RailFailure>,
+    },
     #[error("adapter configuration is invalid: {0}")]
     Config(String),
     /// Returned by an operation this rail does not support.
@@ -135,6 +196,136 @@ pub enum ProviderError {
     NotImplemented(&'static str),
 }
 
+impl vpay_core::Classify for RailFailure {
+    /// Both stages are the rail's behaviour, never ours.
+    ///
+    /// It is only ever reached through a [`ProviderError::Transport`] or
+    /// [`ProviderError::Malformed`], both of which are already
+    /// [`vpay_core::Category::Rail`], so this exists to say the same thing
+    /// where `cargo xtask verify-errors` can check it rather than to give a
+    /// boundary a second opinion — matching
+    /// [`http::HttpBodyError`]'s own impl, which classifies the inner half
+    /// of `RailFailure::Body` identically.
+    fn category(&self) -> vpay_core::Category {
+        vpay_core::Category::Rail
+    }
+}
+
+impl ProviderError {
+    /// A transport failure with no foreign error behind it — a rail that
+    /// answered, badly.
+    ///
+    /// ```
+    /// use vpay_provider::ProviderError;
+    ///
+    /// let error = ProviderError::transport("mtn_momo: requesttopay answered HTTP 503");
+    /// assert_eq!(
+    ///     error.to_string(),
+    ///     "transport error talking to the rail: mtn_momo: requesttopay answered HTTP 503"
+    /// );
+    /// assert!(
+    ///     std::error::Error::source(&error).is_none(),
+    ///     "a rail that answered has no library error behind it to attach"
+    /// );
+    /// ```
+    #[must_use]
+    pub fn transport(context: impl Into<String>) -> Self {
+        Self::Transport {
+            context: context.into(),
+            source: None,
+        }
+    }
+
+    /// A transport failure raised *from* a `reqwest` or body error, which
+    /// stays reachable through [`std::error::Error::source`].
+    ///
+    /// `Display` still renders `context` alone. That is the point: the
+    /// sentence stays one line an operator can read, and the leaf reaches a
+    /// log through [`vpay_core::error::source_chain`] rather than by being
+    /// `format!`ed into the sentence, where nothing could match on it again.
+    ///
+    /// ```
+    /// use vpay_provider::ProviderError;
+    /// use vpay_provider::http::{HttpBodyError, MAX_RAIL_BODY_BYTES};
+    ///
+    /// let error = ProviderError::transport_from(
+    ///     "orange_money: reading the token response",
+    ///     HttpBodyError::TooLarge { max: MAX_RAIL_BODY_BYTES },
+    /// );
+    /// assert_eq!(
+    ///     error.to_string(),
+    ///     "transport error talking to the rail: orange_money: reading the token response"
+    /// );
+    ///
+    /// let stage = std::error::Error::source(&error).expect("the cause is attached");
+    /// assert_eq!(stage.to_string(), "reading the response");
+    /// let leaf = std::error::Error::source(stage).expect("and the leaf under it");
+    /// assert_eq!(leaf.to_string(), format!("the response exceeded {MAX_RAIL_BODY_BYTES} bytes"));
+    /// ```
+    #[must_use]
+    pub fn transport_from(context: impl Into<String>, source: impl Into<RailFailure>) -> Self {
+        Self::Transport {
+            context: context.into(),
+            source: Some(source.into()),
+        }
+    }
+
+    /// An unparseable answer, described by `context` alone.
+    ///
+    /// The constructor a `serde_json` failure uses: that error's own text is
+    /// the whole diagnostic and belongs in `context`, not on a `source`
+    /// nobody would print.
+    ///
+    /// ```
+    /// use vpay_core::Classify as _;
+    /// use vpay_provider::ProviderError;
+    ///
+    /// let error = ProviderError::malformed("mtn_momo: unknown status WHAT");
+    /// assert_eq!(
+    ///     error.to_string(),
+    ///     "could not parse the rail's response: mtn_momo: unknown status WHAT"
+    /// );
+    /// // Not a decline: an answer we cannot read says nothing about whether
+    /// // the payment happened, so it is the rail's category and the worker
+    /// // resolves it by asking again.
+    /// assert_eq!(error.category(), vpay_core::Category::Rail);
+    /// assert_eq!(error.code(), "provider_error");
+    /// ```
+    #[must_use]
+    pub fn malformed(context: impl Into<String>) -> Self {
+        Self::Malformed {
+            context: context.into(),
+            source: None,
+        }
+    }
+
+    /// An unparseable answer raised from a body error.
+    ///
+    /// The oversize-body arm of [`http::read_rail_body`]: the cap is named in
+    /// `context` because it is the whole diagnostic and `Display` must carry
+    /// it, and the [`http::HttpBodyError`] is attached anyway so a caller can
+    /// still tell an oversize body from a truncated one.
+    ///
+    /// ```
+    /// use vpay_provider::ProviderError;
+    /// use vpay_provider::http::{HttpBodyError, MAX_RAIL_BODY_BYTES};
+    ///
+    /// let error = ProviderError::malformed_from(
+    ///     format!("orange_money: the response exceeded {MAX_RAIL_BODY_BYTES} bytes"),
+    ///     HttpBodyError::TooLarge { max: MAX_RAIL_BODY_BYTES },
+    /// );
+    /// assert!(error.to_string().contains(&MAX_RAIL_BODY_BYTES.to_string()));
+    /// assert!(std::error::Error::source(&error).is_some());
+    /// ```
+    #[must_use]
+    pub fn malformed_from(context: impl Into<String>, source: impl Into<RailFailure>) -> Self {
+        Self::Malformed {
+            context: context.into(),
+            source: Some(source.into()),
+        }
+    }
+}
+
 impl vpay_core::Classify for ProviderError {
     fn category(&self) -> vpay_core::Category {
         use vpay_core::Category;
@@ -143,7 +334,7 @@ impl vpay_core::Classify for ProviderError {
             // poll ladder retries these (docs/flows/reconciler.md); nobody
             // else should, and a merchant re-submitting would risk a double
             // charge on a push rail (docs/flows/crash-safety.md).
-            Self::Transport(_) | Self::Malformed(_) => Category::Rail,
+            Self::Transport { .. } | Self::Malformed { .. } => Category::Rail,
             // A rail *decision*, not a rail *failure*: the charge is
             // declined, the intent goes back to requires_payment_method with
             // `last_payment_error`, and the merchant starts a new intent.
@@ -161,8 +352,8 @@ impl vpay_core::Classify for ProviderError {
 
     fn code(&self) -> &'static str {
         match self {
-            Self::Transport(_) => "provider_unavailable",
-            Self::Malformed(_) => "provider_error",
+            Self::Transport { .. } => "provider_unavailable",
+            Self::Malformed { .. } => "provider_error",
             // A constant, *not* the `FailureCode`'s own string. The two
             // vocabularies overlap: `FailureCode::ProviderUnavailable`
             // renders `provider_unavailable`, which is also
@@ -189,8 +380,8 @@ impl vpay_core::Classify for ProviderError {
             // Exhaustive rather than a wildcard: a new variant must state
             // its retry policy here, not inherit one silently from whatever
             // category it happened to pick.
-            Self::Transport(_)
-            | Self::Malformed(_)
+            Self::Transport { .. }
+            | Self::Malformed { .. }
             | Self::Config(_)
             | Self::Unsupported
             | Self::NotImplemented(_) => self.category().default_retry(),
@@ -234,9 +425,10 @@ impl vpay_core::Classify for ProviderError {
             // `Capabilities` first, and that is ours to fix. See the
             // variant's doc comment.
             Self::Unsupported => Severity::Error,
-            Self::Transport(_) | Self::Malformed(_) | Self::Config(_) | Self::NotImplemented(_) => {
-                self.category().default_severity()
-            }
+            Self::Transport { .. }
+            | Self::Malformed { .. }
+            | Self::Config(_)
+            | Self::NotImplemented(_) => self.category().default_severity(),
         }
     }
 
@@ -249,9 +441,10 @@ impl vpay_core::Classify for ProviderError {
             // vocabularies colliding on one field.
             Self::Rejected { code, .. } => format!("The payment was declined ({code})."),
             Self::Unsupported => "This rail does not support the requested operation.".to_owned(),
-            Self::Transport(_) | Self::Malformed(_) | Self::Config(_) | Self::NotImplemented(_) => {
-                self.category().generic_message().to_owned()
-            }
+            Self::Transport { .. }
+            | Self::Malformed { .. }
+            | Self::Config(_)
+            | Self::NotImplemented(_) => self.category().generic_message().to_owned(),
         }
     }
 }
@@ -273,32 +466,15 @@ pub struct ProviderConfig {
     pub credentials: BTreeMap<String, String>,
     /// How long the TCP+TLS handshake to this rail may take.
     ///
-    /// On the *config*, not on the client, and that is the load-bearing
-    /// part: one `reqwest::Client` is built once per process and shared by
-    /// every adapter (see [`http::client_with_timeouts`]), so a per-rail
-    /// deadline cannot live on the client without giving each rail its own
-    /// connection pool. Carrying it here also lets the conformance suite ask
-    /// for 100 ms and assert [`ProviderError::Transport`] against a
-    /// deliberately-slow stub, instead of a test that takes 20 s to pass.
-    ///
-    /// Always [`DEFAULT_CONNECT_TIMEOUT`] for a config built from YAML:
-    /// `vpay_config::ProviderHost::to_provider_config` fills it from that
-    /// constant and there is no YAML knob, because no deployment has asked
-    /// for a different budget and a knob nobody sets is a knob nobody has
-    /// tested. The conformance suite builds a `ProviderConfig` directly and
-    /// is the one caller that overrides it.
+    /// On the *config*, not on the client, because one `reqwest::Client` is
+    /// shared by every adapter in the process — a per-rail deadline on the
+    /// client would mean a connection pool per rail. Always
+    /// [`DEFAULT_CONNECT_TIMEOUT`] for a config built from YAML; there is no
+    /// knob, and `docs/reference/rails.md` says why.
     pub connect_timeout: Duration,
     /// The whole-request deadline: handshake, send, and reading the response
     /// body. [`DEFAULT_REQUEST_TIMEOUT`], on the same terms as
     /// `connect_timeout` above.
-    ///
-    /// A push rail's `submit` is the reason this is generous rather than
-    /// tight: it returns as soon as the rail has *accepted* the request, but
-    /// "accepted" can involve the rail's own upstream. A deadline that fires
-    /// early on a rail that did in fact accept the charge leaves a payer
-    /// prompted for a charge we recorded as a transport failure — which is
-    /// exactly the ambiguity `docs/flows/crash-safety.md` says the status
-    /// query, never a retry, must resolve.
     pub request_timeout: Duration,
 }
 
@@ -326,42 +502,60 @@ impl std::fmt::Debug for ProviderConfig {
     }
 }
 
-/// The handshake budget every deployment gets; see
-/// [`ProviderConfig::connect_timeout`] for why it is not configurable.
+/// The handshake budget every deployment gets.
 ///
-/// Five seconds is long for a TLS handshake to a rail in the same region and
-/// short enough that a black-holed host is a fast, obvious failure rather
-/// than a worker task parked for a minute.
+/// Long enough for a TLS handshake to a rail in the same region, short
+/// enough that a black-holed host fails fast instead of parking a worker
+/// task for a minute.
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The whole-request budget every deployment gets; see
-/// [`ProviderConfig::connect_timeout`] for why it is not configurable.
+/// The whole-request budget every deployment gets.
 ///
-/// Twenty seconds because MTN's `requesttopay` and Orange's `webpayment` are
-/// both synchronous calls into someone else's payment stack, and the failure
-/// mode of being too *tight* is worse than being slow: a timed-out submit on
-/// a push rail is a charge that may exist on the rail and not here.
+/// Generous rather than tight on purpose: both rails' submits are
+/// synchronous calls into someone else's payment stack, and a deadline that
+/// fires on a rail that *did* accept the charge leaves a payer prompted for
+/// a charge we recorded as a transport failure. `docs/reference/rails.md`.
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Every rail implements exactly this.
 ///
-/// Note `query_status` takes the whole [`ChargeRef`], not just an id: some
-/// rails need the amount and their own token to answer.
+/// `query_status` takes the whole [`ChargeRef`], not just an id: some rails
+/// need the amount and their own token to answer.
 ///
-/// # Why `#[async_trait]` and not native `async fn`
+/// # The error surface
 ///
-/// Native async fns in traits landed, but a trait that has one is not
-/// dyn-safe, and this port is *only* ever used as `Box<dyn ProviderAdapter>`
-/// — that is what keeps `if provider == "mtn_momo"` structurally impossible
-/// outside an adapter crate (ADR-0002): the HTTP layer holds trait objects
-/// whose concrete types it cannot name. `async_trait`'s boxed-future
-/// desugaring costs one allocation per rail call, against a network round
-/// trip. Implementors must therefore also write `#[async_trait]`.
+/// Which [`ProviderError`] each operation may raise. The table is the
+/// contract — a caller branches on it, and
+/// [`Classify`](vpay_core::Classify) turns each row into one status, one
+/// retry policy and one severity, at the boundary and nowhere else
+/// (ADR-0011). "May" is the operative word: an adapter that never has a
+/// credential to read may never raise [`ProviderError::Config`], but no
+/// adapter may raise a variant this table does not give it.
 ///
-/// `parse_callback` stays synchronous on purpose: it parses bytes that have
-/// already arrived and must not be able to make a network call — a callback
-/// is a hint, and an adapter that could fetch something while "parsing" one
-/// is an adapter that could smuggle a status out of an unauthenticated
+/// | Variant | `submit` | `query_status` | `parse_callback` | `refund` | what it means |
+/// |---|:-:|:-:|:-:|:-:|---|
+/// | [`Config`](ProviderError::Config) | ✓ | ✓ | | ✓ | a credential, setting or URL this deployment did not supply, or supplied unusably. Stops the poll ladder: no retry against the rail can fix it |
+/// | [`Rejected`](ProviderError::Rejected) | ✓ | ✓ | | ✓ | the rail *decided*. On `submit`/`refund` that includes a payer decline; on `query_status` only the rail refusing **our** partner credentials, because a declined charge is `Ok(`[`ChargeStatus::Failed`]`)`, never an error |
+/// | [`Transport`](ProviderError::Transport) | ✓ | ✓ | | ✓ | the rail could not be reached or could not be finished with — DNS, TLS, a deadline, a 5xx, a body that failed mid-stream. The charge's fate is **unknown**, which is why the worker resolves it by asking again and a merchant must not re-submit |
+/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. Also an unknown fate, never a decline |
+/// | [`Unsupported`](ProviderError::Unsupported) | | | | ✓ | this rail has no such API, permanently. The core is supposed to have branched on [`Capabilities`] first |
+/// | [`NotImplemented`](ProviderError::NotImplemented) | ✓ | ✓ | ✓ | ✓ | unbuilt work, and it says so rather than fabricating a success. Every token appears in `docs/status.md`, which `cargo xtask verify-status` enforces |
+///
+/// There is deliberately **no** `ProviderError::retryable()`: retry policy is
+/// [`Classify::retry`](vpay_core::Classify::retry) and a second oracle beside
+/// it is what ADR-0011 exists to prevent.
+///
+/// # Why `#[async_trait]`, and why `parse_callback` is not async
+///
+/// A trait with a native `async fn` is not dyn-safe, and this port is *only*
+/// ever used as `Box<dyn ProviderAdapter>` — which is what keeps
+/// `if provider == "mtn_momo"` structurally impossible outside an adapter
+/// crate (ADR-0002). Implementors must write `#[async_trait]` too; the cost
+/// is one boxed future per rail call, against a network round trip.
+///
+/// `parse_callback` stays synchronous so that it *cannot* make a network
+/// call: a callback is a hint, and an adapter that could fetch something
+/// while "parsing" one could smuggle a status out of an unauthenticated
 /// request (`docs/flows/reconciler.md`).
 #[async_trait]
 pub trait ProviderAdapter: Debug + Send + Sync {
@@ -370,33 +564,84 @@ pub trait ProviderAdapter: Debug + Send + Sync {
 
     fn capabilities(&self) -> Capabilities;
 
+    /// Asks the rail to take a payment.
+    ///
     /// Idempotent on `charge.reference_id`. A duplicate submission MUST be
     /// reported as [`Submitted`], never as an error — that is what makes
-    /// same-reference retry safe.
+    /// same-reference retry safe after a crash.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::Config`] for a credential or URL this deployment did
+    /// not supply; [`ProviderError::Rejected`] when the rail declined the
+    /// charge or refused our partner credentials;
+    /// [`ProviderError::Transport`] when the rail could not be reached or
+    /// finished with; [`ProviderError::Malformed`] for an answer the adapter
+    /// cannot act on; [`ProviderError::NotImplemented`] if the rail is
+    /// unbuilt. Never [`ProviderError::Unsupported`] — a rail that cannot
+    /// take a payment is not a rail. See the trait's error-surface table.
+    ///
+    /// The last two of those leave the charge's fate **unknown**, and that is
+    /// the distinction the whole port is arranged around: only
+    /// `Rejected` says the money did not move.
     async fn submit(
         &self,
         charge: &ChargeRef,
         config: &ProviderConfig,
     ) -> Result<Submitted, ProviderError>;
 
+    /// The authoritative read, and the only thing that moves money.
+    ///
     /// Must remain callable indefinitely, long after any prompt expired.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::Config`] for a missing credential — or, on a rail
+    /// that needs key material from `submit`, a `ref_extra` that no longer
+    /// carries it, which is a case for a human and not for the poll ladder;
+    /// [`ProviderError::Rejected`] **only** when the rail refuses our own
+    /// credentials; [`ProviderError::Transport`] and
+    /// [`ProviderError::Malformed`] as for [`submit`](ProviderAdapter::submit);
+    /// [`ProviderError::NotImplemented`] if the rail is unbuilt.
+    ///
+    /// A rail that has no record of the charge is **not** an error:
+    /// [`ChargeStatus::NotFound`] is the answer, because a push rail can say
+    /// that about a charge it is about to accept. Neither is a decline —
+    /// that is [`ChargeStatus::Failed`].
     async fn query_status(
         &self,
         charge: &ChargeRef,
         config: &ProviderConfig,
     ) -> Result<ChargeStatus, ProviderError>;
 
-    /// Extract identifiers only. Returning a status here is a design error.
+    /// Extracts identifiers from a callback body. Returning a status here is
+    /// a design error.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::Malformed`], and in practice nothing else: this
+    /// touches no network, holds no credential and reads no configuration,
+    /// so there is no transport to fail and no decision to relay. A body that
+    /// is not parseable, or that names no charge this deployment could have
+    /// generated, must be refused rather than attributed to something.
     fn parse_callback(&self, body: &[u8]) -> Result<CallbackRef, ProviderError>;
 
+    /// Returns part or all of a settled charge.
+    ///
     /// Only called when [`Capabilities::supports_refunds`] is true.
+    ///
+    /// # Errors
     ///
     /// The default is [`ProviderError::Unsupported`], not
     /// [`ProviderError::NotImplemented`]: a rail with no refund API is a
     /// *permanent* answer the core can branch on via
-    /// [`Capabilities::supports_refunds`], not unbuilt work. An adapter that
-    /// has a refund API it has not written yet must override this with its
-    /// own `NotImplemented` token so `verify-status` can see it.
+    /// [`Capabilities::supports_refunds`], not unbuilt work. An adapter whose
+    /// rail *does* refund but which has not written it must override this
+    /// with its own [`ProviderError::NotImplemented`] token, so
+    /// `verify-status` can see it and `docs/status.md` must list it.
+    ///
+    /// An implemented refund raises the same set as
+    /// [`submit`](ProviderAdapter::submit).
     async fn refund(
         &self,
         _charge: &ChargeRef,
@@ -448,11 +693,11 @@ mod tests {
         // Same `code` string, wildly different meaning: 502 "we are
         // retrying" vs. 409 "start a new intent". They must not collide.
         assert_eq!(
-            ProviderError::Transport("timeout".to_owned()).code(),
+            ProviderError::transport("timeout".to_owned()).code(),
             "provider_unavailable"
         );
         assert_eq!(
-            ProviderError::Malformed("not json".to_owned()).code(),
+            ProviderError::malformed("not json".to_owned()).code(),
             "provider_error"
         );
         assert_eq!(

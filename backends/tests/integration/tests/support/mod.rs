@@ -44,7 +44,7 @@ use vpay_api::{ResourceConfig, RouterDeps};
 use vpay_config::oauth::{GrantType, MerchantClient, WebhookEndpoint};
 use vpay_config::{Config, MERCHANT_AUDIENCE};
 use vpay_core::ProviderFlow;
-use vpay_db::{CurrencySeed, ProviderSeed};
+use vpay_db::{CurrencySeed, ProviderSeed, Repositories, TxOutcome, UnitOfWork as _};
 use vpay_provider::ProviderAdapter;
 
 /// A migrated Postgres in a fresh container.
@@ -52,12 +52,14 @@ use vpay_provider::ProviderAdapter;
 /// The container itself comes from
 /// `vpay_testkit::containers::start_postgres_with_retry` (why the tag is
 /// pinned, and which start errors are retried, are documented there); what
-/// lives here is the pool and the migration run.
+/// lives here are the repositories, a plain `sqlx` pool for the assertions
+/// that read the schema itself, and the migration run.
 ///
 /// The `ContainerAsync` is returned rather than dropped: dropping it stops
 /// the container, and a pool talking to a stopped container fails in a way
 /// that looks like a vpay bug.
-pub(crate) async fn migrated_postgres() -> anyhow::Result<(ContainerAsync<PostgresImage>, PgPool)> {
+pub(crate) async fn migrated_postgres()
+-> anyhow::Result<(ContainerAsync<PostgresImage>, Arc<dyn Repositories>, PgPool)> {
     let container = vpay_testkit::containers::start_postgres_with_retry()
         .await
         .context("postgres:16-alpine container starts (it is cached locally on this machine)")?;
@@ -78,7 +80,11 @@ pub(crate) async fn migrated_postgres() -> anyhow::Result<(ContainerAsync<Postgr
         .await
         .context("every migration under backends/migrations applies cleanly")?;
 
-    Ok((container, pool))
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the same container")?;
+
+    Ok((container, repositories, pool))
 }
 
 /// Installs the process-wide rustls `CryptoProvider`.
@@ -252,13 +258,13 @@ pub(crate) fn adapters_by_code() -> BTreeMap<String, Box<dyn ProviderAdapter>> {
 /// cannot hand the router a projection that disagrees with the configuration
 /// it also seeded the database from.
 pub(crate) fn router_deps(
-    pool: PgPool,
+    repositories: Arc<dyn Repositories>,
     merchant_op: Arc<MerchantOp>,
     merchant_validator: MerchantJwtValidator,
     config: &Config,
 ) -> RouterDeps {
     RouterDeps {
-        pool,
+        repositories,
         merchant_op,
         merchant_validator,
         adapters: Arc::new(adapters_by_code()),
@@ -271,7 +277,7 @@ pub(crate) fn router_deps(
 
 /// Boot step 4, run against a test's own configuration.
 ///
-/// Calls the same `vpay_db::config_reconcile::reconcile` both binaries call,
+/// Calls the same `vpay_db::ConfigReconcile::reconcile` both binaries call,
 /// with seeds joined from the same real adapters, because `charges` has
 /// foreign keys onto `providers(code)` and `currencies(code)`: without this,
 /// every confirm in these suites would fail on a foreign key rather than on
@@ -282,7 +288,10 @@ pub(crate) fn router_deps(
 /// Fails if the configuration names a rail no adapter implements — the same
 /// `ConfigError::ProviderWithoutAdapter` a binary exits 78 on, so a suite
 /// cannot configure a rail that could never be charged.
-pub(crate) async fn reconcile_from_config(pool: &PgPool, config: &Config) -> anyhow::Result<()> {
+pub(crate) async fn reconcile_from_config(
+    repositories: &dyn Repositories,
+    config: &Config,
+) -> anyhow::Result<()> {
     let adapters = adapters_by_code();
 
     let currencies = config
@@ -326,7 +335,8 @@ pub(crate) async fn reconcile_from_config(pool: &PgPool, config: &Config) -> any
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    vpay_db::config_reconcile::reconcile(pool, &currencies, &providers)
+    repositories
+        .reconcile(&currencies, &providers)
         .await
         .context("boot step 4: reconciling currencies and providers")
 }
@@ -387,16 +397,15 @@ pub(crate) fn rail_configs(config: &Config) -> BTreeMap<String, vpay_provider::P
 /// nothing here needs one, because a settled crash-recovery charge moves the
 /// intent from wherever it is.
 pub(crate) async fn confirmed_intent(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     merchant_id: &str,
     rail: &str,
     amount: i64,
     currency: &str,
 ) -> anyhow::Result<String> {
     let id = vpay_core::ids::payment_intent_id();
-    vpay_db::payment_intents::insert(
-        pool,
-        &vpay_db::NewPaymentIntent {
+    repositories
+        .insert(&vpay_db::NewPaymentIntent {
             id: id.clone(),
             merchant_id: merchant_id.to_owned(),
             livemode: false,
@@ -420,10 +429,9 @@ pub(crate) async fn confirmed_intent(
             // bookkeeping — so a fixture that back-dated it would be staging
             // an escalation rather than testing one.
             created_at: time::OffsetDateTime::now_utc(),
-        },
-    )
-    .await
-    .context("inserting the payment intent")?;
+        })
+        .await
+        .context("inserting the payment intent")?;
 
     // Deliberately no `transition` call: `insert` already leaves the intent
     // in `requires_payment_method`, which is where a confirm that crashed
@@ -443,7 +451,7 @@ pub(crate) async fn confirmed_intent(
 /// choose its reference (the handler mints it), so a suite that needs a
 /// specific rail answer has to write the charge itself.
 pub(crate) async fn crashed_charge(
-    pool: &PgPool,
+    repositories: &dyn Repositories,
     payment_intent_id: &str,
     rail: &str,
     reference: uuid::Uuid,
@@ -452,41 +460,42 @@ pub(crate) async fn crashed_charge(
     payer_ref: Option<&str>,
 ) -> anyhow::Result<String> {
     let id = vpay_core::ids::charge_id();
-    let mut tx = pool
-        .begin()
+    repositories
+        .transaction(|tx| {
+            let id = &id;
+            Box::pin(async move {
+                tx.insert_for_intent(&vpay_db::NewCharge {
+                    id: id.clone(),
+                    payment_intent_id: payment_intent_id.to_owned(),
+                    provider_code: rail.to_owned(),
+                    provider_reference_id: reference,
+                    provider_ref_extra: None,
+                    redirect_url: None,
+                    return_url: None,
+                    state: vpay_core::ChargeState::INITIAL.as_wire_str().to_owned(),
+                    amount,
+                    currency_code: currency.to_owned(),
+                    payer_ref: payer_ref.map(str::to_owned),
+                    payer_ref_masked: None,
+                })
+                .await
+                .context("inserting the charge")?;
+                // In the same transaction, exactly as `vpay_api`'s
+                // `insert_charge` does it — that atomicity is the property
+                // these suites exist to exercise.
+                tx.enqueue_in_tx(
+                    vpay_worker::JobKind::PollCharge.as_wire_str(),
+                    &vpay_worker::jobs::poll_dedupe_key(id),
+                    &json!({ "charge_id": id }),
+                    time::OffsetDateTime::now_utc(),
+                )
+                .await
+                .context("enqueueing the poll job")?;
+                Ok::<_, anyhow::Error>(TxOutcome::Commit(()))
+            })
+        })
         .await
-        .context("opening the charge transaction")?;
-    vpay_db::charges::insert_for_intent(
-        &mut tx,
-        &vpay_db::NewCharge {
-            id: id.clone(),
-            payment_intent_id: payment_intent_id.to_owned(),
-            provider_code: rail.to_owned(),
-            provider_reference_id: reference,
-            provider_ref_extra: None,
-            redirect_url: None,
-            return_url: None,
-            state: vpay_core::ChargeState::INITIAL.as_wire_str().to_owned(),
-            amount,
-            currency_code: currency.to_owned(),
-            payer_ref: payer_ref.map(str::to_owned),
-            payer_ref_masked: None,
-        },
-    )
-    .await
-    .context("inserting the charge")?;
-    // In the same transaction, exactly as `vpay_api`'s `insert_charge` does
-    // it — that atomicity is the property these suites exist to exercise.
-    vpay_db::jobs::enqueue_in_tx(
-        &mut tx,
-        vpay_worker::JobKind::PollCharge.as_wire_str(),
-        &vpay_worker::jobs::poll_dedupe_key(&id),
-        &json!({ "charge_id": id }),
-        time::OffsetDateTime::now_utc(),
-    )
-    .await
-    .context("enqueueing the poll job")?;
-    tx.commit().await.context("committing the charge")?;
+        .context("committing the charge")?;
     Ok(id)
 }
 
@@ -550,7 +559,7 @@ pub(crate) struct Served {
     pub(crate) signing_key: LoadedSigningKey,
 }
 
-/// Stands a vpay server up on an ephemeral port over `pool`, in
+/// Stands a vpay server up on an ephemeral port over `repositories`, in
 /// `vpay-server`'s own boot order: announce the signing key, run boot step 4,
 /// bind, serve.
 ///
@@ -573,7 +582,7 @@ pub(crate) struct Served {
 /// Fails if the port cannot be bound, the signing key cannot be loaded or
 /// announced, or boot step 4 refuses the configuration.
 pub(crate) async fn serve(
-    pool: &PgPool,
+    repositories: &Arc<dyn Repositories>,
     server_pem: &str,
     make_config: impl FnOnce(&str) -> Config,
 ) -> anyhow::Result<Served> {
@@ -587,14 +596,18 @@ pub(crate) async fn serve(
     let signing_key =
         LoadedSigningKey::from_pem(server_pem, &issuer).context("loading the signing key")?;
     signing_key
-        .ensure_active_in_database(pool)
+        .ensure_active_in_database(repositories.as_ref())
         .await
         .context("announcing the signing key in oauth_signing_keys")?;
 
     let config = make_config(&base_url);
-    reconcile_from_config(pool, &config).await?;
+    reconcile_from_config(repositories.as_ref(), &config).await?;
 
-    let merchant_op = Arc::new(MerchantOp::new(&config, signing_key.clone(), pool.clone()));
+    let merchant_op = Arc::new(MerchantOp::new(
+        &config,
+        signing_key.clone(),
+        Arc::clone(repositories),
+    ));
     let merchant_validator = MerchantJwtValidator(
         JwtValidator::new(
             format!("{base_url}/v1/oauth/jwks.json"),
@@ -605,7 +618,12 @@ pub(crate) async fn serve(
         .expect("the vendored-roots JWKS client builds"),
     );
 
-    let deps = router_deps(pool.clone(), merchant_op, merchant_validator, &config);
+    let deps = router_deps(
+        Arc::clone(repositories),
+        merchant_op,
+        merchant_validator,
+        &config,
+    );
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, vpay_api::router(deps)).await;
     });

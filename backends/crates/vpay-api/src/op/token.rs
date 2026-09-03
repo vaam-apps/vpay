@@ -1,90 +1,16 @@
 //! The two HTTP handlers vpay writes itself for `/v1/oauth`: the RFC 6749
-//! token endpoint and the metadata document that tells a merchant where it
-//! is.
+//! token endpoint and the metadata document that tells a merchant where it is.
 //!
-//! # This endpoint speaks RFC 6749, not the Stripe envelope
+//! **This endpoint renders RFC 6749 §5.2's body, not [`crate::ApiError`]'s
+//! Stripe envelope** — every OAuth client in existence, including vpay's own
+//! SDKs, parses `{"error":…,"error_description":…}`. [`token_handler`] is a
+//! port of `authkestra-axum-0.7.1/src/op.rs::axum_token_handler` with three
+//! deliberate omissions (no DPoP, no mTLS binding, no device/authorize/userinfo
+//! route).
 //!
-//! Every other failure in this crate is rendered by [`crate::ApiError`] as
-//! `{"error":{"type","code","message"}}` (ADR-0011: one renderer). The token
-//! endpoint is the deliberate exception, and it has to be: it is an OAuth2
-//! authorization server endpoint, and RFC 6749 §5.2 fixes the body as
-//! `{"error":"invalid_client","error_description":"…"}`. Every OAuth client
-//! in existence parses that shape, including vpay's own — `sdks/rust`'s
-//! `Client::fetch_token` tries `TokenErrorResponse` (`error` +
-//! `error_description`) and falls through to `Error::UnexpectedResponse`
-//! otherwise, and `sdks/nodejs` does the same. Rendering the Stripe envelope
-//! here would make every SDK report "unexpected response" instead of
-//! "invalid_client", which is precisely the diagnostic a merchant needs.
-//!
-//! So this module renders `authkestra_op`'s own `TokenErrorResponse`
-//! verbatim and does not route through `ApiError`. The status mapping —
-//! `invalid_client` → 401, everything else → 400 — is copied from
-//! `authkestra-axum-0.7.1/src/op.rs::axum_token_handler`, so a merchant
-//! integrating against vpay sees the same statuses as against any other
-//! authkestra deployment.
-//!
-//! # The reference copy is not a dependency — fetch it to re-diff
-//!
-//! **`authkestra-axum` is deliberately not in this workspace's dependency
-//! graph** (see [`crate::op`]'s module docs for the three reasons), so it is
-//! in neither `Cargo.lock` nor the local registry cache: there is nothing
-//! on disk to diff a bump against. On an `authkestra-op` version bump,
-//! fetch the matching reference copy yourself —
-//!
-//! ```text
-//! https://static.crates.io/crates/authkestra-axum/authkestra-axum-<version>.crate
-//! ```
-//!
-//! — and compare `src/op.rs::axum_token_handler` against this, its tail as
-//! of `0.7.1` (lines 239-247), inlined so the comparison target is local
-//! and a drift is visible without a download:
-//!
-//! ```text
-//!         Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
-//!         Err(err) => {
-//!             let status = match err.error.as_str() {
-//!                 "invalid_client" => StatusCode::UNAUTHORIZED,
-//!                 _ => StatusCode::BAD_REQUEST,
-//!             };
-//!             (status, Json(err)).into_response()
-//!         }
-//! ```
-//!
-//! [`token_handler`] and its `token_error_status` are together that, with
-//! `resp`/`err` renamed. Note what is *not* copied: the same file's
-//! `axum_device_authorization_handler` maps `"invalid_client" |
-//! "unauthorized_client"` to 401, and matching *that* arm here would be a
-//! bug — vpay serves no device-authorization endpoint, and RFC 6749 §5.2
-//! makes `unauthorized_client` a 400 on the token endpoint.
-//!
-//! # Deliberate deviations from `axum_token_handler`
-//!
-//! [`token_handler`] is a port of that function (read it: it is ~50 lines).
-//! Three things are left out, each on purpose:
-//!
-//! - **No DPoP header handling.** `axum_token_handler` reads the `DPoP`
-//!   header and passes it to `handle_token_with_client_cert`. vpay wires no
-//!   `DpopReplayStore` (`crate::op::MerchantOp::new`), and
-//!   `authkestra_op`'s `NoDpopReplayStore` fails closed — so a `DPoP` header
-//!   would be answered `invalid_dpop_proof` rather than honoured. Calling
-//!   [`handle_token`] (which passes `None`) means a `DPoP` header is
-//!   *ignored* instead, and the client gets a plain Bearer token it can
-//!   actually use. Neither behaviour is DPoP support; ignoring it is the one
-//!   that does not fail a request over an unsupported extension.
-//! - **No mTLS client certificate.** vpay does not terminate TLS in this
-//!   process (`docs/adr/0004`: the image is `FROM scratch` behind an
-//!   ingress), so there is no certificate to bind a token to and RFC 8705
-//!   `cnf.x5t#S256` is not offered.
-//! - **No device, authorize or userinfo route.** See
-//!   [`crate::op`]'s module docs.
-//!
-//! # No cookies anywhere
-//!
-//! Nothing on this surface reads or sets one. `/v1` is bearer-token only
-//! (ADR-0010), and the cookie-bearing half of authkestra's OP
-//! (`axum_authorize_handler`, which requires `tower_cookies::Cookies` in the
-//! request extensions) is not mounted, which is why `tower-cookies` is not a
-//! dependency of this crate at all.
+//! Why the port exists, the inlined reference copy to re-diff a bump against,
+//! and each omission's reasoning:
+//! [docs/reference/vpay-api.md § the merchant OP](../../../../../docs/reference/vpay-api.md#the-merchant-op-op).
 
 use std::sync::Arc;
 

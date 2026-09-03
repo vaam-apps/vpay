@@ -72,7 +72,7 @@ unbuilt is named at the end, and the callback endpoint is still one of them.
   the job now (`two_workers_claiming_together_never_take_the_same_job`).
 - **The job is enqueued in the same transaction as the charge**
   (`vpay_api::v1::payment_intents`'s confirm path calls
-  `vpay_db::jobs::enqueue_in_tx` inside the charge insert's transaction), so
+  `vpay_db::TxRepositories::enqueue_in_tx` inside the charge insert's transaction), so
   every kill point in [crash-safety.md](crash-safety.md) leaves work behind.
   The hourly `scan:live` job is a **backstop only** — it re-enqueues a live
   charge nothing has touched for ten minutes, and in a healthy deployment it
@@ -118,6 +118,18 @@ unbuilt is named at the end, and the callback endpoint is still one of them.
   the horizon keeps its own classification and is parked or retried as itself,
   because a composite re-deciding a leaf's category is precisely what ADR-0011
   forbids (`a_poisoned_job_past_the_horizon_is_parked_rather_than_rescheduled_hourly`).
+- **What the horizon does *not* guarantee: that a 25-hour-old charge is
+  resent.** When the recovery table wants to resubmit a charge that is already
+  past the horizon, the resubmit row commits first and the escalation second,
+  in two transactions — and the escalation moves the charge to `unresolved`, so
+  the resubmit job usually finds it outside `submitting` and returns without
+  calling the rail. A concurrent worker that claims the resubmit between the
+  two commits does send it, under the charge's existing reference. Both orders
+  are safe (the reference never changes and the escalation is idempotent), but
+  the non-determinism is real and deliberate: past the horizon what is
+  guaranteed is the alert and the hourly poll. Once a human is reconciling a
+  charge against the rail's settlement statement, whether to push another
+  submission at it is their call, not a queue's.
 - **A late success settles normally.** `succeeded` from any live state is one
   transaction: charge `succeeded` (plus `provider_txn_id`), intent `succeeded`
   with `amount_received = amount`, and one `payment_intent.succeeded` event —
@@ -151,7 +163,12 @@ unbuilt is named at the end, and the callback endpoint is still one of them.
   `error!(alert = true, …)` and changes nothing; the classifier's table is unit
   tested over the whole cartesian product, and neither call site is reached by
   any test (one is unreachable behind the terminal guard, the other needs a
-  real multi-worker race). See [../status.md](../status.md).
+  real multi-worker race). Why the worker's code is shaped the way it is — the orderings inside one poll,
+the two lease reapers, the bounded drain — is
+[../reference/vpay-worker.md](../reference/vpay-worker.md); the queue's own
+schema reasoning is [../reference/vpay-db.md](../reference/vpay-db.md).
+
+See [../status.md](../status.md).
 
 The loop's error contract is unchanged and now has a consumer:
 `vpay_worker::JobError::decision(attempt)` turns any job failure into

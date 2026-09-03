@@ -7,7 +7,8 @@ is specific to working here as an agent.
 ## Before you start
 
 ```bash
-just verify    # the two self-checks; both must pass before AND after your change
+just verify    # three self-checks, all of which must pass before AND after your
+               # change, plus the `verify-docs` report, which never fails
 cat docs/status.md
 ```
 
@@ -36,7 +37,9 @@ in your summary.
 
 ## When you finish a task
 
-1. `just ci`
+1. `just ci` — which since Step 7 also runs `just test-doc`
+   (`cargo test --doc --workspace`). `cargo nextest` runs no doctests, so an
+   example in a doc comment is only checked by that step.
 2. Update `docs/status.md` — in the same commit, not a follow-up.
 3. Update the relevant `docs/flows/*.md` **Status** section.
 4. In your summary to the user, state explicitly what you did **not** do.
@@ -45,7 +48,9 @@ in your summary.
 
 This repo prefers evidence over confidence:
 
-- Ran the tests? Say how many passed *and how many are ignored*.
+- Ran the tests? Say how many passed *and how many are ignored*. Doctests are
+  a separate runner and a separate count (`just test-doc`); "the tests pass"
+  without one is half an answer.
 - Changed the schema? Apply it to a real Postgres and prove the constraint fires.
 - Changed a diagram? Render it and look at it — "renders without error" is not
   "renders correctly".

@@ -94,6 +94,7 @@ use crate::{
 /// plus the host/credential material that table's own comment says is
 /// reconciled from YAML, not stored there directly.
 #[derive(Clone, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
 pub struct ProviderHost {
     /// Stable rail code, e.g. `mtn_momo`. Matches `providers.code`.
     #[garde(length(min = 1, max = 64))]
@@ -342,6 +343,7 @@ impl ProviderHost {
 /// One entry in the currency table
 /// (`backends/migrations/0001_create-currencies.sql`).
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
 pub struct CurrencyEntry {
     /// ISO-4217 alphabetic code, e.g. `XAF`.
     #[garde(length(min = 1))]
@@ -363,6 +365,7 @@ pub struct CurrencyEntry {
 /// dump involved, so this composes correctly — proved in this module's
 /// tests rather than just asserted here.
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
 pub struct Config {
     #[garde(dive)]
     pub deployment: Deployment,
@@ -396,6 +399,38 @@ impl Config {
     /// See [`ConfigError`]. A validation failure here means the caller must
     /// exit non-zero without serving traffic (ADR-0003) — this function
     /// never returns a half-valid `Config`.
+    /// # Examples
+    ///
+    /// There is no implicit default path (ADR-0003 wants an explicit file per
+    /// deployment, and guessing one would be exactly the silent behaviour this
+    /// repo forbids):
+    ///
+    /// ```
+    /// use vpay_config::{Config, ConfigError};
+    ///
+    /// assert_eq!(
+    ///     Config::load(None, "sandbox").expect_err("no path was given"),
+    ///     ConfigError::MissingPath,
+    /// );
+    /// ```
+    ///
+    /// A typo'd path is reported as itself. Figment alone is lenient about a
+    /// missing file — it yields an empty document — which would turn one wrong
+    /// character into a pile of downstream validation errors naming fields the
+    /// operator never wrote:
+    ///
+    /// ```
+    /// use std::path::Path;
+    ///
+    /// use vpay_config::{Config, ConfigError};
+    ///
+    /// let typo = Path::new("config/aplication.yml");
+    /// let error = Config::load(Some(typo), "sandbox").expect_err("no such file");
+    /// assert!(
+    ///     matches!(error, ConfigError::FileNotFound(ref named) if named.contains("aplication")),
+    ///     "the refusal names the path that was actually tried: {error}",
+    /// );
+    /// ```
     pub fn load(path: Option<&Path>, profile: &str) -> Result<Self, ConfigError> {
         Self::load_with_env(path, profile, &|key: &str| std::env::var(key).ok())
     }

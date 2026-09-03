@@ -72,6 +72,7 @@ use testcontainers_modules::postgres::Postgres as PostgresImage;
 use uuid::Uuid;
 use vpay_api::op::keys::LoadedSigningKey;
 use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost};
+use vpay_db::{PaymentIntents, Repositories};
 use vpay_sdk::{
     CreatePaymentIntentParams, Credentials, IntentStatus, PaymentMethodType, RequestOptions,
 };
@@ -177,6 +178,9 @@ struct Harness {
     _postgres: ContainerAsync<PostgresImage>,
     _mtn: ContainerAsync<GenericImage>,
     server: tokio::task::JoinHandle<()>,
+    repositories: Arc<dyn Repositories>,
+    /// The plain `sqlx` pool, for the fixtures that read or force schema
+    /// state no repository method owns.
     pool: PgPool,
     base_url: String,
     mtn_url: String,
@@ -269,7 +273,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value, jwks_b: Value) -> C
 async fn harness() -> anyhow::Result<Harness> {
     ensure_crypto_provider_installed();
 
-    let (postgres, pool) = migrated_postgres().await?;
+    let (postgres, repositories, pool) = migrated_postgres().await?;
 
     let mtn = vpay_testkit::containers::start_wiremock(&mappings_dir("mtn"))
         .await
@@ -287,7 +291,7 @@ async fn harness() -> anyhow::Result<Harness> {
 
     let mtn_for_config = mtn_url.clone();
     let (jwks_a_for_server, jwks_b_for_server) = (jwks_a.clone(), jwks_b.clone());
-    let served = serve(&pool, &server_pem, |base_url| {
+    let served = serve(&repositories, &server_pem, |base_url| {
         config_with(
             base_url,
             &mtn_for_config,
@@ -306,6 +310,7 @@ async fn harness() -> anyhow::Result<Harness> {
         _postgres: postgres,
         _mtn: mtn,
         server: served.server,
+        repositories,
         pool,
         base_url: served.base_url,
         mtn_url,
@@ -1020,7 +1025,7 @@ async fn no_event_body_carries_a_client_secret() -> anyhow::Result<()> {
     let endpoints = support::no_webhook_endpoints();
     let http = support::webhook_client();
     let settled = vpay_worker::run_once(
-        &h.pool,
+        h.repositories.as_ref(),
         &h.adapters,
         &h.rails,
         &RecoveryPolicy::default(),
@@ -1076,7 +1081,7 @@ async fn a_stored_rows_debug_output_never_carries_the_client_secret() -> anyhow:
     let h = harness().await?;
     let (id, secret) = create_intent(&h).await?;
 
-    let row = vpay_db::payment_intents::get_by_id(&h.pool, &id)
+    let row = PaymentIntents::get_by_id(h.repositories.as_ref(), &id)
         .await?
         .context("the created intent is stored")?;
 

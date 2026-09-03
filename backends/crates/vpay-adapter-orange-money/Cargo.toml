@@ -29,10 +29,9 @@ uuid.workspace = true
 # already on in the workspace entry; no runtime is started here, an adapter
 # runs on whichever one its caller provides.
 tokio.workspace = true
-# SHA-256 over `client_id`, so a cached token can never be handed to a second
-# merchant on the same rail (see `src/token.rs`). Already resolved by the
-# workspace; no new package.
-sha2.workspace = true
+# NOT here since Step 7: `sha2`. The credential fingerprint moved to
+# `vpay_provider::token::fingerprint`, which both adapters now call — one
+# length-prefixed digest, not two.
 # No `thiserror`: this crate defines no error type of its own. Everything it
 # can fail with is already a `vpay_provider::ProviderError` variant, which is
 # classified once (ADR-0011) — a leaf enum here would only add a second place

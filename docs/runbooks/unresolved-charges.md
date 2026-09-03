@@ -41,7 +41,7 @@ somebody reconciles it by hand.
 > *caller's* transaction and hand the recording to that caller
 > (`charges::record_opened` / `record_left_submitting`, called after
 > `tx.commit()`). `unresolved` itself is reached through
-> `vpay_db::settlement::set_live_state`, a single `UPDATE` on the pool, so it
+> `vpay_db::Settlement::set_live_state`, a single `UPDATE` on the pool, so it
 > is committed by the time it is counted.
 >
 > What has never happened is a scrape: no Prometheus has polled a vpay

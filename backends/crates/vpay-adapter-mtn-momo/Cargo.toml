@@ -31,9 +31,10 @@ uuid.workspace = true
 # feature is used; the workspace pin carries more because the binaries need
 # it, and this adds no package to any graph.
 tokio.workspace = true
-# SHA-256 of the credentials that minted a token, so a second merchant's call
-# on the same `Adapter` cannot be served the first's bearer (see `src/token.rs`).
-sha2.workspace = true
+
+# NOT here since Step 7: `sha2`. The credential fingerprint moved to
+# `vpay_provider::token::fingerprint`, which both adapters now call — one
+# length-prefixed digest, not two.
 
 # NOT here, deliberately: `thiserror`. This crate defines no error type of its
 # own — every failure is a `vpay_provider::ProviderError`, which is already

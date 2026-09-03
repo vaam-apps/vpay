@@ -43,7 +43,9 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use serde::Deserialize;
-use vpay_db::{PgPool, events};
+use std::sync::Arc;
+
+use vpay_db::{Events, Repositories};
 
 use crate::error::ApiError;
 use crate::form::VpayQuery;
@@ -73,6 +75,7 @@ pub(crate) const CURSOR: CursorKind = CursorKind {
 /// typing them here would hand "not a number" to serde, which answers with a
 /// sentence about the request's shape instead of naming `limit`.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) struct ListParams {
     limit: Option<String>,
     starting_after: Option<String>,
@@ -94,7 +97,7 @@ pub(crate) struct ListParams {
 /// for a row that will not render, which migration 0018's `data_is_object`
 /// CHECK makes unreachable.
 pub(crate) async fn list(
-    State(pool): State<PgPool>,
+    State(repositories): State<Arc<dyn Repositories>>,
     scope: MerchantScope,
     VpayQuery(params): VpayQuery<ListParams>,
 ) -> Result<Response, ApiError> {
@@ -105,7 +108,8 @@ pub(crate) async fn list(
         CURSOR,
     )?;
 
-    let (rows, has_more) = events::list_page(&pool, scope.merchant_id(), &page).await?;
+    let (rows, has_more) =
+        Events::list_page(repositories.as_ref(), scope.merchant_id(), &page).await?;
     let data = rows
         .iter()
         .map(EventObject::try_from)
@@ -137,11 +141,11 @@ pub(crate) async fn list(
 /// [`ApiError::Db`] if the read fails; [`ApiError::Internal`] for a row that
 /// will not render.
 pub(crate) async fn retrieve(
-    State(pool): State<PgPool>,
+    State(repositories): State<Arc<dyn Repositories>>,
     scope: MerchantScope,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let row = events::get_by_id(&pool, scope.merchant_id(), &id)
+    let row = Events::get_by_id(repositories.as_ref(), scope.merchant_id(), &id)
         .await?
         .ok_or_else(|| ApiError::NotFound {
             resource: RESOURCE,

@@ -98,8 +98,8 @@ pub(crate) fn internal_error(code: Option<&str>, raw: &str) -> ProviderError {
         // Ambiguity resolves to the rail's side, because reporting it as a
         // decline would close a charge that may still be alive, whereas
         // reporting it as transport leaves the status query to settle it.
-        Some(code) => ProviderError::Transport(format!("mtn_momo: HTTP 500 {code}")),
-        None => ProviderError::Transport(format!("mtn_momo: HTTP 500 {raw}")),
+        Some(code) => ProviderError::transport(format!("mtn_momo: HTTP 500 {code}")),
+        None => ProviderError::transport(format!("mtn_momo: HTTP 500 {raw}")),
     }
 }
 
@@ -158,7 +158,7 @@ mod tests {
         for code in [Some("INTERNAL_PROCESSING_ERROR"), Some("WHO_KNOWS"), None] {
             let error = internal_error(code, "Internal Server Error");
             assert!(
-                matches!(error, ProviderError::Transport(_)),
+                matches!(error, ProviderError::Transport { .. }),
                 "{code:?} produced {error:?}"
             );
         }

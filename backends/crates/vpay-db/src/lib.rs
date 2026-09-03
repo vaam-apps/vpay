@@ -1,55 +1,19 @@
-//! Database connectivity for vpay: a typed connection pool, embedded schema
-//! migrations, and a cheap liveness check — the three things that were
-//! previously entirely absent from every shipping binary (`docs/status.md`,
-//! "Database schema / migrations (core)": eight migrations existed and were
-//! proven against real Postgres by `backends/tests/integration`, but nothing
-//! in the application ever opened a connection).
+//! Database connectivity for vpay: the repository traits every consumer
+//! reaches Postgres through, a typed connection pool, embedded schema
+//! migrations and a cheap liveness check.
 //!
-//! # `rustls::crypto::CryptoProvider::install_default()` — investigated, not
-//! needed here
+//! `Repositories` is the umbrella trait, `PgRepositories` its one
+//! implementation, and `UnitOfWork::transaction` the only way to write two
+//! statements atomically. Nothing here takes or returns a `PgPool`.
 //!
-//! The root `Cargo.toml`'s own comment on the `authkestra-*` dependencies
-//! documents a real requirement: those crates build `reqwest` clients with
-//! `rustls-no-provider`, which means the *first* one constructed panics
-//! unless a process-wide default `CryptoProvider` was already installed.
-//! `sqlx` is configured with the `tls-rustls-ring` feature, which vendors
-//! Mozilla's CA bundle via `webpki-roots` (see the root `Cargo.toml`'s own
-//! comment on that dependency: the runtime image is `FROM scratch` per
-//! ADR-0004, so there is no OS trust store for the `-native-roots`
-//! alternative to read). That looks like the same hazard — it is not.
-//! Reading `sqlx-core` 0.8.6's own TLS
-//! setup (`sqlx-core-0.8.6/src/net/tls/tls_rustls.rs`) shows it never calls
-//! `rustls::crypto::CryptoProvider::get_default()` (the call that panics
-//! without an installed default). Instead it builds its own provider inline
-//! and passes it explicitly:
-//!
-//! ```text
-//! let provider = Arc::new(rustls::crypto::ring::default_provider());
-//! let config = ClientConfig::builder_with_provider(provider.clone())...
-//! ```
-//!
-//! `builder_with_provider` never consults the process-wide default, so a
-//! `sqlx` Postgres connection negotiating TLS cannot hit the "no default
-//! installed" panic regardless of whether `install_default()` was ever
-//! called anywhere in the process. **Conclusion: this crate does not call
-//! `install_default()`, deliberately.** The requirement documented in the
-//! root `Cargo.toml` is real but belongs to the dashboard-auth work
-//! (`authkestra-op`/`authkestra-engine`'s `reqwest` clients), not to this
-//! crate — see that comment block for the call site it still needs to land
-//! at, once that work starts.
-//!
-//! # Pool sizing
-//!
-//! See the constants and their doc comments in `pool` for the numbers and
-//! the reasoning behind each one.
+//! Why the seam has that shape — trait objects over generics, a closure over a
+//! transaction handle, and why this crate installs no rustls `CryptoProvider`
+//! — is in `docs/reference/vpay-db.md`. Pool sizing is in `pool`'s own
+//! constants.
 
-// The repository modules are `pub` rather than flattened into re-exported
-// free functions, unlike the three older ones below. Their names carry the
-// meaning: `payment_intents::insert` says what a bare `insert` would not,
-// and `charges::insert_for_intent` and `idempotency::claim` would collide
-// or read as nonsense at the crate root. The row and seed *types* are
-// re-exported below anyway, so a caller spells a type once and reaches a
-// function through the table it belongs to.
+// The table-family modules stay `pub` for the row/seed types and each
+// family's own trait, not for free functions. Why, in full: [docs/reference/vpay-db.md
+// § what stays pub, and why](../../../../docs/reference/vpay-db.md#what-stays-pub-and-why).
 pub mod charges;
 pub mod config_reconcile;
 pub mod events;
@@ -77,6 +41,11 @@ pub mod settlement;
 // inserts it commits beside — see that module's own comment.
 pub mod webhook_deliveries;
 
+// One trait per table family, `PgRepositories` behind them, and the
+// closure-shaped transaction API. Everything a consumer of this crate names
+// is re-exported below; nothing here takes a `PgPool`.
+mod repository;
+
 mod client_assertion;
 mod disabled_clients;
 mod error;
@@ -85,26 +54,23 @@ mod migrations;
 mod pool;
 mod signing_keys;
 
-pub use charges::{ChargeRow, NewCharge};
-pub use client_assertion::{SqlClientAssertionStore, delete_expired_client_assertion_jtis};
-pub use config_reconcile::{CurrencySeed, ProviderSeed};
-pub use disabled_clients::{disable_client, enable_client, is_client_disabled};
+pub use charges::{ChargeRow, Charges, NewCharge};
+pub use client_assertion::{ClientAssertions, SqlClientAssertionStore};
+pub use config_reconcile::{ConfigReconcile, CurrencySeed, ProviderSeed};
+pub use disabled_clients::DisabledClients;
 pub use error::DbError;
-pub use events::{EventRow, NewEvent};
-pub use health::check_connection;
-pub use idempotency::{IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome};
-pub use jobs::JobRow;
-pub use migrations::run_migrations;
-pub use payment_intents::{ListPage, NewPaymentIntent, PaymentIntentRow};
-pub use pool::connect;
-pub use settlement::AttemptRow;
-pub use signing_keys::{
-    ActivationOutcome, SigningKey, active_signing_key_kid, ensure_active_signing_key,
-    publishable_signing_keys, rotate_signing_key,
+pub use events::{EventRow, Events, NewEvent};
+pub use health::Health;
+pub use idempotency::{Idempotency, IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome};
+pub use jobs::{JobRow, Jobs};
+pub use migrations::Migrations;
+pub use payment_intents::{ListPage, NewPaymentIntent, PaymentIntentRow, PaymentIntents};
+pub use pool::{connect, connect_lazy};
+pub use provider_requests::ProviderRequests;
+pub use repository::{
+    PendingTransaction, Repositories, TransactionSource, TxFuture, TxOutcome, TxRepositories,
+    UnitOfWork,
 };
-pub use webhook_deliveries::DeliveryRow;
-
-// Re-exported so callers (both binaries' `main.rs`, `vpay-api`'s router
-// state) can name the pool type without also depending on `sqlx` directly
-// just to spell it.
-pub use sqlx::PgPool;
+pub use settlement::{AttemptRow, Settlement};
+pub use signing_keys::{ActivationOutcome, SigningKey, SigningKeys};
+pub use webhook_deliveries::{DeliveryRow, WebhookDeliveries};

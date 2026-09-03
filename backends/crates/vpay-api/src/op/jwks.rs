@@ -21,7 +21,7 @@
 //!    replica took the request. Reading from Postgres makes every replica
 //!    answer the same thing.
 //!
-//! So the document is assembled from [`vpay_db::publishable_signing_keys`]
+//! So the document is assembled from [`vpay_db::SigningKeys::publishable_signing_keys`]
 //! (`WHERE active OR expires_at > now()`), and this module is the only place
 //! that shape is built.
 //!
@@ -38,7 +38,9 @@ use axum::extract::State;
 use axum::http::header;
 use axum::response::IntoResponse;
 use serde_json::{Value, json};
-use vpay_db::{PgPool, SigningKey};
+use std::sync::Arc;
+
+use vpay_db::{Repositories, SigningKey};
 
 use crate::error::ApiError;
 
@@ -70,7 +72,7 @@ pub const JWKS_CACHE_MAX_AGE: u64 = 300;
 /// are about *which* keys appear and in what shape, and none of them need a
 /// database or an HTTP request to exercise.
 ///
-/// Order follows the input, which [`vpay_db::publishable_signing_keys`]
+/// Order follows the input, which [`vpay_db::SigningKeys::publishable_signing_keys`]
 /// orders by `created_at` — so the document is stable across requests and a
 /// diff between two fetches means something actually changed. Order carries
 /// no meaning to a verifier: consumers select by `kid`, and vpay's own
@@ -139,9 +141,10 @@ fn is_publishable(key: &SigningKey) -> bool {
 /// spoken to vpay before learns the public keys, so requiring a credential
 /// would be circular.
 ///
-/// Takes `State<PgPool>` rather than the assembler's whole state type, so
-/// this handler stays independent of how the router is put together; the
-/// assembler supplies `impl FromRef<AppState> for PgPool`.
+/// Takes `State<Arc<dyn Repositories>>` rather than the assembler's whole
+/// state type, so this handler stays independent of how the router is put
+/// together; the assembler supplies
+/// `impl FromRef<AppState> for Arc<dyn Repositories>`.
 ///
 /// # Errors
 ///
@@ -149,8 +152,10 @@ fn is_publishable(key: &SigningKey) -> bool {
 /// an empty document on failure: an empty `{"keys":[]}` is a valid JWKS
 /// meaning "this issuer has no keys", which every verifier would cache and
 /// act on. A 503 says "ask again", which is the truth.
-pub async fn jwks_handler(State(pool): State<PgPool>) -> Result<impl IntoResponse, ApiError> {
-    let keys = vpay_db::publishable_signing_keys(&pool).await?;
+pub async fn jwks_handler(
+    State(repositories): State<Arc<dyn Repositories>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let keys = repositories.publishable_signing_keys().await?;
     let document = jwks_document(&keys);
 
     if keys.is_empty() {

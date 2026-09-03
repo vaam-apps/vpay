@@ -50,6 +50,20 @@ fresh reference on retry is how you double-charge a customer.
 A bare `NotFound` is **never** on its own grounds to fail a charge. Resubmission
 is always safe, so every ambiguity resolves toward "find out", never "give up".
 
+The middle row needs **both** conditions, never either: three polls can happen
+in under a second on the first rungs of the ladder, and a rail that is merely
+slow to index a new charge would look identical to one that never got it.
+
+**The table applies only while the charge is `submitting`.** Past that state the
+rail has answered our submit and, on a redirect rail, the payer holds a URL —
+so the "abandon it" row below would discard a live payment. A `NotFound` on a
+`submitted` charge is therefore an ordinary pending answer: the ladder keeps
+running and the streak is recorded for an operator rather than acted on. The
+recovery decision is reached from two places, the crash-recovery step at the top
+of a poll and a `NotFound` the poll itself received, and both go through the
+same function ([../reference/vpay-worker.md](../reference/vpay-worker.md)
+§"Recovering a `submitting` charge").
+
 ## Redirect rails (Orange Money)
 
 The ordering is reversed, and it is safe for a reason worth stating plainly.
@@ -133,7 +147,7 @@ the committed row rather than from the adapter's return value
 
 **What Step 4 adds: the recovery table is now read by code.**
 
-- **The job comes with the charge.** `vpay_db::jobs::enqueue_in_tx` runs inside
+- **The job comes with the charge.** `vpay_db::TxRepositories::enqueue_in_tx` runs inside
   step 2's transaction, so all three kill points leave a job behind. The
   alternative — enqueueing beside step 5 — would have left kill points 1 and 2,
   precisely the recovery cases, with a committed charge and nothing that would
@@ -177,6 +191,21 @@ the committed row rather than from the adapter's return value
   every `lease / 2` on a dedicated timer, and inside the hourly sweep
   (`a_lease_stranded_by_a_crash_is_freed_at_boot_before_any_sweep_runs`,
   `a_lease_that_expires_while_the_worker_runs_is_reaped_on_its_own_timer`).
+
+**Updated 2026-09-03 (Step 7, Phase A review): a rolled-back transaction cannot
+turn a report into a `503`.** `vpay_db::UnitOfWork::transaction` rolls back
+explicitly on `TxOutcome::Abandon`, and a rollback that fails is logged at
+`warn!` and swallowed rather than returned. `ROLLBACK` is best-effort by
+construction — a transaction whose connection died is aborted by the server
+either way — so the failure changes nothing about the database and only about
+what the caller may say, and the two abandoning call sites are exactly the ones
+whose answer matters most here: the confirm path's duplicate-charge recovery
+owes the merchant its `409`, and `persist_submitted` owes an operator the
+`Internal` alert saying *the rail may hold a live payment*. Losing either to a
+storage error would lose the only report of it
+(`an_abandoned_transaction_survives_a_rollback_it_cannot_send`, `vpay-db/tests/
+postgres.rs`, which stages it by terminating the backend that holds the open
+transaction and uses the commit path as its control).
 
 **What is still not built.**
 

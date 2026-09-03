@@ -248,7 +248,7 @@ mod tests {
             _charge: &ChargeRef,
             _config: &ProviderConfig,
         ) -> Result<ChargeStatus, ProviderError> {
-            Err(ProviderError::Transport("no rail here".to_owned()))
+            Err(ProviderError::transport("no rail here".to_owned()))
         }
 
         fn parse_callback(&self, _body: &[u8]) -> Result<CallbackRef, ProviderError> {
