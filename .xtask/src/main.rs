@@ -30,7 +30,7 @@
 // This is a CLI; stdout is its output medium, not stray debugging.
 #![allow(clippy::print_stdout)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -91,6 +91,9 @@ const SHIPPING: [&str; 2] = [
     "backends/apps/vpay-worker-bin/Cargo.toml",
 ];
 
+/// The same two, by package name, for the `cargo metadata` walk.
+const SHIPPING_PACKAGES: [&str; 2] = ["vpay-server", "vpay-worker-bin"];
+
 /// Fail if a test double is reachable from a shipping binary's runtime deps.
 ///
 /// A stub rail is a WireMock *host in configuration*, never a linked
@@ -119,6 +122,14 @@ fn verify_no_mocks(root: &Path) -> Result<(), String> {
         }
     }
 
+    // The whole graph, not just the two app manifests — see
+    // `test_only_reachable_from` and `test_only_declared_by_a_workspace_member`
+    // for what the manifest scan above could not see, and why the two rules
+    // catch different halves of the same defect.
+    let metadata = cargo_metadata(root)?;
+    problems.extend(test_only_reachable_from(&metadata, &SHIPPING_PACKAGES));
+    problems.extend(test_only_declared_by_a_workspace_member(&metadata));
+
     if problems.is_empty() {
         println!("verify-no-mocks: ok — no test double reachable from a shipping binary");
         Ok(())
@@ -128,6 +139,262 @@ fn verify_no_mocks(root: &Path) -> Result<(), String> {
             problems.join("\n  - ")
         ))
     }
+}
+
+/// Runs `cargo metadata` and returns the parsed document.
+///
+/// The two `verify-*` checks that came before this one match on text and take
+/// no dependencies, on purpose (see the module docs). This one cannot: "is a
+/// test double reachable from a shipping binary" is a question about the
+/// resolved dependency *graph*, including which edges are `dev` and which are
+/// not, and a manifest grep cannot answer it — that is exactly the hole this
+/// function exists to close. `serde_json` is already in the workspace
+/// lockfile, so nothing new is fetched.
+///
+/// No `--all-features`: enabling optional dependencies would report edges the
+/// shipping build does not have, and a check that cries wolf gets disabled.
+/// No `--offline` either — a fresh clone with no registry cache should fail
+/// loudly here rather than silently pass a supply-chain gate.
+fn cargo_metadata(root: &Path) -> Result<serde_json::Value, String> {
+    let output = std::process::Command::new(std::env::var("CARGO").unwrap_or("cargo".into()))
+        .args(["metadata", "--format-version", "1"])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("running `cargo metadata`: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "`cargo metadata` failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    serde_json::from_slice(&output.stdout).map_err(|e| format!("parsing `cargo metadata`: {e}"))
+}
+
+/// Every [`TEST_ONLY`] crate reachable from `roots` through a non-dev edge.
+///
+/// # The hole this revealed, and the one it closes
+///
+/// [`verify_no_mocks`]'s original check read the two app manifests and
+/// nothing else, so a test double one hop away was invisible: `vpay-testkit`
+/// declared the Rust `wiremock` crate under `[dependencies]` — a *runtime*
+/// dependency of a crate whose entire reason to exist is being test-only —
+/// and the gate that exists to prevent exactly that was green for months.
+/// Nothing in the manifests of `vpay-server` or `vpay-worker-bin` mentioned
+/// wiremock, and nothing ever would; the defect was in the middle of the
+/// graph. ADR-0006's rule is about *reachability*, so a check has to be
+/// too — but note that this walk does **not** catch that historical case:
+/// `vpay-testkit` is a dev-dependency everywhere, so it is unreachable from
+/// either binary, and a graph walk alone would have called it clean. That
+/// case is caught by [`test_only_declared_by_a_workspace_member`], which
+/// refuses a test-only crate under any workspace member's `[dependencies]`.
+/// What *this* walk closes is the other half: a crate on a non-dev path from
+/// a binary that itself pulls a test double, which the manifest scan could
+/// never see.
+///
+/// # What counts as an edge
+///
+/// Only `dep_kinds` entries whose `kind` is null — a normal dependency.
+/// `dev` is excluded because a dev-dependency is not linked into the binary
+/// (that is the whole permission ADR-0006 grants), and `build` is excluded
+/// because a build script's dependency runs at compile time and ships in
+/// nothing — the same line the manifest scan already drew by ignoring
+/// `[build-dependencies]`.
+///
+/// Takes the parsed document rather than running cargo itself, so the walk
+/// can be proven against a synthetic graph — including graphs this workspace
+/// does not have and must never grow.
+fn test_only_reachable_from(metadata: &serde_json::Value, roots: &[&str]) -> Vec<String> {
+    let Some(nodes) = metadata
+        .get("resolve")
+        .and_then(|resolve| resolve.get("nodes"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        // A document with no resolve graph is not "no violations": it is a
+        // check that did not run, and this one must never pass by finding
+        // nothing.
+        return vec!["`cargo metadata` returned no resolve graph to walk".to_owned()];
+    };
+
+    // id -> (name, non-dev dependency ids)
+    let mut graph: BTreeMap<&str, (&str, Vec<&str>)> = BTreeMap::new();
+    for node in nodes {
+        let Some(id) = node.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let deps = node
+            .get("deps")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let linked = deps
+            .iter()
+            .filter(|dep| {
+                dep.get("dep_kinds")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|kinds| {
+                        kinds
+                            .iter()
+                            .any(|kind| kind.get("kind").is_none_or(serde_json::Value::is_null))
+                    })
+            })
+            .filter_map(|dep| dep.get("pkg").and_then(serde_json::Value::as_str))
+            .collect();
+        graph.insert(id, (package_name_of(metadata, id).unwrap_or(id), linked));
+    }
+
+    let mut problems = Vec::new();
+    for root_name in roots {
+        let Some(root_id) = graph
+            .iter()
+            .find(|(_, (name, _))| name == root_name)
+            .map(|(id, _)| *id)
+        else {
+            // A renamed or removed binary must fail the check, not silently
+            // shrink it — the same instinct `verify_errors` applies to an
+            // empty crate directory.
+            problems.push(format!(
+                "`{root_name}` is not in the resolve graph; verify-no-mocks cannot check it"
+            ));
+            continue;
+        };
+
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        let mut queue = vec![root_id];
+        while let Some(id) = queue.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some((name, deps)) = graph.get(id) else {
+                continue;
+            };
+            if id != root_id && TEST_ONLY.contains(name) {
+                problems.push(format!(
+                    "`{name}` is reachable from `{root_name}` through non-dev dependencies"
+                ));
+            }
+            queue.extend(deps.iter().copied());
+        }
+    }
+
+    problems.sort_unstable();
+    problems.dedup();
+    problems
+}
+
+/// Pairs of (workspace member, [`TEST_ONLY`] crate) that may legitimately be a
+/// runtime dependency.
+///
+/// `vpay-testkit` *wraps* testcontainers — starting a real
+/// `postgres:16-alpine` or `wiremock/wiremock` container is the thing it
+/// exists to do, and a container is not a test double (ADR-0006 says a stub
+/// rail **is** a WireMock host reached over HTTP). So these two edges are the
+/// intent, not a violation.
+///
+/// `wiremock` — the Rust crate, an *in-process* HTTP double — is deliberately
+/// absent, for any member. Its only legitimate use is as a dev-dependency of
+/// a test target that stubs something over loopback inside its own process;
+/// as a runtime dependency of a library it is the beginning of an in-process
+/// rail stub, which is the one thing ADR-0006 forbids outright.
+const TEST_ONLY_RUNTIME_ALLOWED: [(&str, &str); 2] = [
+    ("vpay-testkit", "testcontainers"),
+    ("vpay-testkit", "testcontainers-modules"),
+];
+
+/// Every workspace member that lists a [`TEST_ONLY`] crate as a *runtime*
+/// dependency, allowlist aside.
+///
+/// # Why this exists next to the reachability walk
+///
+/// They catch different halves. [`test_only_reachable_from`] answers
+/// ADR-0006's literal question — is a double linked into a shipping binary —
+/// and by construction it says nothing about a crate the binaries reach only
+/// through dev edges. That is exactly where the real defect sat: `wiremock`
+/// was a runtime dependency of `vpay-testkit`, and `vpay-testkit` is a
+/// dev-dependency everywhere, so the graph walk alone would have called it
+/// clean (verified, not assumed: re-adding that single line leaves the walk
+/// green, and adding one non-dev edge onto the testkit makes it red).
+///
+/// It was still a defect worth failing on. AGENTS.md's rule is the stronger
+/// one — these crates "may appear **only** under `[dev-dependencies]`" — and
+/// a test-only crate carrying an in-process double as a runtime dependency is
+/// a loaded gun in the middle of the graph: the day anything takes a non-dev
+/// edge to it, the double ships.
+fn test_only_declared_by_a_workspace_member(metadata: &serde_json::Value) -> Vec<String> {
+    let members: BTreeSet<&str> = metadata
+        .get("workspace_members")
+        .and_then(serde_json::Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<BTreeSet<&str>>()
+        })
+        .unwrap_or_default();
+
+    let Some(packages) = metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return vec!["`cargo metadata` returned no packages to check".to_owned()];
+    };
+
+    let mut problems = Vec::new();
+    for package in packages {
+        let Some(id) = package.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if !members.contains(id) {
+            continue;
+        }
+        let Some(name) = package.get("name").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let dependencies = package
+            .get("dependencies")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+
+        for dependency in dependencies {
+            // `kind` is absent or null for a normal dependency; "dev" and
+            // "build" are the two that never ship.
+            let is_runtime = dependency
+                .get("kind")
+                .is_none_or(serde_json::Value::is_null);
+            let Some(dep_name) = dependency.get("name").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if is_runtime
+                && TEST_ONLY.contains(&dep_name)
+                && !TEST_ONLY_RUNTIME_ALLOWED.contains(&(name, dep_name))
+            {
+                problems.push(format!(
+                    "workspace member `{name}` lists test-only crate `{dep_name}` under \
+                     [dependencies]; it belongs under [dev-dependencies]"
+                ));
+            }
+        }
+    }
+
+    problems.sort_unstable();
+    problems.dedup();
+    problems
+}
+
+/// The `name` of the package with this id, from `metadata.packages`.
+///
+/// Package ids are opaque (their spelling changed in Cargo 1.77 and may again),
+/// so the name is looked up rather than parsed out of the id.
+fn package_name_of<'a>(metadata: &'a serde_json::Value, id: &str) -> Option<&'a str> {
+    metadata
+        .get("packages")?
+        .as_array()?
+        .iter()
+        .find(|package| package.get("id").and_then(serde_json::Value::as_str) == Some(id))?
+        .get("name")?
+        .as_str()
 }
 
 /// Everything before the first `[dev-dependencies]` / `[build-dependencies]`.
@@ -147,40 +414,139 @@ fn runtime_dependency_section(manifest: &str) -> String {
     out
 }
 
+/// The heading in `docs/status.md` whose bullet list is the declaration this
+/// check compares the code against.
+///
+/// A named section rather than "anywhere in the file", because the check now
+/// runs in both directions and the two directions must read the *same* list.
+/// Matching a token anywhere in the prose would let a token that is only
+/// mentioned in a sentence satisfy the code→docs direction while the
+/// docs→code direction (which has to enumerate) never sees it — two rules
+/// disagreeing about what "declared" means is how a status page starts
+/// lying.
+const STATUS_TOKEN_HEADING: &str = "### Unimplemented items tracked by `verify-status`";
+
 /// Fail if the code claims something is unbuilt that `docs/status.md` does not
 /// declare — or vice versa. Keeps the status page honest by construction.
+///
+/// # Both directions, and why the second one is the one that rots
+///
+/// `AGENTS.md` promises this check "fails in both directions". Only the first
+/// half was implemented: a `NotImplemented("…")` token with no bullet failed
+/// the build, but a bullet naming a token no code carries passed silently.
+/// That is the direction that actually rots, because it is what happens
+/// *every time something gets built*: the implementer deletes the token,
+/// forgets the bullet, and the status page goes on advertising an
+/// unimplemented item that has shipped. A status page that under-claims is
+/// still a lie, and it is the lie that makes people stop reading it.
+///
+/// # Only shipping code counts
+///
+/// The scan skips `tests/` directories and `#[cfg(test)]` items, exactly as
+/// `verify-errors` does and for the same reason: a token inside a test is a
+/// *fixture* — `vpay-worker`'s error tests build a
+/// `ProviderError::NotImplemented("mtn_momo::submit")` to assert how it
+/// classifies — and it names nothing a merchant can reach. Counting fixtures
+/// would force `docs/status.md` to declare items that are implemented, which
+/// is precisely the false claim the docs→code direction exists to catch.
 fn verify_status(root: &Path) -> Result<(), String> {
     let status_path = root.join("docs/status.md");
     let status = fs::read_to_string(&status_path)
         .map_err(|e| format!("docs/status.md: {e} (the status page is mandatory)"))?;
+    let declared = declared_tokens(&status)?;
 
     let mut found = BTreeSet::new();
     for src in rust_sources(&root.join("backends")) {
+        // A token in an integration test is a fixture, not a shipping claim.
+        if src.components().any(|c| c.as_os_str() == "tests") {
+            continue;
+        }
         let text = fs::read_to_string(&src).unwrap_or_default();
         // Scan the whole file, not line by line: rustfmt wraps long calls, and
         // a line-based scan silently under-reports. That would make this check
         // pass while an unimplemented path went undeclared — the exact failure
-        // it exists to prevent.
-        found.extend(scan_not_implemented(&text));
+        // it exists to prevent. `searchable` drops comments and `#[cfg(test)]`
+        // items first, so neither a doc comment quoting a token nor a unit
+        // test constructing one counts as shipping code.
+        found.extend(scan_not_implemented(&searchable(&text)));
     }
 
-    let undeclared: Vec<_> = found.iter().filter(|t| !status.contains(*t)).collect();
+    let mut problems = Vec::new();
+    let undeclared: Vec<&str> = found
+        .iter()
+        .filter(|token| !declared.contains(*token))
+        .map(String::as_str)
+        .collect();
     if !undeclared.is_empty() {
-        return Err(format!(
-            "these unimplemented items are missing from docs/status.md:\n  - {}",
-            undeclared
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join("\n  - ")
+        problems.push(format!(
+            "these unimplemented items are missing from docs/status.md under\n  \
+             `{STATUS_TOKEN_HEADING}`:\n  - {}",
+            undeclared.join("\n  - ")
+        ));
+    }
+    let unbuilt: Vec<&str> = declared
+        .iter()
+        .filter(|token| !found.contains(*token))
+        .map(String::as_str)
+        .collect();
+    if !unbuilt.is_empty() {
+        problems.push(format!(
+            "docs/status.md declares these unimplemented items and no shipping code carries \
+             them\n  (they were built, or renamed, and the status page still advertises them \
+             as gaps):\n  - {}",
+            unbuilt.join("\n  - ")
         ));
     }
 
+    if !problems.is_empty() {
+        return Err(problems.join("\n"));
+    }
+
     println!(
-        "verify-status: ok — {} unimplemented item(s), all declared in docs/status.md",
+        "verify-status: ok — {} unimplemented item(s), all declared in docs/status.md and all \
+         still in shipping code",
         found.len()
     );
     Ok(())
+}
+
+/// The tokens listed under [`STATUS_TOKEN_HEADING`], one per `- \`token\`` bullet.
+///
+/// Stops at the next heading of any level, so an item added to a *later*
+/// section is not silently adopted into this list.
+///
+/// A missing heading is a hard error rather than an empty list: an empty
+/// list would make the docs→code direction vacuous and the code→docs
+/// direction fail on every token at once, and the real cause — someone
+/// renamed the section — would appear nowhere in the message.
+fn declared_tokens(status: &str) -> Result<BTreeSet<String>, String> {
+    let after = status
+        .split_once(STATUS_TOKEN_HEADING)
+        .map(|(_, rest)| rest);
+    let Some(after) = after else {
+        return Err(format!(
+            "docs/status.md has no `{STATUS_TOKEN_HEADING}` section; it is where every \
+             ProviderError::NotImplemented token is declared (AGENTS.md rule 2)"
+        ));
+    };
+
+    let mut out = BTreeSet::new();
+    for line in after.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            break;
+        }
+        let Some(bullet) = line.strip_prefix("- ") else {
+            continue;
+        };
+        let Some(quoted) = bullet.trim().strip_prefix('`') else {
+            continue;
+        };
+        if let Some((token, _)) = quoted.split_once('`') {
+            out.insert(token.to_owned());
+        }
+    }
+    Ok(out)
 }
 
 /// Extract every `NotImplemented("token")` argument from a source file.
@@ -1074,6 +1440,8 @@ mod signing_key_tests {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::{Value, json};
+
     use super::*;
 
     #[test]
@@ -1111,6 +1479,284 @@ vpay-testkit = { path = \"x\" }
             "c::d"
         )"#;
         assert_eq!(scan_not_implemented(text), vec!["a::b", "c::d"]);
+    }
+
+    /// The declaration list is read from one named section, and stops at the
+    /// next heading — a token listed under a *later* section is not
+    /// declared, because that section is not the one `AGENTS.md` points at.
+    #[test]
+    fn the_declared_list_is_the_named_section_and_nothing_after_it() {
+        let status = format!(
+            "# Status\n\nSome prose naming `ghost::token` in passing.\n\n\
+             {STATUS_TOKEN_HEADING}\n\n\
+             Every token below appears verbatim in the source.\n\n\
+             - `mtn_momo::refund`\n- `orange_money::submit`\n\n\
+             ### Adapters\n\n- `later::section`\n"
+        );
+        let declared = declared_tokens(&status).expect("the section is present");
+        assert_eq!(
+            declared,
+            BTreeSet::from([
+                "mtn_momo::refund".to_owned(),
+                "orange_money::submit".to_owned()
+            ]),
+            "prose mentions and later sections declare nothing"
+        );
+    }
+
+    /// A renamed or deleted section is a hard error, not an empty list: an
+    /// empty list would fail every token at once with a message that never
+    /// mentions the heading.
+    #[test]
+    fn a_status_page_without_the_section_is_itself_the_failure() {
+        let error = declared_tokens("# Status\n\nNothing here.\n")
+            .expect_err("a missing section must be reported");
+        assert!(error.contains(STATUS_TOKEN_HEADING), "{error}");
+    }
+
+    /// Both directions of the check, over synthetic sources — the code→docs
+    /// half that always worked, and the docs→code half that did not.
+    ///
+    /// Driven through the same two functions `verify_status` composes,
+    /// because a test that reimplemented the comparison would pass whatever
+    /// the check does.
+    #[test]
+    fn the_status_check_fails_in_both_directions() {
+        let status = format!("{STATUS_TOKEN_HEADING}\n\n- `built::already`\n");
+        let declared = declared_tokens(&status).expect("the section is present");
+
+        // Direction 1: the code carries a token the page does not declare.
+        let found = scan_not_implemented(&searchable(
+            "fn f() { Err(ProviderError::NotImplemented(\"new::gap\")) }",
+        ));
+        assert!(
+            found.iter().any(|token| !declared.contains(token)),
+            "an undeclared token in shipping code must be visible to the check"
+        );
+
+        // Direction 2: the page declares a token no code carries — what
+        // happens every time something is built and the bullet is forgotten.
+        let found: BTreeSet<String> = found.into_iter().collect();
+        assert!(
+            declared.iter().any(|token| !found.contains(token)),
+            "a declared token that no shipping code carries must be visible to the check"
+        );
+    }
+
+    /// A token inside a `#[cfg(test)]` module is a fixture and declares
+    /// nothing — `vpay-worker`'s error tests build one to assert how it
+    /// classifies. Counting it would force `docs/status.md` to advertise a
+    /// gap that does not exist.
+    #[test]
+    fn a_token_in_test_code_is_not_a_shipping_claim() {
+        let text = "#[cfg(test)]\nmod tests {\n    \
+                    const E: E = ProviderError::NotImplemented(\"mtn_momo::submit\");\n}\n";
+        assert!(
+            scan_not_implemented(&searchable(text)).is_empty(),
+            "a token declared under #[cfg(test)] is a fixture"
+        );
+        // And the same token outside the module still counts.
+        let shipping = format!("fn f() {{ Err(ProviderError::NotImplemented(\"a::b\")) }}\n{text}");
+        assert_eq!(
+            scan_not_implemented(&searchable(&shipping)),
+            vec!["a::b"],
+            "only the shipping occurrence is a claim"
+        );
+    }
+
+    /// A doc comment quoting a token declares nothing either — the same
+    /// reason `verify-errors` strips comments before looking for `impl
+    /// Classify`.
+    #[test]
+    fn a_token_quoted_in_a_comment_is_not_a_shipping_claim() {
+        let text = "/// Returns `ProviderError::NotImplemented(\"doc::only\")` one day.\n\
+                    /* NotImplemented(\"block::comment\") */\nfn f() {}\n";
+        assert!(scan_not_implemented(&searchable(text)).is_empty());
+    }
+
+    /// A synthetic `cargo metadata` document: two shipping binaries, a
+    /// library each links, and a test-only crate reachable through whichever
+    /// edge kind the caller asks for.
+    ///
+    /// Synthetic rather than this workspace's own metadata on purpose — the
+    /// graphs that matter are the ones this repository must never grow, and a
+    /// test that could only observe the current graph would pass forever
+    /// without proving the walk works.
+    fn synthetic_metadata(lib_to_wiremock_kind: &str, app_to_testkit_kind: &str) -> Value {
+        let kind = |k: &str| {
+            if k == "normal" { json!(null) } else { json!(k) }
+        };
+        json!({
+            "workspace_members": ["app 0.1.0 (path+file:///app)", "lib 0.1.0 (path+file:///lib)"],
+            "packages": [
+                { "id": "app 0.1.0 (path+file:///app)", "name": "vpay-server", "dependencies": [
+                    { "name": "lib", "kind": null },
+                    { "name": "vpay-testkit", "kind": kind(app_to_testkit_kind) }
+                ]},
+                { "id": "lib 0.1.0 (path+file:///lib)", "name": "lib", "dependencies": [
+                    { "name": "wiremock", "kind": kind(lib_to_wiremock_kind) }
+                ]},
+                { "id": "tk 0.1.0 (path+file:///tk)", "name": "vpay-testkit", "dependencies": [] },
+                { "id": "wm 0.1.0 (registry+wiremock)", "name": "wiremock", "dependencies": [] }
+            ],
+            "resolve": { "nodes": [
+                { "id": "app 0.1.0 (path+file:///app)", "deps": [
+                    { "pkg": "lib 0.1.0 (path+file:///lib)", "dep_kinds": [{ "kind": null }] },
+                    { "pkg": "tk 0.1.0 (path+file:///tk)",
+                      "dep_kinds": [{ "kind": kind(app_to_testkit_kind) }] }
+                ]},
+                { "id": "lib 0.1.0 (path+file:///lib)", "deps": [
+                    { "pkg": "wm 0.1.0 (registry+wiremock)",
+                      "dep_kinds": [{ "kind": kind(lib_to_wiremock_kind) }] }
+                ]},
+                { "id": "tk 0.1.0 (path+file:///tk)", "deps": [] },
+                { "id": "wm 0.1.0 (registry+wiremock)", "deps": [] }
+            ]}
+        })
+    }
+
+    /// The case the manifest scan alone could never see: the double is two
+    /// hops away, and neither app manifest mentions it.
+    #[test]
+    fn a_double_reachable_through_a_library_is_a_violation() {
+        let metadata = synthetic_metadata("normal", "dev");
+        let problems = test_only_reachable_from(&metadata, &["vpay-server"]);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems
+                .first()
+                .is_some_and(|p| p.contains("`wiremock` is reachable from `vpay-server`")),
+            "{problems:?}"
+        );
+    }
+
+    /// And the permission ADR-0006 actually grants: the same crates, through
+    /// dev edges, are fine — that is how every test in this workspace uses
+    /// them.
+    #[test]
+    fn the_same_crates_behind_dev_edges_are_not_a_violation() {
+        let metadata = synthetic_metadata("dev", "dev");
+        assert!(
+            test_only_reachable_from(&metadata, &["vpay-server"]).is_empty(),
+            "a dev-dependency is not linked into the binary"
+        );
+    }
+
+    /// A build-dependency runs at compile time and ships in nothing — the
+    /// same line the manifest scan draws by ignoring `[build-dependencies]`.
+    #[test]
+    fn a_build_dependency_is_not_a_shipping_edge() {
+        let metadata = synthetic_metadata("build", "dev");
+        assert!(test_only_reachable_from(&metadata, &["vpay-server"]).is_empty());
+    }
+
+    /// A direct non-dev edge onto the testkit is caught too, and the whole
+    /// subtree behind it with it.
+    #[test]
+    fn a_direct_runtime_edge_onto_the_testkit_is_a_violation() {
+        let metadata = synthetic_metadata("dev", "normal");
+        let problems = test_only_reachable_from(&metadata, &["vpay-server"]);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("`vpay-testkit` is reachable")),
+            "{problems:?}"
+        );
+    }
+
+    /// A renamed or deleted binary must fail loudly. A check that silently
+    /// stops checking is worse than no check, because the green tick is still
+    /// there.
+    #[test]
+    fn a_shipping_binary_missing_from_the_graph_is_itself_a_failure() {
+        let metadata = synthetic_metadata("normal", "dev");
+        let problems = test_only_reachable_from(&metadata, &["vpay-renamed-server"]);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("not in the resolve graph")),
+            "{problems:?}"
+        );
+    }
+
+    /// The half the reachability walk cannot see, and the exact shape of the
+    /// defect that motivated this: `wiremock` as a *runtime* dependency of a
+    /// crate the binaries only reach through dev edges.
+    #[test]
+    fn a_test_only_crate_under_dependencies_is_a_violation_even_when_unreachable() {
+        let metadata = json!({
+            "workspace_members": ["tk 0.1.0 (path+file:///tk)"],
+            "packages": [
+                { "id": "tk 0.1.0 (path+file:///tk)", "name": "vpay-testkit", "dependencies": [
+                    { "name": "wiremock", "kind": null },
+                    { "name": "testcontainers", "kind": null }
+                ]}
+            ],
+            "resolve": { "nodes": [] }
+        });
+
+        let problems = test_only_declared_by_a_workspace_member(&metadata);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems
+                .first()
+                .is_some_and(|p| p.contains("`vpay-testkit` lists test-only crate `wiremock`")),
+            "{problems:?}"
+        );
+        // `testcontainers` is allowlisted for this member: starting a real
+        // container is what the testkit is *for*, and a container is not a
+        // double (ADR-0006).
+    }
+
+    /// The same crate under `[dev-dependencies]` is the permitted shape, in
+    /// every member.
+    #[test]
+    fn a_test_only_crate_under_dev_dependencies_is_permitted() {
+        let metadata = json!({
+            "workspace_members": ["x 0.1.0 (path+file:///x)"],
+            "packages": [
+                { "id": "x 0.1.0 (path+file:///x)", "name": "vpay-api", "dependencies": [
+                    { "name": "wiremock", "kind": "dev" },
+                    { "name": "testcontainers", "kind": "dev" }
+                ]}
+            ],
+            "resolve": { "nodes": [] }
+        });
+        assert!(test_only_declared_by_a_workspace_member(&metadata).is_empty());
+    }
+
+    /// The allowlist is a pair, not a crate: `testcontainers` is permitted at
+    /// runtime *in the testkit*, and nowhere else.
+    #[test]
+    fn the_runtime_allowlist_is_scoped_to_the_member_it_names() {
+        let metadata = json!({
+            "workspace_members": ["x 0.1.0 (path+file:///x)"],
+            "packages": [
+                { "id": "x 0.1.0 (path+file:///x)", "name": "vpay-db", "dependencies": [
+                    { "name": "testcontainers", "kind": null }
+                ]}
+            ],
+            "resolve": { "nodes": [] }
+        });
+        let problems = test_only_declared_by_a_workspace_member(&metadata);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems
+                .first()
+                .is_some_and(|p| p.contains("`vpay-db` lists test-only crate `testcontainers`")),
+            "{problems:?}"
+        );
+    }
+
+    /// A metadata document with no resolve graph means the walk did not run.
+    /// It must not read as "nothing found".
+    #[test]
+    fn a_document_with_no_resolve_graph_is_a_failure_not_a_pass() {
+        let problems = test_only_reachable_from(&json!({ "packages": [] }), &["vpay-server"]);
+        assert!(
+            !problems.is_empty(),
+            "a check that cannot run must not pass"
+        );
     }
 
     #[test]

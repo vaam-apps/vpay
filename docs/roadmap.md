@@ -55,9 +55,10 @@ signal-handler race fix) → `3d7635a` (#5, CrateStack re-verify) →
   shutdown entirely (`vpay_config::signal::ShutdownSignals`).
 - All 12 Postgres migrations (`backends/migrations/0001`–`0012`), applied
   and constraint-tested against a real database. *This is Phase 1's scope,
-  not the repository total: there are **18** migrations as of 2026-09-03
+  not the repository total: there are **20** migrations as of 2026-09-03
   (`0013` with the authkestra upgrade, `0014`–`0018` with Step 2, of which
-  `0017` and `0018` are schema only). See the Phase 3 addendum.*
+  `0017` and `0018` are schema only, and `0019`–`0020` with Step 3). See the
+  Phase 3 addenda.*
 - YAML configuration loading (`vpay_config::Config::load`: Figment layers +
   hand-rolled `${ENV}` resolution + `garde` validation), wired into both
   binaries as a hard startup requirement — [ADR-0003](adr/0003-yaml-configuration.md).
@@ -71,9 +72,12 @@ signal-handler race fix) → `3d7635a` (#5, CrateStack re-verify) →
 problem, on a missing or invalid `--config`/`--database-url`
 (`a_missing_config_is_exit_78_naming_the_problem` and siblings in
 each binary's `tests/cli.rs`); `/healthz` returns 200 or 503 based on a real
-`SELECT 1`, not a static string; all 12 migrations apply cleanly and
+`SELECT 1`, not a static string; all migrations apply cleanly and
 idempotently with their constraints proven to fire in
-`backends/tests/integration/tests/postgres_smoke.rs`.
+`backends/tests/integration/tests/postgres_smoke.rs` — 12 when this phase
+closed, **20** as of 2026-09-03 (`schema_migrates_cleanly_on_an_empty_database`
+applies whatever is in `backends/migrations/`, so the count is not pinned
+here).
 
 **Unblocks.** Everything below — no later phase can start without a durable
 process and a database.
@@ -564,44 +568,135 @@ behind; `/v1/refunds`, `/v1/events` and `/v1/balance` are unrouted; the
 worker sweeps nothing; and the Node SDK has still never spoken to a running
 vpay.
 
+### Addendum to the addendum — 2026-09-03 (Step 3, branch `claude/step3-rails`)
+
+**Three of the items just above are closed by Phase 4a, and one criterion
+moves from "unmet" to "half-met".**
+
+- **`confirm` now moves the intent.** `processing` on a push rail,
+  `requires_action` with a `next_action.redirect_to_url` on a redirect rail,
+  `409 charge_declined` on a decline, `502` when the rail is unreachable —
+  seven integration tests in `backends/tests/integration/tests/confirm_rails.rs`
+  against real Postgres **and** WireMock containers.
+- **`next_action` is populated**, and only ever from the committed charge
+  row (`redirect_confirm_commits_the_rails_material_before_it_answers`).
+- **`return_url` has a column** (`charges.return_url`, migration `0019`, with
+  length and scheme CHECKs) and is committed before the rail is called.
+- *"create → confirm → a terminal state over real HTTP"* — **still unmet, and
+  the reason changed.** The HTTP is real but the rail is a stub, and no
+  terminal state is reached by anything: `succeeded` requires a poll, and
+  nothing polls. That is Phase 4b/Phase 5.
+- *"`one_charge_per_intent` proven at the API level"* — the half that needed
+  a successful submission is now proven too: a confirm that succeeds still
+  cannot produce a second charge, and a retry after a *lost* submit is
+  refused with "poll, do not create a new PaymentIntent".
+
+**Migration count, corrected:** the repository now has **20**
+(`0001`–`0020`). `0019` adds `charges.return_url`; `0020` adds only a column
+comment documenting the `provider_requests.status_code = 0` sentinel
+(*answered, but the port carries no HTTP status*), changing no data and no
+constraint.
+
 ---
 
-## Phase 4 — The rails
+## Phase 4a — The rail adapters
 
-**Goal.** The eight `ProviderError::NotImplemented` tokens are replaced with
-real HTTP calls, passing the shared conformance suite.
+**Done 2026-09-03** (branch `claude/step3-rails`; Step 3 of the
+production-readiness plan). *This phase was "Phase 4 — The rails" until that
+day, when it was split: the push-rail recovery table it used to contain moved
+to Phase 4b/Phase 5, per Step 3's decision 5. The split is recorded rather
+than silently applied because the old phase's Definition of Done was met by
+the adapters alone, and anyone reading it afterwards would have believed
+recovery had landed.*
 
-**Status.** Not started. Capabilities are declared and tested (✅); every
-wire call is ⛔.
+**Goal.** Seven of the eight `ProviderError::NotImplemented` tokens replaced
+with real HTTP calls, passing the shared conformance suite. *(Eight, in the
+original wording. `mtn_momo::refund` stays — MTN refunds are the
+Disbursements product, with a subscription key and token scope no deployment
+holds — and `orange_money::refund` left the list without being built,
+because Orange documents no refund API and the adapter now inherits the
+port's permanent `Unsupported` default. See `docs/status.md`.)*
 
-**Scope, in dependency order.**
-- `mtn_momo::{submit, query_status, parse_callback, refund}`.
-- `orange_money::{submit, query_status, parse_callback, refund}` — with
-  `refund` staying a hard `false` per its declared capability
-  (`supports_refunds: false`), not a rail-specific branch in the core
-  ([ADR-0002](adr/0002-provider-port.md)).
+**Status.** Done, against WireMock. Capabilities ✅; `submit`,
+`query_status` and `parse_callback` ✅ on both rails against a real
+`wiremock/wiremock` container; **the real sandboxes ⛔ — never called**.
+
+**What landed.**
+- The port became `#[async_trait]`, `ProviderConfig` gained per-rail
+  timeouts, and the vendored-roots HTTP client moved into
+  `vpay_provider::http` (redirects refused, proxies ignored, bodies capped
+  at 256 KiB).
+- `mtn_momo::{submit, query_status, parse_callback}` with a fingerprinted
+  token cache and the failure table transcribed from its flow doc.
+- `orange_money::{submit, query_status, parse_callback}`, returning
+  `pay_token` + `notif_token` + `payment_url` together so a caller cannot
+  hold a URL without the material to query it; `refund` is the port's
+  `Unsupported`.
+- Config gained `providers[].callback_url` / `currency`, `REQUIRED_RAIL_KEYS`
+  ([ADR-0012](adr/0012-rail-configuration-requirements-in-config.md)) and
+  `ProviderHost::to_provider_config`; a livemode-secret rule that had made
+  livemode unbootable was fixed.
+- `POST …/confirm` moves the intent: `processing` / `requires_action` /
+  `409 charge_declined` / `502`, with the redirect's `next_action` built
+  only from the committed charge row.
+- `verify-no-mocks` became a `cargo metadata` reachability walk;
+  `verify-status` became two-directional and comment-aware.
+
+**Definition of done — met, and stated exactly.** The shared conformance
+suite (`backends/tests/conformance/tests/adapter_conformance.rs`) passes
+parameterised over both adapters with **no `#[ignore]`s left**: 26 tests, 26
+passed, 0 skipped, measured 2026-09-03; `just verify-ignored` pins
+`expected_ignored := "0"`.
+
+**What remains before this phase can be called done against the world.**
+- **Neither rail's real sandbox has ever been called.** Every assertion is
+  against a stub whose mappings were written from `docs/flows/adapter-*.md`,
+  so a document that is wrong about the rail would still pass.
+- The 401 → re-mint → retry path is unproven on both rails.
+- No callback route exists: nothing verifies Orange's `notif_token`, and
+  MTN's callbacks are unsigned.
+- `mtn_momo::refund` is still a `NotImplemented` token, and `POST /v1/refunds`
+  is unrouted.
+- Orange's duplicate-submit idempotency is an assumption about the rail.
+
+**Unblocks.** A meaningful Phase 3 `confirm` (delivered); Phase 4b/Phase 5
+(there is now something to poll); Phase 6 (something to sign a webhook
+about).
+
+---
+
+## Phase 4b — Push-rail recovery *(moved into Phase 5)*
+
+**Not started.** This is the half of the old Phase 4 that Step 3 deliberately
+did not ship, and it is listed separately so no one reads Phase 4a's green
+and concludes recovery landed.
+
+**Scope.**
 - The push-rail recovery table
   ([`docs/flows/crash-safety.md`](flows/crash-safety.md)): disambiguating a
   `submitting` charge via `provider_requests` (no row → resubmit; row with
-  `status_code IS NULL` → poll, 3 consecutive `NotFound` over ≥60s before
-  treating as never-received).
-- The redirect-rail commit-gates-redirect discipline: `ref_extra` must
-  commit before `redirect_to_url` is ever emitted.
+  `status_code IS NULL` → poll, 3 consecutive `NotFound` over ≥60 s before
+  treating the request as never received).
+- Crash tests that kill the process at each of the three documented points
+  and assert no double charge.
 
-**Definition of done.** The shared conformance suite
-(`backends/tests/conformance/tests/adapter_conformance.rs`) passes with its
-`#[ignore]`s removed, parameterized over both adapters — per `AGENTS.md`'s
-own rule, adding a rail means making the one suite pass, never writing a
-rail-specific one.
+**What Step 3 supplied towards it, and nothing more:** the adapter API it
+needs — `query_status` returning a canonical `ChargeStatus::NotFound` rather
+than a failure, proven on both rails by
+`not_found_is_never_on_its_own_a_failure`. The `submitting` charges and
+status-less `provider_requests` rows a lost submit leaves behind are written
+correctly and **read by nothing**.
 
-**Unblocks.** A meaningful Phase 3 `confirm`; Phase 5 (nothing to poll
-without a real submission); Phase 6 (nothing to sign a webhook about).
+*The redirect-rail half of the old scope — "`ref_extra` must commit before
+`redirect_to_url` is ever emitted" — **did** land in Phase 4a: the commit and
+the `next_action` are one transaction and a re-read, proven by
+`redirect_confirm_commits_the_rails_material_before_it_answers`.*
 
-**Risks carried by this phase.**
-- Rail testing depends on WireMock hosts (`compose.yml`), which in turn
-  depends on Phase 7's environment blocker (Docker Hub unreachable here) —
-  local conformance-suite runs against stubs may themselves be blocked on
-  this machine specifically, independent of the code being ready.
+**Risks carried by this phase.** Unchanged: rail testing depends on WireMock
+hosts, and on this machine that meant a rootless Docker daemon that could
+not start containers. It now can, and the conformance and integration suites
+run against real containers locally — but no CI run has exercised them on
+this branch.
 
 ---
 

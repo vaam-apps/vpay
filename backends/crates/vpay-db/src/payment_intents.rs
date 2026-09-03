@@ -333,6 +333,50 @@ pub async fn transition(
     expected: &str,
     new: &str,
 ) -> Result<Option<PaymentIntentRow>, DbError> {
+    transition_with(pool, merchant_id, id, expected, new).await
+}
+
+/// [`transition`], inside a transaction the caller owns.
+///
+/// Exists because a confirm that a rail accepted has **two** rows to move —
+/// the charge out of `submitting` and the intent into
+/// `processing`/`requires_action` — and a merchant must never be able to
+/// observe one without the other. `docs/flows/crash-safety.md`'s
+/// "the commit is the gate on the redirect" is a statement about a single
+/// commit; two pooled statements would leave a window in which the intent
+/// says `requires_action` while the charge carries no `redirect_url`, and
+/// `GET /v1/payment_intents/{id}` would render a `next_action` with no URL
+/// in it.
+///
+/// Same compare-and-swap, same `Ok(None)` meaning, as [`transition`] — the
+/// guard is in the statement, so it holds inside a transaction exactly as it
+/// does outside one.
+///
+/// # Errors
+///
+/// As [`transition`].
+pub async fn transition_in_tx(
+    tx: &mut sqlx::PgConnection,
+    merchant_id: &str,
+    id: &str,
+    expected: &str,
+    new: &str,
+) -> Result<Option<PaymentIntentRow>, DbError> {
+    transition_with(&mut *tx, merchant_id, id, expected, new).await
+}
+
+/// The one statement behind [`transition`] and [`transition_in_tx`], generic
+/// over where it runs so the two cannot drift on their guard.
+async fn transition_with<'e, E>(
+    executor: E,
+    merchant_id: &str,
+    id: &str,
+    expected: &str,
+    new: &str,
+) -> Result<Option<PaymentIntentRow>, DbError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     let sql = format!(
         "UPDATE payment_intents SET status = $4::intent_status, updated_at = now() \
          WHERE merchant_id = $1 AND id = $2 AND status = $3::intent_status \
@@ -344,7 +388,66 @@ pub async fn transition(
         .bind(id)
         .bind(expected)
         .bind(new)
-        .fetch_optional(pool)
+        .fetch_optional(executor)
+        .await
+        .map_err(classify_write)
+}
+
+/// Records why the last charge on this intent was refused, **without**
+/// moving its status.
+///
+/// # Why this is not a `transition`
+///
+/// `docs/flows/payment-lifecycle.md` has no `failed` status: "a rail-reported
+/// failure ... returns the intent to `requires_payment_method` with
+/// `last_payment_error` populated". A decline at submit never left that
+/// status in the first place, so there is nothing to move — the whole write
+/// is the error pair. Routing it through [`transition`] with
+/// `expected == new` would read as a state change that is deliberately not
+/// one, and would have to pass the same label twice.
+///
+/// The status is still in the `WHERE`, for the reason every write in this
+/// module carries its guard: between the rail's answer and this statement, a
+/// cancel may have moved the intent, and stamping a payment error onto a
+/// `canceled` intent would tell a merchant a payment they withdrew was
+/// declined.
+///
+/// Both halves are written together because the `lpe_paired` CHECK
+/// (migration 0014) refuses a code without a message. The caller supplies
+/// the message already bounded to the column's 512 characters.
+///
+/// `Ok(None)` means the guard refused: no such intent for this merchant, or
+/// its status is no longer `expected`.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the write fails, including a `code` outside the
+/// `failure_code` enum — which is a vpay bug, since the vocabulary is closed
+/// and owned by `vpay_core::FailureCode`.
+pub async fn record_payment_error(
+    tx: &mut sqlx::PgConnection,
+    merchant_id: &str,
+    id: &str,
+    expected: &str,
+    code: &str,
+    message: &str,
+) -> Result<Option<PaymentIntentRow>, DbError> {
+    let sql = format!(
+        "UPDATE payment_intents \
+         SET last_payment_error_code = $4::failure_code, \
+             last_payment_error_message = $5, \
+             updated_at = now() \
+         WHERE merchant_id = $1 AND id = $2 AND status = $3::intent_status \
+         RETURNING {COLUMNS}"
+    );
+
+    sqlx::query_as::<_, PaymentIntentRow>(&sql)
+        .bind(merchant_id)
+        .bind(id)
+        .bind(expected)
+        .bind(code)
+        .bind(message)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(classify_write)
 }

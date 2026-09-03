@@ -34,3 +34,10 @@ rand.workspace = true
 # test vector in both crates rather than to each other.
 sha2.workspace = true
 base64 = "0.22"
+# `verify-no-mocks`' `cargo metadata` walk. The three verify gates used to
+# match on text and take no dependencies; "which crates are reachable from a
+# shipping binary through non-dev edges" is a question about the resolved
+# graph, and no amount of grepping manifests answers it — see
+# `test_only_reachable_from` for the defect that proved it. Workspace pin,
+# already in the lockfile.
+serde_json.workspace = true

@@ -175,7 +175,10 @@ pub(crate) fn deps() -> RouterDeps {
         // `adapters()`. A test in this crate that needed a rail would be a
         // test that belongs in `backends/tests/integration`.
         adapters: Arc::new(std::collections::BTreeMap::new()),
-        resource_config: Arc::new(crate::ResourceConfig::from_config(&config())),
+        resource_config: Arc::new(
+            crate::ResourceConfig::from_config(&config())
+                .expect("the fixture's rails project onto the port"),
+        ),
         merchant_validator: MerchantJwtValidator(
             JwtValidator::new(
                 "http://127.0.0.1:1/v1/oauth/jwks.json",

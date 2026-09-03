@@ -9,10 +9,12 @@ deployment:
 
 providers:
   - code: mtn_momo
+    currency: XAF
     host:
       url: http://wiremock:8080
       label: mtn-sandbox-wiremock
   - code: mtn_momo
+    currency: XAF
     host:
       url: http://wiremock:8081
       label: mtn-sandbox-wiremock-2

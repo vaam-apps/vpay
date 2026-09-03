@@ -1,0 +1,335 @@
+{
+  "mappings": [
+    {
+      "name": "transactionstatus: no record of this order",
+      "metadata": {
+        "file": [
+          "POST {base}/v1/transactionstatus \u2014 the authenticated status read,",
+          "the only thing that moves money (docs/flows/reconciler.md).",
+          "Selection is by the body's `order_id`; `amount` and `pay_token`",
+          "travel in the same body and are deliberately NOT matched on, so a",
+          "suite that seeds any pay_token into ChargeRef::ref_extra works",
+          "against these stubs unchanged.",
+          "",
+          "Priority 1 for the per-reference cases, 10 for the catch-all SUCCESS",
+          "\u2014 which exists so `just up` plus a developer's curl behaves as it did",
+          "before this file was split out of webpayment.json.",
+          "",
+          "Commentary lives in `metadata` because WireMock fails to start on a",
+          "mapping document containing any field it does not recognise."
+        ],
+        "comment": [
+          "REF_UNKNOWN. 'I have no record' \u2014 must become",
+          "ChargeStatus::NotFound, never a failure: a charge the rail has not",
+          "heard of may still be one the payer is about to complete."
+        ]
+      },
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.order_id",
+              "equalTo": "00000000-0000-0000-0000-000000000404"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 404,
+        "jsonBody": {
+          "code": 404,
+          "message": "Not Found"
+        }
+      }
+    },
+    {
+      "name": "transactionstatus: the rail is unavailable",
+      "metadata": {
+        "comment": [
+          "REF_UNAVAILABLE. A rail that is down must never look like a payer who",
+          "was declined: the adapter owes ProviderError::Transport",
+          "(Category::Rail), so the worker retries instead of the merchant",
+          "starting a new intent."
+        ]
+      },
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.order_id",
+              "equalTo": "00000000-0000-0000-0000-0000000005aa"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 503,
+        "jsonBody": {
+          "code": 503,
+          "message": "Service Unavailable"
+        }
+      }
+    },
+    {
+      "name": "transactionstatus: answers after the request deadline",
+      "metadata": {
+        "comment": [
+          "REF_SLOW. 2000 ms against the suite's SHORT_REQUEST_TIMEOUT of",
+          "100 ms \u2014 two orders of magnitude, so the assertion is about the",
+          "deadline firing and not about a slow CI machine. The eventual body is",
+          "a success precisely so the test cannot pass for the wrong reason: if",
+          "the deadline did not fire, the adapter would answer Succeeded and the",
+          "'must be Transport' assertion would fail loudly."
+        ]
+      },
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.order_id",
+              "equalTo": "00000000-0000-0000-0000-000000000560"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "fixedDelayMilliseconds": 2000,
+        "jsonBody": {
+          "status": "SUCCESS",
+          "order_id": "00000000-0000-0000-0000-000000000560",
+          "txnid": "stub-txn-slow"
+        }
+      }
+    },
+    {
+      "name": "transactionstatus: expired",
+      "metadata": {
+        "comment": [
+          "The decline table's one Orange row: EXPIRED -> payer_timeout",
+          "(docs/flows/adapter-orange-money.md). The payer never entered the",
+          "one-time code before the hosted page aged out."
+        ]
+      },
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.order_id",
+              "equalTo": "00000000-0000-0000-0000-000000000f01"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "EXPIRED",
+          "order_id": "00000000-0000-0000-0000-000000000f01"
+        }
+      }
+    },
+    {
+      "name": "transactionstatus: failed with no documented sub-reason",
+      "metadata": {
+        "comment": [
+          "FAILED, for which Orange documents no sub-reason vocabulary, so the",
+          "adapter maps it to provider_error and carries `message` through as",
+          "the raw reason. Not in the conformance decline table \u2014 that table",
+          "holds only *documented* mappings; design \u00a74 asks for the body to",
+          "exist."
+        ]
+      },
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.order_id",
+              "equalTo": "00000000-0000-0000-0000-000000000f02"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "order_id": "00000000-0000-0000-0000-000000000f02",
+          "message": "Transaction refused by the payer's bank"
+        }
+      }
+    },
+    {
+      "name": "transactionstatus: initiated",
+      "metadata": {
+        "comment": [
+          "INITIATED: the token exists and the payer has not started. It is the",
+          "row a careless transcription turns into a failure, so it gets a stub",
+          "of its own even though no conformance case names it yet."
+        ]
+      },
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.order_id",
+              "equalTo": "00000000-0000-0000-0000-0000000000e1"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "INITIATED",
+          "order_id": "00000000-0000-0000-0000-0000000000e1"
+        }
+      }
+    },
+    {
+      "name": "transactionstatus: scenario, pending on the first ask",
+      "metadata": {
+        "comment": [
+          "REF_SCENARIO, first call. A WireMock scenario rather than two",
+          "references, because the property under test is that query_status",
+          "reports what the rail says *now* and never caches its first answer \u2014",
+          "the poll ladder in docs/flows/reconciler.md is built entirely on",
+          "that. This is the one stateful case, which is why every other case",
+          "uses a distinct reference and needs no admin reset between tests."
+        ]
+      },
+      "priority": 1,
+      "scenarioName": "orange-pending-then-successful",
+      "requiredScenarioState": "Started",
+      "newScenarioState": "settled",
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.order_id",
+              "equalTo": "00000000-0000-0000-0000-000000000ce0"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "PENDING",
+          "order_id": "00000000-0000-0000-0000-000000000ce0"
+        }
+      }
+    },
+    {
+      "name": "transactionstatus: scenario, successful once settled",
+      "metadata": {
+        "comment": [
+          "REF_SCENARIO, second call and thereafter: the payer entered the",
+          "one-time code."
+        ]
+      },
+      "priority": 1,
+      "scenarioName": "orange-pending-then-successful",
+      "requiredScenarioState": "settled",
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.order_id",
+              "equalTo": "00000000-0000-0000-0000-000000000ce0"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "SUCCESS",
+          "order_id": "00000000-0000-0000-0000-000000000ce0",
+          "txnid": "stub-txn-ce0"
+        }
+      }
+    },
+    {
+      "name": "transactionstatus: anything else succeeded",
+      "metadata": {
+        "comment": [
+          "The catch-all, at the lowest priority: anything not named above is a",
+          "settled payment. This is what compose.yml's stub answered before the",
+          "file was split, so `just up` behaves unchanged for a developer. It",
+          "cannot mask a broken per-reference match: every case above asserts",
+          "something other than 'succeeded', so a mapping that stopped matching",
+          "would fall through to here and fail its test."
+        ]
+      },
+      "priority": 10,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"status\":\"SUCCESS\",\"order_id\":\"{{jsonPath request.body '$.order_id'}}\",\"txnid\":\"stub-txn\"}"
+      }
+    },
+    {
+      "name": "transactionstatus: a body far larger than any answer this rail documents",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.order_id",
+              "equalTo": "00000000-0000-0000-0000-000000000b16"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"status\":\"SUCCESS\",\"order_id\":\"00000000-0000-0000-0000-000000000b16\",\"txnid\":\"stub-txn-huge\",\"padding\":\"{{randomValue length=300000 type='ALPHANUMERIC'}}\"}"
+      },
+      "metadata": {
+        "comment": [
+          "REF_HUGE. 300 KB, past vpay_provider::http::MAX_RAIL_BODY_BYTES (256 KiB).",
+          "Response::bytes() reads to end of stream, so the peer chose how much memory a worker",
+          "task allocated until the Step 3 security review; bounded_body stops at the cap.",
+          "",
+          "A valid SUCCESS body on purpose: without the bound the adapter would parse it and",
+          "answer Succeeded, so the case cannot pass for the wrong reason. Padded via",
+          "--global-response-templating rather than a 300 KB fixture file."
+        ]
+      }
+    }
+  ]
+}

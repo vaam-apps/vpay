@@ -130,32 +130,19 @@ verify-errors:
 # and how big the suite is, so a new `#[ignore]` cannot quietly shrink
 # coverage and a test binary dropping out of the workspace cannot read as
 # "fewer tests, still green". The binary count is the one that actually
-# catches a dropped binary: 18 of the 30 hold eight tests or fewer, so a
-# global floor alone would let any one of them vanish unnoticed. All three
-# numbers are deliberate and must be bumped in the same commit that
-# legitimately changes them — the three ignored tests today are the three
-# not-implemented conformance cases listed in docs/status.md.
+# catches a dropped binary: many binaries hold only a handful of tests, so a
+# global floor alone would let one vanish unnoticed. All three numbers are
+# deliberate and must be bumped in the same commit that legitimately changes
+# them.
 #
-# 32 -> 33 on 2026-09-02: `examples/merchant-demo` joined the workspace.
-# nextest lists a crate's binary target as a suite even when it holds no
-# `#[test]`, so a new member adds one here whether or not it adds a test —
-# `merchant-demo::bin/merchant-demo`, contributing 0 to the total. That is
-# also why this bump is +1 and `min_tests` is untouched: no test was added.
-#
-# 33 -> 34 on 2026-09-02: `backends/tests/integration/tests/payment_intents.rs`,
-# the Docker-backed suite for the `/v1/payment_intents` surface (Step 2). One
-# new test *binary*; the tests it holds are real and raise the total, which is
-# why the floor moves too.
-#
-# min_tests 320 -> 500 on 2026-09-02, in the same change: Step 2 took the
-# workspace from ~330 listed tests to 520 (`just verify-ignored` prints the
-# live number), and a floor 200 below the real count would let a whole suite's
-# worth of coverage disappear without the recipe noticing — which is the one
-# thing this floor exists to prevent. 500 rather than 520 so an ordinary
-# refactor that legitimately merges a few cases does not fail CI.
-expected_ignored := "3"
-expected_suites := "34"
-min_tests := "500"
+# History: 3 ignored (the not-implemented conformance cases) from 2026-09-02;
+# 18 for a few hours on 2026-09-03 while the rewritten conformance suite was
+# a failing spec ahead of the adapters; 0 since both adapters landed the same
+# day and all 26 cases run live against WireMock containers. A test is
+# ignored only while its behaviour is unbuilt (AGENTS.md rule 2).
+expected_ignored := "0"
+expected_suites := "35"
+min_tests := "640"
 
 verify-ignored:
     #!/usr/bin/env bash

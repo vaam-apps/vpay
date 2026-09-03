@@ -286,7 +286,7 @@ neither server route: an authenticated call gets the honest `404`.
 |---|---|---|---|---|
 | `POST` | `/v1/payment_intents` | `amount`, `currency`, `payment_method_types[]`, `metadata[…]`, `description` | `payment_intent` | ✅ |
 | `GET` | `/v1/payment_intents/{id}` | | `payment_intent` | ✅ |
-| `POST` | `/v1/payment_intents/{id}/confirm` | `payment_method_data[type]`, `payment_method_data[mtn_momo][msisdn]` (push), `return_url` (redirect) | `payment_intent` | 🟡 routed; answers `501 not_implemented` at the rail |
+| `POST` | `/v1/payment_intents/{id}/confirm` | `payment_method_data[type]`, `payment_method_data[mtn_momo][msisdn]` (push), `return_url` (redirect) | `payment_intent` | 🟡 reaches a rail over HTTP: `processing` / `requires_action`, `409 charge_declined`, `502`. 🟡 because that rail has only ever been a WireMock stub |
 | `POST` | `/v1/payment_intents/{id}/cancel` | | `payment_intent` | ✅ |
 | `GET` | `/v1/payment_intents` | `limit`, `starting_after`, `ending_before` | `list` of `payment_intent` | ✅ |
 | `POST` | `/v1/refunds` | `payment_intent`, `amount` (omit for full), `reason`, `metadata[…]` | `refund` | ⛔ 404 |
@@ -401,8 +401,13 @@ has not made:
 `GET /v1/oauth/jwks.json`, every other `/v1` path sits behind the
 `AuthenticatedMerchant` boundary, **and five of that boundary's routes now
 answer with a payment intent rather than a 404**: create, retrieve, list and
-cancel return the object; confirm reaches the rail adapter and returns
-`501 not_implemented`. `/v1/refunds`, `/v1/events` and `/v1/balance` are
+cancel return the object; confirm reaches the rail adapter. **Updated
+2026-09-03 (Step 3): that adapter now makes a real HTTP call**, so confirm
+answers `200` with the intent in `processing` or `requires_action`, or `409
+charge_declined` / `502` — not the `501 not_implemented` this paragraph
+recorded on the day it was written. The rail behind it has only ever been a
+WireMock host, and nothing polls the resulting charge, so no intent has
+reached `succeeded`. `/v1/refunds`, `/v1/events` and `/v1/balance` are
 still the honest 404, and that is the intended answer rather than a
 placeholder.
 

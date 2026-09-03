@@ -1,0 +1,22 @@
+# Fixture for `a_rail_missing_a_required_setting_is_rejected`
+# (backends/crates/vpay-config/src/config.rs). `mtn_momo` carries
+# `target_environment` but not `api_user`, so it exercises the `settings`
+# half of `REQUIRED_RAIL_KEYS` specifically — the credentials half has its
+# own fixture next to this one.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+providers:
+  - code: mtn_momo
+    currency: EUR
+    host:
+      url: http://wiremock-mtn:8080
+      label: mtn-sandbox-wiremock
+    settings:
+      target_environment: sandbox
+    credentials:
+      subscription_key: sub-key
+      api_key: api-key

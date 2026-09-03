@@ -6,6 +6,26 @@
 //! 3. Validate. A validation failure means [`Config::load`] returns `Err`;
 //!    the caller must not serve traffic.
 //!
+//! # One rule is asked of step 1's text, not step 2's values
+//!
+//! `validate_secret`'s livemode rule is "a credential must be written as a
+//! `${VAR}` placeholder, not as a literal". That is a question about what
+//! the *file* says, and it stops being answerable the moment step 2 has run
+//! — a resolved `${MTN_API_KEY}` and a literal `hunter2` are the same
+//! string by then. Running it after resolution therefore did not enforce
+//! the rule; it made **livemode unbootable**, because every correctly
+//! written credential resolves to something that is not a placeholder.
+//! (Measured: no livemode deployment could ever have started. The literal
+//! fixture passed only because a literal is also not a placeholder.)
+//!
+//! So the pre-resolution text of every `providers[].credentials` value is
+//! captured before step 2 and carried into step 3 (`RawProviderSecrets`,
+//! private to this module).
+//! The "an unresolved placeholder is fatal" rule stays exactly where it was,
+//! in step 2, and the two rules now answer the two different questions they
+//! were always meant to: *was it written as a reference*, and *did the
+//! reference resolve*.
+//!
 //! Step 4 (reconciling into the database in one transaction) is out of
 //! scope here — another pass owns persistence, and reconciliation lands
 //! after that (`docs/status.md`).
@@ -55,6 +75,7 @@ use figment::providers::{Format, Yaml};
 use garde::Validate;
 use serde::{Deserialize, Serialize};
 use vpay_core::Currency;
+use vpay_provider::ProviderConfig;
 
 use crate::oauth::{DashboardClient, MERCHANT_AUDIENCE, MerchantClient, jwks_has_at_least_one_key};
 use crate::{ConfigError, Deployment, GrantType, HostEntry, validate_host, validate_secret};
@@ -102,6 +123,44 @@ pub struct ProviderHost {
     #[garde(skip)]
     #[serde(default)]
     pub settings: BTreeMap<String, String>,
+    /// Where this rail is told to send its callback, if the derived default
+    /// is wrong for this deployment.
+    ///
+    /// Absent — the normal case — means
+    /// `{deployment.public_base_url}/provider/{code}/callback`
+    /// (`docs/api/README.md`'s path), derived by
+    /// [`ProviderHost::to_provider_config`]. Derivation is the default
+    /// because a URL an operator retypes per rail is a URL an operator
+    /// mistypes, and a mistyped one points a *live* rail at nothing while
+    /// looking perfectly healthy at boot.
+    ///
+    /// It is overridable because the derived form assumes the rail can reach
+    /// this deployment at its own public base URL, and one real deployment
+    /// shape breaks that: a rail whose callbacks must arrive on a separate
+    /// ingress (an IP-allowlisted host — MTN requires one,
+    /// `Capabilities::requires_ip_allowlist`) has a callback host that is
+    /// genuinely not `public_base_url`.
+    ///
+    /// Under `livemode` an override must be `https://` and must not look
+    /// like a stub, exactly as a rail host must — see `Config::validate_all`.
+    #[garde(skip)]
+    #[serde(default)]
+    pub callback_url: Option<String>,
+    /// The ISO-4217 code this rail transacts in, e.g. `XAF`.
+    ///
+    /// A property of the rail's *profile*, not of a charge: MTN's sandbox
+    /// rejects XAF and accepts EUR only (`docs/flows/money.md`), which is a
+    /// deployment fact and must never be a code branch (ADR-0003). Required
+    /// rather than defaulted: a rail that submits amounts in the wrong
+    /// currency is the single most expensive kind of config typo, and there
+    /// is no value that is safe to guess.
+    ///
+    /// Checked against [`vpay_core::Currency::from_code`] by
+    /// `Config::validate_all`; `garde` only pins the length, because the
+    /// canonical set lives in `vpay-core` and duplicating it here is how the
+    /// two drift.
+    #[garde(length(min = 3, max = 3))]
+    pub currency: String,
     /// Secret material (mirrors `vpay_provider::ProviderConfig::credentials`).
     /// Every value must be a `${VAR}` placeholder in a livemode deployment —
     /// enforced by [`validate_secret`] over every entry, driven by
@@ -152,9 +211,123 @@ impl fmt::Debug for ProviderHost {
             .field("code", &self.code)
             .field("enabled", &self.enabled)
             .field("host", &self.host)
+            .field("callback_url", &self.callback_url)
+            .field("currency", &self.currency)
             .field("settings", &self.settings)
             .field("credentials", &redacted_credentials)
             .finish()
+    }
+}
+
+/// Decision record: [ADR-0012](../../../../docs/adr/0012-rail-configuration-requirements-in-config.md)
+/// — this table is the one sanctioned provider-code match outside an adapter
+/// crate, and it moves behind the port the day `required_settings()` exists.
+/// The keys each rail's adapter cannot work without, checked at boot.
+///
+/// # Why a table keyed by provider code lives outside an adapter crate
+///
+/// ADR-0002 forbids branching on a provider *code* outside
+/// `vpay-adapter-*`, and this is deliberately not that: nothing here selects
+/// behaviour: it selects a *refusal to start*. The alternative — an adapter
+/// declaring its own required keys through the port — is the better design
+/// and is not built (the port has no `required_settings()` today), so this
+/// table is the honest interim: one visible list, checked once, that fails a
+/// deployment at boot instead of failing a payer's charge at 3am with
+/// `ProviderError::Config`. Growing a rail means editing this list *and* an
+/// adapter, which is the coupling to remove when the port grows the hook.
+///
+/// The contents mirror `docs/flows/adapter-mtn-momo.md` and
+/// `docs/flows/adapter-orange-money.md`, which are the source of truth for
+/// what each rail's API demands.
+///
+/// Orange's `merchant_key` sits under `credentials` rather than `settings`
+/// (Step 3's decision 4): it is not a bearer secret, but it is per-merchant
+/// material that already lives there in `config/application.yml`, and
+/// `ProviderHost`'s `Debug` redacts `credentials` while printing `settings`
+/// in full — so moving it would make it log-visible for no gain.
+const REQUIRED_RAIL_KEYS: [RequiredRailKeys; 2] = [
+    RequiredRailKeys {
+        code: "mtn_momo",
+        // `target_environment` is MTN's `X-Target-Environment` header
+        // (`sandbox`, or the country product name in production) and
+        // `api_user` is the UUID half of the Basic credential the token call
+        // uses. Neither is secret; both are fatal to omit, because MTN
+        // answers a missing target environment with a 500 whose body says
+        // `NOT_ALLOWED_TARGET_ENVIRONMENT` — a failure that looks like the
+        // rail is broken rather than like our YAML is.
+        settings: &["target_environment", "api_user"],
+        credentials: &["subscription_key", "api_key"],
+    },
+    RequiredRailKeys {
+        code: "orange_money",
+        settings: &[],
+        credentials: &["merchant_key", "client_id", "client_secret"],
+    },
+];
+
+/// One row of [`REQUIRED_RAIL_KEYS`].
+struct RequiredRailKeys {
+    code: &'static str,
+    settings: &'static [&'static str],
+    credentials: &'static [&'static str],
+}
+
+impl ProviderHost {
+    /// Projects this rail's YAML onto the [`ProviderConfig`] an adapter is
+    /// handed at call time.
+    ///
+    /// This is the *only* place a `ProviderConfig` is built from
+    /// configuration, so the callback-URL derivation, the currency parse and
+    /// the timeout defaults cannot diverge between the server and the worker
+    /// — two processes disagreeing about a rail's callback URL would be a
+    /// defect with no symptom until a rail called the wrong host.
+    ///
+    /// `deployment` rather than a bare base URL: the derivation needs
+    /// `public_base_url`, and passing the whole struct means a future rule
+    /// that needs another deployment fact does not change this signature.
+    ///
+    /// The timeouts are [`vpay_provider::DEFAULT_CONNECT_TIMEOUT`] /
+    /// [`vpay_provider::DEFAULT_REQUEST_TIMEOUT`] and are not configurable in
+    /// YAML: no deployment has asked for a different budget, and a knob no
+    /// one sets is a knob nobody has tested. The conformance suite overrides
+    /// them by building a `ProviderConfig` directly, which is the one caller
+    /// that genuinely needs a 100 ms deadline.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::UnknownCurrency`] if `currency` is not one
+    /// [`vpay_core::Currency`] knows. `Config::validate_all` has already
+    /// refused to boot on that, so reaching it here means a `ProviderHost`
+    /// built in code rather than loaded from a file.
+    pub fn to_provider_config(
+        &self,
+        deployment: &Deployment,
+    ) -> Result<ProviderConfig, ConfigError> {
+        Ok(ProviderConfig {
+            base_url: self.host.url.clone(),
+            callback_url: self.effective_callback_url(deployment),
+            currency: Currency::from_code(&self.currency.to_ascii_uppercase())
+                .map_err(|_| ConfigError::UnknownCurrency(self.currency.clone()))?,
+            settings: self.settings.clone(),
+            credentials: self.credentials.clone(),
+            connect_timeout: vpay_provider::DEFAULT_CONNECT_TIMEOUT,
+            request_timeout: vpay_provider::DEFAULT_REQUEST_TIMEOUT,
+        })
+    }
+
+    /// The callback URL this rail will actually be given: the override if
+    /// there is one, otherwise `docs/api/README.md`'s derived path.
+    ///
+    /// Separate from [`ProviderHost::to_provider_config`] so the livemode
+    /// `https` rule can be checked against the *effective* value at boot —
+    /// validating only an override would leave the derived form (the one
+    /// almost every deployment uses) unchecked.
+    #[must_use]
+    pub fn effective_callback_url(&self, deployment: &Deployment) -> String {
+        self.callback_url.clone().unwrap_or_else(|| {
+            let base = deployment.public_base_url.trim_end_matches('/');
+            format!("{base}/provider/{}/callback", self.code)
+        })
     }
 }
 
@@ -254,6 +427,10 @@ impl Config {
             .extract()
             .map_err(|e| ConfigError::Load(base_path.display().to_string(), e.to_string()))?;
 
+        // Before step 2, because after it there is nothing left to ask —
+        // see this module's header.
+        let raw_secrets = RawProviderSecrets::from_document(&raw);
+
         resolve_placeholders(&mut raw, env)?;
 
         // `figment::value::Value` and `serde_yaml_ng::Value` are different
@@ -268,27 +445,71 @@ impl Config {
         let config: Self =
             serde_yaml_ng::from_str(&yaml_text).map_err(|e| ConfigError::Shape(e.to_string()))?;
 
-        config.validate_all()?;
+        config.validate_all(&raw_secrets)?;
         Ok(config)
     }
 
     /// Runs every validation rule: `garde`'s structural derive, then the
     /// existing tested guard rules (`validate_host`, `validate_secret`)
     /// over every provider, then the currency-table checks.
-    fn validate_all(&self) -> Result<(), ConfigError> {
+    fn validate_all(&self, raw_secrets: &RawProviderSecrets) -> Result<(), ConfigError> {
         self.validate()
             .map_err(|report| ConfigError::Validation(report.to_string()))?;
 
         let livemode = self.deployment.livemode;
+        // Uniqueness is a property of the *list*, so it is checked over the
+        // whole list before any single rail's rules run. Otherwise the first
+        // entry's own defect (a missing key, a bad currency) would be
+        // reported instead of the duplicate, and an operator would fix the
+        // named problem and hit the real one on the next boot.
         let mut seen_providers = BTreeSet::new();
         for provider in &self.providers {
             if !seen_providers.insert(provider.code.as_str()) {
                 return Err(ConfigError::DuplicateProviderCode(provider.code.clone()));
             }
+        }
+        for provider in &self.providers {
+            // Both destinations first — where we call the rail, and where the
+            // rail calls us — then what we authenticate with, then whether the
+            // block is complete. The order is what an operator reads: an
+            // unreachable or plaintext endpoint makes every later question
+            // moot.
             validate_host(&provider.host, livemode)?;
-            for (key, raw) in &provider.credentials {
-                validate_secret(&format!("{}.{key}", provider.code), raw, livemode)?;
+            // The *effective* callback URL, not just an override: the derived
+            // form is what almost every deployment uses, and a livemode
+            // deployment whose `public_base_url` is `http://` would otherwise
+            // hand a live rail an unencrypted callback host that nothing
+            // checked. Reuses `validate_host` for the same reason
+            // `validate_dashboard_client` does — a callback URL is
+            // structurally the same kind of destination, and a leftover
+            // `localhost`/`wiremock` one in production is exactly as
+            // dangerous. The synthetic `label` only feeds the stub-marker
+            // search and is stored nowhere.
+            validate_host(
+                &HostEntry {
+                    url: provider.effective_callback_url(&self.deployment),
+                    label: format!("{} callback", provider.code),
+                },
+                livemode,
+            )?;
+            for key in provider.credentials.keys() {
+                // The value **as written**, never `provider.credentials[key]`
+                // — that one has been through step 2. `as_written` answering
+                // `None` fails closed for the same reason the rule exists.
+                let as_written = raw_secrets.as_written(&provider.code, key);
+                validate_secret(
+                    &format!("{}.{key}", provider.code),
+                    as_written.unwrap_or(""),
+                    livemode,
+                )?;
             }
+            // The currency is checked here, not only when
+            // `to_provider_config` runs, because that call happens per
+            // request: an unknown code would otherwise be a 500 on a
+            // merchant's confirm rather than a refusal to start.
+            Currency::from_code(&provider.currency.to_ascii_uppercase())
+                .map_err(|_| ConfigError::UnknownCurrency(provider.currency.clone()))?;
+            validate_required_rail_keys(provider)?;
         }
 
         let mut seen_currencies = BTreeSet::new();
@@ -347,6 +568,152 @@ impl Config {
 
         Ok(())
     }
+}
+
+/// The pre-resolution text of every `providers[].credentials` value, keyed
+/// by `(provider code, credential key)`.
+///
+/// # Why a side table and not a field on [`ProviderHost`]
+///
+/// `ProviderHost` is the *resolved* configuration — it is what a rail
+/// adapter is eventually handed, and every consumer of it wants the value,
+/// not the placeholder. Carrying both halves on it would put a second,
+/// almost-identical map in front of every caller (and in `Debug`, where a
+/// literal secret would then be printed by whichever of the two nobody
+/// remembered to redact). This map exists for the length of one
+/// [`Config::load_with_env`] call and is dropped when validation ends.
+///
+/// It is read from the *merged* document, so a credential supplied by a
+/// profile overlay is the one checked — the overlay is what a livemode
+/// deployment actually edits.
+#[derive(Debug, Default)]
+struct RawProviderSecrets(BTreeMap<(String, String), String>);
+
+impl RawProviderSecrets {
+    /// Walks the merged, **unresolved** document for
+    /// `providers[].credentials`.
+    ///
+    /// Every shape mismatch is skipped rather than reported: this runs
+    /// before `serde` has had a chance to say the document is not a
+    /// `Config` at all, so a malformed `providers` block must not produce a
+    /// worse error message here than the shape error the caller is about to
+    /// get anyway. A skipped entry is not a silently passed one — see
+    /// [`Self::as_written`].
+    fn from_document(document: &figment::value::Value) -> Self {
+        use figment::value::Value;
+
+        let mut out = BTreeMap::new();
+        let Some(providers) = document.find_ref("providers").and_then(Value::as_array) else {
+            return Self(out);
+        };
+        for provider in providers {
+            let Some(dict) = provider.as_dict() else {
+                continue;
+            };
+            let Some(code) = dict.get("code").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(credentials) = dict.get("credentials").and_then(Value::as_dict) else {
+                continue;
+            };
+            for (key, value) in credentials {
+                if let Some(text) = value.as_str() {
+                    out.insert((code.to_owned(), key.clone()), text.to_owned());
+                }
+            }
+        }
+        Self(out)
+    }
+
+    /// The value as the file wrote it, or `None` if this map never saw it.
+    ///
+    /// `None` is not "no rule applies": the caller passes it to
+    /// `validate_secret` as an empty string, which fails the livemode rule.
+    /// A credential this function cannot account for is one nobody can
+    /// prove came from a `${VAR}`, and the whole point of the rule is that
+    /// a livemode deployment does not start until that proof exists.
+    fn as_written(&self, code: &str, key: &str) -> Option<&str> {
+        self.0
+            .get(&(code.to_owned(), key.to_owned()))
+            .map(String::as_str)
+    }
+}
+
+#[cfg(test)]
+impl RawProviderSecrets {
+    /// The identity map, for a [`Config`] built in memory by a test rather
+    /// than loaded from a file.
+    ///
+    /// Sound only because nothing resolved anything: a hand-built `Config`'s
+    /// credential *is* its own text. A test that wants to exercise the
+    /// resolution ordering has to go through [`Config::load_with_env`] and a
+    /// fixture file — which is what
+    /// `a_livemode_config_whose_placeholders_resolve_loads` does, and why
+    /// this shortcut cannot be used to fake that proof.
+    fn identity(config: &Config) -> Self {
+        Self(
+            config
+                .providers
+                .iter()
+                .flat_map(|provider| {
+                    provider
+                        .credentials
+                        .iter()
+                        .map(|(key, value)| ((provider.code.clone(), key.clone()), value.clone()))
+                })
+                .collect(),
+        )
+    }
+}
+
+/// Refuses a rail whose YAML omits a key its adapter cannot work without —
+/// see [`REQUIRED_RAIL_KEYS`] for the table and why it lives here.
+///
+/// A rail with no row in the table is not an error: a deployment may
+/// configure a code this binary has no adapter for, and that is
+/// [`ConfigError::ProviderWithoutAdapter`]'s job to report, from the binary
+/// that knows what it links. Reporting it twice, differently, would make the
+/// first message the one an operator reads and the wrong one.
+///
+/// An *empty* value counts as missing. A `${VAR}` that resolved to an empty
+/// string cannot reach here (step 2 makes an unresolved placeholder fatal),
+/// but a literal `api_key: ""` in a sandbox file can, and it fails on the
+/// wire in a way that names neither the key nor the file.
+fn validate_required_rail_keys(provider: &ProviderHost) -> Result<(), ConfigError> {
+    let Some(required) = REQUIRED_RAIL_KEYS
+        .iter()
+        .find(|entry| entry.code == provider.code)
+    else {
+        return Ok(());
+    };
+
+    for key in required.settings {
+        if provider
+            .settings
+            .get(*key)
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            return Err(ConfigError::MissingProviderSetting {
+                code: provider.code.clone(),
+                section: "settings",
+                key: (*key).to_owned(),
+            });
+        }
+    }
+    for key in required.credentials {
+        if provider
+            .credentials
+            .get(*key)
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            return Err(ConfigError::MissingProviderSetting {
+                code: provider.code.clone(),
+                section: "credentials",
+                key: (*key).to_owned(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// ADR-0010's merchant-client rules: no client secret, ever; a non-empty,
@@ -524,7 +891,10 @@ mod tests {
         let defaults: BTreeMap<&str, &str> = [
             ("MTN_SUBSCRIPTION_KEY", "sub-key-test"),
             ("MTN_API_KEY", "api-key-test"),
+            ("MTN_API_USER", "11111111-2222-3333-4444-555555555555"),
             ("ORANGE_MERCHANT_KEY", "merchant-key-test"),
+            ("ORANGE_CLIENT_ID", "client-id-test"),
+            ("ORANGE_CLIENT_SECRET", "client-secret-test"),
         ]
         .into_iter()
         .collect();
@@ -670,7 +1040,94 @@ mod tests {
         let env = example_env(BTreeMap::new());
         let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
             .expect_err("a literal secret under livemode must be rejected");
-        assert!(matches!(err, ConfigError::LiteralSecret(_)));
+        assert_eq!(
+            err,
+            ConfigError::LiteralSecret("mtn_momo.api_key".to_owned()),
+            "the refusal names the credential, and it is the *credential* rule that fired \
+             rather than any of the fixture's other livemode rules"
+        );
+    }
+
+    /// The other side of the same rule, and the one that had never worked:
+    /// a livemode deployment written exactly as the documentation says —
+    /// every credential a `${VAR}` — with every variable set, **loads**.
+    ///
+    /// This is the regression test for a bug that made livemode unbootable.
+    /// `validate_secret` asks whether a value is written as a placeholder,
+    /// and it used to be asked *after* placeholders had been substituted, so
+    /// a correctly written `${MTN_API_KEY}` was `api-key-test` by the time
+    /// the rule ran and every livemode boot failed `LiteralSecret`. Both
+    /// existing tests passed throughout: the literal fixture failed for the
+    /// right reason by accident (a literal is also not a placeholder), and
+    /// nothing else in the suite ever loaded a livemode file.
+    ///
+    /// Reverting the ordering fails exactly here, which is the point.
+    #[test]
+    fn a_livemode_config_whose_placeholders_resolve_loads() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/livemode-resolved-secret.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let config = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect("a livemode config whose ${VAR}s all resolve must load");
+
+        assert!(config.deployment.livemode);
+        let mtn = config
+            .providers
+            .first()
+            .expect("the fixture configures one rail");
+        assert_eq!(
+            mtn.credentials.get("api_key").map(String::as_str),
+            Some("api-key-test"),
+            "the loaded config carries the RESOLVED value — the raw text is only what the \
+             literal-secret rule is asked about"
+        );
+    }
+
+    /// A literal is fine in a sandbox: the rule is about live money, and a
+    /// developer's stub rail has a throwaway key.
+    ///
+    /// Without this case, "check the raw text" could be implemented as
+    /// "refuse every literal" and every local stack would stop booting with
+    /// nothing here to say so.
+    #[test]
+    fn a_sandbox_config_with_a_literal_secret_loads() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/sandbox-literal-secret.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let config = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect("a literal secret outside livemode must load");
+        assert!(!config.deployment.livemode);
+    }
+
+    /// An unresolved placeholder stays fatal in livemode, and stays fatal as
+    /// *itself*.
+    ///
+    /// The two rules are easy to collapse into one now that both are about
+    /// `${VAR}`s, and collapsing them would be a real loss: "you wrote a
+    /// literal" and "the variable is not set in this environment" send an
+    /// operator to two different places, and only one of them is a file they
+    /// can edit.
+    #[test]
+    fn a_livemode_placeholder_that_does_not_resolve_is_still_the_unresolved_error() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/livemode-resolved-secret.yml"
+        );
+        // Everything resolves except MTN_API_KEY.
+        let env = |key: &str| match key {
+            "MTN_API_KEY" => None,
+            _ => Some("set".to_owned()),
+        };
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("an unset variable must still be fatal");
+        assert_eq!(
+            err,
+            ConfigError::UnresolvedPlaceholder("MTN_API_KEY".to_owned())
+        );
     }
 
     #[test]
@@ -704,6 +1161,282 @@ mod tests {
         assert_eq!(
             err,
             ConfigError::DuplicateProviderCode("mtn_momo".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_rail_missing_a_required_setting_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/provider-missing-setting.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("a rail missing a required setting must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::MissingProviderSetting {
+                code: "mtn_momo".to_owned(),
+                section: "settings",
+                key: "api_user".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_rail_missing_a_required_credential_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/provider-missing-credential.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("a rail missing a required credential must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::MissingProviderSetting {
+                code: "orange_money".to_owned(),
+                section: "credentials",
+                key: "client_secret".to_owned(),
+            }
+        );
+    }
+
+    /// The half a `contains_key` check would miss: an operator who wrote the
+    /// key and left the value blank gets the same refusal as one who omitted
+    /// it, rather than a 401 from the rail hours later.
+    #[test]
+    fn a_required_key_present_but_empty_is_treated_as_missing() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/provider-empty-credential.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("an empty required credential must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::MissingProviderSetting {
+                code: "orange_money".to_owned(),
+                section: "credentials",
+                key: "client_secret".to_owned(),
+            }
+        );
+    }
+
+    /// A rail with no row in `REQUIRED_RAIL_KEYS` must load: which rails a
+    /// *binary* implements is `ConfigError::ProviderWithoutAdapter`'s
+    /// question, raised where the linked adapters are known, and answering it
+    /// twice would mean an operator reads the less useful message.
+    #[test]
+    fn a_rail_this_crate_has_no_key_table_for_is_not_refused_here() {
+        let host = ProviderHost {
+            code: "some_future_rail".to_owned(),
+            enabled: true,
+            host: HostEntry {
+                url: "https://rail.example".to_owned(),
+                label: "future".to_owned(),
+            },
+            settings: BTreeMap::new(),
+            callback_url: None,
+            currency: "XAF".to_owned(),
+            credentials: BTreeMap::new(),
+        };
+        assert_eq!(validate_required_rail_keys(&host), Ok(()));
+    }
+
+    #[test]
+    fn a_rail_currency_outside_the_canonical_table_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/provider-unknown-currency.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("a currency vpay-core does not know must be rejected");
+        assert_eq!(err, ConfigError::UnknownCurrency("USD".to_owned()));
+    }
+
+    #[test]
+    fn a_livemode_callback_url_that_is_not_https_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/livemode-insecure-callback-url.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("an http callback URL under livemode must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::InsecureHost(
+                "http://callbacks.vpay.example/provider/mtn_momo/callback".to_owned()
+            )
+        );
+    }
+
+    /// The rule applies to the *derived* callback too, which is the form
+    /// almost every deployment uses: a livemode deployment whose
+    /// `public_base_url` is plaintext would otherwise hand a live rail an
+    /// `http://` callback that nothing had checked.
+    #[test]
+    fn a_livemode_deployment_cannot_derive_a_plaintext_callback_url() {
+        let config = Config {
+            deployment: Deployment {
+                name: "prod".to_owned(),
+                livemode: true,
+                public_base_url: "http://api.vpay.example".to_owned(),
+            },
+            providers: vec![ProviderHost {
+                code: "mtn_momo".to_owned(),
+                enabled: true,
+                host: HostEntry {
+                    url: "https://proxy.momoapi.mtn.com".to_owned(),
+                    label: "mtn-cm-prod".to_owned(),
+                },
+                settings: BTreeMap::from([
+                    ("target_environment".to_owned(), "mtncameroon".to_owned()),
+                    ("api_user".to_owned(), "a-uuid".to_owned()),
+                ]),
+                callback_url: None,
+                currency: "EUR".to_owned(),
+                credentials: BTreeMap::from([
+                    ("subscription_key".to_owned(), "${K}".to_owned()),
+                    ("api_key".to_owned(), "${A}".to_owned()),
+                ]),
+            }],
+            currencies: Vec::new(),
+            merchant_clients: Vec::new(),
+            dashboard_client: None,
+        };
+
+        assert_eq!(
+            config.validate_all(&RawProviderSecrets::identity(&config)),
+            Err(ConfigError::InsecureHost(
+                "http://api.vpay.example/provider/mtn_momo/callback".to_owned()
+            ))
+        );
+    }
+
+    /// The projection every rail call is handed. Asserted on the example
+    /// config rather than a hand-built struct so the derivation is proven
+    /// against the file an operator actually edits.
+    #[test]
+    fn to_provider_config_projects_the_example_config_onto_the_port() {
+        let env = example_env(BTreeMap::new());
+        let config = Config::load_with_env(Some(Path::new(EXAMPLE_BASE)), "does-not-exist", &env)
+            .expect("example config should load");
+        let mtn = config
+            .providers
+            .iter()
+            .find(|p| p.code == "mtn_momo")
+            .expect("the example config configures mtn_momo");
+
+        let projected = mtn
+            .to_provider_config(&config.deployment)
+            .expect("the example config's currency is canonical");
+
+        assert_eq!(projected.base_url, "http://wiremock-mtn:8080");
+        // Derived, not configured: `public_base_url` + docs/api/README.md's
+        // path.
+        assert_eq!(
+            projected.callback_url,
+            "http://localhost:8080/provider/mtn_momo/callback"
+        );
+        // EUR, from the rail's profile — MTN's sandbox rejects XAF.
+        assert_eq!(projected.currency, Currency::Eur);
+        assert_eq!(
+            projected
+                .settings
+                .get("target_environment")
+                .map(String::as_str),
+            Some("sandbox")
+        );
+        // The `${MTN_API_KEY}` placeholder is resolved by the time an
+        // adapter sees it, never handed on as a literal `${...}`.
+        assert_eq!(
+            projected.credentials.get("api_key").map(String::as_str),
+            Some("api-key-test")
+        );
+        assert_eq!(
+            projected.connect_timeout,
+            vpay_provider::DEFAULT_CONNECT_TIMEOUT
+        );
+        assert_eq!(
+            projected.request_timeout,
+            vpay_provider::DEFAULT_REQUEST_TIMEOUT
+        );
+    }
+
+    /// A trailing slash on `public_base_url` must not produce a doubled one
+    /// in the callback path — a rail would POST to a URL the router does not
+    /// match, and the only symptom would be callbacks that never arrive.
+    #[test]
+    fn a_derived_callback_url_survives_a_trailing_slash_and_an_override_wins() {
+        let deployment = Deployment {
+            name: "test".to_owned(),
+            livemode: false,
+            public_base_url: "https://api.vpay.test/".to_owned(),
+        };
+        let mut host = ProviderHost {
+            code: "orange_money".to_owned(),
+            enabled: true,
+            host: HostEntry {
+                url: "https://rail.example/orange-money-webpay/dev".to_owned(),
+                label: "orange".to_owned(),
+            },
+            settings: BTreeMap::new(),
+            callback_url: None,
+            currency: "xaf".to_owned(),
+            credentials: BTreeMap::new(),
+        };
+
+        assert_eq!(
+            host.effective_callback_url(&deployment),
+            "https://api.vpay.test/provider/orange_money/callback"
+        );
+        // Lower-case in YAML is accepted: the wire API is lower-case and an
+        // operator copying a currency from a request body should not be
+        // refused for it.
+        assert_eq!(
+            host.to_provider_config(&deployment)
+                .expect("xaf is canonical once upper-cased")
+                .currency,
+            Currency::Xaf
+        );
+
+        host.callback_url = Some("https://callbacks.vpay.test/orange".to_owned());
+        assert_eq!(
+            host.effective_callback_url(&deployment),
+            "https://callbacks.vpay.test/orange"
+        );
+    }
+
+    /// The one error `to_provider_config` can return, reachable only for a
+    /// `ProviderHost` built in code — a loaded one has already been refused
+    /// at boot.
+    #[test]
+    fn to_provider_config_names_a_currency_it_cannot_parse() {
+        let deployment = Deployment {
+            name: "test".to_owned(),
+            livemode: false,
+            public_base_url: "https://api.vpay.test".to_owned(),
+        };
+        let host = ProviderHost {
+            code: "mtn_momo".to_owned(),
+            enabled: true,
+            host: HostEntry {
+                url: "https://rail.example".to_owned(),
+                label: "rail".to_owned(),
+            },
+            settings: BTreeMap::new(),
+            callback_url: None,
+            currency: "GBP".to_owned(),
+            credentials: BTreeMap::new(),
+        };
+
+        assert_eq!(
+            host.to_provider_config(&deployment),
+            Err(ConfigError::UnknownCurrency("GBP".to_owned()))
         );
     }
 
@@ -780,6 +1513,8 @@ mod tests {
                 "subscription_key_header".to_owned(),
                 "Ocp-Apim-Subscription-Key".to_owned(),
             )]),
+            callback_url: None,
+            currency: "EUR".to_owned(),
             credentials: BTreeMap::from([(
                 "api_key".to_owned(),
                 "super-secret-live-mtn-key".to_owned(),
@@ -811,6 +1546,8 @@ mod tests {
                 "subscription_key_header".to_owned(),
                 "Ocp-Apim-Subscription-Key".to_owned(),
             )]),
+            callback_url: None,
+            currency: "EUR".to_owned(),
             credentials: BTreeMap::from([(
                 "api_key".to_owned(),
                 "super-secret-live-mtn-key".to_owned(),
@@ -948,6 +1685,7 @@ deployment:
 providers:
   - code: mtn_momo
     enabled: false
+    currency: EUR
     host:
       url: http://wiremock-mtn:8080
       label: mtn-sandbox-wiremock

@@ -68,3 +68,24 @@ true }`: exactly this document's "still polled, once an hour, and now
 raising an alert" — never a silent failure, and never a dead-letter, because
 the late success at hour 30 is a normal transition. Nothing calls
 `decision()` yet.
+
+**Unchanged by Step 3 (2026-09-03), deliberately — but the adapter API this
+document needs now exists.** No job loop, no escalation, no callback
+endpoint: nothing polls a `submitted` charge, so a confirmed push intent sits
+in `processing` indefinitely and a redirect intent in `requires_action`.
+What Step 3 supplied is the half a reconciler cannot be written without:
+
+- `ProviderAdapter::query_status` is implemented on both rails and is
+  `async`, and it returns a canonical `ChargeStatus::NotFound` for a
+  reference the rail has no record of — never a failure. That distinction is
+  the whole basis of the recovery table in
+  [crash-safety.md](crash-safety.md), and it is proven on both rails by the
+  conformance case `not_found_is_never_on_its_own_a_failure`.
+- A charge that is pending and later settles walks correctly:
+  `pending_then_successful_walks_the_scenario` drives a WireMock scenario
+  through two `query_status` calls.
+- `parse_callback` is implemented on both rails and returns identifiers
+  only. **There is still no callback route**, so nothing compares Orange's
+  `notif_token` against the stored one, and MTN's callbacks are unsigned and
+  unauthenticated in any case. Until that route exists, `parse_callback`
+  is exercised by tests and by nothing else.

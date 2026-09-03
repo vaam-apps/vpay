@@ -18,10 +18,23 @@ deployment:
 
 providers:
   - code: mtn_momo
+    currency: EUR
     host:
       url: http://wiremock-mtn:8080
       label: mtn-sandbox-wiremock
+    # `Config::validate_all` refuses an incomplete `mtn_momo` block since
+    # 2026-09-03 (`REQUIRED_RAIL_KEYS`), and this fixture has to get *past*
+    # validation to reach the adapter join it exists to test. Literals rather
+    # than `${VAR}`s so the test needs no environment; `livemode: false`
+    # permits them.
+    settings:
+      target_environment: sandbox
+      api_user: 11111111-2222-3333-4444-555555555555
+    credentials:
+      subscription_key: not-a-real-key
+      api_key: not-a-real-key
   - code: a_rail_that_does_not_exist
+    currency: XAF
     host:
       url: http://wiremock-nothing:8080
       label: no-such-rail

@@ -39,7 +39,6 @@ use axum::http::Method;
 use axum::http::request::Parts;
 use axum::routing::{MethodRouter, get, post};
 use vpay_config::Config;
-use vpay_core::Currency;
 use vpay_provider::ProviderConfig;
 
 use crate::error::ApiError;
@@ -214,18 +213,19 @@ where
 /// One rail's deployment-specific material, as an adapter needs it.
 ///
 /// Split out of [`ResourceConfig`] so the per-request work is a map lookup
-/// and one `clone` of the small maps, rather than re-deriving a callback URL
-/// and re-copying credentials for every rail on every request.
+/// and one `clone` of an already-projected value, rather than re-deriving a
+/// callback URL and re-parsing a currency for every rail on every request.
 #[derive(Debug, Clone)]
 pub struct RailConfig {
     /// `providers.code`.
     code: String,
     /// Whether new intents may name this rail — [`vpay_config::ProviderHost::enabled`].
     enabled: bool,
-    base_url: String,
-    callback_url: String,
-    settings: BTreeMap<String, String>,
-    credentials: BTreeMap<String, String>,
+    /// Projected once at boot by
+    /// [`vpay_config::ProviderHost::to_provider_config`] — see
+    /// [`RailConfig::provider_config`] for why the projection lives there and
+    /// not here.
+    provider_config: ProviderConfig,
 }
 
 impl RailConfig {
@@ -235,24 +235,53 @@ impl RailConfig {
         &self.code
     }
 
-    /// The [`ProviderConfig`] handed to `ProviderAdapter::submit` for a
-    /// charge in `currency`.
+    /// The currency this rail settles in, from `providers[].currency`.
     ///
-    /// `currency` is a parameter rather than a stored field because a rail
-    /// is not tied to one currency — the charge carries the intent's
-    /// currency verbatim, with no conversion and no per-rail currency check
-    /// (Step 2's D2). Storing one on the rail would make that a property of
-    /// the deployment and quietly reject the second currency a rail
-    /// supports.
+    /// Exposed separately from [`RailConfig::provider_config`] because the
+    /// one caller that needs it — the confirm path's charge-vs-rail check —
+    /// needs to *compare* it, and cloning a whole `ProviderConfig`
+    /// (credentials included) per request to read one field would put rail
+    /// secrets on the stack of a validation function for no reason.
     #[must_use]
-    pub fn provider_config(&self, currency: Currency) -> ProviderConfig {
-        ProviderConfig {
-            base_url: self.base_url.clone(),
-            callback_url: self.callback_url.clone(),
-            currency,
-            settings: self.settings.clone(),
-            credentials: self.credentials.clone(),
-        }
+    pub fn currency(&self) -> vpay_core::Currency {
+        self.provider_config.currency
+    }
+
+    /// The [`ProviderConfig`] handed to `ProviderAdapter::submit`.
+    ///
+    /// # What changed in Step 3, and what it means
+    ///
+    /// This used to take the *charge's* currency (Step 2's D2: the charge
+    /// carries the intent's currency verbatim). It no longer does: the
+    /// currency an adapter is told to transact in is now
+    /// `providers[].currency` from the YAML, because it is a property of the
+    /// rail's *profile* — MTN's sandbox rejects XAF and accepts EUR only
+    /// (`docs/flows/money.md`), which is a deployment fact and must never be
+    /// a code branch (ADR-0003).
+    ///
+    /// The charge is unaffected: `charges.currency_code` is still the
+    /// intent's own, and `Money` still carries it, so
+    /// `Money::to_provider_string` still renders with the *charge's*
+    /// exponent.
+    ///
+    /// **The two are now reconciled at confirm, not left to the rail.**
+    /// `vpay_api::v1::payment_intents`' `currencies_agree` refuses a confirm
+    /// whose intent currency is not this one, with a `400` naming
+    /// `payment_method_data[type]`, before any charge row is written. The
+    /// alternative — submitting a XAF amount under a EUR profile because
+    /// "amounts against a EUR profile are notional" (`docs/flows/money.md`)
+    /// — is a payer charged the wrong unit by a rail that simply believes
+    /// the number. Refusing at *boot* was the other candidate and is
+    /// deliberately not done: a deployment may legitimately offer several
+    /// rails in several currencies, and which pair is illegal is a property
+    /// of the request, not of the file.
+    ///
+    /// Built at boot rather than per call because the projection can fail
+    /// (an unknown currency) and a request path is the wrong place to
+    /// discover a configuration defect.
+    #[must_use]
+    pub fn provider_config(&self) -> ProviderConfig {
+        self.provider_config.clone()
     }
 }
 
@@ -279,8 +308,17 @@ impl ResourceConfig {
     /// projection is one edit, and so both binaries build it identically —
     /// a server and a worker disagreeing about which currencies exist would
     /// be a defect with no visible symptom until a charge failed.
-    #[must_use]
-    pub fn from_config(config: &Config) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`vpay_config::ProviderHost::to_provider_config`] returns —
+    /// today, a `providers[].currency` outside
+    /// [`vpay_core::Currency`]. `Config::load` has already refused to boot on
+    /// that, so this is unreachable for a `Config` that came from a file;
+    /// it is `Result` rather than a silent skip because a rail dropped from
+    /// this map would make every charge on it answer "unknown rail", which
+    /// looks like a merchant's typo rather than our configuration defect.
+    pub fn from_config(config: &Config) -> Result<Self, vpay_config::ConfigError> {
         let merchant_id_by_client_id = config
             .merchant_clients
             .iter()
@@ -291,7 +329,10 @@ impl ResourceConfig {
             .iter()
             .map(|entry| entry.code.to_ascii_uppercase())
             .collect();
-        let base = config.deployment.public_base_url.trim_end_matches('/');
+        // The callback-URL derivation and the currency parse live in
+        // `vpay-config`, on the side that owns the YAML shape, so the server
+        // and the worker cannot derive a rail's callback URL differently —
+        // and so this crate never learns what a config file looks like.
         let rails = config
             .providers
             .iter()
@@ -299,25 +340,18 @@ impl ResourceConfig {
                 let rail = RailConfig {
                     code: provider.code.clone(),
                     enabled: provider.enabled,
-                    base_url: provider.host.url.clone(),
-                    // `docs/api/README.md`'s `/provider/{code}/callback`.
-                    // Derived rather than configured: the rail is told where
-                    // to call back, and a value an operator could mistype
-                    // would point a live rail at nothing.
-                    callback_url: format!("{base}/provider/{}/callback", provider.code),
-                    settings: provider.settings.clone(),
-                    credentials: provider.credentials.clone(),
+                    provider_config: provider.to_provider_config(&config.deployment)?,
                 };
-                (provider.code.clone(), rail)
+                Ok((provider.code.clone(), rail))
             })
-            .collect();
+            .collect::<Result<BTreeMap<_, _>, vpay_config::ConfigError>>()?;
 
-        Self {
+        Ok(Self {
             livemode: config.deployment.livemode,
             merchant_id_by_client_id,
             currency_codes,
             rails,
-        }
+        })
     }
 
     /// `deployment.livemode`, stamped on every object this deployment
@@ -343,8 +377,8 @@ impl ResourceConfig {
 
     /// Whether `code` (upper-case ISO 4217) is one this deployment admits.
     ///
-    /// Two gates, not one: [`Currency`] says the *system* knows the code,
-    /// this says the *deployment* configured it. A deployment that lists
+    /// Two gates, not one: [`vpay_core::Currency`] says the *system* knows
+    /// the code, this says the *deployment* configured it. A deployment that lists
     /// only XAF must not accept an EUR intent it has no rail configured to
     /// charge.
     #[must_use]
@@ -387,6 +421,8 @@ mod tests {
                         label: "mtn".to_owned(),
                     },
                     settings: BTreeMap::from([("k".to_owned(), "v".to_owned())]),
+                    callback_url: None,
+                    currency: "XAF".to_owned(),
                     credentials: BTreeMap::from([("api_key".to_owned(), "secret".to_owned())]),
                 },
                 ProviderHost {
@@ -397,6 +433,8 @@ mod tests {
                         label: "orange".to_owned(),
                     },
                     settings: BTreeMap::new(),
+                    callback_url: None,
+                    currency: "XAF".to_owned(),
                     credentials: BTreeMap::new(),
                 },
             ],
@@ -455,7 +493,8 @@ mod tests {
 
     #[test]
     fn a_clients_tenant_comes_from_config_not_from_the_client_id() {
-        let resource_config = ResourceConfig::from_config(&config());
+        let resource_config = ResourceConfig::from_config(&config())
+            .expect("the fixture's rails project onto the port");
         assert_eq!(
             resource_config.merchant_id_for("acme-cameroon"),
             Some("acme-cameroon-tenant"),
@@ -466,7 +505,8 @@ mod tests {
 
     #[test]
     fn a_disabled_rail_is_configured_but_not_offered() {
-        let resource_config = ResourceConfig::from_config(&config());
+        let resource_config = ResourceConfig::from_config(&config())
+            .expect("the fixture's rails project onto the port");
         assert!(resource_config.rail("orange_money").is_some());
         assert!(
             resource_config.enabled_rail("orange_money").is_none(),
@@ -475,19 +515,27 @@ mod tests {
         assert!(resource_config.enabled_rail("mtn_momo").is_some());
     }
 
-    /// The callback URL is derived from `deployment.public_base_url`, and the
-    /// trailing slash a config might carry must not survive into it.
+    /// What a rail call is handed: the derived callback URL (with the
+    /// config's trailing slash not surviving into it), the rail's *own*
+    /// currency from the YAML rather than a charge's, and the credentials
+    /// verbatim.
+    ///
+    /// The derivation itself is `vpay-config`'s and is tested there; this
+    /// asserts that the projection reaches a request path intact, which is
+    /// the part that would break if `ResourceConfig` ever grew a second
+    /// copy of the rule.
     #[test]
     fn the_callback_url_is_derived_from_the_public_base_url() {
-        let resource_config = ResourceConfig::from_config(&config());
+        let resource_config = ResourceConfig::from_config(&config())
+            .expect("the fixture's rails project onto the port");
         let rail = resource_config.rail("mtn_momo").expect("mtn is configured");
-        let provider_config = rail.provider_config(Currency::Xaf);
+        let provider_config = rail.provider_config();
         assert_eq!(
             provider_config.callback_url,
             "https://api.vpay.test/provider/mtn_momo/callback"
         );
         assert_eq!(provider_config.base_url, "https://mtn.example");
-        assert_eq!(provider_config.currency, Currency::Xaf);
+        assert_eq!(provider_config.currency, vpay_core::Currency::Xaf);
         assert_eq!(
             provider_config
                 .credentials
@@ -499,7 +547,8 @@ mod tests {
 
     #[test]
     fn a_currency_the_deployment_did_not_configure_is_not_admitted() {
-        let resource_config = ResourceConfig::from_config(&config());
+        let resource_config = ResourceConfig::from_config(&config())
+            .expect("the fixture's rails project onto the port");
         assert!(resource_config.admits_currency("XAF"));
         // A currency `vpay_core::Currency` knows, that this deployment did
         // not list. Both gates have to pass — see `admits_currency`.

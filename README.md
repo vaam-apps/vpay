@@ -44,10 +44,12 @@ two-step flow. vpay ships its own merchant SDKs that do that handshake —
 has completed a real handshake against a running `vpay-server` — that is
 what [`examples/merchant-demo`](examples/merchant-demo/) and `just demo`
 below exist to show — and, since 2026-09-03, has created, retrieved, listed
-and cancelled real payment intents through `/v1/payment_intents`. **It has
-never taken a payment:** `confirm` reaches the rail adapter and gets
-`501 not_implemented`. The Node SDK is still tested only against stubs of the
-contract.
+and cancelled real payment intents through `/v1/payment_intents` — and,
+since Step 3 the same day, confirmed one and watched the intent move to
+`processing`. **It has still never taken a payment:** the rail behind that
+confirm is a WireMock container, nothing polls the charge, and no intent has
+ever reached `succeeded`. The Node SDK is still tested only against stubs of
+the contract.
 
 Two rails ship in the MVP, and they have genuinely different payer journeys:
 
@@ -163,13 +165,27 @@ What you will see, five steps, one line each:
 4. `payment_intents().create(…)` then `.retrieve(…)` through the SDK — a real
    `pi_…` written to a real database, printed with its status, amount and
    `livemode`, and read back to prove the retrieve returns what the create did;
-5. `payment_intents().confirm(…)` through the SDK — a typed **`501
-   not_implemented`**, because the rail adapters are the next step.
+5. `payment_intents().confirm(…)` through the SDK — the intent comes back
+   **`processing`**, because the confirm reached the stack's MTN rail stub
+   over HTTP and it accepted the charge. The demo then re-reads the intent
+   and asserts the confirm's response and the retrieve are the same object,
+   so a status that was rendered but not committed fails the run.
 
-Step 5 is the point. A payment intent can be created, read, listed and
-cancelled; it cannot be *paid*, because no rail exists, and the demo exits `0`
-for saying so. If it ever prints a **confirmed** payment intent, something
-fabricated one — treat that as a defect, not a feature.
+Step 5 is the point, and what it does *not* say is the important half.
+`processing` means the request is with the rail — not that anyone paid.
+**Nothing polls that charge**, so the intent stays `processing` forever; no
+intent in this repository has ever reached `succeeded`. And the rail is a
+WireMock container in the compose stack, reached over HTTP exactly as a real
+rail would be (that is the rule in [AGENTS.md](AGENTS.md): a stub rail is a
+*host*, never a linked implementation) — **MTN and Orange have never been
+called by this code.** If the demo ever prints a **succeeded** payment
+intent, something fabricated one; treat that as a defect, not a feature.
+
+The demo's intent is in **EUR**, not XAF: `config/application.yml` puts
+`mtn_momo` on EUR because MTN's sandbox rejects XAF, and `/v1` refuses a
+confirm whose intent currency is not the rail's settlement currency. That is
+a property of the profile, expressed as configuration — never a code
+branch.
 
 Then:
 
@@ -192,7 +208,7 @@ Three commands, with genuinely different requirements:
 | Command | Needs | Runs |
 |---|---|---|
 | `just verify` | nothing but Rust; seconds | the three self-checks — no test double reachable from a shipping binary, every unimplemented path declared in `docs/status.md`, every error type classified |
-| `just test` | **Docker** | `cargo nextest run --workspace` + `pnpm -r test`. The Postgres-backed suites use testcontainers and **fail loudly** without a reachable daemon — they never skip, so a green run is a real one |
+| `just test` | **Docker** | `cargo nextest run --workspace` + `pnpm -r test`. The Postgres-backed suites use testcontainers and **fail loudly** without a reachable daemon — they never skip, so a green run is a real one. Since 2026-09-03 the adapter conformance suite needs Docker too: it starts a real `wiremock/wiremock` container per rail rather than an in-process HTTP double, because a stub rail is a host reached over HTTP (ADR-0006). `just verify-ignored` pins the suite at **0 `#[ignore]`d tests**, so a green run cannot be quietly shrinking |
 | `just test-e2e` | Docker, and Cypress's binary | builds the images, boots `compose.yml` + `compose.e2e.yml`, runs the browser suite, tears the stack down. This is what CI's `e2e` job does |
 
 `just ci` runs everything CI runs, in CI's order, and is what to run before
@@ -224,7 +240,9 @@ the database. In a real deployment it is a Kubernetes Secret and
 ```bash
 # The rail credentials in config/application.yml are ${VAR} placeholders, and
 # an unresolved one is a fatal, named startup error — not an empty string.
-export MTN_SUBSCRIPTION_KEY=dev MTN_API_KEY=dev ORANGE_MERCHANT_KEY=dev
+export MTN_SUBSCRIPTION_KEY=dev MTN_API_KEY=dev \
+       MTN_API_USER=11111111-2222-3333-4444-555555555555 \
+       ORANGE_MERCHANT_KEY=dev ORANGE_CLIENT_ID=dev ORANGE_CLIENT_SECRET=dev
 
 # flags win over env vars
 cargo run -p vpay-server -- \
@@ -242,17 +260,23 @@ VPAY_BIND=127.0.0.1:8080 VPAY_LOG_FORMAT=text cargo run -p vpay-server
 
 The Postgres those URLs point at is the one `just up` starts.
 
-Neither binary calls a payment rail. `vpay-server` connects to Postgres, runs
-migrations, and serves `/healthz` plus the merchant OP —
+`vpay-server` calls a payment rail when a merchant confirms an intent;
+`vpay-worker-bin` calls none, because it has no job loop. `vpay-server`
+connects to Postgres, runs migrations, and serves `/healthz` plus the
+merchant OP —
 `POST /v1/oauth/token` (`client_credentials` + `private_key_jwt`),
 `GET /v1/oauth/.well-known/openid-configuration` and
 `GET /v1/oauth/jwks.json`. Every other path under `/v1` is behind a merchant
 bearer token and a scope check. Since 2026-09-03 that boundary has four
 payment-intent paths behind it — `POST`/`GET /v1/payment_intents`,
 `GET /v1/payment_intents/{id}`, `POST …/confirm` and `POST …/cancel`, with an
-`Idempotency-Key` required on every `POST`. `confirm` calls the rail adapter
-and receives `501 not_implemented`; `/v1/refunds`, `/v1/events` and
-`/v1/balance` still answer the honest 404. `vpay-worker-bin` stays up answering shutdown signals but its
+`Idempotency-Key` required on every `POST`. **`confirm` calls the rail
+adapter over HTTP and moves the intent** — `processing` on a push rail,
+`requires_action` with a redirect on a redirect rail, `409 charge_declined`
+when the rail refuses, `502` when it cannot be reached. Whether that rail is
+MTN or a WireMock stub is a line in `config/application.yml`, and to date it
+has only ever been a stub. `/v1/refunds`, `/v1/events` and `/v1/balance`
+still answer the honest 404. `vpay-worker-bin` stays up answering shutdown signals but its
 job loop is not implemented, and it says so in a startup banner and a repeating
 heartbeat log line.
 

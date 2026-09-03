@@ -4052,9 +4052,12 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vpay-adapter-mtn-momo"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "reqwest",
  "serde",
  "serde_json",
- "thiserror",
+ "sha2",
+ "tokio",
  "tracing",
  "uuid",
  "vpay-core",
@@ -4065,9 +4068,12 @@ dependencies = [
 name = "vpay-adapter-orange-money"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "reqwest",
  "serde",
  "serde_json",
- "thiserror",
+ "sha2",
+ "tokio",
  "tracing",
  "uuid",
  "vpay-core",
@@ -4088,7 +4094,6 @@ dependencies = [
  "rand 0.8.7",
  "reqwest",
  "rsa",
- "rustls",
  "serde",
  "serde_json",
  "sha2",
@@ -4107,7 +4112,6 @@ dependencies = [
  "vpay-ledger",
  "vpay-provider",
  "vpay-sdk",
- "webpki-roots 1.0.9",
  "wiremock",
 ]
 
@@ -4125,6 +4129,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vpay-core",
+ "vpay-provider",
 ]
 
 [[package]]
@@ -4175,11 +4180,16 @@ dependencies = [
 name = "vpay-provider"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
  "uuid",
  "vpay-core",
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]
@@ -4216,6 +4226,7 @@ dependencies = [
  "clap",
  "mimalloc",
  "rand 0.8.7",
+ "reqwest",
  "rsa",
  "rustls",
  "sqlx",
@@ -4241,13 +4252,13 @@ dependencies = [
 name = "vpay-testkit"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "testcontainers",
  "testcontainers-modules",
  "tokio",
  "uuid",
  "vpay-core",
  "vpay-provider",
- "wiremock",
 ]
 
 [[package]]
@@ -4255,7 +4266,9 @@ name = "vpay-tests-conformance"
 version = "0.1.0"
 dependencies = [
  "rstest",
+ "testcontainers",
  "tokio",
+ "uuid",
  "vpay-adapter-mtn-momo",
  "vpay-adapter-orange-money",
  "vpay-core",
@@ -4322,6 +4335,7 @@ dependencies = [
  "axum",
  "clap",
  "mimalloc",
+ "reqwest",
  "rustls",
  "testcontainers",
  "testcontainers-modules",
@@ -4810,6 +4824,7 @@ dependencies = [
  "base64 0.22.1",
  "rand 0.8.7",
  "rsa",
+ "serde_json",
  "sha2",
 ]
 

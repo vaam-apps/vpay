@@ -20,14 +20,26 @@ developer who knows Stripe gets it right by default.
 
 ## The single conversion point
 
-Exactly one function renders an amount for a provider:
+Exactly one *conversion* renders an amount for a provider, in two encodings:
 
 ```rust
-Money::to_provider_string()   // backends/crates/vpay-core/src/money.rs
+Money::to_provider_string()   // backends/crates/vpay-core/src/money.rs — "5000", "50.00"
+Money::to_provider_minor()    // the same amount as an integer count of minor units
 ```
 
-It reads the exponent from the *currency*, because the exponent is a property of
-the currency universally — not of a deployment, an environment or a config row.
+`to_provider_string` reads the exponent from the *currency*, because the exponent
+is a property of the currency universally — not of a deployment, an environment
+or a config row. `to_provider_minor` reads no exponent at all: it returns exactly
+`Money::minor`, the number the amount is already stored as. Neither *scales*
+anything — there is still one conversion, in two encodings — and the integer form
+exists because Orange Money's request body takes `"amount": 5000` as a JSON
+number while MTN's takes the string form
+(`the_amount_is_a_json_number_in_minor_units` in
+`vpay-adapter-orange-money`; `xaf_renders_the_same_digits_in_both_encodings` and
+`eur_pads_the_fractional_part` in `vpay-core`). Sending minor units to a rail that
+expects major units is a 100× error nothing downstream can detect, so an adapter
+picks the encoding its rail's own documentation names — never the one that
+happens to compile.
 
 | Currency | Exponent | `Money::new(5000, …)` renders |
 |---|---|---|

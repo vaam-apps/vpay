@@ -84,5 +84,78 @@ method, not a core change.
 
 ## Status
 
-Capabilities are declared and tested. **No wire call is implemented** — see
-[../status.md](../status.md).
+All three wire calls are implemented in `vpay-adapter-orange-money`
+(`submit`, `query_status`, `parse_callback`). `refund` is **not** implemented
+and never will be on this rail: the adapter does not override the port's
+default, so it answers `ProviderError::Unsupported` — a permanent capability
+answer, not unbuilt work. There is no `orange_money::*` `NotImplemented` token
+left. See [../status.md](../status.md).
+
+**What is proven, and by what.** The pure halves — token-URL derivation, the
+status table, the request body's shape (`amount` as a JSON *number*), callback
+parsing, `ref_extra`'s shape, payment-URL validation — are **53 unit tests in
+the crate, 53 passed, 0 skipped** (`cargo nextest run -p
+vpay-adapter-orange-money`, measured 2026-09-03). The wire behaviour is proven
+by `backends/tests/conformance` against a real `wiremock/wiremock` host reached
+over HTTP exactly as the rail is (ADR-0006); the mappings live in
+`backends/tests/conformance/wiremock/orange/mappings/`, which is the same
+directory `compose.yml` bind-mounts, so a mapping fixed for one is fixed for
+both.
+
+**All 11 conformance port cases now pass for this rail** — 26 tests across
+both rails, 26 passed, 0 skipped, measured 2026-09-03 with `cargo nextest run
+-p vpay-tests-conformance`. *(An earlier draft of this section said five of
+nine passed and four failed on `query_status` for want of a `pay_token` in
+the suite's `ChargeRef`. That was fixed in the suite, where it belonged: a
+`ProviderFlow::Redirect` rail is now seeded with the `pay_token` its previous
+`submit` returned, mirroring how a `Push` rail is seeded with `payer_ref`.
+The adapter's behaviour did not change — a `query_status` with no `pay_token`
+is still `ProviderError::Config` and never `NotFound`, because "the rail has
+no record" is what tells a reconciler nothing has happened yet, and a charge
+whose `pay_token` we lost is the opposite case.)*
+
+**What the transport refuses.** Every call goes through
+`vpay_provider::http`: redirects are returned rather than followed
+(`redirects_are_refused_and_never_followed`), proxies are ignored, and bodies
+are capped at 256 KiB (`an_oversized_rail_body_is_refused_at_the_cap`,
+`a_long_rail_body_is_bounded_before_it_reaches_a_log_line`). Each request
+carries `ProviderConfig::request_timeout` explicitly. **It did not, until the
+Step 3 security review** — MTN applied the deadline per request and Orange
+silently did not, so a black-holed Orange host held a worker task for as long
+as the shared client allowed. The `payment_url` the rail returns is validated
+as `http(s)` and ≤2048 characters before it can reach a browser or the
+`charges.redirect_url` column, and a refusal never quotes the URL
+(`a_payment_url_that_is_not_an_http_url_is_refused`,
+`a_payment_url_over_the_column_limit_is_refused`,
+`refusing_a_payment_url_does_not_quote_it`). The bearer is cached behind a
+length-prefixed SHA-256 fingerprint of `client_id` + `client_secret`, so
+rotating only the secret evicts it (`rotating_only_the_secret_evicts_the_cached_bearer`,
+`a_field_boundary_cannot_be_shifted_into_a_collision`), and its lifetime is
+measured from the *send*, not the answer
+(`the_lifetime_is_measured_from_the_send_not_from_the_answer`).
+
+**Still unverified against the real rail**, and each blocks something concrete:
+
+- The error-body vocabulary for `webpayment`. Orange documents none, so a 4xx
+  that is not a 401/404 becomes `Rejected{provider_error}` carrying the raw
+  body. That is the "unmapped, alert on it" bucket of
+  [failures.md](failures.md), not a settled mapping.
+- The sub-reasons of `FAILED`. Same bucket, same reason.
+- Whether a repeated `order_id` really is idempotent. The stub returns the same
+  `pay_token`, and the port requires a duplicate to be `Submitted` rather than
+  an error, but this is an assumption about Orange, not an observation.
+- Item 1 of the list above (does the notification carry `pay_token`?). The
+  adapter carries it through *when present* and never requires it.
+- `notif_token` equality is **not** performed by the adapter — it holds no
+  state. `parse_callback` returns the received `notif_token` in `ref_extra` and
+  fails closed when there is none; comparing it with the stored one is the
+  callback route's job, and that route is not built yet.
+- The hosted page's `lang` defaults to `fr` when a deployment configures none.
+  It is the one defaulted field in the request body.
+- **The 401 → re-mint → retry path is unproven.** No mapping returns 401 from
+  `webpayment` or `transactionstatus` *after* a good token, so only the 401 on
+  the token endpoint itself is covered
+  (`bad_credentials_are_not_reported_as_a_payer_problem`).
+- **Nothing here has ever called Orange.** Every wire assertion above is
+  against WireMock; a mapping faithful to this document but not to Orange
+  would pass. All seven "to confirm" items above still stand.

@@ -32,8 +32,23 @@ providers:
       # never been started (docs/status.md, Infrastructure).
       url: http://wiremock-mtn:8080
       label: mtn-sandbox-wiremock
+    # EUR, not XAF: MTN's sandbox rejects XAF and accepts EUR only
+    # (docs/flows/money.md). That is a property of this *profile*, expressed
+    # as a config value — never a code branch (ADR-0003). Amounts against a
+    # EUR profile are notional; no FX happens and none is implied.
+    currency: EUR
     settings:
       subscription_key_header: Ocp-Apim-Subscription-Key
+      # MTN's `X-Target-Environment` header. `sandbox` here; in production it
+      # is the country product name MTN issues with the live credentials.
+      # Required (vpay_config::config::REQUIRED_RAIL_KEYS) because MTN
+      # answers a wrong one with a 500 whose body says
+      # NOT_ALLOWED_TARGET_ENVIRONMENT — a failure that reads as "the rail is
+      # broken" rather than "our YAML is".
+      target_environment: sandbox
+      # The UUID half of the Basic credential the token call uses. A settings
+      # key, not a credential: it is an identifier, not a bearer secret.
+      api_user: ${MTN_API_USER}
     credentials:
       subscription_key: ${MTN_SUBSCRIPTION_KEY}
       api_key: ${MTN_API_KEY}
@@ -47,8 +62,23 @@ providers:
       # at the host root, which the adapter must account for when it exists.
       url: http://wiremock-orange:8080/orange-money-webpay/dev
       label: orange-sandbox-wiremock
+    currency: XAF
+    settings:
+      # Informational only — the path segment above is what actually selects
+      # Orange's environment. Kept because the adapter's request body and its
+      # hosted page are documented in terms of these two
+      # (docs/flows/adapter-orange-money.md).
+      env: dev
+      lang: en
     credentials:
+      # Stays under `credentials` (Step 3's decision 4). It is not a bearer
+      # secret — it travels in the request body — but it is per-merchant
+      # material, and `ProviderHost`'s Debug redacts `credentials` while
+      # printing `settings` in full, so moving it would only make it
+      # log-visible.
       merchant_key: ${ORANGE_MERCHANT_KEY}
+      client_id: ${ORANGE_CLIENT_ID}
+      client_secret: ${ORANGE_CLIENT_SECRET}
 
 # Mirrors backends/migrations/0001_create-currencies.sql. The exponent is a
 # property of the currency itself (vpay_core::Currency::exponent) — this

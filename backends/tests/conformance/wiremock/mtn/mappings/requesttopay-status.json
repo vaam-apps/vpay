@@ -1,0 +1,164 @@
+{
+  "mappings": [
+    {
+      "name": "status: successful",
+      "priority": 10,
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/collection/v1_0/requesttopay/.*"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "financialTransactionId": "1234567890",
+          "amount": "50.00",
+          "currency": "EUR",
+          "status": "SUCCESSFUL"
+        }
+      },
+      "metadata": {
+        "why": "The default answer for any reference with no more specific mapping. EUR because MTN's sandbox rejects XAF (docs/flows/money.md) and this stub mirrors the sandbox."
+      }
+    },
+    {
+      "name": "status: the rail has no record of this reference",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000404"
+      },
+      "response": {
+        "status": 404,
+        "jsonBody": {
+          "code": "RESOURCE_NOT_FOUND",
+          "message": "Requested resource was not found"
+        }
+      },
+      "metadata": {
+        "why": "`not_found_is_never_on_its_own_a_failure`: a push rail can answer 404 for a charge it is about to accept, so this must be ChargeStatus::NotFound and never Failed."
+      }
+    },
+    {
+      "name": "status: declined \u2014 the payer had no balance",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000f01"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": "NOT_ENOUGH_FUNDS"
+        }
+      },
+      "metadata": {
+        "why": "-> insufficient_funds (docs/flows/adapter-mtn-momo.md)"
+      }
+    },
+    {
+      "name": "status: declined \u2014 the payer never entered their PIN",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000f02"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": {
+            "code": "COULD_NOT_PERFORM_TRANSACTION",
+            "message": "The transaction could not be performed"
+          }
+        }
+      },
+      "metadata": {
+        "why": "-> payer_timeout. Deliberately the object-shaped `reason`: MTN documents both shapes and the adapter must read either."
+      }
+    },
+    {
+      "name": "status: declined \u2014 our own partner account is not allowed",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000f03"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": "NOT_ALLOWED"
+        }
+      },
+      "metadata": {
+        "why": "-> provider_account_blocked, the one decline in the table that pages (docs/flows/failures.md)."
+      }
+    },
+    {
+      "name": "status: the rail is down",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-0000000005aa"
+      },
+      "response": {
+        "status": 503,
+        "jsonBody": {
+          "code": "SERVICE_UNAVAILABLE",
+          "message": "Service temporarily unavailable"
+        }
+      },
+      "metadata": {
+        "why": "`an_unavailable_rail_is_a_transport_error_never_a_decline`: Transport, Category::Rail \u2014 a rail that is down must not look like a payer who was declined."
+      }
+    },
+    {
+      "name": "status: answered, but far too slowly",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000560"
+      },
+      "response": {
+        "status": 200,
+        "fixedDelayMilliseconds": 2000,
+        "jsonBody": {
+          "status": "PENDING"
+        }
+      },
+      "metadata": {
+        "why": "Two orders of magnitude above the suite's SHORT_REQUEST_TIMEOUT (100 ms), so the assertion is about ProviderConfig::request_timeout firing and not about a slow CI machine. The body is a *success* on purpose: the adapter must fail on the deadline, not on the content."
+      }
+    },
+    {
+      "name": "status: a body far larger than any answer this rail documents",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000b16"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"status\":\"SUCCESSFUL\",\"financialTransactionId\":\"1234567890\",\"padding\":\"{{randomValue length=300000 type='ALPHANUMERIC'}}\"}"
+      },
+      "metadata": {
+        "why": [
+          "REF_HUGE. 300 KB, comfortably past vpay_provider::http::MAX_RAIL_BODY_BYTES (256",
+          "KiB). Response::text()/bytes() read to end of stream, so before the Step 3 security",
+          "review the peer chose how much memory a worker task allocated -- one task per charge,",
+          "each willing to buffer whatever arrived. bounded_body stops at the cap and the",
+          "adapter answers Malformed naming it.",
+          "",
+          "The body is a valid, SUCCESSFUL status on purpose: if the bound were removed the",
+          "adapter would parse it and answer Succeeded, so the case cannot pass for the wrong",
+          "reason. Padded via --global-response-templating rather than a 300 KB fixture file,",
+          "which is not a thing to check into a repository."
+        ]
+      }
+    }
+  ]
+}

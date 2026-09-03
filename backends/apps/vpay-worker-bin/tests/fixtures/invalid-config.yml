@@ -12,6 +12,7 @@ deployment:
 
 providers:
   - code: mtn_momo
+    currency: EUR
     host:
       url: http://proxy.momoapi.mtn.com
       label: mtn-cm-prod

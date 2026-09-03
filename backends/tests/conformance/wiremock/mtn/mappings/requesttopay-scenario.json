@@ -1,0 +1,41 @@
+{
+  "mappings": [
+    {
+      "name": "scenario: pending on the first status query",
+      "scenarioName": "mtn-pending-then-successful",
+      "requiredScenarioState": "Started",
+      "newScenarioState": "settled",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000ce0"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": { "status": "PENDING" }
+      },
+      "metadata": {
+        "why": "`pending_then_successful_walks_the_scenario`: query_status must report what the rail says *now*, not a cached first answer — the poll ladder in docs/flows/reconciler.md is built entirely on that. Each conformance case starts its own container, so the scenario always begins in `Started`."
+      }
+    },
+    {
+      "name": "scenario: successful on the second status query",
+      "scenarioName": "mtn-pending-then-successful",
+      "requiredScenarioState": "settled",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000ce0"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "SUCCESSFUL",
+          "financialTransactionId": "1234567891",
+          "amount": "50.00",
+          "currency": "EUR"
+        }
+      }
+    }
+  ]
+}

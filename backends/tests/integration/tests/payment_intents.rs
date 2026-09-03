@@ -15,9 +15,9 @@
 //!    `idempotency_error` / `idempotency_key_in_use`;
 //! 4. a second confirm cannot produce a second charge — one charge per
 //!    intent, forever;
-//! 5. a confirm reaches the linked rail adapter and answers the documented
-//!    `501`, leaving the `submitting` charge row and the status-less
-//!    `provider_requests` row a recovery pass will need;
+//! 5. a confirm reaches the linked rail adapter, and an unreachable rail
+//!    answers `502` while leaving the `submitting` charge row and the
+//!    status-less `provider_requests` row a recovery pass will need;
 //! 6. `cancel` is legal only from `requires_payment_method`;
 //! 7. cursor paging walks forward and backward over 25 rows and comes back
 //!    to the same page;
@@ -33,10 +33,13 @@
 //!
 //! # What is deliberately not claimed here
 //!
-//! No adapter implements `submit` (`docs/status.md`), so nothing in this file
-//! shows a payment being taken. Test 5 asserts the `501` *and the rows left
-//! behind*, which is the honest whole of what a confirm does today. When a
-//! rail lands, that test is the one that has to change.
+//! **Nothing in this file shows a payment being taken.** Every rail it
+//! configures is unreachable on purpose, because this suite starts no
+//! container for one: what it proves about `confirm` is the ordering and the
+//! rows, not the rail. A confirm a rail *accepts* — `processing`,
+//! `requires_action`, `next_action`, a declined charge — is
+//! `backends/tests/integration/tests/confirm_rails.rs`, which stubs both
+//! rails as WireMock hosts.
 //!
 //! `just sdk-conformance-node` cannot be pointed at this server — it verifies
 //! an assertion shape only — so nothing here claims Node/Rust SDK parity
@@ -216,25 +219,63 @@ fn config_with(
                 code: PUSH_RAIL.to_owned(),
                 enabled: push_rail_enabled,
                 host: HostEntry {
-                    // Never reached: no adapter implements `submit`, so the
-                    // rail is resolved and then answers `NotImplemented`
-                    // before any HTTP client is built. A reachable host here
-                    // would make that silence look like configuration.
+                    // Deliberately unreachable, and fully configured
+                    // otherwise. This suite is about the *surface*: it starts
+                    // no rail stub, so every confirm below ends in
+                    // `Category::Rail` — which is a real answer from the real
+                    // adapter, over the real HTTP client, and is what makes
+                    // "the confirm reached the rail" observable here without
+                    // a container. The accepted-confirm cases live in
+                    // `confirm_rails.rs`, against WireMock.
+                    //
+                    // The settings and credentials below are the keys
+                    // `vpay_config::REQUIRED_RAIL_KEYS` insists on; without
+                    // them the adapter answers `ProviderError::Config` (500,
+                    // misconfigured) before it opens a socket, and these
+                    // tests would be asserting against our own YAML rather
+                    // than against an unreachable rail.
                     url: "http://127.0.0.1:1".to_owned(),
                     label: "unreachable-by-design".to_owned(),
                 },
-                settings: BTreeMap::new(),
-                credentials: BTreeMap::new(),
+                settings: BTreeMap::from([
+                    ("target_environment".to_owned(), "sandbox".to_owned()),
+                    (
+                        "api_user".to_owned(),
+                        "11111111-2222-3333-4444-555555555555".to_owned(),
+                    ),
+                ]),
+                callback_url: None,
+                // The intents these suites create are XAF, and a confirm
+                // whose intent currency is not its rail's is a `400` before
+                // any charge exists (`vpay_api`'s `currencies_agree`) — which
+                // is `confirm_rails.rs`'s subject, not this file's.
+                currency: "XAF".to_owned(),
+                credentials: BTreeMap::from([
+                    (
+                        "subscription_key".to_owned(),
+                        "stub-subscription-key".to_owned(),
+                    ),
+                    ("api_key".to_owned(), "stub-api-key".to_owned()),
+                ]),
             },
             ProviderHost {
                 code: REDIRECT_RAIL.to_owned(),
                 enabled: true,
                 host: HostEntry {
-                    url: "http://127.0.0.1:1".to_owned(),
+                    url: "http://127.0.0.1:1/orange-money-webpay/dev".to_owned(),
                     label: "unreachable-by-design".to_owned(),
                 },
-                settings: BTreeMap::new(),
-                credentials: BTreeMap::new(),
+                settings: BTreeMap::from([
+                    ("env".to_owned(), "dev".to_owned()),
+                    ("lang".to_owned(), "en".to_owned()),
+                ]),
+                callback_url: None,
+                currency: "XAF".to_owned(),
+                credentials: BTreeMap::from([
+                    ("merchant_key".to_owned(), "stub-merchant-key".to_owned()),
+                    ("client_id".to_owned(), "stub-client-id".to_owned()),
+                    ("client_secret".to_owned(), "stub-client-secret".to_owned()),
+                ]),
             },
         ],
         currencies: vec![CurrencyEntry {
@@ -554,9 +595,9 @@ async fn a_reused_key_with_a_different_body_is_the_400_envelope() -> anyhow::Res
 /// "One charge per intent, forever" (`AGENTS.md`), observed from outside: the
 /// second confirm is a `409` and there is still exactly one charge row.
 ///
-/// Both confirms reach the rail — the first one gets the `501` of test 5 —
-/// so this is specifically about the *charge*, not about the confirm
-/// succeeding.
+/// Both confirms reach the rail — the first one gets the `502` of test 5,
+/// because this suite's rails are unreachable by design — so this is
+/// specifically about the *charge*, not about the confirm succeeding.
 #[tokio::test]
 async fn a_second_confirm_cannot_produce_a_second_charge() -> anyhow::Result<()> {
     let harness = harness().await?;
@@ -576,11 +617,11 @@ async fn a_second_confirm_cannot_produce_a_second_charge() -> anyhow::Result<()>
             RequestOptions::new(),
         )
         .await
-        .expect_err("no rail implements submit; a confirm cannot succeed today");
+        .expect_err("this suite's rail is unreachable, so a confirm cannot succeed");
     assert_eq!(
         api_error(first).0,
-        501,
-        "the first confirm reaches the rail"
+        502,
+        "the first confirm reaches the rail — or rather, fails to"
     );
 
     let second = client
@@ -613,18 +654,24 @@ async fn a_second_confirm_cannot_produce_a_second_charge() -> anyhow::Result<()>
 
 // ------------------------------------------------------------------ test 5
 
-/// The confirm path, whole: the documented `501`, **and** the two rows it
-/// deliberately leaves behind.
+/// The confirm path when the rail never answers: the `502`, **and** the two
+/// rows it deliberately leaves behind.
 ///
 /// The rows are not incidental. `docs/flows/crash-safety.md` requires the
 /// reference to be durable before anything is submitted, so the charge is
 /// committed in `submitting` and the attempt is recorded with no status
 /// *before* the adapter is called. What a crash between those writes and the
-/// answer would leave is exactly what a `NotImplemented` leaves — which is
-/// why asserting only the `501` would let someone delete both writes and
+/// answer would leave is exactly what an unreachable rail leaves — which is
+/// why asserting only the `502` would let someone delete both writes and
 /// still pass.
+///
+/// **This used to be the `501` case**, when no adapter implemented `submit`.
+/// The rows asserted are the same ones; what changed is that the request now
+/// reaches a socket. The confirms that *succeed* are in `confirm_rails.rs`,
+/// which needs a WireMock container and therefore does not belong here.
 #[tokio::test]
-async fn confirm_reaches_the_adapter_and_renders_the_documented_501() -> anyhow::Result<()> {
+async fn confirm_reaches_the_rail_and_an_unreachable_one_leaves_the_recovery_rows()
+-> anyhow::Result<()> {
     let harness = harness().await?;
     let client = harness.a();
 
@@ -642,15 +689,16 @@ async fn confirm_reaches_the_adapter_and_renders_the_documented_501() -> anyhow:
             RequestOptions::new(),
         )
         .await
-        .expect_err("mtn_momo::submit is not implemented (docs/status.md)");
+        .expect_err("nothing is listening on the configured rail host");
 
     let (status, kind, code, _param) = api_error(error);
-    assert_eq!(status, 501);
+    assert_eq!(status, 502, "the rail is the failing party, not the caller");
     assert_eq!(kind, "api_error");
     assert_eq!(
         code.as_deref(),
-        Some("not_implemented"),
-        "the 501 must be the adapter's own NotImplemented, not an invented failure"
+        Some("provider_unavailable"),
+        "the answer is the adapter's own `Transport`, classified once \
+         (docs/flows/errors.md) — never an invented failure and never a decline"
     );
 
     // The charge: committed before the call, in the initial state, carrying
@@ -694,7 +742,7 @@ async fn confirm_reaches_the_adapter_and_renders_the_documented_501() -> anyhow:
     );
     assert_eq!(
         error_kind.as_deref(),
-        Some("not_implemented"),
+        Some("provider_unavailable"),
         "the attempt records why it ended, using the error's own classification code"
     );
     assert_eq!(
@@ -1164,8 +1212,8 @@ async fn a_post_without_an_idempotency_key_is_the_documented_400() -> anyhow::Re
 
 /// F1: an intent whose confirm reached the rail cannot be canceled.
 ///
-/// The dangerous version of this test passes today's code before the fix:
-/// `confirm` commits its charge and then answers `501`, leaving the intent
+/// The dangerous version of this test passes the code before the fix:
+/// `confirm` commits its charge and then answers `502`, leaving the intent
 /// at `requires_payment_method` — so a status-only compare-and-swap cancels
 /// it happily, and vpay tells a merchant the payment was withdrawn while the
 /// rail may hold the reference it was given. Never say that.
@@ -1192,10 +1240,10 @@ async fn a_confirmed_intent_cannot_be_canceled() -> anyhow::Result<()> {
             RequestOptions::new(),
         )
         .await
-        .expect_err("no rail implements submit");
+        .expect_err("this suite's rail is unreachable");
     assert_eq!(
         api_error(confirmed).0,
-        501,
+        502,
         "the confirm must have reached the rail — this test is about what it left behind"
     );
 
@@ -1242,11 +1290,12 @@ async fn a_confirmed_intent_cannot_be_canceled() -> anyhow::Result<()> {
 /// F2: a `5xx` hands the `Idempotency-Key` back, so the merchant's retry
 /// re-executes instead of being told the first attempt is still running.
 ///
-/// Before the fix, the `501` left the key `in_flight` and nothing in the
+/// Before the fix, a `5xx` left the key `in_flight` and nothing in the
 /// system ever moved that row again: every retry under it was answered "a
 /// request with this Idempotency-Key is still in progress" for the life of
-/// the deployment, and since *every* confirm ends in that `501` today, every
-/// confirm burned a key permanently.
+/// the deployment. It mattered most when every confirm ended in the
+/// adapter's `501`; it matters now for every confirm a rail does not answer,
+/// which is the case this test stages.
 ///
 /// **What the retry answers is `409`, not a second `501`, and that is the
 /// correct outcome** — the first confirm committed a charge before reaching
@@ -1275,8 +1324,8 @@ async fn a_5xx_releases_its_idempotency_key_so_the_retry_re_executes() -> anyhow
             opts.clone(),
         )
         .await
-        .expect_err("mtn_momo::submit is not implemented");
-    assert_eq!(api_error(first).0, 501);
+        .expect_err("this suite's rail is unreachable");
+    assert_eq!(api_error(first).0, 502);
 
     // The row is gone: the key is claimable again by anyone.
     let held = count(
@@ -1311,8 +1360,14 @@ async fn a_5xx_releases_its_idempotency_key_so_the_retry_re_executes() -> anyhow
         }
         other => panic!("expected an API error envelope, got {other:?}"),
     };
+    // The one-charge rule's 409, in the wording a *live* charge gets: the
+    // first confirm left a `submitting` charge the rail may be holding, so
+    // this message must not invite a second PaymentIntent
+    // (`vpay_api::v1::payment_intents::already_charged`, and
+    // `confirm_rails.rs`'s unreachable-rail case, which pins the sentence
+    // itself).
     assert!(
-        message.contains("already has a charge"),
+        message.contains("do not create a new PaymentIntent"),
         "the retry must have re-executed and met the one-charge rule; instead it was answered \
          {message:?}"
     );

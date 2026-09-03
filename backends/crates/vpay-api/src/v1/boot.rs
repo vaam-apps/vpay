@@ -212,6 +212,7 @@ mod tests {
         flow: ProviderFlow,
     }
 
+    #[async_trait::async_trait]
     impl ProviderAdapter for TestRail {
         fn code(&self) -> &'static str {
             self.code
@@ -227,7 +228,7 @@ mod tests {
             }
         }
 
-        fn submit(
+        async fn submit(
             &self,
             _charge: &ChargeRef,
             _config: &ProviderConfig,
@@ -235,7 +236,7 @@ mod tests {
             Err(ProviderError::Unsupported)
         }
 
-        fn query_status(
+        async fn query_status(
             &self,
             _charge: &ChargeRef,
             _config: &ProviderConfig,
@@ -247,7 +248,7 @@ mod tests {
             Err(ProviderError::Unsupported)
         }
 
-        fn refund(
+        async fn refund(
             &self,
             _charge: &ChargeRef,
             _amount: Money,
@@ -274,6 +275,8 @@ mod tests {
                         label: "rail".to_owned(),
                     },
                     settings: BTreeMap::new(),
+                    callback_url: None,
+                    currency: "XAF".to_owned(),
                     credentials: BTreeMap::new(),
                 })
                 .collect(),
