@@ -1,6 +1,6 @@
 # ADR-0004: Static musl binaries with mimalloc
 
-- **Status:** Accepted
+- **Status:** Accepted; superseded in part by [ADR-0014](0014-builder-host-musl-triple.md) (the architecture named in the Decision below is now the builder's host musl triple)
 - **Date:** 2026-08-08
 - **Deciders:** vpay maintainers
 

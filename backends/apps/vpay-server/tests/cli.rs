@@ -263,6 +263,12 @@ fn http_request(addr: SocketAddr, request: &str) -> Option<(u16, String)> {
     Some((status, response))
 }
 
+/// A minimal `GET` for [`http_request`], with `Connection: close` so the
+/// server ends the response and this file needs no chunked-body parser.
+fn get_request(path: &str) -> String {
+    format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+}
+
 /// Sends SIGTERM to `child` via the `kill` utility rather than a raw libc
 /// FFI call, so this stays within `unsafe_code = "forbid"`.
 #[cfg(unix)]
@@ -992,6 +998,363 @@ fn shutdown_grace_period_flag_still_allows_a_prompt_clean_exit_with_no_in_flight
                 "the forced-timeout WARN should never fire when there is no in-flight work, got: {lines:?}"
             );
         }
+    });
+}
+
+/// The observability listener is a **second socket on a second port**, and
+/// this is the process-level proof of every half of that claim: `/livez` and
+/// `/metrics` answer on `--observability-bind`, and neither answers on
+/// `--bind`.
+///
+/// The negative half is the one that matters. `/metrics` names every rail
+/// this deployment talks to, every route pattern it serves and every error
+/// code it has produced. `--bind`'s port is the one an Ingress fronts, so a
+/// `/metrics` reachable there is an operational map handed to anyone who can
+/// reach `/healthz`. `vpay_api`'s own
+/// `neither_livez_nor_metrics_is_reachable_on_the_traffic_router` asserts
+/// this against the router in-process; this asserts it against the running
+/// binary, over a real socket, which is where a future `.merge()` of the two
+/// routers would actually show up.
+#[test]
+fn the_observability_listener_serves_livez_and_metrics_on_its_own_port_only() {
+    with_live_postgres(|database_url| {
+        let (traffic, observability) = two_free_addrs();
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut guard = ChildGuard(
+            bin()
+                .env("VPAY_BIND", traffic.to_string())
+                .env("VPAY_OBSERVABILITY_BIND", observability.to_string())
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_CONFIG", valid_config_path())
+                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn vpay-server"),
+        );
+
+        // The traffic port coming up means every fallible startup step
+        // finished, which is also the precondition for the observability
+        // listener having been bound at all (it is bound last, on purpose).
+        assert_eq!(
+            poll_healthz(traffic, Duration::from_secs(5)),
+            Some(200),
+            "server never became healthy on {traffic}"
+        );
+
+        let (code, response) = http_request(observability, &get_request("/livez"))
+            .expect("the observability listener answers /livez");
+        assert_eq!(code, 200, "GET /livez on {observability}:\n{response}");
+        assert!(
+            response.ends_with("ok"),
+            "/livez must answer the static body a liveness probe expects, got:\n{response}"
+        );
+
+        let (code, response) = http_request(observability, &get_request("/metrics"))
+            .expect("the observability listener answers /metrics");
+        assert_eq!(code, 200, "GET /metrics on {observability}:\n{response}");
+        assert!(
+            response.contains("text/plain; version=0.0.4"),
+            "a scraper decides how to parse from the Content-Type, got:\n{response}"
+        );
+        // `describe_all()` ran, so the name carries help text...
+        assert!(
+            response.contains("# HELP vpay_build_info"),
+            "vpay_core::metrics::describe_all() did not reach the recorder:\n{response}"
+        );
+        // ...and `install_recorder()` stamped the gauge itself, labelled.
+        // The version is asserted against this crate's own, because both
+        // come from the workspace version and a build that disagreed with
+        // itself would be worth knowing about.
+        assert!(
+            response.contains(&format!("version=\"{}\"", env!("CARGO_PKG_VERSION"))),
+            "vpay_build_info must carry this build's version:\n{response}"
+        );
+        assert!(
+            response.contains(&format!("git_sha=\"{}\"", vpay_core::metrics::git_sha())),
+            "vpay_build_info must carry this build's git_sha — `unknown` unless something \
+             passed VPAY_GIT_SHA at compile time (backends/Dockerfile's ARG, release.yml's \
+             build-args):\n{response}"
+        );
+
+        // The HTTP middleware, over a real socket, on the process that ships.
+        // `poll_healthz` above already made at least one GET /healthz that
+        // answered 200, so this series must exist — and it must be labelled
+        // with the route *pattern*, which for this route is the path.
+        //
+        // `>= 1` rather than an exact count on purpose: `poll_healthz` polls
+        // until the server answers, so the number is a property of how fast
+        // this machine booted Postgres. The decisive part is the label set,
+        // not the value.
+        assert!(
+            response.lines().any(|line| line.starts_with(
+                r#"vpay_http_requests_total{route="/healthz",method="GET",status="200"}"#
+            )),
+            "a served /healthz must be counted by vpay_api's track_http_metrics:\n{response}"
+        );
+        // ...and the observability listener's own traffic is not on it. This
+        // request is the second scrape of /metrics on this port; if the
+        // second listener were counted, the first would already appear here.
+        assert!(
+            !response.contains(r#"route="/metrics""#) && !response.contains(r#"route="/livez""#),
+            "the observability listener must not count its own scrapes — a Prometheus \
+             polling every 15s would be the busiest 'route' in the deployment:\n{response}"
+        );
+
+        // **The vocabulary check `vpay_core::metrics::ALL` exists for.**
+        // Every family this process actually emits must be a name that module
+        // spells; a series rendered under a name nothing declares is a metric
+        // no dashboard, alert or runbook in this repository knows about, and
+        // `describe_all` never gave it help text either.
+        //
+        // Sample lines, not `# HELP` lines: descriptions are registered for
+        // all twelve names whether or not anything records them, so asserting
+        // on those would prove only that `describe_all` ran (which the
+        // assertion above already does). The histogram suffixes Prometheus
+        // adds (`_bucket`, `_sum`, `_count`) are folded back to their family.
+        let body = response
+            .split_once("\r\n\r\n")
+            .map_or(response.as_str(), |(_, body)| body);
+        let mut families: Vec<&str> = Vec::new();
+        for line in body.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some(name) = line.split(['{', ' ']).next().filter(|n| !n.is_empty()) else {
+                continue;
+            };
+            let family = if vpay_core::metrics::ALL.contains(&name) {
+                name
+            } else {
+                ["_bucket", "_sum", "_count"]
+                    .iter()
+                    .find_map(|suffix| name.strip_suffix(suffix))
+                    .unwrap_or(name)
+            };
+            if !families.contains(&family) {
+                families.push(family);
+            }
+        }
+        assert!(
+            !families.is_empty(),
+            "nothing was parsed out of the scrape body; the split above is wrong, not the \
+             server:\n{response}"
+        );
+        for family in &families {
+            assert!(
+                vpay_core::metrics::ALL.contains(family),
+                "this build emits `{family}`, which is not in vpay_core::metrics::ALL. Add \
+                 the name to that module (and to its doc list) or stop recording it — a \
+                 series nothing declares has no description, no runbook and no alert.\n\
+                 emitted: {families:?}"
+            );
+        }
+
+        for path in ["/metrics", "/livez"] {
+            let (code, response) = http_request(traffic, &get_request(path))
+                .expect("the traffic listener answers something");
+            assert_eq!(
+                code, 404,
+                "{path} must NOT be served on the traffic port {traffic}; it is the port an \
+                 Ingress fronts. Response was:\n{response}"
+            );
+        }
+
+        // ...and the reverse: the observability listener is not a second
+        // copy of the API. `/healthz` there would let a probe think the
+        // database was being checked when it was not.
+        for path in ["/healthz", "/v1/payment_intents"] {
+            let (code, response) = http_request(observability, &get_request(path))
+                .expect("the observability listener answers something");
+            assert_eq!(
+                code, 404,
+                "{path} must not exist on the observability port. Response was:\n{response}"
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            send_sigterm(&guard.0);
+            let exit = guard.0.wait().expect("wait for graceful shutdown");
+            assert!(
+                exit.success(),
+                "expected exit 0 after SIGTERM, got {exit:?}"
+            );
+        }
+
+        // The listener shuts down *with* the process rather than outliving
+        // it as a detached task: once the child has been reaped, nothing is
+        // on that port.
+        #[cfg(unix)]
+        assert!(
+            TcpStream::connect(observability).is_err(),
+            "the observability port is still accepting after the process exited"
+        );
+    });
+}
+
+/// The drain timeout, exercised end to end against the real binary: a
+/// request that is genuinely still in flight when SIGTERM arrives makes
+/// `--shutdown-grace-seconds` elapse, and the process exits **1** with the
+/// forced-cutoff WARN in its log.
+///
+/// This is the gap `docs/status.md` recorded as "no test exercises the
+/// timeout path". `shutdown_grace_period_flag_still_allows_a_prompt_clean_exit_with_no_in_flight_work`
+/// above covers the *clean* branch; the unit tests in `src/main.rs` cover
+/// `grace_clock`'s arithmetic in isolation. Neither of them proves that a
+/// real in-flight request, on a real socket, actually loses the race.
+///
+/// # How the request is held open, and why not the way the design sketched
+///
+/// `docs/plans/2026-09-03-step6-deployment.md` §5 proposed holding a
+/// `/v1/payment_intents` confirm against a WireMock rail with a
+/// `fixedDelayMilliseconds` mapping. That works, and it is a legitimate
+/// stub under ADR-0006 (a WireMock host in configuration is how a rail is
+/// stubbed), but it costs a WireMock container, a merchant registration
+/// with a generated JWK, a minted `private_key_jwt` assertion and a token
+/// exchange — the whole `backends/tests/integration` harness, rebuilt in a
+/// crate that has none of it, in order to make one request slow.
+///
+/// A **stalled request body** is slow for free and is not a stub of
+/// anything: the client here promises `Content-Length: 200` and sends 29
+/// bytes. `POST /v1/oauth/token` is unauthenticated by necessity (the
+/// credential *is* the body) and its handler takes `Form<TokenRequest>`,
+/// which awaits the whole body — so the handler future is genuinely pending
+/// inside the router, on a connection hyper counts as in flight, with no
+/// test double anywhere and nothing added to the shipping binary. A slow
+/// client is not a simulation of a slow client.
+///
+/// # Why `Expect: 100-continue` and not a sleep
+///
+/// SIGTERM must not arrive before the server has read the request head:
+/// hyper's graceful shutdown closes a connection that is *idle* and waits
+/// only for one with a request in progress, so a signal that beats the head
+/// into the router turns this into the clean-path test — silently, as a
+/// pass. This used to be a 500 ms sleep, which is a guess about a machine
+/// rather than a fact about the server, and a loaded CI runner is exactly
+/// where the guess is wrong.
+///
+/// `Expect: 100-continue` turns it into a handshake. hyper writes
+/// `HTTP/1.1 100 Continue` the first time the request body is *polled*
+/// (`hyper::proto::h1::conn`, `Reading::Continue`) — which happens inside
+/// `Form`'s extractor, after the head was parsed and the request was routed.
+/// Reading that interim response is therefore proof of the precondition this
+/// test needs, from the server itself, and it costs whatever it costs rather
+/// than a fixed 500 ms.
+///
+/// What it therefore does **not** prove: that a slow *rail* produces the
+/// same outcome. It does not need to — the drain is a property of the
+/// connection, not of what the handler is waiting on — but the distinction
+/// is worth stating rather than leaving a reader to assume this covers the
+/// rail path too.
+///
+/// The body is deliberately never completed and the socket is deliberately
+/// held open until after the child is reaped: dropping it early would close
+/// the connection, the drain would finish, and this test would silently
+/// become a second copy of the clean-path one.
+#[cfg(unix)]
+#[test]
+fn an_in_flight_request_that_outlasts_the_grace_period_is_exit_1_and_says_so() {
+    with_live_postgres(|database_url| {
+        // Two seconds: long enough that the SIGTERM below cannot beat the
+        // request into the router, short enough that this test costs
+        // seconds rather than the 25s default.
+        const GRACE: Duration = Duration::from_secs(2);
+
+        let (traffic, observability) = two_free_addrs();
+        let mut cmd = bin();
+        cmd.env("VPAY_BIND", traffic.to_string())
+            .env("VPAY_OBSERVABILITY_BIND", observability.to_string())
+            .env("VPAY_LOG_FORMAT", "text")
+            .env("DATABASE_URL", &database_url)
+            .env("VPAY_CONFIG", valid_config_path())
+            .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+            .args(["--shutdown-grace-seconds", &GRACE.as_secs().to_string()]);
+        let (mut guard, rx) = spawn_and_capture_stdout(cmd);
+
+        assert_eq!(
+            poll_healthz(traffic, Duration::from_secs(5)),
+            Some(200),
+            "server never became healthy on {traffic}"
+        );
+
+        // A request whose body will never arrive. Held in this binding for
+        // the rest of the test — see the doc comment.
+        let mut stalled = TcpStream::connect(traffic).expect("connect for the stalled request");
+        stalled
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("a read timeout so a server that never answers fails rather than hangs");
+        stalled
+            .write_all(
+                "POST /v1/oauth/token HTTP/1.1\r\nHost: localhost\r\n\
+                 Content-Type: application/x-www-form-urlencoded\r\n\
+                 Expect: 100-continue\r\n\
+                 Content-Length: 200\r\n\r\n"
+                    .as_bytes(),
+            )
+            .expect("send the request head");
+        stalled.flush().expect("flush the request head");
+
+        // The handshake that replaces a sleep — see the doc comment.
+        let mut seen = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !seen.ends_with(b"\r\n\r\n") {
+            let read = stalled
+                .read(&mut byte)
+                .expect("the server must answer 100 Continue rather than nothing");
+            assert_eq!(
+                read, 1,
+                "the server closed the connection instead of continuing"
+            );
+            seen.push(byte[0]);
+        }
+        let interim = String::from_utf8_lossy(&seen).into_owned();
+        assert!(
+            interim.starts_with("HTTP/1.1 100 Continue"),
+            "expected the interim response that proves the handler is awaiting the body, \
+             got:\n{interim}"
+        );
+
+        // Now the body starts and stops: 29 bytes of a promised 200.
+        stalled
+            .write_all(b"grant_type=client_credentials")
+            .expect("send part of the body");
+        stalled.flush().expect("flush the partial body");
+
+        send_sigterm(&guard.0);
+
+        // The grace period, plus generous slack for a loaded CI runner. A
+        // process that exits *before* the grace elapsed would fail the
+        // log assertion below rather than this one.
+        let exit = wait_with_timeout(&mut guard.0, GRACE + Duration::from_secs(20))
+            .expect("the server must stop waiting once the grace period elapses, not hang");
+
+        assert_eq!(
+            exit.code(),
+            Some(1),
+            "a forced cutoff must be distinguishable from a clean drain by exit code alone, \
+             got {exit:?}"
+        );
+
+        let lines = collect_remaining_lines(&rx, Duration::from_secs(5));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("shutdown grace period elapsed")),
+            "expected the forced-timeout WARN naming the grace period, got: {lines:?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("graceful shutdown complete")),
+            "the clean-path line must not appear when work was cut off, got: {lines:?}"
+        );
+
+        // Explicit, so nobody "tidies" the binding away: closing this socket
+        // before the child is reaped would end the drain early and turn this
+        // test into the clean-path one.
+        drop(stalled);
     });
 }
 

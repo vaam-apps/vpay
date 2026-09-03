@@ -3,7 +3,7 @@
 //! Writes rows and returns. It never calls a payment rail — that is the
 //! worker's job, and it is what makes the system crash-safe.
 
-use std::future::IntoFuture as _;
+use std::future::{Future, IntoFuture as _};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use clap::Parser as _;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use mimalloc::MiMalloc;
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::{LoadedSigningKey, SigningKeyError};
@@ -174,10 +175,16 @@ async fn run() -> anyhow::Result<()> {
     // hard startup failure (see ShutdownSignals::install's docs for why),
     // deliberately not a logged warning that lets the process continue with
     // no graceful shutdown path at all.
-    let shutdown_signals =
+    let mut shutdown_signals =
         ShutdownSignals::install().context("installing SIGINT/SIGTERM handlers")?;
 
     install_crypto_provider();
+
+    // Beside `install_crypto_provider`, and before `init_tracing`, for the
+    // same reason: it is a process-wide default that everything after it
+    // may depend on, so nothing can be allowed to run ahead of it. A metric
+    // recorded before this call goes nowhere and is never recovered.
+    let metrics = install_recorder().context("installing the Prometheus metrics recorder")?;
 
     init_tracing(&args.common.log_filter, args.common.log_format);
 
@@ -435,9 +442,65 @@ async fn run() -> anyhow::Result<()> {
         ),
     };
 
+    // The observability listener, bound *last* — after the config, the
+    // signing key, the database, the migrations, boot step 4 and the
+    // validator. That ordering is the entire definition of `/livez`: this
+    // process answers `ok` only once every one of those has succeeded, so a
+    // probe against a server that is still starting, or one that is about to
+    // exit 78 or 69, gets a connection refusal rather than a cheerful 200.
+    // Nothing in `vpay_api::observability`'s handler checks anything; the
+    // bind is the check.
+    //
+    // Never `args.bind`: `/metrics` names every rail, route and error code
+    // this deployment has, and `args.bind` is the port an Ingress fronts.
+    // See `vpay_config::CommonArgs::observability_bind`.
+    let observability_listener = tokio::net::TcpListener::bind(args.common.observability_bind)
+        .await
+        .with_context(|| {
+            format!(
+                "binding the observability listener on {} (--observability-bind / \
+                 VPAY_OBSERVABILITY_BIND)",
+                args.common.observability_bind
+            )
+        })?;
+    let observability_bound = observability_listener
+        .local_addr()
+        .context("reading the bound address back off the observability listener")?;
+    // Logged because `--observability-bind 127.0.0.1:0` is a real
+    // configuration — the subprocess tests in `tests/cli.rs` use it — and
+    // with a `:0` port nothing else in the system can know the answer.
+    tracing::info!(
+        addr = %observability_bound,
+        "observability listener listening (/livez, /metrics)"
+    );
+
+    // Observed twice: `serve_with_bounded_drain` starts the traffic drain on
+    // it, and this listener stops accepting on it. A detached task with no
+    // shutdown of its own would keep the port open past the drain and answer
+    // `/livez` with `ok` while the process was on its way out.
+    let (observability_shutdown_tx, observability_shutdown_rx) =
+        tokio::sync::oneshot::channel::<()>();
+    let observability = tokio::spawn(vpay_api::observability::serve(
+        observability_listener,
+        move || metrics.render(),
+        async move {
+            // A dropped sender means the traffic future ended some other way
+            // and the process is exiting regardless; either way this
+            // listener should stop.
+            let _ = observability_shutdown_rx.await;
+        },
+    ));
+
     let shutdown_grace = Duration::from_secs(args.common.shutdown_grace_seconds);
-    match serve_with_bounded_drain(listener, deps, shutdown_grace, shutdown_signals).await? {
+    let shutdown = async move {
+        shutdown_signals.wait().await;
+        // A closed receiver just means the observability listener already
+        // stopped — nothing to tell.
+        let _ = observability_shutdown_tx.send(());
+    };
+    match serve_with_bounded_drain(listener, deps, shutdown_grace, shutdown).await? {
         DrainOutcome::Clean => {
+            join_observability(observability, shutdown_grace).await;
             tracing::info!("graceful shutdown complete, exiting");
             Ok(())
         }
@@ -540,11 +603,19 @@ fn loopback_jwks_url(bound: SocketAddr) -> String {
 /// draining, and a second consumer starts a `shutdown_grace`-long clock at
 /// that same moment. Whichever finishes first — the drain, or the clock —
 /// decides the [`DrainOutcome`].
+///
+/// `shutdown` is a future rather than the `ShutdownSignals` itself because
+/// the signal now has a *third* observer: `run` wraps it so that the
+/// observability listener stops accepting at the same moment this drain
+/// starts. Taking a future here keeps that composition in `run`, where the
+/// listener it belongs to is constructed, and matches
+/// `vpay_worker::run_loop`'s signature so the two binaries' shutdown paths
+/// read the same way.
 async fn serve_with_bounded_drain(
     listener: tokio::net::TcpListener,
     deps: RouterDeps,
     shutdown_grace: Duration,
-    mut shutdown_signals: ShutdownSignals,
+    shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<DrainOutcome> {
     let (drain_started_tx, drain_started_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -553,7 +624,7 @@ async fn serve_with_bounded_drain(
     // needs the latter, hence the explicit `.into_future()`.
     let serve_fut = axum::serve(listener, vpay_api::router(deps))
         .with_graceful_shutdown(async move {
-            shutdown_signals.wait().await;
+            shutdown.await;
             // A closed receiver just means the grace-period clock below
             // already lost interest — the drain itself already won the race.
             let _ = drain_started_tx.send(());
@@ -568,6 +639,92 @@ async fn serve_with_bounded_drain(
         }
         () = grace_clock(drain_started_rx, shutdown_grace) => Ok(DrainOutcome::TimedOut),
     }
+}
+
+/// Waits for the observability listener to stop, bounded by the same grace
+/// period the traffic drain uses.
+///
+/// Called only on the clean path. The timed-out path calls
+/// `std::process::exit(1)` and takes this task with it, which is the correct
+/// answer there: a process that has already given up on in-flight payments
+/// should not then wait on a metrics socket.
+///
+/// A failure here is logged and *not* propagated. The observability port is
+/// not a payment path, and turning "the scrape socket had an accept error on
+/// the way out" into a non-zero exit would make an operator's
+/// forced-cutoff signal (see [`DrainOutcome::TimedOut`]) ambiguous.
+async fn join_observability(
+    observability: tokio::task::JoinHandle<std::io::Result<()>>,
+    grace: Duration,
+) {
+    match tokio::time::timeout(grace, observability).await {
+        Ok(Ok(Ok(()))) => tracing::debug!("observability listener stopped"),
+        Ok(Ok(Err(error))) => {
+            tracing::warn!(%error, "the observability listener ended with an error");
+        }
+        Ok(Err(error)) => tracing::warn!(%error, "the observability listener task failed"),
+        Err(_) => tracing::warn!(
+            grace_seconds = grace.as_secs(),
+            "the observability listener did not stop inside the grace period; exiting anyway"
+        ),
+    }
+}
+
+/// Installs this process's Prometheus recorder, describes every metric name
+/// and stamps `vpay_build_info`.
+///
+/// The twin of [`install_crypto_provider`] and placed beside it for the same
+/// reason: it is a process-wide default, and anything recorded before it is
+/// silently lost. `vpay-worker-bin` has a near-copy — the same argument that
+/// keeps `exit_code_for` and `init_tracing` duplicated applies here, and
+/// with an extra edge: the exporter's configuration (which quantiles, which
+/// buckets, which idle timeout) is a property of what a process measures,
+/// and the two measure different things.
+///
+/// **Why a library does not do this.** `vpay_core::metrics` owns the names
+/// and nothing else; installing a global recorder from a library takes the
+/// decision out of the application's hands and makes two linked libraries a
+/// startup failure. See that module's header.
+///
+/// # `vpay_build_info`'s `git_sha`, and when it is `unknown`
+///
+/// [`vpay_core::metrics::record_build_info`] stamps the gauge from
+/// `vpay_core::metrics::git_sha`, which is `option_env!("VPAY_GIT_SHA")`
+/// resolved when *`vpay-core`* was compiled (that crate's `build.rs` puts
+/// the variable in cargo's fingerprint, so changing it rebuilds rather than
+/// silently reusing the previous label). `backends/Dockerfile` declares
+/// `ARG VPAY_GIT_SHA` and exports it into the builder stage, and
+/// `.github/workflows/release.yml` passes `${{ github.sha }}`.
+///
+/// Every build that nobody passed one to — every local `cargo build`, every
+/// `just demo`, every `docker build` without `--build-arg` — reads
+/// `unknown`, and that is the honest value rather than a placeholder:
+/// deriving one from `git rev-parse` at runtime would report the sha of
+/// whatever tree the *process* is standing in, which for a `FROM scratch`
+/// image is nothing at all.
+///
+/// # Errors
+///
+/// Only if a recorder was already installed, which cannot happen in this
+/// binary — nothing else calls `metrics::set_global_recorder`. It is
+/// reported rather than ignored because the alternative is a process whose
+/// `/metrics` renders empty forever while looking healthy.
+fn install_recorder() -> anyhow::Result<PrometheusHandle> {
+    let recorder = PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    if metrics::set_global_recorder(recorder).is_err() {
+        anyhow::bail!(
+            "a metrics recorder was already installed in this process; vpay-server installs \
+             exactly one, so this is a bug rather than a deployment problem"
+        );
+    }
+    vpay_core::metrics::describe_all();
+    // `env!` here and `option_env!` inside `record_build_info`: the version
+    // is this binary's own (a workspace where the two ever differ should
+    // report the binary's), and the sha is the one thing a build is told
+    // from outside.
+    vpay_core::metrics::record_build_info(env!("CARGO_PKG_VERSION"));
+    Ok(handle)
 }
 
 /// Waits for the shutdown signal to actually reach `with_graceful_shutdown`

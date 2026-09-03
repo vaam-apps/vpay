@@ -2,8 +2,61 @@
 
 ## Alert
 
-A charge has been in `unresolved` for more than one hour — i.e. it passed 24
-hours without the rail giving a terminal answer.
+**`VpayUnresolvedChargesRising`** — `deploy/helm/vpay/templates/prometheusrule.yaml`,
+group `vpay.rules`, `severity: warning`, label `provisional: "true"`,
+`runbook_url` pointing here.
+
+```promql
+increase(vpay_charge_transitions_total{to="unresolved"}[1h]) > 0
+```
+
+`for: 5m`. `vpay_charge_transitions_total` carries `{provider, from, to}`;
+`to="unresolved"` is where a charge lands when the 24-hour escalation gives up
+on it.
+
+The threshold is "more than none", and it is the one number in the whole
+`PrometheusRule` that is not really a guess: a charge reaching `unresolved` is
+a human's problem by definition — money whose disposition is unknown until
+somebody reconciles it by hand.
+
+> **Read the rule literally, because it is not quite what this page used to
+> say.** The prose below described "a charge has been in `unresolved` for more
+> than one hour". The rule fires on any *transition into* `unresolved` in the
+> last hour, held for 5 minutes. Those are close but not identical: the rule
+> pages on arrival, not on dwell time. Arrival is the actionable event, and no
+> metric measures dwell time — but if you are reconciling an alert against
+> this text, the rule is the arrival.
+>
+> **`vpay_charge_transitions_total` is emitted, and has never been scraped.**
+> As of 2026-09-03 (step 6, block C) all six statements that move
+> `charges.state` are counted — the three in `vpay_db::charges` and the three
+> in `vpay_db::settlement` — so an arrival at `unresolved` does produce the
+> series this rule reads.
+>
+> Each is counted **after the transaction that made it commits**, never
+> inside it, so this alert cannot fire for a charge that was rolled back.
+> Where that recording happens differs by write, and the difference is
+> deliberate: `vpay_db::settlement`'s three own their transaction and record
+> after their own `COMMIT`, while `vpay_db::charges`' three run inside a
+> *caller's* transaction and hand the recording to that caller
+> (`charges::record_opened` / `record_left_submitting`, called after
+> `tx.commit()`). `unresolved` itself is reached through
+> `vpay_db::settlement::set_live_state`, a single `UPDATE` on the pool, so it
+> is committed by the time it is counted.
+>
+> What has never happened is a scrape: no Prometheus has polled a vpay
+> process, so this rule has never been evaluated against real series, and
+> `metrics.prometheusRule.enabled` is `false` by default.
+
+The query below stays the primary tool regardless, and not only as a
+fallback: the metric reports *arrivals*, and reconciling money needs the rows
+themselves.
+
+```sql
+SELECT id, payment_intent_id, provider_code, provider_reference_id, amount,
+       currency_code, created_at, updated_at
+FROM charges WHERE state = 'unresolved' ORDER BY updated_at;
+```
 
 ## What it means
 

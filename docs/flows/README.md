@@ -20,6 +20,7 @@ go wrong, and what invariant holds throughout.
 | [errors.md](errors.md) | How an error travels from where it happens to where it is acted on: leaf/composite/boundary tiers, the `Classify` policy table, `anyhow` at the edge only |
 | [adapter-mtn-momo.md](adapter-mtn-momo.md) | MTN specifics — push flow |
 | [adapter-orange-money.md](adapter-orange-money.md) | Orange specifics — redirect flow |
+| [deployment.md](deployment.md) | What ships, what must exist before a pod starts, the boot order, the `subPath` overlay rule, and what guards a bad deployment |
 
 Every flow here is *designed*. See [../status.md](../status.md) for which parts
 are actually built.

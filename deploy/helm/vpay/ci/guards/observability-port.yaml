@@ -1,0 +1,6 @@
+# /metrics on the port the Ingress routes to.
+observability:
+  port: 8080
+  livenessPath: /livez
+  metricsPath: /metrics
+  readinessPath: /healthz

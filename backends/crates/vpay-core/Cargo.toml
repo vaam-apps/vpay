@@ -11,6 +11,9 @@ publish = false
 workspace = true
 
 [dependencies]
+# `metrics`: the facade only. This crate describes every metric name
+# (`metrics.rs`) and installs no recorder — see that module's header.
+metrics.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 time.workspace = true
@@ -18,6 +21,17 @@ time.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# Test-only, and deliberately the *shipping* exporter rather than
+# `metrics-util`'s `DebuggingRecorder`: `metrics.rs`'s tests assert on the
+# rendered Prometheus text, which is what a scrape of a pod actually
+# receives, so a mis-spelled label fails here for the same reason a dashboard
+# would be empty. Enabling metrics-util's `debugging` feature instead would
+# add `ordered-float` to `Cargo.lock` for a weaker assertion. Already
+# resolved at this exact pin by both binaries, so no new package enters the
+# lockfile — and it stays out of this crate's *shipping* graph, where
+# installing a recorder from a library is the thing `metrics.rs`' header
+# forbids.
+metrics-exporter-prometheus.workspace = true
 # Test-only. `state.rs` writes each status's wire label twice — once for
 # `serde` (what a merchant reads) and once as `as_wire_str` (what a `WHERE`
 # clause matches) — and the test that pins the two together needs a

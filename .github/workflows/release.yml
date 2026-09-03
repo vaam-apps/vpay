@@ -1,0 +1,262 @@
+name: release
+
+# Publishes the three container images the Helm chart and the compose files
+# name: `ghcr.io/vaam-store/vpay-{server,worker,dashboard}` (step-6 decision
+# (1)). Nothing else in this repository pushes an image; `ci.yml` builds them
+# and throws them away.
+#
+# NOTHING IN THIS FILE HAS EVER RUN. It was written 2026-09-03 against
+# `backends/Dockerfile`, `frontends/Dockerfile` and the documented behaviour of
+# the actions it calls. No tag has been pushed, no image has been published and
+# nothing has been signed. `actionlint` says it parses; that is the whole of
+# the evidence. See docs/status.md and docs/runbooks/release.md.
+#
+# Two build contexts, one shape: both Dockerfiles are built from the
+# repository root (`context: .`), exactly as `compose.e2e.yml` builds them.
+# `backends/Dockerfile` needs the root context because it COPYs `sdks/rust`
+# and `examples/merchant-demo` — cargo refuses to load a workspace whose
+# `members` list names a missing directory, and both are members.
+#
+# One `--build-arg`, and only on `backends/Dockerfile`: `VPAY_GIT_SHA`, which
+# becomes `vpay_build_info{git_sha="..."}` on the running binaries' /metrics.
+# `frontends/Dockerfile` declares no ARG and is passed one anyway — buildx
+# warns about an unused build argument rather than failing, and passing it to
+# every image keeps the matrix from needing a per-image condition. If that
+# warning is ever promoted to an error, split it per matrix entry.
+
+on:
+  # `v*` tags are the real releases. Pushes to the default branch publish
+  # `:edge` so the chart has something to pull between releases — and so the
+  # first evidence that this workflow works arrives on merge rather than on a
+  # tag nobody wants to cut blind.
+  push:
+    tags: ['v*']
+    branches: [master]
+
+# Two publishes of the same ref must not race for the same tag. Not
+# `cancel-in-progress`: a half-cancelled `imagetools create` leaves a tag
+# pointing at whichever index won.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  NAMESPACE: vaam-store
+
+# The floor every job gets: read the checkout, push to GHCR. Nothing more.
+#
+# `id-token: write` is NOT here. It is what makes cosign keyless signing
+# possible at all — the workflow's OIDC token is the identity Fulcio
+# certifies (step-6 decision (3)) — and it is also a credential that can be
+# exchanged for cloud roles, so it belongs to the one job that signs
+# (`merge`) rather than to the six `build` jobs, which never call cosign.
+# A job-level `permissions:` block REPLACES this one, so `merge` restates
+# `contents` and `packages` alongside it.
+#
+# `attestations: write` was declared per the step-6 design and is dropped:
+# nothing here calls the attestations API. buildx writes its provenance and
+# SBOM into the image index itself (`provenance: mode=max`, `sbom: true`),
+# which needs only `packages: write`. Add it back in the job that needs it if
+# `actions/attest-build-provenance` ever lands here.
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # One job per (image, architecture). Each pushes an *unnamed* manifest —
+  # `push-by-digest=true` — and hands its digest to `merge`, which is what
+  # assembles the multi-arch manifest list under the real tags.
+  #
+  # Native runners, not QEMU (step-6 decision (8)). `backends/Dockerfile`
+  # builds the builder's OWN host triple, read from `rustc -vV`, precisely so
+  # it is never a cross-compile; an arm64 runner keeps that invariant while an
+  # emulated one pays for `ring`'s asm and mimalloc's C build under QEMU.
+  build:
+    name: build ${{ matrix.image.name }} (${{ matrix.platform.arch }})
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      # One architecture failing should still show whether the other builds.
+      fail-fast: false
+      matrix:
+        image:
+          - name: vpay-server
+            file: backends/Dockerfile
+            target: server
+          - name: vpay-worker
+            file: backends/Dockerfile
+            target: worker
+          # `frontends/Dockerfile`'s final stage. Named explicitly rather than
+          # left to "the last stage wins", so adding a stage below it cannot
+          # silently change what ships.
+          - name: vpay-dashboard
+            file: frontends/Dockerfile
+            target: runner
+        platform:
+          - arch: amd64
+            runner: ubuntu-latest
+            docker: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            docker: linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Labels only here; the TAGS are applied once, by `merge`, to the
+      # manifest list. A per-architecture build that carried them would leave
+      # `:edge` pointing at whichever architecture pushed last.
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image.name }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.vendor=vaam-store
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ${{ matrix.image.file }}
+          target: ${{ matrix.image.target }}
+          platforms: ${{ matrix.platform.docker }}
+          # The one thing a build cannot work out for itself. `github.sha` is
+          # the merge/tag commit this workflow ran on, which is exactly what
+          # an operator holding a `vpay_build_info` label wants to `git show`.
+          build-args: |
+            VPAY_GIT_SHA=${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image.name }},push-by-digest=true,name-canonical=true,push=true
+          # `mode=max` records every build step, not just the final image —
+          # for a `FROM scratch` image with no shell to inspect it with, the
+          # provenance and the SBOM are the only description of what is
+          # inside. Both ride in the image index buildx pushes.
+          provenance: mode=max
+          sbom: true
+          # A `master` push rebuilds the whole musl workspace twice per
+          # architecture (server and worker are separate jobs sharing one
+          # builder stage but not one runner). The scope is per image AND per
+          # architecture because an amd64 layer is useless to an arm64 build.
+          # Unmeasured: whether six `mode=max` scopes fit inside GitHub's
+          # per-repository cache budget without evicting each other. If they
+          # do not, the symptom is slow builds, not wrong ones — drop to
+          # `mode=min`, or drop the cache entirely.
+          cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }}
+      # An empty file named after the digest: the artifact IS the digest, so
+      # `merge` needs no output plumbing across a matrix it cannot index into.
+      - name: record the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.image.name }}-${{ matrix.platform.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Assembles one multi-arch manifest list per image, applies the tags, and
+  # signs the resulting index digest.
+  merge:
+    name: manifest list + sign (${{ matrix.image.name }})
+    runs-on: ubuntu-latest
+    needs: [build]
+    # The only job that signs, and therefore the only one holding an OIDC
+    # token. A job-level block replaces the workflow-level one outright, so
+    # the two the workflow already grants are restated rather than inherited.
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: vpay-server
+          - name: vpay-worker
+          - name: vpay-dashboard
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.image.name }}-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The tags, computed once. `merge` is the only job that names them.
+      #   v1.2.3         -> `1.2.3`, `1.2`, `sha-<40 hex>`
+      #   push to master -> `edge`,  `sha-<40 hex>`
+      # There is deliberately no `latest`: the chart pins a digest for
+      # anything real (deploy/helm/vpay/README.md), and a floating `latest`
+      # invites the one deployment shape this repository argues against.
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image.name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=edge,enable={{is_default_branch}}
+            type=sha,format=long
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.vendor=vaam-store
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+      # `$DOCKER_METADATA_OUTPUT_JSON` is set by metadata-action above; each
+      # file in this directory is named after one per-architecture digest.
+      - name: create the manifest list
+        working-directory: /tmp/digests
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image.name }}
+        run: |
+          set -euo pipefail
+          # Both substitutions are meant to word-split into separate argv
+          # entries; that is the documented buildx recipe for this step.
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
+      # The digest of the INDEX, which is what a `cosign verify` of a tag
+      # resolves to and what `images.<component>.digest` pins in the chart.
+      - id: index
+        name: read back the manifest-list digest
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" \
+            --format '{{json .Manifest}}' | jq -er .digest)"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "${IMAGE}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+      # Keyless (step-6 decision (3)): no key exists to store or rotate. The
+      # Fulcio certificate binds this image to this workflow file at this ref,
+      # and the Rekor entry makes that public and append-only. The cost is
+      # named in ADR terms in docs/runbooks/release.md: renaming this file
+      # breaks every downstream `cosign verify`.
+      #
+      # The INDEX digest is signed, not the per-architecture children. A
+      # consumer that pulls by tag or by the index digest is covered; one that
+      # pins a child manifest's own digest is not.
+      - name: cosign sign (keyless, GitHub OIDC)
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image.name }}
+          DIGEST: ${{ steps.index.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"

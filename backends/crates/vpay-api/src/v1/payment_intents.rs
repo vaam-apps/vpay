@@ -1012,6 +1012,10 @@ async fn persist_submitted(
     })?;
 
     tx.commit().await.map_err(vpay_db::DbError::Query)?;
+
+    // After the commit — the intent write above shares this transaction, and
+    // a charge whose submit was rolled back is not a submitted charge.
+    charges::record_left_submitting(&charge);
     Ok((intent, charge))
 }
 
@@ -1071,7 +1075,7 @@ async fn persist_decline(
 ) -> Result<(), ApiError> {
     let mut tx = pool.begin().await.map_err(vpay_db::DbError::Query)?;
 
-    charges::mark_failed(
+    let charge = charges::mark_failed(
         &mut tx,
         charge_id,
         code.as_str(),
@@ -1103,6 +1107,9 @@ async fn persist_decline(
     }
 
     tx.commit().await.map_err(vpay_db::DbError::Query)?;
+
+    // After the commit, as in `persist_submitted`.
+    charges::record_left_submitting(&charge);
     Ok(())
 }
 
@@ -1246,6 +1253,12 @@ async fn insert_charge(pool: &PgPool, new: &NewCharge) -> Result<ChargeRow, ApiE
     .await?;
 
     tx.commit().await.map_err(vpay_db::DbError::Query)?;
+
+    // After the commit, and only here: `insert_for_intent` runs inside this
+    // transaction, so an enqueue that failed below would have rolled the
+    // charge back with the counter already incremented. See
+    // `vpay_db::charges`' header.
+    charges::record_opened(&charge);
     Ok(charge)
 }
 

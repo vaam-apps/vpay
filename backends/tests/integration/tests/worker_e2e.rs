@@ -55,10 +55,11 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use serde_json::Value;
 use sqlx::PgPool;
 use testcontainers::{ContainerAsync, GenericImage};
@@ -102,6 +103,53 @@ const PLAIN_MSISDN: &str = "237670000000";
 /// The reference `requesttopay-status.json` answers
 /// `FAILED / NOT_ENOUGH_FUNDS` to — `insufficient_funds` in the taxonomy.
 const DECLINED_REF: Uuid = Uuid::from_u128(0x0f01);
+
+/// This test binary's Prometheus recorder, installed on first use.
+///
+/// A `LazyLock` rather than a per-test install because
+/// `metrics::set_global_recorder` can only ever succeed once in a process.
+/// Under `cargo nextest` — which is what `just test-rust` and CI run — every
+/// test gets its own process, so "once per process" is also "once per test"
+/// and the counters below start at zero for the test that reads them. Under
+/// a plain `cargo test`, which shares one process across the binary, the
+/// exact-count assertion in
+/// `a_decline_after_submission_returns_the_intent_to_requires_payment_method`
+/// would be reading a total across whatever else had run first; that is a
+/// property of the runner, stated here rather than papered over with a
+/// `contains`-style assertion that would also pass against a counter that
+/// never moved.
+static METRICS: LazyLock<PrometheusHandle> = LazyLock::new(|| {
+    let recorder = PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    metrics::set_global_recorder(recorder).expect("this test binary installs exactly one recorder");
+    vpay_core::metrics::describe_all();
+    handle
+});
+
+/// Serves the **shipping** observability router
+/// (`vpay_api::observability`, the same function both `main.rs` files call)
+/// on an ephemeral port, rendering [`METRICS`].
+///
+/// Deliberately the real router over a real socket rather than
+/// `PrometheusHandle::render()` read directly: the thing under test is what
+/// a Prometheus scrape of a vpay pod would actually receive, and that
+/// includes the route being mounted and the handler returning it.
+async fn serve_metrics() -> anyhow::Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
+    let handle = METRICS.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .context("binding the observability listener")?;
+    let addr = listener.local_addr().context("reading the bound address")?;
+    let task = tokio::spawn(async move {
+        let _ = vpay_api::observability::serve(
+            listener,
+            move || handle.render(),
+            std::future::pending::<()>(),
+        )
+        .await;
+    });
+    Ok((addr, task))
+}
 
 /// The reference whose status query takes two seconds
 /// (`fixedDelayMilliseconds: 2000`). What the drain case blocks its handlers
@@ -513,6 +561,15 @@ async fn a_confirmed_payment_is_driven_to_succeeded_and_the_merchant_sees_it() -
     let h = harness().await?;
     let client = h.client();
 
+    // Installed *before* the create, because the charge's whole state
+    // machine is what the assertions at the end are about: the confirm
+    // opens the charge (`` -> submitting`) and submits it
+    // (`submitting -> submitted`) inside vpay-api, and only the last edge
+    // belongs to the worker. `metrics::counter!` with no recorder is a
+    // silent no-op, so a recorder installed later would render a document
+    // missing exactly the half this test is uniquely able to see.
+    let (metrics_addr, metrics_task) = serve_metrics().await?;
+
     let created = client
         .payment_intents()
         .create(create_params(), RequestOptions::new())
@@ -653,6 +710,81 @@ async fn a_confirmed_payment_is_driven_to_succeeded_and_the_merchant_sees_it() -
         report.released, 0,
         "a clean drain leaves no lease to release"
     );
+
+    // The metrics half, and the only place in this workspace where the two
+    // rail-facing series are asserted against a *real* adapter speaking real
+    // HTTP to a real container. `vpay_provider::measured`'s unit tests prove
+    // the decorator's labels; this proves the shipping path produces them —
+    // that `adapters_by_code` really wraps, that the MTN adapter really
+    // reaches the stub, and that a settlement really moves the charge.
+    let scrape = reqwest::get(format!("http://{metrics_addr}/metrics"))
+        .await
+        .context("scraping /metrics off the observability listener")?
+        .text()
+        .await
+        .context("reading the scrape body")?;
+
+    // At least one successful status query: the ladder polls until the stub
+    // answers SUCCESSFUL, and how many rungs that takes is the stub's
+    // business, not this assertion's.
+    assert!(
+        scrape.lines().any(|line| {
+            line.starts_with(concat!(
+                r#"vpay_provider_requests_total{provider="mtn_momo","#,
+                r#"operation="query_status",error_kind=""}"#
+            ))
+        }),
+        "the MTN adapter's status queries must be counted through \
+         vpay_provider::Measured — is adapters_by_code still wrapping?\n{scrape}"
+    );
+    assert!(
+        scrape.contains(concat!(
+            r#"vpay_provider_requests_total{provider="mtn_momo","#,
+            r#"operation="submit",error_kind=""} 1"#
+        )),
+        "exactly one submit reached the rail, and the confirm is what made it:\n{scrape}"
+    );
+
+    // **The charge's whole walk, edge by edge, each exactly once.** This is
+    // the assertion that says the `from` label follows the row rather than
+    // the caller's intention: the last two edges are `submitted → pending`
+    // and `pending → succeeded`, because the `mtn-e2e-poll` scenario answers
+    // `PENDING` on the first status query and `SUCCESSFUL` on the second. A
+    // `from` taken from what the settlement *meant* to move would have read
+    // `submitted → succeeded` and this list would be wrong in a way no
+    // unit test can see — `vpay_db::settlement`'s previous-state sub-select
+    // is what makes it right.
+    //
+    // Four boundaries wrote these four rows: `vpay-api`'s create, its
+    // confirm, the worker's ladder rung, and the settlement transaction.
+    for edge in [
+        r#"vpay_charge_transitions_total{provider="mtn_momo",from="",to="submitting"} 1"#,
+        r#"vpay_charge_transitions_total{provider="mtn_momo",from="submitting",to="submitted"} 1"#,
+        r#"vpay_charge_transitions_total{provider="mtn_momo",from="submitted",to="pending"} 1"#,
+        r#"vpay_charge_transitions_total{provider="mtn_momo",from="pending",to="succeeded"} 1"#,
+    ] {
+        assert!(
+            scrape.contains(edge),
+            "missing charge transition `{edge}`; the settled edge is the one \
+             vpay_db::settlement's RETURNING sub-select supplies `from` for:\n{scrape}"
+        );
+    }
+
+    // The confirm went through the real router, so the HTTP middleware is on
+    // this scrape too — labelled with the route *pattern*, never the id.
+    assert!(
+        scrape.contains(concat!(
+            r#"vpay_http_requests_total{route="/v1/payment_intents/{id}/confirm","#,
+            r#"method="POST",status="200"} 1"#
+        )),
+        "the confirm must be counted under its route pattern:\n{scrape}"
+    );
+    assert!(
+        !scrape.contains(&created.id),
+        "a payment intent id must never reach a metric label:\n{scrape}"
+    );
+
+    metrics_task.abort();
     h.shutdown().await;
     Ok(())
 }
@@ -696,6 +828,11 @@ async fn a_decline_after_submission_returns_the_intent_to_requires_payment_metho
         .execute(&h.pool)
         .await
         .context("pointing the charge at the rail's decline stub")?;
+
+    // Installed *before* the job runs: `metrics::counter!` with no recorder
+    // is a silent no-op, so a recorder installed afterwards would render an
+    // empty document and this test would pass by asserting nothing.
+    let (metrics_addr, metrics_task) = serve_metrics().await?;
 
     // One step of the real loop is all this needs: the rail answers with a
     // terminal status on the first poll.
@@ -772,6 +909,60 @@ async fn a_decline_after_submission_returns_the_intent_to_requires_payment_metho
     // cases that call `run_loop` do seed one, and there the pair is a race
     // between two of the loop's own jobs — which is why they assert through
     // `event_types_for` and `wait_for_fanout` instead.
+
+    // The metrics half: exactly one job was claimed and exactly one was
+    // settled, and a Prometheus scrape of this process says so.
+    //
+    // This test is where the assertion belongs rather than the settling one
+    // above, because `run_once` runs *one* job against a table holding
+    // exactly one row — no poll ladder, no seeded singletons — so the counts
+    // are `1` and not "at least 1". An assertion that only checked the name
+    // appeared would also pass against a counter that was registered and
+    // never incremented.
+    let scrape = reqwest::get(format!("http://{metrics_addr}/metrics"))
+        .await
+        .context("scraping /metrics off the observability listener")?
+        .text()
+        .await
+        .context("reading the scrape body")?;
+
+    assert!(
+        scrape.contains(r#"vpay_jobs_claimed_total{kind="poll_charge"} 1"#),
+        "the claim point in vpay_worker::run_once did not reach the recorder:\n{scrape}"
+    );
+    assert!(
+        scrape.contains(r#"vpay_jobs_completed_total{kind="poll_charge",outcome="terminal"} 1"#),
+        "a declined charge is Disposition::Finished, which is the `terminal` outcome label \
+         (vpay_core::metrics::job_outcome):\n{scrape}"
+    );
+    // `describe_all()` ran too, so a scrape carries help text and not just
+    // bare series — the thing that makes these names readable in a
+    // dashboard nobody wrote yet.
+    assert!(
+        scrape.contains("# HELP vpay_jobs_claimed_total"),
+        "vpay_core::metrics::describe_all() did not reach the recorder:\n{scrape}"
+    );
+    // The rail-facing half of the same run. The recorder went in after the
+    // confirm here (this test rewrites the charge's reference in between),
+    // so what it can see is the *worker's* status query and the settlement
+    // it caused — which is precisely the decline path, and the `to="failed"`
+    // edge the success case above cannot produce.
+    assert!(
+        scrape.contains(concat!(
+            r#"vpay_provider_requests_total{provider="mtn_momo","#,
+            r#"operation="query_status",error_kind=""} 1"#
+        )),
+        "one status query, answered: {scrape}"
+    );
+    assert!(
+        scrape.contains(
+            r#"vpay_charge_transitions_total{provider="mtn_momo",from="submitted",to="failed"} 1"#
+        ),
+        "a rail-reported decline is a charge transition and must be counted with the state \
+         the charge came from:\n{scrape}"
+    );
+
+    metrics_task.abort();
     h.shutdown().await;
     Ok(())
 }

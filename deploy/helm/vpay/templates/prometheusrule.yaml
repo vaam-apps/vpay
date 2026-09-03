@@ -1,0 +1,151 @@
+{{- include "vpay.validate" . -}}
+{{- if .Values.metrics.prometheusRule.enabled }}
+{{- $r := .Values.metrics.prometheusRule -}}
+{{- $repo := "https://github.com/vaam-store/vpay/blob/master/docs/runbooks" -}}
+# ⚠⚠ READ THIS BEFORE TRUSTING ANY NUMBER BELOW ⚠⚠
+#
+# 1. EVERY THRESHOLD HERE IS PROPOSED, NOT DERIVED. Step-6 decision (5): the
+#    two runbooks this repository already had contain no numbers at all
+#    ("crosses its threshold", "more than one hour"), so there was nothing to
+#    transcribe. These were invented against a system that has never taken a
+#    real payment. A 5% provider-error rate on a live MTN account may be
+#    perfectly normal. Revisit after the first week of real traffic.
+#    Every rule carries `provisional: "true"` as a label so this is visible in
+#    Alertmanager and not only here.
+#
+# 2. EVERY METRIC HERE IS EMITTED AND HAS NEVER BEEN SCRAPED.
+#    `vpay_provider_requests_total`, `vpay_charge_transitions_total`,
+#    `vpay_jobs_*` and `vpay_alert_events_total` are recorded by the builds on
+#    this branch (step-6 block C landed 2026-09-03) and both binaries serve
+#    them on `--observability-bind`. What has never happened is a scrape: no
+#    Prometheus has polled a vpay process, so no rule below has ever been
+#    evaluated against a real series, and `metrics.prometheusRule.enabled` is
+#    `false` by default. (The earlier text here said the metrics did not exist
+#    at all; block A and block C both landed after it was written.)
+#
+# The names come from `docs/plans/2026-09-03-step6-deployment.md` §3 and are
+# the contract with block C; the `vpay_jobs_*` half is in turn the contract
+# with Step 4's worker loop, whose 60s gauge log line
+# (`vpay-worker/src/run_loop.rs`, "job loop gauge") reports the same
+# quantities as `claimed` / `finished` / `rescheduled` / `dead_lettered` /
+# `queue_behind_seconds`. `vpay_jobs_oldest_claimable_age_seconds` is that log
+# line's `queue_behind_seconds` as a gauge.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "vpay.fullname" . }}
+  labels:
+    {{- include "vpay.labels" . | nindent 4 }}
+    {{- with $r.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: vpay.rules
+      rules:
+        - alert: VpayProviderErrorRateHigh
+          # `error_kind!=""` — every failed port call, not just
+          # `error_kind="provider_error"`.
+          #
+          # `error_kind` is `vpay_core::Classify::code` and is `""` only on
+          # success, so `!=""` is "the call did not succeed". The selector this
+          # replaces named ONE failure code, and not the one an outage
+          # produces: a rail that stops answering raises
+          # `ProviderError::Transport`, whose code is `provider_unavailable`,
+          # so the numerator stayed at zero through a total rail outage while
+          # the denominator kept climbing. An alert that cannot fire during the
+          # incident it is named for is not an alert.
+          #
+          # ⚠ THIS NOW INCLUDES DECLINES. `error_kind="charge_declined"` is a
+          # rail *decision* (`vpay_provider::ProviderError::Rejected` — an
+          # insufficient balance, a payer timeout), not a rail failure, and on
+          # mobile money it is routinely a large fraction of all calls. Against
+          # real traffic this rule will therefore fire on ordinary decline
+          # rates, and the maintainer's choice — leave it (one alert for "calls
+          # to this rail are not succeeding") or exclude declines with
+          # `error_kind!~"|charge_declined"` — is a threshold decision that
+          # belongs with the first week of measured traffic, alongside the
+          # ratio itself. Recorded here rather than decided quietly.
+          expr: >-
+            sum by (provider) (rate(vpay_provider_requests_total{error_kind!=""}[{{ $r.providerErrorWindow }}]))
+            /
+            sum by (provider) (rate(vpay_provider_requests_total[{{ $r.providerErrorWindow }}]))
+            > {{ $r.providerErrorRatio }}
+          for: {{ $r.providerErrorWindow }}
+          labels:
+            severity: warning
+            provisional: "true"
+          annotations:
+            summary: "calls to {{ `{{ $labels.provider }}` }} are failing above the proposed threshold"
+            description: >-
+              More than {{ $r.providerErrorRatio }} of port calls to {{ `{{ $labels.provider }}` }} in the last
+              {{ $r.providerErrorWindow }} carried a non-empty `error_kind` — transport failures
+              (`provider_unavailable`), unparseable answers (`provider_error`), declines
+              (`charge_declined`), configuration refusals (`misconfigured`) and the rest.
+              Split by `error_kind` before acting; the runbook says how.
+              THRESHOLD IS PROVISIONAL — it was proposed, never measured against real rail traffic.
+            runbook_url: {{ $repo }}/provider-error-rate.md
+
+        - alert: VpayUnresolvedChargesRising
+          # `unresolved` is where a charge lands when the 24h escalation gives
+          # up on it. Any new one is a human's problem by definition, so the
+          # threshold is "more than none", which is the one number here that is
+          # not really a guess.
+          expr: increase(vpay_charge_transitions_total{to="unresolved"}[1h]) > 0
+          for: 5m
+          labels:
+            severity: warning
+            provisional: "true"
+          annotations:
+            summary: "A charge reached `unresolved` in the last hour"
+            description: >-
+              At least one charge was escalated to `unresolved`: vpay could not determine its
+              outcome from the rail within the escalation window. Each one is money whose
+              disposition is unknown until someone reconciles it by hand.
+            runbook_url: {{ $repo }}/unresolved-charges.md
+
+        - alert: VpayJobQueueBehind
+          expr: vpay_jobs_oldest_claimable_age_seconds > {{ $r.jobQueueBehindSeconds }}
+          for: 10m
+          labels:
+            severity: warning
+            provisional: "true"
+          annotations:
+            summary: "The job queue is more than {{ $r.jobQueueBehindSeconds }}s behind"
+            description: >-
+              The oldest claimable job has been runnable for over {{ $r.jobQueueBehindSeconds }}s.
+              Jobs whose time has come with nobody taking them: add a worker replica or raise
+              `worker.concurrency`. THRESHOLD IS PROVISIONAL.
+            runbook_url: {{ $repo }}/worker-queue.md
+
+        - alert: VpayPageableErrorEvents
+          # `vpay_alert_events_total` is incremented inside the `Severity::Page`
+          # arm of the error logger, not by a log-scraping layer, so this
+          # counter and the `alert=true` field in the JSON logs cannot diverge
+          # (ADR-0011).
+          expr: increase(vpay_alert_events_total[{{ $r.alertEventWindow }}]) > 0
+          for: 0m
+          labels:
+            severity: critical
+            provisional: "true"
+          annotations:
+            summary: "vpay logged an error classified `Severity::Page`"
+            description: >-
+              `{{ `{{ $labels.category }}` }}` / `{{ `{{ $labels.code }}` }}` was classified as page-worthy by
+              ADR-0011's policy table. The classification is the alert; there is no separate
+              threshold to tune.
+            runbook_url: {{ $repo }}/README.md
+
+        - alert: VpayJobsDeadLettered
+          expr: increase(vpay_jobs_completed_total{outcome="dead_letter"}[15m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+            provisional: "true"
+          annotations:
+            summary: "A job exhausted its attempts and was dead-lettered"
+            description: >-
+              A job of kind {{ `{{ $labels.kind }}` }} ran out of retries. Whatever it was driving is not
+              being driven any more.
+            runbook_url: {{ $repo }}/worker-queue.md
+{{- end }}

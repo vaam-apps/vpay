@@ -16,11 +16,19 @@ on a flag's name, env var, or default.
 | `--database-url` | `DATABASE_URL` | none |
 | `--profile` | `VPAY_PROFILE` | `sandbox` |
 | `--config` | `VPAY_CONFIG` | none |
-| `--public-base-url` (`vpay-server` only) | `VPAY_PUBLIC_BASE_URL` | none |
+| `--observability-bind` | `VPAY_OBSERVABILITY_BIND` | `0.0.0.0:9090` |
 | `--oauth-signing-key-file` (`vpay-server` only) | `VPAY_OAUTH_SIGNING_KEY_FILE` | none |
 | `--log-filter` | `RUST_LOG` | `info` |
 | `--log-format` (`json`\|`text`) | `VPAY_LOG_FORMAT` | `json` |
 | `--shutdown-grace-seconds` | `VPAY_SHUTDOWN_GRACE_SECONDS` | `25` |
+
+`--observability-bind` is on **both** binaries — the worker had no HTTP
+listener at all before it — and serves exactly two paths, `GET /livez` and
+`GET /metrics`, from a second socket. It is never the `--bind` port: that one
+is fronted by an Ingress, and `/metrics` names every rail this deployment
+talks to, every route pattern it serves and every error code it has produced.
+The chart's NetworkPolicy admits 9090 from the monitoring namespace only, and
+it can express that *because* the two are different ports.
 
 `--version` reports the workspace version (`0.1.0`). Run
 `cargo run -p vpay-server -- --help` to see the live flag set — that is more
@@ -38,15 +46,31 @@ for the compose stack. The *path* is deliberately visible in `Debug` output
 secret, and "which file did it try" is the first thing an operator needs —
 while the file's contents never enter the CLI types at all.
 
-**This is CLI/env plumbing, not the boot sequence below**, and one flag is
-still pure plumbing: **`--public-base-url` is accepted and parsed and read
-by nothing.** This is easy to get wrong now that `/v1/oauth` publishes an
-issuer, so to be exact — the issuer is
+**This is CLI/env plumbing, not the boot sequence below.** Every flag in the
+table is now consumed by something; the one that was not — `--public-base-url`
+— was **removed on 2026-09-03** (step-6 decision (7)) rather than wired.
+It had been accepted and parsed and read by nothing since it was added, which
+is easy to get wrong now that `/v1/oauth` publishes an issuer: the issuer is
 `vpay_api::op::issuer_for(&config)`, which reads
-**`deployment.public_base_url` from the YAML config file**, not this flag.
-Two spellings of the same idea, one of them inert. `--profile` only ever
-selects a config *file name*, per the "no environment branching" rule; it is
-never matched on to change behaviour.
+**`deployment.public_base_url` from the YAML config file**, and that is
+unchanged. What went away is the *flag* and its `VPAY_PUBLIC_BASE_URL`
+variable — the second, inert spelling of one idea.
+
+The two halves of that removal behave differently, and the difference matters
+to whoever upgrades (`backends/crates/vpay-config/src/cli.rs`, the
+`--public-base-url` is gone section):
+
+- Passing **`--public-base-url`** now fails at parse time, loudly, on an
+  unknown argument. A chart or compose file that still sets the flag breaks on
+  upgrade — the honest cost of removing an interface.
+- Setting **`VPAY_PUBLIC_BASE_URL`** does **not** fail. clap reads an
+  environment variable only for a flag it declares, so a stale variable in a
+  Secret or a compose file is silently ignored: no error, no effect. That is
+  the same thing it did before the removal (it was inert then too), so nothing
+  breaks — but nothing tells anyone either. Nothing in this repository sets it
+  (`.env.example` dropped its row in the same change).
+`--profile` only ever selects a config *file name*, per the "no environment
+branching" rule; it is never matched on to change behaviour.
 
 `--shutdown-grace-seconds` is a partial exception: `vpay-server` actually uses
 it to bound how long it waits for in-flight requests to drain after a
@@ -341,8 +365,9 @@ concept ("every merchant's rail host is in the allowlist", and the
 merchant-facing half of "every referenced provider exists and is enabled" —
 see that row above for what *is* enforced); a `display_name` that is a real
 port capability rather than a derivation of the code; and any hot reload —
-a config change is still a redeploy. `--public-base-url` remains accepted,
-parsed and read by nothing. See [../status.md](../status.md).
+a config change is still a redeploy. (`--public-base-url`, which this
+paragraph used to list here as still-inert, was removed on 2026-09-03 — see
+the flag table above.) See [../status.md](../status.md).
 
 **New 2026-09-03 (Step 3), and one of these is a bug this pass found rather
 than a feature it added:**

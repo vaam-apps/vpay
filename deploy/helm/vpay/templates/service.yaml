@@ -1,0 +1,60 @@
+{{- include "vpay.validate" . -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vpay.fullname" . }}
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+  {{- if or .Values.commonAnnotations .Values.service.annotations }}
+  annotations:
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.service.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+    # The observability port is on the Service so a ServiceMonitor can select
+    # it. It is NOT on any Ingress: nothing outside the cluster should reach
+    # /metrics, and the "observability-port" guard keeps the two numbers apart.
+    - name: metrics
+      port: {{ .Values.observability.port }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "vpay.componentSelectorLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+---
+# A headless Service for the worker, carrying the observability port only.
+#
+# The worker serves no traffic and needs no virtual IP, but a ServiceMonitor
+# selects Services — so without this object the worker's metrics (the
+# `vpay_jobs_*` family, i.e. every number that says whether the queue is
+# keeping up) would never be scraped. `clusterIP: None` keeps it a discovery
+# record rather than a load balancer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vpay.fullname" . }}-worker
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "worker") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: {{ .Values.observability.port }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "vpay.componentSelectorLabels" (dict "ctx" . "component" "worker") | nindent 4 }}

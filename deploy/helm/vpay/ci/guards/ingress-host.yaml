@@ -1,0 +1,17 @@
+ingress:
+  enabled: true
+  className: nginx
+  host: ""
+  tls:
+    enabled: true
+    clusterIssuer: letsencrypt-prod
+  api:
+    path: /v1
+    pathType: Prefix
+    limitRps: 20
+    limitBurstMultiplier: 3
+  token:
+    path: /v1/oauth/token
+    pathType: Exact
+    limitRps: 5
+    limitBurstMultiplier: 2

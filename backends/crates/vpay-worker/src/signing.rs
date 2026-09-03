@@ -169,10 +169,10 @@ mod tests {
             "one v1= per configured secret: {header}"
         );
 
-        for secret in &secrets {
+        for (index, secret) in secrets.iter().enumerate() {
             assert!(
                 verify_at(BODY, &header, secret, DEFAULT_TOLERANCE, system_time(T)).is_ok(),
-                "secret {secret} was configured but its signature is not in {header}"
+                "secrets[{index}] was configured but its signature is not in {header}"
             );
         }
         // And a secret that was never configured still does not verify, so

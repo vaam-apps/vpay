@@ -170,3 +170,91 @@ New rows: `/livez` + probe split (✅ once the router test lands), `/metrics` + 
 8. **arm64 at all, and how (S4).** *Default: publish arm64, built on native `ubuntu-24.04-arm` runners, and amend ADR-0004 (or supersede it) to say "the builder's host musl triple", which is what `backends/Dockerfile` already does.* Gained: Graviton/Apple-Silicon parity, and the `+crt-static` gap in `.cargo/config.toml:9-10` gets an explicit `[target.aarch64-unknown-linux-musl]` entry rather than an implicit default. Lost: two runner pools and a manifest-merge job; ADR-0004's Decision line has to change, and this repo's rule is supersede-never-edit. **Amd64-only** is the cheaper honest option if no arm64 target exists yet.
 
 9. **Managed Postgres vs CloudNativePG (ADR-0013).** *Default: external managed Postgres, `DATABASE_URL` from an existing Secret; CloudNativePG documented, not templated.* Gained: PITR, WAL archiving and the restore drill are the provider's proven machinery, not code vpay owns; the chart stays a stateless-workload chart. Lost: backup policy lives outside this repo, so ADR-0013 can state obligations it cannot enforce, and the restore-drill runbook is provider-specific. CloudNativePG would put the whole thing in-repo at the cost of operating Postgres.
+---
+
+## Outcome — 2026-09-03
+
+Written after the step landed, on the branch `claude/step6-deployment`. From
+here on `docs/status.md` and the flow docs are the record; this section exists
+so that a reader of the design above can see where the implementation
+disagreed with it and why.
+
+### What landed
+
+* **§1 release pipeline** — `.github/workflows/release.yml`: three images, two
+  native runner pools, push-by-digest plus a per-image `merge` job,
+  `provenance: mode=max`, `sbom: true`, keyless cosign. `just release-dry-run`
+  builds all three for the host architecture and then runs `just helm-check`.
+  [ADR-0014](../adr/0014-builder-host-musl-triple.md) supersedes ADR-0004's
+  x86_64 wording and `.cargo/config.toml` gained the explicit
+  `[target.aarch64-unknown-linux-musl]` `+crt-static` entry. **Never run.**
+* **§2 chart** — `deploy/helm/vpay`, 13 named template guards, `just
+  helm-check`, a CI `deploy` job that runs the recipe rather than a copy of it.
+  **Never applied to a cluster.**
+* **§3 metrics** — all twelve names in `vpay_core::metrics`; eleven emitted,
+  each at one seam; the observability listener on both binaries. See the
+  deviations below for the twelfth.
+* **§4 ADR-0013**, **§5 hardening**, **§6 runbooks** — as designed.
+* **§8 status** — the new rows are in `docs/status.md`.
+
+### Deviations, each deliberate
+
+1. **`vpay_jobs_completed_total` has a fourth `outcome`: `lost`.** §3 lists
+   `terminal|retry|dead_letter`. That list predates Step 4 landing
+   `vpay_worker::Disposition::Lost` — a lease reaped mid-job, its answer
+   thrown away. Folding it into a neighbour would make a handler outrunning
+   its lease invisible, which is a real defect class, so it got its own value.
+2. **`vpay_jobs_oldest_claimable_age_seconds` goes negative**, and the name in
+   §3 is misleading about it. The underlying query is `min(run_at)` over every
+   unleased, unparked row *including future ones*, so an idle deployment whose
+   only queued work is the hourly sweep reports about `-3500` (observed on
+   `just demo` at `-540.01`). The name is transcribed verbatim from §3 and was
+   not changed; the correct reading is "seconds until (negative) or since
+   (positive) the next queued work was due". Documented on the constant, in
+   `docs/status.md` and in `docs/flows/deployment.md` §6a rather than papered
+   over with an `abs()`.
+3. **The drain-under-load test uses a stalled request body, not a slow rail.**
+   §5 proposed holding a `/v1/payment_intents` confirm against a WireMock rail
+   with `fixedDelayMilliseconds`. That would have required rebuilding the
+   `backends/tests/integration` harness — container, merchant registration,
+   minted `private_key_jwt`, token exchange — inside `vpay-server`'s own
+   subprocess suite, to make one request slow. A client that promises
+   `Content-Length: 200` and sends 29 bytes to `POST /v1/oauth/token` is slow
+   for free, is not a stub of anything, and leaves the handler future genuinely
+   pending inside the router. It does not prove a slow *rail* drains the same
+   way; the drain is a property of the connection, not of what the handler
+   awaits.
+4. **The chart was written before the listener it probes existed.** §7 splits
+   A (binary plumbing) from B (chart), and B landed first: `deployment-*.yaml`
+   templated a liveness probe against `/livez` on 9090 while `vpay-worker-bin`
+   still bound no socket at all. Both halves are on this branch and the gap is
+   closed, but `docs/flows/deployment.md` keeps the struck-through sentence
+   rather than deleting it, so nobody has to wonder whether it was ever true.
+5. **No Grafana dashboard is templated.** §3 names the metrics and the chart
+   templates a `ServiceMonitor` and a `PrometheusRule`; nothing renders a
+   dashboard. A dashboard JSON committed against series nobody has ever
+   scraped would be a screenshot of an assumption. The metric names and their
+   caveats (negative gauge, port-calls-not-requests, `unknown` git sha) are
+   written down instead.
+6. **`just helm-check` is not in `just ci`.** It is in CI as a separate
+   `deploy` job and in `just release-dry-run`. Adding it to `ci` would make
+   every local `just ci` require `helm` and `kubeconform` on `PATH`, which no
+   other recipe in this repository needs; the recipe fails with a named error
+   if either is missing, so the omission is visible rather than silent.
+7. **`vpay_webhook_deliveries_total` is described and emitted by nothing.**
+   Step 5 is not on this branch, so there is no seam. Recording a zero so the
+   series existed would read as "no failures" on a dashboard; a described name
+   with no recorded handle does not appear in a scrape at all.
+8. **`vpay_alert_events_total` does not cover every `alert = true` log line.**
+   It covers the three sites that log a *classified* error at its own
+   severity. Four other lines flag `alert = true` and carry no `Classify`
+   value to derive labels from (or would double-count one that is already
+   counted). Listed in full on `record_error_event` and in `docs/status.md`
+   rather than left for someone to discover during an incident.
+
+### What still has no evidence
+
+No cluster has run the chart. No tag has been pushed, so no image exists at
+`ghcr.io/vaam-store/vpay-*` and nothing has been signed. No Prometheus has
+scraped a vpay process, so every alert rule is unevaluated. No backup has ever
+been taken. `docs/status.md` says all of this in the rows themselves.

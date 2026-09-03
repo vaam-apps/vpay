@@ -44,6 +44,25 @@
 # this build without a deliberate version bump here.
 FROM rust:1.95.0-alpine3.22 AS builder
 RUN apk add --no-cache musl-dev pkgconfig
+# The commit this image is built from, surfaced at runtime as
+# `vpay_build_info{git_sha="..."}` on /metrics. `vpay_core::metrics::git_sha`
+# reads it with `option_env!` at compile time and `vpay-core/build.rs` puts it
+# in cargo's fingerprint, so changing it rebuilds rather than reusing the
+# previous label.
+#
+# `unknown` is the default and the honest one: a `docker build` nobody passed
+# `--build-arg VPAY_GIT_SHA=...` to genuinely does not know its commit. There
+# is deliberately no `git rev-parse` here — the build context is a COPY of
+# source trees with no `.git` in it, and a sha read from the build machine's
+# own checkout would describe some other tree. `.github/workflows/release.yml`
+# passes `${{ github.sha }}`; `compose*.yml` and `just release-dry-run` pass
+# nothing and get `unknown`.
+#
+# ARG and ENV both: ARG makes it settable from outside, ENV puts it in the
+# environment cargo (and therefore rustc) is invoked with, which is where
+# `option_env!` reads it from. An ARG alone would be invisible to the compiler.
+ARG VPAY_GIT_SHA=unknown
+ENV VPAY_GIT_SHA=${VPAY_GIT_SHA}
 WORKDIR /build
 COPY Cargo.toml Cargo.lock clippy.toml ./
 COPY .cargo ./.cargo

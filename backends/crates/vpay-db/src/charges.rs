@@ -34,6 +34,59 @@
 //! `409` without attempting the write — but that read is an optimisation,
 //! never the guard.
 //!
+//! # This module owns `vpay_charge_transitions_total`'s labels — but not,
+//! for the three writes below, its timing
+//!
+//! `record_transition` — private, because the *only* correct callers are the
+//! six statements' own modules — backs each of the three writes below and
+//! the three in [`crate::settlement`], and nothing else. The database layer
+//! rather than the caller, because *every* transition passes through these
+//! six statements and only some of them pass through the worker: a confirm
+//! opens and submits a charge inside `vpay-api`, so a counter mounted on the
+//! worker's settlement points would be silently blind to the busiest half of
+//! the state machine.
+//!
+//! Two rules make the count mean what it says, and the second one is why
+//! this module has [`record_opened`] and [`record_left_submitting`] at all.
+//!
+//! **Every label is read back off the returned row**, never off the caller's
+//! argument, and the recording happens only after the statement returned a
+//! row — a compare-and-swap that matched nothing is a transition that did
+//! not happen.
+//!
+//! **A transition is counted after it is committed, never before.** The
+//! three writes in [`crate::settlement`] own their own transaction, so they
+//! record after their own `COMMIT`. The three below run inside a
+//! *caller's* transaction — that is the whole point of taking a
+//! `PgConnection` (`docs/flows/crash-safety.md` requires the charge row to
+//! be committed before any network call, and the caller owns that commit) —
+//! so they cannot record at all: a `ROLLBACK` after the insert, from a later
+//! statement in the same transaction failing, would otherwise leave a
+//! counter claiming a charge that does not exist. Instead each returns its
+//! row and the caller calls [`record_opened`] or [`record_left_submitting`]
+//! **after** `tx.commit()`. The seam is still this module — the label
+//! vocabulary and the metric name are here and the callers pass no strings —
+//! but the *timing* has to belong to whoever owns the commit, because
+//! nothing inside a transaction can know whether it will be committed.
+//!
+//! (Until 2026-09-03 all three recorded inline, and this header claimed the
+//! metric "cannot claim a transition the database refused" while a
+//! rolled-back insert was counted. The claim is now true rather than
+//! qualified.)
+//!
+//! What that timing costs: a caller can now *forget* to record, which an
+//! inline call could not; and a process that dies between `tx.commit()` and
+//! the recorder loses that transition for good, so the counter is at-most-once
+//! against `charges`, never exactly-once — expect drift after a crash. Both directions are pinned by tests rather than by
+//! review —
+//! `a_rolled_back_charge_insert_counts_nothing_and_a_committed_one_counts_once`
+//! (`tests/repositories.rs`) fails if the recording moves back inside the
+//! statement, and
+//! `a_confirmed_payment_is_driven_to_succeeded_and_the_merchant_sees_it`
+//! (`backends/tests/integration/tests/worker_e2e.rs`) scrapes the running
+//! server and fails if any of the four edges of one charge's walk goes
+//! uncounted, which is what happens when a caller drops its call.
+//!
 //! # Why the insert takes a connection, not a pool
 //!
 //! `docs/flows/crash-safety.md` requires the charge row — carrying the
@@ -45,8 +98,79 @@
 use sqlx::{PgConnection, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
+use vpay_core::ChargeState;
+use vpay_core::metrics::CHARGE_TRANSITIONS_TOTAL;
 
 use crate::error::{DbError, classify_write};
+
+/// The `from` label for a charge that had no previous state: the row is
+/// being created.
+///
+/// The empty string rather than a word like `none`, and rather than omitting
+/// the label: a Prometheus series is identified by its whole label *set*, so
+/// dropping `from` here would put charge creation on a different series from
+/// every other transition and break `sum by (to) (...)`. Empty is the same
+/// convention `vpay_provider_requests_total`'s `error_kind` uses for "there
+/// was no error".
+pub(crate) const NO_PRIOR_STATE: &str = "";
+
+/// Counts one charge state transition that the database actually performed.
+///
+/// The single seam for [`CHARGE_TRANSITIONS_TOTAL`] — see this module's
+/// header for why it lives in `vpay-db` and not at the callers.
+///
+/// Call it *after* the statement returned a row, never before: these writes
+/// are compare-and-swaps, and a swap that matched nothing is a transition
+/// that did not happen. `to` and `provider` come off the returned row in
+/// every caller, so they are the database's answer rather than the caller's
+/// intention.
+///
+/// A no-op when no recorder is installed, which is the case in most of this
+/// crate's own tests and in every process that has not called
+/// `install_recorder` — the library never installs one
+/// (`vpay_core::metrics`).
+pub(crate) fn record_transition(provider_code: &str, from: &str, to: &str) {
+    metrics::counter!(
+        CHARGE_TRANSITIONS_TOTAL,
+        "provider" => provider_code.to_owned(),
+        "from" => from.to_owned(),
+        "to" => to.to_owned(),
+    )
+    .increment(1);
+}
+
+/// Counts the charge [`insert_for_intent`] opened — **after** the caller's
+/// transaction has committed.
+///
+/// Counted as a transition out of nothing. A charge being opened is the
+/// first edge of the state machine and the one every later edge is a
+/// fraction of, so leaving it out would mean a dashboard could show the
+/// failures without the denominator.
+///
+/// Call it once, immediately after the `COMMIT` that made the row real. See
+/// this module's header for why the caller and not the insert.
+pub fn record_opened(charge: &ChargeRow) {
+    record_transition(&charge.provider_code, NO_PRIOR_STATE, &charge.state);
+}
+
+/// Counts the move out of `submitting` that [`mark_submitted`] or
+/// [`mark_failed`] performed — **after** the caller's transaction has
+/// committed.
+///
+/// `from` is the literal in both statements' `WHERE` clauses, not a guess:
+/// neither matches a row unless the charge was in `submitting`. `to` and the
+/// rail come off the row the statement returned.
+///
+/// One function for both writes because the *transition* is what is counted
+/// and both leave the same state; which of the two happened is the `to`
+/// label. See this module's header for why the caller and not the write.
+pub fn record_left_submitting(charge: &ChargeRow) {
+    record_transition(
+        &charge.provider_code,
+        ChargeState::Submitting.as_wire_str(),
+        &charge.state,
+    );
+}
 
 /// Every column of `charges`, shared by both queries so they cannot drift
 /// on what [`ChargeRow`] decodes.
@@ -165,6 +289,9 @@ pub struct NewCharge {
 
 /// Opens the single charge for an intent, inside the caller's transaction.
 ///
+/// Does **not** count the transition: the caller owns the commit, so the
+/// caller calls [`record_opened`] once it has one. See this module's header.
+///
 /// # Errors
 ///
 /// [`DbError::UniqueViolation`] with `constraint: "one_charge_per_intent"`
@@ -185,7 +312,7 @@ pub async fn insert_for_intent(
          RETURNING {COLUMNS}"
     );
 
-    sqlx::query_as::<_, ChargeRow>(&sql)
+    let row = sqlx::query_as::<_, ChargeRow>(&sql)
         .bind(&new.id)
         .bind(&new.payment_intent_id)
         .bind(&new.provider_code)
@@ -200,7 +327,9 @@ pub async fn insert_for_intent(
         .bind(new.payer_ref_masked.as_deref())
         .fetch_one(&mut *tx)
         .await
-        .map_err(classify_write)
+        .map_err(classify_write)?;
+
+    Ok(row)
 }
 
 /// Reads the charge belonging to an intent, if one has been opened.
@@ -326,6 +455,11 @@ pub async fn get_by_id(pool: &PgPool, id: &str) -> Result<Option<ChargeRow>, DbE
 /// not exist. Neither is a merchant's doing, so it classifies as `Internal`
 /// (`docs/flows/errors.md`) and the caller must not retry it as if the rail
 /// had failed. [`DbError::Query`] if the write itself fails.
+///
+/// # Counting
+///
+/// Does **not** count the transition — [`record_left_submitting`], after the
+/// caller's commit. See this module's header.
 pub async fn mark_submitted(
     tx: &mut PgConnection,
     id: &str,
@@ -346,7 +480,7 @@ pub async fn mark_submitted(
          RETURNING {COLUMNS}"
     );
 
-    sqlx::query_as::<_, ChargeRow>(&sql)
+    let row = sqlx::query_as::<_, ChargeRow>(&sql)
         .bind(id)
         .bind(state)
         .bind(provider_ref_extra)
@@ -357,7 +491,9 @@ pub async fn mark_submitted(
         .ok_or_else(|| DbError::WriteMatchedNoRow {
             table: "charges",
             key: id.to_owned(),
-        })
+        })?;
+
+    Ok(row)
 }
 
 /// Fails a charge the rail declined, as the same compare-and-swap out of
@@ -380,7 +516,8 @@ pub async fn mark_submitted(
 ///
 /// # Errors
 ///
-/// As [`mark_submitted`].
+/// As [`mark_submitted`], and it does not count its transition either —
+/// [`record_left_submitting`], after the caller's commit.
 pub async fn mark_failed(
     tx: &mut PgConnection,
     id: &str,
@@ -397,7 +534,7 @@ pub async fn mark_failed(
          RETURNING {COLUMNS}"
     );
 
-    sqlx::query_as::<_, ChargeRow>(&sql)
+    let row = sqlx::query_as::<_, ChargeRow>(&sql)
         .bind(id)
         .bind(failure_code)
         .bind(failure_raw)
@@ -407,5 +544,7 @@ pub async fn mark_failed(
         .ok_or_else(|| DbError::WriteMatchedNoRow {
             table: "charges",
             key: id.to_owned(),
-        })
+        })?;
+
+    Ok(row)
 }

@@ -1,0 +1,3 @@
+# 25 == shutdownGraceSeconds: the kubelet would kill the process at the exact
+# moment it is still finishing its last request.
+terminationGracePeriodSeconds: 25

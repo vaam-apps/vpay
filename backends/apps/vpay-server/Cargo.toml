@@ -40,6 +40,14 @@ clap.workspace = true
 # panics when it builds a client with no process default installed (root
 # Cargo.toml's comments on the `reqwest` and `authkestra-*` pins).
 rustls.workspace = true
+# The metrics facade and its Prometheus text exporter. `install_recorder()`
+# in main.rs installs exactly one recorder per process — a decision that
+# belongs to the binary, not to a library (see `vpay_core::metrics`) — and
+# `vpay_api::observability` renders its handle on `--observability-bind`.
+# The exporter is pinned `default-features = false` in the root Cargo.toml;
+# its `push-gateway` default would pull `aws-lc-rs`, which `deny.toml` bans.
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
 # `adapters()` names `reqwest::Client` in its signature — the one client this
 # process builds at boot (`vpay_provider::http::client_with_timeouts`) and
 # hands to every rail adapter. Already resolved in this binary's graph via

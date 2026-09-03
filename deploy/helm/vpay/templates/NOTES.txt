@@ -1,0 +1,35 @@
+vpay {{ .Chart.AppVersion }} — chart {{ .Chart.Version }}, release {{ .Release.Name }} in {{ .Release.Namespace }}.
+
+  server:  {{ include "vpay.image" (dict "ctx" . "component" "server") }}  ({{ .Values.server.replicaCount }} replicas)
+  worker:  {{ include "vpay.image" (dict "ctx" . "component" "worker") }}  ({{ .Values.worker.replicaCount }} replicas)
+  profile: {{ .Values.config.profile }}{{ if .Values.config.createOverlayConfigMap }} (overlay ConfigMap {{ include "vpay.overlayConfigMapName" . }} -> {{ include "vpay.overlayMountPath" . }}){{ else }} (no overlay ConfigMap — the image's baked config is the whole configuration){{ end }}
+
+READ THIS.
+
+  * This chart has never been applied to a cluster by anyone. Its entire
+    evidence is `helm lint`, `helm template` and `kubeconform` in CI. Nothing
+    has verified scheduling, the probes, readOnlyRootFilesystem, the
+    NetworkPolicy, the PodDisruptionBudget during a rolling restart, or
+    whether the ingress controller honours `limit-rps`.
+
+  * The liveness probes point at {{ .Values.observability.livenessPath }} on port {{ .Values.observability.port }} — the
+    observability listener (`--observability-bind`), which both binaries bind
+    as of 2026-09-03. Both `tests/cli.rs` suites prove /livez and /metrics
+    answer there and 404 on the traffic port. An image built BEFORE that
+    (anything older than this chart's appVersion) has no such listener and
+    will be restarted in a loop by the kubelet: pin `images.*.digest`, and
+    check `docs/status.md`.
+
+  * This chart creates no Secret and no database. These must already exist:
+      Secret/{{ .Values.database.existingSecret }} (key {{ .Values.database.existingSecretKey }}) — the Postgres URL
+      Secret/{{ .Values.signingKey.existingSecret }} (key {{ .Values.signingKey.key }}) — the RS256 signing key
+      Secret/{{ .Values.rails.existingSecret }} — the rail credentials, one key per ${VAR} in the config
+
+  * Rotating the signing key is restart-based, and rolling back to a retired
+    kid is exit 78, not a degraded start.
+{{ if not .Values.metrics.prometheusRule.enabled }}
+  * The PrometheusRule is disabled. Enabling it installs alerts whose
+    thresholds are proposed rather than measured. The metrics they query are
+    emitted; no Prometheus has ever scraped a vpay process, so no rule below
+    has ever been evaluated against a real series.
+{{- end }}

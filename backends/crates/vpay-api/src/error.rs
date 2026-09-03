@@ -494,9 +494,19 @@ impl ApiError {
     /// carries `alert = true`, which is what an alerting rule selects on. A
     /// level alone could not express the difference, and losing it would
     /// mean either paging on every `DbError` or never paging at all.
+    ///
+    /// It is also where `vpay_error_events_total` and — for a `Page` —
+    /// `vpay_alert_events_total` are incremented, through
+    /// [`vpay_core::metrics::record_error_event`]. In this function rather
+    /// than in a `tracing` layer that scraped the events, so that the
+    /// counter and the `alert = true` field are the same decision read from
+    /// the same [`Classify`] impl: a layer would be a second classification
+    /// that could disagree with this one, and the disagreement would be
+    /// invisible until a page failed to fire.
     fn log(&self) {
         let category = self.category();
         let chain = self.source_chain();
+        vpay_core::metrics::record_error_event(self);
         match self.severity() {
             Severity::Info => tracing::info!(
                 category = ?category,
@@ -1323,6 +1333,54 @@ mod tests {
         assert!(
             caller.contains("INFO"),
             "a caller's mistake informs: {caller}"
+        );
+    }
+
+    /// The same decision, on the other channel: the log line's
+    /// `alert = true` and the counter an alert rule fires on are one call,
+    /// so they cannot disagree about what a page is.
+    ///
+    /// `Internal` pages and `Db` does not, which is exactly the pair the
+    /// test above asserts on the log side — asserted here on the metrics
+    /// side, in one recorder, so "both counters moved" and "only the error
+    /// counter moved" are two lines of one document rather than two runs.
+    #[test]
+    fn a_page_severity_error_increments_the_alert_counter_and_a_storage_error_does_not() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || {
+            // `log()` and not `into_response()`: the counters belong to the
+            // operator-facing half, and this pins them to the same function
+            // that writes `alert = true`.
+            let _ = with_captured_log(|| ApiError::Internal("x".into()).log());
+            let _ = with_captured_log(|| ApiError::Db(leaky_db_error()).log());
+        });
+        let scrape = handle.render();
+
+        assert!(
+            scrape.contains(
+                r#"vpay_error_events_total{category="Internal",code="internal_error",severity="Page"} 1"#
+            ),
+            "{scrape}"
+        );
+        assert!(
+            scrape.contains(
+                r#"vpay_alert_events_total{category="Internal",code="internal_error"} 1"#
+            ),
+            "an ApiError that logs `alert = true` must also reach vpay_alert_events_total, or \
+             VpayPageableErrorEvents cannot fire on it: {scrape}"
+        );
+        assert!(
+            scrape.contains(r#"severity="Error""#),
+            "the DbError must still be counted, at its own severity: {scrape}"
+        );
+        assert_eq!(
+            scrape
+                .lines()
+                .filter(|line| line.starts_with("vpay_alert_events_total{"))
+                .count(),
+            1,
+            "only the Page-severity error may page: {scrape}"
         );
     }
 

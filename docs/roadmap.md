@@ -200,8 +200,13 @@ plus the Stripe-shaped 404.
    `publishable_signing_keys` across the overlap window. **Runtime rotation
    does not exist:** `TokenManager` holds one key for the life of the
    process, so rotating means restarting with a new Secret, nothing re-reads
-   the file, a rollback to a retired `kid` is refused, and no runbook
-   describes the sequence.
+   the file, and a rollback to a retired `kid` is refused. **The "no runbook
+   describes the sequence" half of this is fixed as of 2026-09-03 (Step 6,
+   block C):** [runbooks/rotate-signing-key.md](runbooks/rotate-signing-key.md)
+   documents the restart-based rotation, the 24 h overlap window, and the
+   exit-78-not-69 crash loop a rollback to a retired `kid` produces. Runtime
+   rotation itself still does not exist, and the runbook has never been
+   followed against a deployment.
 4. ~~`rustls::crypto::CryptoProvider::install_default()` in both binaries'
    `main()`, before the first JWKS fetch~~ — **done 2026-09-02**, see
    `docs/status.md`'s "rustls `CryptoProvider` process default" row.
@@ -286,8 +291,10 @@ imply dashboard login blocks the payment path, which it does not.
 - **`disabled_clients` supplements YAML identity as a kill switch.**
   ADR-0010: YAML stays authoritative for identity; the table only ever
   *subtracts* access, so revocation is an `INSERT`, not a deploy. Cost: a
-  correct "is this client allowed" answer needs checking both — no runbook
-  documents that yet (Open questions, below).
+  correct "is this client allowed" answer needs checking both —
+  [runbooks/rotate-rail-credentials.md](runbooks/rotate-rail-credentials.md)
+  §5 documents that check as of 2026-09-03, having never been followed
+  against a deployment.
 - **No secret material in the database at all.** Migration
   `0010_reshape-oauth-signing-keys.sql` replaced `private_key_pem` with
   `public_jwk JSONB`; the private PEM is meant to come from a Kubernetes
@@ -340,9 +347,19 @@ imply dashboard login blocks the payment path, which it does not.
   `the_access_token_ttl_fits_inside_the_key_rotation_overlap`), not that 24 h
   is the right length. A maintainer should settle it together with the TTL
   above, since the two are related by that constraint.
-- **Open — the `disabled_clients` + YAML dual-authority runbook.** ADR-0010
-  says a future revocation runbook must check both explicitly. None exists
-  in `docs/runbooks/` yet.
+- ~~**Open — the `disabled_clients` + YAML dual-authority runbook.**~~
+  **Written 2026-09-03 (Step 6, block C.)**
+  [runbooks/rotate-rail-credentials.md](runbooks/rotate-rail-credentials.md)
+  §5 documents the check ADR-0010 requires: YAML `merchant_clients` for
+  identity, `disabled_clients` for subtraction, the order to ask the two
+  questions in, the `INSERT`/`DELETE` that revoke and un-revoke, and the fact
+  that the switch acts on *issuance* only, so an already-issued token stays
+  valid for its remaining 900 s. It also says to re-check the table after a
+  database restore, because a restore silently un-revokes. **The runbook has
+  never been followed against a deployment**, and `disable_client` /
+  `enable_client` are still called by no shipping code — an operator flips
+  the row by hand. The half the switch cannot cover, revoking a token already
+  issued, is the next item and is still open.
 - **Open — the revocation-endpoint gap on `authkestra-op` itself.**
   ADR-0009: a stolen access token cannot be revoked mid-lifetime through the
   OP. Whether vpay builds a deny-list or accepts this as bounded by TTL is
@@ -352,8 +369,19 @@ imply dashboard login blocks the payment path, which it does not.
   solve, but worth confirming ingress config actually does it before relying
   on the assumption. **`/v1/oauth/token` is now publicly reachable and
   unauthenticated by necessity (the credential is the request body), so this
-  moved from theoretical to live on 2026-09-02.** Nothing in this repository
-  rate-limits it or verifies that anything else does.
+  moved from theoretical to live on 2026-09-02.** ~~Nothing in this
+  repository rate-limits it or verifies that anything else does.~~
+  **Half-corrected 2026-09-03 (Step 6, block B):** the chart renders a
+  separate `Ingress` for `/v1/oauth/token` carrying a tighter
+  `nginx.ingress.kubernetes.io/limit-rps` than the one on `/v1`
+  (ingress-nginx applies the limit per Ingress object, so one object cannot
+  carry two), a `rate-limit-ordering` template guard refuses values where the
+  token limit is the looser of the two, and `just helm-check` greps the
+  rendered YAML for the annotation. **That is a check on rendered YAML and
+  nothing more** — no ingress controller has ever honoured, or been asked to
+  honour, either limit, and nginx enforces `limit-rps` per controller
+  replica, so the effective global limit is approximately
+  `limit-rps × replicas`. Still open in the sense that matters.
 - **New, 2026-09-02 — the resource validator fetches its JWKS over loopback
   HTTP from its own process.** `vpay-server` binds first, then builds the
   validator against `http://127.0.0.1:{bound_port}/v1/oauth/jwks.json`. It is

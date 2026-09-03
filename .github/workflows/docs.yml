@@ -4,6 +4,12 @@ on:
   pull_request:
     paths: ["docs/**", "README.md", "AGENTS.md", "CLAUDE.md"]
 
+# Read-only, as in ci.yml: this job runs one `cargo xtask` and reports
+# through its exit code. It never comments, labels or pushes
+# (CodeQL actions/missing-workflow-permissions).
+permissions:
+  contents: read
+
 jobs:
   status-is-current:
     name: status.md matches the code

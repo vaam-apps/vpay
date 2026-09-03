@@ -2376,13 +2376,40 @@ mod tests {
 
         let formatted = format!("{config:?}");
 
-        assert!(!formatted.contains("sub-key-test"), "{formatted}");
-        assert!(!formatted.contains("api-key-test"), "{formatted}");
-        assert!(!formatted.contains("merchant-key-test"), "{formatted}");
+        // No assertion message interpolates `formatted`. The subject of this
+        // test is a `Debug` string built from a `Config` whose credentials
+        // were resolved from the environment, so precisely when one of these
+        // assertions fails, `formatted` is the string holding the credential
+        // value in cleartext — and a failed test writes its message to the
+        // CI log (CodeQL rust/cleartext-logging). Each message names the
+        // credential's path in `config/application.yml` instead; that is
+        // enough to find the missing redaction, and costs nothing an
+        // operator would have been allowed to read anyway.
+        assert!(
+            !formatted.contains("sub-key-test"),
+            "Config Debug leaked providers[mtn_momo].credentials.subscription_key"
+        );
+        assert!(
+            !formatted.contains("api-key-test"),
+            "Config Debug leaked providers[mtn_momo].credentials.api_key"
+        );
+        assert!(
+            !formatted.contains("merchant-key-test"),
+            "Config Debug leaked providers[orange_money].credentials.merchant_key"
+        );
         // Non-secret fields survive the trip through the whole `Config`.
-        assert!(formatted.contains("vpay"), "{formatted}");
-        assert!(formatted.contains("mtn_momo"), "{formatted}");
-        assert!(formatted.contains("[redacted]"), "{formatted}");
+        assert!(
+            formatted.contains("vpay"),
+            "Config Debug dropped deployment.name"
+        );
+        assert!(
+            formatted.contains("mtn_momo"),
+            "Config Debug dropped providers[mtn_momo].code"
+        );
+        assert!(
+            formatted.contains("[redacted]"),
+            "Config Debug dropped the [redacted] marker that stands in for a credential value"
+        );
     }
 
     // --- OAuth client validation rules (ADR-0010, docs/flows/dashboard-auth.md) ---

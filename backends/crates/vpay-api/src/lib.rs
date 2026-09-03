@@ -12,6 +12,12 @@
 //! a real database check (below) and a real 404 are the opposite of
 //! fabricated data, so they stay. See `docs/status.md`.
 //!
+//! [`observability`] is this crate's *other* router: `/livez` and
+//! `/metrics`, mounted by both binaries on `--observability-bind` and by
+//! neither on the traffic port. It is here rather than in `main.rs` because
+//! it is mechanism both binaries share, and because the test that keeps
+//! those two paths off [`router`] belongs beside the module that owns them.
+//!
 //! [`resource_auth`] supplies the bearer-token validation now mounted in
 //! front of `/v1` — see [`router`]'s "Route tree" section for exactly which
 //! paths sit inside and outside it. `/dash/v1` is still mounted nowhere:
@@ -37,9 +43,10 @@ use std::borrow::Cow;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::body::Body;
-use axum::extract::{FromRef, State};
+use axum::extract::{FromRef, MatchedPath, State};
 use axum::http::{HeaderName, Method, Request, Uri};
 use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
@@ -50,6 +57,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
 use tracing::Span;
+use vpay_core::metrics::{HTTP_REQUEST_DURATION_SECONDS, HTTP_REQUESTS_TOTAL};
 use vpay_db::PgPool;
 use vpay_provider::ProviderAdapter;
 
@@ -58,6 +66,12 @@ pub mod form;
 pub mod idempotency;
 mod jwks_cache;
 pub mod model;
+// The second listener: `/livez` and `/metrics`, on `--observability-bind`,
+// mounted by BOTH binaries and by neither's traffic router. It lives in this
+// crate rather than being written twice in `main.rs` because it is
+// mechanism, not policy — and because the test that keeps those two paths
+// *off* `router()` below belongs next to the module that owns them.
+pub mod observability;
 pub mod op;
 pub mod resource_auth;
 #[cfg(test)]
@@ -304,20 +318,33 @@ impl FromRef<AppState> for Arc<BTreeMap<String, Box<dyn ProviderAdapter>>> {
 /// `/healthz`: reflects whether the database is actually reachable right
 /// now, rather than a static `"ok"`.
 ///
-/// Single combined liveness+readiness endpoint, deliberately not split into
-/// `/healthz` (process alive) and `/readyz` (DB reachable): nothing in this
-/// repository defines a Kubernetes liveness vs. readiness probe today — no
-/// manifest, no `Dockerfile HEALTHCHECK` (the runtime image is `FROM
-/// scratch` and has no shell to run one — see `backends/Dockerfile`), no
-/// `compose.yml` healthcheck on `vpay-server` itself. Inventing a real
-/// liveness/readiness split ahead of an actual orchestration consumer that
-/// would treat them differently would be exactly the kind of feature that
-/// only *looks* more finished than it is (`CLAUDE.md`: "never make the repo
-/// look more finished than it is") — a `/readyz` nobody polls proves
-/// nothing. When real k8s manifests land, split this: a liveness probe
-/// should stay a static `"ok"` (so a transient database blip does not cause
-/// a pod restart that cannot fix a database outage), and a new readiness
-/// probe should carry this DB check instead.
+/// **This is now the readiness half of a real split** (Step 6). The
+/// paragraph that used to stand here said the endpoint was deliberately
+/// *not* split, because nothing in the repository defined a Kubernetes
+/// liveness vs. readiness probe and a `/readyz` nobody polls proves nothing.
+/// `deploy/helm/vpay` is that consumer: `deployment-server.yaml` wires
+/// `readinessProbe` → `GET /healthz` on the traffic port and
+/// `livenessProbe` → `GET /livez` on the observability port. So the split
+/// happened, exactly as that paragraph specified it should — and it happened
+/// on **two ports**, not two paths.
+///
+/// `/healthz` keeps the database check and keeps its meaning: a pod whose
+/// Postgres is unreachable should stop receiving traffic. It is deliberately
+/// *not* the liveness probe, because a liveness probe that fails on a
+/// database outage restarts every pod in the deployment, repeatedly, and a
+/// restart cannot fix a database.
+///
+/// Liveness is [`crate::observability`]'s `/livez`, a static `"ok"` on
+/// `--observability-bind`. It is not mounted here and must not be: see that
+/// module's header for why `/metrics` cannot share a port with the surface
+/// an Ingress fronts, and
+/// `neither_livez_nor_metrics_is_reachable_on_the_traffic_router` below for
+/// the test that keeps it off.
+///
+/// Nothing about `/healthz` itself changed. CI's readiness gate
+/// (`.github/workflows/ci.yml`) and `compose.e2e.yml` both depend on its
+/// current meaning, and moving the DB check off it would break them
+/// silently.
 async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
     match vpay_db::check_connection(&state.pool).await {
         Ok(()) => (StatusCode::OK, "ok"),
@@ -388,6 +415,160 @@ fn make_request_span(request: &Request<Body>) -> Span {
         path = request.uri().path(),
         request_id = %request_id,
     )
+}
+
+/// The label [`HTTP_REQUESTS_TOTAL`] carries for a request that matched no
+/// route.
+///
+/// A bounded stand-in for an unbounded set. The alternative — falling back
+/// to `uri().path()` — hands anyone who can reach the port the ability to
+/// create a new time series per request, which is the classic way to fill a
+/// metrics store from the outside.
+///
+/// `pub` for the reason [`OTHER_METHOD`] is: these two are the label values
+/// an operator reads on a dashboard, and a caller outside this crate that
+/// wants to assert on one should name the constant rather than re-spell the
+/// string.
+pub const UNMATCHED_ROUTE: &str = "unmatched";
+
+/// The label [`HTTP_REQUESTS_TOTAL`] carries for a request whose method is
+/// not one of the ten [`Method`] constants.
+///
+/// [`UNMATCHED_ROUTE`]'s reasoning, on the other label of the same series.
+/// RFC 9110 §9.1 makes a method any token, `http::Method` parses one into
+/// its extension form rather than rejecting it, and axum routes the request
+/// — so `M12345 /healthz`, unauthenticated, on a loop, mints one time
+/// series per request. Bounding `route` and leaving `method` free closed
+/// one half of the same hole.
+///
+/// `pub` so the label an operator sees in a dashboard has a name in code,
+/// and so a `/metrics` assertion outside this crate can be written against
+/// the constant rather than against a copy of the string.
+pub const OTHER_METHOD: &str = "other";
+
+/// The ten methods this router labels verbatim, and the constants those
+/// ten labels are checked against.
+///
+/// A `static` rather than a `const` so [`bounded_method`] can hand out
+/// `&'static str` from it: the point of returning `http`'s own spelling is
+/// that a dashboard's `method="GET"` cannot drift from what `Method::GET`
+/// renders, and a copy of the literal here would be exactly that drift.
+static STANDARD_METHODS: [Method; 10] = [
+    Method::GET,
+    Method::HEAD,
+    Method::POST,
+    Method::PUT,
+    Method::DELETE,
+    Method::CONNECT,
+    Method::OPTIONS,
+    Method::TRACE,
+    Method::PATCH,
+    Method::QUERY,
+];
+
+/// A request method as a bounded label value: one of [`STANDARD_METHODS`]
+/// verbatim, or [`OTHER_METHOD`].
+///
+/// A linear scan over ten `&'static` constants, on a path that already
+/// awaited a whole HTTP response; the alternative — a `match` on
+/// `method.as_str()` with ten string literals — would re-spell the labels
+/// in this file, which is the drift the `static` above exists to prevent.
+fn bounded_method(method: &Method) -> &'static str {
+    STANDARD_METHODS
+        .iter()
+        .find(|standard| *standard == method)
+        .map_or(OTHER_METHOD, Method::as_str)
+}
+
+/// Counts and times one HTTP response: the single seam for
+/// [`HTTP_REQUESTS_TOTAL`] and [`HTTP_REQUEST_DURATION_SECONDS`].
+///
+/// # Why a `from_fn` middleware and not `TraceLayer`'s `on_response`
+///
+/// `on_response` is handed the response, the elapsed time and the span — but
+/// not the request, and a `route` label has to come from the request's
+/// [`MatchedPath`] extension. Reading it back off the span is not possible
+/// (`tracing` fields are write-only), and recording the route into a span
+/// field so a callback could read it would be a second mechanism to keep
+/// correct. A middleware that holds the request, awaits the inner service
+/// and then records is one function that can see both halves.
+///
+/// # Why the route pattern and never the path
+///
+/// `/v1/payment_intents/pi_3Nk…` as a label value would mint a time series
+/// per payment intent, and a metrics store's cardinality is the one resource
+/// a payment gateway's own success exhausts. The pattern
+/// (`/v1/payment_intents/{id}`) is a fixed, small set — the route table —
+/// and it is what a dashboard actually groups by.
+///
+/// `method` is bounded for the same reason and was not always: see
+/// [`bounded_method`] and [`OTHER_METHOD`]. Every label on this series now
+/// comes from a closed set — the route table, ten methods, and a status
+/// code.
+///
+/// # Where this is mounted, and why in three places rather than one
+///
+/// axum inserts `MatchedPath` **after** routing, and a layer added with
+/// `Router::layer` runs after that router's own routing but *before* a
+/// nested router's. For a request into a nest, the outer router therefore
+/// has no `MatchedPath` to offer at all: `axum::extract::matched_path`
+/// stores a private `MatchedNestedPath` instead whenever the matched pattern
+/// ends in the nest's tail-capture parameter, precisely so that a
+/// half-resolved pattern cannot be mistaken for a real one. Mounted only on
+/// the outermost router, this middleware would therefore label every `/v1`
+/// request `unmatched`.
+///
+/// So it is mounted three times inside [`router`] — once on the outer
+/// router's own routes, once inside the `/v1/oauth` nest and once inside the
+/// `/v1` nest — and each copy sees the pattern its own router matched. The
+/// outer mount is applied *before* the two nests are added, which is what
+/// keeps a `/v1` request from being counted twice: `Router::layer` wraps
+/// only the routes that already exist ("Additional routes added after
+/// `layer` is called will not have the middleware added"). That ordering is
+/// load-bearing and `every_mounted_group_is_counted_exactly_once` fails if
+/// someone reorders it.
+///
+/// Inside `/v1` it is applied *outside* the authentication layer, so a `401`
+/// — the response a confused integrator is most likely to be holding — is
+/// counted against the route it was aimed at rather than disappearing into
+/// `unmatched`.
+///
+/// # What is not counted here
+///
+/// `/livez` and `/metrics`: they are [`observability`]'s router on a
+/// different port. A scraper polling every 15 seconds would otherwise be the
+/// largest traffic source on the series, and it is not traffic anyone wants
+/// to see on a dashboard of merchant requests.
+async fn track_http_metrics(request: Request<Body>, next: Next) -> Response {
+    // Owned before the request is consumed by the inner service; both are
+    // small and bounded (a route pattern from the table, a method).
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or_else(|| UNMATCHED_ROUTE.to_owned(), |m| m.as_str().to_owned());
+    let method = bounded_method(request.method());
+
+    let started = Instant::now();
+    let response = next.run(request).await;
+    let elapsed = started.elapsed();
+    let status = response.status().as_u16().to_string();
+
+    metrics::counter!(
+        HTTP_REQUESTS_TOTAL,
+        "route" => route.clone(),
+        "method" => method,
+        "status" => status.clone(),
+    )
+    .increment(1);
+    metrics::histogram!(
+        HTTP_REQUEST_DURATION_SECONDS,
+        "route" => route,
+        "method" => method,
+        "status" => status,
+    )
+    .record(elapsed.as_secs_f64());
+
+    response
 }
 
 /// The longest caller-supplied request id this router will honour, in bytes.
@@ -622,13 +803,21 @@ const V1_BODY_LIMIT_BYTES: usize = 64 * 1024;
 ///
 /// | Path | Auth | Why |
 /// |---|---|---|
-/// | `GET /healthz` | none | A probe must answer before anything is configured, and it reveals only whether Postgres is reachable. |
+/// | `GET /healthz` | none | A probe must answer before anything is configured, and it reveals only whether Postgres is reachable. It is the *readiness* probe; liveness is `/livez` on the observability port ([`observability`]). |
 /// | `POST /v1/oauth/token` | none | The credential *is* the request body (RFC 7523 `client_assertion`). Requiring a bearer token to get a bearer token is circular. |
 /// | `GET /v1/oauth/.well-known/openid-configuration` | none | How a client that has never spoken to vpay finds the token endpoint. |
 /// | `GET /v1/oauth/jwks.json` | none | How a verifier that has never spoken to vpay learns the public keys. Same circularity. |
 /// | **anything else under `/v1/oauth`** | none | The OP subtree is public by design; its own `.fallback(not_found)` answers the honest 404 rather than letting the path escape to the outer router. |
 /// | **everything else under `/v1`** | `AuthenticatedMerchant` | The merchant API. |
 /// | anything else | none | The honest 404. |
+///
+/// `/livez` and `/metrics` are **not** in that table and are not served by
+/// this router at all. They belong to [`observability`], on
+/// `--observability-bind` (default `0.0.0.0:9090`), because `/metrics` names
+/// every rail, route pattern and error code this deployment has and must not
+/// be reachable from whatever fronts the traffic port. The chart's
+/// NetworkPolicy encodes that, and it can only do so because the two are
+/// different ports.
 ///
 /// The `/v1` nest mounts [`v1::V1_ROUTES`] and a 404 fallback for
 /// everything else, which is the production behaviour and not a
@@ -763,7 +952,10 @@ pub fn router(deps: RouterDeps) -> Router {
         .route("/jwks.json", get(op::jwks::jwks_handler))
         // Explicit, not inherited — see this function's route table and the
         // paragraph under it.
-        .fallback(not_found);
+        .fallback(not_found)
+        // Inside the nest, because that is the only place the OP's own route
+        // patterns exist — see `track_http_metrics`.
+        .layer(from_fn(track_http_metrics));
 
     // Every route is mounted from `v1::V1_ROUTES` — see that constant, and
     // `v1::routes`, which also carries the fallback. `Router::layer` (not
@@ -780,13 +972,26 @@ pub fn router(deps: RouterDeps) -> Router {
         // rather than axum's `DefaultBodyLimit` because the latter is
         // applied per-handler through extractors and would not cover a body
         // read by middleware.
-        .layer(RequestBodyLimitLayer::new(V1_BODY_LIMIT_BYTES));
+        .layer(RequestBodyLimitLayer::new(V1_BODY_LIMIT_BYTES))
+        // Outermost of the three, and inside this nest rather than on the
+        // outer router: a `/v1` request's route pattern only exists once
+        // this router has matched, and a 401 decided by the layer above must
+        // still be counted against the route it was aimed at. See
+        // `track_http_metrics`.
+        .layer(from_fn(track_http_metrics));
 
     Router::new()
         .route("/healthz", get(healthz))
+        .fallback(not_found)
+        // **Before the two nests, and that ordering is the whole reason a
+        // `/v1` request is not counted twice**: `Router::layer` wraps the
+        // routes that exist when it is called and nothing added afterwards,
+        // so this copy covers `/healthz` and the outer 404 only, while each
+        // nest carries its own. Moving this line below the nests would
+        // double every `/v1` count and label half of them `unmatched`.
+        .layer(from_fn(track_http_metrics))
         .nest("/v1/oauth", oauth)
         .nest("/v1", v1)
-        .fallback(not_found)
         .with_state(state)
         .layer(
             ServiceBuilder::new()
@@ -842,6 +1047,260 @@ mod tests {
             )
             .await
             .expect("router does not fail to serve")
+    }
+
+    /// Renders a real Prometheus scrape of whatever `body` recorded.
+    ///
+    /// The **shipping** exporter over a *local* recorder — see
+    /// `vpay_core::metrics`' own tests for why both halves of that matter.
+    /// Asserting on rendered text means a label spelled wrongly fails here
+    /// for the same reason a dashboard would be empty.
+    fn scrape_of(body: impl FnOnce()) -> String {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, body);
+        handle.render()
+    }
+
+    /// Drives one request through the real router under a local recorder and
+    /// returns `(status, scrape)`.
+    ///
+    /// The runtime is built inside the recorder's scope and on one thread:
+    /// `with_local_recorder` installs a *thread-local*, so a multi-threaded
+    /// runtime could poll the middleware on a thread that cannot see it and
+    /// the test would silently assert on an empty document.
+    fn request_and_scrape(method: &str, uri: &str) -> (StatusCode, String) {
+        let mut status = StatusCode::IM_A_TEAPOT;
+        let scrape = scrape_of(|| {
+            let response = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a current-thread runtime builds")
+                .block_on(async {
+                    router(deps())
+                        .oneshot(
+                            Request::builder()
+                                .method(method)
+                                .uri(uri)
+                                .body(Body::empty())
+                                .expect("valid request"),
+                        )
+                        .await
+                        .expect("router does not fail to serve")
+                });
+            status = response.status();
+        });
+        (status, scrape)
+    }
+
+    /// The label `vpay_http_requests_total` carries for a healthz probe —
+    /// the series `deploy/helm/vpay`'s dashboards and the server's own
+    /// `tests/cli.rs` both name.
+    #[test]
+    fn a_healthz_probe_is_counted_under_its_own_route_pattern() {
+        let (status, scrape) = request_and_scrape("GET", "/healthz");
+        assert!(
+            scrape.contains(&format!(
+                r#"vpay_http_requests_total{{route="/healthz",method="GET",status="{}"}} 1"#,
+                status.as_u16()
+            )),
+            "{scrape}"
+        );
+        assert!(
+            scrape.contains(&format!(
+                r#"vpay_http_request_duration_seconds_count{{route="/healthz",method="GET",status="{}"}} 1"#,
+                status.as_u16()
+            )),
+            "the histogram must observe the same request: {scrape}"
+        );
+    }
+
+    /// **The reason `track_http_metrics` is mounted inside the nests**: a
+    /// `/v1` request is labelled with the route *pattern*, not the concrete
+    /// path and not `unmatched`.
+    ///
+    /// The id in the URI is a literal that no route table entry contains, so
+    /// a scrape naming it would be a per-object time series — the
+    /// cardinality failure the pattern exists to prevent. It is a `401`
+    /// (no bearer token), which is the other half: the count happens outside
+    /// the authentication layer, so the response a confused integrator is
+    /// most likely holding is counted against the route they aimed at.
+    #[test]
+    fn a_v1_request_is_counted_under_the_route_pattern_and_not_the_path() {
+        let (status, scrape) = request_and_scrape("GET", "/v1/payment_intents/pi_3NkExAmPlE");
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(
+            scrape.contains(
+                r#"vpay_http_requests_total{route="/v1/payment_intents/{id}",method="GET",status="401"} 1"#
+            ),
+            "{scrape}"
+        );
+        assert!(
+            !scrape.contains("pi_3NkExAmPlE"),
+            "a concrete object id must never become a label value: {scrape}"
+        );
+    }
+
+    /// The OP subtree is a second nest and carries its own copy of the
+    /// middleware, so its patterns are real rather than `unmatched`.
+    #[test]
+    fn an_oauth_request_is_counted_under_the_ops_own_route_pattern() {
+        let (_, scrape) = request_and_scrape("GET", "/v1/oauth/.well-known/openid-configuration");
+        assert!(
+            scrape.contains(
+                r#"vpay_http_requests_total{route="/v1/oauth/.well-known/openid-configuration",method="GET",status="200"} 1"#
+            ),
+            "{scrape}"
+        );
+    }
+
+    /// A path nothing routes is counted once, under the bounded label.
+    ///
+    /// Falling back to `uri().path()` here is the classic way to let anyone
+    /// who can reach the port mint a time series per request; this asserts
+    /// the path does not appear at all.
+    #[test]
+    fn an_unrouted_path_is_counted_under_a_bounded_label() {
+        let (status, scrape) = request_and_scrape("GET", UNROUTED_PATH);
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(
+            scrape.contains(
+                r#"vpay_http_requests_total{route="unmatched",method="GET",status="404"} 1"#
+            ),
+            "{scrape}"
+        );
+        assert!(
+            !scrape.contains(UNROUTED_PATH),
+            "a caller-supplied path must never become a label value: {scrape}"
+        );
+    }
+
+    /// **The cardinality guard on the `method` label.** An extension method
+    /// — RFC 9110 §9.1 lets a method be any token, and `http::Method` parses
+    /// one rather than rejecting it — is counted under [`OTHER_METHOD`], and
+    /// the caller's own text never reaches the scrape.
+    ///
+    /// Driven through the *real* router rather than through
+    /// [`bounded_method`] directly, because the defect this pins was not in a
+    /// mapping function (there was none): it was `request.method().to_string()`
+    /// at the seam. A revert to that line puts `M12345` back in the render and
+    /// fails the second assertion; a revert that keeps a mapping function but
+    /// stops calling it fails the first.
+    ///
+    /// The method is unauthenticated and unroutable, so this is also the shape
+    /// of the attack: anyone who can open a socket to the traffic port can
+    /// repeat it with a fresh token every time.
+    #[test]
+    fn an_extension_method_is_counted_under_a_bounded_label() {
+        const EXTENSION_METHOD: &str = "M12345";
+
+        let (status, scrape) = request_and_scrape(EXTENSION_METHOD, "/healthz");
+        assert_eq!(
+            status,
+            StatusCode::METHOD_NOT_ALLOWED,
+            "the router must still answer this request: {scrape}"
+        );
+        assert!(
+            scrape.contains(&format!(
+                r#"vpay_http_requests_total{{route="/healthz",method="{OTHER_METHOD}",status="405"}} 1"#
+            )),
+            "{scrape}"
+        );
+        assert!(
+            !scrape.contains(EXTENSION_METHOD),
+            "a caller-supplied method must never become a label value — one new time series \
+             per request, from an unauthenticated caller: {scrape}"
+        );
+    }
+
+    /// The ten labels [`bounded_method`] hands out are `http`'s own
+    /// spellings, and the tenth case is [`OTHER_METHOD`].
+    ///
+    /// The drift this pins is a re-spelled literal (`"Get"`, `"get"`) in
+    /// [`STANDARD_METHODS`]' place: it would not fail any request, it would
+    /// silently split one dashboard series in two.
+    #[test]
+    fn every_standard_method_is_labelled_with_its_own_spelling() {
+        for method in [
+            Method::GET,
+            Method::HEAD,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::CONNECT,
+            Method::OPTIONS,
+            Method::TRACE,
+            Method::PATCH,
+            Method::QUERY,
+        ] {
+            assert_eq!(
+                bounded_method(&method),
+                method.as_str(),
+                "{method} must be labelled verbatim"
+            );
+        }
+        assert_eq!(
+            STANDARD_METHODS.len(),
+            10,
+            "all ten of http::Method's constants, or the set is not the standard one"
+        );
+
+        let extension = Method::from_bytes(b"M12345").expect("an extension method parses");
+        assert_eq!(bounded_method(&extension), OTHER_METHOD);
+    }
+
+    /// **The ordering guard.** `track_http_metrics` is mounted three times,
+    /// and the outer mount is applied before the two nests are added
+    /// precisely so a `/v1` request is not wrapped twice. Move that
+    /// `.layer(...)` line below the `.nest(...)` calls and every count here
+    /// becomes `2`.
+    ///
+    /// One request per group, all in one recorder, so this also proves the
+    /// three groups produce three distinct series rather than one shared
+    /// one.
+    #[test]
+    fn every_mounted_group_is_counted_exactly_once() {
+        let scrape = scrape_of(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a current-thread runtime builds");
+            for uri in [
+                "/healthz",
+                UNROUTED_PATH,
+                "/v1/payment_intents",
+                "/v1/oauth/jwks.json",
+            ] {
+                runtime.block_on(async {
+                    router(deps())
+                        .oneshot(
+                            Request::builder()
+                                .uri(uri)
+                                .body(Body::empty())
+                                .expect("valid request"),
+                        )
+                        .await
+                        .expect("router does not fail to serve")
+                });
+            }
+        });
+
+        let counted: Vec<&str> = scrape
+            .lines()
+            .filter(|line| line.starts_with("vpay_http_requests_total{"))
+            .collect();
+        assert_eq!(
+            counted.len(),
+            4,
+            "four requests must produce four distinct series, once each:\n{scrape}"
+        );
+        for line in counted {
+            assert!(
+                line.ends_with(" 1"),
+                "a request counted more than once — is the outer .layer() still applied \
+                 *before* the two .nest() calls? line: {line}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1027,6 +1486,59 @@ mod tests {
     #[tokio::test]
     async fn healthz_is_still_unauthenticated() {
         assert_ne!(get("/healthz").await.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// The decisive test for step-6 decision (9): `/livez` and `/metrics`
+    /// live on [`crate::observability`]'s own listener
+    /// (`--observability-bind`, default `0.0.0.0:9090`) and are **not**
+    /// reachable on the port an Ingress fronts.
+    ///
+    /// `/metrics` is the one that matters. It names every rail this
+    /// deployment talks to, every route pattern it serves and every error
+    /// code it has produced; on the public port that is an operational map
+    /// handed to anyone who can reach `/healthz`. The chart's
+    /// NetworkPolicy admits the observability port from the monitoring
+    /// namespace only, and that policy is only expressible because the two
+    /// ports are different — so mounting either path here would silently
+    /// undo it.
+    ///
+    /// A 404, not a 401: neither path is under `/v1`, so the honest answer
+    /// is "this router does not serve that", and asserting the *code* rather
+    /// than merely "not 200" is what would fail if someone put them behind
+    /// the merchant boundary instead of leaving them off.
+    #[tokio::test]
+    async fn neither_livez_nor_metrics_is_reachable_on_the_traffic_router() {
+        for path in ["/livez", "/metrics", "/v1/livez", "/v1/metrics"] {
+            let status = get(path).await.status();
+            let expected = if path.starts_with("/v1/") {
+                // Under the merchant boundary, an unauthenticated request is
+                // refused before routing — which is also "not served here".
+                StatusCode::UNAUTHORIZED
+            } else {
+                StatusCode::NOT_FOUND
+            };
+            assert_eq!(
+                status, expected,
+                "{path} must not be served by the traffic router; it belongs to \
+                 vpay_api::observability on --observability-bind"
+            );
+        }
+    }
+
+    /// …and neither is in [`V1_ROUTES`], which is the list `v1::routes`
+    /// folds into the authenticated nest. The check above would already
+    /// fail if one were mounted, but this one names the cause: a route added
+    /// to that table is mounted by construction, so the table is where the
+    /// mistake would be made.
+    #[test]
+    fn the_v1_route_table_carries_no_observability_path() {
+        for route in V1_ROUTES {
+            assert!(
+                !route.path.contains("livez") && !route.path.contains("metrics"),
+                "{} is an observability path and must not be under /v1",
+                route.path
+            );
+        }
     }
 
     /// A `GET` of a route that does not exist, which is the cheapest request

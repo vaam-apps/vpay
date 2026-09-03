@@ -1,0 +1,159 @@
+{{- include "vpay.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vpay.fullname" . }}-server
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.server.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "vpay.componentSelectorLabels" (dict "ctx" . "component" "server") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vpay.componentLabels" (dict "ctx" . "component" "server") | nindent 8 }}
+      {{- if or .Values.config.createOverlayConfigMap .Values.server.podAnnotations }}
+      annotations:
+        {{- if .Values.config.createOverlayConfigMap }}
+        # The overlay is mounted with `subPath`, which does NOT live-update
+        # when the ConfigMap changes (and ADR-0003 has no hot reload anyway).
+        # This checksum turns an overlay edit into a rolling restart, which is
+        # the only way the change takes effect.
+        checksum/config-overlay: {{ .Values.config.overlay | sha256sum }}
+        {{- end }}
+        {{- with .Values.server.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "vpay.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.images.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "vpay.podSecurityContext" . | nindent 8 }}
+      # 35s against the process's own 25s drain deadline. No `preStop` hook:
+      # `ShutdownSignals::install()` is the first statement in `main`, so the
+      # startup race a sleep-based hook exists to cover is already closed.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: server
+          image: {{ include "vpay.image" (dict "ctx" . "component" "server") | quote }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          securityContext:
+            {{- include "vpay.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.server.port }}
+              protocol: TCP
+            # The observability listener (`--observability-bind`, default
+            # 0.0.0.0:9090, serving /livez and /metrics), bound since
+            # 2026-09-03. The Service, the ServiceMonitor and both probes all
+            # read this one number.
+            - name: metrics
+              containerPort: {{ .Values.observability.port }}
+              protocol: TCP
+          env:
+            {{- include "vpay.commonEnv" . | nindent 12 }}
+            - name: VPAY_BIND
+              value: {{ printf "0.0.0.0:%d" (int .Values.server.port) | quote }}
+            - name: VPAY_OAUTH_SIGNING_KEY_FILE
+              value: {{ .Values.signingKey.mountPath | quote }}
+            {{- with .Values.server.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            # Rail credentials. `kubectl describe pod` shows the variable
+            # *names* only for an `envFrom.secretRef`, never the values.
+            - secretRef:
+                name: {{ .Values.rails.existingSecret | quote }}
+          # Liveness is static and takes no database; readiness is /healthz,
+          # which is a real `SELECT 1`. Splitting them is the point: a
+          # momentary database blip must take a pod out of the Service, not
+          # restart it.
+          #
+          # The liveness probe answers on the observability port (see the
+          # `metrics` port above), which `vpay-server`'s own `tests/cli.rs`
+          # proves is served — on that port and not on the traffic one. An
+          # image older than that listener has nothing there and the kubelet
+          # will restart the pod in a loop: pin `images.server.digest`.
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.observability.livenessPath }}
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.observability.readinessPath }}
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Migrations run at boot before the listener binds, and against a
+          # cold database that is the slowest part of a start. A startup probe
+          # keeps that from being counted as a liveness failure.
+          startupProbe:
+            httpGet:
+              path: {{ .Values.observability.livenessPath }}
+              port: metrics
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            {{- toYaml .Values.server.resources | nindent 12 }}
+          volumeMounts:
+            - name: signing-key
+              mountPath: {{ .Values.signingKey.mountPath }}
+              subPath: {{ .Values.signingKey.key }}
+              readOnly: true
+            {{- if .Values.config.createOverlayConfigMap }}
+            # `subPath`, NOT a directory mount: the image bakes `config/` at
+            # /config, and mounting a ConfigMap at /config would replace the
+            # baked base file, after which the process exits 78 complaining
+            # about a file it can no longer see.
+            - name: config-overlay
+              mountPath: {{ include "vpay.overlayMountPath" . }}
+              subPath: {{ include "vpay.overlayFileName" . }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: signing-key
+          secret:
+            secretName: {{ .Values.signingKey.existingSecret | quote }}
+            # 0440 octal / 288 decimal. A Secret volume with `fsGroup` set is
+            # owned by root:<fsGroup>, and this pod runs as UID 65532 — 0400
+            # would leave the key readable by root alone, i.e. unreadable by
+            # the only process in the image. Reasoned from the documented
+            # ownership rule; never observed in a running pod.
+            defaultMode: {{ .Values.signingKey.defaultMode }}
+            items:
+              - key: {{ .Values.signingKey.key }}
+                path: {{ .Values.signingKey.key }}
+        {{- if .Values.config.createOverlayConfigMap }}
+        - name: config-overlay
+          configMap:
+            name: {{ include "vpay.overlayConfigMapName" . }}
+        {{- end }}
+      {{- with .Values.server.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

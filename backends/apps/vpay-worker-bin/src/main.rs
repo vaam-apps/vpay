@@ -1,12 +1,20 @@
 //! vpay worker: submit, poll, reconcile, deliver.
 //!
 //! Boots exactly as `vpay-server` does — signal handlers, crypto provider,
-//! tracing, YAML configuration, pool, migrations, boot step 4 — and then runs
-//! [`vpay_worker::run_loop()`] instead of binding a listener. Everything the
-//! loop does is in that module; this file's job is to assemble its inputs
-//! (the pool, the adapters, each rail's configuration, the recovery policy,
-//! the merchant webhook endpoints and the client that delivers to them) and
-//! to bound its drain.
+//! metrics recorder, tracing, YAML configuration, pool, migrations, boot
+//! step 4 — and then runs [`vpay_worker::run_loop()`] instead of binding a
+//! traffic listener. Everything the loop does is in that module; this file's
+//! job is to assemble its inputs (the pool, the adapters, each rail's
+//! configuration, the recovery policy, the merchant webhook endpoints and
+//! the client that delivers to them) and to bound its drain.
+//!
+//! It does now bind **one** socket, which it did not before Step 6: the
+//! observability listener on `--observability-bind`
+//! (`vpay_api::observability`), serving `/livez` and `/metrics`. That is the
+//! only HTTP surface this process has — it routes no `/v1` and answers no
+//! merchant — and it exists because a Deployment needs a liveness probe and
+//! because `vpay_jobs_oldest_claimable_age_seconds` is the one number that
+//! says whether live charges are being driven at all.
 //!
 //! Webhook delivery runs here: this process owns both halves of the outbox,
 //! the `fan_out_events` drain and the `deliver_webhook` sends. Nothing in
@@ -31,6 +39,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use clap::Parser as _;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use mimalloc::MiMalloc;
 use vpay_config::{ConfigError, LogFormat, ShutdownSignals, WorkerArgs};
 use vpay_core::error::{Category, Classify as _, find_in_chain};
@@ -183,6 +192,11 @@ async fn run() -> anyhow::Result<()> {
         ShutdownSignals::install().context("installing SIGINT/SIGTERM handlers")?;
 
     install_crypto_provider();
+
+    // Beside `install_crypto_provider`, and before `init_tracing`, for the
+    // same reason: a process-wide default that everything after it may
+    // depend on. A metric recorded before this call goes nowhere.
+    let metrics = install_recorder().context("installing the Prometheus metrics recorder")?;
 
     init_tracing(&args.common.log_filter, args.common.log_format);
 
@@ -399,6 +413,50 @@ async fn run() -> anyhow::Result<()> {
     let grace = Duration::from_secs(args.common.shutdown_grace_seconds);
     let worker_id = vpay_worker::worker_id();
 
+    // **The only socket this process opens.** Before it existed, the worker
+    // had no listener at all: no liveness probe a Deployment could use, and
+    // no way to export the queue-depth gauge that is the one number saying
+    // whether live charges are being driven. `vpay-server`'s `main.rs` binds
+    // the identical listener on the identical flag.
+    //
+    // Bound *last*, after the config, the database, the migrations, boot
+    // step 4 and the rail projection, because that ordering is the whole
+    // definition of `/livez`: a worker that is still starting, or one about
+    // to exit 78 for a `--worker-concurrency` of 0, refuses the connection
+    // rather than answering `ok`.
+    let observability_listener = tokio::net::TcpListener::bind(args.common.observability_bind)
+        .await
+        .with_context(|| {
+            format!(
+                "binding the observability listener on {} (--observability-bind / \
+                 VPAY_OBSERVABILITY_BIND)",
+                args.common.observability_bind
+            )
+        })?;
+    let observability_bound = observability_listener
+        .local_addr()
+        .context("reading the bound address back off the observability listener")?;
+    // `--observability-bind 127.0.0.1:0` is a real configuration (the
+    // subprocess tests use it) and with a `:0` port nothing else can know
+    // the answer.
+    tracing::info!(
+        addr = %observability_bound,
+        "observability listener listening (/livez, /metrics)"
+    );
+
+    // One signal, two consumers: `run_loop`'s drain and this listener. A
+    // detached task with no shutdown of its own would keep answering
+    // `/livez` with `ok` while the drain was already cutting jobs off.
+    let (observability_shutdown_tx, observability_shutdown_rx) =
+        tokio::sync::oneshot::channel::<()>();
+    let observability = tokio::spawn(vpay_api::observability::serve(
+        observability_listener,
+        move || metrics.render(),
+        async move {
+            let _ = observability_shutdown_rx.await;
+        },
+    ));
+
     let report = vpay_worker::run_loop(
         &pool,
         Arc::new(adapters),
@@ -409,12 +467,17 @@ async fn run() -> anyhow::Result<()> {
         concurrency,
         grace,
         worker_id,
-        async move { shutdown_signals.wait().await },
+        async move {
+            shutdown_signals.wait().await;
+            // A closed receiver just means the listener already stopped.
+            let _ = observability_shutdown_tx.send(());
+        },
     )
     .await;
 
     match report.drain {
         Drain::Clean => {
+            join_observability(observability, grace).await;
             tracing::info!("graceful shutdown complete, exiting");
             Ok(())
         }
@@ -442,6 +505,71 @@ async fn run() -> anyhow::Result<()> {
             std::process::exit(1);
         }
     }
+}
+
+/// Waits for the observability listener to stop, bounded by the same grace
+/// period the job drain uses.
+///
+/// Called only on the clean path — the timed-out path calls
+/// `std::process::exit(1)` and takes this task with it, which is correct
+/// there: a worker that has already cut jobs off mid-flight must not then
+/// wait on a metrics socket.
+///
+/// Failures are logged, never propagated: the observability port is not a
+/// payment path, and letting it change this binary's exit code would make
+/// the forced-cutoff `1` (see [`Drain::TimedOut`]) ambiguous.
+///
+/// A near-copy of `vpay-server`'s function of the same name, for the same
+/// reason `exit_code_for` and `init_tracing` are copies.
+async fn join_observability(
+    observability: tokio::task::JoinHandle<std::io::Result<()>>,
+    grace: Duration,
+) {
+    match tokio::time::timeout(grace, observability).await {
+        Ok(Ok(Ok(()))) => tracing::debug!("observability listener stopped"),
+        Ok(Ok(Err(error))) => {
+            tracing::warn!(%error, "the observability listener ended with an error");
+        }
+        Ok(Err(error)) => tracing::warn!(%error, "the observability listener task failed"),
+        Err(_) => tracing::warn!(
+            grace_seconds = grace.as_secs(),
+            "the observability listener did not stop inside the grace period; exiting anyway"
+        ),
+    }
+}
+
+/// Installs this process's Prometheus recorder, describes every metric name
+/// and stamps `vpay_build_info`.
+///
+/// A near-copy of `vpay-server`'s function of the same name — see that one
+/// for the full reasoning, including where `vpay_build_info`'s `git_sha`
+/// comes from and why it reads `unknown` on every build nobody passed
+/// `VPAY_GIT_SHA` to.
+///
+/// What this binary does with the recorder that the server does not:
+/// `vpay_worker::run_loop` emits `vpay_jobs_claimed_total`,
+/// `vpay_jobs_completed_total` and `vpay_jobs_oldest_claimable_age_seconds`
+/// into it. Those macros are no-ops until this call has run, which is why it
+/// sits at the top of `run` and not beside the loop.
+///
+/// # Errors
+///
+/// Only if a recorder was already installed, which cannot happen here.
+/// Reported rather than ignored because the alternative is a worker whose
+/// `/metrics` renders empty forever while looking healthy — and the queue
+/// gauge is the one number that says whether live charges are being driven.
+fn install_recorder() -> anyhow::Result<PrometheusHandle> {
+    let recorder = PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    if metrics::set_global_recorder(recorder).is_err() {
+        anyhow::bail!(
+            "a metrics recorder was already installed in this process; vpay-worker-bin installs \
+             exactly one, so this is a bug rather than a deployment problem"
+        );
+    }
+    vpay_core::metrics::describe_all();
+    vpay_core::metrics::record_build_info(env!("CARGO_PKG_VERSION"));
+    Ok(handle)
 }
 
 /// Installs the process-wide rustls [`CryptoProvider`] this binary's HTTP

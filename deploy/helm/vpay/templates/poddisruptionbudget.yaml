@@ -1,0 +1,21 @@
+{{- include "vpay.validate" . -}}
+{{- if .Values.podDisruptionBudget.enabled }}
+# Server only. The worker is one replica whose jobs are leased and re-claimable
+# (`vpay_db::jobs`, migration 0021), so a budget on it would block node drains
+# to protect a process that is safe to lose.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "vpay.fullname" . }}-server
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "vpay.componentSelectorLabels" (dict "ctx" . "component" "server") | nindent 6 }}
+{{- end }}

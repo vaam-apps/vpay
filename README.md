@@ -291,13 +291,20 @@ heartbeat log line.
 
 `--config`, `--database-url` and `--oauth-signing-key-file` are required and
 genuinely consumed; a missing one exits `78` before the port is bound.
-`--public-base-url` is accepted and read by nothing: `ServerArgs::public_base_url`
-(`backends/crates/vpay-config/src/cli.rs`) is only ever touched by that module's
-own tests — grep the workspace for `public_base_url` and every remaining hit is
-`Config`'s `deployment.public_base_url`, which is a *different* value, read from
-the YAML. That YAML field is what the OP's issuer is derived from
-(`vpay_api::op::issuer_for` → `{public_base_url}/v1/oauth`), so the URL a
-merchant's tokens carry comes from the config file, never from the flag. See
+`--public-base-url` **was removed on 2026-09-03**: it had been accepted, parsed
+and read by nothing, and the second spelling was a trap rather than a feature.
+The URL a merchant's tokens carry has always come from `Config`'s
+`deployment.public_base_url` in the YAML — a *different* value — which the OP's
+issuer is derived from (`vpay_api::op::issuer_for` → `{public_base_url}/v1/oauth`)
+and which is unchanged. A deployment that set the flag now fails to start rather
+than ignoring it.
+
+`--observability-bind` (`VPAY_OBSERVABILITY_BIND`, default `0.0.0.0:9090`) is new
+on **both** binaries: a second listener serving `GET /livez` (a static `ok`, the
+liveness probe) and `GET /metrics` (Prometheus text). Neither is on the `--bind`
+port, because that one is fronted by an Ingress and `/metrics` is an operational
+map of the deployment. `/healthz` stays on 8080 and stays the readiness probe.
+Nothing has ever scraped `/metrics`. See
 [`docs/status.md`](docs/status.md) and
 [`docs/flows/configuration.md`](docs/flows/configuration.md).
 

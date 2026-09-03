@@ -1,0 +1,104 @@
+{{- include "vpay.validate" . -}}
+{{- if .Values.ingress.enabled }}
+{{- $fullName := include "vpay.fullname" . -}}
+{{- $tlsSecret := default (printf "%s-tls" $fullName) .Values.ingress.tls.secretName -}}
+# Two Ingress objects, one host.
+#
+# ingress-nginx applies `limit-rps` per Ingress object, so a single object
+# cannot carry a tighter limit for `/v1/oauth/token` than for the rest of
+# `/v1`. Splitting them is the only way to express that, and the
+# "rate-limit-ordering" guard is what keeps the tighter one actually tighter.
+#
+# The limit is enforced per controller *replica*: the effective global limit is
+# roughly `limit-rps x controller replicas`. ADR-0009 assumes a rate limit
+# exists; this is the first thing in the repository that puts one in writing,
+# and CI greps the rendered YAML for the annotation so it cannot quietly
+# disappear. It is still an approximation, and no controller has ever served
+# it.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-api
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/limit-rps: {{ .Values.ingress.api.limitRps | quote }}
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: {{ .Values.ingress.api.limitBurstMultiplier | quote }}
+    # A payment intent body is small; 64k is generous for it and closes the
+    # cheapest denial-of-service on the API.
+    nginx.ingress.kubernetes.io/proxy-body-size: 64k
+    nginx.ingress.kubernetes.io/ssl-redirect: {{ .Values.ingress.tls.enabled | quote }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer | quote }}
+    {{- end }}
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ $tlsSecret | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.ingress.api.path }}
+            pathType: {{ .Values.ingress.api.pathType }}
+            backend:
+              service:
+                name: {{ $fullName }}
+                port:
+                  name: http
+---
+# The token endpoint, rate-limited more tightly than the rest of /v1. A token
+# request costs an RSA verification and a database write
+# (`oauth_client_assertion_jtis`), so it is the expensive unauthenticated
+# surface, and `pathType: Exact` keeps this object from also matching
+# `/v1/oauth/...` discovery.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-token
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/limit-rps: {{ .Values.ingress.token.limitRps | quote }}
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: {{ .Values.ingress.token.limitBurstMultiplier | quote }}
+    nginx.ingress.kubernetes.io/proxy-body-size: 16k
+    nginx.ingress.kubernetes.io/ssl-redirect: {{ .Values.ingress.tls.enabled | quote }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer | quote }}
+    {{- end }}
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ $tlsSecret | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.ingress.token.path }}
+            pathType: {{ .Values.ingress.token.pathType }}
+            backend:
+              service:
+                name: {{ $fullName }}
+                port:
+                  name: http
+{{- end }}

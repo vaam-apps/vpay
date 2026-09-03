@@ -7,6 +7,20 @@ on:
   push: { branches: [master] }
   pull_request:
 
+# The floor for every job below, and no job overrides it: nothing in this
+# workflow writes anything back to GitHub. It checks out, compiles, runs
+# tests, brings a compose stack up and renders a chart. Without this block
+# the default token is whatever the repository setting says — historically
+# read/write — so a compromised action in any of these six jobs could push
+# a commit or a package (CodeQL actions/missing-workflow-permissions).
+#
+# `actions/upload-artifact@v4` in `e2e` does not need `actions: write`: it
+# uploads through the runtime token the runner injects, not `GITHUB_TOKEN`.
+# `release.yml` is the only workflow here that writes, and it scopes its
+# own permissions per job.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   # NOT set here: `CYPRESS_INSTALL_BINARY`. It used to be `0` at workflow
@@ -306,3 +320,69 @@ jobs:
         with: { name: compose-logs, path: compose.log }
       - if: always()
         run: docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml down -v
+
+  # The Helm chart. Renders it, proves every template guard fires, and
+  # validates every rendered object against upstream schemas.
+  #
+  # It never touches a cluster — there is none to touch — so what this job
+  # establishes is narrow and worth stating: the chart is syntactically valid,
+  # its two value sets render, each named `fail` guard aborts on its own
+  # values file, the ingress rate limit ADR-0009 assumes is present in the
+  # rendered YAML, and every object matches its Kubernetes (or Prometheus CRD)
+  # schema. It establishes nothing about scheduling, probes,
+  # readOnlyRootFilesystem, the NetworkPolicy, or whether an ingress
+  # controller honours `limit-rps`. See docs/status.md.
+  #
+  # No Rust toolchain: this job compiles nothing and adds no test binary, so
+  # `justfile`'s `expected_suites` / `min_tests` are untouched by it.
+  deploy:
+    name: deploy (helm chart)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Third-party actions in this job are pinned to a full commit SHA, the
+      # way `release.yml` pins every one of its own: a mutable tag like `@v4`
+      # is a promise from whoever can move it, and this job is the only gate
+      # on the chart. `actions/*` stays on its tag to match the rest of this
+      # file — one convention per file, and GitHub owns that namespace.
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.16.1
+      # No action for kubeconform; the release tarball is one binary. Pinned
+      # by version AND by digest: a version tag on a GitHub release names a
+      # file that can be replaced in place, so the checksum is what actually
+      # decides what runs here. It is the one upstream publishes in the
+      # release's own CHECKSUMS asset.
+      - name: install kubeconform
+        env:
+          KUBECONFORM_VERSION: v0.6.7
+          KUBECONFORM_SHA256: 95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  /tmp/kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
+          kubeconform -v
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: just
+      # One recipe, not a copy of its steps: `just helm-check` is what a
+      # contributor runs locally, so the gate and the local check cannot
+      # drift. It is deliberately NOT part of `just ci` — kubeconform fetches
+      # its schemas over the network, and `just ci` must work offline.
+      #
+      # The recipe does all four things this job exists for: `helm lint` and
+      # `helm template` over the default values and over
+      # `deploy/helm/vpay/ci/values-full.yaml` (which turns on every optional
+      # object so kubeconform actually sees them); one `helm template` per
+      # file in `deploy/helm/vpay/ci/guards/`, each of which must exit
+      # non-zero with a message naming the guard the file is called after;
+      # a grep for `nginx.ingress.kubernetes.io/limit-rps` on the rendered
+      # Ingress plus a check that the token endpoint's limit is the tighter
+      # of the two; and `kubeconform -strict -summary` with
+      # `-schema-location default` for the built-in kinds and the
+      # datreeio/CRDs-catalog location for ServiceMonitor and PrometheusRule,
+      # which no built-in schema covers.
+      - run: just helm-check

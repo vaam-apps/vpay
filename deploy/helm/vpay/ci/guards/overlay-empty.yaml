@@ -1,0 +1,5 @@
+config:
+  profile: production
+  path: /config/application.yml
+  createOverlayConfigMap: true
+  overlay: "   \n"

@@ -12,6 +12,14 @@ workspace = true
 
 [dependencies]
 vpay-core.workspace = true
+# The metrics facade, for `vpay_charge_transitions_total`. It is recorded by
+# `charges::record_transition` and called by the six statements that can move
+# `charges.state` — three here and three in `settlement` — because every
+# transition passes through this crate and only some pass through the worker
+# (a confirm opens and submits a charge inside `vpay-api`). Facade only: no
+# recorder is installed from a library, and with none installed every macro
+# is a cheap no-op, which is what this crate's own container tests get.
+metrics.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -62,6 +70,14 @@ subtle.workspace = true
 async-trait = "0.1"
 
 [dev-dependencies]
+# Test-only, and deliberately the *shipping* exporter rather than
+# `metrics-util`'s `DebuggingRecorder`: `repositories.rs`'s
+# `a_settlement_counts_the_transition_it_actually_made` asserts on the
+# rendered Prometheus text, which is what a scrape of a pod receives, and it
+# is the one test that pins `settlement`'s previous-state sub-select. Already
+# resolved at this exact pin by both binaries, so no new package enters
+# `Cargo.lock`.
+metrics-exporter-prometheus.workspace = true
 # Real containers only (ADR-0006 / AGENTS.md rule 1: no mock, fake, stub or
 # dummy anywhere reachable — including in how *this crate's own tests* prove
 # themselves). See tests/postgres.rs for the pinned image tag.
