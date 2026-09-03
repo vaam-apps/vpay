@@ -94,7 +94,17 @@ export class VpayTransportError extends VpayError {
   }
 }
 
-/** The SDK was configured incorrectly — caught before any request is sent. */
+/**
+ * The SDK was configured incorrectly — caught before any request is sent.
+ *
+ * Almost always at construction (a missing `clientId`, an unreadable
+ * `privateKey`, an `assertionLifetimeSeconds` outside the OP's `1..=300`).
+ * The one exception is `@vpay/sdk/stripe`'s host binding: an authenticator
+ * asked to sign a request addressed somewhere other than its `baseUrl`
+ * throws this *per request*, because that is when the destination becomes
+ * knowable. Still before anything is sent — no token is minted and no
+ * `Authorization` header is written.
+ */
 export class VpayConfigError extends VpayError {}
 
 /** A webhook signature failed verification — see {@link verifyWebhook}. */

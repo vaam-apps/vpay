@@ -1,18 +1,24 @@
 /**
  * A merchant backend talking to vpay through `@vpay/sdk` (sdks/nodejs).
  *
- * NOT RUNNABLE AGAINST A REAL VPAY YET — /v1/* is not implemented, and
- * neither is the client_credentials + private_key_jwt token endpoint this
- * SDK speaks to. See ../../docs/status.md and
- * ../../docs/flows/merchant-auth.md (the wire contract the SDK implements).
- * What this file shows is the shape of a real integration; the SDK itself is
- * tested against an HTTP stub of that contract, not against vpay.
+ * CORRECTED 2026-09-03. This header used to say "/v1/* is not implemented,
+ * and neither is the client_credentials + private_key_jwt token endpoint" —
+ * true on 2026-09-02, false since. Both exist: the merchant OP is served and
+ * so are the five payment-intent routes, and a confirm reaches a rail. What
+ * is still true is that **no test in this file's package has run it against
+ * a vpay**: it is written for `merchant_a` against a hypothetical
+ * `api.vpay.example`, and the SDK's own tests use an HTTP stub of the wire
+ * contract. `examples/merchant-demo` and `examples/merchant-stripe-node` are
+ * the two examples that actually run against the compose stack. See
+ * ../../docs/status.md and ../../docs/flows/merchant-auth.md.
  *
- * Why not the Stripe SDK: vpay's object model and idempotency semantics are
- * Stripe-shaped, but its authentication is not (ADR-0010) — a Stripe SDK can
- * only send a fixed bearer string, and cannot sign an RFC 7523 client
- * assertion or refresh a short-lived access token. `@vpay/sdk` does both,
- * transparently, on every call.
+ * Why this and not the Stripe SDK: vpay's object model and idempotency
+ * semantics are Stripe-shaped, and its authentication is not (ADR-0010) — a
+ * Stripe SDK sends a fixed bearer string and cannot sign an RFC 7523 client
+ * assertion. `@vpay/sdk` does the handshake transparently on every call. A
+ * Stripe SDK *can* be made to do it through `config.authenticator`, which is
+ * what `@vpay/sdk/stripe` and `examples/merchant-stripe-node` are for; use
+ * that if you already have Stripe integration code, and this if you do not.
  *
  * Build the SDK first: `pnpm --filter @vpay/sdk build`.
  */

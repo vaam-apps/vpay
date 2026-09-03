@@ -255,6 +255,71 @@ branch on. Recorded in `ApiError::IdempotencyKeyInFlight`'s own doc comment.
 Every one is derived from a `Category`; see
 [../flows/errors.md](../flows/errors.md).
 
+### Using the official Stripe SDKs
+
+A merchant with an existing Stripe integration can point `stripe-node` at
+vpay: build it with an empty key and a `config.authenticator` that performs
+the `private_key_jwt` handshake.
+
+```js
+import Stripe from "stripe";
+import { createStripeAuthenticator } from "@vpay/sdk/stripe";
+
+const stripe = new Stripe("", {
+  authenticator: createStripeAuthenticator({
+    baseUrl: "https://api.vpay.example",
+    clientId: "acme-cameroon",
+    privateKey: readFileSync("./merchant-key.pem", "utf8"),
+  }),
+  host: "api.vpay.example",
+  port: "443",
+  protocol: "https",
+});
+```
+
+Two response headers exist for those clients specifically. Every response
+carries the request id under **`request-id`** as well as `x-request-id`, with
+one value, because `request-id` is the only spelling stripe-node reads when
+it populates `err.requestId`. Every response the error renderer produces also
+carries **`stripe-should-retry`**, derived from the error's
+[`Classify::retry`](../adr/0011-error-modelling.md) — `false` on a `409`,
+which stripe-node would otherwise retry unconditionally, and `true` on an
+in-flight idempotency key, which it would otherwise never retry. `405` and
+`413` are produced above that renderer and carry neither the envelope nor the
+header.
+
+`Stripe-Version`, `Stripe-Account`, `Stripe-Context` and the
+`X-Stripe-Client-*` headers are accepted and ignored; vpay advertises no
+dated API version and echoes none.
+
+**A request field is refused only when ignoring it would change where or when
+money moves.** `confirm: true` on create is refused with `param: "confirm"`
+rather than dropped, and so are `capture_method` with any value other than
+`automatic`, `application_fee_amount`, `transfer_data` and `on_behalf_of` —
+each a `400` naming the field, on both POST bodies. vpay has no authorise-now
+/ capture-later split and no Connect, so silently dropping one of those would
+settle a merchant's money at a time, or to an account, they neither asked for
+nor can see in the response. Everything else Stripe sends and vpay does not
+implement — `setup_future_usage`, `confirmation_method`, `receipt_email`,
+`statement_descriptor`, `customer`, `expand` — is accepted and ignored,
+because none of it changes the payment that results. `metadata` is accepted
+on both bodies too, but it is not on that list: `metadata` is stored; the
+rest are dropped — it is persisted on the intent and comes back on every
+read.
+
+**A replayed response carries the advisory the original carried.** Migration
+`0025` stores the header's own value beside the status and body
+(`idempotency_keys.response_retry`), written from the rendered response's
+`HeaderMap` and re-emitted unchanged — never re-derived from the stored
+status, which is what ADR-0011 forbids and what would make the replay
+disagree with the response it replays. A stored `2xx` carries `NULL` there and
+its replay emits no header, because a `2xx` never reaches the error renderer.
+
+[../flows/stripe-sdk-compat.md](../flows/stripe-sdk-compat.md) is the full
+list of what carries over and what does not, and what has actually been
+proven — `sdks/stripe-compat` drives the real `stripe` package against a real
+stack, and CI runs it.
+
 ### Not served — the honest 404 stands
 
 | Method | Path | Why |

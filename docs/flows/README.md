@@ -13,6 +13,7 @@ go wrong, and what invariant holds throughout.
 | [provider-port.md](provider-port.md) | The adapter interface and the checklist for adding a rail |
 | [configuration.md](configuration.md) | Boot sequence, validation rules, what refuses to start |
 | [merchant-auth.md](merchant-auth.md) | The `client_credentials` + `private_key_jwt` handshake and the `/v1` wire contract the Rust and Node SDKs implement |
+| [stripe-sdk-compat.md](stripe-sdk-compat.md) | Driving the official Stripe SDKs against vpay: the `config.authenticator` seam, what carries over, and every divergence |
 | [dashboard-auth.md](dashboard-auth.md) | Staff login: vpay as its own OpenID Provider for `/dash/v1` |
 | [webhooks.md](webhooks.md) | The two-step outbox and the signature scheme |
 | [ledger.md](ledger.md) | Double-entry postings and the four invariants |

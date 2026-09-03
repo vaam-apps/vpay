@@ -1,0 +1,13 @@
+{
+  "name": "@vpay-examples/merchant-stripe-node",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "@vpay/sdk": "workspace:*",
+    "stripe": "^22.6.1"
+  }
+}

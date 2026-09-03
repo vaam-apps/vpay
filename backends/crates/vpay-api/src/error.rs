@@ -78,7 +78,7 @@ use std::error::Error as StdError;
 
 use axum::Json;
 use axum::extract::rejection::{FormRejection, JsonRejection, PathRejection, QueryRejection};
-use axum::http::StatusCode;
+use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use vpay_core::{Category, Classify, Retry, Severity};
 use vpay_ledger::LedgerError;
@@ -107,6 +107,64 @@ const KEY_HINT_CHARS: usize = 8;
 /// is not a plausible field name renders as [`FALLBACK_PARAM`] instead, so
 /// the envelope cannot become a reflection channel and stays small.
 const PARAM_MAX_CHARS: usize = 64;
+
+/// The advisory an SDK's retry loop reads, and the two values it takes.
+///
+/// Stripe's own header. stripe-node's `RequestSender._shouldRetry` consults
+/// it *above* its status-code rules: `false` stops a retry it would
+/// otherwise make, `true` forces one it would otherwise skip. vpay needs
+/// both directions, which is the whole reason this exists rather than being
+/// left to the status code
+/// (`docs/plans/2026-09-03-step5b-stripe-sdk.md` §0 S2):
+///
+/// - stripe-node retries **409 unconditionally**, so without the header it
+///   silently re-POSTs a [`ApiError::Conflict`] twice — a lifecycle refusal
+///   ("this intent already has a charge") that no amount of waiting fixes.
+/// - stripe-node retries **no 4xx**, so without the header it never retries
+///   [`ApiError::IdempotencyKeyInFlight`]'s `400` — the one refusal on this
+///   surface that resolves on its own the moment the first attempt lands.
+///
+/// The value is **derived from [`Classify::retry`], never chosen here**
+/// (ADR-0011: a boundary renders a classification, it does not make one).
+/// `Retry::AfterBackoff` is `true`; `Retry::Never` and `Retry::NewAttempt`
+/// are `false` — a new attempt is a *different* request (a new
+/// `PaymentIntent`, per `docs/flows/payment-lifecycle.md`), and telling an
+/// SDK to replay the same bytes under the same `Idempotency-Key` would be a
+/// lie about what would happen.
+///
+/// Emitted on every response this impl renders, not only the ones a Stripe
+/// SDK is likely to see: a header whose presence depended on the category
+/// would be one more thing to keep consistent, and `false` is the honest
+/// answer for a `400` that will never succeed.
+///
+/// # A replay re-emits it, and does not re-decide it
+///
+/// This impl is still the *only* place the advisory is **decided**, and a
+/// replay does not pass through it: `v1::payment_intents::replay` rebuilds a
+/// response from what `idempotency_keys` stored. Since migration `0025` that
+/// includes the header's own text (`idempotency_keys.response_retry`), which
+/// `PostRequest::finish` reads back off the rendered response and `replay`
+/// writes out unchanged. So a merchant retrying under a key whose stored
+/// answer was a `409` gets that `409` **with** `stripe-should-retry: false`,
+/// and stripe-node stops applying its own "retry every 409" rule to a refusal
+/// waiting cannot fix.
+///
+/// The fix deliberately *not* taken was re-deriving the advisory from the
+/// stored status at replay time. That is exactly what ADR-0011 forbids and
+/// what this header exists to avoid: the stored status is `409` both for
+/// "your intent already has a charge" (`Retry::Never`) and for any future
+/// `Category` that maps there with a different policy, so a status-only rule
+/// would emit the *opposite* of the advice from a second, hand-maintained
+/// table. Storing the rendered bytes keeps one decision in one place.
+///
+/// `v1::payment_intents::tests::a_replayed_response_carries_the_advisory_it_was_stored_with`
+/// and the integration suite's
+/// `a_replayed_error_carries_the_same_retry_advisory_the_original_did` pin
+/// that, end to end, against a real Postgres.
+pub(crate) const STRIPE_SHOULD_RETRY_HEADER: HeaderName =
+    HeaderName::from_static("stripe-should-retry");
+const RETRY_YES: HeaderValue = HeaderValue::from_static("true");
+const RETRY_NO: HeaderValue = HeaderValue::from_static("false");
 
 /// What an unusable `param` renders as. Deliberately a real, if unhelpful,
 /// field name rather than an empty string or a dropped key: an SDK reading
@@ -781,7 +839,19 @@ impl IntoResponse for ApiError {
             self.param(),
         );
 
-        (status, Json(body)).into_response()
+        // Asked of the same classification the status came from, so the
+        // header cannot drift from the category the way a per-handler or
+        // per-status rule would. See `STRIPE_SHOULD_RETRY_HEADER`.
+        let should_retry = match self.retry() {
+            Retry::AfterBackoff => RETRY_YES,
+            Retry::Never | Retry::NewAttempt => RETRY_NO,
+        };
+
+        let mut response = (status, Json(body)).into_response();
+        response
+            .headers_mut()
+            .insert(STRIPE_SHOULD_RETRY_HEADER, should_retry);
+        response
     }
 }
 
@@ -845,6 +915,11 @@ mod tests {
     /// `ApiError` is not `Clone` (a `sqlx::Error` is not) and each case is
     /// consumed twice: once directly and once through a real router.
     type Case = (fn() -> ApiError, u16, &'static str, &'static str);
+
+    /// [`Case`]'s sibling for `the_retry_advisory_follows_the_classification_not_the_status`:
+    /// constructor, expected status, expected `stripe-should-retry`. Same
+    /// reason it is a `fn()` rather than a value — `ApiError` is not `Clone`.
+    type RetryCase = (fn() -> ApiError, u16, &'static str);
 
     /// At least one variant per wrapped leaf, plus every variant this layer
     /// owns. The expectations are written from `docs/flows/errors.md`'s
@@ -1837,5 +1912,120 @@ mod tests {
         // A variant with no source has an empty chain rather than an
         // invented one.
         assert_eq!(ApiError::Internal("x".into()).source_chain(), "");
+    }
+
+    /// `stripe-should-retry` says what the *classification* says, which is
+    /// not what the status code says.
+    ///
+    /// The expectations below are written from `docs/flows/errors.md`'s
+    /// policy table and the design's §0 S2, never read back from
+    /// `Classify::retry` — a table generated from the implementation would
+    /// agree with any implementation. Two rows are the whole reason the
+    /// header exists, and they are the two where status and advice disagree:
+    ///
+    /// - `400` / `true` for an in-flight key. stripe-node retries no 4xx, so
+    ///   without the header it never retries the one refusal on this surface
+    ///   that clears itself.
+    /// - `409` / `false` for a lifecycle conflict. stripe-node retries every
+    ///   409 unconditionally, so without the header it re-POSTs a permanent
+    ///   refusal twice before surfacing it.
+    ///
+    /// The `500` row is the third: it is a 5xx, which stripe-node also
+    /// retries unconditionally, and `Category::Internal` says `Retry::Never`
+    /// because an invariant violation does not heal by being asked again.
+    #[test]
+    fn the_retry_advisory_follows_the_classification_not_the_status() {
+        let cases: Vec<RetryCase> = vec![
+            (
+                || ApiError::idempotency_key_in_flight("idem_0123456789"),
+                400,
+                "true",
+            ),
+            (
+                || ApiError::Conflict {
+                    message: "This PaymentIntent already has a charge.".into(),
+                },
+                409,
+                "false",
+            ),
+            (
+                || ApiError::from(AuthRejection::KeysUnavailable),
+                503,
+                "true",
+            ),
+            (
+                || ApiError::Internal("an invariant broke".into()),
+                500,
+                "false",
+            ),
+            (
+                || ApiError::from(AuthRejection::MissingHeader),
+                401,
+                "false",
+            ),
+            (
+                || ApiError::UnknownRoute {
+                    method: "GET".to_owned(),
+                    path: "/v1/nope".to_owned(),
+                },
+                404,
+                "false",
+            ),
+            (
+                || ApiError::invalid_param("amount", "`amount` must be a positive integer."),
+                400,
+                "false",
+            ),
+            (
+                || ApiError::idempotency_key_reused("idem_0123456789"),
+                400,
+                "false",
+            ),
+        ];
+
+        for (make, status, advice) in cases {
+            let error = make();
+            let label = format!("{error:?}");
+            let response = error.into_response();
+            assert_eq!(response.status().as_u16(), status, "{label}");
+            assert_eq!(
+                response
+                    .headers()
+                    .get("stripe-should-retry")
+                    .map(|value| value.to_str().expect("the advisory is ascii")),
+                Some(advice),
+                "{label}"
+            );
+        }
+    }
+
+    /// The advisory reaches the wire through the real router too, not only
+    /// through a directly-called `into_response`.
+    ///
+    /// A layer that rewrote or dropped response headers would leave the test
+    /// above green and merchants without the header, so the 404 fallback —
+    /// the one error the router produces with no handler involved — is
+    /// checked end to end.
+    #[tokio::test]
+    async fn the_404_fallback_carries_the_retry_advisory() {
+        let response = crate::router(crate::test_fixtures::deps())
+            .oneshot(
+                Request::builder()
+                    .uri("/not_a_vpay_route")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router does not fail to serve");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get("stripe-should-retry")
+                .map(|value| value.to_str().expect("the advisory is ascii")),
+            Some("false"),
+            "an unrouted path never becomes routed by being asked again"
+        );
     }
 }

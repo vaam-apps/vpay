@@ -1391,3 +1391,38 @@ describe("amount validation reaches the resource methods", () => {
     expect(server.requests).toHaveLength(0);
   });
 });
+
+describe("an unreadable private key is refused at construction", () => {
+  /**
+   * The core client's half of the parse `stripe-auth.test.ts` pins for the
+   * authenticator.
+   *
+   * `resolveMerchantAuth` is where `createPrivateKey` now runs, and both
+   * entry points call it — so this is one shared line, and until this case
+   * existed only one of the two callers proved it fires. A regression that
+   * moved the parse back to first-mint would leave `VpayClient` throwing an
+   * OpenSSL `Error` from the middle of a token exchange instead of a
+   * `VpayConfigError` from the line the merchant wrote, and every test in
+   * this file would still pass.
+   */
+  it("throws VpayConfigError from the constructor, before any request", () => {
+    expect(
+      () =>
+        new VpayClient({
+          baseUrl: "https://api.vpay.example",
+          clientId: "merchant_a",
+          privateKey: "not a pem",
+        }),
+    ).toThrow(VpayConfigError);
+    // The message, so this cannot pass for some unrelated reason: every
+    // other option above is valid, and only the key can be the complaint.
+    expect(
+      () =>
+        new VpayClient({
+          baseUrl: "https://api.vpay.example",
+          clientId: "merchant_a",
+          privateKey: "not a pem",
+        }),
+    ).toThrow(/privateKey could not be read as a private key/);
+  });
+});

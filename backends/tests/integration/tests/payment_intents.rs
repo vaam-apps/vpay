@@ -31,6 +31,31 @@
 //!     failed — see test 17, which injects that failure in Postgres because
 //!     it is not otherwise reachable from outside the process.
 //!
+//! Step 5b (`docs/plans/2026-09-03-step5b-stripe-sdk.md`) adds four more,
+//! all of which are about headers and refusals a Stripe SDK reads and which
+//! therefore only exist once the whole stack has run:
+//!
+//! 12. every response carries the request id under Stripe's `request-id` as
+//!     well as `x-request-id`, with **one** value, including on a 404
+//!     fallback and on the 401 decided before routing;
+//! 13. `stripe-should-retry` carries `Classify::retry`'s answer rather than
+//!     the status code's — `true` on an in-flight key's 400, `false` on a
+//!     lifecycle 409;
+//! 14. `confirm=true` on create is a 400 naming `confirm`, and
+//!     `confirm=false` is not;
+//! 15. nothing stripe-node adds of its own accord — `Stripe-Version`,
+//!     `Stripe-Account`, its telemetry headers, `expand[]`, a
+//!     `stripe-node-retry-<uuid>` idempotency key — turns a valid request
+//!     into a refusal;
+//! 16. the Stripe fields that decide *where or when money moves*
+//!     (`capture_method` other than `automatic`, `application_fee_amount`,
+//!     `transfer_data`, `on_behalf_of`) are refused on create **and** on
+//!     confirm, and the refusal leaves the `Idempotency-Key` unspent so the
+//!     corrected retry under the same key goes through;
+//! 17. a **replayed** error response does not carry `stripe-should-retry`,
+//!     which is a documented gap rather than a claim — see
+//!     `vpay_api`'s `STRIPE_SHOULD_RETRY_HEADER`.
+//!
 //! # What is deliberately not claimed here
 //!
 //! **Nothing in this file shows a payment being taken.** Every rail it
@@ -1857,6 +1882,767 @@ async fn a_failed_store_releases_the_key_so_the_retry_re_executes() -> anyhow::R
         intents, 2,
         "the first attempt's intent plus the re-executed retry's — the documented cost of \
          releasing a key whose response could not be stored"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------ tests 18-22: Stripe SDKs
+//
+// Step 5b (`docs/plans/2026-09-03-step5b-stripe-sdk.md`): a merchant driving
+// vpay with the *official* Stripe SDK plus a `config.authenticator`. What
+// those SDKs need from the server is not the envelope — that already matches
+// — but two response headers and one honest refusal, and none of the three
+// is observable from a handler unit test: `request-id` is set by a
+// middleware layer, `stripe-should-retry` is set by the one renderer every
+// layer's failures pass through, and both have to survive the whole stack on
+// responses that no handler produced (a 404 fallback, a 401 decided before
+// routing).
+
+/// The Stripe SDK spelling of the request id, and the one this API has
+/// always used, side by side on the response.
+fn request_id_headers(response: &reqwest::Response) -> (Option<String>, Option<String>) {
+    let read = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .map(|value| value.to_str().expect("a request id is ascii").to_owned())
+    };
+    (read("x-request-id"), read("request-id"))
+}
+
+/// `stripe-should-retry` as an SDK would read it, or `None` when absent.
+fn retry_advice(response: &reqwest::Response) -> Option<String> {
+    response
+        .headers()
+        .get("stripe-should-retry")
+        .map(|value| value.to_str().expect("the advisory is ascii").to_owned())
+}
+
+// ----------------------------------------------------------------- test 18
+
+/// Every response carries the request id under **both** names, with one
+/// value — on a success, on a `400`, on the `404` fallback and on the `401`
+/// the authentication boundary decides before routing.
+///
+/// stripe-node populates `err.requestId` and `obj.lastResponse.requestId`
+/// from `headers['request-id']` and looks at no other name, so without this
+/// header `Category::Internal`'s public sentence — "Contact support with the
+/// request id" — is an instruction a Stripe SDK user cannot follow.
+///
+/// The four responses are chosen because they are produced in four different
+/// places: a handler, an extractor rejection, the router's fallback, and the
+/// middleware in front of `/v1`. A layer ordering that put the mirror inside
+/// the authentication boundary would pass on the first and fail on the
+/// last. **The equality is the assertion**: `request-id` alone would also be
+/// satisfied by a second id generator, and a merchant quoting an id support
+/// cannot find is worse than a merchant quoting none.
+#[tokio::test]
+async fn every_response_carries_the_request_id_under_stripes_header_too() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let http = raw_client();
+    let bearer = harness.bearer(CLIENT_A);
+    const BODY: &str = "amount=5000&currency=xaf&payment_method_types[0]=mtn_momo";
+
+    // 200 — a handler's own response.
+    let created = http
+        .post(harness.url("/v1/payment_intents"))
+        .bearer_auth(&bearer)
+        .header("Idempotency-Key", "request-id-on-a-success")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(BODY)
+        .send()
+        .await
+        .context("a create that succeeds")?;
+
+    // 400 — an extractor rejection, decided before the handler runs.
+    let no_key = http
+        .post(harness.url("/v1/payment_intents"))
+        .bearer_auth(&bearer)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(BODY)
+        .send()
+        .await
+        .context("a create with no Idempotency-Key")?;
+
+    // 404 — the router's fallback, with no handler involved at all.
+    let unrouted = http
+        .get(harness.url("/not_a_vpay_route"))
+        .send()
+        .await
+        .context("an unrouted path")?;
+
+    // 401 — the authentication boundary, outside every handler.
+    let unauthenticated = http
+        .get(harness.url("/v1/payment_intents"))
+        .send()
+        .await
+        .context("a /v1 request with no bearer token")?;
+
+    for (label, expected_status, response) in [
+        ("200", 200, created),
+        ("400", 400, no_key),
+        ("404", 404, unrouted),
+        ("401", 401, unauthenticated),
+    ] {
+        assert_eq!(response.status().as_u16(), expected_status, "{label}");
+        let (x_request_id, stripe) = request_id_headers(&response);
+        let x_request_id = x_request_id
+            .unwrap_or_else(|| panic!("{label}: no x-request-id on the response at all"));
+        assert!(!x_request_id.is_empty(), "{label}");
+        assert_eq!(
+            stripe.as_deref(),
+            Some(x_request_id.as_str()),
+            "{label}: `request-id` must be the same id, not a second one"
+        );
+    }
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 19
+
+/// The two answers whose HTTP status tells a Stripe SDK the *opposite* of
+/// what vpay means carry `stripe-should-retry`, and it says what vpay means.
+///
+/// stripe-node's `RequestSender._shouldRetry` consults the header above its
+/// own rules, and its own rules retry every `>= 500` **and every 409**,
+/// unconditionally, twice by default:
+///
+/// * the `502` from an unreachable rail is `Category::Rail`, whose policy is
+///   `Retry::AfterBackoff` — so `true`, which agrees with what the SDK would
+///   have done anyway;
+/// * the `409` from "one charge per intent, forever" is `Category::Conflict`,
+///   `Retry::Never` — so `false`, and this is the one that changes what the
+///   SDK does. Without it a merchant's lifecycle refusal is re-POSTed twice
+///   before they see it.
+///
+/// Both come out of the same two-confirm sequence
+/// `a_5xx_releases_its_idempotency_key_so_the_retry_re_executes` uses, and
+/// that test is what pins the accompanying claim this one does not repeat:
+/// re-executing the released key does **not** produce a second charge.
+/// Nothing here is stubbed — the rail is unreachable by configuration and
+/// the `502` is the real adapter over the real HTTP client.
+#[tokio::test]
+async fn a_rail_failure_and_a_conflict_carry_opposite_retry_advice() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let http = raw_client();
+    let bearer = harness.bearer(CLIENT_A);
+
+    let intent = harness
+        .a()
+        .payment_intents()
+        .create(create_params(), RequestOptions::new())
+        .await
+        .context("creating the intent to confirm")?;
+
+    let confirm = |key: &'static str| {
+        http.post(harness.url(&format!("/v1/payment_intents/{}/confirm", intent.id)))
+            .bearer_auth(&bearer)
+            .header("Idempotency-Key", key)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("payment_method_data[type]=mtn_momo&payment_method_data[mtn_momo][msisdn]=237670000000")
+            .send()
+    };
+
+    let unreachable_rail = confirm("advice-first").await.context("the first confirm")?;
+    assert_eq!(
+        unreachable_rail.status().as_u16(),
+        502,
+        "this suite's rail is unreachable by configuration"
+    );
+    assert_eq!(
+        retry_advice(&unreachable_rail).as_deref(),
+        Some("true"),
+        "`Category::Rail` is `Retry::AfterBackoff`; the rail may answer later"
+    );
+
+    let already_charged = confirm("advice-second")
+        .await
+        .context("the second confirm")?;
+    assert_eq!(already_charged.status().as_u16(), 409);
+    let advice = retry_advice(&already_charged);
+    let body: Value = already_charged
+        .json()
+        .await
+        .context("the 409 body is JSON")?;
+    // Which 409 this is matters, and it is read off the *same* response as
+    // the header above: the in-flight refusal is a 400 and is the next
+    // test's subject, and a `Conflict` about the object is what
+    // `Retry::Never` is the correct advice for.
+    assert_eq!(
+        body.pointer("/error/code").and_then(Value::as_str),
+        Some("invalid_state"),
+        "got {body:#}"
+    );
+    assert_eq!(
+        advice.as_deref(),
+        Some("false"),
+        "stripe-node retries every 409 unconditionally; this is what stops it"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 20
+
+/// The `400` for a key whose first request has not finished says **retry**,
+/// which is the opposite of what its status code says to a Stripe SDK.
+///
+/// stripe-node retries no `4xx` at all, and this is the one refusal on this
+/// surface that clears itself: the first attempt landing is what ends it.
+/// The status stays `400` — `Category::Idempotency`'s policy row, and a
+/// maintainer decision recorded on `ApiError::IdempotencyKeyInFlight` — so
+/// the header is the only thing that can carry the correct advice.
+///
+/// The in-flight state is reached the way test 16 reaches it, and for the
+/// same reason: racing two requests would usually observe a replay instead.
+/// The row, its hash and the retry that meets it are all the server's own.
+#[tokio::test]
+async fn an_in_flight_idempotency_key_tells_a_stripe_sdk_to_retry_its_400() -> anyhow::Result<()> {
+    const PATH: &str = "/v1/payment_intents";
+    const BODY: &str = "amount=5000&currency=xaf&payment_method_types[0]=mtn_momo";
+    // The shape stripe-node generates for every v1 POST
+    // (`_defaultIdempotencyKey`), so this also shows vpay accepts one.
+    const KEY: &str = "stripe-node-retry-11111111-2222-3333-4444-555555555555";
+
+    let harness = harness().await?;
+    let http = raw_client();
+    let bearer = harness.bearer(CLIENT_A);
+
+    let post = || {
+        http.post(harness.url(PATH))
+            .bearer_auth(&bearer)
+            .header("Idempotency-Key", KEY)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(BODY)
+            .send()
+    };
+
+    assert_eq!(
+        post()
+            .await
+            .context("the first POST under this key")?
+            .status()
+            .as_u16(),
+        200,
+        "a `stripe-node-retry-<uuid>` key is inside vpay's 255-byte printable-ASCII rule"
+    );
+
+    let reopened = sqlx::query(
+        "UPDATE idempotency_keys SET state = 'in_flight', response_status = NULL, \
+         response_body = NULL, completed_at = NULL \
+         WHERE merchant_id = $1 AND idempotency_key = $2",
+    )
+    .bind(MERCHANT_A)
+    .bind(KEY)
+    .execute(&harness.pool)
+    .await
+    .context("re-opening the stored claim")?;
+    assert_eq!(reopened.rows_affected(), 1);
+
+    let in_flight = post().await.context("a POST under a key still in flight")?;
+    assert_eq!(in_flight.status().as_u16(), 400);
+    assert_eq!(
+        retry_advice(&in_flight).as_deref(),
+        Some("true"),
+        "the one 4xx on this surface that heals on its own must say so, or a \
+         Stripe SDK will never retry it"
+    );
+
+    let body: Value = in_flight.json().await.context("the body is JSON")?;
+    assert_eq!(
+        body.pointer("/error/code").and_then(Value::as_str),
+        Some("idempotency_key_in_flight"),
+        "got {body:#}"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 21
+
+/// `confirm=true` on create is refused, naming `confirm`; `confirm=false` is
+/// honoured, because that is what this endpoint does anyway.
+///
+/// `CreateParams` has no `deny_unknown_fields`, so before Step 5b a merchant
+/// who copied Stripe's most common snippet got a `200`, an intent in
+/// `requires_payment_method`, and the belief that they had charged someone.
+/// A silently-dropped field is the one incompatibility a merchant cannot
+/// debug from the response.
+///
+/// The `confirm=false` half is not decoration: it is what fails if the
+/// refusal is widened to "reject the field whenever it is present", which
+/// would refuse a request vpay can satisfy exactly as written.
+#[tokio::test]
+async fn confirm_on_create_is_refused_and_names_the_field() -> anyhow::Result<()> {
+    const PATH: &str = "/v1/payment_intents";
+    const BODY: &str = "amount=5000&currency=xaf&payment_method_types[0]=mtn_momo";
+
+    let harness = harness().await?;
+    let http = raw_client();
+    let bearer = harness.bearer(CLIENT_A);
+
+    let create = |key: &'static str, body: String| {
+        http.post(harness.url(PATH))
+            .bearer_auth(&bearer)
+            .header("Idempotency-Key", key)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(body)
+            .send()
+    };
+
+    let refused = create("confirm-true", format!("{BODY}&confirm=true"))
+        .await
+        .context("a create asking to confirm")?;
+    assert_eq!(refused.status().as_u16(), 400);
+    let body: Value = refused.json().await.context("the body is JSON")?;
+    assert_eq!(
+        body.pointer("/error/type").and_then(Value::as_str),
+        Some("invalid_request_error"),
+        "got {body:#}"
+    );
+    assert_eq!(
+        body.pointer("/error/param").and_then(Value::as_str),
+        Some("confirm"),
+        "a Stripe SDK points its user at `error.param`: {body:#}"
+    );
+    assert!(
+        body.pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("/v1/payment_intents/{id}/confirm")),
+        "the refusal must name the endpoint that does the work: {body:#}"
+    );
+
+    // Nothing was created — the refusal is not a half-done create.
+    assert_eq!(
+        count(
+            &harness.pool,
+            "SELECT count(*) FROM payment_intents WHERE merchant_id = $1",
+            MERCHANT_A,
+        )
+        .await?,
+        0,
+    );
+
+    let accepted = create("confirm-false", format!("{BODY}&confirm=false"))
+        .await
+        .context("a create explicitly asking not to confirm")?;
+    assert_eq!(
+        accepted.status().as_u16(),
+        200,
+        "`confirm=false` asks for exactly what this endpoint does"
+    );
+    let created: Value = accepted.json().await.context("the body is JSON")?;
+    assert_eq!(
+        created.get("status").and_then(Value::as_str),
+        Some("requires_payment_method"),
+        "got {created:#}"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 22
+
+/// Every header and parameter stripe-node adds of its own accord is accepted
+/// and ignored, rather than refused.
+///
+/// Step 5b's §2 claims "axum ignores unknown headers already — no code
+/// change" and "`expand` is already dropped silently"; this is the evidence
+/// for the claim, so that a future `deny_unknown_fields`, a stricter header
+/// policy or a `Stripe-Version` check breaks a test here instead of breaking
+/// a merchant. It is deliberately one request carrying all of them at once,
+/// because that is what a real stripe-node call looks like on the wire.
+///
+/// `Stripe-Account` in particular is accepted rather than refused: vpay has
+/// no Connect, and a `400` naming a header a merchant deliberately set is a
+/// worse diagnostic than a documented "Connect is not a thing here".
+#[tokio::test]
+async fn a_request_shaped_the_way_stripe_node_sends_it_is_accepted() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let http = raw_client();
+    let bearer = harness.bearer(CLIENT_A);
+
+    let response = http
+        .post(harness.url("/v1/payment_intents"))
+        .bearer_auth(&bearer)
+        .header("Idempotency-Key", "stripe-node-retry-abc-123")
+        .header("content-type", "application/x-www-form-urlencoded")
+        // The exact set `RequestSender._makeHeaders` builds, minus the ones
+        // this suite already sends. `Stripe-Version` is advertised nowhere
+        // and echoed nowhere; a merchant pinning one is pinning nothing.
+        .header("Stripe-Version", "2026-08-26.dahlia")
+        .header("Stripe-Account", "acct_not_a_thing_here")
+        .header("X-Stripe-Client-User-Agent", r#"{"lang":"node"}"#)
+        .header(
+            "X-Stripe-Client-Telemetry",
+            r#"{"last_request_metrics":{}}"#,
+        )
+        .header("User-Agent", "Stripe/v1 NodeBindings/22.6.1")
+        // Indexed arrays, which is how stripe-node encodes them, and
+        // `expand`, which vpay does not implement and must not choke on.
+        .body(
+            "amount=5000&currency=xaf&payment_method_types[0]=mtn_momo\
+             &expand[0]=charge&metadata[order_id]=1234",
+        )
+        .send()
+        .await
+        .context("a create shaped the way stripe-node sends one")?;
+
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "no header or parameter stripe-node adds may turn a valid create into a refusal"
+    );
+    let created: Value = response.json().await.context("the body is JSON")?;
+    // The ignored `expand` did not become a field of the object either.
+    assert!(created.get("charge").is_none(), "got {created:#}");
+    assert_eq!(
+        created
+            .pointer("/metadata/order_id")
+            .and_then(Value::as_str),
+        Some("1234"),
+        "got {created:#}"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 23
+
+/// The fields that change **where or when money moves** are refused on
+/// create, and the refusal hands the `Idempotency-Key` back.
+///
+/// Two claims, and the second is the one the `confirm=true` test could not
+/// make: it used a different key for its accepted request, so it showed the
+/// refusal happened but not that the key survived it. Here the *same* key
+/// carries the refused request and then the corrected one. If the refusal
+/// stored its 400, the retry would replay the 400; if it left the claim
+/// in_flight, the retry would be `idempotency_key_in_flight`. Only a
+/// released key produces the `200` asserted below.
+///
+/// `capture_method=manual` is the case a merchant actually hits: it is one
+/// word in a copied Stripe snippet, and ignoring it would take the payer's
+/// money at a moment the merchant believes it is only being authorised.
+#[tokio::test]
+async fn a_refused_create_hands_its_idempotency_key_back() -> anyhow::Result<()> {
+    const PATH: &str = "/v1/payment_intents";
+    const BODY: &str = "amount=5000&currency=xaf&payment_method_types[0]=mtn_momo";
+    const KEY: &str = "order-77-attempt-1";
+
+    let harness = harness().await?;
+    let http = raw_client();
+    let bearer = harness.bearer(CLIENT_A);
+
+    let post = |key: &'static str, body: String| {
+        http.post(harness.url(PATH))
+            .bearer_auth(&bearer)
+            .header("Idempotency-Key", key)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(body)
+            .send()
+    };
+
+    // Every refused field, each under its own key, each naming itself.
+    for (suffix, param) in [
+        ("&capture_method=manual", "capture_method"),
+        ("&application_fee_amount=250", "application_fee_amount"),
+        ("&transfer_data[destination]=acct_x", "transfer_data"),
+        ("&on_behalf_of=acct_x", "on_behalf_of"),
+    ] {
+        let refused = post(param, format!("{BODY}{suffix}"))
+            .await
+            .with_context(|| format!("a create carrying `{suffix}`"))?;
+        assert_eq!(refused.status().as_u16(), 400, "{suffix}");
+        let body: Value = refused.json().await.context("the body is JSON")?;
+        assert_eq!(
+            body.pointer("/error/type").and_then(Value::as_str),
+            Some("invalid_request_error"),
+            "{suffix}: got {body:#}"
+        );
+        assert_eq!(
+            body.pointer("/error/param").and_then(Value::as_str),
+            Some(param),
+            "{suffix}: a Stripe SDK points its user at `error.param`: {body:#}"
+        );
+        assert!(
+            body.pointer("/error/message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| message.contains("does not support")),
+            "{suffix}: the refusal must say vpay cannot do it: {body:#}"
+        );
+    }
+
+    // Nothing was created by any of them.
+    assert_eq!(
+        count(
+            &harness.pool,
+            "SELECT count(*) FROM payment_intents WHERE merchant_id = $1",
+            MERCHANT_A,
+        )
+        .await?,
+        0,
+    );
+
+    // The key-release claim, on one key: refused, then corrected, then
+    // through.
+    let refused = post(KEY, format!("{BODY}&capture_method=manual"))
+        .await
+        .context("the refused attempt under the shared key")?;
+    assert_eq!(refused.status().as_u16(), 400);
+
+    let corrected = post(KEY, BODY.to_owned())
+        .await
+        .context("the corrected attempt under the same key")?;
+    assert_eq!(
+        corrected.status().as_u16(),
+        200,
+        "a refusal that stored its 400, or left the claim in flight, would answer 4xx here"
+    );
+    let created: Value = corrected.json().await.context("the body is JSON")?;
+    assert_eq!(
+        created.get("status").and_then(Value::as_str),
+        Some("requires_payment_method"),
+        "got {created:#}"
+    );
+
+    // `capture_method=automatic` asks for exactly what vpay does, so it is
+    // accepted — the half that fails if the refusal is widened to "the field
+    // is present".
+    let automatic = post(
+        "order-77-automatic",
+        format!("{BODY}&capture_method=automatic"),
+    )
+    .await
+    .context("a create asking for the capture behaviour vpay already has")?;
+    assert_eq!(automatic.status().as_u16(), 200);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 24
+
+/// The same refusal on `confirm`, where a merchant who was refused on create
+/// would otherwise get the field silently ignored one request later.
+///
+/// stripe-node's `paymentIntents.confirm` takes `capture_method` and
+/// `application_fee_amount` too, so refusing only on create would leave the
+/// exact same misunderstanding one call further along — and this one is
+/// worse, because the confirm is the request that moves the money.
+///
+/// The intent is left untouched by the refusal: the check runs before the
+/// key is claimed and long before any charge row exists.
+///
+/// The second half is the one claim 16 makes that the refusals alone do not
+/// show — **the refusal leaves the `Idempotency-Key` unspent**, as test 23
+/// pins on the create side. A refusal that had stored its `400`, or left the
+/// claim in flight, would answer `400` `idempotency_key_in_use` to the
+/// corrected confirm under the same key instead of letting it reach the rail.
+#[tokio::test]
+async fn a_confirm_refuses_the_same_fields_a_create_does() -> anyhow::Result<()> {
+    const PMD: &str =
+        "payment_method_data[type]=mtn_momo&payment_method_data[mtn_momo][msisdn]=237670000000";
+    // The one key carried across a refusal and its correction.
+    const KEY: &str = "confirm-refused-then-corrected";
+
+    let harness = harness().await?;
+    let http = raw_client();
+    let bearer = harness.bearer(CLIENT_A);
+
+    let intent = harness
+        .a()
+        .payment_intents()
+        .create(create_params(), RequestOptions::new())
+        .await
+        .context("creating the intent to confirm")?;
+
+    let confirm = |key: &'static str, body: String| {
+        http.post(harness.url(&format!("/v1/payment_intents/{}/confirm", intent.id)))
+            .bearer_auth(&bearer)
+            .header("Idempotency-Key", key)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(body)
+            .send()
+    };
+
+    let refused = confirm("confirm-manual", format!("{PMD}&capture_method=manual"))
+        .await
+        .context("a confirm asking for a manual capture")?;
+    assert_eq!(refused.status().as_u16(), 400);
+    let body: Value = refused.json().await.context("the body is JSON")?;
+    assert_eq!(
+        body.pointer("/error/param").and_then(Value::as_str),
+        Some("capture_method"),
+        "got {body:#}"
+    );
+
+    let connect = confirm(
+        "confirm-connect",
+        format!("{PMD}&transfer_data[destination]=acct_x"),
+    )
+    .await
+    .context("a confirm asking to route the money elsewhere")?;
+    assert_eq!(connect.status().as_u16(), 400);
+    let body: Value = connect.json().await.context("the body is JSON")?;
+    assert_eq!(
+        body.pointer("/error/param").and_then(Value::as_str),
+        Some("transfer_data"),
+        "got {body:#}"
+    );
+
+    // No charge was attempted by either refusal, and the intent is where it
+    // was — a refused confirm is not a half-done one.
+    assert_eq!(
+        count(
+            &harness.pool,
+            "SELECT count(*) FROM charges WHERE payment_intent_id = $1",
+            &intent.id,
+        )
+        .await?,
+        0,
+    );
+    let unchanged = harness
+        .a()
+        .payment_intents()
+        .retrieve(&intent.id)
+        .await
+        .context("reading the intent back")?;
+    assert_eq!(unchanged.status, intent.status);
+
+    // The key-release claim on the confirm side: refused, then corrected,
+    // under one key.
+    let refused = confirm(KEY, format!("{PMD}&application_fee_amount=100"))
+        .await
+        .context("the refused attempt under the shared key")?;
+    assert_eq!(refused.status().as_u16(), 400);
+    let body: Value = refused.json().await.context("the body is JSON")?;
+    assert_eq!(
+        body.pointer("/error/param").and_then(Value::as_str),
+        Some("application_fee_amount"),
+        "got {body:#}"
+    );
+
+    // Nothing was written under the key at all — not a stored response, not
+    // an in-flight claim. The refusal runs before `claim_or_answer`, so
+    // there is no row to release.
+    assert_eq!(
+        count(
+            &harness.pool,
+            "SELECT count(*) FROM idempotency_keys WHERE idempotency_key = $1",
+            KEY,
+        )
+        .await?,
+        0,
+        "a refused confirm must leave the key unclaimed, not spent",
+    );
+
+    let corrected = confirm(KEY, PMD.to_owned())
+        .await
+        .context("the corrected attempt under the same key")?;
+    assert_eq!(
+        corrected.status().as_u16(),
+        502,
+        "the corrected confirm reached the rail — this suite's rail is \
+         unreachable by configuration, which is test 5's outcome. A refusal \
+         that had stored its 400, or left the claim in flight, would answer \
+         400 `idempotency_key_in_use` here instead",
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 25
+
+/// A **replayed** error response carries the same `stripe-should-retry` the
+/// original did — proven against a real Postgres, through the real replay
+/// path.
+///
+/// This test used to pin the opposite, and the sentence it used to carry is
+/// worth keeping: `v1::payment_intents::replay` rebuilt a response from a
+/// stored status and body, the advisory was neither, so a merchant retrying
+/// under a key whose stored answer was a `409` got that `409` bare and
+/// stripe-node applied its own "retry every 409" rule to a refusal waiting
+/// cannot fix. Migration `0025` adds `idempotency_keys.response_retry`,
+/// `PostRequest::finish` stores what the rendered response actually carried,
+/// and `replay` writes those bytes back.
+///
+/// The stored `409` is reached the way test 19 reaches it, through the real
+/// "one charge per intent, forever" refusal — not by editing a row. **The
+/// two responses are asserted to be the same body**, so the header is the
+/// only thing left that could differ, and it is asserted equal rather than
+/// merely present: a `replay` that hard-coded `false` would pass a presence
+/// check and fail this one the day a `true`-advised error becomes storable.
+#[tokio::test]
+async fn a_replayed_error_carries_the_same_retry_advisory_the_original_did() -> anyhow::Result<()> {
+    const KEY: &str = "replay-keeps-the-advisory";
+
+    let harness = harness().await?;
+    let http = raw_client();
+    let bearer = harness.bearer(CLIENT_A);
+
+    let intent = harness
+        .a()
+        .payment_intents()
+        .create(create_params(), RequestOptions::new())
+        .await
+        .context("creating the intent to confirm")?;
+
+    let confirm = |key: &'static str| {
+        http.post(harness.url(&format!("/v1/payment_intents/{}/confirm", intent.id)))
+            .bearer_auth(&bearer)
+            .header("Idempotency-Key", key)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("payment_method_data[type]=mtn_momo&payment_method_data[mtn_momo][msisdn]=237670000000")
+            .send()
+    };
+
+    // The first confirm commits a `submitting` charge and then fails at the
+    // unreachable rail: a 502, which is *released* rather than stored.
+    assert_eq!(
+        confirm("advisory-replay-first")
+            .await
+            .context("the first confirm")?
+            .status()
+            .as_u16(),
+        502,
+        "this suite's rail is unreachable by configuration"
+    );
+
+    // The second meets `one_charge_per_intent` and is the 409 that gets
+    // stored under KEY.
+    let original = confirm(KEY).await.context("the stored 409")?;
+    assert_eq!(original.status().as_u16(), 409);
+    let original_advice = retry_advice(&original);
+    assert_eq!(
+        original_advice.as_deref(),
+        Some("false"),
+        "rendered fresh, the advisory is there and says what the classification says"
+    );
+    let original_body: Value = original.json().await.context("the 409 body is JSON")?;
+
+    // The same key again: the stored response, replayed.
+    let replayed = confirm(KEY).await.context("the replay of the stored 409")?;
+    assert_eq!(replayed.status().as_u16(), 409);
+    assert_eq!(
+        retry_advice(&replayed),
+        original_advice,
+        "a replay must re-emit the advisory the response it replays carried — equality with \
+         the original, not merely presence, is what rules out a hard-coded value in `replay`"
+    );
+    let replayed_body: Value = replayed.json().await.context("the replay body is JSON")?;
+    assert_eq!(
+        replayed_body, original_body,
+        "the body really is the stored one, so the two responses now agree on all three of \
+         status, body and advisory"
     );
 
     harness.shutdown().await;

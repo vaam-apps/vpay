@@ -129,6 +129,137 @@ struct CreateParams {
     #[serde(default)]
     metadata: BTreeMap<String, String>,
     description: Option<String>,
+    /// Stripe's `confirm`, accepted **only so it can be refused**.
+    ///
+    /// vpay has no confirm-on-create: creation and confirmation are two
+    /// requests (`docs/flows/payment-lifecycle.md`), and `CreateParams` has
+    /// no `deny_unknown_fields`, so before this field existed a merchant who
+    /// copied a Stripe snippet with `confirm: true` got a `200`, an intent in
+    /// `requires_payment_method`, and the belief that they had charged
+    /// someone. A field that is dropped silently is the one shape of
+    /// incompatibility a merchant cannot debug from the response
+    /// (`docs/plans/2026-09-03-step5b-stripe-sdk.md` §2.6).
+    ///
+    /// `Option<String>` like every other field here: the wire is
+    /// form-encoded, so the value arrives as text and
+    /// [`reject_confirm_on_create`] decides what to do with it.
+    confirm: Option<String>,
+    /// The Stripe fields that decide **where or when money moves**, accepted
+    /// only so they can be refused. See [`UnsupportedStripeParams`].
+    #[serde(flatten)]
+    unsupported: UnsupportedStripeParams,
+}
+
+/// The Stripe request fields vpay refuses on both `POST` bodies, because
+/// silently ignoring them would change where or when a merchant's money
+/// moves.
+///
+/// # Why these four and not every field vpay ignores
+///
+/// Neither [`CreateParams`] nor [`ConfirmParams`] has `deny_unknown_fields`,
+/// and that is deliberate: a Stripe SDK adds fields of its own accord
+/// (`expand`, telemetry), Stripe's own API gains fields between versions, and
+/// a `400` for each of them would make vpay unusable from the SDKs this
+/// compatibility work exists to support. So the default is
+/// *accepted-and-ignored*, and this struct is the exception list.
+///
+/// The line between the two is **what a merchant believes happened**. These
+/// are accepted-and-ignored, and stay that way:
+///
+/// * `setup_future_usage`, `confirmation_method`, `receipt_email`,
+///   `statement_descriptor`, `customer` — vpay does not implement them, and a
+///   merchant who sends one gets the payment they asked for anyway, taken
+///   from the payer they asked, for the amount they asked;
+/// * `expand`, `metadata` — `expand` is not implemented (the response simply
+///   has no expanded field, which is visible in the response itself);
+///   `metadata` is implemented and stored.
+///
+/// These four are different. Each of them says money should move somewhere
+/// else, or at a different time, than it otherwise would:
+///
+/// * `capture_method` other than `automatic` asks vpay to *authorise now and
+///   capture later*. vpay has no authorise/capture split — a confirm is the
+///   charge (`docs/flows/payment-lifecycle.md`) — so ignoring it would take
+///   the payer's money at a moment the merchant believes it is only being
+///   held;
+/// * `application_fee_amount`, `transfer_data` and `on_behalf_of` are
+///   Stripe Connect: they route part or all of a payment to a *different*
+///   account. vpay has no Connect at all, so ignoring them settles the whole
+///   amount to the merchant who called — which is neither what was asked for
+///   nor something they can see in the response.
+///
+/// `capture_method=automatic` is accepted, for
+/// [`reject_confirm_on_create`]'s reason: it asks for exactly what this API
+/// does, so refusing it would refuse a request vpay can satisfy as written.
+///
+/// # Not an ADR-0002 violation
+///
+/// These are *request fields* — the wire contract this API publishes — not
+/// rails. Nothing here branches on a provider code, and adding a rail does
+/// not change this list.
+#[derive(Debug, Default, Deserialize)]
+struct UnsupportedStripeParams {
+    /// Text like every other form field. Only `automatic` is accepted.
+    capture_method: Option<String>,
+    application_fee_amount: Option<String>,
+    /// A [`Value`] rather than a `String` because it arrives nested —
+    /// `transfer_data[destination]=acct_x` decodes to an object
+    /// (`crate::form`) — and this code never reads inside it. Its
+    /// *presence* is the whole question.
+    transfer_data: Option<Value>,
+    on_behalf_of: Option<String>,
+}
+
+/// The sentence every Connect field shares. One string, because three
+/// hand-written variations on "vpay has no Connect" would drift — and
+/// because every public message has to fit `MESSAGE_MAX_CHARS` (200), which
+/// three separately-edited sentences would each have to be checked against.
+const NO_CONNECT: &str = "vpay does not support Stripe Connect: a payment cannot be split, have a fee \
+                          taken from it, or be settled to an account other than the merchant that \
+                          created it. Remove this field.";
+
+/// The `capture_method` refusal, which is about *when* rather than *where*.
+const NO_MANUAL_CAPTURE: &str = "vpay does not support authorising now and capturing later: confirming a PaymentIntent is \
+     what charges the payer. `capture_method` accepts only `automatic`.";
+
+impl UnsupportedStripeParams {
+    /// Refuses the first field this request asked for that vpay cannot do.
+    ///
+    /// One table rather than four `if let`s: the rows are the specification,
+    /// and a fifth field is a line here instead of another copy of the same
+    /// three lines of error construction. The order is fixed, so a request
+    /// carrying two of them is always refused with the same one and a
+    /// merchant's second attempt makes progress rather than trading one 400
+    /// for another at random.
+    ///
+    /// # Errors
+    /// [`ApiError::InvalidParam`] (`400`, `invalid_request_error`) naming the
+    /// field, because `error.param` is what a Stripe SDK points its user at.
+    fn reject_unsupported(&self) -> Result<(), ApiError> {
+        // (the wire name, whether this request asked for it, why vpay cannot)
+        let asked: [(&str, bool, &str); 4] = [
+            (
+                "capture_method",
+                self.capture_method
+                    .as_deref()
+                    .is_some_and(|method| method != "automatic"),
+                NO_MANUAL_CAPTURE,
+            ),
+            (
+                "application_fee_amount",
+                self.application_fee_amount.is_some(),
+                NO_CONNECT,
+            ),
+            ("transfer_data", self.transfer_data.is_some(), NO_CONNECT),
+            ("on_behalf_of", self.on_behalf_of.is_some(), NO_CONNECT),
+        ];
+        for (param, present, message) in asked {
+            if present {
+                return Err(ApiError::invalid_param(param, message));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `POST /v1/payment_intents`.
@@ -245,6 +376,13 @@ async fn validate_create(
     config: &ResourceConfig,
 ) -> Result<ValidCreate, ApiError> {
     let params: CreateParams = post.form().await?;
+
+    reject_confirm_on_create(params.confirm.as_deref())?;
+    // Before anything is written, and — like every other rule in this
+    // function — while the key is claimed but nothing is stored, so
+    // `create` releases the key and the merchant's corrected retry under the
+    // same key executes rather than replaying the refusal.
+    params.unsupported.reject_unsupported()?;
 
     Ok(ValidCreate {
         amount: parse_amount(params.amount.as_deref())?,
@@ -457,6 +595,12 @@ fn charge_in_flight() -> ApiError {
 struct ConfirmParams {
     payment_method_data: Option<Map<String, Value>>,
     return_url: Option<String>,
+    /// The same refusal set `POST /v1/payment_intents` carries. stripe-node's
+    /// `paymentIntents.confirm` takes `capture_method` and `application_fee_amount`
+    /// too, and a merchant who was refused on create would otherwise get them
+    /// silently ignored one request later.
+    #[serde(flatten)]
+    unsupported: UnsupportedStripeParams,
 }
 
 /// `POST /v1/payment_intents/{id}/confirm`.
@@ -504,6 +648,19 @@ pub(crate) async fn confirm(
 ) -> Result<Response, ApiError> {
     let post = PostRequest::read(request).await?;
     let params: ConfirmParams = post.form().await?;
+    // Before the claim, where the body is decoded — so a refused confirm
+    // stores nothing and leaves the key unspent, exactly as a body that fails
+    // to decode already does. The corrected retry under the same key is a
+    // fresh request, not a replay of the refusal.
+    //
+    // Running it first is safe because the check is config-independent — it
+    // reads the body alone — so a genuine replay, whose body is byte for byte
+    // the one that was accepted, can never be shadowed by it. What the
+    // ordering is visible in is the other case: a confirm reusing a completed
+    // key with a newly added refused field answers that field's `400` rather
+    // than [`ApiError::idempotency_key_reused`] (`idempotency_key_in_use` on
+    // the wire), because the field is refused before the key is looked at.
+    params.unsupported.reject_unsupported()?;
 
     let claim_id = match post.claim_or_answer(&pool, &scope).await? {
         ClaimOutcome::Owned(claim_id) => claim_id,
@@ -1289,6 +1446,38 @@ fn parse_currency(raw: Option<&str>, config: &ResourceConfig) -> Result<Currency
     Ok(currency)
 }
 
+/// Refuses `confirm` on create, so a Stripe snippet that believes it
+/// charged someone is told otherwise.
+///
+/// **`confirm=false` is accepted, and `confirm=true` is not.** They ask for
+/// different things: `false` asks vpay to create the intent without
+/// confirming it, which is exactly and only what this endpoint does, so
+/// honouring it is not "ignoring" anything and refusing it would reject a
+/// request vpay can satisfy as written. `true` asks for a charge this
+/// endpoint will never make, and there is no answer to that but a refusal —
+/// which is the whole point of the field's existence here.
+///
+/// Anything that is neither takes the same branch as `true`, deliberately:
+/// vpay cannot know what a merchant meant by `confirm=yes`, and the safe
+/// reading of an unparseable confirmation flag is the one that does not
+/// leave them thinking a payment happened. The message is written to be true
+/// in both cases.
+///
+/// `param: "confirm"` because that is the field a Stripe SDK will point its
+/// user at, and the sentence names the endpoint that actually does the work
+/// rather than merely saying "unsupported".
+fn reject_confirm_on_create(confirm: Option<&str>) -> Result<(), ApiError> {
+    match confirm {
+        None | Some("false") => Ok(()),
+        Some(_) => Err(ApiError::invalid_param(
+            "confirm",
+            "`confirm` is not supported when creating a PaymentIntent. Create the intent first, \
+             then confirm it with POST /v1/payment_intents/{id}/confirm, which is where the \
+             payment method is supplied.",
+        )),
+    }
+}
+
 /// Every named rail must be one this deployment offers *now*: a
 /// `payment_method_types` naming a disabled or unknown rail would produce an
 /// intent that can never be confirmed.
@@ -1601,6 +1790,19 @@ impl PostRequest {
             return Ok(response);
         }
 
+        // The advisory as this response actually carries it, taken off the
+        // rendered `HeaderMap` rather than worked out again from `status`.
+        // That is what makes `idempotency_keys.response_retry` (migration
+        // 0025) a record of what was sent instead of a second opinion about
+        // it — see `error::STRIPE_SHOULD_RETRY_HEADER`. A value that is not
+        // ASCII cannot have come from `into_response`'s two constants, and
+        // storing it would fail the column's CHECK, so it is dropped.
+        let retry = response
+            .headers()
+            .get(crate::error::STRIPE_SHOULD_RETRY_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+
         let (parts, body) = response.into_parts();
         let bytes = match axum::body::to_bytes(body, crate::V1_BODY_LIMIT_BYTES).await {
             Ok(bytes) => bytes,
@@ -1628,6 +1830,7 @@ impl PostRequest {
             claim_id,
             status.as_u16(),
             &value,
+            retry.as_deref(),
         )
         .await
         {
@@ -1691,7 +1894,17 @@ enum ClaimOutcome {
     Answered(Response),
 }
 
-/// Replays a stored response verbatim.
+/// Replays a stored response verbatim — status, body **and** the
+/// `stripe-should-retry` advisory the original carried.
+///
+/// The advisory is re-emitted from `idempotency_keys.response_retry`
+/// (migration `0025`) and is never re-derived from `record.response_status`.
+/// A replay that worked the header out again from the status would be a
+/// second classification of an error this deployment may since have
+/// reclassified — the drift ADR-0011 exists to prevent — and would be wrong
+/// today for any status two categories share. `None` means the stored
+/// response carried none, which is what a stored `2xx` looks like: only
+/// `ApiError::into_response` sets the header.
 fn replay(record: &IdempotencyRecord) -> Result<Response, ApiError> {
     let (Some(status), Some(body)) = (record.response_status, record.response_body.as_ref()) else {
         // The `complete_has_a_response` CHECK (migration 0015) makes this
@@ -1709,7 +1922,23 @@ fn replay(record: &IdempotencyRecord) -> Result<Response, ApiError> {
                 "a stored idempotent response carries {status}, which is not an HTTP status"
             ))
         })?;
-    Ok(value_response(status, body))
+
+    let mut response = value_response(status, body);
+    // Parsed rather than trusted: the column's CHECK already confines it to
+    // `true`/`false`, so an unparseable value means the row was written by
+    // something other than `store`. Dropping it re-creates the pre-0025
+    // behaviour for that row instead of failing a replay a merchant is
+    // waiting on.
+    if let Some(advisory) = record
+        .response_retry
+        .as_deref()
+        .and_then(|advisory| HeaderValue::from_str(advisory).ok())
+    {
+        response
+            .headers_mut()
+            .insert(crate::error::STRIPE_SHOULD_RETRY_HEADER, advisory);
+    }
+    Ok(response)
 }
 
 #[cfg(test)]
@@ -2176,6 +2405,220 @@ mod tests {
         );
         assert_eq!(exact.chars().count(), RETURN_URL_MAX_CHARS);
         assert!(checked_return_url(&exact).is_ok());
+    }
+
+    /// `confirm=true` on create is refused, and `confirm=false` is not.
+    ///
+    /// The `false` half is the one that would be lost by "reject the field
+    /// whenever it is present": a merchant asking vpay *not* to confirm is
+    /// asking for exactly what this endpoint does, and a 400 there refuses a
+    /// request that was already correct.
+    ///
+    /// The `true` half is what stops a copied Stripe snippet from returning
+    /// a `200` and an unconfirmed intent to a merchant who believes they
+    /// charged someone.
+    #[test]
+    fn confirm_on_create_is_refused_unless_it_asks_for_nothing() {
+        assert!(reject_confirm_on_create(None).is_ok());
+        assert!(reject_confirm_on_create(Some("false")).is_ok());
+
+        for asked in ["true", "1", "yes", ""] {
+            let error = reject_confirm_on_create(Some(asked))
+                .expect_err("`confirm` that is not `false` must be refused");
+            assert_eq!(
+                param_of(&error),
+                Some("confirm"),
+                "a Stripe SDK points its user at `error.param`; got {error:?}"
+            );
+            let ApiError::InvalidParam { message, .. } = &error else {
+                panic!("expected an invalid-parameter error, got {error:?}")
+            };
+            assert!(
+                message.contains("/v1/payment_intents/{id}/confirm"),
+                "the refusal must name the endpoint that does the work: {message}"
+            );
+        }
+    }
+
+    /// The fields that change where or when money moves are refused, on the
+    /// **create** body and on the **confirm** body, decoded by the real form
+    /// decoder rather than by constructing the struct.
+    ///
+    /// Going through `crate::form::parse_form` is the point: what a merchant
+    /// sends is bytes, and `transfer_data[destination]=acct_x` only reaches
+    /// `UnsupportedStripeParams::transfer_data` if the bracket nesting, the
+    /// `#[serde(flatten)]` and the field name all agree. A test that built
+    /// the struct by hand would pass with a field the wire can never fill.
+    ///
+    /// `capture_method=automatic` is in the accepted column deliberately: it
+    /// asks for exactly what vpay does, and refusing it would refuse a
+    /// correct request — the same rule `confirm=false` follows.
+    #[test]
+    fn the_fields_that_move_money_elsewhere_are_refused_through_the_real_decoder() {
+        fn create_of(body: &str) -> CreateParams {
+            let value = crate::form::parse_form(body.as_bytes()).expect("the body decodes");
+            serde_json::from_value(value).expect("a create body deserializes")
+        }
+        fn confirm_of(body: &str) -> ConfirmParams {
+            let value = crate::form::parse_form(body.as_bytes()).expect("the body decodes");
+            serde_json::from_value(value).expect("a confirm body deserializes")
+        }
+
+        const VALID: &str = "amount=5000&currency=xaf&payment_method_types[0]=mtn_momo";
+        const PMD: &str = "payment_method_data[type]=mtn_momo\
+                           &payment_method_data[mtn_momo][msisdn]=237670000000";
+
+        // Refused, on both bodies, each naming its own field.
+        for (suffix, param) in [
+            ("&capture_method=manual", "capture_method"),
+            ("&application_fee_amount=250", "application_fee_amount"),
+            ("&transfer_data[destination]=acct_x", "transfer_data"),
+            ("&on_behalf_of=acct_x", "on_behalf_of"),
+        ] {
+            for (label, refused) in [
+                (
+                    "create",
+                    create_of(&format!("{VALID}{suffix}"))
+                        .unsupported
+                        .reject_unsupported(),
+                ),
+                (
+                    "confirm",
+                    confirm_of(&format!("{PMD}{suffix}"))
+                        .unsupported
+                        .reject_unsupported(),
+                ),
+            ] {
+                let error = refused.expect_err(&format!("{label}: `{suffix}` must be refused"));
+                assert_eq!(
+                    param_of(&error),
+                    Some(param),
+                    "{label}: a Stripe SDK points its user at `error.param`; got {error:?}"
+                );
+                let ApiError::InvalidParam { message, .. } = &error else {
+                    panic!("{label}: expected an invalid-parameter error, got {error:?}")
+                };
+                assert!(
+                    message.contains("does not support"),
+                    "{label}: the refusal must say vpay cannot do it: {message}"
+                );
+                // The envelope truncates a public message at
+                // `MESSAGE_MAX_CHARS` (200) with no warning, so a sentence
+                // edited past the cap silently loses its ending — and the
+                // ending is where these two say what to do instead.
+                assert!(
+                    message.chars().count() <= 200,
+                    "{label}: `{param}`'s message is {} chars and the envelope caps at 200: \
+                     {message}",
+                    message.chars().count()
+                );
+                // And it is one sentence rather than a line-continuation
+                // that lost its backslash: `\` at the end of a Rust string
+                // literal line eats the newline *and* the indentation, and
+                // without it the merchant reads a paragraph of spaces.
+                assert!(
+                    !message.contains("  "),
+                    "{label}: `{param}`'s message carries a run of spaces: {message:?}"
+                );
+            }
+        }
+
+        // Accepted: the value that asks for what vpay already does, and a
+        // body that mentions none of them.
+        for body in [
+            VALID.to_owned(),
+            format!("{VALID}&capture_method=automatic"),
+            // The fields vpay ignores rather than refuses, all at once —
+            // this is the half that fails if the refusal is widened to
+            // "anything Stripe has that vpay lacks".
+            format!(
+                "{VALID}&setup_future_usage=off_session&confirmation_method=automatic\
+                 &receipt_email=a@example.com&statement_descriptor=ACME&customer=cus_1\
+                 &expand[0]=charge&metadata[order_id]=1234"
+            ),
+        ] {
+            assert!(
+                create_of(&body).unsupported.reject_unsupported().is_ok(),
+                "must be accepted: {body}"
+            );
+        }
+        assert!(
+            confirm_of(&format!("{PMD}&capture_method=automatic"))
+                .unsupported
+                .reject_unsupported()
+                .is_ok()
+        );
+    }
+
+    /// A replayed response carries the `stripe-should-retry` it was stored
+    /// with — the same value the fresh response carried, not a fresh opinion
+    /// about the stored status.
+    ///
+    /// This is the test that used to pin the opposite. Before migration
+    /// `0025` [`replay`] rebuilt a response from a status and a body alone,
+    /// so a merchant whose stored answer was a `409` got it back bare and
+    /// stripe-node applied its own "retry every 409" rule to a refusal that
+    /// will never change. `error::STRIPE_SHOULD_RETRY_HEADER` records why the
+    /// column stores the header's own text rather than re-deriving it.
+    ///
+    /// The equality with a *freshly rendered* `Conflict` is the assertion
+    /// that matters: it is what fails if `finish` ever starts storing
+    /// something other than what `into_response` emitted.
+    ///
+    /// The `None` row is the other half. A stored `2xx` never went through
+    /// the error renderer, so its replay must emit no header at all — a
+    /// `false` there would tell an SDK not to retry a successful create,
+    /// which is meaningless, and a `true` would tell it to re-POST one.
+    #[test]
+    fn a_replayed_response_carries_the_advisory_it_was_stored_with() {
+        let stored = |status: i16, retry: Option<&str>| IdempotencyRecord {
+            request_hash: vec![0u8; 32],
+            state: "complete".to_owned(),
+            response_status: Some(status),
+            response_body: Some(serde_json::json!({
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "invalid_state",
+                    "message": "This payment intent already has a charge.",
+                }
+            })),
+            response_retry: retry.map(str::to_owned),
+        };
+        let advisory_of = |response: &Response| {
+            response
+                .headers()
+                .get("stripe-should-retry")
+                .map(|value| value.to_str().expect("the advisory is ascii").to_owned())
+        };
+
+        let replayed = replay(&stored(409, Some("false"))).expect("a complete record replays");
+        assert_eq!(replayed.status(), StatusCode::CONFLICT);
+        assert_eq!(advisory_of(&replayed).as_deref(), Some("false"));
+
+        // The same error rendered *fresh* carries the same value: what a
+        // replay hands back and what the classification says are one thing.
+        let fresh = ApiError::Conflict {
+            message: "This payment intent already has a charge.".to_owned(),
+        }
+        .into_response();
+        assert_eq!(fresh.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            advisory_of(&replayed),
+            advisory_of(&fresh),
+            "a replayed 409 and a fresh 409 must advise the same thing"
+        );
+
+        // `true` is not hard-coded anywhere in `replay` — it comes back
+        // because it was stored.
+        let in_flight = replay(&stored(400, Some("true"))).expect("a complete record replays");
+        assert_eq!(advisory_of(&in_flight).as_deref(), Some("true"));
+
+        // And a response that carried none replays with none.
+        let none = replay(&stored(200, None)).expect("a complete record replays");
+        assert!(
+            advisory_of(&none).is_none(),
+            "a stored 2xx never had an advisory, so its replay must not invent one"
+        );
     }
 
     fn invalid_param_of(error: ApiError) -> Option<String> {
