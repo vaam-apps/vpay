@@ -1,0 +1,28 @@
+# Fixture for `every_webhook_endpoint_rule_refuses_its_own_fixture`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# Not a URL at all. `validate_host` is two substring tests and cannot tell
+# this from a destination: under `livemode: false` it does not look at the
+# string, so this booted and produced one failed delivery attempt per event
+# per rung, forever.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    webhooks:
+      - id: primary
+        url: receiver.internal/webhooks
+        secrets: [whsec-sandbox-literal-is-fine-here]

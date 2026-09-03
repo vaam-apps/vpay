@@ -4087,3 +4087,848 @@ async fn set_payload_writes_only_for_the_lease_holder() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+// --- webhook deliveries and the events read API (migration 0022, Step 5) ---
+//
+// Same technique as every section above — one container per test, via
+// `migrated_postgres()`. The fan-out and delivery *handlers* live in
+// `vpay-worker` and are not exercised here: what these tests pin is the
+// persistence contract those handlers are written against, and every claim
+// below is about what a real Postgres committed, re-read rather than
+// inferred from what a writer returned.
+
+/// A `payment_intent.succeeded` event for `merchant_id`. The type and the
+/// data are deliberately boring — nothing below asserts anything about
+/// either — so a failure points at fan-out or paging rather than at fixture
+/// noise.
+fn fixture_event(id: &str, merchant_id: &str) -> vpay_db::NewEvent {
+    vpay_db::NewEvent {
+        id: id.to_owned(),
+        merchant_id: merchant_id.to_owned(),
+        livemode: false,
+        event_type: "payment_intent.succeeded".to_owned(),
+        object_id: "pi_event_fixture".to_owned(),
+        data: json!({ "id": "pi_event_fixture", "object": "payment_intent" }),
+    }
+}
+
+/// Commits one event in its own transaction. `events::insert_in_tx` has no
+/// pooled variant on purpose (an event must commit with the transition it
+/// describes); a test setting up a backlog has no such transition to be in
+/// step with.
+async fn insert_event(pool: &PgPool, new: &vpay_db::NewEvent) -> anyhow::Result<vpay_db::EventRow> {
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let row = vpay_db::events::insert_in_tx(&mut tx, new)
+        .await
+        .context("inserting the event must succeed")?;
+    tx.commit().await.context("transaction commits")?;
+    Ok(row)
+}
+
+/// Creates one delivery in its own committed transaction, the way the
+/// fan-out pass would — and returns exactly what `create_in_tx` said, so a
+/// caller can assert on the `None` that means "already fanned out".
+async fn create_delivery(
+    pool: &PgPool,
+    event_id: &str,
+    endpoint_id: &str,
+    url: &str,
+) -> anyhow::Result<Option<uuid::Uuid>> {
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let created = vpay_db::webhook_deliveries::create_in_tx(&mut tx, event_id, endpoint_id, url)
+        .await
+        .context("creating the delivery must succeed")?;
+    tx.commit().await.context("transaction commits")?;
+    Ok(created)
+}
+
+/// One delivery, re-read through the repository. Every assertion below goes
+/// through this rather than through the `bool` a writer returned, because
+/// "the statement matched a row" and "the row now holds what it should" are
+/// different claims and only the second one is the contract.
+async fn delivery(pool: &PgPool, id: uuid::Uuid) -> anyhow::Result<vpay_db::DeliveryRow> {
+    vpay_db::webhook_deliveries::get(pool, id)
+        .await
+        .context("reading the delivery must succeed")?
+        .context("the delivery must still exist")
+}
+
+/// The three timestamp columns `DeliveryRow` deliberately does not carry.
+/// Read raw, because the pairing they encode — `status_code IS NULL` with
+/// `responded_at IS NULL` and a `sent_at` set is a transport failure — is a
+/// property of the row that no Rust type in this crate spells.
+async fn delivery_timestamps(
+    pool: &PgPool,
+    id: uuid::Uuid,
+) -> anyhow::Result<(bool, bool, Option<String>)> {
+    let row: (bool, bool, Option<String>) = sqlx::query_as(
+        "SELECT sent_at IS NOT NULL, responded_at IS NOT NULL, state \
+         FROM webhook_deliveries WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .context("re-reading the delivery's timestamps must succeed")?;
+    Ok(row)
+}
+
+/// An event's stored `fanout_state`, read without the repository so an
+/// assertion about what was *committed* cannot be satisfied by whatever the
+/// writer happened to return.
+async fn fanout_state(pool: &PgPool, event_id: &str) -> anyhow::Result<String> {
+    sqlx::query_scalar::<_, String>("SELECT fanout_state FROM events WHERE id = $1")
+        .bind(event_id)
+        .fetch_one(pool)
+        .await
+        .context("re-reading the event must succeed")
+}
+
+/// The id of the nth events paging fixture, zero-padded so lexical and
+/// insertion order agree — same reasoning as `page_fixture_id`.
+fn event_page_id(n: usize) -> String {
+    format!("evt_{n:02}")
+}
+
+/// Migration 0022 applies to a database that already has 0021's four job
+/// kinds, and it leaves the shape Step 5 needs: the two new kinds are
+/// enqueueable, an invented one is still refused, and `webhook_deliveries`
+/// exists with its state vocabulary closed.
+///
+/// The refusals are the half that matters. 0021 closed `kind_is_known`
+/// *specifically* so a `deliver_webhook` job could not be enqueued before a
+/// handler existed; a migration that reopened it permissively — or one that
+/// dropped the constraint and forgot to re-add it — would apply just as
+/// cleanly as this one and would leave nothing to catch a typo'd kind that
+/// no worker will ever run.
+#[tokio::test]
+async fn migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states() -> anyhow::Result<()>
+{
+    let (_container, pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+
+    for kind in ["fan_out_events", "deliver_webhook"] {
+        assert!(
+            enqueue(&pool, kind, &format!("dedupe:{kind}"), now).await?,
+            "0022 must make {kind} enqueueable — the handlers land in this step"
+        );
+    }
+    // And 0021's four are untouched by the drop-and-re-add.
+    assert!(enqueue(&pool, "poll_charge", "poll:ch_still_ok", now).await?);
+
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let refused =
+        vpay_db::jobs::enqueue_in_tx(&mut tx, "deliver_webhooks", "webhook:typo", &json!({}), now)
+            .await;
+    assert!(
+        matches!(refused, Err(vpay_db::DbError::Query(_))),
+        "a kind no handler exists for must still be refused by the database, not merely by \
+         convention: {refused:?}"
+    );
+    tx.rollback().await.context("transaction rolls back")?;
+
+    // The delivery table exists, and its own vocabulary is closed too — a
+    // state outside `state_is_known` is as unrunnable as a job kind is.
+    let event = insert_event(&pool, &fixture_event("evt_state_check", "merchant_a")).await?;
+    let id = create_delivery(&pool, &event.id, "ep_live", "https://example.test/hook")
+        .await?
+        .context("the first delivery for a pair must be created")?;
+
+    let bad_state = sqlx::query("UPDATE webhook_deliveries SET state = 'retrying' WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await;
+    assert!(
+        bad_state.is_err(),
+        "state_is_known must refuse a state no reader knows how to interpret"
+    );
+
+    // A delivery for an event that does not exist is refused by the foreign
+    // key, so a fan-out bug cannot leave a delivery pointing at nothing.
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let dangling = vpay_db::webhook_deliveries::create_in_tx(
+        &mut tx,
+        "evt_nonexistent",
+        "ep_live",
+        "https://example.test/hook",
+    )
+    .await;
+    assert!(
+        matches!(dangling, Err(vpay_db::DbError::ForeignKeyViolation { .. })),
+        "event_id is a real foreign key: {dangling:?}"
+    );
+    tx.rollback().await.context("transaction rolls back")?;
+
+    Ok(())
+}
+
+/// Migration 0023 makes `scan_deliveries` enqueueable, leaves 0022's six
+/// alone, and still refuses a seventh nothing dispatches.
+///
+/// The last assertion is the one that matters: `kind_is_known` is dropped and
+/// re-added on every one of these migrations, and a re-add that widened to
+/// `kind IS NOT NULL` would pass every other check in this file while making
+/// the constraint stop doing its job — which is to refuse, at the insert, a
+/// job kind no worker knows how to dispatch.
+#[tokio::test]
+async fn migration_0023_opens_scan_deliveries_and_keeps_the_vocabulary_closed() -> anyhow::Result<()>
+{
+    let (_container, pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+
+    assert!(
+        enqueue(&pool, "scan_deliveries", "scan:deliveries", now).await?,
+        "0023 must make scan_deliveries enqueueable — the backstop handler lands with it"
+    );
+    for kind in [
+        "poll_charge",
+        "resubmit_charge",
+        "sweep_expired",
+        "scan_live_charges",
+        "fan_out_events",
+        "deliver_webhook",
+    ] {
+        assert!(
+            enqueue(&pool, kind, &format!("still-known:{kind}"), now).await?,
+            "the drop-and-re-add must not have lost {kind}"
+        );
+    }
+
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let refused = vpay_db::jobs::enqueue_in_tx(
+        &mut tx,
+        "scan_delivery",
+        "scan:deliveries:typo",
+        &json!({}),
+        now,
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(vpay_db::DbError::Query(_))),
+        "a kind no handler exists for must still be refused by the database: {refused:?}"
+    );
+    tx.rollback().await.context("transaction rolls back")?;
+
+    Ok(())
+}
+
+/// `endpoint_id_length` and `url_length` really do refuse an out-of-bounds
+/// value, inside the fan-out's own transaction.
+///
+/// This is the failure `vpay_config`'s boot bounds exist to move to boot, and
+/// it is also the mechanism the fan-out isolation test uses to make exactly
+/// one event fail. Both claims rest on this CHECK firing, so it is asserted
+/// rather than assumed from the migration's text.
+#[tokio::test]
+async fn a_delivery_outside_the_length_checks_is_refused_by_the_database() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    let event = insert_event(&pool, &fixture_event("evt_bounds", "merchant_a")).await?;
+
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let too_long_id = vpay_db::webhook_deliveries::create_in_tx(
+        &mut tx,
+        &event.id,
+        &"p".repeat(65),
+        "https://example.test/hook",
+    )
+    .await;
+    assert!(
+        matches!(too_long_id, Err(vpay_db::DbError::Query(_))),
+        "endpoint_id_length caps endpoint_id at 64 characters: {too_long_id:?}"
+    );
+    tx.rollback().await.context("transaction rolls back")?;
+
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let too_long_url = vpay_db::webhook_deliveries::create_in_tx(
+        &mut tx,
+        &event.id,
+        "ep_bounds",
+        &format!("https://example.test/{}", "p".repeat(2049)),
+    )
+    .await;
+    assert!(
+        matches!(too_long_url, Err(vpay_db::DbError::Query(_))),
+        "url_length caps url at 2048 characters: {too_long_url:?}"
+    );
+    tx.rollback().await.context("transaction rolls back")?;
+
+    Ok(())
+}
+
+/// The fan-out is at-least-once by construction: a pass that crashes before
+/// committing re-runs the whole event. `create_in_tx` is what makes that
+/// harmless — the second creation for the same (event, endpoint) pair
+/// reports `None` and writes nothing, so the merchant is not told twice.
+///
+/// The `None` is the assertion that matters. A repository that returned the
+/// existing row's id instead would read identically at the call site and
+/// would make the caller enqueue a second `deliver_webhook` job for work
+/// already queued.
+#[tokio::test]
+async fn a_second_delivery_for_one_event_and_endpoint_is_not_created() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    let event = insert_event(&pool, &fixture_event("evt_dedupe", "merchant_a")).await?;
+
+    let first = create_delivery(&pool, &event.id, "ep_one", "https://example.test/one")
+        .await?
+        .context("the first fan-out pass must create the delivery")?;
+    let second = create_delivery(&pool, &event.id, "ep_one", "https://example.test/one").await?;
+    assert!(
+        second.is_none(),
+        "a re-run of the fan-out must report that it created nothing, so the caller enqueues no \
+         second delivery job"
+    );
+
+    // A *different* endpoint is different work, and is created.
+    let other = create_delivery(&pool, &event.id, "ep_two", "https://example.test/two")
+        .await?
+        .context("a second endpoint is a second delivery")?;
+    assert_ne!(first, other);
+
+    let rows = vpay_db::webhook_deliveries::for_event(&pool, &event.id).await?;
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.endpoint_id.clone())
+            .collect::<Vec<_>>(),
+        vec!["ep_one".to_owned(), "ep_two".to_owned()],
+        "exactly one delivery per configured endpoint, however many times the drain ran"
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row.state == "pending" && row.attempt == 0 && row.next_attempt_at.is_none()),
+        "a freshly created delivery is owed an attempt and has never had one: {rows:?}"
+    );
+
+    Ok(())
+}
+
+/// One failed attempt records what the receiver said, moves the ladder on,
+/// and — when the ladder runs out — parks the delivery as `exhausted` where
+/// nothing will pick it up again.
+///
+/// Three separate claims, all of which a plausible-looking implementation
+/// gets wrong: the excerpt is bounded to the column's CHECK rather than
+/// letting the write fail (which would lose the very record it exists to
+/// make), a transport failure leaves `responded_at` NULL so it cannot be
+/// misread as a refusal that was actually heard, and `payload_sha256` keeps
+/// the *first* attempt's digest so "we sent what we signed" stays checkable
+/// across attempts.
+#[tokio::test]
+async fn record_attempt_bounds_the_excerpt_moves_the_ladder_and_then_exhausts() -> anyhow::Result<()>
+{
+    let (_container, pool) = migrated_postgres().await?;
+    let event = insert_event(&pool, &fixture_event("evt_attempts", "merchant_a")).await?;
+    let id = create_delivery(&pool, &event.id, "ep_one", "https://example.test/one")
+        .await?
+        .context("the delivery must be created")?;
+
+    // A receiver answering 500 with a long, multi-byte error page: the
+    // excerpt has to survive as *something*, bounded to `excerpt_length`.
+    let overlong = "é".repeat(2500);
+    let due = time::OffsetDateTime::now_utc() + time::Duration::seconds(10);
+    assert!(
+        vpay_db::webhook_deliveries::record_attempt(
+            &pool,
+            id,
+            Some(500),
+            Some(&overlong),
+            Some("sha-first"),
+            Some(due),
+            false,
+        )
+        .await?,
+        "the first attempt must match the pending row"
+    );
+
+    let row = delivery(&pool, id).await?;
+    assert_eq!(row.attempt, 1, "attempt counts failures");
+    assert_eq!(
+        row.state, "pending",
+        "a failure that is not exhausted is still owed an attempt"
+    );
+    assert_eq!(row.status_code, Some(500));
+    assert_eq!(row.payload_sha256.as_deref(), Some("sha-first"));
+    let excerpt = row
+        .response_excerpt
+        .context("the excerpt must be recorded")?;
+    assert_eq!(
+        excerpt.chars().count(),
+        2000,
+        "the excerpt is truncated to the column's CHECK, in characters, rather than refused"
+    );
+    assert!(
+        excerpt.chars().all(|c| c == 'é'),
+        "and cut on a character boundary"
+    );
+    let scheduled = row
+        .next_attempt_at
+        .context("the next attempt must be scheduled")?;
+    assert!(
+        (scheduled - due).abs() < time::Duration::seconds(1),
+        "next_attempt_at is the caller's instant, not one this layer invented: {scheduled} vs {due}"
+    );
+    let (sent, responded, _) = delivery_timestamps(&pool, id).await?;
+    assert!(
+        sent && responded,
+        "a refusal that was heard has both a send and a response"
+    );
+
+    // A transport failure: the request went out, nothing came back.
+    assert!(
+        vpay_db::webhook_deliveries::record_attempt(
+            &pool,
+            id,
+            None,
+            None,
+            Some("sha-second"),
+            Some(due),
+            false,
+        )
+        .await?
+    );
+    let row = delivery(&pool, id).await?;
+    assert_eq!(row.attempt, 2);
+    assert_eq!(row.status_code, None);
+    assert_eq!(
+        row.payload_sha256.as_deref(),
+        Some("sha-first"),
+        "the first attempt's digest is the one that survives — a later attempt must not be able \
+         to make the row agree with bytes that were never signed"
+    );
+    let (sent, responded, _) = delivery_timestamps(&pool, id).await?;
+    assert!(
+        sent && !responded,
+        "sent with no status and no responded_at is the transport-failure shape, and it must not \
+         be recorded as a refusal the receiver actually made"
+    );
+
+    // The ladder runs out.
+    assert!(
+        vpay_db::webhook_deliveries::record_attempt(
+            &pool,
+            id,
+            Some(500),
+            None,
+            Some("sha"),
+            None,
+            true
+        )
+        .await?
+    );
+    let row = delivery(&pool, id).await?;
+    assert_eq!(row.state, "exhausted");
+    assert_eq!(row.attempt, 3);
+    assert!(
+        row.next_attempt_at.is_none(),
+        "an exhausted delivery is owed nothing"
+    );
+
+    // And nothing can walk it further: the guard is `state = 'pending'`.
+    assert!(
+        !vpay_db::webhook_deliveries::record_attempt(
+            &pool,
+            id,
+            Some(500),
+            None,
+            Some("sha"),
+            None,
+            true
+        )
+        .await?,
+        "a replayed job must not be able to keep incrementing an exhausted delivery"
+    );
+    assert_eq!(delivery(&pool, id).await?.attempt, 3);
+
+    Ok(())
+}
+
+/// A `2xx` finishes the delivery, and only the first one does.
+///
+/// The guard is the point. Two workers can hold the same job — a lease
+/// reaped while the first was still running is exactly the case
+/// `jobs::finish` returns `false` for — and a second `record_success` that
+/// wrote anyway would stamp a fresh `responded_at` on an attempt that had
+/// already been settled, and could resurrect a delivery an operator had
+/// deliberately parked.
+#[tokio::test]
+async fn record_success_settles_a_delivery_once_and_a_second_call_writes_nothing()
+-> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    let event = insert_event(&pool, &fixture_event("evt_success", "merchant_a")).await?;
+    let id = create_delivery(&pool, &event.id, "ep_one", "https://example.test/one")
+        .await?
+        .context("the delivery must be created")?;
+
+    // One failure first, so the success has something to clear.
+    let due = time::OffsetDateTime::now_utc() + time::Duration::seconds(10);
+    assert!(
+        vpay_db::webhook_deliveries::record_attempt(
+            &pool,
+            id,
+            Some(503),
+            Some("busy"),
+            Some("sha-body"),
+            Some(due),
+            false,
+        )
+        .await?
+    );
+
+    assert!(
+        vpay_db::webhook_deliveries::record_success(&pool, id, 200, Some("ok"), "sha-body").await?,
+        "the first 2xx must settle the delivery"
+    );
+    let row = delivery(&pool, id).await?;
+    assert_eq!(row.state, "succeeded");
+    assert_eq!(row.status_code, Some(200));
+    assert_eq!(row.response_excerpt.as_deref(), Some("ok"));
+    assert_eq!(
+        row.attempt, 1,
+        "attempt counts failures, so a success does not increment it — it is the ladder's index"
+    );
+    assert!(
+        row.next_attempt_at.is_none(),
+        "a succeeded delivery must not stay due, or the backstop scan would keep finding it"
+    );
+
+    assert!(
+        !vpay_db::webhook_deliveries::record_success(&pool, id, 201, Some("again"), "sha-body")
+            .await?,
+        "a second worker running the same job must change nothing"
+    );
+    let row = delivery(&pool, id).await?;
+    assert_eq!(
+        row.status_code,
+        Some(200),
+        "the settled row keeps the answer that settled it"
+    );
+    assert_eq!(row.response_excerpt.as_deref(), Some("ok"));
+
+    Ok(())
+}
+
+/// The fan-out's closing write flips `pending → done` and nothing else.
+///
+/// `Ok(false)` on the second call is what tells a racing drain that the
+/// backlog entry was not its to claim, so it rolls back instead of
+/// committing a second set of deliveries. Without the `AND fanout_state =
+/// 'pending'` half, both passes would report success and only the unique
+/// index would stand between the merchant and two of every webhook.
+#[tokio::test]
+async fn mark_fanned_out_flips_a_pending_event_once() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    let event = insert_event(&pool, &fixture_event("evt_fanout", "merchant_a")).await?;
+    assert_eq!(fanout_state(&pool, &event.id).await?, "pending");
+
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let flipped = vpay_db::webhook_deliveries::mark_fanned_out_in_tx(&mut tx, &event.id).await?;
+    tx.commit().await.context("transaction commits")?;
+    assert!(flipped, "the first pass claims the backlog entry");
+    assert_eq!(fanout_state(&pool, &event.id).await?, "done");
+
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let again = vpay_db::webhook_deliveries::mark_fanned_out_in_tx(&mut tx, &event.id).await?;
+    tx.rollback().await.context("transaction rolls back")?;
+    assert!(
+        !again,
+        "an event already fanned out must refuse the second claim rather than silently agreeing"
+    );
+
+    // An event that does not exist is the same quiet `false`, not an error:
+    // a drain reading a page whose event was removed underneath it has
+    // nothing to do, and nothing to page anyone about.
+    let mut tx = pool.begin().await.context("transaction begins")?;
+    let missing =
+        vpay_db::webhook_deliveries::mark_fanned_out_in_tx(&mut tx, "evt_not_here").await?;
+    tx.rollback().await.context("transaction rolls back")?;
+    assert!(!missing);
+
+    // And the backlog query agrees: nothing is pending any more.
+    assert!(vpay_db::events::pending_page(&pool, 10).await?.is_empty());
+
+    Ok(())
+}
+
+/// The backstop scan returns exactly the deliveries nothing is driving — not
+/// the ones scheduled for later, not the ones already settled, and not the
+/// freshly created ones the queue still owns.
+///
+/// Every arm of the predicate is load-bearing. Without `state = 'pending'` a
+/// settled delivery with an old `next_attempt_at` would be re-delivered;
+/// without `next_attempt_at <= now()` the scan would drag every rung of the
+/// retry ladder back to now, which is how a ladder becomes a hot loop against
+/// a receiver that is already struggling; and without the `next_attempt_at IS
+/// NULL AND created_at < now() - lease` arm a delivery whose job was deleted
+/// before it was ever attempted is owed an attempt nothing will ever make.
+///
+/// The last two fixtures are the pair that pins that arm: two rows that
+/// differ only in age, one older than the lease and one not. A scan that
+/// simply treated NULL as "due now" would return both, and would then race
+/// the queue on every delivery the fan-out had just created.
+#[tokio::test]
+async fn pending_due_returns_the_deliveries_nothing_is_driving() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    let event = insert_event(&pool, &fixture_event("evt_due", "merchant_a")).await?;
+    let now = time::OffsetDateTime::now_utc();
+    // `RecoveryPolicy::lease`'s five minutes, transcribed: this crate cannot
+    // see `vpay-worker`, and the caller passes exactly that value.
+    let lease = std::time::Duration::from_secs(5 * 60);
+
+    let mut ids = Vec::new();
+    for endpoint in [
+        "ep_due",
+        "ep_later",
+        "ep_settled",
+        "ep_untried_young",
+        "ep_untried_stranded",
+    ] {
+        ids.push((
+            endpoint,
+            create_delivery(&pool, &event.id, endpoint, "https://example.test/hook")
+                .await?
+                .context("the delivery must be created")?,
+        ));
+    }
+    let id_of = |name: &str| -> anyhow::Result<uuid::Uuid> {
+        ids.iter()
+            .find(|(endpoint, _)| *endpoint == name)
+            .map(|(_, id)| *id)
+            .context("fixture delivery must exist")
+    };
+
+    // Due an hour ago.
+    vpay_db::webhook_deliveries::record_attempt(
+        &pool,
+        id_of("ep_due")?,
+        Some(500),
+        None,
+        Some("sha"),
+        Some(now - time::Duration::hours(1)),
+        false,
+    )
+    .await?;
+    // Not due for another hour.
+    vpay_db::webhook_deliveries::record_attempt(
+        &pool,
+        id_of("ep_later")?,
+        Some(500),
+        None,
+        Some("sha"),
+        Some(now + time::Duration::hours(1)),
+        false,
+    )
+    .await?;
+    // Overdue on paper but already settled. Written by hand rather than
+    // through `record_success`, which would also clear `next_attempt_at` —
+    // this is the row that isolates the `state` half of the predicate.
+    vpay_db::webhook_deliveries::record_attempt(
+        &pool,
+        id_of("ep_settled")?,
+        Some(500),
+        None,
+        Some("sha"),
+        Some(now - time::Duration::hours(1)),
+        false,
+    )
+    .await?;
+    sqlx::query("UPDATE webhook_deliveries SET state = 'succeeded' WHERE id = $1")
+        .bind(id_of("ep_settled")?)
+        .execute(&pool)
+        .await
+        .context("parking the settled fixture must succeed")?;
+    // `ep_untried_young` keeps both `next_attempt_at IS NULL` and its default
+    // `created_at`: its delivery job was written in the same transaction it
+    // was, and has simply not been claimed yet. The queue owns it.
+    //
+    // `ep_untried_stranded` is the same row an hour older. Nothing has ever
+    // attempted it, which after a whole lease means its job is not merely
+    // waiting — it is gone.
+    sqlx::query(
+        "UPDATE webhook_deliveries SET created_at = now() - interval '1 hour' WHERE id = $1",
+    )
+    .bind(id_of("ep_untried_stranded")?)
+    .execute(&pool)
+    .await
+    .context("ageing the stranded fixture must succeed")?;
+
+    let due = vpay_db::webhook_deliveries::pending_due(&pool, lease, 10).await?;
+    let endpoints: Vec<String> = due.iter().map(|row| row.endpoint_id.clone()).collect();
+    assert_eq!(
+        endpoints.len(),
+        2,
+        "exactly the overdue one and the stranded one: {due:?}"
+    );
+    assert!(
+        endpoints.contains(&"ep_due".to_owned()),
+        "a delivery whose next attempt has arrived must be found: {endpoints:?}"
+    );
+    assert!(
+        endpoints.contains(&"ep_untried_stranded".to_owned()),
+        "a never-attempted delivery older than the lease has lost its job and must be \
+         found: {endpoints:?}"
+    );
+    assert!(
+        !endpoints.contains(&"ep_untried_young".to_owned()),
+        "a delivery the queue has not got to yet must be left alone, or the scan races the \
+         fan-out on every row it creates: {endpoints:?}"
+    );
+
+    Ok(())
+}
+
+/// `GET /v1/events` paging, proven the same way the payment-intent list is:
+/// forward to the end, backward to the start, an unknown cursor, and another
+/// merchant's events invisible throughout.
+///
+/// The merchant scope is the authorisation here, so the `merchant_b` row is
+/// not decoration — it is the only thing in this test that fails if the
+/// `WHERE merchant_id = $1` or either cursor subquery's scope is dropped.
+#[tokio::test]
+async fn events_list_page_walks_forward_and_backward_over_twenty_five_events() -> anyhow::Result<()>
+{
+    let (_container, pool) = migrated_postgres().await?;
+
+    for n in 0..25 {
+        let row = insert_event(&pool, &fixture_event(&event_page_id(n), "merchant_a")).await?;
+        assert_eq!(row.id, event_page_id(n));
+    }
+    let other = insert_event(&pool, &fixture_event("evt_other_merchant", "merchant_b")).await?;
+
+    let ids = |rows: &[vpay_db::EventRow]| -> Vec<String> {
+        rows.iter().map(|row| row.id.clone()).collect()
+    };
+    let newest_first =
+        |from: usize, to: usize| -> Vec<String> { (from..=to).rev().map(event_page_id).collect() };
+
+    let page = vpay_db::ListPage {
+        limit: 10,
+        starting_after: None,
+        ending_before: None,
+    };
+    let (first, has_more) = vpay_db::events::list_page(&pool, "merchant_a", &page).await?;
+    assert_eq!(
+        ids(&first),
+        newest_first(15, 24),
+        "the default page is the newest 10"
+    );
+    assert!(has_more);
+
+    let page = vpay_db::ListPage {
+        limit: 10,
+        starting_after: Some(event_page_id(15)),
+        ending_before: None,
+    };
+    let (second, has_more) = vpay_db::events::list_page(&pool, "merchant_a", &page).await?;
+    assert_eq!(ids(&second), newest_first(5, 14));
+    assert!(has_more);
+
+    let page = vpay_db::ListPage {
+        limit: 10,
+        starting_after: Some(event_page_id(5)),
+        ending_before: None,
+    };
+    let (third, has_more) = vpay_db::events::list_page(&pool, "merchant_a", &page).await?;
+    assert_eq!(ids(&third), newest_first(0, 4));
+    assert!(
+        !has_more,
+        "the last forward page must report that nothing follows it"
+    );
+
+    let page = vpay_db::ListPage {
+        limit: 10,
+        starting_after: None,
+        ending_before: Some(event_page_id(4)),
+    };
+    let (back, has_more) = vpay_db::events::list_page(&pool, "merchant_a", &page).await?;
+    assert_eq!(
+        ids(&back),
+        ids(&second),
+        "ending_before returns the page before, in the same newest-first order the envelope \
+         always promises"
+    );
+    assert!(has_more);
+
+    let page = vpay_db::ListPage {
+        limit: 10,
+        starting_after: None,
+        ending_before: Some(event_page_id(15)),
+    };
+    let (tail, has_more) = vpay_db::events::list_page(&pool, "merchant_a", &page).await?;
+    assert_eq!(ids(&tail), newest_first(16, 24));
+    assert!(
+        !has_more,
+        "9 rows for a limit of 10 is the end of the range in this direction"
+    );
+
+    // Another merchant's event id is not a position in this merchant's
+    // range: the cursor subquery is scoped too, so it resolves to NULL and
+    // the page is empty rather than a silent fallback to the newest rows.
+    let page = vpay_db::ListPage {
+        limit: 10,
+        starting_after: Some(other.id.clone()),
+        ending_before: None,
+    };
+    let (foreign_cursor, has_more) = vpay_db::events::list_page(&pool, "merchant_a", &page).await?;
+    assert!(foreign_cursor.is_empty() && !has_more);
+
+    let page = vpay_db::ListPage {
+        limit: 10,
+        starting_after: Some("evt_does_not_exist".to_owned()),
+        ending_before: None,
+    };
+    let (unknown, has_more) = vpay_db::events::list_page(&pool, "merchant_a", &page).await?;
+    assert!(unknown.is_empty() && !has_more);
+
+    let page = vpay_db::ListPage {
+        limit: 10,
+        starting_after: None,
+        ending_before: None,
+    };
+    let (others, _) = vpay_db::events::list_page(&pool, "merchant_b", &page).await?;
+    assert_eq!(
+        ids(&others),
+        vec!["evt_other_merchant".to_owned()],
+        "every page is merchant-scoped in SQL"
+    );
+
+    Ok(())
+}
+
+/// `GET /v1/events/{id}` is merchant-scoped, and another merchant's event id
+/// is indistinguishable from one that does not exist.
+///
+/// Both halves matter: a `404` that could be told apart from a `403` lets
+/// anyone with one merchant's credentials enumerate which `evt_…` ids exist
+/// across the whole deployment, and an unscoped read hands them the payload.
+#[tokio::test]
+async fn events_get_by_id_is_merchant_scoped() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    let mine = insert_event(&pool, &fixture_event("evt_mine", "merchant_a")).await?;
+    let theirs = insert_event(&pool, &fixture_event("evt_theirs", "merchant_b")).await?;
+
+    let found = vpay_db::events::get_by_id(&pool, "merchant_a", &mine.id)
+        .await?
+        .context("a merchant must be able to read their own event")?;
+    assert_eq!(found, mine);
+
+    assert!(
+        vpay_db::events::get_by_id(&pool, "merchant_a", &theirs.id)
+            .await?
+            .is_none(),
+        "another merchant's event must read as absent, not as forbidden"
+    );
+    assert!(
+        vpay_db::events::get_by_id(&pool, "merchant_a", "evt_does_not_exist")
+            .await?
+            .is_none()
+    );
+    // And the scope is not merely reversed: merchant_b really does have
+    // theirs, so the assertion above is about the filter and not about a
+    // fixture that failed to insert.
+    assert_eq!(
+        vpay_db::events::get_by_id(&pool, "merchant_b", &theirs.id).await?,
+        Some(theirs)
+    );
+
+    Ok(())
+}

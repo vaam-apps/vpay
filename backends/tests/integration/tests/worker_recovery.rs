@@ -128,11 +128,17 @@ impl Harness {
     /// `locked_by` guard included, one step at a time instead of racing a
     /// background loop.
     async fn step(&self, policy: &RecoveryPolicy) -> anyhow::Result<Settled> {
+        let endpoints = support::no_webhook_endpoints();
+        let http = support::webhook_client();
         vpay_worker::run_once(
             &self.pool,
             &self.adapters,
             &self.rails,
             policy,
+            &vpay_worker::WebhookContext {
+                endpoints: &endpoints,
+                http: &http,
+            },
             "worker-recovery-suite",
         )
         .await
@@ -1655,8 +1661,8 @@ async fn a_decline_past_the_horizon_settles_an_unresolved_charge_and_clears_the_
     Ok(())
 }
 
-/// Parks the two housekeeping singletons so nothing but the loop's own reaper
-/// can free a lease.
+/// Parks the four singleton jobs so nothing but the loop's own reaper can
+/// free a lease.
 ///
 /// `seed_singletons` is `ON CONFLICT (dedupe_key) DO NOTHING`, so seeding them
 /// here and then moving them to `run_at = 'infinity'` means `run_loop`'s own
@@ -1664,21 +1670,26 @@ async fn a_decline_past_the_horizon_settles_an_unresolved_charge_and_clears_the_
 /// an artificial state: it is precisely the deadlock F2 named — a worker that
 /// dies holding `sweep:expired` leaves the only reaper unclaimable, and if the
 /// sweep were the only reaper nothing would ever recover it.
+///
+/// The key list and the count are written out rather than derived, so a
+/// singleton added to `seed_singletons` without being parked here fails this
+/// helper instead of silently running inside a test whose subject is
+/// something else.
 async fn park_the_housekeeping_jobs(pool: &PgPool) -> anyhow::Result<()> {
     vpay_worker::seed_singletons(pool)
         .await
         .context("seeding the singletons")?;
     let parked = sqlx::query(
         "UPDATE jobs SET run_at = 'infinity'::TIMESTAMPTZ \
-         WHERE dedupe_key IN ('sweep:expired', 'scan:live')",
+         WHERE dedupe_key IN ('sweep:expired', 'scan:live', 'fanout:events', 'scan:deliveries')",
     )
     .execute(pool)
     .await
     .context("parking the singletons")?
     .rows_affected();
     anyhow::ensure!(
-        parked == 2,
-        "expected two singletons to park, parked {parked}"
+        parked == 4,
+        "expected four singletons to park, parked {parked}"
     );
     Ok(())
 }
@@ -1804,6 +1815,8 @@ async fn a_lease_stranded_by_a_crash_is_freed_at_boot_before_any_sweep_runs() ->
             adapters,
             rails,
             policy,
+            support::no_webhook_endpoints(),
+            support::webhook_client(),
             1,
             Duration::from_secs(10),
             "worker-recovery-suite".to_owned(),
@@ -1872,6 +1885,8 @@ async fn a_lease_that_expires_while_the_worker_runs_is_reaped_on_its_own_timer()
             adapters,
             rails,
             policy,
+            support::no_webhook_endpoints(),
+            support::webhook_client(),
             1,
             Duration::from_secs(10),
             "worker-recovery-suite".to_owned(),
@@ -1974,6 +1989,10 @@ async fn a_poisoned_job_is_parked_with_its_lease_cleared_and_its_reason_recorded
             &h.adapters,
             &h.rails,
             &policy,
+            &vpay_worker::WebhookContext {
+                endpoints: &support::no_webhook_endpoints(),
+                http: &support::webhook_client(),
+            },
             "worker-recovery-suite"
         )
         .await?
@@ -1983,7 +2002,8 @@ async fn a_poisoned_job_is_parked_with_its_lease_cleared_and_its_reason_recorded
     Ok(())
 }
 
-/// The housekeeping singletons: seeded once, whatever the concurrency, and
+/// The four singletons — the sweep, the charge backstop, the outbox drain and
+/// the delivery backstop — seeded once whatever the concurrency, and
 /// rescheduled rather than deleted.
 ///
 /// `ON CONFLICT (dedupe_key) DO NOTHING` is what makes N workers booting
@@ -2005,15 +2025,20 @@ async fn the_housekeeping_jobs_are_seeded_once_and_reschedule_themselves() -> an
             .iter()
             .map(|job| job.dedupe_key.as_str())
             .collect::<Vec<_>>(),
-        vec!["scan:live", "sweep:expired"],
-        "three boots must leave exactly two rows"
+        vec![
+            "fanout:events",
+            "scan:deliveries",
+            "scan:live",
+            "sweep:expired"
+        ],
+        "three boots must leave exactly four rows"
     );
 
     // Both run, and both go back on the clock. A sweep that finished would be
     // a deployment that swept once and never again — which is the bug
     // `vpay-server`'s boot-time sweep actually was.
     let mut seen: Vec<String> = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..4 {
         let settled = h.step(&policy).await?;
         assert!(
             matches!(settled.disposition, Disposition::Rescheduled(_)),
@@ -2024,7 +2049,19 @@ async fn the_housekeeping_jobs_are_seeded_once_and_reschedule_themselves() -> an
         seen.push(settled.kind);
     }
     seen.sort();
-    assert_eq!(seen, vec!["scan_live_charges", "sweep_expired"]);
+    assert_eq!(
+        seen,
+        vec![
+            "fan_out_events",
+            "scan_deliveries",
+            "scan_live_charges",
+            "sweep_expired"
+        ],
+        "all four singletons must go back on the clock; a fan-out that finished \
+         instead is a deployment that drains its outbox once and never again, and a \
+         delivery backstop that finished is one whose lost delivery jobs are lost for \
+         good"
+    );
     Ok(())
 }
 
@@ -2078,9 +2115,9 @@ async fn the_backstop_scan_re_enqueues_an_unattended_charge_and_leaves_attended_
         .await?;
 
     vpay_worker::seed_singletons(&h.pool).await?;
-    // The two singletons and the attended charge's poll job are all runnable;
-    // run until the scan has had its turn.
-    for _ in 0..4 {
+    // The four singletons and the attended charge's poll job are all
+    // runnable; run until the scan has had its turn.
+    for _ in 0..6 {
         if h.step(&policy).await?.kind == "scan_live_charges" {
             break;
         }

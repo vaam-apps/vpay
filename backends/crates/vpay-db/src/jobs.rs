@@ -456,6 +456,47 @@ pub async fn dead_letter(
     Ok(updated == 1)
 }
 
+/// Which of these dedupe keys name a **parked** job (`run_at = 'infinity'`).
+///
+/// The one read that makes a dead letter visible to something other than an
+/// operator running `SELECT * FROM jobs WHERE run_at = 'infinity'` by hand.
+/// The module comment states the cost of parking — a parked row is invisible
+/// to every `run_at`-ordered query, so the alert raised when it was parked is
+/// the only notice anyone gets — and this is how a backstop scan that *cannot
+/// recover* such a row can at least name it.
+///
+/// # Why the caller supplies the keys
+///
+/// A `dedupe_key` is the idempotency key of a piece of *work*, and its
+/// grammar (`poll:<charge_id>`, `webhook:<uuid>`) belongs to the crate that
+/// enqueues the work — `vpay_worker::jobs` — not here. A query that built one
+/// would put half of that vocabulary in the persistence layer, where a change
+/// to the other half could not reach it. So this asks a question about keys
+/// the caller already holds.
+///
+/// Ordered by key so a caller logging the answer logs it deterministically.
+///
+/// # Errors
+///
+/// Returns [`DbError::Query`] if the read fails.
+pub async fn parked_dedupe_keys(pool: &PgPool, keys: &[String]) -> Result<Vec<String>, DbError> {
+    // Postgres accepts an empty array, but the round trip is pure cost and
+    // the answer is knowable here.
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    sqlx::query_scalar::<_, String>(
+        "SELECT dedupe_key FROM jobs \
+         WHERE dedupe_key = ANY($1) AND run_at = 'infinity'::TIMESTAMPTZ \
+         ORDER BY dedupe_key",
+    )
+    .bind(keys)
+    .fetch_all(pool)
+    .await
+    .map_err(DbError::Query)
+}
+
 /// When the oldest *runnable* job becomes claimable, or `None` if the queue
 /// holds none.
 ///

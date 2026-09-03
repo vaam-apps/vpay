@@ -1,7 +1,7 @@
 //! `merchant-demo` — a runnable walk through **everything vpay's `/v1`
 //! surface answers today**, and a deliberate demonstration of where it stops.
 //!
-//! Six steps:
+//! Seven steps:
 //!
 //! 1. Read the OP's discovery document and JWKS, and show the issuer and the
 //!    `kid` the server signs `/v1` access tokens with.
@@ -17,13 +17,18 @@
 //!    moves to `processing`.
 //! 6. Wait for `vpay-worker` to drive it to `succeeded`, polling
 //!    `GET /v1/payment_intents/{id}` exactly as a merchant integration would.
+//! 7. Read the webhook that settlement produced out of the receiver's own
+//!    request journal, and verify its `Vpay-Signature` with the shipping
+//!    SDK — the same call a merchant's handler makes.
 //!
-//! **Each of the last two steps changed once the code behind it landed, and
-//! that is the point.** Step 5 used to assert a `501 not_implemented`,
+//! **Each of the last three steps changed once the code behind it landed,
+//! and that is the point.** Step 5 used to assert a `501 not_implemented`,
 //! because no adapter implemented `submit`; step 6 did not exist, because
-//! nothing polled a charge and the demo said so in place of a payment. Both
-//! now assert what the code actually does, and both are the first thing to
-//! break when that stops being true.
+//! nothing polled a charge and the demo said so in place of a payment; step
+//! 7 used to report an *absent* webhook, because nothing wrote an `events`
+//! row and nothing drained one. All three now assert what the code actually
+//! does, and all three are the first thing to break when that stops being
+//! true.
 //!
 //! **Why the demo can end in `succeeded` at all.** Step 6 is not a poll that
 //! hopes: the rail stub answers `PENDING` on the first status query and
@@ -41,7 +46,8 @@
 //! here rather than quietly omitted.
 //!
 //! Nothing here prints a secret: not the access token, not the private key,
-//! not a rail credential. Steps 4-6 print the intent's own public fields.
+//! not a rail credential, and not the webhook signing secret step 7 verifies
+//! with. Steps 4-6 print the intent's own public fields.
 //!
 //! # Why the token exchange in step 2 is not `Client`'s
 //!
@@ -87,6 +93,42 @@ const DEFAULT_CLIENT_ID: &str = "demo-merchant";
 /// a demo artefact and must never be reused for anything.
 const DEFAULT_PRIVATE_KEY_FILE: &str = ".e2e/demo-merchant/oauth-signing-key.pem";
 
+/// Where `just demo` publishes the `wiremock-webhook` receiver — the
+/// container `.e2e/application-demo.yml` points this merchant's webhook
+/// endpoint at. `just demo_receiver_port=…` moves it, and the recipe exports
+/// the matching `VPAY_RECEIVER_URL`.
+///
+/// Step 7 reads this container's request *journal*
+/// (`GET /__admin/requests`), which is the merchant-side view: what actually
+/// arrived, headers and body, rather than what vpay believes it sent.
+const DEFAULT_RECEIVER_URL: &str = "http://localhost:8083";
+
+/// The webhook signing secret `compose.e2e.yml` gives both binaries, so step
+/// 7 can verify a delivery the same way a merchant's own handler would.
+///
+/// A **stub** value for a stub receiver, and not a secret in any meaningful
+/// sense: it is written in `compose.e2e.yml` in plain sight, and the demo
+/// stack is `livemode: false` (a literal there under livemode is a refusal
+/// to boot). It is still read from the environment first, so pointing this
+/// demo at a stack configured differently needs no rebuild — and it is never
+/// printed.
+///
+/// Over `vpay_config`'s 32-byte livemode floor even though this stack is
+/// sandbox, so that the value an operator is most likely to copy is not one
+/// the boot guard would then refuse for a reason unrelated to why it is
+/// wrong.
+const DEFAULT_WEBHOOK_SECRET: &str = "wiremock-stub-webhook-secret-32-bytes";
+
+/// How long step 7 waits for the delivery before failing.
+///
+/// Step 6 has already seen the intent reach `succeeded`, so the `events` row
+/// exists before this wait starts; what is left is the fan-out drain (a
+/// singleton that reschedules every five seconds) and one `deliver_webhook`
+/// job that runs immediately. Thirty seconds is several times that, which
+/// makes a timeout here mean "the drain or the delivery is broken" rather
+/// than "the demo was impatient".
+const RECEIVER_WAIT: Duration = Duration::from_secs(30);
+
 /// The id step 3 asks for without a token. Deliberately one no merchant
 /// holds: step 3 is about the `401`, which is decided before any handler
 /// looks anything up.
@@ -94,12 +136,14 @@ const DEMO_INTENT_ID: &str = "pi_demo";
 
 /// The one sentence this demo exists to put on a terminal.
 ///
-/// It is no longer about the adapters — they ship — but about what happens
-/// *after* a rail accepts a charge, which is still nothing: no worker asks
-/// the rail whether the payer approved.
+/// It is no longer about the adapters, and no longer about delivery — both
+/// ship, and steps 6 and 7 prove it. What is still missing is the *inbound*
+/// half: nothing accepts a rail's callback, so every settlement this demo
+/// shows came from vpay asking rather than from being told.
 const NOT_BUILT_YET: &str = concat!(
-    "webhook delivery is not built yet — a merchant polls GET /v1/payment_intents/{id}, ",
-    "as step 6 does, until Step 5 lands the fan-out (docs/status.md)"
+    "there is still no callback route — `POST /provider/{code}/callback` does not exist, ",
+    "so a rail that calls back is ignored and every settlement above came from the ",
+    "worker's own authenticated query_status (docs/status.md)"
 );
 
 /// The intent step 4 creates: 5,000 minor units on the push rail.
@@ -170,7 +214,7 @@ async fn main() -> ExitCode {
     match run().await {
         Ok(()) => {
             println!();
-            println!("✔ all six steps behaved as expected.");
+            println!("✔ all seven steps behaved as expected.");
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -187,6 +231,9 @@ async fn run() -> anyhow::Result<()> {
         .to_owned();
     let client_id = env_or("VPAY_CLIENT_ID", DEFAULT_CLIENT_ID);
     let key_file = PathBuf::from(env_or("VPAY_PRIVATE_KEY_FILE", DEFAULT_PRIVATE_KEY_FILE));
+    let receiver_url = env_or("VPAY_RECEIVER_URL", DEFAULT_RECEIVER_URL)
+        .trim_end_matches('/')
+        .to_owned();
 
     println!("vpay merchant demo");
     println!("  base URL     {base_url}   (VPAY_BASE_URL)");
@@ -195,6 +242,7 @@ async fn run() -> anyhow::Result<()> {
         "  private key  {}   (VPAY_PRIVATE_KEY_FILE)",
         key_file.display()
     );
+    println!("  receiver     {receiver_url}   (VPAY_RECEIVER_URL)");
     println!();
 
     let http = reqwest::Client::builder()
@@ -224,6 +272,7 @@ async fn run() -> anyhow::Result<()> {
     let intent_id = step_4_create_and_retrieve(&client, &run).await?;
     step_5_confirm(&client, &intent_id, &run).await?;
     step_6_await_settlement(&client, &intent_id).await?;
+    step_7_webhook(&http, &receiver_url, &intent_id).await?;
 
     Ok(())
 }
@@ -272,7 +321,7 @@ struct Endpoints {
 async fn step_1_discovery(http: &reqwest::Client, base_url: &str) -> anyhow::Result<Endpoints> {
     const STEP: &str = "step 1 (discovery + JWKS)";
 
-    println!("[1/6] discovery + JWKS");
+    println!("[1/7] discovery + JWKS");
 
     let discovery_url = format!("{base_url}/v1/oauth/.well-known/openid-configuration");
     let discovery = get_json(http, &discovery_url)
@@ -353,7 +402,7 @@ async fn step_2_access_token(
     const STEP: &str = "step 2 (access token)";
 
     println!();
-    println!("[2/6] access token (client_credentials + private_key_jwt)");
+    println!("[2/7] access token (client_credentials + private_key_jwt)");
 
     let credentials = credentials(client_id, pem).with_context(|| STEP)?;
     let assertion = vpay_sdk::auth::mint_client_assertion(
@@ -454,7 +503,7 @@ async fn step_3_unauthenticated(http: &reqwest::Client, base_url: &str) -> anyho
     const STEP: &str = "step 3 (unauthenticated /v1 is 401)";
 
     println!();
-    println!("[3/6] the same path with no bearer token");
+    println!("[3/7] the same path with no bearer token");
 
     let url = format!("{base_url}/v1/payment_intents/{DEMO_INTENT_ID}");
     let response = http
@@ -528,7 +577,7 @@ async fn step_4_create_and_retrieve(client: &Client, run: &str) -> anyhow::Resul
     const STEP: &str = "step 4 (create + retrieve a payment intent)";
 
     println!();
-    println!("[4/6] payment_intents().create(…) then .retrieve(…) through vpay-sdk");
+    println!("[4/7] payment_intents().create(…) then .retrieve(…) through vpay-sdk");
 
     let params = CreatePaymentIntentParams {
         amount: DEMO_AMOUNT,
@@ -612,7 +661,7 @@ async fn step_5_confirm(client: &Client, intent_id: &str, run: &str) -> anyhow::
     const STEP: &str = "step 5 (confirm reaches the rail and is accepted)";
 
     println!();
-    println!("[5/6] payment_intents().confirm(\"{intent_id}\") through vpay-sdk");
+    println!("[5/7] payment_intents().confirm(\"{intent_id}\") through vpay-sdk");
 
     let confirmed = client
         .payment_intents()
@@ -700,18 +749,20 @@ async fn step_5_confirm(client: &Client, intent_id: &str, run: &str) -> anyhow::
 /// `payment_intent.succeeded` event together. This loop only observes the
 /// result through the same `GET` any merchant has.
 ///
-/// # Why a merchant polls at all
+/// # Why a merchant polls at all, when step 7 shows a webhook
 ///
-/// Because webhook fan-out is not built (`docs/status.md`). When it is, this
-/// is the step that becomes a delivered `payment_intent.succeeded` instead of
-/// a loop — and the object a merchant's handler receives will be the snapshot
-/// already being written into `events.data` today.
+/// Because a poll is the fallback a merchant is told to keep
+/// (`docs/api/README.md`): a delivery can be missed, and `GET
+/// /v1/payment_intents/{id}` is the authoritative answer that cannot be. The
+/// two steps deliberately observe the *same* settlement by the two routes a
+/// merchant has — this one through the API, step 7 through the event the
+/// same transaction wrote.
 async fn step_6_await_settlement(client: &Client, intent_id: &str) -> anyhow::Result<()> {
     const STEP: &str = "step 6 (the worker drives the charge to a terminal state)";
 
     println!();
     println!(
-        "[6/6] polling payment_intents().retrieve(\"{intent_id}\") until it is no longer \
+        "[6/7] polling payment_intents().retrieve(\"{intent_id}\") until it is no longer \
          processing"
     );
     println!(
@@ -784,10 +835,233 @@ async fn step_6_await_settlement(client: &Client, intent_id: &str) -> anyhow::Re
         "      charge         succeeded in Postgres, with the rail's own provider_txn_id; \
          /v1 has no charges resource (docs/api/README.md)"
     );
+
+    Ok(())
+}
+
+// ------------------------------------------------------------------ step 7
+
+/// Reads the webhook the settlement in step 6 produced out of the receiver's
+/// own request journal, and verifies it with the shipping SDK.
+///
+/// # Why the receiver's journal, and not vpay's own tables
+///
+/// Because the merchant-side view is the only one that can prove delivery.
+/// `webhook_deliveries.state = 'succeeded'` is vpay's belief about what it
+/// sent; `GET /__admin/requests` is what a receiver actually got, headers
+/// and body, byte for byte. A demo that read the first would be quoting the
+/// sender back to itself.
+///
+/// # Why a missing delivery fails the run
+///
+/// Every link now exists: the rail answered, the worker settled the charge
+/// and wrote an `events` row in the same transaction, the `fanout:events`
+/// drain turned it into a `webhook_deliveries` row and a `deliver_webhook`
+/// job, and that job POSTed it. This step used to report an absent webhook
+/// and pass, because the first two links were unbuilt; they are built, so an
+/// absence here is a defect and is reported as one.
+///
+/// # What is checked, beyond "something arrived"
+///
+/// The signature is verified with `vpay_sdk::webhooks::verify` over the exact
+/// recorded bytes — the same call a merchant's handler makes. A delivery that
+/// arrives and does not verify fails the demo louder than one that never
+/// arrives: at that point vpay is signing something a merchant cannot check.
+/// `Stripe-Signature` is asserted to carry the *same* value as
+/// `Vpay-Signature`, because that duplicate header exists so a merchant can
+/// keep a Stripe-shaped handler, and one that drifted from the header it
+/// mirrors would verify in the SDK and fail in their code.
+async fn step_7_webhook(
+    http: &reqwest::Client,
+    receiver_url: &str,
+    intent_id: &str,
+) -> anyhow::Result<()> {
+    const STEP: &str = "step 7 (the webhook the settled payment produced)";
+
+    println!();
+    println!("[7/7] polling {receiver_url}/__admin/requests for the delivery of {intent_id}");
+
+    let deadline = std::time::Instant::now() + RECEIVER_WAIT;
+    let mut delivered = None;
+    let mut last_error = None;
+
+    while std::time::Instant::now() < deadline {
+        match recorded_webhook(http, receiver_url, intent_id).await {
+            Ok(Some(found)) => {
+                delivered = Some(found);
+                break;
+            }
+            Ok(None) => {}
+            // The receiver being briefly unreachable is not on its own a
+            // failure — compose may still be publishing the port — so it is
+            // remembered and only reported if the wait runs out.
+            Err(error) => last_error = Some(error),
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    let Some(delivery) = delivered else {
+        let reason = last_error.map_or_else(
+            || "the journal was readable and held no POST for this intent".to_owned(),
+            |error| format!("the last read of the journal failed: {error:#}"),
+        );
+        bail!(
+            "{STEP}: no webhook was delivered for {intent_id} within {}s ({reason}). Step 6 \
+             already saw the intent reach `succeeded`, so the `events` row exists and this \
+             is the fan-out or the delivery failing, not a missing producer. Try \
+             `docker compose logs vpay-worker`, and check that {receiver_url} is the port \
+             `just demo` published wiremock-webhook on (VPAY_RECEIVER_URL).",
+            RECEIVER_WAIT.as_secs()
+        );
+    };
+
+    println!(
+        "  ✔ the receiver recorded a POST carrying Vpay-Event-Id: {}",
+        delivery.event_id
+    );
+
+    if delivery.stripe_signature != delivery.signature {
+        bail!(
+            "{STEP}: the delivery's Stripe-Signature and Vpay-Signature differ. They are the \
+             same bytes by construction (vpay_worker::webhooks) so a merchant can keep a \
+             Stripe-shaped handler; a drift here verifies in our SDK and fails in theirs."
+        );
+    }
+    println!(
+        "      Vpay-Signature   present, t=…,v1=… (not printed: it is a MAC, not a secret, but it is noise)"
+    );
+    println!("      Stripe-Signature present, and byte-identical to Vpay-Signature");
+
+    let secret = env_or("MERCHANT_WEBHOOK_SECRET", DEFAULT_WEBHOOK_SECRET);
+    let event = vpay_sdk::webhooks::verify(
+        delivery.body.as_bytes(),
+        &delivery.signature,
+        &secret,
+        vpay_sdk::webhooks::DEFAULT_TOLERANCE,
+    )
+    .map_err(|error| {
+        anyhow!(
+            "{STEP}: a webhook arrived and its Vpay-Signature does not verify ({error}). vpay \
+             signed something this merchant cannot check, which is worse than sending nothing. \
+             The secret came from MERCHANT_WEBHOOK_SECRET (or the compose stub); check it \
+             matches `webhooks[0].secrets` in .e2e/application-demo.yml."
+        )
+    })?;
+
+    println!("  ✔ Vpay-Signature verifies with vpay-sdk — the same call a handler makes");
+    println!("      id             {}", event.id);
+    println!("      type           {}", event.kind);
+    println!("      livemode       {}", event.livemode);
+    println!(
+        "      data.object.id {}",
+        event
+            .data
+            .object
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("(absent)")
+    );
+
     println!();
     println!("      {NOT_BUILT_YET}");
 
     Ok(())
+}
+
+/// One delivery as the receiver recorded it.
+///
+/// A struct rather than a tuple because the two signature headers are the
+/// same string and a tuple would let a careless caller compare a value with
+/// itself and call it a check.
+struct Delivered {
+    /// `Vpay-Event-Id` — the `evt_…` the delivery names.
+    event_id: String,
+    /// The recorded request body, verbatim. Never re-serialised.
+    body: String,
+    /// `Vpay-Signature`.
+    signature: String,
+    /// `Stripe-Signature`, which must equal [`Self::signature`].
+    stripe_signature: String,
+}
+
+/// The POST in the receiver's journal that delivered an event about
+/// `payment_intent_id`, if one has arrived yet.
+///
+/// Two filters, and both are load-bearing. The `Vpay-Event-Id` header,
+/// because the receiver answers 200 to *anything* POSTed at it
+/// (`backends/tests/webhook-receiver/wiremock/mappings/`) and a stray request
+/// from something else on the machine must not be mistaken for a delivery.
+/// The body's `data.object.id`, because the journal survives for the life of
+/// the container and a previous run's delivery would otherwise satisfy this
+/// run — a demo that passed on last run's evidence is exactly the false green
+/// this repository is written against.
+///
+/// The body is taken as the journal's recorded text and never re-serialised:
+/// the signature covers bytes, and a parse-and-reprint is the single most
+/// common way a merchant breaks their own verification. It is *parsed* here
+/// only to read the intent id, and the parse's result is thrown away.
+async fn recorded_webhook(
+    http: &reqwest::Client,
+    receiver_url: &str,
+    payment_intent_id: &str,
+) -> anyhow::Result<Option<Delivered>> {
+    let journal: Value = http
+        .get(format!("{receiver_url}/__admin/requests"))
+        .send()
+        .await
+        .context("reading the receiver's request journal")?
+        .json()
+        .await
+        .context("the receiver's journal is JSON")?;
+
+    let requests = journal
+        .get("requests")
+        .and_then(Value::as_array)
+        .context("the journal has a `requests` array")?;
+
+    for entry in requests {
+        let Some(request) = entry.get("request") else {
+            continue;
+        };
+        if request.get("method").and_then(Value::as_str) != Some("POST") {
+            continue;
+        }
+        let headers = request.get("headers").and_then(Value::as_object);
+        let header = |name: &str| {
+            headers.and_then(|map| {
+                map.iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                    .and_then(|(_, value)| value.as_str())
+            })
+        };
+        let (Some(event_id), Some(signature), Some(stripe_signature)) = (
+            header("Vpay-Event-Id"),
+            header("Vpay-Signature"),
+            header("Stripe-Signature"),
+        ) else {
+            continue;
+        };
+        let body = request
+            .get("body")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let names_this_intent = serde_json::from_str::<Value>(body).is_ok_and(|parsed| {
+            parsed
+                .pointer("/data/object/id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == payment_intent_id)
+        });
+        if !names_this_intent {
+            continue;
+        }
+        return Ok(Some(Delivered {
+            event_id: event_id.to_owned(),
+            body: body.to_owned(),
+            signature: signature.to_owned(),
+            stripe_signature: stripe_signature.to_owned(),
+        }));
+    }
+    Ok(None)
 }
 
 // ------------------------------------------------------------------ helpers

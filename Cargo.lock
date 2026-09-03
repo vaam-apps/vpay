@@ -4128,6 +4128,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "url",
  "vpay-core",
  "vpay-provider",
 ]
@@ -4297,6 +4298,8 @@ dependencies = [
  "testcontainers-modules",
  "time",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
  "vpay-adapter-mtn-momo",
  "vpay-adapter-orange-money",
@@ -4315,8 +4318,12 @@ name = "vpay-worker"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "hex",
+ "hmac",
+ "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "thiserror",
  "time",
@@ -4328,6 +4335,7 @@ dependencies = [
  "vpay-db",
  "vpay-ledger",
  "vpay-provider",
+ "vpay-sdk",
 ]
 
 [[package]]

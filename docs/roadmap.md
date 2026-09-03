@@ -26,7 +26,7 @@ being true.
 | 3 | Payment API (`/v1`) | ⛔ Not started |
 | 4 | The rails | ⛔ Not started — *split on 2026-09-03 into 4a (the adapters, done) and 4b (push-rail recovery, absorbed into Phase 5 and delivered there); this row is the pre-split one and the two headings below are current* |
 | 5 | The worker | 🟡 In progress — the job loop, the poll ladder, recovery and settlement landed 2026-09-03 (Step 4) against WireMock rails; the callback route and prompt expiry did not |
-| 6 | Webhooks | ⛔ Not started — the `events` rows exist, the fan-out does not |
+| 6 | Webhooks | 🟡 In progress — the outbox drain, signing and delivery landed 2026-09-03 (Step 5) against a WireMock receiver; no merchant endpoint has ever been POSTed to, there is no SSRF protection of any kind (boot-time `validate_host` is a stub-host guard, not an address check), delivery is unordered, and replaying an exhausted delivery is a hand-written transaction |
 | 7 | Operability | ⛔ Blocked by environment, not by unwritten code |
 
 Phases 3 and 4 are listed in build order but genuinely interleave — see
@@ -725,7 +725,7 @@ without double-charging.
 **Status. 🟡 In progress — the loop landed 2026-09-03 (Step 4).**
 `vpay-worker-bin` no longer logs a heartbeat saying the loop is not
 implemented: it boots, reconciles configuration under the same advisory lock
-`vpay-server` uses, reaps stranded job leases, seeds its two singleton jobs and
+`vpay-server` uses, reaps stranded job leases, seeds its its singleton jobs (two then; four since Step 5 — `sweep:expired`, `scan:live`, `fanout:events`, `scan:deliveries`) and
 runs `vpay_worker::run_loop` — N claim/settle tasks over a `jobs` table
 (migration `0021`, `FOR UPDATE SKIP LOCKED`, leases guarded on `locked_by`,
 dead letters parked at `run_at = 'infinity'`), a 60-second gauge line, and a
@@ -782,36 +782,101 @@ repository exists to avoid.
 
 ## Phase 6 — Webhooks
 
-**Candidate, not decided (2026-09-02):** `cratestack-outbox` implements
+**~~Candidate, not decided (2026-09-02):~~ Decided 2026-09-03 — keep the
+in-repo outbox; `cratestack-outbox` is not adopted.** The question this
+paragraph reserved was whether to take `cratestack-outbox` (which implements
 exactly this shape — `OutboxClient::persist_in_tx` inside the caller's
-transaction, `drain` in insertion order, an axum drain/gc handler pair — and
-carries no schema macro. Whether to take the dependency or write the
-~200-line outbox by hand is for whoever builds this phase; ADR-0006's
-"no in-process fake receiver" rule applies either way.
+transaction, `drain` in insertion order, an axum drain/gc handler pair, and no
+schema macro) or to write the ~200-line outbox by hand. **The answer is the
+hand-written one**, in migrations `0021`/`0022`: the `jobs` table already
+provides `FOR UPDATE SKIP LOCKED` claims, leases guarded on `locked_by`, a
+reaper, dead-letter parking and a dedupe key, and `vpay_db::events::insert_in_tx`
+already writes the outbox row in the same transaction as the charge. Adopting
+`cratestack-outbox` would duplicate all of that — two drain paths, two lease
+mechanisms, two sets of metrics for one queue — and add a dependency in the
+money path that has to be justified through `deny.toml`. What is given up is
+real: vpay now owns this code forever, and the drain is one more thing to
+maintain rather than to upgrade.
+
+**This decision was taken by an agent under the user's standing delegation
+("take all decisions yourself"), not by the maintainer who reserved it.** It is
+reversible — the drain is `vpay_worker::webhooks::handle_fan_out`, one function
+behind one job kind — and the maintainer may reopen it. ADR-0006's "no
+in-process fake receiver" rule applied either way and still does.
 
 **Goal.** Merchants receive signed webhook notifications for intent/charge
 state changes, delivered at-least-once via a durable outbox.
 
-**Status.** Not started (⛔ in `docs/status.md`).
+**Status. 🟡 Delivered 2026-09-03 (Step 5), against a WireMock receiver.** Both
+transactions of [`docs/flows/webhooks.md`](flows/webhooks.md)'s outbox run: the
+settlement transaction writes the `events` row (Step 4), and the `fan_out_events`
+singleton (`fanout:events`, seeded at every worker boot) turns it into one
+`webhook_deliveries` row and one `deliver_webhook` job per configured endpoint,
+in one transaction per event. `deliver_webhook` renders the event through the
+same `vpay_api::model::EventObject` that `GET /v1/events` serves, signs those
+exact bytes with HMAC-SHA256 over `"{t}.{body}"`, and POSTs them under
+`Vpay-Signature` and `Stripe-Signature`. `just demo`'s seventh step ends with a
+signed `payment_intent.succeeded` read back out of a WireMock receiver's own
+request journal and verified with the shipping SDK.
 
-**Scope.**
-- An outbox row written in the same transaction as the state change it
-  reports.
-- A signing scheme matching Stripe's, so existing merchant webhook-handling
-  code needs no new verification logic.
-- A delivery worker with a retry policy.
+**No merchant endpoint has ever been POSTed to.** Every delivery observed so
+far went to a WireMock host on a compose network, on a developer machine and in
+CI. That is why this phase is 🟡 and not ✅, and it is the same limit Phases 4
+and 5 carry about rails.
 
-**Definition of done.** An integration test proves a state transition never
-commits without a corresponding outbox row in the same transaction; a
-delivery test proves signature verification succeeds against a real HMAC
-computation, driven against a real or WireMock receiver — never an
-in-process fake ([ADR-0006](adr/0006-no-mocks-in-main-processes.md)).
+**Scope, and what became of each item.**
+- ✅ An outbox row written in the same transaction as the state change it
+  reports — `vpay_db::events::insert_in_tx`, inside
+  `vpay_db::settlement::apply_succeeded`/`apply_failed` (Step 4).
+- ✅ A signing scheme matching Stripe's — `t=…,v1=…` over `"{t}.{body}"`,
+  emitted under both header names, verified by the two shipping SDKs against
+  bytes this server actually sent.
+- ✅ A delivery worker with a retry policy — `vpay_worker::delivery_delay`
+  (10 s, 30 s, 2 m, 10 m, 1 h, 6 h, 24 h), then `state = 'exhausted'` with an
+  `alert = true` log line.
+- ✅ A backstop behind the queue — `scan:deliveries` (migration `0023`), every
+  10 minutes over up to 500 rows, re-enqueueing a `deliver_webhook` job for any
+  `pending` delivery nothing is driving.
+- 🟡 Absorbed and only half-built: **the operator side.** There is no replay
+  endpoint and no CLI, and the backstop cannot resurrect an `exhausted`
+  delivery — re-sending one is a hand-written transaction, now written down in
+  [`docs/runbooks/webhook-delivery-failures.md`](runbooks/webhook-delivery-failures.md).
+- ⛔ Not in scope and still unbuilt: five of the seven documented event types
+  (`payment_intent.created`, `.processing`, `.canceled` and the two refund
+  types), and the `?type=` filter on `GET /v1/events`.
+
+**Definition of done — met.** `worker_e2e.rs` proves a settlement commits its
+`events` row in the same transaction as the charge and that the same loop drains
+it; `backends/tests/integration/tests/webhooks.rs` proves signature verification
+against a real HMAC — twice, once through the Rust SDK and once through the Node
+SDK in a subprocess — driven against a WireMock receiver started by
+`vpay_testkit`, never an in-process fake
+([ADR-0006](adr/0006-no-mocks-in-main-processes.md)). The Node case **fails
+rather than skips** when `node` is absent; CI sets `VPAY_REQUIRE_NODE=1`.
 
 **Unblocks.** Nothing further downstream on the payments path — this is the
 last functional phase before the MVP claim in `docs/status.md` can move.
 
-**Risks carried by this phase.** None new beyond the standing no-mocks
-constraint above.
+**Risks carried by this phase.**
+- **No SSRF protection at all, and `validate_host` is not any.** Endpoint URLs
+  are checked at **boot** only, and that check is a scheme prefix plus four
+  substrings (`wiremock`, `stub`, `mock`, `localhost`) that never looks at the
+  destination address — so loopback, RFC1918, link-local and cloud-metadata
+  addresses all boot clean in livemode and are all delivered to. The honest fix
+  is a custom reqwest connector — a resolve-then-connect check is TOCTOU — and
+  it is out of scope; decision 4 of
+  `docs/plans/2026-09-03-step5-webhooks.md`.
+- **Delivery is unordered.** Concurrent claims and the retry ladder can reorder
+  two of one merchant's events; merchants must dedupe on `event.id` and reason
+  from `event.created` and the object's own `status`, never from arrival order.
+  Nothing in the design provides ordering and nothing is planned to.
+- **A webhook secret is a forgery key.** Whoever holds one can sign a
+  `payment_intent.succeeded` a merchant's handler will believe. Rotation exists
+  (two secrets, two `v1=` values) but needs a deploy, and there is no
+  revocation short of one.
+- **The ladder's later rungs have never elapsed.** 1 h, 6 h and 24 h are
+  asserted as values by a unit test; no deployment has waited them out.
+- Unchanged: the standing no-mocks constraint above.
 
 ---
 

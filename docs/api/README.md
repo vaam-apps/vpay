@@ -64,8 +64,8 @@ else `403` `forbidden`
 
 ### Served today
 
-`vpay_api::v1::V1_ROUTES` is the router's source, not a copy of it. Five
-methods across four paths:
+`vpay_api::v1::V1_ROUTES` is the router's source, not a copy of it. Seven
+methods across six paths:
 
 | Method | Path | Request params | Answer |
 |---|---|---|---|
@@ -74,6 +74,88 @@ methods across four paths:
 | GET | `/v1/payment_intents` | `limit` (default 10, capped at 100), `starting_after`, `ending_before` (ids; not both) | `200` + `list` envelope (`list_pages_forward_and_backward_with_cursors`) |
 | POST | `/v1/payment_intents/{id}/confirm` | `payment_method_data[type]`, `payment_method_data[<type>][msisdn]` (push), `return_url` (redirect) | `200` + `payment_intent` in **`processing`** (push) or **`requires_action`** with `next_action.redirect_to_url` (redirect); `409 charge_declined`; `502 provider_unavailable`; `400` (see below) |
 | POST | `/v1/payment_intents/{id}/cancel` | | `200` + `payment_intent` in `canceled`, or `409 invalid_state` (`cancel_is_legal_only_from_requires_payment_method`, `a_confirmed_intent_cannot_be_canceled`) |
+| GET | `/v1/events` | `limit` (default 10, capped at 100), `starting_after`, `ending_before` (`evt_…` ids; not both) | `200` + `list` envelope of `event` objects, newest first, scoped to your merchant (`events_are_listed_newest_first_scoped_to_the_merchant`) |
+| GET | `/v1/events/{id}` | | `200` + `event`, or `404 resource_missing` — **including for another merchant's id**, byte for byte (same test) |
+
+**`GET /v1/events` renders an event through the same code the webhook
+deliverer signs** (`vpay_api::model::EventObject`). That is deliberate: this
+list is the documented fallback when a webhook is missed, and two renderers
+would let it answer a different question from the one the webhook asked. The
+`event` object is six keys, and the delivered webhook body is these same bytes:
+
+```json
+{
+  "id": "evt_…",
+  "object": "event",
+  "type": "payment_intent.succeeded",
+  "created": 1753401600,
+  "livemode": false,
+  "data": { "object": { "…": "the payment_intent, verbatim" } }
+}
+```
+
+`created` is unix **seconds**, like every other `created` on this surface.
+`type` is one of the seven in [../flows/webhooks.md](../flows/webhooks.md); only
+`payment_intent.succeeded` and `payment_intent.payment_failed` are ever written
+today, and the CHECK `type_is_a_documented_event` (migration `0018`) closes the
+vocabulary at the database. `livemode` comes off the stored row, not from
+configuration read at render time, so redeploying does not change what a
+delivered event says about itself.
+
+**`data.object` is the same 12-key `payment_intent`
+`GET /v1/payment_intents/{id}` returns** — `id`, `object`, `amount`, `currency`,
+`status`, `payment_method_types`, `next_action`, `last_payment_error`,
+`metadata`, `description`, `created`, `livemode` — rendered by
+`vpay_api::model::PaymentIntentObject` at the moment the transition happened and
+stored verbatim. It is a **snapshot, not a re-read**: an intent that changed
+afterwards still shows what was true when the event was emitted. Neither the
+delivered body nor this endpoint re-validates it against a payment-intent shape,
+so an SDK version that predates a future object type can still receive the
+event rather than failing to decode it.
+
+**`?type=` is NOT implemented.** A `type` filter interacts with the cursor —
+`has_more` and the `seq` window both have to be computed over the filtered set,
+or paging silently skips rows — and half of that is worse than none. `?type=…`
+is **ignored**, not refused, exactly as every other handler on this surface
+ignores unknown query parameters, so a caller who sends it gets an unfiltered
+page. See [../status.md](../status.md).
+
+### What a webhook receiver sees
+
+The delivered body is byte-for-byte the `event` object above. Four headers
+accompany it (`vpay_worker::webhooks::handle_deliver`):
+
+| Header | Value |
+|---|---|
+| `Content-Type` | `application/json` |
+| `Vpay-Signature` | `t=<unix seconds>,v1=<hex>` — one `v1=` per configured secret, so **two** during a rotation |
+| `Stripe-Signature` | the **same string**, byte for byte, so `stripe.webhooks.constructEvent` verifies it with the vpay secret |
+| `Vpay-Event-Id` | the `evt_…` this delivery carries |
+
+There is no custom user agent: the request goes out on
+`vpay_provider::http::client_with_timeouts`, which sets none, so a receiver sees
+reqwest's default. Do not filter on it.
+
+`Vpay-Event-Id` is a **convenience for an access log, not evidence** — only the
+body is signed, so a receiver must read `event.id` out of the verified body and
+dedupe on that. **Delivery is at-least-once and unordered:** concurrent worker
+tasks and the retry ladder can deliver two of your events out of the order they
+happened, so do not decide state from arrival order — reason from
+`event.created` and the object's own `status`. A failing delivery is retried
+**8 times over about 31 hours** and then abandoned, and every non-2xx walks that
+whole ladder, `4xx` included: answering `410 Gone` does not stop it. Verify the raw bytes as received: a framework that parses the
+JSON and re-serialises it before verifying breaks every delivery. Both SDKs ship
+the verifier (`vpay_sdk::webhooks::verify`, `@vpay/sdk`'s `verifyWebhook`), both
+reject a `t` more than 5 minutes from the receiver's clock, and both try every
+`v1=`. The request deadline is **10 seconds end to end** (5 to connect), so
+acknowledge with any `2xx` first and do the work afterwards; a `3xx` is a failed
+attempt, because the client refuses redirects. Diagnosis and replay are
+[../runbooks/webhook-delivery-failures.md](../runbooks/webhook-delivery-failures.md).
+
+**A webhook that is never delivered leaves nothing on this surface to say
+so.** A delivery that exhausts its retry ladder is recorded in
+`webhook_deliveries` and logged with `alert = true`; the merchant is not told.
+`GET /v1/events` is how they find out, by polling.
 
 **`confirm` reaches a rail, and has four outcomes.** It performs every write
 the lifecycle requires — a `submitting` charge row committed with its
@@ -120,9 +202,12 @@ strand the payment. There is no other `next_action` type.
 
 **No rail this deployment has ever called was a real one.** Every outcome
 above has been observed against a WireMock host; MTN and Orange have never
-been contacted. And nothing polls a `submitted` charge yet, so an intent in
-`processing` or `requires_action` stays there — `succeeded` has never
-happened. See [../status.md](../status.md).
+been contacted. *(The second half of this paragraph said "nothing polls a
+`submitted` charge yet … `succeeded` has never happened" until 2026-09-03; Step
+4's worker retired it. A `processing` intent is now driven to `succeeded` by
+`vpay_worker`, and Step 5 delivers the webhook that follows — against WireMock
+hosts, on a developer machine and in CI, and nowhere else.)* See
+[../status.md](../status.md).
 
 ### Bodies, and the `Idempotency-Key` header
 
@@ -175,11 +260,13 @@ Every one is derived from a `Category`; see
 | Method | Path | Why |
 |---|---|---|
 | POST | `/v1/refunds` | no refunds repository, no handler; migration `0017` is the schema only |
-| GET | `/v1/events` | nothing emits events; migration `0018` is the schema only |
 | GET | `/v1/balance` | no ledger read path |
 
-Both SDKs can call all three. Each returns the `404` envelope to an
+Both SDKs can call both. Each returns the `404` envelope to an
 authenticated caller, because a `200` would mean someone invented a resource.
+
+`GET /v1/events` was on this list until 2026-09-03 and is now served — see
+"Served today" above.
 
 See [../status.md](../status.md) for the tests behind each claim above and
 for the state of the evidence.
@@ -196,9 +283,21 @@ handshake against a real `vpay_api::router` in
 `backends/tests/integration/tests/merchant_token_flow.rs`, and since
 2026-09-03 it also drives the five served payment-intent methods above
 against a real router and a real Postgres in
-`backends/tests/integration/tests/payment_intents.rs`. Three of its eight
-resource methods still have no route to call. The **Node** SDK has still
-never spoken to a vpay of any kind.
+`backends/tests/integration/tests/payment_intents.rs`, and its
+`client.events().list()` against the same in
+`backends/tests/integration/tests/webhooks.rs`. Two of its eight resource
+methods still have no route to call (`refunds().create()`,
+`balance().retrieve()`).
+
+**The Node SDK has now spoken to a vpay, in exactly one respect.** Its
+`verifyWebhook` verifies a `Vpay-Signature` this server emitted, in a
+subprocess, in `backends/tests/integration/tests/webhooks.rs`
+(`the_delivered_signature_verifies_with_the_shipping_node_sdk`) — the header
+comes off a real WireMock receiver's request journal, and the same test
+asserts the wrong secret is refused. That test **fails** rather than skips
+when `node` is missing; CI's `rust` job sets `VPAY_REQUIRE_NODE=1`. Nothing
+else in the Node SDK — the handshake, the resource calls — has ever reached a
+vpay.
 
 Everything not listed under "Served today" returns a Stripe-shaped 404 naming
 vpay honestly, rather than pretending the route exists.

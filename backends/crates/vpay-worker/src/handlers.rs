@@ -61,6 +61,7 @@ use crate::jobs::{
     JobKind, Outcome, PollChargePayload, ResubmitPayload, poll_dedupe_key, resubmit_dedupe_key,
 };
 use crate::recovery::{RecoveryAction, RecoveryPolicy, SubmitAttempt, recovery_step};
+use crate::webhooks::{EndpointRegistry, handle_deliver, handle_fan_out, handle_scan_deliveries};
 
 /// Every rail this deployment can talk to, by `providers.code`.
 ///
@@ -85,6 +86,33 @@ pub type Adapters = BTreeMap<String, Box<dyn ProviderAdapter>>;
 /// `resource_config.rail(code).map(RailConfig::provider_config)` for each
 /// adapter code.
 pub type RailConfigs = BTreeMap<String, ProviderConfig>;
+
+/// What the two webhook jobs need and no other job may touch: the endpoint
+/// table and the outbound HTTP client.
+///
+/// Borrowed as one struct rather than added as two parameters to every
+/// handler, for the reason [`RailConfigs`] is a projection rather than the
+/// whole of `ResourceConfig`: a poll job has no business reaching a merchant's
+/// signing secrets, and grouping the two makes the dispatch signature say so.
+///
+/// The client is built **by the binary**, once, with
+/// `vpay_provider::http::client_with_timeouts` over
+/// [`crate::WEBHOOK_CONNECT_TIMEOUT`] and [`crate::WEBHOOK_REQUEST_TIMEOUT`],
+/// and cloned. The budgets are named rather than written out here, for the
+/// reason those constants exist at all: the pair was once spelled in three
+/// places, and prose repeating the numbers is a fourth copy nothing pins. It
+/// is not built here and never by `reqwest::Client::new()`, which panics in
+/// the `scratch` runtime image (see that module) — and building one per job
+/// would also throw away every pooled connection between attempts.
+#[derive(Debug, Clone, Copy)]
+pub struct WebhookContext<'a> {
+    /// Every merchant's configured endpoints, by `events.merchant_id`.
+    pub endpoints: &'a EndpointRegistry,
+    /// The outbound client. Refuses redirects and ignores the proxy
+    /// environment, which is what keeps a signed event body from being
+    /// replayed at a host the operator never configured.
+    pub http: &'a reqwest::Client,
+}
 
 /// How often the housekeeping sweep runs. Hourly, and unconditionally: the
 /// three things it deletes are all bounded by their own expiry timestamps, so
@@ -138,9 +166,10 @@ pub async fn handle(
     adapters: &Adapters,
     rails: &RailConfigs,
     policy: &RecoveryPolicy,
+    webhooks: &WebhookContext<'_>,
     job: &vpay_db::JobRow,
 ) -> Result<Outcome, JobError> {
-    let result = dispatch(pool, adapters, rails, policy, job).await;
+    let result = dispatch(pool, adapters, rails, policy, webhooks, job).await;
     if let Err(error) = &result {
         log_failure(job, error);
     }
@@ -152,6 +181,7 @@ async fn dispatch(
     adapters: &Adapters,
     rails: &RailConfigs,
     policy: &RecoveryPolicy,
+    webhooks: &WebhookContext<'_>,
     job: &vpay_db::JobRow,
 ) -> Result<Outcome, JobError> {
     let kind = JobKind::from_wire(&job.kind).ok_or_else(|| {
@@ -170,6 +200,19 @@ async fn dispatch(
         JobKind::ResubmitCharge => resubmit_charge(pool, adapters, rails, job).await,
         JobKind::SweepExpired => sweep_expired(pool, policy).await,
         JobKind::ScanLiveCharges => scan_live_charges(pool, job).await,
+        // Both live in `crate::webhooks`, which owns every decision they make.
+        // This module only routes: a second copy of the delivery ladder or of
+        // the fan-out's transaction boundary here is exactly the duplication
+        // this file's header refuses.
+        JobKind::FanOutEvents => handle_fan_out(pool, webhooks.endpoints, job).await,
+        JobKind::DeliverWebhook => {
+            handle_deliver(pool, webhooks.http, webhooks.endpoints, job).await
+        }
+        // The delivery queue's backstop. `policy.lease` and not a constant of
+        // its own: the never-attempted arm of the scan's query asks "has this
+        // delivery's job been outstanding longer than a claim may legitimately
+        // be?", and that is the same number the reaper compares against.
+        JobKind::ScanDeliveries => handle_scan_deliveries(pool, policy.lease, job).await,
     }
 }
 

@@ -12,17 +12,20 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use crate::error::Decision;
 
-/// The kinds of job this step can enqueue.
+/// The kinds of job this workspace can enqueue.
 ///
 /// Closed, and closed against a database constraint rather than a convention:
-/// migration 0021's `kind_is_known` CHECK lists exactly these four strings, so
-/// a fifth spelled here and not there is refused by Postgres at the insert
-/// rather than discovered by a worker that claims a job it cannot dispatch.
-/// `deliver_webhook` is deliberately absent from both — Step 5 adds it with
-/// its own migration, so this step cannot enqueue one by accident.
+/// migration 0023's `kind_is_known` CHECK lists exactly these seven strings,
+/// so an eighth spelled here and not there is refused by Postgres at the
+/// insert rather than discovered by a worker that claims a job it cannot
+/// dispatch. The two webhook kinds arrived with migration 0022 (0021
+/// deliberately withheld them, so Step 4 could not enqueue a delivery nothing
+/// would run) and [`Self::ScanDeliveries`] with 0023, on the same terms; the
+/// constraint and this enum move together, always.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
@@ -38,10 +41,44 @@ pub enum JobKind {
     /// The backstop scan that finds live charges nothing is polling — rows
     /// written before the queue existed, or a job lost to operator error.
     ScanLiveCharges,
+    /// The outbox drain: turn `fanout_state = 'pending'` events into one
+    /// `webhook_deliveries` row per configured endpoint, and one
+    /// [`Self::DeliverWebhook`] job per row.
+    ///
+    /// A singleton ([`FANOUT_DEDUPE_KEY`]) that reschedules itself, on the
+    /// same terms as [`Self::SweepExpired`]: N workers produce one row, and
+    /// the row outlives every one of them.
+    FanOutEvents,
+    /// POST one rendered, signed event to one merchant endpoint. One job per
+    /// `webhook_deliveries` row, enqueued in the transaction that created it.
+    DeliverWebhook,
+    /// The backstop scan behind the delivery queue: re-enqueue a
+    /// [`Self::DeliverWebhook`] job for any `pending` delivery nothing appears
+    /// to be driving.
+    ///
+    /// A singleton ([`SCAN_DELIVERIES_DEDUPE_KEY`]) on
+    /// [`Self::ScanLiveCharges`]'s exact terms, and with the same relationship
+    /// to the mechanism: the fan-out enqueues a delivery's job in the
+    /// transaction that creates the row, so a healthy deployment's scan finds
+    /// nothing. What it covers is what that transaction cannot — a job
+    /// **deleted** by an operator, or lost with the `jobs` table during an
+    /// incident. Without it such a delivery is owed an attempt nothing will
+    /// ever make and the merchant is never told.
+    ///
+    /// It does **not** cover a *dead-lettered* job, and cannot:
+    /// `vpay_db::jobs::dead_letter` parks the row rather than deleting it and
+    /// keeps its `dedupe_key`, so this scan's `ON CONFLICT DO NOTHING`
+    /// enqueue is a no-op for exactly those deliveries. That is deliberate —
+    /// a job is parked for a reason retrying cannot fix, and resurrecting it
+    /// on a timer is the hot loop parking exists to prevent. The scan names
+    /// such rows in one `warn` per pass; un-parking one is manual
+    /// (`crate::webhooks::handle_scan_deliveries`,
+    /// `docs/runbooks/webhook-delivery-failures.md`).
+    ScanDeliveries,
 }
 
 impl JobKind {
-    /// The exact string in `jobs.kind`, and in migration 0021's
+    /// The exact string in `jobs.kind`, and in migration 0022's
     /// `kind_is_known` CHECK.
     ///
     /// Written out beside the `serde` rename for the same reason
@@ -56,6 +93,9 @@ impl JobKind {
             Self::ResubmitCharge => "resubmit_charge",
             Self::SweepExpired => "sweep_expired",
             Self::ScanLiveCharges => "scan_live_charges",
+            Self::FanOutEvents => "fan_out_events",
+            Self::DeliverWebhook => "deliver_webhook",
+            Self::ScanDeliveries => "scan_deliveries",
         }
     }
 
@@ -75,6 +115,9 @@ impl JobKind {
             Self::ResubmitCharge,
             Self::SweepExpired,
             Self::ScanLiveCharges,
+            Self::FanOutEvents,
+            Self::DeliverWebhook,
+            Self::ScanDeliveries,
         ]
         .into_iter()
         .find(|candidate| candidate.as_wire_str() == kind)
@@ -176,6 +219,33 @@ impl ResubmitPayload {
     }
 }
 
+/// `deliver_webhook`'s payload.
+///
+/// Only the delivery's own id. Every other input — the event, the endpoint
+/// id, the URL — is read from the `webhook_deliveries` row it names, so no
+/// queue row can send a merchant's event to a URL that is not the one
+/// recorded against the delivery. The same argument [`ResubmitPayload`] makes
+/// for a provider reference.
+///
+/// `fan_out_events` has no payload type at all: it is a singleton drain with
+/// no arguments, and its `jobs.payload` is the empty object `{}` (which is
+/// what the `payload_is_object` CHECK requires). A struct with no fields
+/// would only be a place for a future argument to be added without anyone
+/// asking whether the drain should be parameterised.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliverWebhookPayload {
+    /// The `webhook_deliveries.id` to attempt.
+    pub delivery_id: Uuid,
+}
+
+impl DeliverWebhookPayload {
+    /// A delivery attempt for `delivery_id`.
+    #[must_use]
+    pub const fn new(delivery_id: Uuid) -> Self {
+        Self { delivery_id }
+    }
+}
+
 /// What a handler that did **not** fail wants the loop to do with the row.
 ///
 /// Two values, because a successful handler has only two things to say: this
@@ -250,36 +320,104 @@ pub const SWEEP_DEDUPE_KEY: &str = "sweep:expired";
 /// the same terms as [`SWEEP_DEDUPE_KEY`].
 pub const SCAN_DEDUPE_KEY: &str = "scan:live";
 
+/// The `jobs.dedupe_key` of the one and only outbox drain. A singleton, on
+/// the same terms as [`SWEEP_DEDUPE_KEY`].
+///
+/// One drain per deployment rather than one per merchant: the backlog is
+/// ordered by `events.seq` across every merchant
+/// (`vpay_db::events::pending_page`), and a per-merchant key would deliver in
+/// merchant order rather than in the order things happened.
+pub const FANOUT_DEDUPE_KEY: &str = "fanout:events";
+
+/// The `jobs.dedupe_key` of the one and only delivery backstop. A singleton,
+/// on the same terms as [`SWEEP_DEDUPE_KEY`].
+///
+/// `scan:deliveries`, in [`SCAN_DEDUPE_KEY`]'s (`scan:live`) namespace and
+/// deliberately not equal to it: the two scans back up two different queues
+/// and a shared key would let one lose to the other's
+/// `ON CONFLICT DO NOTHING` and never be seeded at all.
+pub const SCAN_DELIVERIES_DEDUPE_KEY: &str = "scan:deliveries";
+
+/// The `jobs.dedupe_key` for delivering one `webhook_deliveries` row.
+///
+/// Keyed on the *delivery*, not on the event: a merchant with two endpoints
+/// gets two rows and must get two jobs, and an event-keyed dedupe would let
+/// the second endpoint's job lose to the first's `ON CONFLICT DO NOTHING` and
+/// never be delivered at all.
+///
+/// This is also what makes the fan-out crash-idempotent: a pass that dies
+/// after committing re-runs, the unique index absorbs the duplicate delivery
+/// row, and this key absorbs the duplicate job.
+#[must_use]
+pub fn webhook_dedupe_key(delivery_id: Uuid) -> String {
+    format!("webhook:{delivery_id}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
-    const KINDS: [JobKind; 4] = [
+    const KINDS: [JobKind; 7] = [
         JobKind::PollCharge,
         JobKind::ResubmitCharge,
         JobKind::SweepExpired,
         JobKind::ScanLiveCharges,
+        JobKind::FanOutEvents,
+        JobKind::DeliverWebhook,
+        JobKind::ScanDeliveries,
     ];
 
-    /// Transcribed from migration 0021's `kind_is_known` CHECK. If these four
-    /// strings and that constraint ever disagree, every enqueue of the odd one
-    /// out fails at the database — so the list is written out here rather than
-    /// generated from the enum.
-    const KIND_IS_KNOWN: [&str; 4] = [
+    /// Transcribed from migration 0023's `kind_is_known` CHECK — the current
+    /// one. If these seven strings and that constraint ever disagree, every
+    /// enqueue of the odd one out fails at the database, so the list is
+    /// written out here rather than generated from the enum.
+    ///
+    /// This constant has *changed* twice, both times deliberately: 0021's
+    /// version asserted `deliver_webhook` was **not** enqueueable, which was
+    /// true for exactly as long as no handler existed, and 0022 added both
+    /// webhook kinds with their handlers. 0023 adds `scan_deliveries` with
+    /// its own, and `the_check_constraint_is_migration_0023s` reads the
+    /// migration file so this list cannot quietly drift from it.
+    const KIND_IS_KNOWN: [&str; 7] = [
         "poll_charge",
         "resubmit_charge",
         "sweep_expired",
         "scan_live_charges",
+        "fan_out_events",
+        "deliver_webhook",
+        "scan_deliveries",
     ];
 
     #[test]
     fn the_kinds_are_exactly_the_check_constraints() {
         let ours: Vec<&str> = KINDS.iter().map(|k| k.as_wire_str()).collect();
         assert_eq!(ours, KIND_IS_KNOWN.to_vec());
+    }
+
+    /// [`KIND_IS_KNOWN`] really is the migration's list, read from the
+    /// migration.
+    ///
+    /// Transcription is only worth something if something checks it. Without
+    /// this, `KIND_IS_KNOWN` and the CHECK could drift and the drift would be
+    /// found by a worker enqueueing a job Postgres refuses — at runtime, in
+    /// the settlement path.
+    #[test]
+    fn the_check_constraint_is_migration_0023s() {
+        let sql = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations/0023_jobs-scan-deliveries.sql"
+        ))
+        .expect("migration 0023 is in the tree");
+        let expected = KIND_IS_KNOWN
+            .iter()
+            .map(|kind| format!("'{kind}'"))
+            .collect::<Vec<_>>()
+            .join(",");
         assert!(
-            !ours.contains(&"deliver_webhook"),
-            "deliver_webhook belongs to Step 5 and must not be enqueueable yet"
+            sql.contains(&format!("CHECK (kind IN\n  ({expected}))")),
+            "KIND_IS_KNOWN no longer matches migration 0023's kind_is_known; expected \
+             ({expected})"
         );
     }
 
@@ -294,8 +432,10 @@ mod tests {
 
     #[test]
     fn an_unknown_kind_is_not_guessed_at() {
-        assert_eq!(JobKind::from_wire("deliver_webhook"), None);
         assert_eq!(JobKind::from_wire("poll_charges"), None);
+        assert_eq!(JobKind::from_wire("deliver_webhooks"), None);
+        assert_eq!(JobKind::from_wire("fanout_events"), None);
+        assert_eq!(JobKind::from_wire("scan_delivery"), None);
         assert_eq!(JobKind::from_wire(""), None);
     }
 
@@ -377,16 +517,26 @@ mod tests {
 
     #[test]
     fn the_dedupe_keys_are_the_documented_ones_and_never_collide() {
+        let delivery = Uuid::from_u128(1);
         assert_eq!(poll_dedupe_key("ch_abc"), "poll:ch_abc");
         assert_eq!(resubmit_dedupe_key("ch_abc"), "resubmit:ch_abc");
         assert_eq!(SWEEP_DEDUPE_KEY, "sweep:expired");
         assert_eq!(SCAN_DEDUPE_KEY, "scan:live");
+        assert_eq!(SCAN_DELIVERIES_DEDUPE_KEY, "scan:deliveries");
+        assert_eq!(FANOUT_DEDUPE_KEY, "fanout:events");
+        assert_eq!(
+            webhook_dedupe_key(delivery),
+            "webhook:00000000-0000-0000-0000-000000000001"
+        );
 
         let keys = [
             poll_dedupe_key("ch_abc"),
             resubmit_dedupe_key("ch_abc"),
             SWEEP_DEDUPE_KEY.to_owned(),
             SCAN_DEDUPE_KEY.to_owned(),
+            SCAN_DELIVERIES_DEDUPE_KEY.to_owned(),
+            FANOUT_DEDUPE_KEY.to_owned(),
+            webhook_dedupe_key(delivery),
         ];
         let unique: std::collections::BTreeSet<&String> = keys.iter().collect();
         assert_eq!(
@@ -398,6 +548,31 @@ mod tests {
         // Two charges are two jobs. The obvious property, and the one a
         // `format!` typo would break.
         assert_ne!(poll_dedupe_key("ch_a"), poll_dedupe_key("ch_b"));
+        // And two deliveries of one event — a merchant with two endpoints —
+        // are two jobs. An event-keyed dedupe would silently drop the second.
+        assert_ne!(
+            webhook_dedupe_key(Uuid::from_u128(1)),
+            webhook_dedupe_key(Uuid::from_u128(2))
+        );
+    }
+
+    #[test]
+    fn a_delivery_payload_round_trips_and_carries_nothing_but_the_row_id() {
+        let payload = DeliverWebhookPayload::new(Uuid::from_u128(7));
+        let json = serde_json::to_value(&payload).expect("serialises");
+        assert_eq!(
+            json,
+            json!({ "delivery_id": "00000000-0000-0000-0000-000000000007" })
+        );
+        assert_eq!(
+            json.as_object().map(serde_json::Map::len),
+            Some(1),
+            "a delivery payload must not carry a URL or a secret: both come \
+             from the row and from configuration, so no queue row can re-point \
+             a delivery"
+        );
+        let back: DeliverWebhookPayload = serde_json::from_value(json).expect("deserialises");
+        assert_eq!(back, payload);
     }
 
     /// The bridge between the error contract and the queue: a retryable

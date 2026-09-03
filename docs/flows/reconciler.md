@@ -160,4 +160,11 @@ the error's classification ([errors.md](errors.md)), and
 `vpay_worker::run_loop` is the one place those three answers become the three
 writes that end a lease.
 
+`JobError::decision()` is charge polling only; webhook delivery uses
+`delivery_delay` (`vpay_worker::delivery_delay`, the seven-rung ladder in
+[webhooks.md](webhooks.md)) and never consults `Classify::retry` — a
+merchant's `500` is not a `ProviderError`, and giving a webhook receiver the
+rail's 24-hour horizon and hourly `unresolved` escalation would be a policy
+nobody chose.
+
 See [../status.md](../status.md).

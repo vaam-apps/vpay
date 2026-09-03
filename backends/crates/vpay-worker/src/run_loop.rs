@@ -47,9 +47,13 @@ use vpay_core::{Classify as _, Severity};
 use vpay_db::{DbError, JobRow, PgPool};
 
 use crate::error::{Decision, JobError};
-use crate::handlers::{Adapters, RailConfigs, handle};
-use crate::jobs::{JobKind, Outcome, SCAN_DEDUPE_KEY, SWEEP_DEDUPE_KEY};
+use crate::handlers::{Adapters, RailConfigs, WebhookContext, handle};
+use crate::jobs::{
+    FANOUT_DEDUPE_KEY, JobKind, Outcome, SCAN_DEDUPE_KEY, SCAN_DELIVERIES_DEDUPE_KEY,
+    SWEEP_DEDUPE_KEY,
+};
 use crate::recovery::RecoveryPolicy;
+use crate::webhooks::EndpointRegistry;
 
 /// How long a task waits after finding the queue empty before asking again.
 ///
@@ -276,13 +280,14 @@ pub async fn run_once(
     adapters: &Adapters,
     rails: &RailConfigs,
     policy: &RecoveryPolicy,
+    webhooks: &WebhookContext<'_>,
     worker_id: &str,
 ) -> Result<Option<Settled>, DbError> {
     let Some(job) = vpay_db::jobs::claim(pool, worker_id).await? else {
         return Ok(None);
     };
 
-    let result = handle(pool, adapters, rails, policy, &job).await;
+    let result = handle(pool, adapters, rails, policy, webhooks, &job).await;
     let settled = settle(pool, worker_id, &job, result).await?;
     log_disposition(&settled);
     Ok(Some(settled))
@@ -443,19 +448,24 @@ fn log_disposition(settled: &Settled) {
     }
 }
 
-/// Seeds the two singleton jobs this deployment always wants running.
+/// Seeds the four singleton jobs this deployment always wants running.
 ///
-/// `sweep_expired` and `scan_live_charges` are not enqueued by anything that
-/// creates work — there is no request that produces a sweep — so they are
-/// seeded at boot and reschedule themselves for as long as the deployment
-/// lives. `ON CONFLICT (dedupe_key) DO NOTHING` (`jobs::enqueue_in_tx`) is
-/// what makes N workers all doing this produce one row each, and what stops
-/// a restart from dragging a job that is already scheduled an hour out back
-/// to now.
+/// `sweep_expired`, `scan_live_charges`, `fan_out_events` and
+/// `scan_deliveries` are not enqueued by anything that creates work — there is
+/// no request that produces a sweep, and the settlement transaction writes an
+/// `events` row without knowing a drain exists — so they are seeded at boot
+/// and reschedule themselves for as long as the deployment lives.
+/// `ON CONFLICT (dedupe_key) DO NOTHING` (`jobs::enqueue_in_tx`) is what makes
+/// N workers all doing this produce one row each, and what stops a restart
+/// from dragging a job that is already scheduled an hour out back to now.
 ///
-/// One transaction for both because they are one fact ("this deployment has
-/// housekeeping"), and a partial seed — the sweep without the scan — is a
-/// deployment whose backstop is silently absent.
+/// One transaction for all four because they are one fact ("this deployment
+/// runs its own background work"), and a partial seed is worse than none: the
+/// sweep without the scan is a deployment whose backstop is silently absent,
+/// and a deployment without `fan_out_events` settles payments and tells no
+/// merchant about any of them — every `events` row it writes stays
+/// `fanout_state = 'pending'`, which looks exactly like a healthy deployment
+/// until somebody reads the backlog.
 ///
 /// This is **not** where lease recovery happens. `sweep_expired` also reaps
 /// expired leases, but a worker that has just booted after a crash cannot
@@ -484,6 +494,31 @@ pub async fn seed_singletons(pool: &PgPool) -> Result<(), DbError> {
         &mut tx,
         JobKind::ScanLiveCharges.as_wire_str(),
         SCAN_DEDUPE_KEY,
+        &empty,
+        now,
+    )
+    .await?;
+    // The outbox drain. `run_at = now` rather than a delay: an event written
+    // before this process started is already waiting, and the first thing a
+    // freshly-booted worker should do about a settled payment nobody was
+    // told about is tell them.
+    vpay_db::jobs::enqueue_in_tx(
+        &mut tx,
+        JobKind::FanOutEvents.as_wire_str(),
+        FANOUT_DEDUPE_KEY,
+        &empty,
+        now,
+    )
+    .await?;
+    // The delivery backstop (migration 0023). Seeded here rather than left
+    // out because "the queue owns every delivery" is only true while no job
+    // is ever deleted, dead-lettered or lost with the table — and a
+    // deployment that drops this seed looks exactly like a healthy one until
+    // a merchant asks why they never heard about a payment.
+    vpay_db::jobs::enqueue_in_tx(
+        &mut tx,
+        JobKind::ScanDeliveries.as_wire_str(),
+        SCAN_DELIVERIES_DEDUPE_KEY,
         &empty,
         now,
     )
@@ -536,6 +571,8 @@ pub async fn run_loop(
     adapters: Arc<Adapters>,
     rails: Arc<RailConfigs>,
     policy: RecoveryPolicy,
+    endpoints: Arc<EndpointRegistry>,
+    http: reqwest::Client,
     concurrency: usize,
     grace: Duration,
     worker_id: String,
@@ -593,6 +630,11 @@ pub async fn run_loop(
                 Arc::clone(&adapters),
                 Arc::clone(&rails),
                 policy,
+                Arc::clone(&endpoints),
+                // `reqwest::Client` is an `Arc` internally, so this shares
+                // the one connection pool the binary built rather than
+                // opening `concurrency` of them.
+                http.clone(),
                 worker_id.clone(),
                 rx.clone(),
                 Arc::clone(&counters),
@@ -699,17 +741,31 @@ pub async fn run_loop(
 /// Shutdown is checked at the *top* of an iteration and nowhere else, which
 /// is what makes a clean drain mean something: a job that has been claimed is
 /// always settled, whatever the signal does while it runs.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one task's share of exactly the list `run_loop` was given; a config struct \
+              here would only move the arguments to whatever constructs it"
+)]
 async fn claim_loop(
     pool: PgPool,
     adapters: Arc<Adapters>,
     rails: Arc<RailConfigs>,
     policy: RecoveryPolicy,
+    endpoints: Arc<EndpointRegistry>,
+    http: reqwest::Client,
     worker_id: String,
     mut shutdown: watch::Receiver<bool>,
     counters: Arc<Counters>,
 ) {
+    // Built once per task rather than per claim: it borrows two values this
+    // task owns for its whole life, so a per-iteration construction would be
+    // the same two pointers written out again.
+    let webhooks = WebhookContext {
+        endpoints: &endpoints,
+        http: &http,
+    };
     while !*shutdown.borrow() {
-        match run_once(&pool, &adapters, &rails, &policy, &worker_id).await {
+        match run_once(&pool, &adapters, &rails, &policy, &webhooks, &worker_id).await {
             Ok(Some(settled)) => counters.record(&settled),
             Ok(None) => idle(&mut shutdown).await,
             Err(error) => {

@@ -51,6 +51,18 @@ services:
       ORANGE_MERCHANT_KEY: wiremock-stub-merchant-key
       ORANGE_CLIENT_ID: wiremock-stub-client-id
       ORANGE_CLIENT_SECRET: wiremock-stub-client-secret
+      # Added 2026-09-03 (Step 5): `config/application.yml`'s example
+      # merchant now names a webhook endpoint, whose `secrets:` is a
+      # `${MERCHANT_WEBHOOK_SECRET}` placeholder. Unresolved is exit 78 at
+      # boot for BOTH services, so it is set on the worker below as well. A
+      # stub value for a stub receiver — `livemode: false` in that file is
+      # what permits it; under livemode a literal there is refused outright
+      # (ConfigError::LiteralSecret). Thirty-seven bytes, over the 32-byte
+      # livemode floor (ConfigError::WeakWebhookSecret) even though sandbox
+      # does not apply it: a value copied out of here into a livemode
+      # overlay should fail on being a literal, which is the real defect, and
+      # not on a length nobody would connect to it.
+      MERCHANT_WEBHOOK_SECRET: wiremock-stub-webhook-secret-32-bytes
       # The RS256 private key the merchant OP signs `/v1` access tokens with
       # (docs/flows/merchant-auth.md). `vpay-server` refuses to start without
       # it (exit 78). It is a *file*, never an env value, because that is how
@@ -67,6 +79,7 @@ services:
       postgres: { condition: service_healthy }
       wiremock-mtn: { condition: service_started }
       wiremock-orange: { condition: service_started }
+      wiremock-webhook: { condition: service_started }
     ports: ["8080:8080"]
     restart: unless-stopped
     # Comfortably above CommonArgs' default `--shutdown-grace-seconds` (25s,
@@ -92,10 +105,38 @@ services:
       ORANGE_MERCHANT_KEY: wiremock-stub-merchant-key
       ORANGE_CLIENT_ID: wiremock-stub-client-id
       ORANGE_CLIENT_SECRET: wiremock-stub-client-secret
+      MERCHANT_WEBHOOK_SECRET: wiremock-stub-webhook-secret-32-bytes
     depends_on:
       postgres: { condition: service_healthy }
+      # The worker is the process that will POST to it once the job loop
+      # lands — see this file's `wiremock-webhook` service.
+      wiremock-webhook: { condition: service_started }
     restart: unless-stopped
     stop_grace_period: 30s
+
+  # Stands in for a MERCHANT's webhook receiver, not for a rail.
+  #
+  # Same mechanism as `wiremock-mtn` and `wiremock-orange` in compose.yml — a
+  # host in configuration, reached over HTTP, never a linked receiver
+  # (ADR-0006). It lives here rather than in compose.yml because it exists
+  # for the two vpay processes this overlay adds: `config/application.yml`'s
+  # example merchant points `webhooks[0].url` at
+  # `http://wiremock-webhook:8080/webhooks`, which is this service's name and
+  # its port as seen *inside* the compose network.
+  #
+  # 8083 on the host is for a developer's `curl
+  # http://localhost:8083/__admin/requests` — which is how you see what vpay
+  # actually delivered, headers included. Nothing inside the stack uses it.
+  #
+  # It also serves `/flaky`, a scenario that answers 500 three times and then
+  # 200 (`backends/tests/webhook-receiver/wiremock/mappings/`). That is there
+  # for the integration suite; the stack never points an endpoint at it.
+  wiremock-webhook:
+    image: wiremock/wiremock:3.9.2
+    command: ["--global-response-templating", "--verbose"]
+    ports: ["8083:8080"]
+    volumes:
+      - ./backends/tests/webhook-receiver/wiremock:/home/wiremock:ro
 
   dashboard:
     build:

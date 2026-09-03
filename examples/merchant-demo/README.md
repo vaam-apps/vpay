@@ -1,9 +1,11 @@
 # merchant-demo
 
 The local demo `just demo` runs. It authenticates as a registered merchant with
-the shipping Rust SDK ([`sdks/rust`](../../sdks/rust/)) and walks the five
-things vpay's `/v1` surface can currently do — the fifth of which is to
-confirm a payment intent against a rail and watch it move to `processing`.
+the shipping Rust SDK ([`sdks/rust`](../../sdks/rust/)) and walks a payment all
+the way through vpay's `/v1` surface: discovery, a token, the `401` boundary, a
+PaymentIntent, a confirm the MTN stub accepts, the worker driving that charge to
+`succeeded`, and finally the signed webhook the settlement produced — read back
+out of the receiver's own request journal and verified with the SDK.
 
 ```bash
 just demo            # generate keys, boot the stack, run this
@@ -18,8 +20,10 @@ vpay:
 | `VPAY_BASE_URL` | `http://localhost:8080` |
 | `VPAY_CLIENT_ID` | `demo-merchant` |
 | `VPAY_PRIVATE_KEY_FILE` | `.e2e/demo-merchant/oauth-signing-key.pem` |
+| `VPAY_RECEIVER_URL` | `http://localhost:8083` |
+| `MERCHANT_WEBHOOK_SECRET` | `wiremock-stub-webhook-secret-32-bytes` |
 
-Exits `0` only when all five steps behave as expected, and non-zero naming the
+Exits `0` only when all seven steps behave as expected, and non-zero naming the
 step that did not.
 
 Step 4 creates a real PaymentIntent and reads it back — a real row in the demo
@@ -33,14 +37,44 @@ than `processing` — including a `next_action` on a push rail — is a failure.
 
 **This is the assertion that inverted on 2026-09-03.** Until Step 3, step 5
 expected `501 not_implemented` and treated a successful confirm as a defect,
-because no adapter implemented `submit`. It now expects the opposite. What
-has *not* changed is what the demo is careful not to claim: `processing` is
-not `succeeded`, nothing polls the charge, and the rail is a stub — a
-WireMock host reached over HTTP exactly as a real rail would be, never a
-linked implementation ([ADR-0006](../../docs/adr/0006-no-mocks-in-main-processes.md)).
-**MTN and Orange have never been called by this code.** A demo that ever
-printed a *succeeded* intent would have fabricated it
-([`docs/status.md`](../../docs/status.md), [`CLAUDE.md`](../../CLAUDE.md)).
+because no adapter implemented `submit`. It now expects the opposite. The rail
+is still a stub — a WireMock host reached over HTTP exactly as a real rail
+would be, never a linked implementation
+([ADR-0006](../../docs/adr/0006-no-mocks-in-main-processes.md)) — and **MTN's
+and Orange's real endpoints have never been called by this code.**
+
+**Step 6 waits for the worker to settle it.** It polls
+`GET /v1/payment_intents/{id}` — the merchant's own fallback — until the intent
+is no longer `processing`, and requires `succeeded`. Nothing here fakes an
+approval: the `vpay-worker` container claims the `poll_charge` job the confirm
+committed in the same transaction as the charge, asks the MTN stub over HTTP,
+is told `PENDING`, comes back on the ladder's first rung and is told
+`SUCCESSFUL`. The stub answers that way because the demo's MSISDN enters a
+WireMock scenario keyed on it, which is the coupling
+[`src/main.rs`](src/main.rs) states rather than buries.
+
+**Step 7 reads the webhook that settlement produced.** It polls the
+`wiremock-webhook` receiver's own request journal (`GET /__admin/requests` —
+the same URL you can `curl`) for a POST that carries a `Vpay-Event-Id` *and*
+whose body names this run's intent, then checks that `Stripe-Signature`
+carries the same value as `Vpay-Signature` and verifies the recorded bytes
+with `vpay_sdk::webhooks::verify` — the same call a merchant's handler makes.
+It waits up to **30 seconds**. Both filters matter: the receiver answers `200`
+to anything POSTed at it, and its journal outlives the run, so without the
+intent id a *previous* run's delivery would satisfy this one. The body is
+verified as the journal recorded it and never re-serialised, because the
+signature covers bytes.
+
+**This step used to report an absent webhook and pass.** That was correct while
+nothing settled a charge and nothing drained the outbox; both now exist, so an
+absence here is a defect and fails the run. **A delivery that arrives and does
+not verify fails it louder**, because at that point vpay is signing something a
+merchant cannot check, which is worse than sending nothing.
+
+The destination is configuration, not code: `just gen-demo-keys` writes a
+`webhooks:` block into `.e2e/application-demo.yml` pointing at
+`http://wiremock-webhook:8080/webhooks`, and `compose.e2e.yml` runs that
+receiver — a host in configuration, exactly as the rails are (ADR-0006).
 
 The demo's intent is in **EUR**, because `config/application.yml` puts
 `mtn_momo` on EUR (MTN's sandbox rejects XAF) and `/v1` refuses a confirm

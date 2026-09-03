@@ -201,3 +201,175 @@ Step 4's `events` claims to re-verify before trusting: that `apply_succeeded`/`a
 5. **`GET /v1/events` in this step, and with `?type=`?** *Default: build both routes, defer `?type=`.* Gained: the merchant's documented fallback for a missed webhook exists the same day webhooks do, and the renderer is shared with the deliverer so they cannot disagree. Lost: `docs/api/README.md:177` documents `type` and will keep documenting a parameter that 400s or is ignored — which must be stated in status.md, not left implicit. Deciding "ignore unknown query params" vs "400" is itself a choice; the existing handlers ignore them.
 
 6. **Node parity test: `node -e` subprocess, or drop it?** *Default: subprocess, gated on `VPAY_REQUIRE_NODE=1` in CI so a missing `node` fails rather than skips.* Gained: the only real proof that the header the server emits is accepted by the SDK a merchant actually installs — the two verifiers have subtly different parse paths and the Rust one alone cannot prove Node's. Lost: an integration test that shells out and depends on the Node build being present; without the env gate it degrades into a silent skip, which is worse than not having it.
+---
+
+# Outcome (2026-09-03)
+
+*Appended after the step landed. From here on `docs/status.md`,
+[`docs/flows/webhooks.md`](../flows/webhooks.md) and
+[`docs/runbooks/webhook-delivery-failures.md`](../runbooks/webhook-delivery-failures.md)
+are the record; everything above this line is history.*
+
+## What landed
+
+- **Migrations `0022`, `0023` and `0024`** — `webhook_deliveries`, and
+  `jobs.kind_is_known` re-opened twice: for `fan_out_events`/`deliver_webhook`
+  (`0022`, asserted by
+  `migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states`) and
+  then for `scan_deliveries` (`0023`, the backstop scan added by the security
+  remediation). Seven job kinds. `0024` (the second remediation) adds
+  `events.fanout_attempts` and a third `fanout_state`, `failed`, and re-issues
+  `0022`'s `payload_sha256` comment.
+- **`vpay_db::webhook_deliveries`** — `create_in_tx`, `get`, `record_success`,
+  `record_attempt`, `mark_fanned_out_in_tx`, `pending_due`, `for_event`; and
+  `events::{list_page, get_by_id}` for the read API.
+- **`vpay_worker::signing::signature_header`** and
+  **`vpay_worker::delivery_delay`** — the header, and the seven-rung ladder that
+  ends in `None` rather than an eighth rung.
+- **`vpay_worker::webhooks`** — `Endpoint`, `EndpointRegistry` (both with
+  hand-written secret-redacting `Debug`), `handle_fan_out`, `handle_deliver`.
+- **`vpay_api::model::EventObject`** and **`vpay_api::v1::events`** —
+  `GET /v1/events`, `GET /v1/events/{id}`, one renderer shared with the
+  deliverer.
+- **`vpay_config::oauth::WebhookEndpoint`** and `MerchantClient::webhooks`, with
+  `validate_webhook_endpoints` (missing/duplicate id, the URL rules, the 1–2
+  secret count, empty secrets) **and** the `RawSecrets` extension that S3 named,
+  so a livemode literal webhook secret is now a refusal to boot. The security
+  remediation added four more boot rules: `id` ≤ 64 and `url` ≤ 2048 (mirroring
+  `0022`'s CHECKs, so a document the database would refuse is refused at boot),
+  a URL with no host or with embedded credentials, and a livemode secret shorter
+  than 32 bytes once resolved.
+- **The binary wiring** — `vpay-worker-bin` projects the registry, builds the
+  delivery client and runs `run_loop`; `compose.e2e.yml` runs a third WireMock
+  service as the receiver; `just gen-demo-keys` writes the `webhooks:` block.
+- **Tests** — `backends/tests/integration/tests/webhooks.rs` (**15** of the
+  integration suite's 90: fan-out idempotency, the zero-endpoint case, Rust and
+  Node signature parity, `Stripe-Signature` byte-identity and grammar, rotation,
+  the ladder, exhaustion, the two `GET /v1/events` cases, and — from the
+  remediation — page isolation, the backstop, the no-digest branch and
+  `the_real_run_loop_delivers_a_backlog_event_to_the_receiver`; and from the
+  second — `a_dead_lettered_delivery_job_is_not_resurrected_by_the_scan` and
+  `a_permanently_unfannable_event_is_abandoned_after_five_passes_and_alerts_once`),
+  plus the unit tests beside each function. The `run_loop` test starts from an inserted
+  `events` row rather than a real confirm; `worker_e2e.rs` and `just demo`'s
+  step 7 are what join settlement to it.
+- **Docs** — this Outcome, the flow doc's Status, the new runbook, `docs/api/README.md`,
+  the roadmap's Phase 6, and `docs/status.md`.
+
+## Deviations from the design above
+
+1. **The handler signature is threaded through `run_loop`, not
+   `handle(..., webhooks, job)` as §8 wrote it.** `vpay_worker::handlers` gained
+   a `WebhookContext<'a> { endpoints, http }` borrowed struct, which `run_loop`
+   builds once per claim task and passes into `handle`/`dispatch`; the two
+   handlers are then called as `handle_fan_out(pool, webhooks.endpoints, job)`
+   and `handle_deliver(pool, webhooks.http, webhooks.endpoints, job)`. The
+   design's `ResourceConfig::endpoints_by_merchant_id` idea (S5) was **not**
+   taken for the worker: the registry is keyed on `merchant_id` and
+   `ResourceConfig` is keyed on `client_id`, so the binary projects one from the
+   other at boot instead. `ResourceConfig::webhook_endpoints()` is that
+   projection's source.
+2. **`fanout:events` is seeded with the other singletons**, in
+   `run_loop::seed_singletons`, in one transaction with `sweep:expired` and
+   `scan:live` — not by a separate seeder. A partial seed is worse than none: a
+   deployment without `fan_out_events` settles payments and tells no merchant,
+   which looks exactly like a healthy deployment until somebody reads
+   `events.fanout_state`.
+3. **The demo step is 7, not 6.** §8 said "demo step 6", written before Step 4
+   inserted its own settlement-wait step. The receiver step is the seventh and
+   last, and it now **fails** on an absent or unverifiable delivery where an
+   earlier version reported the absence and passed.
+4. **`backends/apps/vpay-server/tests/cli.rs` needed `MERCHANT_WEBHOOK_SECRET`.**
+   `config/application.yml` now declares a webhook endpoint whose `secrets:` is a
+   `${MERCHANT_WEBHOOK_SECRET}` placeholder, and an unresolved placeholder is a
+   refusal to boot (exit 78) — so the server's subprocess CLI test had to set the
+   variable. `compose.e2e.yml` sets it on **both** the server and the worker for
+   the same reason: both processes load and validate the same document.
+5. **A second `deliver_webhook` failure mode was added that the design did not
+   name:** an endpoint the registry no longer holds, or holds with no secret, is
+   recorded as an ordinary failed attempt (with a `WARN`) rather than sent
+   unsigned or exhausted on the spot.
+6. **The security remediation added a job kind the design did not have.**
+   `scan:deliveries` (`JobKind::ScanDeliveries`, migration `0023`) gives
+   `webhook_deliveries::pending_due` the shipping caller §8 wrote it without —
+   every 10 minutes, 500 rows a pass, over both a passed `next_attempt_at` and a
+   never-attempted row older than `RecoveryPolicy::lease`. `0023` also corrects
+   `0022`'s `webhook_deliveries_live_idx` comment, which had described a scan
+   that did not exist. The remediation further made `handle_fan_out` continue
+   past a failing event (alert, count, move on, and wait the idle interval if
+   the pass drained nothing) rather than abandoning the rest of the page; added
+   the boot bounds and the livemode secret floor; made `record_attempt` take an
+   `Option` digest so the unconfigured-endpoint branch stores none; hoisted the
+   client budgets into shared `pub const`s; and added
+   `the_real_run_loop_delivers_a_backlog_event_to_the_receiver`, which is what
+   retired `webhooks.rs`'s module-doc claim that `run_loop` does not exist in
+   this build.
+7. **A second remediation (2026-09-03) closed four review findings, and the
+   heaviest of them was a documentation claim rather than a code defect.**
+
+   - **The backstop cannot recover a *dead-lettered* delivery job**, and six
+     places said it could (`webhooks.rs`, `jobs.rs`, migration `0023`,
+     `docs/status.md`, `docs/flows/webhooks.md`, and the backstop test's own
+     doc comment). `jobs::dead_letter` parks the row and keeps its
+     `dedupe_key`, so the scan's `ON CONFLICT DO NOTHING` insert is a no-op.
+     The **behaviour was kept** — un-parking a poisoned job on a timer is the
+     hot loop parking exists to prevent — and every claim was corrected. The
+     scan now emits one `WARN` per pass naming such deliveries
+     (`vpay_db::jobs::parked_dedupe_keys`), and
+     `a_dead_lettered_delivery_job_is_not_resurrected_by_the_scan` pins the
+     negative. The un-park procedure is in the runbook, and is **unrun**.
+   - **A permanently unfannable event was an unbounded alert storm and held a
+     page slot forever.** Migration `0024` adds `events.fanout_attempts` and
+     `fanout_state = 'failed'`; `FANOUT_MAX_ATTEMPTS` (5) failures abandon the
+     event, which then leaves `pending_page`. Before the ceiling each failure
+     is a `WARN` with no `alert`; the transition is exactly one
+     `ERROR … alert = true`. So 99 poisoned events cost 99 alerts in total
+     rather than 99 per pass. Re-arming a `failed` event is a manual `UPDATE`
+     (runbook, also unrun).
+   - **`handle_scan_deliveries`' doc comment argued the inverse of the fan-out
+     lesson** — that sharing one transaction across the page was safe. That is
+     not why the pass is safe; it is safe because the schema gives it no
+     per-row failure mode (no length CHECK on `dedupe_key`, a fixed payload
+     shape, no operator-authored value anywhere in the write). The comment now
+     says that and names what would invalidate it. A failing pass also logs
+     `alert = true` before returning, keeping the `Retry::AfterBackoff`
+     reschedule.
+   - **Webhook URL validation moved off `validate_host` onto a sibling**,
+     `vpay_config::validate_webhook_url`: `starts_with("https://")` refused an
+     uppercase scheme, and a stub-marker search over the whole URL refused a
+     merchant's own `/mockups` path. A URL must now name a host in **both**
+     deployments (a sandbox `mailto:x` used to boot). `validate_host` is
+     unchanged, so the rail path is untouched.
+   - Smaller: `payload_sha256`'s "first attempt" is really "the first attempt
+     that rendered and signed a body" (`0024` re-issues the `COMMENT`, on
+     `0023`'s precedent), and `handlers.rs`' prose names
+     `WEBHOOK_{CONNECT,REQUEST}_TIMEOUT` instead of spelling 5 s and 10 s.
+
+## What is not done
+
+- **No merchant endpoint has ever been POSTed to.** Every delivery was to a
+  WireMock host on a compose network.
+- **No runtime SSRF filtering** (decision 4, taken deliberately). Boot-time
+  `validate_webhook_url` is the only URL check there is.
+- **No `?type=` filter** on `GET /v1/events` (decision 5, deferred deliberately).
+  It is ignored, not refused.
+- **No replay path beyond a hand-written transaction** and no operator CLI. The
+  `scan:deliveries` backstop recovers a *deleted or lost* job within ten
+  minutes; it cannot resurrect an `exhausted` delivery (not `pending`), and it
+  deliberately does not resurrect one whose job was **dead-lettered** (the
+  parked row still holds the `dedupe_key`, so the re-enqueue is a no-op — see
+  the second remediation below). Nor does anything re-arm a `failed` event.
+  All three are manual `UPDATE`s in the runbook, and none of the three has
+  been run against a deployment.
+- **No ordering guarantee.** Concurrent claims and the retry ladder can reorder
+  two of one merchant's events; nothing in the design provides ordering.
+- **No SSRF protection.** `validate_webhook_url` checks the scheme and four
+  host substrings and never inspects the destination address (decision 4).
+- **No webhook for five of the seven documented event types** — events are
+  written for terminal transitions only.
+- **The 1 h, 6 h and 24 h rungs have never elapsed** anywhere.
+- ~~The 5 s / 10 s webhook client budgets are written twice.~~ **Retracted:
+  fixed by the remediation.** `WEBHOOK_CONNECT_TIMEOUT` and
+  `WEBHOOK_REQUEST_TIMEOUT` are single `pub const`s in
+  `vpay_worker::webhooks`, and both `vpay-worker-bin`'s `main.rs` and the
+  integration suite's `delivery_client()` read them.

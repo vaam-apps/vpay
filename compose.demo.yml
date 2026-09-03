@@ -103,6 +103,23 @@ services:
       # as a merchant's own process would.
       - ./.e2e/application-demo.yml:/config/application-demo.yml:ro
 
+  # The merchant webhook receiver from compose.e2e.yml, republished on a
+  # port the `just demo` variable controls.
+  #
+  # `!override` for the identical reason `vpay-server`'s `ports:` is: compose
+  # APPENDS `ports:` across files, so a plain list here would leave
+  # compose.e2e.yml's `8083:8083` in place as well and `just
+  # demo_receiver_port=…` would fail the whole `up` on "port is already
+  # allocated" — the exact thing the variable exists to avoid.
+  #
+  # The demo binary runs on the HOST (as a merchant's own process would), so
+  # it reads this container's request journal over the published port. The
+  # container port stays 8080: that is what
+  # `.e2e/application-demo.yml`'s `webhooks[0].url` names over the compose
+  # network, and nothing inside the stack has to know the host mapping.
+  wiremock-webhook:
+    ports: !override ["${VPAY_DEMO_RECEIVER_PORT:-8083}:8080"]
+
   vpay-worker:
     environment:
       VPAY_PROFILE: demo

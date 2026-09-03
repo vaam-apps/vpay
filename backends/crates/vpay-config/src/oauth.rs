@@ -102,6 +102,105 @@ pub enum GrantType {
     ClientCredentials,
 }
 
+/// One webhook endpoint a merchant has asked vpay to POST events to
+/// (`docs/flows/webhooks.md`).
+///
+/// # Why endpoints are YAML and not a `/v1` resource
+///
+/// ADR-0003 puts administration in git, and ADR-0008 puts anything the
+/// dashboard cannot administer into YAML; `docs/flows/configuration.md`
+/// already lists "webhook endpoints" among the values safe to mutate there.
+/// Nothing in this repository has ever proposed a `/v1/webhook_endpoints`
+/// resource, and a merchant who could re-point their own endpoint at boot
+/// speed would be a merchant who could re-point it *without* the review
+/// their onboarding is built on (ADR-0010's "merchant onboarding is a PR,
+/// not a self-serve flow").
+///
+/// # There is no `webhook_endpoints` table either
+///
+/// `webhook_deliveries.endpoint_id` (migration 0022) references no table on
+/// purpose: it stores [`Self::id`] verbatim so an operator who fixes a
+/// typo'd URL does not orphan the delivery history. That is what makes the
+/// uniqueness rule below load-bearing rather than cosmetic — two endpoints
+/// sharing an id within one merchant collide on
+/// `webhook_deliveries_event_endpoint`, and exactly one of them would ever
+/// be delivered to.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct WebhookEndpoint {
+    /// The operator-authored name for this endpoint, stored on every
+    /// delivery row and read back in runbooks.
+    ///
+    /// Required and unique **within one merchant**
+    /// ([`ConfigError::DuplicateWebhookEndpointId`](crate::ConfigError::DuplicateWebhookEndpointId)),
+    /// deliberately *not* unique across merchants: the delivery index is
+    /// `(event_id, endpoint_id)` and events are already merchant-scoped, so
+    /// two merchants both calling their endpoint `primary` is the normal
+    /// case rather than a collision.
+    ///
+    /// Not a hash of [`Self::url`]: a hash changes when the URL is
+    /// corrected, so the delivery history of the endpoint an operator is
+    /// looking at would silently split in two — and a hash is unreadable in
+    /// the runbook that has to name it.
+    pub id: String,
+    /// The absolute URL to POST the signed event body to.
+    ///
+    /// Validated at boot by `Config::validate_all`: in **either** deployment
+    /// it must parse, name a host and carry no userinfo, and under `livemode`
+    /// [`crate::validate_webhook_url`] additionally requires the `https`
+    /// scheme and refuses a stub marker in the *host*.
+    /// **That is the only URL validation there is** — there is no runtime
+    /// private/link-local filtering, so a livemode operator who writes
+    /// `https://169.254.169.254/…` gets exactly that
+    /// (`docs/plans/2026-09-03-step5-webhooks.md`, decision 4: a
+    /// resolve-then-connect check is TOCTOU unless reqwest is given a custom
+    /// connector, so the honest options were "nothing" or "a connector", and
+    /// the second is out of scope).
+    pub url: String,
+    /// The HMAC-SHA256 signing secrets, in configuration order, one per
+    /// `v1=` in the `Vpay-Signature` header.
+    ///
+    /// One or two ([`ConfigError::WebhookSecretCount`](crate::ConfigError::WebhookSecretCount)):
+    /// one normally, two only while a rotation is in flight. A third is
+    /// refused rather than accepted-and-ignored because every extra secret
+    /// is another `v1=` on every delivery, and an endpoint that never
+    /// finished a rotation is a secret nobody has revoked.
+    ///
+    /// **Covered by the livemode literal-secret rule.** Unlike
+    /// [`MerchantClient::jwks`], which is public key material and correct as
+    /// a literal, one of these is enough to *forge* a
+    /// `payment_intent.succeeded` a merchant's handler will believe — so a
+    /// livemode config must write each one as a `${VAR}` placeholder
+    /// ([`ConfigError::LiteralSecret`](crate::ConfigError::LiteralSecret)),
+    /// checked against the pre-resolution text of the file exactly as
+    /// `providers[].credentials` is.
+    pub secrets: Vec<String>,
+}
+
+/// Redacts [`WebhookEndpoint::secrets`] down to a count, keeping the id and
+/// the URL visible.
+///
+/// The endpoint table is held for a process's whole life — by the server's
+/// `AppState` and by the worker's job loop — so it lands in any `{:?}` of
+/// either: a `tracing` field, an operator's debug print, a panic message. A
+/// webhook secret in a log is a forged webhook. The *count* stays because
+/// "is this endpoint mid-rotation?" is a question a runbook asks and
+/// answering it needs no secret; the id and URL stay because they are
+/// already in the delivery rows and in the merchant's own configuration, and
+/// an operator asking "why did this merchant get no webhook?" needs to see
+/// what vpay actually loaded.
+impl fmt::Debug for WebhookEndpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebhookEndpoint")
+            .field("id", &self.id)
+            .field("url", &self.url)
+            .field(
+                "secrets",
+                &format_args!("[{} redacted]", self.secrets.len()),
+            )
+            .finish()
+    }
+}
+
 /// A statically registered merchant OAuth2 client (ADR-0010): `/v1`
 /// authenticates with `client_credentials` + `private_key_jwt`.
 ///
@@ -209,6 +308,24 @@ pub struct MerchantClient {
     #[garde(skip)]
     #[serde(default)]
     pub client_secret: Option<String>,
+    /// Where this merchant's events are POSTed, and what each delivery is
+    /// signed with (`docs/flows/webhooks.md`). See [`WebhookEndpoint`].
+    ///
+    /// Defaults to empty, and an empty list is a *complete* answer rather
+    /// than a missing one: a merchant who has configured no endpoint still
+    /// has their events fanned out to nothing and marked `done`, because
+    /// leaving them `pending` for an endpoint that might appear later grows
+    /// `events_pending_idx` without bound (`vpay_worker::webhooks`).
+    ///
+    /// `#[garde(skip)]`, unlike every other structural rule on this type:
+    /// each rule these endpoints have to satisfy names *which* merchant and
+    /// *which* endpoint is wrong, and a `garde` report says only that
+    /// `merchant_clients[3].webhooks[1].id` failed `length(min = 1)`. The
+    /// rules therefore live in `Config::validate_all`, beside the
+    /// uniqueness check that no per-value derive could express anyway.
+    #[garde(skip)]
+    #[serde(default)]
+    pub webhooks: Vec<WebhookEndpoint>,
 }
 
 /// Redacts [`MerchantClient::client_secret`] (which must always be `None` —
@@ -231,6 +348,9 @@ impl fmt::Debug for MerchantClient {
                 "client_secret",
                 &self.client_secret.as_deref().map(|_| "[redacted]"),
             )
+            // Its own `Debug` redacts the secrets and keeps the ids and URLs
+            // — see [`WebhookEndpoint`]'s impl for why that split.
+            .field("webhooks", &self.webhooks)
             .finish()
     }
 }
@@ -345,6 +465,11 @@ mod tests {
             scopes: vec!["payments:write".to_owned()],
             allowed_audiences: vec!["vpay".to_owned()],
             client_secret: Some("this-should-never-be-here".to_owned()),
+            webhooks: vec![WebhookEndpoint {
+                id: "primary".to_owned(),
+                url: "https://acme.example/hooks".to_owned(),
+                secrets: vec!["whsec_never_log_me".to_owned()],
+            }],
         };
 
         let formatted = format!("{client:?}");
@@ -358,6 +483,45 @@ mod tests {
         assert!(formatted.contains("acme"), "{formatted}");
         assert!(formatted.contains("k1"), "{formatted}");
         assert!(formatted.contains("payments:write"), "{formatted}");
+        // And the nested endpoint's secret is gone too: a derived `Debug` on
+        // a field whose own `Debug` redacts composes correctly, which is
+        // exactly what this asserts rather than assumes.
+        assert!(!formatted.contains("whsec_never_log_me"), "{formatted}");
+        assert!(
+            formatted.contains("https://acme.example/hooks"),
+            "{formatted}"
+        );
+    }
+
+    /// One webhook secret is enough to forge a `payment_intent.succeeded`
+    /// a merchant's handler will believe, so it must not be reachable from
+    /// any `{:?}` — the registry lives in the server's `AppState` and in the
+    /// worker's job loop for the whole life of both processes.
+    ///
+    /// The *count* is deliberately kept: "is this endpoint mid-rotation?" is
+    /// a runbook question that needs no secret to answer.
+    #[test]
+    fn a_webhook_endpoints_debug_output_never_contains_a_secret() {
+        let endpoint = WebhookEndpoint {
+            id: "primary".to_owned(),
+            url: "https://acme.example/hooks".to_owned(),
+            secrets: vec![
+                "whsec_current_never_log_me".to_owned(),
+                "whsec_incoming_never_log_me".to_owned(),
+            ],
+        };
+
+        let formatted = format!("{endpoint:?}");
+
+        for secret in &endpoint.secrets {
+            assert!(!formatted.contains(secret.as_str()), "{formatted}");
+        }
+        assert!(formatted.contains("[2 redacted]"), "{formatted}");
+        assert!(formatted.contains("primary"), "{formatted}");
+        assert!(
+            formatted.contains("https://acme.example/hooks"),
+            "{formatted}"
+        );
     }
 
     #[test]

@@ -3,16 +3,22 @@
 //! Everything that touches the network happens here, never in the API process.
 //!
 //! Read in this order: [`mod@run_loop`] owns the `jobs` row (claim, settle,
-//! drain), [`handlers::handle`] does the work of one job, [`recovery`] and
-//! `vpay_core::settlement` are the two pure decision tables it consults, and
-//! [`error`] is the retry policy all of it derives from `Classify`.
+//! drain), [`handlers::handle`] does the work of one job, [`recovery`],
+//! `vpay_core::settlement` and [`webhooks`] are the decision tables it
+//! consults, and [`error`] is the retry policy all of it derives from
+//! `Classify`.
 //!
 //! STATUS: polling, recovery and settlement are implemented and proven
 //! against a real Postgres and a real WireMock rail in
-//! `backends/tests/integration/tests/worker_{recovery,e2e}.rs`. **Webhook
-//! delivery is not** — `deliver_webhook` is absent from [`jobs::JobKind`] and
-//! from migration 0021's `kind_is_known` CHECK, so this build cannot enqueue
-//! one by accident. See `docs/status.md`.
+//! `backends/tests/integration/tests/worker_{recovery,e2e}.rs`; webhook
+//! fan-out, signing and delivery in `webhooks.rs` against a real WireMock
+//! receiver. `docs/status.md` is the record of what is actually wired up,
+//! and it is the one to trust — this crate holds *handlers*, and a handler
+//! no loop calls is not a running worker.
+//!
+//! Two independent retry ladders live here: [`poll_delay`] for charge
+//! polling and [`delivery_delay`] for webhook delivery. They are
+//! deliberately separate — see [`delivery_delay`].
 
 use std::time::Duration;
 
@@ -21,12 +27,19 @@ pub mod handlers;
 pub mod jobs;
 pub mod recovery;
 pub mod run_loop;
+pub mod signing;
+pub mod webhooks;
 pub use error::{Decision, JobError, tracing_level};
-pub use handlers::{Adapters, RailConfigs, handle};
-pub use jobs::{JobKind, Outcome, PollChargePayload, ResubmitPayload};
+pub use handlers::{Adapters, RailConfigs, WebhookContext, handle};
+pub use jobs::{DeliverWebhookPayload, JobKind, Outcome, PollChargePayload, ResubmitPayload};
 pub use recovery::{RecoveryAction, RecoveryPolicy, SubmitAttempt, recovery_step};
 pub use run_loop::{
     Disposition, Drain, LoopReport, Settled, run_loop, run_once, seed_singletons, worker_id,
+};
+pub use signing::signature_header;
+pub use webhooks::{
+    Endpoint, EndpointRegistry, FANOUT_MAX_ATTEMPTS, WEBHOOK_CONNECT_TIMEOUT,
+    WEBHOOK_REQUEST_TIMEOUT, handle_deliver, handle_fan_out, handle_scan_deliveries,
 };
 
 /// Delay before poll number `n` (0-indexed), per `docs/flows/reconciler.md`.
@@ -61,6 +74,38 @@ pub fn poll_delay(attempt: u32) -> Duration {
 /// nobody asks about is one whose late success is lost.
 pub const UNRESOLVED_POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
+/// Delay before webhook delivery attempt number `n` (0-indexed), or `None`
+/// when the ladder has run out — `docs/flows/webhooks.md`: "delivery, with
+/// retries: 10s → 30s → 2m → 10m → 1h → 6h → 24h".
+///
+/// # Why this is not [`poll_delay`], and not [`JobError::decision`]
+///
+/// Polling asks a *rail* what happened to money; delivering tells a
+/// *merchant* what already happened. The two have no failure vocabulary in
+/// common: a merchant's `500` is not a `ProviderError`, nothing about it is
+/// classified by ADR-0011's table, and pushing it through
+/// [`JobError::decision`] would give a webhook receiver the poll ladder's
+/// 24-hour horizon and its hourly `unresolved` escalation. So delivery keeps
+/// its own ladder and never consults `Classify::retry`
+/// (`docs/flows/reconciler.md`'s Status says the same in the other
+/// direction).
+///
+/// # Why `Option` rather than a final rung
+///
+/// "The ladder ran out" is the `exhausted` transition of a
+/// `webhook_deliveries` row, and it must not be expressible as another
+/// delay. A `Duration` return would make the seventh failure and the eighth
+/// indistinguishable at the type level, and a delivery that keeps
+/// rescheduling forever is a queue that never drains.
+#[must_use]
+pub fn delivery_delay(attempt: u32) -> Option<Duration> {
+    const LADDER: [u64; 7] = [10, 30, 120, 600, 3_600, 21_600, 86_400];
+    LADDER
+        .get(attempt as usize)
+        .copied()
+        .map(Duration::from_secs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +128,44 @@ mod tests {
     fn the_ladder_slows_but_never_stops() {
         assert_eq!(poll_delay(6), Duration::from_secs(120));
         assert_eq!(poll_delay(100), Duration::from_secs(900));
+    }
+
+    /// Transcribed rung by rung from `docs/flows/webhooks.md`: "10s → 30s →
+    /// 2m → 10m → 1h → 6h → 24h". Written out in the document's own units and
+    /// converted here, rather than reused from the implementation's `LADDER`,
+    /// so this asserts the *document* and not whatever numbers the code
+    /// chose.
+    #[test]
+    fn the_delivery_ladder_is_the_documented_one() {
+        assert_eq!(delivery_delay(0), Some(Duration::from_secs(10)));
+        assert_eq!(delivery_delay(1), Some(Duration::from_secs(30)));
+        assert_eq!(delivery_delay(2), Some(Duration::from_secs(2 * 60)));
+        assert_eq!(delivery_delay(3), Some(Duration::from_secs(10 * 60)));
+        assert_eq!(delivery_delay(4), Some(Duration::from_secs(60 * 60)));
+        assert_eq!(delivery_delay(5), Some(Duration::from_secs(6 * 60 * 60)));
+        assert_eq!(delivery_delay(6), Some(Duration::from_secs(24 * 60 * 60)));
+    }
+
+    /// Seven rungs, then the delivery is `exhausted` — never an eighth
+    /// attempt, and never a silent repeat of the last rung.
+    #[test]
+    fn the_delivery_ladder_ends_after_seven_rungs() {
+        assert_eq!(delivery_delay(7), None);
+        assert_eq!(delivery_delay(8), None);
+        assert_eq!(delivery_delay(u32::MAX), None);
+        // The rung *before* the end is a real delay, so `None` marks the end
+        // of the ladder rather than an off-by-one that lost the last rung.
+        assert!(delivery_delay(6).is_some());
+    }
+
+    #[test]
+    fn the_delivery_ladder_is_strictly_increasing_while_it_lasts() {
+        let mut prev = Duration::ZERO;
+        for n in 0..7 {
+            let d = delivery_delay(n).expect("the first seven rungs exist");
+            assert!(d > prev, "delay did not increase at attempt {n}");
+            prev = d;
+        }
     }
 
     #[test]

@@ -49,6 +49,18 @@ jobs:
   rust:
     name: rust
     runs-on: ubuntu-latest
+    env:
+      # `backends/tests/integration/tests/webhooks.rs` verifies a
+      # `Vpay-Signature` this server emitted with the SHIPPING Node SDK, in a
+      # subprocess. That test fails rather than skips when `node` is missing,
+      # and this flag only changes the message — a skipped parity test is a
+      # parity claim nobody checked, which is how this suite would go green
+      # while proving nothing (CLAUDE.md's first failure mode). The Node
+      # toolchain and the SDK build are set up below.
+      VPAY_REQUIRE_NODE: 1
+      # The `rust` job runs no Cypress; skip the ~200 MB binary download that
+      # `pnpm install` would otherwise trigger.
+      CYPRESS_INSTALL_BINARY: 0
     steps:
       - uses: actions/checkout@v4
       - id: toolchain
@@ -71,6 +83,15 @@ jobs:
           # Comma-separated in one string; a flow-style `{ tool: nextest, just }`
           # would repeat the `components:` mistake noted above.
           tool: nextest,just
+      # Node, and the built `@vpay/sdk`, for the webhook signature-parity
+      # test. Before nextest on purpose: the test builds `dist/` on demand if
+      # it is absent, and a build failure should be reported by the step
+      # whose job it is rather than as a mysterious test failure.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @vpay/sdk build
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # Runs the container-backed suites too (vpay-db, vpay-tests-integration,

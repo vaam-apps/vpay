@@ -1,0 +1,46 @@
+{
+  "mappings": [
+    {
+      "name": "flaky receiver: 500 on the first attempt",
+      "scenarioName": "receiver-flaky",
+      "requiredScenarioState": "Started",
+      "newScenarioState": "attempt-2",
+      "priority": 1,
+      "request": { "method": "POST", "urlPath": "/flaky" },
+      "response": { "status": 500, "body": "receiver is having a bad day" },
+      "metadata": {
+        "why": "Three 500s then a 200, which is what `the_ladder_walks_delivery_delay_and_then_succeeds` asserts: `attempt` reaches 3 and the successive `next_attempt_at` deltas are `delivery_delay(0)`, `delivery_delay(1)` and `delivery_delay(2)` (10s, 30s, 120s — docs/flows/webhooks.md). A receiver that failed forever would prove the ladder advances but never that a delivery RECOVERS, and 'recovers' is the case a merchant's outage actually is.\n\nThe body is short and non-JSON on purpose: it is what ends up in `webhook_deliveries.response_excerpt`, and an operator reading that column should see the receiver's own words."
+      }
+    },
+    {
+      "name": "flaky receiver: 500 on the second attempt",
+      "scenarioName": "receiver-flaky",
+      "requiredScenarioState": "attempt-2",
+      "newScenarioState": "attempt-3",
+      "priority": 1,
+      "request": { "method": "POST", "urlPath": "/flaky" },
+      "response": { "status": 500, "body": "receiver is having a bad day" }
+    },
+    {
+      "name": "flaky receiver: 500 on the third attempt",
+      "scenarioName": "receiver-flaky",
+      "requiredScenarioState": "attempt-3",
+      "newScenarioState": "recovered",
+      "priority": 1,
+      "request": { "method": "POST", "urlPath": "/flaky" },
+      "response": { "status": 500, "body": "receiver is having a bad day" }
+    },
+    {
+      "name": "flaky receiver: recovered, and every later attempt succeeds",
+      "scenarioName": "receiver-flaky",
+      "requiredScenarioState": "recovered",
+      "priority": 1,
+      "request": { "method": "POST", "urlPath": "/flaky" },
+      "response": {
+        "status": 200,
+        "headers": { "Content-Type": "application/json" },
+        "jsonBody": { "received": true }
+      }
+    }
+  ]
+}

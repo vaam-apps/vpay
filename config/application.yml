@@ -136,6 +136,29 @@ merchant_clients:
     # route then rejects as a bare 401. `Config::validate_all` now refuses to
     # boot without it (ConfigError::MerchantMissingV1Audience).
     allowed_audiences: ["vpay:v1"]
+    # Where this merchant's events are POSTed (docs/flows/webhooks.md), and
+    # what each delivery is signed with. Endpoints are YAML, not a `/v1`
+    # resource and not a table — see `vpay_config::oauth::WebhookEndpoint`.
+    webhooks:
+      # Stored verbatim on every `webhook_deliveries` row (migration 0022)
+      # and named in the runbook, so it must survive a URL correction —
+      # which is exactly why it is not a hash of the URL below.
+      - id: primary
+        # The compose service name from compose.e2e.yml, port as seen
+        # *inside* the compose network, exactly like the two rail stubs
+        # above. A WireMock host reached over HTTP, never a linked receiver
+        # (ADR-0006). A livemode deployment must overlay this with a real
+        # `https://` URL: `validate_host` refuses both the scheme and the
+        # `wiremock` marker when `livemode: true`.
+        url: http://wiremock-webhook:8080/webhooks
+        # One secret; two only while a rotation is in flight (each produces
+        # one `v1=` in `Vpay-Signature`). A `${VAR}`, not a literal — under
+        # `livemode: true` a literal here is a refusal to boot
+        # (ConfigError::LiteralSecret), checked against this file's *text*
+        # before placeholders are resolved. Unlike `jwks` above, this value
+        # is genuinely secret: whoever holds it can sign a
+        # `payment_intent.succeeded` this merchant's handler will believe.
+        secrets: ["${MERCHANT_WEBHOOK_SECRET}"]
 
 # The dashboard's single OAuth2 client (docs/flows/dashboard-auth.md):
 # authorization-code + PKCE, a public client with no secret, requesting

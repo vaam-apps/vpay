@@ -24,7 +24,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Once};
+use std::time::Duration;
 
 use anyhow::Context as _;
 use base64::Engine as _;
@@ -36,9 +38,10 @@ use sqlx::PgPool;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_api::op::MerchantOp;
-use vpay_api::resource_auth::MerchantJwtValidator;
+use vpay_api::op::keys::LoadedSigningKey;
+use vpay_api::resource_auth::{JwtValidator, MerchantJwtValidator, Surface};
 use vpay_api::{ResourceConfig, RouterDeps};
-use vpay_config::oauth::{GrantType, MerchantClient};
+use vpay_config::oauth::{GrantType, MerchantClient, WebhookEndpoint};
 use vpay_config::{Config, MERCHANT_AUDIENCE};
 use vpay_core::ProviderFlow;
 use vpay_db::{CurrencySeed, ProviderSeed};
@@ -156,6 +159,22 @@ pub(crate) fn merchant_client_with_scopes(
     jwks: Value,
     scopes: &[&str],
 ) -> MerchantClient {
+    merchant_client_with(client_id, merchant_id, jwks, scopes, Vec::new())
+}
+
+/// The same, with this merchant's webhook endpoints spelled out.
+///
+/// Separate rather than a fifth argument on every call site: only
+/// `tests/webhooks.rs` configures an endpoint, and the endpoints have to be
+/// built *after* the receiver container has a mapped port, so they cannot be
+/// a constant either.
+pub(crate) fn merchant_client_with(
+    client_id: &str,
+    merchant_id: &str,
+    jwks: Value,
+    scopes: &[&str],
+    webhooks: Vec<WebhookEndpoint>,
+) -> MerchantClient {
     MerchantClient {
         client_id: client_id.to_owned(),
         merchant_id: merchant_id.to_owned(),
@@ -164,6 +183,7 @@ pub(crate) fn merchant_client_with_scopes(
         scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
         allowed_audiences: vec![MERCHANT_AUDIENCE.to_owned()],
         client_secret: None,
+        webhooks,
     }
 }
 
@@ -467,4 +487,136 @@ pub(crate) async fn attempted_references(
     .await
     .context("reading the attempted references")?;
     Ok(rows.into_iter().map(|(reference,)| reference).collect())
+}
+
+/// One merchant webhook endpoint, shaped exactly as
+/// `merchant_clients[].webhooks[]` is in YAML.
+///
+/// A helper rather than a struct literal per test for the reason
+/// [`merchant_client`] is one: a registration a suite built by hand that
+/// `Config::validate_all` would refuse proves nothing about the real path,
+/// and the rules here (a non-empty id, one or two non-empty secrets) are
+/// exactly the ones an operator gets wrong.
+pub(crate) fn webhook_endpoint(id: &str, url: &str, secrets: &[&str]) -> WebhookEndpoint {
+    WebhookEndpoint {
+        id: id.to_owned(),
+        url: url.to_owned(),
+        secrets: secrets.iter().map(|s| (*s).to_owned()).collect(),
+    }
+}
+
+/// One running server: the task serving it, where it is, and the key it
+/// signs tokens with.
+pub(crate) struct Served {
+    pub(crate) server: tokio::task::JoinHandle<()>,
+    pub(crate) base_url: String,
+    pub(crate) signing_key: LoadedSigningKey,
+}
+
+/// Stands a vpay server up on an ephemeral port over `pool`, in
+/// `vpay-server`'s own boot order: announce the signing key, run boot step 4,
+/// bind, serve.
+///
+/// `make_config` takes the base URL because the configuration cannot be
+/// built until the port is known — `public_base_url` is what the issuer, the
+/// assertion audience and every callback URL are derived from, and a
+/// placeholder would make the OP mint tokens no validator here would accept.
+///
+/// A function rather than inlined in each suite's harness because several
+/// tests boot a *second* server over the same database with a different
+/// configuration, which is exactly what an operator editing
+/// `application.yml` and redeploying does. It lives in this module rather
+/// than in a suite because three test binaries need it and three
+/// hand-rolled copies would be three chances to boot it in an order the
+/// binary does not — the same argument this module's header makes about the
+/// pool-and-migrate helper.
+///
+/// # Errors
+///
+/// Fails if the port cannot be bound, the signing key cannot be loaded or
+/// announced, or boot step 4 refuses the configuration.
+pub(crate) async fn serve(
+    pool: &PgPool,
+    server_pem: &str,
+    make_config: impl FnOnce(&str) -> Config,
+) -> anyhow::Result<Served> {
+    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .context("binding an ephemeral loopback port")?;
+    let bound = listener.local_addr().context("reading the bound port")?;
+    let base_url = format!("http://{bound}");
+    let issuer = format!("{base_url}/v1/oauth");
+
+    let signing_key =
+        LoadedSigningKey::from_pem(server_pem, &issuer).context("loading the signing key")?;
+    signing_key
+        .ensure_active_in_database(pool)
+        .await
+        .context("announcing the signing key in oauth_signing_keys")?;
+
+    let config = make_config(&base_url);
+    reconcile_from_config(pool, &config).await?;
+
+    let merchant_op = Arc::new(MerchantOp::new(&config, signing_key.clone(), pool.clone()));
+    let merchant_validator = MerchantJwtValidator(
+        JwtValidator::new(
+            format!("{base_url}/v1/oauth/jwks.json"),
+            Duration::from_secs(300),
+            merchant_op.issuer(),
+            Surface::Merchant,
+        )
+        .expect("the vendored-roots JWKS client builds"),
+    );
+
+    let deps = router_deps(pool.clone(), merchant_op, merchant_validator, &config);
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, vpay_api::router(deps)).await;
+    });
+
+    Ok(Served {
+        server,
+        base_url,
+        signing_key,
+    })
+}
+
+// -------------------------------------------------------------- webhooks --
+
+/// The endpoint table `vpay_worker::{run_loop, run_once}` take, for a suite
+/// whose subject is not webhook delivery.
+///
+/// **Empty is a real configuration, not a stand-in.** A deployment whose
+/// merchants have registered no endpoints is exactly this, and the fan-out
+/// drain still runs against it: it marks such an event `fanout_state = 'done'`
+/// with zero deliveries, because the alternative is a backlog index that grows
+/// forever (`vpay_worker::webhooks::handle_fan_out`). So a suite that uses
+/// this is asserting the loop's real behaviour for that deployment rather
+/// than switching a feature off — which a `#[cfg(test)]` seam would be, and
+/// AGENTS.md rule 1 forbids.
+pub(crate) fn no_webhook_endpoints() -> Arc<vpay_worker::EndpointRegistry> {
+    Arc::new(vpay_worker::EndpointRegistry::from_pairs(
+        std::iter::empty::<(String, Vec<vpay_worker::Endpoint>)>(),
+    ))
+}
+
+/// The outbound client the worker binary builds at boot: the same call, and
+/// the same two budgets read from the same constants.
+///
+/// `vpay_worker::WEBHOOK_{CONNECT,REQUEST}_TIMEOUT` and not `5` and `10`
+/// spelled again. Those numbers used to be written out in three places —
+/// `vpay-worker-bin`'s `main`, this helper, and `webhooks.rs`'s own — with
+/// nothing pinning them together, so a change to the binary's pair would have
+/// left every test exercising a client that no longer ships, and the suite
+/// would have stayed green saying so.
+///
+/// Not `reqwest::Client::new()`: that one panics in the `scratch` runtime
+/// image (`vpay_provider::http`), so a suite using it would not be exercising
+/// the client that ships.
+pub(crate) fn webhook_client() -> reqwest::Client {
+    ensure_crypto_provider_installed();
+    vpay_provider::http::client_with_timeouts(
+        vpay_worker::WEBHOOK_CONNECT_TIMEOUT,
+        vpay_worker::WEBHOOK_REQUEST_TIMEOUT,
+    )
+    .expect("the vendored-roots client builds")
 }
