@@ -52,7 +52,8 @@ pub struct EventRow {
     pub merchant_id: String,
     /// Live or test money, copied from the object for the same reason.
     pub livemode: bool,
-    /// One of the seven types `type_is_a_documented_event` allows. Named
+    /// One of the eight types `type_is_a_documented_event` allows
+    /// (migrations 0018 and 0029). Named
     /// `event_type` because `type` is a Rust keyword; the column is `type`,
     /// which `COLUMNS` aliases rather than renaming the field with a
     /// `#[sqlx(rename)]` — the alias keeps the two queries and this struct
@@ -93,7 +94,7 @@ pub struct NewEvent {
     /// deployment's `livemode` can change between emit and delivery, and the
     /// event describes what was true when it happened.
     pub livemode: bool,
-    /// One of the seven documented types. The database refuses the rest.
+    /// One of the eight documented types. The database refuses the rest.
     pub event_type: String,
     /// The id of the object the event is about.
     pub object_id: String,
@@ -110,7 +111,7 @@ pub struct NewEvent {
 /// [`DbError::UniqueViolation`] on `events_pkey` if the `id` has already
 /// been emitted — which for a retried settlement is the *correct* refusal:
 /// two rows would be two deliveries of one transition. [`DbError::Query`]
-/// otherwise, including a `type` outside the documented seven or a `data`
+/// otherwise, including a `type` outside the documented eight or a `data`
 /// that is not a JSON object, both of which are vpay bugs.
 pub(crate) async fn insert_in_tx(
     tx: &mut PgConnection,

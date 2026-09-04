@@ -905,7 +905,7 @@ the screen the whole redirect leg exists to reach, and refusing it would break
 the successful case. What ends the reads is the clock.
 
 And deliberately **not** left to the expiry sweep
-([vpay-worker.md](vpay-worker.md#the-housekeeping-sweep-retires-a-fourth-thing)).
+([vpay-worker.md](vpay-worker.md#the-housekeeping-sweep-retires-a-fourth-thing-and-tells-someone-about-it)).
 The sweep leaves a session with a live charge `open` on purpose, it runs at
 most once an hour, and a deployment whose worker was down would keep answering
 these reads for the length of the outage. The sweep makes `status` honest to a

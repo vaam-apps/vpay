@@ -2158,3 +2158,793 @@ async fn a_stored_sessions_debug_output_carries_neither_credential() -> anyhow::
     h.shutdown().await;
     Ok(())
 }
+
+// ------------------------------------------- `checkout.session.expired` ---
+//
+// Claim 14: the sweep does not only move a row any more — it tells the
+// merchant. Until migration `0029` an expired session notified nobody: no
+// event, no webhook, and `docs/flows/hosted-checkout.md` said so under "What
+// is not built". These cases are what retires that sentence, and every one of
+// them drives the shipping `vpay_worker::run_once` over the shipping
+// `seed_singletons` job rather than calling a repository method, because the
+// claim is that a *deployment* emits the event.
+
+/// The type migration `0029` opened the `events` vocabulary for.
+const SESSION_EXPIRED: &str = "checkout.session.expired";
+
+/// Two endpoints for merchant A, so "one delivery per configured endpoint" is
+/// a count and not a tautology, and one for merchant B, so a session expiring
+/// for A cannot fan out to B.
+///
+/// The URLs are never reached: every case below stops the loop the moment the
+/// fan-out has run, before any `deliver_webhook` job can be claimed. What is
+/// asserted is what the fan-out *created* — the delivery rows and their jobs —
+/// which is where the event either reaches a merchant's queue or does not.
+fn two_endpoints_for_a() -> vpay_worker::EndpointRegistry {
+    vpay_worker::EndpointRegistry::from_pairs([
+        (
+            MERCHANT_A.to_owned(),
+            vec![
+                vpay_worker::Endpoint {
+                    id: "acme-primary".to_owned(),
+                    url: "https://hooks.acme.example/vpay".to_owned(),
+                    secrets: vec!["whsec_acme_primary_0000000000000000".to_owned()],
+                },
+                vpay_worker::Endpoint {
+                    id: "acme-audit".to_owned(),
+                    url: "https://audit.acme.example/vpay".to_owned(),
+                    secrets: vec!["whsec_acme_audit_00000000000000000".to_owned()],
+                },
+            ],
+        ),
+        (
+            MERCHANT_B.to_owned(),
+            vec![vpay_worker::Endpoint {
+                id: "beta-only".to_owned(),
+                url: "https://hooks.beta.example/vpay".to_owned(),
+                secrets: vec!["whsec_beta_only_000000000000000000".to_owned()],
+            }],
+        ),
+    ])
+}
+
+/// Drives the shipping loop until a job of `kind` has finished, and answers
+/// how many jobs ran on the way.
+///
+/// It does **not** call `support::make_every_job_runnable`: two of the cases
+/// below defer a `poll_charge` job on purpose so that the sweep, and not the
+/// poll ladder, is what decides the session's fate, and a helper that pulled
+/// every job forward would settle the charge out from under them.
+async fn run_until(
+    h: &Harness,
+    endpoints: &vpay_worker::EndpointRegistry,
+    kind: &str,
+) -> anyhow::Result<usize> {
+    let egress = support::default_egress_policy();
+    let mut ran = 0_usize;
+    for _ in 0..16 {
+        let Some(settled) = vpay_worker::run_once(
+            h.repositories.as_ref(),
+            &h.adapters,
+            &h.rails,
+            &RecoveryPolicy::default(),
+            &vpay_worker::WebhookContext { endpoints, egress },
+            "checkout-sessions-expiry",
+        )
+        .await?
+        else {
+            anyhow::bail!("the loop ran out of work before `{kind}` ran");
+        };
+        ran += 1;
+        if settled.kind == kind {
+            anyhow::ensure!(
+                settled.error.is_none(),
+                "`{kind}` must not fail: {:?}",
+                settled.error
+            );
+            return Ok(ran);
+        }
+    }
+    anyhow::bail!("`{kind}` never ran")
+}
+
+/// One housekeeping sweep, then one outbox drain — and **nothing after it**,
+/// so what the assertions read is what the fan-out created rather than what a
+/// delivery attempt to an unreachable host left behind.
+///
+/// Two phases rather than one loop with two flags, because the order matters:
+/// a drain that ran before the sweep would have had no event to fan out, and a
+/// helper that accepted it would let every case below pass with zero
+/// deliveries.
+async fn sweep_then_fan_out(
+    h: &Harness,
+    endpoints: &vpay_worker::EndpointRegistry,
+) -> anyhow::Result<()> {
+    vpay_worker::seed_singletons(h.repositories.as_ref())
+        .await
+        .context("seeding the singleton jobs a worker seeds at boot")?;
+    run_until(h, endpoints, "sweep_expired").await?;
+    // The sweep's own row is left leased by `run_once`'s reschedule, exactly
+    // as a running worker leaves it; the drain is a different singleton and is
+    // claimable in its own right.
+    run_until(h, endpoints, "fan_out_events").await?;
+    Ok(())
+}
+
+/// Moves every session in this deployment past its horizon.
+///
+/// `expires_at` is the only column rewritten — `status` is what the sweep has
+/// to decide, and staging that would prove nothing.
+async fn move_every_session_past_its_horizon(h: &Harness) -> anyhow::Result<u64> {
+    Ok(
+        sqlx::query("UPDATE checkout_sessions SET expires_at = now() - INTERVAL '1 minute'")
+            .execute(&h.pool)
+            .await
+            .context("moving the sessions past their horizon")?
+            .rows_affected(),
+    )
+}
+
+/// Every event row of `event_type`, oldest first: id, the object it names, and
+/// its `data` **as stored**.
+async fn events_of_type(
+    pool: &PgPool,
+    event_type: &str,
+) -> anyhow::Result<Vec<(String, String, String, Value)>> {
+    let rows: Vec<(String, String, String, Value)> = sqlx::query_as(
+        "SELECT id, merchant_id, object_id, data FROM events WHERE type = $1 ORDER BY seq",
+    )
+    .bind(event_type)
+    .fetch_all(pool)
+    .await
+    .context("reading the events of a type")?;
+    Ok(rows)
+}
+
+/// The `webhook_deliveries` rows for one event, by endpoint id, sorted.
+async fn delivery_endpoints(pool: &PgPool, event_id: &str) -> anyhow::Result<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT endpoint_id FROM webhook_deliveries WHERE event_id = $1 ORDER BY endpoint_id",
+    )
+    .bind(event_id)
+    .fetch_all(pool)
+    .await
+    .context("reading the deliveries of an event")?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// The `dedupe_key` of every `deliver_webhook` job, sorted.
+async fn delivery_job_keys(pool: &PgPool) -> anyhow::Result<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT dedupe_key FROM jobs WHERE kind = 'deliver_webhook' ORDER BY dedupe_key",
+    )
+    .fetch_all(pool)
+    .await
+    .context("reading the delivery jobs")?;
+    Ok(rows.into_iter().map(|(key,)| key).collect())
+}
+
+/// `GET /v1/events` for a tenant, through the shipping router.
+async fn list_events(h: &Harness, client_id: &str) -> anyhow::Result<(u16, Value)> {
+    let response = browser()
+        .get(h.url("/v1/events"))
+        .bearer_auth(h.bearer(client_id))
+        .send()
+        .await
+        .context("listing events")?;
+    let status = response.status().as_u16();
+    let body: Value = response.json().await.context("the body is JSON")?;
+    Ok((status, body))
+}
+
+/// `GET /v1/events/{id}` for a tenant, through the shipping router.
+async fn retrieve_event(h: &Harness, client_id: &str, id: &str) -> anyhow::Result<(u16, Value)> {
+    let response = browser()
+        .get(h.url(&format!("/v1/events/{id}")))
+        .bearer_auth(h.bearer(client_id))
+        .send()
+        .await
+        .context("retrieving an event")?;
+    let status = response.status().as_u16();
+    let body: Value = response.json().await.context("the body is JSON")?;
+    Ok((status, body))
+}
+
+/// Claim 14a: one sweep over an abandoned session writes exactly one
+/// `checkout.session.expired`, whose `data.object` is that session and whose
+/// body carries no credential — and the drain turns it into one delivery, and
+/// one job, per configured endpoint.
+///
+/// The negative assertions are made on the **serialised JSON string** of the
+/// stored `data`, not on the parsed object: a credential under a key this test
+/// did not think to look at would still be in the bytes a merchant's endpoint
+/// receives, and the bytes are the thing.
+///
+/// **Revert-proof, measured 2026-09-04:** delete the `events::insert_in_tx`
+/// call from `vpay_db::CheckoutSessions::expire_due` and this fails on
+/// "exactly one event" — the session still expires, which is precisely the
+/// silent regression the case exists to catch.
+#[tokio::test]
+async fn an_expiry_sweep_emits_one_event_and_one_delivery_per_endpoint() -> anyhow::Result<()> {
+    let h = harness().await?;
+    let session = hosted_session(&h).await?;
+    assert_eq!(move_every_session_past_its_horizon(&h).await?, 1);
+
+    let endpoints = two_endpoints_for_a();
+    sweep_then_fan_out(&h, &endpoints).await?;
+
+    assert_eq!(
+        stored_session(&h.pool, &session.id).await?,
+        ("expired".to_owned(), "unpaid".to_owned()),
+        "the sweep must still do what it did before it emitted anything"
+    );
+
+    let events = events_of_type(&h.pool, SESSION_EXPIRED).await?;
+    let [(event_id, merchant_id, object_id, data)] = events.as_slice() else {
+        anyhow::bail!("exactly one checkout.session.expired was expected: {events:?}");
+    };
+    assert_eq!(object_id, &session.id, "the event must name the session");
+    assert_eq!(merchant_id, MERCHANT_A);
+    assert!(
+        event_id.starts_with("evt_"),
+        "an event id merchants dedupe on: {event_id}"
+    );
+    assert_eq!(
+        data.get("id").and_then(Value::as_str),
+        Some(session.id.as_str()),
+        "data.object is the session: {data:#}"
+    );
+    assert_eq!(
+        data.get("object").and_then(Value::as_str),
+        Some("checkout.session")
+    );
+    assert_eq!(
+        data.get("status").and_then(Value::as_str),
+        Some("expired"),
+        "the snapshot must describe the transition, not the row before it: {data:#}"
+    );
+    assert_eq!(
+        data.get("payment_status").and_then(Value::as_str),
+        Some("unpaid"),
+        "an expiry never rewrites what the money did: {data:#}"
+    );
+    assert_eq!(
+        data.get("url"),
+        Some(&Value::Null),
+        "the url carries the credential in its fragment and must not be delivered (the rendered \
+         value is never printed; the session is {})",
+        session.id
+    );
+    assert_eq!(
+        data.get("ui_mode").and_then(Value::as_str),
+        Some("hosted"),
+        "…and a null url must still be distinguishable from an embedded session"
+    );
+
+    // The decisive assertion, on the bytes.
+    let token = return_token(&h.pool, &session.id).await?;
+    let suffix = session
+        .secret
+        .split_once("_secret_")
+        .map(|(_, suffix)| suffix.to_owned())
+        .context("the credential carries the separator")?;
+    let body = serde_json::to_string(data).context("the stored data serialises")?;
+    for secret in [session.secret.as_str(), suffix.as_str(), token.as_str()] {
+        assert!(
+            !body.contains(secret),
+            "a payer credential is in the event body (the body is never printed; it is {} bytes \
+             for session {})",
+            body.len(),
+            session.id
+        );
+    }
+    assert!(
+        !body.contains("_secret_") && !body.contains("client_secret"),
+        "nothing shaped like a credential may be in the event body (the body is never printed; \
+         it is {} bytes for session {})",
+        body.len(),
+        session.id
+    );
+
+    // One delivery, and one job, per configured endpoint of *this* merchant.
+    assert_eq!(
+        delivery_endpoints(&h.pool, event_id).await?,
+        vec!["acme-audit".to_owned(), "acme-primary".to_owned()],
+        "one delivery per configured endpoint, and none of merchant B's"
+    );
+    let jobs = delivery_job_keys(&h.pool).await?;
+    assert_eq!(
+        jobs.len(),
+        2,
+        "one deliver_webhook job per delivery row: {jobs:?}"
+    );
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Claim 14b: a second sweep over the same session writes no second event.
+///
+/// Idempotency here is the compare-and-swap and nothing else: the second pass
+/// reads no due session at all, because the first one left `status = 'expired'`
+/// in the same commit as the event. A merchant deduping by `event.id` would
+/// survive a duplicate; a merchant reading `GET /v1/events` would not, and
+/// neither would their alerting.
+#[tokio::test]
+async fn a_second_sweep_writes_no_second_expiry_event() -> anyhow::Result<()> {
+    let h = harness().await?;
+    let session = hosted_session(&h).await?;
+    move_every_session_past_its_horizon(&h).await?;
+
+    let endpoints = two_endpoints_for_a();
+    sweep_then_fan_out(&h, &endpoints).await?;
+    let after_one = events_of_type(&h.pool, SESSION_EXPIRED).await?;
+    assert_eq!(
+        after_one.len(),
+        1,
+        "the first sweep emits one: {after_one:?}"
+    );
+
+    // A second pass over the same deployment. The sweep is a singleton whose
+    // row `run_once` rescheduled, so it is pulled forward the way the loop's
+    // own timer would — nothing else about the state is touched.
+    sqlx::query(
+        "UPDATE jobs SET run_at = now(), locked_at = NULL, locked_by = NULL \
+         WHERE dedupe_key = 'sweep:expired'",
+    )
+    .execute(&h.pool)
+    .await
+    .context("re-arming the housekeeping singleton")?;
+    run_until(&h, &endpoints, "sweep_expired").await?;
+
+    let after_two = events_of_type(&h.pool, SESSION_EXPIRED).await?;
+    assert_eq!(
+        after_two.len(),
+        1,
+        "a second sweep must write no second event: {after_two:?}"
+    );
+    assert_eq!(
+        after_one.first().map(|(id, ..)| id),
+        after_two.first().map(|(id, ..)| id),
+        "…and must not replace the first one either"
+    );
+    assert_eq!(
+        stored_session(&h.pool, &session.id).await?.0,
+        "expired".to_owned()
+    );
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Claim 14c: a session whose intent has a live charge is neither expired nor
+/// evented.
+///
+/// The event follows the flip, so proving the flip is refused is only half of
+/// it: a read that rendered the session before the write refused it would mint
+/// an `evt_…` and build an object claiming an abandoned checkout, and the
+/// second assertion here is what says that never happens.
+///
+/// The poll job is deferred an hour first. Without it the drain would settle
+/// the charge before the sweep ran, the session would be `complete`, and the
+/// live-charge guard would have had nothing to guard.
+#[tokio::test]
+async fn a_session_with_a_live_charge_is_neither_expired_nor_evented() -> anyhow::Result<()> {
+    let h = harness().await?;
+    let paying = hosted_session(&h).await?;
+
+    let (_status, body) = session_read(&h, &paying.id, PK_A, &paying.secret).await?;
+    let intent_secret = body
+        .pointer("/payment_intent/client_secret")
+        .and_then(Value::as_str)
+        .context("the intent credential the page confirms with")?
+        .to_owned();
+    assert_eq!(
+        browser_confirm(&h, &paying.intent_id, &intent_secret).await?,
+        200
+    );
+    sqlx::query("UPDATE jobs SET run_at = now() + INTERVAL '1 hour' WHERE kind = 'poll_charge'")
+        .execute(&h.pool)
+        .await
+        .context("deferring the poll so only the sweep can be claimed")?;
+    move_every_session_past_its_horizon(&h).await?;
+
+    let endpoints = two_endpoints_for_a();
+    sweep_then_fan_out(&h, &endpoints).await?;
+
+    assert_eq!(
+        stored_session(&h.pool, &paying.id).await?,
+        ("open".to_owned(), "unpaid".to_owned()),
+        "a session a rail is still holding must survive the sweep"
+    );
+    assert!(
+        events_of_type(&h.pool, SESSION_EXPIRED).await?.is_empty(),
+        "and must not be reported as abandoned to its merchant either"
+    );
+    // The guard's *read* copy, which the two assertions above cannot see: the
+    // write refuses this session on its own, so both would still hold if
+    // `due_for_expiry` returned it. It must not — rendering a session a rail
+    // is holding mints an `evt_…` and builds an object claiming the checkout
+    // was abandoned, which is one more place a future change could leak.
+    assert!(
+        vpay_db::CheckoutSessions::due_for_expiry(
+            h.repositories.as_ref(),
+            time::OffsetDateTime::now_utc(),
+            100,
+        )
+        .await?
+        .is_empty(),
+        "a session a rail is holding must not even be read as due"
+    );
+
+    // The premise of both assertions, stated rather than assumed.
+    let (state,): (String,) =
+        sqlx::query_as("SELECT state::TEXT FROM charges WHERE payment_intent_id = $1")
+            .bind(&paying.intent_id)
+            .fetch_one(&h.pool)
+            .await
+            .context("the charge the guard is guarding")?;
+    assert!(
+        ["submitting", "submitted", "pending", "unresolved"].contains(&state.as_str()),
+        "the charge must still be live, or this case proves nothing: {state}"
+    );
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Claim 14d: a session the **settlement** transaction finished produces
+/// `payment_intent.succeeded` and **no** `checkout.session.expired`.
+///
+/// D10 gives a settled-then-declined session the label `expired` too, so
+/// "expired" on its own is not the trigger — the sweep is, and only for a
+/// session whose horizon passed with nothing driving it. A settlement already
+/// emits a `payment_intent.*` event for the same thing happening, and a second
+/// event would be a duplicate vpay invented.
+#[tokio::test]
+async fn a_session_finished_by_settlement_emits_no_expiry_event() -> anyhow::Result<()> {
+    let h = harness().await?;
+    let session = hosted_session(&h).await?;
+
+    let (_status, body) = session_read(&h, &session.id, PK_A, &session.secret).await?;
+    let intent_secret = body
+        .pointer("/payment_intent/client_secret")
+        .and_then(Value::as_str)
+        .context("the intent credential the page confirms with")?
+        .to_owned();
+    assert_eq!(
+        browser_confirm(&h, &session.intent_id, &intent_secret).await?,
+        200
+    );
+    drain_worker(&h).await?;
+
+    assert_eq!(
+        stored_session(&h.pool, &session.id).await?,
+        ("complete".to_owned(), "paid".to_owned()),
+        "the settlement transaction must have finished the session"
+    );
+
+    // Now sweep, with the horizon moved past. The session is no longer `open`,
+    // so there is nothing due — which is the whole point.
+    move_every_session_past_its_horizon(&h).await?;
+    let endpoints = two_endpoints_for_a();
+    sweep_then_fan_out(&h, &endpoints).await?;
+
+    assert_eq!(
+        events_of_type(&h.pool, "payment_intent.succeeded")
+            .await?
+            .len(),
+        1,
+        "the settlement's own event is the one a merchant gets"
+    );
+    assert!(
+        events_of_type(&h.pool, SESSION_EXPIRED).await?.is_empty(),
+        "a settled session must not also be reported as expired"
+    );
+    assert_eq!(
+        stored_session(&h.pool, &session.id).await?,
+        ("complete".to_owned(), "paid".to_owned()),
+        "and the sweep must not have touched it"
+    );
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Claim 14e: the event is listable and retrievable through `/v1/events`,
+/// scoped to the merchant it belongs to.
+///
+/// `GET /v1/events` is the documented fallback for a merchant who missed a
+/// delivery (`docs/flows/webhooks.md`), so an event they cannot read there is
+/// an event they have no way to recover. The tenancy half is the same rule
+/// every other read on this surface keeps: another tenant's event is
+/// indistinguishable from one that does not exist.
+#[tokio::test]
+async fn an_expiry_event_is_listable_and_retrievable_within_its_tenant() -> anyhow::Result<()> {
+    let h = harness().await?;
+    let session = hosted_session(&h).await?;
+    move_every_session_past_its_horizon(&h).await?;
+
+    let endpoints = two_endpoints_for_a();
+    sweep_then_fan_out(&h, &endpoints).await?;
+
+    let events = events_of_type(&h.pool, SESSION_EXPIRED).await?;
+    let [(event_id, ..)] = events.as_slice() else {
+        anyhow::bail!("exactly one event was expected: {events:?}");
+    };
+
+    let (status, list) = list_events(&h, CLIENT_A).await?;
+    assert_eq!(status, 200, "{list:#}");
+    let listed = list
+        .pointer("/data/0")
+        .context("the merchant's newest event")?;
+    assert_eq!(
+        listed.get("id").and_then(Value::as_str),
+        Some(event_id.as_str())
+    );
+    assert_eq!(
+        listed.get("type").and_then(Value::as_str),
+        Some(SESSION_EXPIRED),
+        "rendered like every other event: {list:#}"
+    );
+    assert_eq!(
+        listed.pointer("/data/object/id").and_then(Value::as_str),
+        Some(session.id.as_str()),
+        "with the session under data.object: {list:#}"
+    );
+    assert_eq!(listed.get("object").and_then(Value::as_str), Some("event"));
+    assert_eq!(listed.get("livemode"), Some(&Value::Bool(false)));
+    assert!(listed.get("created").and_then(Value::as_i64).is_some());
+
+    let (status, retrieved) = retrieve_event(&h, CLIENT_A, event_id).await?;
+    assert_eq!(status, 200, "{retrieved:#}");
+    assert_eq!(
+        &retrieved, listed,
+        "the retrieve and the list must render one event identically"
+    );
+    // The credential assertion again, this time on what the *API* serves —
+    // `GET /v1/events` is a merchant surface and its bytes end up in logs too.
+    let served = serde_json::to_string(&retrieved).context("the response serialises")?;
+    assert!(
+        !served.contains("_secret_") && !served.contains(&session.secret),
+        "the API must not serve a credential either (the response is never printed; it is {} \
+         bytes for event {event_id})",
+        served.len()
+    );
+
+    // The tenant boundary. Merchant B holds a valid token for a real client
+    // and still cannot see it — and cannot tell it from an id that exists
+    // nowhere.
+    let unknown = "evt_00000000000000000000000z";
+    let (status, body) = retrieve_event(&h, CLIENT_B, event_id).await?;
+    assert_eq!(status, 404, "another tenant must get a 404: {body:#}");
+    let (unknown_status, unknown_body) = retrieve_event(&h, CLIENT_B, unknown).await?;
+    assert_eq!(unknown_status, 404);
+    // The two envelopes differ in exactly one place — the id the *caller*
+    // supplied, which they already knew — and nowhere else. Compared field by
+    // field rather than as whole values, because the messages cannot be equal
+    // and the point is that nothing beyond the echo distinguishes them: an
+    // "unauthorised" code, a different `type`, or a message naming the owning
+    // tenant would each let anyone enumerate which `evt_…` ids exist across
+    // the deployment.
+    for key in ["code", "type"] {
+        assert_eq!(
+            body.pointer(&format!("/error/{key}")),
+            unknown_body.pointer(&format!("/error/{key}")),
+            "the two 404s must agree on `{key}`: {body:#} vs {unknown_body:#}"
+        );
+    }
+    assert_eq!(
+        body.pointer("/error/message").and_then(Value::as_str),
+        Some(format!("No such event: {event_id}").as_str()),
+        "…and each message may echo the caller's own id and nothing else: {body:#}"
+    );
+    assert_eq!(
+        unknown_body
+            .pointer("/error/message")
+            .and_then(Value::as_str),
+        Some(format!("No such event: {unknown}").as_str()),
+        "{unknown_body:#}"
+    );
+    assert_eq!(
+        body.as_object().map(serde_json::Map::len),
+        unknown_body.as_object().map(serde_json::Map::len),
+        "and no extra member may appear on one of them: {body:#} vs {unknown_body:#}"
+    );
+
+    let (status, theirs) = list_events(&h, CLIENT_B).await?;
+    assert_eq!(status, 200, "{theirs:#}");
+    assert_eq!(
+        theirs
+            .pointer("/data")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0),
+        "another tenant's list must not carry it: {theirs:#}"
+    );
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Claim 14f: **the flip and the event are one transaction.** Make the event
+/// insert fail and the session is still `open` afterwards.
+///
+/// This is the case the whole design exists for. A session reporting `expired`
+/// that no merchant was ever told about is invisible: there is no sweep over
+/// "expired sessions with no event", no fan-out backlog entry, and nothing
+/// that would ever notice — the merchant simply never hears, and their own
+/// reconciliation sees an abandoned checkout they were not told about.
+///
+/// The failure is induced by handing the shipping repository method a `data`
+/// that is not a JSON object, which migration 0018's `data_is_object` CHECK
+/// refuses. Nothing is monkey-patched and no seam is added: this is
+/// `CheckoutSessions::expire_due` as `sweep_expired` calls it, with one
+/// argument the renderer could never produce.
+///
+/// **Revert-proof, measured 2026-09-04:** commit the `UPDATE` before inserting
+/// the event — i.e. run the flip on the pool and the event in its own
+/// transaction — and this fails with the session `expired` and no event.
+#[tokio::test]
+async fn a_failed_event_insert_leaves_the_session_open() -> anyhow::Result<()> {
+    let h = harness().await?;
+    let session = hosted_session(&h).await?;
+    move_every_session_past_its_horizon(&h).await?;
+
+    // The premise: this session *is* due, so a refusal below cannot be the
+    // compare-and-swap quietly declining to do anything.
+    let due = vpay_db::CheckoutSessions::due_for_expiry(
+        h.repositories.as_ref(),
+        time::OffsetDateTime::now_utc(),
+        100,
+    )
+    .await?;
+    assert_eq!(
+        due.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+        vec![session.id.as_str()],
+        "the session must be due, or this case proves nothing"
+    );
+
+    let event_id = vpay_db::events::event_id();
+    let refused = vpay_db::CheckoutSessions::expire_due(
+        h.repositories.as_ref(),
+        &session.id,
+        time::OffsetDateTime::now_utc(),
+        &event_id,
+        // `data_is_object` (migration 0018) refuses this. The renderer cannot
+        // produce it; a schema change that broke the renderer could.
+        &serde_json::json!("not an object"),
+    )
+    .await;
+    assert!(
+        refused.is_err(),
+        "the event insert must fail, or the rest of this case is vacuous: {refused:?}"
+    );
+
+    assert_eq!(
+        stored_session(&h.pool, &session.id).await?,
+        ("open".to_owned(), "unpaid".to_owned()),
+        "the flip must have rolled back with the event: a session that says `expired` with no \
+         event is one no merchant will ever be told about"
+    );
+    let (events,): (i64,) = sqlx::query_as("SELECT count(*) FROM events WHERE id = $1")
+        .bind(&event_id)
+        .fetch_one(&h.pool)
+        .await
+        .context("counting the refused event")?;
+    assert_eq!(events, 0, "and no half-written event may survive either");
+
+    // …and the next sweep still picks it up, which is what makes rolling back
+    // the right answer rather than a lost expiry.
+    let endpoints = two_endpoints_for_a();
+    sweep_then_fan_out(&h, &endpoints).await?;
+    assert_eq!(
+        stored_session(&h.pool, &session.id).await?.0,
+        "expired".to_owned()
+    );
+    assert_eq!(events_of_type(&h.pool, SESSION_EXPIRED).await?.len(), 1);
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Claim 14g: the live-charge guard is in the **write**, and not only in the
+/// read that precedes it.
+///
+/// `due_for_expiry` and `expire_due` are two statements with a window between
+/// them, and a payer confirming inside that window is the entire reason
+/// `expire_due` re-evaluates the `NOT EXISTS` rather than trusting the page it
+/// was handed. Every other case here goes through the sweep, which reads and
+/// writes back to back — so all of them pass with the guard present in the
+/// read alone, and none of them notices if the write's copy is deleted as a
+/// duplicate of it. Measured 2026-09-04: deleting the `NOT EXISTS` from
+/// `expire_due`'s `UPDATE` left all 23 cases in this file green.
+///
+/// The window is staged rather than raced, so the case is deterministic: read
+/// the page the sweep would have read, *then* let the payer confirm, then run
+/// the write with the row the sweep is still holding.
+///
+/// What the guard is worth: without it that session is expired and its
+/// merchant is told the checkout was abandoned, while the rail is holding a
+/// live payment — and the settlement transaction that arrives minutes later
+/// cannot record it, because `settle_for_intent`'s own `WHERE status = 'open'`
+/// no longer matches. The session would sit `expired`/`unpaid` over a payment
+/// that succeeded.
+#[tokio::test]
+async fn a_payer_confirming_between_the_read_and_the_write_keeps_the_session() -> anyhow::Result<()>
+{
+    let h = harness().await?;
+    let session = hosted_session(&h).await?;
+
+    // Read while the session is still inside its horizon: both browser reads
+    // stop at it whatever the status
+    // (`both_browser_reads_stop_at_the_horizon_whatever_the_status`), and the
+    // payer in this story is one who has been sitting on an open page.
+    let (_status, body) = session_read(&h, &session.id, PK_A, &session.secret).await?;
+    let intent_secret = body
+        .pointer("/payment_intent/client_secret")
+        .and_then(Value::as_str)
+        .context("the intent credential the page confirms with")?
+        .to_owned();
+
+    move_every_session_past_its_horizon(&h).await?;
+
+    // The read half, exactly as `expire_due_sessions` runs it. `now` is held
+    // and reused below, because the sweep uses one instant for both halves.
+    let now = time::OffsetDateTime::now_utc();
+    let due = vpay_db::CheckoutSessions::due_for_expiry(h.repositories.as_ref(), now, 100).await?;
+    let row = due
+        .iter()
+        .find(|row| row.id == session.id)
+        .context("the session must be due at the read, or this case proves nothing")?;
+
+    // The window: the payer confirms after the page was read and before the
+    // write runs.
+    assert_eq!(
+        browser_confirm(&h, &session.intent_id, &intent_secret).await?,
+        200
+    );
+    let (state,): (String,) =
+        sqlx::query_as("SELECT state::TEXT FROM charges WHERE payment_intent_id = $1")
+            .bind(&session.intent_id)
+            .fetch_one(&h.pool)
+            .await
+            .context("the charge the guard is guarding")?;
+    assert!(
+        ["submitting", "submitted", "pending", "unresolved"].contains(&state.as_str()),
+        "the charge must be live before the write, or this case proves nothing: {state}"
+    );
+
+    // The write half, with the row the sweep read before any of that
+    // happened — and the object it would have rendered from it.
+    let data = serde_json::to_value(vpay_api::model::CheckoutSessionObject::expired_snapshot(
+        row,
+    ))
+    .context("the rendered snapshot serialises")?;
+    let event_id = vpay_db::events::event_id();
+    let written = vpay_db::CheckoutSessions::expire_due(
+        h.repositories.as_ref(),
+        &session.id,
+        now,
+        &event_id,
+        &data,
+    )
+    .await?;
+
+    assert!(
+        written.is_none(),
+        "the write must re-check the live charge and refuse: {written:?}"
+    );
+    assert_eq!(
+        stored_session(&h.pool, &session.id).await?,
+        ("open".to_owned(), "unpaid".to_owned()),
+        "a session a rail is holding must survive a sweep that read it before the payer confirmed"
+    );
+    assert!(
+        events_of_type(&h.pool, SESSION_EXPIRED).await?.is_empty(),
+        "and its merchant must not be told the checkout was abandoned"
+    );
+
+    h.shutdown().await;
+    Ok(())
+}

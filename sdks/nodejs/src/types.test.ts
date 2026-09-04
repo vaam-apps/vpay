@@ -18,9 +18,17 @@
 import { describe, expect, it } from "vitest";
 import type { VpayClientOptions } from "./client.js";
 import { generateTestRsaKeyPair } from "./testing/keys.js";
+import {
+  isCheckoutSessionEvent,
+  isPaymentIntentEvent,
+  isRefundEvent,
+} from "./types.js";
 import type {
+  CheckoutSession,
   CreatePaymentIntentParams,
   CreateRefundParams,
+  Event,
+  KnownEventType,
   ListEventsParams,
   ListParams,
   RequestOptions,
@@ -96,5 +104,93 @@ describe("public option types under exactOptionalPropertyTypes", () => {
     expect(listParams).toBeDefined();
     expect(listEventsParams).toBeDefined();
     expect(createRefund.payment_intent).toBe("pi_123");
+  });
+});
+
+/**
+ * The event body a merchant's webhook handler is actually handed for an
+ * expired Checkout Session — `status` already `expired`, `url` null and no
+ * `client_secret` member, exactly as
+ * `vpay_api::model::CheckoutSessionObject::expired_snapshot` renders it.
+ *
+ * Built as a `CheckoutSession` rather than an untyped literal so the shape is
+ * checked by `pnpm --filter @vpay/sdk typecheck` as well as by vitest.
+ */
+const expiredSession: CheckoutSession = {
+  id: "cs_1",
+  object: "checkout.session",
+  livemode: false,
+  payment_intent: "pi_1",
+  ui_mode: "hosted",
+  status: "expired",
+  payment_status: "unpaid",
+  success_url: "https://shop.example/ok?sid={CHECKOUT_SESSION_ID}",
+  cancel_url: "https://shop.example/cancel",
+  return_url: null,
+  url: null,
+  expires_at: 1_700_086_400,
+  created: 1_700_000_000,
+};
+
+const sessionExpired: Event = {
+  id: "evt_9",
+  object: "event",
+  type: "checkout.session.expired",
+  created: 1_753_401_600,
+  livemode: false,
+  data: { object: expiredSession },
+};
+
+/**
+ * `checkout.session.expired` is a member of the exported vocabulary. This is
+ * a *type-level* assertion checked by `typecheck`: widen or remove the union
+ * member and this assignment stops compiling.
+ */
+const knownType: KnownEventType = "checkout.session.expired";
+
+describe("checkout.session.expired", () => {
+  it("is a member of KnownEventType and narrows with isCheckoutSessionEvent", () => {
+    expect(knownType).toBe("checkout.session.expired");
+    expect(isCheckoutSessionEvent(sessionExpired)).toBe(true);
+    if (!isCheckoutSessionEvent(sessionExpired)) {
+      throw new Error("the guard must narrow this event");
+    }
+    // Inside the narrowing, `data.object` is a CheckoutSession at the type
+    // level as well as at runtime — reading these members is the assertion.
+    expect(sessionExpired.data.object.id).toBe("cs_1");
+    expect(sessionExpired.data.object.status).toBe("expired");
+  });
+
+  it("carries no client_secret and a null url, so a webhook body holds no payer credential", () => {
+    // Asserted on the serialised body, not only on the object: a delivered
+    // event is bytes a merchant stores, replays and logs.
+    const body = JSON.stringify(sessionExpired);
+    expect(body).not.toContain("_secret_");
+
+    if (!isCheckoutSessionEvent(sessionExpired)) {
+      throw new Error("the guard must narrow this event");
+    }
+    const session = sessionExpired.data.object;
+    expect(session.url).toBeNull();
+    expect("client_secret" in session).toBe(false);
+    // …and a null url does not mean the session was embedded. Reading
+    // ui_mode is the only way to know that, and this is the assertion that
+    // says so.
+    expect(session.ui_mode).toBe("hosted");
+  });
+
+  it("is not narrowed by the payment-intent or refund guards", () => {
+    // A guard that matched everything would make the one above worthless.
+    expect(isPaymentIntentEvent(sessionExpired)).toBe(false);
+    expect(isRefundEvent(sessionExpired)).toBe(false);
+  });
+
+  it("leaves an unknown checkout.session.* type deliverable rather than a failure", () => {
+    // `Event.type` is a `string`, not `KnownEventType`, so a type this SDK
+    // version predates still decodes and is still readable — and the prefix
+    // guard still narrows its payload, which is why it is a prefix.
+    const future: Event = { ...sessionExpired, type: "checkout.session.completed" };
+    expect(isCheckoutSessionEvent(future)).toBe(true);
+    expect(future.type).toBe("checkout.session.completed");
   });
 });

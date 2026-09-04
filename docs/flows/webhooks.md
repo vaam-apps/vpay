@@ -10,12 +10,38 @@ Constant-time comparison; reject a timestamp older than 5 minutes.
 
 `payment_intent.created`, `payment_intent.processing`,
 `payment_intent.succeeded`, `payment_intent.payment_failed`,
-`payment_intent.canceled`, `charge.refunded`, `charge.refund.updated`.
+`payment_intent.canceled`, `charge.refunded`, `charge.refund.updated`,
+`checkout.session.expired`.
 
 A custom type is silently dropped by any merchant using `stripe-node`'s typed
 event union or an exhaustive `switch`. This is why a late success emits a plain
 `payment_intent.succeeded`: an event merchants structurally tend to ignore is
 the worst possible carrier for "money actually arrived".
+
+**Three of the eight are written, and only three.** `payment_intent.succeeded`
+and `payment_intent.payment_failed` come from the settlement transaction (TX 1
+below); `checkout.session.expired` comes from the housekeeping sweep, since
+2026-09-04. The other five are documented shapes nothing emits — events are
+written for terminal transitions only.
+
+**`checkout.session.expired` is the only one whose `data.object` is not a
+`payment_intent` or a `refund`.** It carries a `checkout.session`: the thirteen
+keys `docs/flows/hosted-checkout.md` documents, with `status` already
+`expired`, `payment_status` whatever the money did, and `url` **always
+`null`** — a hosted session's `url` carries its `client_secret` in the
+fragment (D6), and a webhook body is stored, signed, delivered at-least-once
+and replayed on every rung of the ladder. So `url: null` in an event does
+**not** mean the session was embedded; read `ui_mode`. `client_secret` is
+absent entirely, as is the `return_token`, which is a column and on no wire
+object at all. Both merchant SDKs carry the type in their vocabulary
+(`vpay_sdk::KnownEventType::CheckoutSessionExpired`, `@vpay/sdk`'s
+`KnownEventType`) with a narrowing accessor for the payload
+(`Event::checkout_session`, `isCheckoutSessionEvent`), and both keep working
+unchanged for a type they do not know: `type` is a `string` in both, not the
+union.
+
+The `object_id` on such a row is the `cs_…`, which made it the fourth prefix
+that polymorphic column carries.
 
 ## Two-step outbox
 
@@ -57,6 +83,15 @@ from.
 
 ## Status
 
+**Updated 2026-09-04: the housekeeping sweep is a third writer.** A checkout
+session passing its 24-hour horizon with nothing driving it now produces one
+`checkout.session.expired` — in the same transaction as the status flip — and
+that event goes through the identical fan-out, signing, delivery client,
+egress guard and retry ladder every other event does, because it is one more
+row in the same table. Migration `0029` is what let the database accept the
+type; nothing else in this document changed. `docs/flows/hosted-checkout.md`'s
+"An expired session notifies nobody" is retired by it.
+
 **Both transactions are real, and a signed webhook has been delivered to a
 WireMock receiver and verified with both shipping SDKs — and, since Step 5b,
 with the official `stripe` package. No merchant endpoint has ever been POSTed
@@ -88,10 +123,33 @@ container on the same compose network, permitted by the sandbox profile's
 
 **TX 1 — the business transaction.** `vpay_db::Settlement::apply_succeeded` /
 `apply_failed` move the charge, move the intent and insert one `events` row in
-a single transaction, with `fanout_state = 'pending'`. Two types only, both
-from this document's list — `payment_intent.succeeded` and
+a single transaction, with `fanout_state = 'pending'`. Two types from this
+document's list — `payment_intent.succeeded` and
 `payment_intent.payment_failed` — and the CHECK `type_is_a_documented_event`
-(migration `0018`) refuses anything else at the database.
+(migrations `0018` and `0029`) refuses anything else at the database.
+
+**There is a second TX 1, and it is the same shape.**
+`vpay_db::CheckoutSessions::expire_due` moves one checkout session from `open`
+to `expired` and inserts its `checkout.session.expired` row in one
+transaction, once per session, called by the housekeeping sweep
+(`vpay_worker::handlers::sweep_expired`). The argument for it being one
+transaction is the settlement's, sharpened: a session that says `expired` with
+no event is one **nothing would ever notice** — there is no sweep over
+"expired sessions with no event", no fan-out backlog entry naming it, and the
+merchant simply never hears. `a_failed_event_insert_leaves_the_session_open`
+(`backends/tests/integration/tests/checkout_sessions.rs`) is the proof, and it
+is a real refusal from a real CHECK rather than a seam: measured 2026-09-04,
+committing the flip before the insert makes it fail with the session
+`expired`.
+
+The flip is a compare-and-swap on `status = 'open'` **and** the horizon
+**and** a `NOT EXISTS` over the live charge states, so a second sweep emits no
+second event, a session a rail is still holding is neither expired nor
+evented, and a session the settlement transaction already finished is left
+alone — it has had its `payment_intent.*` event for the same thing happening,
+and a second one would be a duplicate vpay invented. `POST
+/v1/checkout/sessions/{id}/expire`, the merchant's own abandon, emits nothing
+either; see "What is not built".
 
 **TX 2 — the fan-out.** `vpay_worker::webhooks::handle_fan_out` is the
 `fan_out_events` job: a singleton (`fanout:events`) seeded beside
@@ -447,6 +505,28 @@ delivery has been observed reaching a receiver.**
   `payment_intent.canceled` — plus the two refund types, are unchanged: events
   are written for terminal transitions only (decision 4 of
   `docs/plans/2026-09-03-step4-worker.md`).
+- **A merchant expiring its own session emits nothing.** `POST
+  /v1/checkout/sessions/{id}/expire` moves the row and writes no event, so a
+  merchant whose own systems are the ones that need telling has to tell them.
+  The argument for the current shape is that the caller already knows; the
+  argument against is that a merchant with several services does not
+  necessarily, and Stripe emits `checkout.session.expired` for both paths.
+  Not an oversight — the 2026-09-04 change that added the event was scoped to
+  the sweep, which is the path nobody is watching — and **left to whoever owns
+  this document**, because "one transition, one event" is a contract merchants
+  build dedupe logic on and widening it later is cheaper than narrowing it.
+- **No `checkout.session.completed`.** A session reaching `complete` already
+  produces `payment_intent.succeeded` from the same commit, and a second event
+  for one payment is a dedupe problem vpay would have created. A merchant that
+  wants the session object reads it.
+- **No deployment has ever delivered a `checkout.session.expired` to a
+  merchant endpoint.** The event, its fan-out, its one delivery row per
+  configured endpoint and its `deliver_webhook` jobs are proven against a real
+  Postgres by `an_expiry_sweep_emits_one_event_and_one_delivery_per_endpoint`;
+  the endpoints in that case are URLs nothing resolves, because what it
+  asserts is what the fan-out *created*. The delivery half is the same code
+  every other event walks, and that has been observed against a WireMock
+  receiver — but not for this type.
 
 Why the delivery code is shaped the way it is — the digest invariant, the two
 failure recorders, the fan-out's per-event transaction, and what the backstop

@@ -449,6 +449,128 @@ pub struct EventData {
     pub object: serde_json::Value,
 }
 
+/// The event types `docs/flows/webhooks.md` commits to — the vocabulary a
+/// merchant `match`es [`Event::kind`] against.
+///
+/// The mirror of `sdks/nodejs`'s `KnownEventType` union, and it exists for
+/// the same reason: every one of them is a **real Stripe** type, because a
+/// custom one is silently dropped by any handler switching exhaustively over
+/// Stripe's own typed event union. Spelling them once here is what stops a
+/// merchant matching on a string literal with a typo in it, which compiles
+/// and never fires.
+///
+/// [`Event::kind`] is deliberately **not** this type. It stays a `String`, so
+/// an event carrying a type this SDK version predates is still deliverable
+/// rather than a decode failure in a merchant's handler
+/// (`docs/flows/merchant-auth.md`, "Objects") — the same split
+/// [`PaymentIntent::payment_method_types`] makes. Use [`Self::from_wire`] to
+/// narrow, and handle `None` as "a type newer than this SDK".
+///
+/// `#[non_exhaustive]`, so vpay documenting a ninth type is not a breaking
+/// change for a caller who matched on it.
+///
+/// ```
+/// use vpay_sdk::KnownEventType;
+///
+/// assert_eq!(
+///     KnownEventType::from_wire("checkout.session.expired"),
+///     Some(KnownEventType::CheckoutSessionExpired)
+/// );
+/// assert_eq!(
+///     KnownEventType::CheckoutSessionExpired.as_wire_str(),
+///     "checkout.session.expired"
+/// );
+/// // A type this SDK version predates is not an error — it is `None`, and
+/// // the event is still delivered and still readable.
+/// assert_eq!(KnownEventType::from_wire("checkout.session.completed"), None);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum KnownEventType {
+    /// A PaymentIntent was created. Nothing emits this today.
+    PaymentIntentCreated,
+    /// A PaymentIntent was submitted to a rail. Nothing emits this today.
+    PaymentIntentProcessing,
+    /// A payment settled. `data.object` is a [`PaymentIntent`].
+    PaymentIntentSucceeded,
+    /// A rail declined a payment. `data.object` is a [`PaymentIntent`],
+    /// back in [`IntentStatus::RequiresPaymentMethod`] with
+    /// [`PaymentIntent::last_payment_error`] populated.
+    PaymentIntentPaymentFailed,
+    /// A PaymentIntent was withdrawn. Nothing emits this today.
+    PaymentIntentCanceled,
+    /// A charge was refunded. Nothing emits this today.
+    ChargeRefunded,
+    /// A refund changed state. Nothing emits this today.
+    ChargeRefundUpdated,
+    /// A Checkout Session passed its 24-hour horizon without being paid and
+    /// vpay's hourly sweep expired it (Step 9's D10).
+    ///
+    /// `data.object` is a [`CheckoutSession`] — the only one of these whose
+    /// payload is neither a [`PaymentIntent`] nor a [`Refund`]. Decode it
+    /// with [`Event::checkout_session`].
+    ///
+    /// **Not** emitted when a merchant expires a session itself through
+    /// `POST /v1/checkout/sessions/{id}/expire`, and not emitted when a
+    /// settlement moves a session — that transition already sends a
+    /// `payment_intent.*` event for the same thing happening.
+    CheckoutSessionExpired,
+}
+
+impl KnownEventType {
+    /// The exact string this type is named by on the wire.
+    ///
+    /// Hand-written rather than derived from a `serde` rename, exactly as
+    /// [`PaymentMethodType::as_wire_str`] is: [`Event::kind`] is a `String`
+    /// and never goes through `serde` for this type, so without it the wire
+    /// spelling would exist in only one of the two paths.
+    #[must_use]
+    pub fn as_wire_str(self) -> &'static str {
+        match self {
+            KnownEventType::PaymentIntentCreated => "payment_intent.created",
+            KnownEventType::PaymentIntentProcessing => "payment_intent.processing",
+            KnownEventType::PaymentIntentSucceeded => "payment_intent.succeeded",
+            KnownEventType::PaymentIntentPaymentFailed => "payment_intent.payment_failed",
+            KnownEventType::PaymentIntentCanceled => "payment_intent.canceled",
+            KnownEventType::ChargeRefunded => "charge.refunded",
+            KnownEventType::ChargeRefundUpdated => "charge.refund.updated",
+            KnownEventType::CheckoutSessionExpired => "checkout.session.expired",
+        }
+    }
+
+    /// The type a wire string names, or `None` for one this SDK version does
+    /// not know.
+    ///
+    /// `None` is a normal answer and never an error: vpay may document a
+    /// type after this SDK was published, and an event carrying it is still
+    /// delivered, still verifiable and still readable through
+    /// [`Event::kind`]. A parse that failed here would turn "newer server"
+    /// into "broken handler".
+    #[must_use]
+    pub fn from_wire(wire: &str) -> Option<Self> {
+        // A `match` rather than an iteration over a slice, so adding a
+        // variant above without adding it here is a non-exhaustive-match
+        // compile error.
+        match wire {
+            "payment_intent.created" => Some(KnownEventType::PaymentIntentCreated),
+            "payment_intent.processing" => Some(KnownEventType::PaymentIntentProcessing),
+            "payment_intent.succeeded" => Some(KnownEventType::PaymentIntentSucceeded),
+            "payment_intent.payment_failed" => Some(KnownEventType::PaymentIntentPaymentFailed),
+            "payment_intent.canceled" => Some(KnownEventType::PaymentIntentCanceled),
+            "charge.refunded" => Some(KnownEventType::ChargeRefunded),
+            "charge.refund.updated" => Some(KnownEventType::ChargeRefundUpdated),
+            "checkout.session.expired" => Some(KnownEventType::CheckoutSessionExpired),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for KnownEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_wire_str())
+    }
+}
+
 /// A `/v1/events` object — one of the real Stripe event types
 /// `docs/flows/webhooks.md` commits to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -503,6 +625,30 @@ impl Event {
             crate::Error::UnexpectedResponse {
                 status: 0,
                 body_prefix: format!("event.data.object did not decode as a refund: {e}"),
+            }
+        })
+    }
+
+    /// Decodes [`EventData::object`] as a [`CheckoutSession`], for a
+    /// `checkout.session.*` event.
+    ///
+    /// The session on an event carries **no** `client_secret` and its `url`
+    /// is always `None`: both are live payer credentials, and an event body
+    /// is stored, delivered at-least-once and replayable. So a `None` `url`
+    /// here does not mean the session was embedded — read
+    /// [`CheckoutSession::ui_mode`] for that. Everything else is the object
+    /// as it stood at the transition, which for
+    /// [`KnownEventType::CheckoutSessionExpired`] means `status` is already
+    /// [`CheckoutSessionStatus::Expired`] while `payment_status` is whatever
+    /// the money did.
+    ///
+    /// # Errors
+    /// See [`Event::payment_intent`].
+    pub fn checkout_session(&self) -> Result<CheckoutSession, crate::Error> {
+        serde_json::from_value(self.data.object.clone()).map_err(|e| {
+            crate::Error::UnexpectedResponse {
+                status: 0,
+                body_prefix: format!("event.data.object did not decode as a checkout_session: {e}"),
             }
         })
     }
