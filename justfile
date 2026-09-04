@@ -201,13 +201,55 @@ deny:
 # to the npm registry's advisory endpoint on every run and cannot work
 # offline at all, and `just ci` is expected to run on a machine with no
 # network. CI runs it on every PR regardless.
+#
+# A registry outage is not an advisory. On 2026-09-04 the audit endpoint
+# (`/-/npm/v1/security/audits`) timed out or answered 503 for about two hours
+# and failed seven consecutive CI runs of a branch whose lockfile had not
+# changed; every one of those runs printed `ERR_SOCKET_TIMEOUT`, none printed
+# a finding. So each `pnpm audit` below is given a longer fetch timeout than
+# pnpm's 60 s default and is retried a bounded number of times, and when it
+# still fails the recipe says which of the two things happened: an advisory
+# (the audit answered and found something — the exit code is pnpm's own) or
+# the registry (no answer at all). Both still fail the job. What this does
+# NOT do is pass when the registry is down: an unreachable audit is an audit
+# that did not run, and this is a payment system.
+audit_attempts := "4"
+audit_retry_wait_seconds := "90"
+audit_fetch_timeout_ms := "180000"
+
 audit-web:
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "audit-web: production dependency graph only"
-    pnpm audit --audit-level=high --prod
-    echo "audit-web: whole workspace, dev dependencies included"
-    pnpm audit --audit-level=high
+    export npm_config_fetch_timeout="{{audit_fetch_timeout_ms}}"
+    audit() {
+        # $1: label; the rest: pnpm audit arguments. Retries only when the
+        # output carries the registry's own failure signatures; an advisory
+        # fails at once, with pnpm's report already printed.
+        local label="$1"; shift
+        local attempt out
+        for attempt in $(seq 1 {{audit_attempts}}); do
+            echo "audit-web: ${label} (attempt ${attempt} of {{audit_attempts}})"
+            if out=$(pnpm audit --audit-level=high "$@" 2>&1); then
+                printf '%s\n' "$out"
+                return 0
+            fi
+            if printf '%s' "$out" | grep -qE 'ERR_SOCKET_TIMEOUT|ERR_PNPM_AUDIT_BAD_RESPONSE|ECONNRESET|EAI_AGAIN|FetchError'; then
+                printf '%s\n' "$out" | grep -E 'ERR_|FetchError|WARN' | tail -3
+                if [ "$attempt" -lt {{audit_attempts}} ]; then
+                    echo "audit-web: the npm registry's audit endpoint did not answer — retrying in {{audit_retry_wait_seconds}}s"
+                    sleep {{audit_retry_wait_seconds}}
+                    continue
+                fi
+                echo "audit-web: REGISTRY UNREACHABLE — the audit did not run ({{audit_attempts}} attempts, fetch timeout {{audit_fetch_timeout_ms}} ms). This is not an advisory; re-run when https://status.npmjs.org is clear." >&2
+                return 2
+            fi
+            printf '%s\n' "$out"
+            echo "audit-web: ADVISORY — pnpm audit found a high or critical advisory (${label}); see the report above" >&2
+            return 1
+        done
+    }
+    audit "production dependency graph only" --prod
+    audit "whole workspace, dev dependencies included"
     echo "audit-web: ok — no high or critical advisory in the workspace"
 
 # ---------------------------------------------------- self-verification ----
