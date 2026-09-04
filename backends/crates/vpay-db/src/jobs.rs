@@ -118,6 +118,87 @@ pub(crate) async fn enqueue_in_tx(
     Ok(inserted == 1)
 }
 
+/// Brings an already-queued job's `run_at` forward to now, **inside the
+/// caller's transaction**, returning whether a row moved — unless it is
+/// already due within `floor`, in which case it is left where it is.
+///
+/// The one write that makes a rail callback worth anything. `enqueue_in_tx`
+/// is `ON CONFLICT DO NOTHING` and deliberately not an upsert (see
+/// `docs/reference/vpay-db.md` §"`enqueue_in_tx` exists only in the
+/// transactional form"), so a callback arriving while a poll job sits at
+/// `now() + 10s` — the ladder's first rung, `vpay_worker::poll_delay` —
+/// changes nothing at all without this. That is the whole difference between
+/// "the rail told us and we asked immediately" and "the rail told us and we
+/// asked at the next rung anyway".
+///
+/// # Why this is not `enqueue_in_tx` growing a `DO UPDATE`
+///
+/// Because the argument against the upsert is still right: the backstop scan
+/// (`scan_live_charges`) re-enqueues every live charge's key every ten
+/// minutes, and an upserting enqueue would drag a job scheduled for a
+/// quarter of an hour's time back to now on every pass — a poll ladder that
+/// silently becomes a hot loop against a rail. A caller has to *ask* for the
+/// pull-forward, and exactly one does.
+///
+/// # The three guards, and what each refuses
+///
+/// * `locked_at IS NULL` — a leased job is being run **right now**, by a
+///   worker that will see the rail's answer without any help from here.
+///   Moving `run_at` under someone else's lease would also be the one write
+///   in this module that ends up outside the `locked_by` discipline the
+///   module header describes.
+/// * `run_at > now() + floor` — a job that is already claimable, *or due
+///   within `floor`*, needs nothing: it is about to run. Skipping the write
+///   is what makes a burst of duplicate callbacks (which both rails send)
+///   free rather than a row-lock queue on one job, and `floor` is what stops
+///   an unauthenticated caller from converting each POST into a rail request
+///   for a charge the queue was going to ask about in a moment anyway. See
+///   below.
+/// * `run_at < 'infinity'` — a **dead letter** is parked precisely so that
+///   nothing re-creates the work on a timer; `docs/reference/vpay-db.md`
+///   §"Why a dead letter is parked and not deleted" names a callback as one
+///   of the things the parked `dedupe_key` must keep out. Un-parking one
+///   stays a human's `UPDATE`.
+///
+/// `Ok(false)` therefore means "nothing to do", never a failure: it is the
+/// answer for a job that was just inserted at `now()`, for one due inside
+/// `floor`, for one a worker holds, and for one an operator parked.
+///
+/// # Why `floor` is a parameter and not a constant here
+///
+/// The number that belongs in it is the *poll ladder's* fastest rung, and
+/// the ladder is `vpay_worker::poll_delay` — a rail-facing retry policy this
+/// crate has no business knowing (ADR-0002: nothing outside the adapters and
+/// the worker's own policy decides how often a rail is asked anything).
+/// `vpay-db` is handed a duration and enforces it; the caller
+/// (`vpay_api::provider_callback`) is where the value is written down and
+/// justified.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the write fails.
+pub(crate) async fn pull_forward_in_tx(
+    tx: &mut PgConnection,
+    dedupe_key: &str,
+    floor: Duration,
+) -> Result<bool, DbError> {
+    let moved = sqlx::query(
+        "UPDATE jobs SET run_at = now() \
+         WHERE dedupe_key = $1 \
+           AND locked_at IS NULL \
+           AND run_at > now() + ($2::BIGINT * INTERVAL '1 microsecond') \
+           AND run_at < 'infinity'::TIMESTAMPTZ",
+    )
+    .bind(dedupe_key)
+    .bind(as_micros(floor))
+    .execute(&mut *tx)
+    .await
+    .map_err(classify_write)?
+    .rows_affected();
+
+    Ok(moved == 1)
+}
+
 /// A [`Duration`] as whole microseconds, saturating.
 ///
 /// Durations reach Postgres as a microsecond count multiplied by

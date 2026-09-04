@@ -83,6 +83,12 @@ pub mod model;
 // *off* `router()` below belongs next to the module that owns them.
 pub mod observability;
 pub mod op;
+// The one route a payment *rail* calls, and the reason
+// `ProviderConfig::callback_url` has had a host to name since Step 3. Its own
+// module rather than a route under `v1` because it is not part of the
+// merchant API and must not sit inside the `/v1` authentication boundary —
+// see that module's header.
+pub mod provider_callback;
 pub mod resource_auth;
 #[cfg(test)]
 mod test_fixtures;
@@ -103,6 +109,7 @@ pub use vpay_provider::http as http_client;
 
 pub use browser::{BROWSER_ROUTES, PayerScope};
 pub use error::ApiError;
+pub use provider_callback::{PROVIDER_CALLBACK_ROUTE, PROVIDER_NEST};
 pub use resource_auth::MerchantJwtValidator;
 /// The boot steps both binaries call, under the name to call them by.
 ///
@@ -938,6 +945,33 @@ pub fn router(deps: RouterDeps) -> Router {
         // `track_http_metrics` and the ordering guard below.
         .layer(from_fn(track_http_metrics));
 
+    // Unauthenticated by *necessity*, and this is the only one of the three
+    // where that word carries no qualifier: the OP's callers present a
+    // `client_assertion`, a browser presents an intent's `client_secret`, and
+    // a rail presents **nothing at all** — neither MTN nor Orange signs a
+    // callback or sends a shared secret. So this nest is the one place a
+    // request's contents authorise nothing, and `provider_callback`'s handler
+    // is written around that: it never writes charge or intent state, and the
+    // only thing it can do is move a poll job's `run_at`.
+    //
+    // Mounted with its own body limit, its own fallback and no `CorsLayer` —
+    // see `provider_callback::routes`.
+    let provider = provider_callback::routes()
+        // Outside nothing in particular here (there is no auth layer to be
+        // outside of), but named for the same reason the `/v1` nest names
+        // it: the bound is on the *body*, so it applies before any extractor
+        // reads one, and an anonymous caller cannot make this process buffer
+        // more than `CALLBACK_BODY_LIMIT_BYTES`.
+        .layer(RequestBodyLimitLayer::new(
+            provider_callback::CALLBACK_BODY_LIMIT_BYTES,
+        ))
+        // Inside the nest, for the reason the other three give: the route
+        // pattern `/provider/{code}/callback` only exists once this router
+        // has matched, and mounting it outside would label every rail
+        // callback `unmatched` — which is also the label an unlinked rail
+        // code would otherwise get to choose.
+        .layer(from_fn(track_http_metrics));
+
     Router::new()
         .route("/healthz", get(healthz))
         .fallback(not_found)
@@ -951,6 +985,7 @@ pub fn router(deps: RouterDeps) -> Router {
         .nest("/v1/oauth", oauth)
         .nest("/v1/browser", browser)
         .nest("/v1", v1)
+        .nest(PROVIDER_NEST, provider)
         .with_state(state)
         .layer(
             ServiceBuilder::new()
@@ -1208,15 +1243,15 @@ mod tests {
         assert_eq!(bounded_method(&extension), OTHER_METHOD);
     }
 
-    /// **The ordering guard.** `track_http_metrics` is mounted four times —
-    /// once on the outer router, and once inside each of the three nests
-    /// (`oauth`, `browser`, `v1`) — and the outer mount is applied before any
-    /// `.nest(...)` call precisely so a request handled by a nest is not
-    /// wrapped twice. Move that `.layer(...)` line below the `.nest(...)`
-    /// calls and every count here becomes `2`.
+    /// **The ordering guard.** `track_http_metrics` is mounted five times —
+    /// once on the outer router, and once inside each of the four nests
+    /// (`oauth`, `browser`, `v1`, `provider`) — and the outer mount is
+    /// applied before any `.nest(...)` call precisely so a request handled by
+    /// a nest is not wrapped twice. Move that `.layer(...)` line below the
+    /// `.nest(...)` calls and every count here becomes `2`.
     ///
     /// One request per group, all in one recorder, so this also proves the
-    /// four groups produce four distinct series rather than one shared one.
+    /// five groups produce five distinct series rather than one shared one.
     #[test]
     fn every_mounted_group_is_counted_exactly_once() {
         let scrape = scrape_of(|| {
@@ -1224,21 +1259,31 @@ mod tests {
                 .enable_all()
                 .build()
                 .expect("a current-thread runtime builds");
-            for uri in [
-                "/healthz",
-                UNROUTED_PATH,
-                "/v1/payment_intents",
-                "/v1/oauth/jwks.json",
+            for (method, uri) in [
+                ("GET", "/healthz"),
+                ("GET", UNROUTED_PATH),
+                ("GET", "/v1/payment_intents"),
+                ("GET", "/v1/oauth/jwks.json"),
                 // The browser nest's own mount of `track_http_metrics`: no
                 // `key`/`client_secret` query is supplied, so this answers a
                 // 4xx from `authenticate` — but it is still counted, and
                 // under the *pattern*, exactly like the `/v1` case above.
-                "/v1/browser/payment_intents/pi_3NkExAmPlE",
+                ("GET", "/v1/browser/payment_intents/pi_3NkExAmPlE"),
+                // The rail callback nest. `POST` because that is the only
+                // method it routes, and a `GET` would be axum's own 405 —
+                // a different question from the one this test asks. The
+                // fixture links no adapters, so it answers the 404 the
+                // handler raises for an unknown rail code; counted all the
+                // same, and under the pattern rather than the code, which
+                // is what stops an anonymous caller minting a time series
+                // per made-up rail.
+                ("POST", "/provider/mtn_momo/callback"),
             ] {
                 runtime.block_on(async {
                     router(deps())
                         .oneshot(
                             Request::builder()
+                                .method(method)
                                 .uri(uri)
                                 .body(Body::empty())
                                 .expect("valid request"),
@@ -1255,8 +1300,8 @@ mod tests {
             .collect();
         assert_eq!(
             counted.len(),
-            5,
-            "five requests must produce five distinct series, once each:\n{scrape}"
+            6,
+            "six requests must produce six distinct series, once each:\n{scrape}"
         );
         for line in counted {
             assert!(
@@ -1487,6 +1532,154 @@ mod tests {
         }
     }
 
+    /// A `POST` through the whole real stack, for the routes `get` cannot
+    /// reach.
+    ///
+    /// `Content-Type` is deliberately unset: neither rail declares one this
+    /// handler depends on, and `provider_callback` reads the body as
+    /// `Bytes` precisely so a rail's choice of header cannot decide whether
+    /// a notification is accepted.
+    async fn post(uri: &str, body: &'static str) -> Response {
+        router(deps())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .body(Body::from(body))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router does not fail to serve")
+    }
+
+    async fn body_bytes(response: Response) -> Vec<u8> {
+        axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("the body is readable")
+            .to_vec()
+    }
+
+    /// The rail callback nest sits outside the merchant boundary, answers
+    /// its own 404, and answers an **unlinked rail code** with a body that
+    /// is byte-for-byte the router's own fallback.
+    ///
+    /// Three properties, and each fails on its own:
+    ///
+    /// * a `401` on any of these paths would tell a rail's backend — which
+    ///   holds no vpay credential and never will — to present a bearer
+    ///   token. That is what removing `.fallback` from
+    ///   `provider_callback::routes` or dropping the `.nest` would produce
+    ///   for an unmatched path;
+    /// * the unlinked-code answer being *identical* to a mistyped path's is
+    ///   what `provider_callback::callback` calls [`not_found`] for rather
+    ///   than building its own `ApiError`. A caller cannot use this route to
+    ///   ask which rails a deployment links, because the two answers do not
+    ///   differ in a byte;
+    /// * this crate's fixture deliberately links **no** adapters
+    ///   (`test_fixtures::deps` — `vpay-api` depends on no adapter crate,
+    ///   ADR-0002), so `mtn_momo` is "unlinked" here in exactly the way a
+    ///   rail code nobody configured would be in production. The
+    ///   *linked*-rail behaviour needs a real adapter and a real Postgres and
+    ///   is `backends/tests/integration/tests/provider_callback.rs`.
+    #[tokio::test]
+    async fn the_provider_nest_is_unauthenticated_and_its_404_is_the_routers_own() {
+        for path in [
+            "/provider/not_a_route",
+            "/provider/mtn_momo/callback/extra",
+            "/provider",
+        ] {
+            let response = post(path, "{}").await;
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "{path} must answer the provider nest's own honest 404, never a 401"
+            );
+        }
+
+        let unrouted = get(UNROUTED_PATH).await;
+        assert_eq!(unrouted.status(), StatusCode::NOT_FOUND);
+        let expected = body_bytes(unrouted).await;
+
+        let unlinked = post("/provider/mtn_momo/callback", "{}").await;
+        assert_eq!(
+            unlinked.status(),
+            StatusCode::NOT_FOUND,
+            "a rail code this process links no adapter for is not a route"
+        );
+        assert_eq!(
+            body_bytes(unlinked).await,
+            expected,
+            "an unlinked rail code must be indistinguishable from a path that does not exist"
+        );
+    }
+
+    /// The body limit is on the callback nest, and it is the tighter one.
+    ///
+    /// `RequestBodyLimitLayer` answers `413` before any extractor runs, which
+    /// is the point: without it an anonymous caller chooses how much this
+    /// process buffers. Asserted at a size that is over
+    /// `provider_callback::CALLBACK_BODY_LIMIT_BYTES` and comfortably *under*
+    /// `V1_BODY_LIMIT_BYTES`, so a nest that quietly inherited the `/v1`
+    /// bound — or none at all — fails here rather than passing for the wrong
+    /// reason.
+    #[tokio::test]
+    async fn an_oversized_rail_callback_is_refused_before_it_is_read() {
+        // A `const` block, so the two bounds are compared at compile time —
+        // clippy rightly refuses a runtime `assert!` over two constants.
+        const {
+            assert!(
+                provider_callback::CALLBACK_BODY_LIMIT_BYTES < V1_BODY_LIMIT_BYTES,
+                "the rail surface must not be looser than the merchant one"
+            );
+        }
+
+        let oversized = "x".repeat(provider_callback::CALLBACK_BODY_LIMIT_BYTES + 1);
+        let response = router(deps())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/provider/mtn_momo/callback")
+                    .body(Body::from(oversized))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("router does not fail to serve");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// A `GET` on the callback path is axum's bare `405`, not this crate's
+    /// 404 envelope — written down because it is now reachable by a *payer's
+    /// browser* and was not before.
+    ///
+    /// Orange's adapter defaults `return_url`/`cancel_url` to
+    /// `ProviderConfig::callback_url` when a deployment configures no
+    /// `return_url` setting, and `config/application.yml` configures none —
+    /// so the hosted page sends the payer back to this exact path with a
+    /// `GET`. Before this route was mounted that was the outer router's 404
+    /// envelope; it is now an empty 405. **Neither is a working return
+    /// trip**: the Orange redirect return is a named, unbuilt gap
+    /// (`docs/flows/browser-checkout.md`, `docs/status.md`), and this change
+    /// neither closes it nor makes it worse — it renames the failure.
+    ///
+    /// Left as a bare 405 for the reason `docs/reference/vpay-api.md` already
+    /// records about `GET /v1/oauth/token`: 405 is the correct status for a
+    /// path that exists and does not take this method, and answering the 404
+    /// envelope instead would tell an integrator the path does not exist when
+    /// it does. The gap — an empty body where every other refusal on this
+    /// surface carries the Stripe envelope — is worth closing with a
+    /// `method_not_allowed` renderer for the whole router, not one route at a
+    /// time.
+    #[tokio::test]
+    async fn a_get_on_the_callback_path_is_a_405_and_not_the_404_envelope() {
+        let response = get("/provider/mtn_momo/callback").await;
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert!(
+            body_bytes(response).await.is_empty(),
+            "axum's own 405 carries no body; if this grows one, a renderer was added and the \
+             comment above needs revisiting"
+        );
+    }
+
     /// CORS is on the browser nest and **only** there.
     ///
     /// A preflight for the merchant `/v1` answering with an
@@ -1533,6 +1726,11 @@ mod tests {
             "/v1/payment_intents/pi_x/confirm",
             "/v1/oauth/token",
             "/healthz",
+            // The rail callback nest. Unauthenticated like `/v1/browser`
+            // and deliberately *not* CORS-enabled: its caller is a rail's
+            // own backend, so a permissive header here would only ever be
+            // an invitation for a page to POST notifications at it.
+            "/provider/mtn_momo/callback",
         ] {
             let response = preflight(uri).await;
             assert!(

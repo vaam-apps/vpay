@@ -45,7 +45,30 @@
 # this does not is the dashboard's redirect URI, which nothing in the demo
 # exercises.
 
-name: vpay
+# The COMPOSE PROJECT NAME, and the one thing in this file that decides
+# whether two demos can run on one machine at once.
+#
+# Compose merges `name:` by last-file-wins, and this file is always last
+# (`just`'s `demo_compose`), so this value — not compose.yml's `vpay` — is the
+# project every `docker compose … -f compose.demo.yml` command addresses. It
+# is what prefixes every container (`<project>-vpay-server-1`), names the
+# default network, and namespaces the `pgdata` volume, so two stacks with
+# different values share nothing and neither `up` nor `down -v` can touch the
+# other's rows.
+#
+# It used to read `name: vpay`, which made the demo stack and `just up`'s
+# development stack THE SAME PROJECT: `just demo` adopted (and `just
+# demo-down -v` deleted the volumes of) whatever `just up` had left running,
+# and two demos could not coexist however their ports were remapped. The
+# default is now `vpay-demo` — a project of its own, still fixed, so the
+# single-user path needs no flags.
+#
+# `just demo` exports this from its `demo_project` variable (`just
+# demo_project=vpay-demo-b demo_port=18088 demo_receiver_port=18089 demo`);
+# the `:-vpay-demo` default keeps a bare `docker compose -f … up` working and
+# keeps this file readable without `just`. Compose restricts a project name to
+# lowercase letters, digits, `-` and `_`, starting with a letter or digit.
+name: ${VPAY_DEMO_PROJECT:-vpay-demo}
 
 services:
   postgres:
@@ -60,11 +83,37 @@ services:
     # developer's machine be free — a local Postgres, or any other project's
     # compose stack, and `just demo` dies on "port is already allocated"
     # before a single line of the demo runs. That happened on the machine
-    # this was written on. :3000 and :8080 stay published because the README
-    # promises those URLs; :5432 buys the demo nothing.
+    # this was written on. :5432 buys the demo nothing.
     #
     # `docker compose exec postgres psql -U vpay vpay` still gets you a shell
     # on it. Use `just up` (compose.yml alone) if you want the port published.
+    ports: !reset []
+
+  # The two rail stubs, unpublished for the same reason and by the same
+  # mechanism as `postgres` above — and this one is what actually makes two
+  # concurrent demos possible.
+  #
+  # `demo_project`, `demo_port` and `demo_receiver_port` between them move
+  # everything a second demo would otherwise fight over EXCEPT these: 8081 and
+  # 8082 are fixed literals in compose.yml, they are appended (not replaced)
+  # by a plain `ports:` here, and a second `up` on the same machine dies on
+  # "port is already allocated" before any of the three variables gets a
+  # chance to matter. Nothing in the demo reaches a rail stub from the host:
+  # `vpay-server` and `vpay-worker` talk to `wiremock-mtn:8080` /
+  # `wiremock-orange:8080` over the compose network, which is what
+  # `config/application.yml` names.
+  #
+  # Reading what vpay actually sent a rail is still one command, and it is the
+  # one docs/runbooks/demo.md uses:
+  #
+  #     docker compose $DEMO_COMPOSE exec wiremock-mtn \
+  #         curl -s localhost:8080/__admin/requests
+  #
+  # `just up` (compose.yml alone) still publishes both if you want them.
+  wiremock-mtn:
+    ports: !reset []
+
+  wiremock-orange:
     ports: !reset []
 
   vpay-server:
@@ -120,6 +169,18 @@ services:
   wiremock-webhook:
     ports: !override ["${VPAY_DEMO_RECEIVER_PORT:-8083}:8080"]
 
+  # NOTE ON `dashboard`. This file does not mention it, and `just demo-up`
+  # does not start it — the recipe names the six services the walkthrough
+  # needs (postgres, both rail stubs, the receiver, the server, the worker)
+  # exactly as `just stripe-compat` already did. Two reasons, one of them
+  # honest rather than practical: building `frontends/Dockerfile` costs
+  # minutes, and per docs/status.md the dashboard renders a static scaffold
+  # notice and makes no call to `vpay-server` — there is no data source to
+  # show, so a demo that booted it would be inviting a reader to look at a
+  # screen that cannot show the payments the walkthrough just made
+  # (docs/runbooks/demo.md says so out loud). Its `3000:3000` publication is
+  # therefore left exactly as compose.e2e.yml has it: unreached by the demo,
+  # and still there for `docker compose -f compose.yml -f compose.e2e.yml up`.
   vpay-worker:
     environment:
       VPAY_PROFILE: demo

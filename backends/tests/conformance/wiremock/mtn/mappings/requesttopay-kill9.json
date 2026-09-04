@@ -1,0 +1,161 @@
+{
+  "mappings": [
+    {
+      "name": "kill9: a confirm whose status query is slow, selected by MSISDN rather than by reference",
+      "scenarioName": "mtn-kill9-slow-status",
+      "requiredScenarioState": "Started",
+      "newScenarioState": "kill9-polling",
+      "priority": 4,
+      "request": {
+        "method": "POST",
+        "urlPath": "/collection/v1_0/requesttopay",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.payer.partyId",
+              "equalTo": "237600000ce9"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 202
+      },
+      "metadata": {
+        "why": [
+          "THE ENTRY POINT of the only status query an end-to-end confirm can make slow.",
+          "requesttopay-status.json's ...0560 mapping already answers slowly, but it is keyed",
+          "on a fixed reference and a confirm cannot choose its reference (the handler mints",
+          "provider_reference_id with Uuid::new_v4() before committing the charge, and a seam",
+          "to fix it from a test would be a code path that exists only outside production --",
+          "AGENTS.md's first rule). MTN's status query is a GET carrying no body, so the",
+          "steering has to happen HERE, on the POST, and be carried forward by scenario state",
+          "-- the same technique, and the same documentation-MSISDN block, as",
+          "requesttopay-scenario.json's `mtn-e2e-poll`.",
+          "",
+          "237600000ce9 continues that file's 0ce0 convention; the trailing 9 names the signal",
+          "worker_kill9.rs sends (SIGKILL).",
+          "",
+          "Answers a plain 202 because this mapping exists to MOVE THE SCENARIO, not to change",
+          "what a confirm sees: the crash under test is the WORKER's, and up to the point the",
+          "worker polls, this confirm must be indistinguishable from any other."
+        ]
+      }
+    },
+    {
+      "name": "kill9: the first status query takes thirty seconds, whatever the reference",
+      "scenarioName": "mtn-kill9-slow-status",
+      "requiredScenarioState": "kill9-polling",
+      "newScenarioState": "kill9-answering",
+      "priority": 4,
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/collection/v1_0/requesttopay/.*"
+      },
+      "response": {
+        "status": 200,
+        "fixedDelayMilliseconds": 30000,
+        "jsonBody": {
+          "status": "PENDING"
+        }
+      },
+      "metadata": {
+        "why": [
+          "Thirty seconds is chosen against vpay_provider::DEFAULT_REQUEST_TIMEOUT (20 s), not",
+          "against a stopwatch: it is longer, so this request CANNOT be answered before the",
+          "worker's own deadline fires. A test that killed the worker a little late therefore",
+          "still cannot settle the charge behind the assertion's back -- it fails loudly",
+          "instead, which is the failure mode worker_kill9.rs wants from a slow machine.",
+          "",
+          "newScenarioState fires when the stub MATCHES the request, not when it finishes",
+          "answering it (verified against wiremock/wiremock:3.9.2 before this file was",
+          "written: during a 30 s delay, GET /__admin/scenarios already reports the new state",
+          "and POST /__admin/requests/count already counts the request). That is what makes",
+          "the SIGKILLed poll observable at all, and what makes the SECOND worker's poll --",
+          "the one that must settle the charge -- fast.",
+          "",
+          "Matches ANY reference, so it is usable from a real confirm. Three things keep it",
+          "from swallowing an unrelated case, exactly as for `mtn-e2e-poll`:",
+          "  1. requiredScenarioState -- only the POST above leaves `Started`, and no other",
+          "     suite, and no demo, sends that MSISDN;",
+          "  2. priority 4 is below the reference-keyed status mappings (priority 1), so",
+          "     ...0404, ...0f01 and the rest keep winning even inside this scenario;",
+          "  3. priority 4 is above `mtn-e2e-poll`'s priority-5 status mappings, so a",
+          "     container that somehow had both scenarios armed would answer deterministically",
+          "     rather than by mapping insertion order. No suite arms both: each test starts",
+          "     its own container."
+        ]
+      }
+    },
+    {
+      "name": "kill9: every later status query answers SUCCESSFUL at once",
+      "scenarioName": "mtn-kill9-slow-status",
+      "requiredScenarioState": "kill9-answering",
+      "priority": 4,
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/collection/v1_0/requesttopay/.*"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "SUCCESSFUL",
+          "financialTransactionId": "kill9-1234567893",
+          "amount": "50.00",
+          "currency": "EUR"
+        }
+      },
+      "metadata": {
+        "why": [
+          "No newScenarioState, so the scenario rests here and every later poll answers the",
+          "same thing -- which is what makes 'the charge settles EXACTLY once' a real",
+          "assertion rather than an artefact of the stub changing its mind.",
+          "",
+          "financialTransactionId is distinct from both 1234567891 (the reference-keyed",
+          "scenario) and e2e-1234567892 (mtn-e2e-poll), so an assertion on",
+          "charges.provider_txn_id cannot pass by reading another stub's answer."
+        ]
+      }
+    },
+    {
+      "name": "kill9: a submit that takes thirty seconds to answer, selected by MSISDN",
+      "priority": 4,
+      "request": {
+        "method": "POST",
+        "urlPath": "/collection/v1_0/requesttopay",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.payer.partyId",
+              "equalTo": "237600000cf9"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 202,
+        "fixedDelayMilliseconds": 30000
+      },
+      "metadata": {
+        "why": [
+          "docs/flows/crash-safety.md's kill point 2 -- 'POST issued, response lost' -- staged",
+          "against the SHIPPING vpay-server rather than written into the database.",
+          "worker_kill9.rs confirms with this MSISDN, waits until the charge is committed in",
+          "`submitting` with an unanswered provider_requests row (write first, network",
+          "second), and SIGKILLs the server while this delay is still running. The response",
+          "never reaches anyone, which is precisely what 'the answer was lost' means.",
+          "",
+          "No scenario: nothing about the recovery depends on a second POST. The recovery",
+          "table's answer for an unanswered submit is POLL, and the poll falls through to",
+          "requesttopay-status.json's catch-all SUCCESSFUL (priority 10) like any other",
+          "reference -- so a resubmit, which would show up as a second POST in the journal,",
+          "is something that test can assert did NOT happen.",
+          "",
+          "Thirty seconds for the same reason as the status mapping above, measured against",
+          "the same 20 s request timeout. 237600000cf9 is the submit-side twin of",
+          "237600000ce9."
+        ]
+      }
+    }
+  ]
+}

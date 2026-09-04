@@ -114,3 +114,15 @@ rustls.workspace = true
 # without a word.
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# `tests/worker_kill9.rs` spawns the shipping `vpay-server` and
+# `vpay-worker-bin` as real OS processes, and a real process reads its
+# configuration from a YAML file (`--config` / `VPAY_CONFIG`, ADR-0003) —
+# there is no in-memory `Config` to hand it. That suite therefore *writes*
+# the same `vpay_config::Config` value its in-process harness uses, with the
+# same serializer `vpay_config` itself round-trips through
+# (`Config::load_with_env`), so the killed process and the surviving one
+# cannot be running two different deployments. Hand-writing the YAML instead
+# would be a second spelling of the configuration, and the first thing it
+# would drift on is the rail host — which is the one field a poll must agree
+# with the confirm about.
+serde_yaml_ng.workspace = true

@@ -148,8 +148,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 26,
-        "all twenty-six migrations under backends/migrations should be recorded as applied \
+        applied, 27,
+        "all twenty-seven migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -161,8 +161,10 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          0024 events.fanout_attempts + the 'failed' fanout_state, \
          Step 5b's 0025 idempotency_keys.response_retry, the column that lets a \
          replayed response re-emit the stripe-should-retry the original carried, \
-         and Step 5c's 0026 payment_intents.client_secret_suffix, the payer credential \
-         /v1/browser authenticates with)"
+         Step 5c's 0026 payment_intents.client_secret_suffix, the payer credential \
+         /v1/browser authenticates with, and Step 8's 0027 \
+         charges_provider_reference_idx, which keeps the unauthenticated \
+         POST /provider/{{code}}/callback lookup off a sequential scan)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys

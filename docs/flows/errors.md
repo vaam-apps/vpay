@@ -361,10 +361,11 @@ attach the `reqwest`/body error instead of `format!`ing it into a message,
 and Orange's hand-rolled `Error::source()` walk is gone — the walk is the
 logger's now (`vpay_core::error::source_chain`, used by `ApiError::log` and
 by `vpay_worker`'s job settlement, so `jobs.last_error` keeps the leaf it
-would otherwise have lost). `verify-errors` counts **14 error types, all
-classified** (13 until Step 7's lane 3 added `vpay_api::BootError`), and additionally checks that each of the **14 `#[from]`
-variants** is named explicitly in every `Classify` method that discriminates
-on `self` — a count that is now derived from the variants that passed rather
+would otherwise have lost). ~~`verify-errors` counts **14 error types, all classified** (13 until Step 7's
+lane 3 added `vpay_api::BootError`)~~ **— corrected 2026-09-04: it counts 15,
+Step 8's lane B having added `vpay_worker::ssrf::EgressRefusal`** — and it
+additionally checks that each of the **14 `#[from]` variants** is named
+explicitly in every `Classify` method that discriminates on `self` — a count that is now derived from the variants that passed rather
 than from per-file arithmetic. Nothing about the wire changed: the 26 conformance cases still pass,
 and three of their assertions were adapted to the struct shape (Step 7
 decision 14) without changing what they assert.

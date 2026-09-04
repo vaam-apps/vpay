@@ -188,12 +188,18 @@ it says "Status: not implemented"). Concretely, for the Orange Money
 adapter, `return_url = setting(config, "return_url").unwrap_or(callback_url)`
 is a **deployment** setting, never the merchant's per-checkout one;
 `config/application.yml` sets no `return_url`, so Orange redirects the payer
-to `{public_base_url}/provider/orange_money/callback` — a path the router
-does not mount. The merchant's own `return_url` is stored on `charges` and
-echoed back in `next_action` as a label; nothing redirects to it. **Do not
-ship a redirect-rail (Orange) checkout on `@vpay/stripe-js` until the
-callback route lands.** This gap is owned by whichever step builds provider
-callbacks, not by this one — tracked in `docs/status.md`.
+to `{public_base_url}/provider/orange_money/callback` — ~~a path the router
+does not mount~~ **which since 2026-09-04 (Step 8, lane C) *is* a mounted path,
+but a `POST`-only one for the rail's own backend, so a payer's browser arriving
+there gets an empty `405`** (measured, not assumed:
+`a_get_on_the_callback_path_is_a_405_and_not_the_404_envelope` in `vpay-api`).
+That is not a return trip either. The merchant's own `return_url` is stored on
+`charges` and echoed back in `next_action` as a label; nothing redirects to it.
+**The redirect gap itself is unchanged and only the failure's *name* changed: do
+not ship a redirect-rail (Orange) checkout on `@vpay/stripe-js` until a real
+return endpoint exists.** The callback route did not close this gap and was not
+meant to — the Step 8 plan names the return trip as explicitly out of scope.
+Tracked in `docs/status.md`.
 
 ## The merchant SDKs and `client_secret` (gap found and closed in this step)
 
@@ -232,8 +238,10 @@ the value to `@vpay/stripe-js` in the browser and never logs it.
   against the real compose stack: mints an intent server-side (Node, the
   `demo-merchant` OAuth keypair, never in the browser) via
   `cy.task('mintCheckoutPaymentIntent')`, visits the page, confirms an MTN
-  push with MSISDN `237600000ce0` (`examples/merchant-demo`'s
-  `DEMO_MSISDN`, keying WireMock scenario `mtn-e2e-poll`), and asserts the
+  push with MSISDN `237600000ce0` (the same number `examples/merchant-demo`
+  uses for its first outcome — `Steering::Msisdn("237600000ce0")` in
+  `OUTCOMES[0]` since Step 8; the constant was called `DEMO_MSISDN` until then,
+  and only the name changed — keying WireMock scenario `mtn-e2e-poll`), and asserts the
   rendered status reaches `succeeded` once `vpay-worker` — running in the
   stack, not stubbed — settles the charge. Added to `.github/workflows/ci.yml`'s
   `e2e` job. See `docs/status.md` for whether this run's own output is

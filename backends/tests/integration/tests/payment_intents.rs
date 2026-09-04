@@ -313,6 +313,7 @@ fn config_with(
             // Registered, and registered for nothing — see `CLIENT_C`.
             merchant_client_with_scopes(CLIENT_C, MERCHANT_C, jwks_c, &[]),
         ],
+        webhooks: vpay_config::WebhookPolicy::default(),
         dashboard_client: None,
     }
 }

@@ -43,9 +43,28 @@ fresh reference on retry is how you double-charge a customer.
 
 | Evidence | What happened | Action |
 |---|---|---|
+| Charge younger than 60 s | A confirm may still be running | **Wait.** Reschedule once, for the rest of the window, and touch nothing |
 | No `provider_requests` row | Crashed before the POST | **Resubmit**, same reference |
 | Row exists, `status_code IS NULL` | POST issued, response lost | **Poll**. On `NotFound`, retry the poll; only after 3 consecutive `NotFound` over ≥60s treat it as never-received and resubmit with the same reference |
 | Row has a status code | Normal path | Advance state from the code |
+
+**Added 2026-09-04 (Step 8, lane G). The table applies only to a charge that
+has been `submitting` for at least `not_found_window` (60 s).** That state is
+not only what a crash leaves: it is also the ordinary state of a confirm that is
+still inside its rail call, because the charge and its poll job are committed
+*before* the network call and the `submitting → submitted` compare-and-swap
+happens after it. Younger than the window, nothing on disk distinguishes the
+two, and every row above would move a charge out from under a live confirm —
+which is what Step 8's demo observed four times in six runs. The age is read
+from `charges.created_at`, because the first row of the table has no
+`provider_requests` row to read a time from at all. **Amended 2026-09-04
+(Step 8, lane H).** The wait costs the charge one rung of the ladder and not
+six: `RecoveryAction::Wait` carries `not_found_window - age` and the poll
+comes back once, when the age guard will pass, so a genuinely crashed charge
+starts its real recovery at `poll_delay(1)` — twenty seconds — rather than at
+`poll_delay(6)`. The age itself is measured by Postgres at both ends
+(`Charges::get_by_id_as_of` selects `now()` beside the row), because a window
+computed from the worker host's clock is a window a fast host does not have.
 
 A bare `NotFound` is **never** on its own grounds to fail a charge. Resubmission
 is always safe, so every ambiguity resolves toward "find out", never "give up".
@@ -106,7 +125,8 @@ response and before the state update. Each must resolve without
 double-charging.
 
 **They are exercised by writing the state a crash leaves, not by killing a
-process.** `backends/tests/integration/tests/worker_recovery.rs` builds each of
+process — and since 2026-09-04 (Step 8, lane D) two of the three are *also*
+exercised by killing one.** `backends/tests/integration/tests/worker_recovery.rs` builds each of
 the three states directly against a real Postgres — commit the charge and no
 attempt row; add an attempt row with `status_code IS NULL`; add one carrying a
 status — then runs the real handler against a real WireMock rail and asserts
@@ -115,10 +135,57 @@ the recovery table resolves it. The decisive assertion in each is that **every
 `provider_reference_id`** (`assert_one_reference`), which is the property the
 retry rule exists for.
 
-That is a weaker claim than "a `SIGKILL` at each point resolves cleanly", and
-it is stated this way on purpose: it proves the recovery table, not the
-process's behaviour under a signal. Nothing in this repository kills a process
-mid-confirm.
+Each of those three states is written **ninety seconds in the past**
+(`support::age_the_crash`), which is not a convenience: since lane G a charge
+inserted a millisecond ago is indistinguishable from a confirm that is still
+running, and the recovery table refuses it. The suite's fourth and fifth cases
+are that refusal — the same fixtures unaged, asserting nothing moves — and its
+sixth (`a_confirms_compare_and_swap_wins_against_the_worker_that_claimed_its_poll_job`)
+runs the shipping loop against the confirm's own compare-and-swap.
+
+That was a weaker claim than "a `SIGKILL` at each point resolves cleanly", and
+it was stated that way on purpose: it proves the recovery table, not the
+process's behaviour under a signal. ~~Nothing in this repository kills a process
+mid-confirm.~~ **Retired 2026-09-04 (Step 8, lane D):
+`backends/tests/integration/tests/worker_kill9.rs` does.** It spawns the
+shipping `vpay-worker-bin` and the shipping `vpay-server` as real OS processes
+against a real Postgres and a real WireMock rail, makes the rail slow at exactly
+one point (a 30 s `fixedDelayMilliseconds` mapping armed by a documentation
+MSISDN — longer than `vpay_provider::DEFAULT_REQUEST_TIMEOUT`, so a late kill
+cannot let the request quietly settle the charge), and `Child::kill()`s the
+process once two independent witnesses agree the request is in flight. The exit
+status is asserted **signalled with 9** in both cases, and additionally
+`code() == None` in the mid-poll one (`worker_kill9.rs:961-971`, against
+`:1203-1207`), so a process that chose to `exit(1)` could not stand in for one
+that was killed.
+
+- **`a_worker_killed_mid_poll_settles_the_charge_exactly_once_after_its_lease_is_reaped`**
+  — the worker dies mid-status-query. The lease, held by the dead process's own
+  `worker_id`, is the only trace; a second worker reaps it at boot, re-runs the
+  poll, and the charge settles exactly once by four independent counts,
+  including the rail's own journal showing one submit and two status queries.
+- **`a_server_killed_mid_submit_leaves_a_charge_the_worker_settles_without_a_second_submit`**
+  — kill point 2, staged against the shipping server with no test-only seam. The
+  worker recovers by polling and never resubmits: **one** submit in the journal,
+  which is what the retry rule is actually about.
+
+**Two clocks are simulated in that file, and nothing else is.**
+`age_the_dead_workers_lease` moves `jobs.locked_at` ten minutes back, guarded on
+the dead worker's own `worker_id`, because `RecoveryPolicy`'s five-minute lease
+has no CLI override and the test cannot wait it out.
+`age_the_crashed_charge` moves `charges.created_at` ten minutes back, guarded on
+`state = 'submitting'`, because lane G's minimum charge age means a
+freshly-killed server's charge is — correctly — indistinguishable from a live
+confirm. That second clock is load-bearing and was measured to be: added on the
+integration branch after lane G merged, because without it the server-kill case
+failed there with the worker correctly waiting. The processes, the signal, the
+reap, the claim and the re-run are all the shipping binaries' own.
+
+**Kill point 1 is still written rather than caused**, and for a reason rather
+than for want of trying: it is the moment *before* the reference is minted, so
+there is no network call for a signal to land during. `worker_recovery.rs`
+remains the only proof of that case. Neither kill case exercises Orange, and the
+rail is a WireMock container in both.
 
 **Status: implemented, and driving payments. Updated 2026-09-03 (Step 4).**
 
@@ -155,17 +222,32 @@ the committed row rather than from the adapter's return value
   that transaction cannot: charges written before the queue existed, and a job
   lost to operator error.
 - **The table itself** is `vpay_worker::recovery::recovery_step`, a pure
-  function over (flow shape, latest submit attempt, `NotFound` streak, window).
+  function over (flow shape, latest submit attempt, `NotFound` streak, **charge
+  age**, window).
   `SubmitAttempt::{Never, Unanswered, Answered(code)}` are the three rows above;
-  `Answered` includes migration `0020`'s `0` sentinel.
-- **The flow shape decides first.** A **redirect** charge still in `submitting`
+  `Answered` includes migration `0020`'s `0` sentinel. **Amended 2026-09-04
+  (Step 8, lane H): those ages are `Duration`s, not instants**, and they are
+  computed from `Charges::get_by_id_as_of`, which selects `now()` on the same
+  statement that reads the row. `recovery_step` and `past_the_horizon` used to
+  subtract `charges.created_at` from the *worker host's* clock, so a worker a
+  minute fast measured every charge as a minute older than it was and the guard
+  above became a silent no-op; taking durations leaves no parameter for a
+  caller to read off the wrong clock
+  (`the_age_is_measured_by_the_database_and_not_by_this_host`,
+  `the_charge_read_carries_the_databases_own_clock_beside_the_row`).
+- **The charge's age decides first, then the flow shape.** A **redirect** charge still in `submitting`
   is failed (`provider_unavailable`, intent back to `requires_payment_method`):
   the payer was never handed a URL, and the `pay_token` needed to ask the rail
   about the order was in the response that was lost, so that `order_id` is dead
   — this document's own conclusion, now executed
   (`a_redirect_charge_with_no_token_is_failed_without_ever_asking_the_rail`).
   The branch is on `Capabilities::flow`, a capability *value*, never a rail code
-  (ADR-0002).
+  (ADR-0002). **The redirect branch is unconditional *within* the table but no
+  longer unconditional overall (2026-09-04, lane G):** a redirect charge younger
+  than the window is left alone, because `FailDeadOrder` is correct only for a
+  submit response that was genuinely lost and catastrophic for one that is about
+  to arrive
+  (`a_young_redirect_charge_is_not_failed_as_a_dead_order_until_it_is_older`).
 - **The resubmit rule holds.** `resubmit_charge` reads
   `charges.provider_reference_id` and never mints one
   (`a_charge_whose_submit_never_left_is_resubmitted_under_the_same_reference`).
@@ -209,11 +291,21 @@ transaction and uses the commit path as its control).
 
 **What is still not built.**
 
-- **No `SIGKILL` test.** See the Tests section above: the states are written,
-  not caused. A real kill-and-restart test would additionally prove the
-  process's behaviour under a signal, and nothing does.
-- **No callback route**, so a rail that tries to tell us about a charge is
-  ignored and only the ladder finds out — see [reconciler.md](reconciler.md).
+- ~~**No `SIGKILL` test.**~~ **Narrowed 2026-09-04 (Step 8, lane D) to kill
+  point 1 only.** Kill points 2 and the mid-poll crash are proven by a real
+  signal to a real shipping process (`worker_kill9.rs`, Tests above). Kill
+  point 1's state is still written rather than caused, because there is no
+  request to interrupt at that instant. **Orange Money is not exercised by
+  either kill case**, and a redirect-rail kill test would need its own scenario
+  (the ordering is reversed — see "Redirect rails" above).
+- ~~**No callback route**, so a rail that tries to tell us about a charge is
+  ignored~~ — **retired 2026-09-04 (Step 8, lane C): a rail that tells us about
+  a charge is now heard.** The callback route pulls that charge's poll forward
+  instead of leaving it to the ladder's next rung. It changes nothing about
+  recovery — the authenticated status query is still the only thing that settles
+  anything, and every kill point above resolves identically whether a callback
+  arrives or not. What is still missing is a rail that has actually called it.
+  See [reconciler.md](reconciler.md).
 - **The rails are WireMock hosts.** Every recovery case above is proven against
   a stub speaking the documented protocol. No real rail has ever been called,
   so what is proven is that the recovery table is executed correctly, not that

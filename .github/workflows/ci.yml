@@ -59,6 +59,21 @@ jobs:
       - run: cargo xtask verify-status
       - name: verify-errors (ADR-0011)
         run: cargo xtask verify-errors
+      # ADR-0015 decision (3): the parity matrix is machine-checked and
+      # "fails the build the moment the document and the trees disagree",
+      # and `docs/plans/2026-09-03-step8-production-gate.md` §3 spelled that
+      # out as "in `just verify` (and therefore CI's `self-checks`)". Until
+      # 2026-09-04 the parenthesis was false — the gate ran in the justfile
+      # and nowhere in this file — so a ✅ in `docs/sdks/parity.md` naming a
+      # test that no longer exists would have merged with CI green.
+      #
+      # Before `verify-docs`, because `verify-docs` is a report rather than a
+      # gate and the justfile promises it runs last.
+      #
+      # The job's `name:` above is deliberately unchanged — it is a required
+      # status check, and renaming it would silently stop gating.
+      - name: verify-sdk-parity (ADR-0015)
+        run: cargo xtask verify-sdk-parity
       # A report, not a gate — it exits 0 whatever it finds (Step 7,
       # decision (4)). It is here so `justfile`'s claim that this job runs
       # exactly what `just verify` runs stays true, and so the doc-volume,

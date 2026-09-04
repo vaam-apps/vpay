@@ -186,7 +186,7 @@ struct Booted {
     adapters: BTreeMap<String, Box<dyn ProviderAdapter>>,
     rails: BTreeMap<String, vpay_provider::ProviderConfig>,
     endpoints: EndpointRegistry,
-    webhook_http: reqwest::Client,
+    egress: vpay_worker::EgressPolicy,
     concurrency: usize,
 }
 
@@ -231,7 +231,7 @@ async fn run() -> anyhow::Result<()> {
         Arc::new(booted.rails),
         policy,
         Arc::new(booted.endpoints),
-        booted.webhook_http,
+        booted.egress,
         booted.concurrency,
         grace,
         worker_id,
@@ -301,7 +301,7 @@ fn install_process_defaults(args: &WorkerArgs) -> anyhow::Result<PrometheusHandl
 /// implementation, because both write the same two tables in the same database
 /// and a divergence there would be silent. What is left is what only *this*
 /// binary does: the rail projection the loop polls with, and the webhook
-/// endpoints and client it delivers with.
+/// endpoints and egress policy it delivers with.
 ///
 /// Nothing here binds a socket, which is the entire definition of `/livez`: a
 /// probe against a process still inside this function, or one about to exit
@@ -370,32 +370,35 @@ async fn boot(args: &WorkerArgs) -> anyhow::Result<Booted> {
     let rails = project_rails(&resource_config, &adapters);
     let endpoints = project_endpoints(&resource_config);
 
-    // A *second* client, not the rails' one, and the difference is the
-    // timeouts. A rail's budget is the port's default and rides on
-    // `ProviderConfig`; a merchant's receiver is somebody else's server that
-    // this process must not be held open by, so it gets a short connect and a
-    // bounded read. The two budgets are `vpay_worker::webhooks`' own constants
-    // and not this binary's, so a change cannot leave the integration suite
-    // exercising a client that no longer ships. Everything else is
-    // `client_with_timeouts`'s doing and is what makes it safe to POST a
-    // signed body at an operator-configured URL: vendored roots,
-    // `redirect::Policy::none()` so a receiver cannot bounce the delivery at a
-    // host nobody configured, and `no_proxy()`.
+    // **No second client is built here any more, and that is the Step 8
+    // change.** Webhook delivery used to share one `reqwest::Client` built at
+    // this point; it cannot, because each delivery's client is pinned to the
+    // addresses its own endpoint resolved to
+    // (`vpay_worker::ssrf`, `vpay_provider::http::client_pinned_to`) and a
+    // pin is a property of the builder. The two budgets are unchanged and
+    // still `vpay_worker::webhooks`' own constants; what this binary passes
+    // down instead is the *policy*.
     //
-    // Built once and cloned into every task — `reqwest::Client` is an `Arc`
-    // internally, so the clones share one connection pool.
-    let webhook_http = vpay_provider::http::client_with_timeouts(
-        vpay_worker::WEBHOOK_CONNECT_TIMEOUT,
-        vpay_worker::WEBHOOK_REQUEST_TIMEOUT,
-    )
-    .context("building the outbound HTTP client webhook delivery uses")?;
+    // Projected out of YAML exactly as the endpoint table above is: a handler
+    // must never read a config document's shape (ADR-0003 —
+    // `vpay_worker::WebhookContext`). The refusal of `livemode: true` with
+    // `allow_private_targets: true` has already happened, in
+    // `Config::validate_all`, before this line runs.
+    let egress = vpay_worker::EgressPolicy {
+        allow_private_targets: config.webhooks.allow_private_targets,
+    };
+    tracing::info!(
+        allow_private_targets = egress.allow_private_targets,
+        livemode = config.deployment.livemode,
+        "webhook egress policy loaded"
+    );
 
     Ok(Booted {
         repositories,
         adapters,
         rails,
         endpoints,
-        webhook_http,
+        egress,
         concurrency,
     })
 }

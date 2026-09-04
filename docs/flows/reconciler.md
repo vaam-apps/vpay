@@ -60,7 +60,8 @@ The `dedupe_key` is what stops duplicate callbacks becoming a job storm.
 The poll ladder, the recovery table and the 24-hour escalation all run —
 against a real Postgres and a real WireMock rail, in
 `backends/tests/integration/tests/worker_{recovery,e2e}.rs`. What is still
-unbuilt is named at the end, and the callback endpoint is still one of them.
+unbuilt is named at the end. The callback endpoint left that list on 2026-09-04
+(Step 8, lane C).
 
 **What is built.**
 
@@ -80,6 +81,29 @@ unbuilt is named at the end, and the callback endpoint is still one of them.
 - **The ladder above, wired.** `vpay_worker::poll_delay(attempt)` is indexed by
   `jobs.attempts - 1` (the claim increments the counter), and a rung is one
   `UPDATE jobs SET run_at = now() + delay`.
+- **The callback endpoint exists.** `POST /provider/{code}/callback`
+  (`vpay_api::provider_callback`) is the route the section above describes,
+  built 2026-09-04. It never changes state: it enqueues the charge's
+  `poll:<charge id>` job if it is missing and brings it forward to `now()` if it
+  is parked **further out than the ladder's first rung**, refusing a leased or
+  dead-lettered one, and refusing one already due within that rung so that an
+  unauthenticated caller cannot spend a rail request on a poll the queue was
+  about to make anyway. The `dedupe_key` really is what stops duplicate
+  callbacks becoming a job storm, and it is now that on a live path rather than
+  in a design. What it does **not** do is bound a caller who repeats against a
+  charge parked further out; there is no rate limit, and
+  [reference/vpay-api.md](../reference/vpay-api.md) states the true bound.
+  **Two statements, in one transaction** (`enqueue_in_tx`, `ON CONFLICT DO
+  NOTHING`, then `TxRepositories::pull_forward_in_tx`), and **the floor has a
+  behavioural cost, stated 2026-09-04 (Step 8, lane H): a rail calling back
+  while the charge sits on the ladder's first rung no longer settles it early —
+  it settles at that rung, up to ten seconds later than before.** Eleven cases
+  in `backends/tests/integration/tests/provider_callback.rs`: ten
+  container-backed over both rails, plus
+  `the_pull_forward_floor_is_the_poll_ladders_first_rung`, which needs no
+  container because it is the join between
+  `vpay_api::provider_callback::PULL_FORWARD_FLOOR` and
+  `vpay_worker::poll_delay(0)` and fails if either moves.
 - **The state table.** `vpay_core::settlement::settle(StatusKind, ChargeState)`
   is a `const fn`, total and wildcard-free in both dimensions; its 24-pair
   table is transcribed as a test, and a second test proves the transcription
@@ -143,11 +167,13 @@ unbuilt is named at the end, and the callback endpoint is still one of them.
 
 **What is not built.**
 
-- **No callback endpoint.** `POST /provider/{code}/callback` does not exist, so
-  nothing enqueues a poll from a callback and nothing compares Orange's
-  `notif_token` against the stored one. `parse_callback` is implemented on both
-  rails and is exercised by tests and by nothing else. The section above
-  describes a design, not a route.
+- **Nothing compares Orange's `notif_token` against the stored one.** The
+  callback route discards `CallbackRef::ref_extra` rather than trusting it, so a
+  callback still cannot repair a charge whose key material was lost. See
+  [adapter-orange-money.md](adapter-orange-money.md).
+- **No rail has ever called the callback route.** Every body it has parsed was
+  transcribed from `docs/flows/adapter-*.md` by this repository's own tests, so
+  a document that is wrong about MTN or Orange would pass every one of them.
 - **`prompt_ttl_seconds` / `prompt_expired_at` are not implemented** — the
   whole of "Timers assert nothing" above except the 24-hour rung. There is no
   `charges.prompt_expired_at` column, no config key, and no

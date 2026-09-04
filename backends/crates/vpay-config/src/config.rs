@@ -340,6 +340,50 @@ impl ProviderHost {
     }
 }
 
+/// The deployment's policy for **outbound** webhook delivery — the top-level
+/// `webhooks:` block.
+///
+/// Deliberately not part of [`MerchantClient::webhooks`], which is the list of
+/// *destinations* one merchant registered. This is one answer for the whole
+/// deployment, because the question it settles is about the network the worker
+/// runs on and not about any merchant: may a delivery connect to an address on
+/// it at all.
+///
+/// One field today. It is a struct rather than a bare `bool` on
+/// [`Deployment`] so the next egress rule — an allowlist, a
+/// per-endpoint override — has a home that does not move this one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Validate)]
+pub struct WebhookPolicy {
+    /// Whether a webhook delivery may connect to a loopback, private,
+    /// link-local, CGNAT, multicast or otherwise non-public address
+    /// (`vpay_worker::ssrf`).
+    ///
+    /// `false` — the `#[serde(default)]`, and therefore what a deployment
+    /// that has never heard of this key gets — means the worker resolves each
+    /// endpoint's host, refuses every such address, and pins the connection to
+    /// the addresses it vetted. That is the shape a livemode deployment must
+    /// have: a merchant-supplied URL is POSTed to from *inside* the
+    /// deployment's network, so without it `https://169.254.169.254/…` is a
+    /// valid endpoint and the delivery is the request that reads the
+    /// instance's credentials.
+    ///
+    /// `true` exists for one reason and it is not convenience: the compose
+    /// stack's receiver (`wiremock-webhook`, `compose.e2e.yml`) and the
+    /// integration suite's receiver container are private addresses, so a
+    /// sandbox that refused them could not deliver a webhook at all. It is a
+    /// *config file* selecting a value, never a code path (ADR-0003) — the
+    /// same guard runs either way and the classification is identical; only
+    /// the verdict on a private address changes.
+    ///
+    /// `deployment.livemode: true` with this `true` is refused at boot
+    /// ([`ConfigError::PrivateWebhookTargetsInLivemode`]): the two together
+    /// describe a production deployment that will POST a signed event body at
+    /// its own metadata service if a merchant asks it to.
+    #[garde(skip)]
+    #[serde(default)]
+    pub allow_private_targets: bool,
+}
+
 /// One entry in the currency table
 /// (`backends/migrations/0001_create-currencies.sql`).
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -380,6 +424,13 @@ pub struct Config {
     #[garde(dive)]
     #[serde(default)]
     pub merchant_clients: Vec<MerchantClient>,
+    /// How outbound webhook delivery may leave this deployment
+    /// (`docs/flows/webhooks.md`). Absent means [`WebhookPolicy::default`] —
+    /// private targets refused — so a document written before this key
+    /// existed gets the safe answer rather than the permissive one.
+    #[garde(dive)]
+    #[serde(default)]
+    pub webhooks: WebhookPolicy,
     /// The dashboard's OAuth2 client (`docs/flows/dashboard-auth.md`).
     /// `Option` because not every deployment needs the dashboard wired up
     /// yet — unlike a merchant client, there is exactly one of these ever,
@@ -500,6 +551,14 @@ impl Config {
             .map_err(|report| ConfigError::Validation(report.to_string()))?;
 
         let livemode = self.deployment.livemode;
+        // Before any per-merchant rule, because it is not one: this is a
+        // property of the whole deployment, and a file that carries it is
+        // wrong however its merchants are written. Answering it first also
+        // means the boot failure names the contradiction rather than
+        // whichever endpoint happened to be validated first.
+        if livemode && self.webhooks.allow_private_targets {
+            return Err(ConfigError::PrivateWebhookTargetsInLivemode);
+        }
         // Uniqueness is a property of the *list*, so it is checked over the
         // whole list before any single rail's rules run. Otherwise the first
         // entry's own defect (a missing key, a bad currency) would be
@@ -1603,6 +1662,7 @@ mod tests {
             },
             providers: Vec::new(),
             currencies: Vec::new(),
+            webhooks: WebhookPolicy::default(),
             merchant_clients: vec![MerchantClient {
                 client_id: "acme-cameroon".to_owned(),
                 merchant_id: "acme-cameroon-tenant".to_owned(),
@@ -1962,6 +2022,84 @@ mod tests {
             .expect("a sandbox deployment's throwaway webhook secret is not held to the floor");
     }
 
+    /// A livemode deployment may not switch the SSRF verdict off.
+    ///
+    /// The fixture is loaded from disk rather than assembled in memory for
+    /// [`load_fixture`]'s reason: `webhooks:` is `#[serde(default)]`, so a
+    /// renamed key or a moved field would be an *absent* block and the
+    /// deployment would boot with the safe value — this rule would then never
+    /// fire, and a `Config` built by hand would never notice. The second half
+    /// asserts the same file with `livemode: false` loads **and carries the
+    /// flag**, which is what separates "the rule is livemode's" from "the key
+    /// is being ignored".
+    #[test]
+    fn a_livemode_deployment_may_not_allow_private_webhook_targets() {
+        assert_eq!(
+            load_fixture("webhook-livemode-private-targets.yml")
+                .expect_err("livemode + allow_private_targets must not boot"),
+            ConfigError::PrivateWebhookTargetsInLivemode
+        );
+
+        let mut sandbox = valid_config();
+        sandbox.webhooks.allow_private_targets = true;
+        sandbox
+            .validate_all(&RawSecrets::default())
+            .expect("a sandbox deployment may deliver to its own private receiver");
+
+        let mut live = valid_config();
+        live.deployment.livemode = true;
+        assert!(
+            live.validate_all(&RawSecrets::default()).is_ok(),
+            "livemode alone is not the defect; the pair is"
+        );
+    }
+
+    /// The default is the safe one, and it survives a document that has never
+    /// heard of the key.
+    ///
+    /// `config/application.yml` deliberately does **not** set
+    /// `allow_private_targets` (the sandbox overlay does), so this reads the
+    /// shipped example: a deployment that upgrades into a build carrying this
+    /// guard gets it switched on, rather than inheriting the pre-guard
+    /// behaviour because its file predates the key.
+    #[test]
+    fn a_document_with_no_webhooks_block_refuses_private_targets() {
+        let config = Config::load_with_env(
+            Some(Path::new(EXAMPLE_BASE)),
+            "does-not-exist",
+            &example_env(BTreeMap::new()),
+        )
+        .expect("the example config loads");
+        assert!(
+            !config.webhooks.allow_private_targets,
+            "an absent `webhooks:` block must mean the guard refuses private targets"
+        );
+    }
+
+    /// The sandbox overlay is the file the compose stack and CI actually
+    /// load (`compose.e2e.yml` sets `VPAY_PROFILE: sandbox`), and its
+    /// receiver — `wiremock-webhook`, a compose service — resolves to a
+    /// private address. If this key ever leaves that overlay, every webhook
+    /// in the e2e stack and in `sdks/stripe-compat` starts being refused
+    /// `ssrf_blocked`, which is a failure a long way from its cause.
+    #[test]
+    fn the_sandbox_overlay_allows_its_own_private_receiver() {
+        let config = Config::load_with_env(
+            Some(Path::new(EXAMPLE_BASE)),
+            "sandbox",
+            &example_env(BTreeMap::new()),
+        )
+        .expect("the sandbox overlay loads");
+        assert!(
+            config.webhooks.allow_private_targets,
+            "config/application-sandbox.yml must allow the compose receiver"
+        );
+        assert!(
+            !config.deployment.livemode,
+            "…and it may only do so because that overlay is not livemode"
+        );
+    }
+
     /// The two length bounds are transcribed from migration 0022, and this
     /// reads the migration to prove it.
     ///
@@ -2260,6 +2398,7 @@ mod tests {
                 ]),
             }],
             currencies: Vec::new(),
+            webhooks: WebhookPolicy::default(),
             merchant_clients: Vec::new(),
             dashboard_client: None,
         };

@@ -152,6 +152,23 @@ mod one_tx {
             .map(TxOutcome::into_inner)
     }
 
+    pub(super) async fn pull_forward_in_tx(
+        repositories: &dyn Repositories,
+        dedupe_key: &str,
+        floor: std::time::Duration,
+    ) -> Result<bool, DbError> {
+        repositories
+            .transaction(|tx| {
+                Box::pin(async move {
+                    Ok::<_, DbError>(TxOutcome::Commit(
+                        tx.pull_forward_in_tx(dedupe_key, floor).await?,
+                    ))
+                })
+            })
+            .await
+            .map(TxOutcome::into_inner)
+    }
+
     pub(super) async fn record_payment_error(
         repositories: &dyn Repositories,
         merchant_id: &str,
@@ -3734,6 +3751,213 @@ async fn enqueue_in_tx_dedupes_on_dedupe_key() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The write a rail callback is worth anything because of: a job sitting a
+/// rung or two out is brought back to now, and the four states it must
+/// **not** touch are left alone.
+///
+/// The first assertion is the callback's whole value — without it a rail
+/// telling us about a payment changes nothing at all, because
+/// `enqueue_in_tx` is `DO NOTHING` and the test directly above pins that it
+/// stays that way. The others are the reasons this is a separate, opt-in
+/// write rather than that enqueue growing an upsert: a leased job is being
+/// run right now, a parked job is a dead letter a human owns, an
+/// already-claimable job needs nothing — and a job due **within the floor**
+/// is about to run anyway, which is the guard that stops an unauthenticated
+/// caller turning a POST about a freshly confirmed charge into a rail
+/// request (`vpay_api::provider_callback::PULL_FORWARD_FLOOR`).
+#[tokio::test]
+async fn pull_forward_moves_a_job_past_the_floor_and_leaves_near_leased_parked_and_due_alone()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+    // The poll ladder's first rung, which is the floor the one caller passes
+    // (`vpay_worker::poll_delay(0)`, spelled in `vpay_api::provider_callback`
+    // because the dependency runs the other way).
+    let floor = std::time::Duration::from_secs(10);
+    let a_few_rungs_out = now + time::Duration::seconds(30);
+
+    enqueue(
+        repositories.as_ref(),
+        "poll_charge",
+        "poll:ch_rung",
+        a_few_rungs_out,
+    )
+    .await?;
+    // Inside the floor: the queue is about to ask anyway.
+    enqueue(
+        repositories.as_ref(),
+        "poll_charge",
+        "poll:ch_soon",
+        now + time::Duration::seconds(5),
+    )
+    .await?;
+    // Already claimable: nothing to do.
+    enqueue(repositories.as_ref(), "poll_charge", "poll:ch_due", now).await?;
+    // A worker is running this one right now.
+    enqueue(
+        repositories.as_ref(),
+        "poll_charge",
+        "poll:ch_leased",
+        a_few_rungs_out,
+    )
+    .await?;
+    sqlx::query("UPDATE jobs SET locked_at = now(), locked_by = 'worker-1' WHERE dedupe_key = $1")
+        .bind("poll:ch_leased")
+        .execute(&pool)
+        .await
+        .context("leasing the job must succeed")?;
+    // Parked by `dead_letter`: `run_at = 'infinity'`, lease cleared.
+    enqueue(
+        repositories.as_ref(),
+        "poll_charge",
+        "poll:ch_parked",
+        a_few_rungs_out,
+    )
+    .await?;
+    sqlx::query("UPDATE jobs SET run_at = 'infinity'::TIMESTAMPTZ WHERE dedupe_key = $1")
+        .bind("poll:ch_parked")
+        .execute(&pool)
+        .await
+        .context("parking the job must succeed")?;
+
+    let soon_before = run_at_of(&pool, "poll:ch_soon").await?;
+
+    assert!(
+        one_tx::pull_forward_in_tx(repositories.as_ref(), "poll:ch_rung", floor).await?,
+        "a job past the floor, unleased and unparked, is exactly what a callback exists \
+         to move"
+    );
+    let moved: time::OffsetDateTime = run_at_of(&pool, "poll:ch_rung").await?;
+    assert!(
+        moved <= time::OffsetDateTime::now_utc(),
+        "the job must be claimable now, not at its rung; run_at is {moved}"
+    );
+
+    for (key, why) in [
+        (
+            "poll:ch_soon",
+            "a job due inside the floor is about to run; moving it buys the rail nothing \
+             and lets an anonymous caller spend a rail request",
+        ),
+        ("poll:ch_due", "a job whose time has come needs no help"),
+        (
+            "poll:ch_leased",
+            "a leased job is being polled right now; that poll will see the rail's answer",
+        ),
+        (
+            "poll:ch_parked",
+            "a dead letter stays parked — un-parking one is a human's UPDATE",
+        ),
+    ] {
+        assert!(
+            !one_tx::pull_forward_in_tx(repositories.as_ref(), key, floor).await?,
+            "{why}"
+        );
+    }
+
+    // The refusal has to be about the *row*, not only about the answer: a
+    // statement that moved the job and then reported `false` would pass the
+    // loop above.
+    assert_eq!(
+        run_at_of(&pool, "poll:ch_soon").await?,
+        soon_before,
+        "a job inside the floor must be left exactly where it was"
+    );
+
+    // And the parked row is *still* parked. The boolean above would also be
+    // `false` for a write that matched nothing because it had already moved
+    // the row, so the state itself is what the assertion has to be about.
+    // Counted rather than selected: `'infinity'` has no `OffsetDateTime`
+    // representation, so decoding `run_at` here would fail the query instead
+    // of answering it (`Jobs::oldest_runnable_run_at` says the same).
+    let still_parked: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM jobs WHERE dedupe_key = 'poll:ch_parked' AND run_at = 'infinity'",
+    )
+    .fetch_one(&pool)
+    .await
+    .context("counting the parked row must succeed")?;
+    assert_eq!(still_parked, 1, "the dead letter must still be parked");
+
+    // A key nothing has ever queued is not an error either — the callback
+    // route calls this immediately after an enqueue that may have inserted.
+    assert!(!one_tx::pull_forward_in_tx(repositories.as_ref(), "poll:ch_absent", floor).await?);
+
+    // A floor of zero is the old behaviour, and it is what proves the guard
+    // above is the floor doing work rather than the row being unmovable for
+    // some other reason.
+    assert!(
+        one_tx::pull_forward_in_tx(
+            repositories.as_ref(),
+            "poll:ch_soon",
+            std::time::Duration::ZERO
+        )
+        .await?,
+        "with no floor the same job moves, so the refusal above was the floor's"
+    );
+
+    Ok(())
+}
+
+/// `run_at` for one dedupe key, read straight off the table so an assertion
+/// about what was committed cannot be satisfied by what the writer returned.
+async fn run_at_of(pool: &PgPool, dedupe_key: &str) -> anyhow::Result<time::OffsetDateTime> {
+    sqlx::query_scalar::<_, time::OffsetDateTime>("SELECT run_at FROM jobs WHERE dedupe_key = $1")
+        .bind(dedupe_key)
+        .fetch_one(pool)
+        .await
+        .context("reading the job's run_at must succeed")
+}
+
+/// The lookup behind the unauthenticated callback route: a charge is found by
+/// the reference vpay generated, and **only** under the rail that generated
+/// it.
+///
+/// The second half is the security property, not a tidiness one. The rail is
+/// named by a path segment and the reference by a body anyone who can reach
+/// the URL could have written, so a lookup that ignored `provider_code` would
+/// let a POST to `/provider/orange_money/callback` name an MTN charge.
+#[tokio::test]
+async fn get_by_provider_reference_finds_the_charge_and_only_under_its_own_rail()
+-> anyhow::Result<()> {
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+
+    repositories
+        .insert(&fixture_intent("pi_cb", "XAF"))
+        .await
+        .context("inserting the intent must succeed")?;
+    let mut charge = fixture_charge("ch_cb", "pi_cb");
+    let reference = uuid::Uuid::new_v4();
+    charge.provider_reference_id = reference;
+    one_tx::insert_for_intent(repositories.as_ref(), &charge)
+        .await
+        .context("opening the charge must succeed")?;
+
+    let found = repositories
+        .get_by_provider_reference("mtn_momo", reference)
+        .await?
+        .context("the charge must be found by the reference vpay generated")?;
+    assert_eq!(found.id, "ch_cb");
+    assert_eq!(found.provider_reference_id, reference);
+
+    assert!(
+        repositories
+            .get_by_provider_reference("orange_money", reference)
+            .await?
+            .is_none(),
+        "a callback posted to one rail's path must not be able to name another rail's charge"
+    );
+    assert!(
+        repositories
+            .get_by_provider_reference("mtn_momo", uuid::Uuid::new_v4())
+            .await?
+            .is_none(),
+        "a reference this deployment never generated names nothing"
+    );
+
+    Ok(())
+}
+
 /// The push-rail settlement: a `submitted` charge on a `processing` intent.
 /// Charge and intent both reach `succeeded`, `amount_received` becomes the
 /// full amount, and **one** `payment_intent.succeeded` event is queued for
@@ -4447,6 +4671,72 @@ async fn set_live_state_moves_a_charge_only_from_the_expected_state() -> anyhow:
             .set_live_state("ch_live", "submitted", "pending")
             .await?,
         "re-running the same swap is a no-op, not a second move"
+    );
+
+    Ok(())
+}
+
+/// The read the worker polls with carries **Postgres' own clock** beside the
+/// row, and the age that pair implies moves with `created_at`.
+///
+/// Everything the worker decides about a `submitting` charge is that age:
+/// whether the state is evidence of a crash or of a confirm still inside its
+/// rail call (`vpay_worker::recovery_step`, sixty seconds), and whether the
+/// charge is past the 24-hour escalation horizon. `created_at` is written by
+/// Postgres; before this method existed the other operand was the worker
+/// host's `OffsetDateTime::now_utc()`, so the subtraction spanned two clocks
+/// and a worker running a minute fast measured every charge as a minute
+/// older than it was. Both halves come off one statement now, which is what
+/// this asserts — and the second half asserts the answer is a real
+/// measurement rather than a constant: move `created_at` back by a minute and
+/// a second, and the age moves with it, across the window the worker's guard
+/// compares against.
+#[tokio::test]
+async fn the_charge_read_carries_the_databases_own_clock_beside_the_row() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    live_charge(
+        repositories.as_ref(),
+        "pi_as_of",
+        "ch_as_of",
+        "processing",
+        "submitting",
+    )
+    .await?;
+
+    let as_of = Charges::get_by_id_as_of(repositories.as_ref(), "ch_as_of")
+        .await?
+        .context("the charge must be readable by its own id")?;
+    assert_eq!(
+        Some(&as_of.charge),
+        Charges::get_by_id(repositories.as_ref(), "ch_as_of")
+            .await?
+            .as_ref(),
+        "`get_by_id` is this read with the clock dropped; two statements that answered \
+         with different rows would be the drift the delegation exists to prevent"
+    );
+
+    let fresh = as_of.db_now - as_of.charge.created_at;
+    assert!(
+        fresh >= time::Duration::ZERO && fresh < time::Duration::seconds(5),
+        "a charge opened a moment ago must read as seconds old; got {fresh}"
+    );
+
+    // The same lever the integration suite's `age_the_crash` pulls, and the
+    // one number the recovery guard compares against: a minute and a second.
+    sqlx::query("UPDATE charges SET created_at = now() - INTERVAL '61 seconds' WHERE id = $1")
+        .bind("ch_as_of")
+        .execute(&pool)
+        .await
+        .context("backdating the charge")?;
+
+    let aged = Charges::get_by_id_as_of(repositories.as_ref(), "ch_as_of")
+        .await?
+        .context("the backdated charge must still be readable")?;
+    let age = aged.db_now - aged.charge.created_at;
+    assert!(
+        age >= time::Duration::seconds(61) && age < time::Duration::seconds(66),
+        "the age must be the database's own measurement of `now() - created_at`; got {age}"
     );
 
     Ok(())

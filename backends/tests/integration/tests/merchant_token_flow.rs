@@ -235,6 +235,7 @@ async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
             merchant_jwks,
             scopes,
         )],
+        webhooks: vpay_config::WebhookPolicy::default(),
         dashboard_client: None,
     };
 

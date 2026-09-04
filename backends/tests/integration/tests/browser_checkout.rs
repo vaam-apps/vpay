@@ -266,6 +266,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value, jwks_b: Value) -> C
             merchant_client_with_publishable_keys(CLIENT_A, MERCHANT_A, jwks_a, &[PK_A]),
             merchant_client_with_publishable_keys(CLIENT_B, MERCHANT_B, jwks_b, &[PK_B]),
         ],
+        webhooks: vpay_config::WebhookPolicy::default(),
         dashboard_client: None,
     }
 }
@@ -1023,7 +1024,7 @@ async fn no_event_body_carries_a_client_secret() -> anyhow::Result<()> {
         .context("pointing the charge at the rail's decline stub")?;
 
     let endpoints = support::no_webhook_endpoints();
-    let http = support::webhook_client();
+    let egress = support::default_egress_policy();
     let settled = vpay_worker::run_once(
         h.repositories.as_ref(),
         &h.adapters,
@@ -1031,7 +1032,7 @@ async fn no_event_body_carries_a_client_secret() -> anyhow::Result<()> {
         &RecoveryPolicy::default(),
         &vpay_worker::WebhookContext {
             endpoints: &endpoints,
-            http: &http,
+            egress,
         },
         "browser-checkout-suite",
     )

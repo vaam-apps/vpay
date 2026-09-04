@@ -441,6 +441,7 @@ mod tests {
                 exponent: 0,
             }],
             merchant_clients: Vec::new(),
+            webhooks: vpay_config::WebhookPolicy::default(),
             dashboard_client: None,
         }
     }

@@ -6,6 +6,22 @@
 deployment:
   name: vpay-sandbox
 
+# The compose stack's webhook receiver is `wiremock-webhook` (compose.e2e.yml),
+# a service on the compose network, so every delivery this profile makes
+# resolves to a private address — and `vpay_worker::ssrf` refuses those by
+# default. This is the one value that changes the verdict; the guard itself
+# runs identically here and in production, and classifies identically
+# (ADR-0003: a profile selects a *file*, never a code path).
+#
+# `deployment.livemode` is `false` in the base file, and it must stay so for
+# this line to be legal at all: the pair is refused at boot
+# (ConfigError::PrivateWebhookTargetsInLivemode). A livemode overlay must
+# therefore either omit this block or set it `false` — copying this file into
+# production fails loudly rather than quietly delivering to the metadata
+# service.
+webhooks:
+  allow_private_targets: true
+
 # Local dev typically runs the dashboard's own frontend dev server on 3000,
 # separate from vpay-server's own :8080 — override just this one field, not
 # the whole dashboard_client block; figment's dict merge leaves client_id

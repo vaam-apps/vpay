@@ -227,7 +227,7 @@ impl Harness {
             Arc::clone(&self.rails),
             policy,
             support::no_webhook_endpoints(),
-            support::webhook_client(),
+            support::default_egress_policy(),
             concurrency,
             grace,
             "worker-e2e-suite".to_owned(),
@@ -279,6 +279,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
             exponent: 0,
         }],
         merchant_clients: vec![merchant_client(CLIENT_A, MERCHANT_A, jwks_a)],
+        webhooks: vpay_config::WebhookPolicy::default(),
         dashboard_client: None,
     }
 }
@@ -633,7 +634,7 @@ async fn a_confirmed_payment_is_driven_to_succeeded_and_the_merchant_sees_it() -
             rails,
             RecoveryPolicy::default(),
             support::no_webhook_endpoints(),
-            support::webhook_client(),
+            support::default_egress_policy(),
             2,
             Duration::from_secs(10),
             "worker-e2e-suite".to_owned(),
@@ -851,7 +852,7 @@ async fn a_decline_after_submission_returns_the_intent_to_requires_payment_metho
     // One step of the real loop is all this needs: the rail answers with a
     // terminal status on the first poll.
     let endpoints = support::no_webhook_endpoints();
-    let http = support::webhook_client();
+    let egress = support::default_egress_policy();
     let settled = vpay_worker::run_once(
         h.repositories.as_ref(),
         &h.adapters,
@@ -859,7 +860,7 @@ async fn a_decline_after_submission_returns_the_intent_to_requires_payment_metho
         &RecoveryPolicy::default(),
         &vpay_worker::WebhookContext {
             endpoints: &endpoints,
-            http: &http,
+            egress,
         },
         "worker-e2e-suite",
     )

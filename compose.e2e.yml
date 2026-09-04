@@ -137,6 +137,19 @@ services:
     ports: ["8083:8080"]
     volumes:
       - ./backends/tests/webhook-receiver/wiremock:/home/wiremock:ro
+    # Same probe, and for the same reason, as the two rail stubs in
+    # compose.yml: `/__admin/health` is WireMock's own answer to "am I
+    # ready", and it is what `docker compose up --wait` gates `just demo-up`
+    # on. It matters more here than on the rails, because the demo's last
+    # assertion per outcome reads THIS container's request journal — a
+    # receiver that had not finished loading its mappings would answer 404 to
+    # a delivery, and the worker would retry it on the delivery ladder rather
+    # than the demo failing on it.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8080/__admin/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
 
   dashboard:
     build:

@@ -559,7 +559,7 @@ pub async fn run_loop(
     rails: Arc<RailConfigs>,
     policy: RecoveryPolicy,
     endpoints: Arc<EndpointRegistry>,
-    http: reqwest::Client,
+    egress: crate::ssrf::EgressPolicy,
     concurrency: usize,
     grace: Duration,
     worker_id: String,
@@ -602,10 +602,11 @@ pub async fn run_loop(
                 Arc::clone(&rails),
                 policy,
                 Arc::clone(&endpoints),
-                // `reqwest::Client` is an `Arc` internally, so this shares
-                // the one connection pool the binary built rather than
-                // opening `concurrency` of them.
-                http.clone(),
+                // One `bool`, copied per task. There is no client to share:
+                // a delivery's client is pinned to the addresses its own
+                // target vetted, so it is built inside the handler
+                // (`crate::ssrf`, and `WebhookContext` for the cost).
+                egress,
                 worker_id.clone(),
                 rx.clone(),
                 Arc::clone(&counters),
@@ -779,17 +780,17 @@ async fn claim_loop(
     rails: Arc<RailConfigs>,
     policy: RecoveryPolicy,
     endpoints: Arc<EndpointRegistry>,
-    http: reqwest::Client,
+    egress: crate::ssrf::EgressPolicy,
     worker_id: String,
     mut shutdown: watch::Receiver<bool>,
     counters: Arc<Counters>,
 ) {
-    // Built once per task rather than per claim: it borrows two values this
-    // task owns for its whole life, so a per-iteration construction would be
-    // the same two pointers written out again.
+    // Built once per task rather than per claim: it borrows a value this task
+    // owns for its whole life and copies a `bool`, so a per-iteration
+    // construction would be the same pointer written out again.
     let webhooks = WebhookContext {
         endpoints: &endpoints,
-        http: &http,
+        egress,
     };
     while !*shutdown.borrow() {
         match run_once(

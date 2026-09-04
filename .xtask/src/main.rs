@@ -1,12 +1,14 @@
 //! Repository automation. Run via `cargo xtask <cmd>` or `just`.
 //!
-//! Three of these commands exist to enforce promises this repository makes
+//! Four of these commands exist to enforce promises this repository makes
 //! about itself, because a promise nothing checks is a promise that decays:
 //!
 //! * `verify-no-mocks`  — no test double is reachable from a shipping binary.
 //! * `verify-status`    — every `NotImplemented` is declared in `docs/status.md`.
 //! * `verify-errors`    — every error type classifies itself, and `anyhow`
 //!   stays at the process edge (`docs/adr/0011-error-modelling.md`).
+//! * `verify-sdk-parity` — every ✅ in `docs/sdks/parity.md` names a test that
+//!   exists, and every ⛔ carries a date (`docs/adr/0015-sdk-parity.md`).
 //!
 //! One reports rather than enforcing:
 //!
@@ -22,8 +24,9 @@
 //!
 //! # Dependencies
 //!
-//! The three `verify-*` commands take no dependencies at all and match on
-//! text rather than on types — see [`has_classify_impl`] for what that costs.
+//! The `verify-*` commands other than `verify-no-mocks` take no dependencies
+//! at all and match on text rather than on types — see [`has_classify_impl`]
+//! for what that costs.
 //! That is still true of them. `gen-signing-key` is what put four crates
 //! (`rsa`, `rand`, `sha2`, `base64`) in this crate's manifest: generating an
 //! RSA key and computing an RFC 7638 thumbprint cannot be done by string
@@ -52,9 +55,11 @@ fn main() -> ExitCode {
         "verify-no-mocks" => verify_no_mocks(&root),
         "verify-status" => verify_status(&root),
         "verify-errors" => verify_errors(&root),
+        "verify-sdk-parity" => verify_sdk_parity(&root),
         "verify-all" => verify_no_mocks(&root)
             .and_then(|()| verify_status(&root))
-            .and_then(|()| verify_errors(&root)),
+            .and_then(|()| verify_errors(&root))
+            .and_then(|()| verify_sdk_parity(&root)),
         // Not `Result`-shaped like the three gates above, and that is the
         // point: there is nothing here for a caller to fail on. See
         // `verify_docs`.
@@ -65,7 +70,8 @@ fn main() -> ExitCode {
         "gen-signing-key" => gen_signing_key(&args),
         "help" | "--help" | "-h" => {
             println!(
-                "usage: cargo xtask <verify-no-mocks|verify-status|verify-errors|verify-all>\n\
+                "usage: cargo xtask \
+                 <verify-no-mocks|verify-status|verify-errors|verify-sdk-parity|verify-all>\n\
                  \x20      cargo xtask verify-docs        (a report; never fails)\n\
                  \x20      cargo xtask gen-signing-key --out <dir>"
             );
@@ -1383,6 +1389,611 @@ fn rust_sources(dir: &Path) -> Vec<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
+// verify-sdk-parity
+// ---------------------------------------------------------------------------
+
+/// The matrix this check reads.
+///
+/// [ADR-0015](../../docs/adr/0015-sdk-parity.md): the two merchant SDKs must
+/// offer the same capabilities with the same wire semantics, the matrix is
+/// the record of where they do, and this function is the enforcement. Modelled
+/// on [`verify_status`] — a machine check over a markdown table, so the
+/// document a human reads is the document the build checks.
+const SDK_PARITY_DOC: &str = "docs/sdks/parity.md";
+
+/// The first header cell that marks a table as one of the parity matrices.
+///
+/// A marker rather than "every table in the file", for the same reason
+/// [`STATUS_TOKEN_HEADING`] names a section: the document also carries a gap
+/// ledger and a legend, and a check that tried to read those as matrices
+/// would either fail on prose or force the prose out of the document.
+const PARITY_TABLE_MARKER: &str = "Capability";
+
+/// Directories that hold no first-party source and would only slow the walk
+/// down — or, worse, contribute a test name from a vendored dependency and
+/// let a ✅ cell be satisfied by somebody else's test.
+const PARITY_SKIPPED_DIRS: [&str; 5] = ["node_modules", "dist", "target", ".git", "coverage"];
+
+/// Extensions [`test_names_in`] knows how to read.
+const PARITY_TS_EXTENSIONS: [&str; 5] = ["ts", "tsx", "mts", "mjs", "js"];
+
+/// One parity table: the SDK trees its columns compare, and its rows.
+struct ParityTable {
+    /// Repo-relative SDK roots, one per column after `Capability`.
+    columns: Vec<String>,
+    rows: Vec<ParityRow>,
+    /// 1-based line number of the header row, for failure messages.
+    line: usize,
+}
+
+/// One capability row: what is being compared, and one cell per column.
+struct ParityRow {
+    capability: String,
+    cells: Vec<String>,
+    /// 1-based line number, so a failure can be pasted into an editor.
+    line: usize,
+}
+
+/// Fail if the parity matrix claims something the SDK trees do not carry.
+///
+/// Three rules, one per way the matrix could start lying:
+///
+/// * a `✅` cell names the test(s) that prove the capability **in that SDK**,
+///   and every one of them must exist there — a Rust `#[test]`/`#[tokio::test]`
+///   function or a TypeScript `it("…")`/`test("…")` with that exact name.
+///   Renaming a test without updating the matrix is the ordinary way a
+///   proof-of-parity claim rots, and it fails here instead.
+/// * a `⛔` cell must carry a date. ADR-0015 allows a capability to be
+///   missing from one SDK; it does not allow the absence to be undated,
+///   because an undated gap is indistinguishable from one nobody has looked
+///   at since it was written.
+/// * no cell may be blank. A blank cell is the only answer that says nothing,
+///   and it is what an unfinished row looks like.
+fn verify_sdk_parity(root: &Path) -> Result<(), String> {
+    let path = root.join(SDK_PARITY_DOC);
+    let doc = fs::read_to_string(&path).map_err(|e| {
+        format!("{SDK_PARITY_DOC}: {e} (the parity matrix is mandatory — see docs/adr/0015-sdk-parity.md)")
+    })?;
+
+    let outcome = parity_outcome(root, &doc);
+    if !outcome.problems.is_empty() {
+        return Err(format!(
+            "sdk parity violations:\n  - {}",
+            outcome.problems.join("\n  - ")
+        ));
+    }
+
+    println!(
+        "verify-sdk-parity: ok — {} proving test(s) named in {SDK_PARITY_DOC} all exist, {} dated gap(s)",
+        outcome.proven, outcome.gaps
+    );
+    Ok(())
+}
+
+/// What [`parity_outcome`] found: everything wrong, and the two counts the
+/// success line reports.
+struct ParityOutcome {
+    problems: Vec<String>,
+    proven: usize,
+    gaps: usize,
+}
+
+/// Checks every cell of every parity table in `doc` against the SDK trees
+/// under `root`.
+///
+/// Takes the document text rather than reading it, so the rules can be proven
+/// against synthetic matrices — including matrices this repository does not
+/// have and must never grow (a `✅` naming a test that was renamed away, a
+/// blank cell, an undated `⛔`).
+fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
+    let mut problems = Vec::new();
+    let mut proven = 0usize;
+    let mut gaps = 0usize;
+
+    let tables = parity_tables(doc);
+    if tables.is_empty() {
+        problems.push(format!(
+            "{SDK_PARITY_DOC} carries no table whose first column is `{PARITY_TABLE_MARKER}`; \
+             the matrix is the record and this check reads it, so a document without one \
+             would pass by checking nothing"
+        ));
+        return ParityOutcome {
+            problems,
+            proven,
+            gaps,
+        };
+    }
+
+    for table in &tables {
+        let mut indexes = Vec::new();
+        for column in &table.columns {
+            let dir = root.join(column);
+            if !dir.is_dir() {
+                problems.push(format!(
+                    "{SDK_PARITY_DOC}:{}: column `{column}` is not a directory in this repository",
+                    table.line
+                ));
+            }
+            indexes.push(test_names_in(&dir));
+        }
+
+        for row in &table.rows {
+            if row.cells.len() != table.columns.len() {
+                problems.push(format!(
+                    "{SDK_PARITY_DOC}:{}: row `{}` has {} cell(s), the table has {} column(s)",
+                    row.line,
+                    row.capability,
+                    row.cells.len(),
+                    table.columns.len()
+                ));
+                continue;
+            }
+            for ((cell, column), index) in row.cells.iter().zip(&table.columns).zip(&indexes) {
+                check_parity_cell(
+                    cell,
+                    column,
+                    index,
+                    row,
+                    &mut problems,
+                    &mut proven,
+                    &mut gaps,
+                );
+            }
+        }
+    }
+
+    ParityOutcome {
+        problems,
+        proven,
+        gaps,
+    }
+}
+
+/// The three rules on [`verify_sdk_parity`], applied to one cell.
+fn check_parity_cell(
+    cell: &str,
+    column: &str,
+    index: &BTreeSet<String>,
+    row: &ParityRow,
+    problems: &mut Vec<String>,
+    proven: &mut usize,
+    gaps: &mut usize,
+) {
+    let text = cell.trim();
+    let at = format!(
+        "{SDK_PARITY_DOC}:{} `{}` / {column}",
+        row.line, row.capability
+    );
+
+    if text.is_empty() {
+        problems.push(format!(
+            "{at}: the cell is blank — every capability is answered ✅ (naming the test(s) \
+             that prove it) or ⛔ (with a dated gap line)"
+        ));
+        return;
+    }
+
+    if text.starts_with('✅') {
+        let names = code_spans(text);
+        if names.is_empty() {
+            problems.push(format!(
+                "{at}: ✅ names no test — a ✅ cell lists the test(s) that prove it, each in \
+                 backticks"
+            ));
+            return;
+        }
+        for name in names {
+            if index.contains(&name) {
+                *proven += 1;
+            } else {
+                problems.push(format!(
+                    "{at}: names the test `{name}`, which does not exist under `{column}` \
+                     (looked for a Rust `#[test]`/`#[tokio::test]` fn or a TypeScript \
+                     `it(\"…\")`/`test(\"…\")` with exactly that name, ignoring anything \
+                     `#[ignore]`d)"
+                ));
+            }
+        }
+        return;
+    }
+
+    if text.starts_with('⛔') {
+        if contains_iso_date(text) {
+            *gaps += 1;
+        } else {
+            problems.push(format!(
+                "{at}: ⛔ with no date — a gap is recorded with the date it was found \
+                 (YYYY-MM-DD), the reason, and who owns closing it"
+            ));
+        }
+        return;
+    }
+
+    problems.push(format!(
+        "{at}: the cell must begin with ✅ or ⛔, and begins `{}`",
+        text.chars().take(16).collect::<String>()
+    ));
+}
+
+/// Every table in `doc` whose first header cell is [`PARITY_TABLE_MARKER`].
+///
+/// The remaining header cells are the SDK roots the table compares, written
+/// as code spans (`` `sdks/rust` ``) so the document reads as paths and the
+/// check can take them literally.
+fn parity_tables(doc: &str) -> Vec<ParityTable> {
+    let lines: Vec<&str> = doc.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+
+    while i < lines.len() {
+        let Some(header) = lines.get(i).and_then(|l| table_row(l)) else {
+            i += 1;
+            continue;
+        };
+        if header.first().map(String::as_str) != Some(PARITY_TABLE_MARKER) || header.len() < 2 {
+            i += 1;
+            continue;
+        }
+        let separator = lines.get(i + 1).and_then(|l| table_row(l));
+        let Some(separator) = separator else {
+            i += 1;
+            continue;
+        };
+        if separator.len() != header.len() || !separator.iter().all(|c| is_separator_cell(c)) {
+            i += 1;
+            continue;
+        }
+
+        let columns: Vec<String> = header
+            .iter()
+            .skip(1)
+            .map(|cell| {
+                code_spans(cell)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| cell.clone())
+            })
+            .collect();
+
+        let header_line = i + 1;
+        let mut rows = Vec::new();
+        let mut j = i + 2;
+        while let Some(cells) = lines.get(j).and_then(|l| table_row(l)) {
+            let capability = cells.first().cloned().unwrap_or_default();
+            rows.push(ParityRow {
+                capability,
+                cells: cells.into_iter().skip(1).collect(),
+                line: j + 1,
+            });
+            j += 1;
+        }
+
+        out.push(ParityTable {
+            columns,
+            rows,
+            line: header_line,
+        });
+        i = j;
+    }
+
+    out
+}
+
+/// The cells of a markdown table row, or `None` if the line is not one.
+///
+/// A cell may not contain a `|`; the matrix has no need for one and
+/// supporting `\|` would mean a second escaping rule that only this check
+/// understands.
+fn table_row(line: &str) -> Option<Vec<String>> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('|') || !trimmed.ends_with('|') || trimmed.len() < 2 {
+        return None;
+    }
+    let inner = trimmed.strip_prefix('|')?.strip_suffix('|')?;
+    Some(
+        inner
+            .split('|')
+            .map(|cell| cell.trim().to_owned())
+            .collect(),
+    )
+}
+
+/// `---`, `:--`, `--:` and friends: the row that separates a header from its
+/// body and marks the lines above and below as one table.
+fn is_separator_cell(cell: &str) -> bool {
+    !cell.is_empty() && cell.chars().all(|c| c == '-' || c == ':')
+}
+
+/// Every code span in `text`, honouring backtick runs.
+///
+/// A run of *n* backticks opens a span that the next run of exactly *n*
+/// closes, which is how a test name that itself contains a backtick —
+/// `` ``authenticates a real `stripe` client end to end`` `` — is written in
+/// a cell at all. One leading and one trailing space are stripped when both
+/// are present, as CommonMark does, so the delimiter can be held off the
+/// content.
+fn code_spans(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+
+    while i < chars.len() {
+        if chars.get(i) != Some(&'`') {
+            i += 1;
+            continue;
+        }
+        let open_start = i;
+        while chars.get(i) == Some(&'`') {
+            i += 1;
+        }
+        let run = i - open_start;
+        let content_start = i;
+
+        let mut j = i;
+        let mut close = None;
+        while j < chars.len() {
+            if chars.get(j) == Some(&'`') {
+                let start = j;
+                while chars.get(j) == Some(&'`') {
+                    j += 1;
+                }
+                if j - start == run {
+                    close = Some((start, j));
+                    break;
+                }
+            } else {
+                j += 1;
+            }
+        }
+
+        let Some((close_start, close_end)) = close else {
+            break; // An unclosed run is not a span; nothing after it can be one either.
+        };
+        let content: String = chars
+            .get(content_start..close_start)
+            .unwrap_or_default()
+            .iter()
+            .collect();
+        out.push(strip_one_padding_space(content));
+        i = close_end;
+    }
+
+    out
+}
+
+/// CommonMark's code-span rule: one leading and one trailing space are part
+/// of the delimiter, not of the content, when both are present and the
+/// content is not all spaces.
+fn strip_one_padding_space(content: String) -> String {
+    if content.starts_with(' ') && content.ends_with(' ') && !content.trim().is_empty() {
+        let end = content.len().saturating_sub(1);
+        return content.get(1..end).unwrap_or(&content).to_owned();
+    }
+    content
+}
+
+/// Whether `text` carries a `YYYY-MM-DD` anywhere.
+///
+/// Shape only, not validity: this exists so that a gap says *when* it was
+/// found, and a check that also argued about leap years would fail rows for
+/// a reason that has nothing to do with SDK parity.
+fn contains_iso_date(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    chars.windows(10).any(|window| {
+        window.iter().enumerate().all(|(index, c)| match index {
+            4 | 7 => *c == '-',
+            _ => c.is_ascii_digit(),
+        })
+    })
+}
+
+/// Every test name declared under `dir`, by the conventions of whichever
+/// language declared it.
+fn test_names_in(dir: &Path) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for path in parity_sources(dir) {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        match path.extension().and_then(|e| e.to_str()) {
+            Some("rs") => rust_test_names(&text, &mut out),
+            Some(extension) if PARITY_TS_EXTENSIONS.contains(&extension) => {
+                ts_test_names(&text, &mut out);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Every file under `dir` this check knows how to read, skipping
+/// [`PARITY_SKIPPED_DIRS`].
+fn parity_sources(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let skipped = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| PARITY_SKIPPED_DIRS.contains(&n));
+            if !skipped {
+                out.extend(parity_sources(&path));
+            }
+        } else {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// Every `fn` in `text` that an attribute marks as a test, and that no
+/// attribute marks as ignored.
+///
+/// `#[ignore]`d functions are deliberately **not** collected: AGENTS.md's
+/// second rule makes an ignored test a declaration that the behaviour is
+/// unbuilt, and a matrix cell that cited one would claim a capability is
+/// proven by a test that never runs.
+fn rust_test_names(text: &str, out: &mut BTreeSet<String>) {
+    let lines: Vec<&str> = text.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        let Some(name) = rust_fn_name(line) else {
+            continue;
+        };
+        if attributes_mark_a_live_test(&lines, index) {
+            out.insert(name);
+        }
+    }
+}
+
+/// The name of the function this line declares, if it declares one.
+fn rust_fn_name(line: &str) -> Option<String> {
+    let mut rest = line.trim();
+    loop {
+        let stripped = [
+            "pub(crate) ",
+            "pub ",
+            "async ",
+            "const ",
+            "unsafe ",
+            "extern ",
+        ]
+        .iter()
+        .find_map(|prefix| rest.strip_prefix(prefix));
+        match stripped {
+            Some(next) => rest = next.trim_start(),
+            None => break,
+        }
+    }
+    let rest = rest.strip_prefix("fn ")?;
+    let name: String = rest.chars().take_while(|c| is_ident_char(*c)).collect();
+    if name.is_empty() {
+        return None;
+    }
+    let after = rest.get(name.len()..)?.trim_start();
+    if !after.starts_with('(') && !after.starts_with('<') {
+        return None;
+    }
+    Some(name)
+}
+
+/// Walks back over the attributes and doc comments above `index`: true when
+/// one of them names a test harness and none of them ignores it.
+fn attributes_mark_a_live_test(lines: &[&str], index: usize) -> bool {
+    let mut found_test = false;
+    let mut i = index;
+    while i > 0 {
+        i -= 1;
+        let Some(line) = lines.get(i) else {
+            break;
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        if !trimmed.starts_with("#[") {
+            break; // Anything else ends the attribute block.
+        }
+        if trimmed.starts_with("#[ignore") {
+            return false;
+        }
+        // `#[test]`, `#[tokio::test]`, `#[test_log::test(tokio::test)]`.
+        if trimmed.contains("test") {
+            found_test = true;
+        }
+    }
+    found_test
+}
+
+/// Every `it("…")` / `test("…")` title in `text`.
+///
+/// Deliberately textual, like every other scan in this file. `it.skip(` and
+/// `it.each(` do not match, because the character after the keyword must be
+/// `(`; `submit(` and `unit(` do not match, because the character before it
+/// must not be part of an identifier.
+fn ts_test_names(text: &str, out: &mut BTreeSet<String>) {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0usize;
+
+    while i < chars.len() {
+        let Some(after_keyword) = ts_test_keyword_at(&chars, i) else {
+            i += 1;
+            continue;
+        };
+        let mut j = after_keyword;
+        while chars.get(j).is_some_and(|c| c.is_whitespace()) {
+            j += 1;
+        }
+        let Some(&quote) = chars.get(j) else {
+            break;
+        };
+        if quote != '"' && quote != '\'' && quote != '`' {
+            i += 1;
+            continue;
+        }
+        j += 1;
+
+        let mut title = String::new();
+        let mut closed = false;
+        while let Some(&c) = chars.get(j) {
+            j += 1;
+            if c == '\\' {
+                if let Some(&escaped) = chars.get(j) {
+                    j += 1;
+                    title.push(match escaped {
+                        'n' => '\n',
+                        't' => '\t',
+                        'r' => '\r',
+                        other => other,
+                    });
+                }
+                continue;
+            }
+            if c == quote {
+                closed = true;
+                break;
+            }
+            if c == '\n' && quote != '`' {
+                break; // An unterminated single-line string is not a title.
+            }
+            title.push(c);
+        }
+
+        if closed && !title.is_empty() {
+            out.insert(title);
+        }
+        i = j.max(i + 1);
+    }
+}
+
+/// If `it(` or `test(` starts at `i` and is not part of a longer identifier
+/// or a member expression, the index just past the `(`.
+fn ts_test_keyword_at(chars: &[char], i: usize) -> Option<usize> {
+    for keyword in ["it", "test"] {
+        let letters: Vec<char> = keyword.chars().collect();
+        let end = i + letters.len();
+        if chars.get(i..end) != Some(letters.as_slice()) {
+            continue;
+        }
+        if chars.get(end) != Some(&'(') {
+            continue;
+        }
+        let preceded = i
+            .checked_sub(1)
+            .and_then(|p| chars.get(p))
+            .is_some_and(|c| is_ident_char(*c) || *c == '.');
+        if preceded {
+            continue;
+        }
+        return Some(end + 1);
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // verify-docs
 // ---------------------------------------------------------------------------
 
@@ -2524,10 +3135,14 @@ mod signing_key_tests {
     /// A directory under the system temp dir, unique per test, removed on
     /// drop. xtask has no `tempfile` dependency and one small guard is
     /// cheaper than acquiring one.
-    struct TempDir(PathBuf);
+    ///
+    /// `pub(crate)` because `sdk_parity_tests` builds a synthetic SDK tree
+    /// with it: two test modules needing a temp directory is not a reason to
+    /// have two temp-directory guards.
+    pub(crate) struct TempDir(PathBuf);
 
     impl TempDir {
-        fn new(label: &str) -> Self {
+        pub(crate) fn new(label: &str) -> Self {
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system clock is after the unix epoch")
@@ -2536,6 +3151,11 @@ mod signing_key_tests {
                 .join(format!("vpay-xtask-{label}-{}-{nanos}", std::process::id()));
             fs::create_dir_all(&path).expect("temp dir is creatable");
             Self(path)
+        }
+
+        /// The directory itself, for a caller that builds a tree inside it.
+        pub(crate) fn path(&self) -> &Path {
+            &self.0
         }
     }
 
@@ -3472,5 +4092,255 @@ pub enum RealError { A }
             "anyhow = { version = \"1\" }",
             "anyhow"
         ));
+    }
+}
+
+#[cfg(test)]
+mod sdk_parity_tests {
+    use super::*;
+    use crate::signing_key_tests::TempDir;
+
+    /// Builds a synthetic two-SDK tree: `sdks/rust` with one live `#[test]`
+    /// and one `#[ignore]`d one, `sdks/nodejs` with one `it(...)`.
+    ///
+    /// A real directory rather than an in-memory index, because the walk
+    /// (which extension is read how, which directories are skipped) is half
+    /// of what this check does and an in-memory fixture would prove none of
+    /// it.
+    fn synthetic_sdks(label: &str) -> TempDir {
+        let dir = TempDir::new(label);
+        let rust = dir.path().join("sdks/rust/tests");
+        let node = dir.path().join("sdks/nodejs/src");
+        let vendored = dir.path().join("sdks/nodejs/node_modules/other");
+        fs::create_dir_all(&rust).expect("the rust fixture directory is creatable");
+        fs::create_dir_all(&node).expect("the node fixture directory is creatable");
+        fs::create_dir_all(&vendored).expect("the vendored fixture directory is creatable");
+
+        fs::write(
+            rust.join("resources.rs"),
+            "#[tokio::test]\n\
+             async fn a_confirm_reaches_the_rail() {}\n\
+             \n\
+             /// Doc comment, then an attribute block.\n\
+             #[test]\n\
+             fn the_body_is_encoded_exactly() {}\n\
+             \n\
+             #[test]\n\
+             #[ignore = \"not implemented: see docs/status.md\"]\n\
+             fn a_refund_settles() {}\n\
+             \n\
+             fn a_plain_helper() {}\n",
+        )
+        .expect("the rust fixture is writable");
+
+        fs::write(
+            node.join("client.test.ts"),
+            "describe(\"resources\", () => {\n  \
+               it(\"encodes the body exactly\", async () => {});\n  \
+               it.skip(\"a refund settles\", async () => {});\n  \
+               it(\n    \"is wrapped across two lines\",\n    async () => {},\n  );\n  \
+               it(\"authenticates a real \\`stripe\\` client end to end\", () => {});\n  \
+               const submit = () => {};\n\
+             });\n",
+        )
+        .expect("the node fixture is writable");
+
+        fs::write(
+            vendored.join("vendor.test.ts"),
+            "it(\"a vendored dependency's own test\", () => {});\n",
+        )
+        .expect("the vendored fixture is writable");
+
+        dir
+    }
+
+    const HEADER: &str = "| Capability | `sdks/rust` | `sdks/nodejs` |\n|---|---|---|\n";
+
+    fn problems(dir: &TempDir, doc: &str) -> Vec<String> {
+        parity_outcome(dir.path(), doc).problems
+    }
+
+    #[test]
+    fn a_matrix_whose_cells_all_name_tests_that_exist_passes() {
+        let dir = synthetic_sdks("parity-pass");
+        let doc = format!(
+            "{HEADER}\
+             | confirm | ✅ `a_confirm_reaches_the_rail` | ✅ `encodes the body exactly` |\n\
+             | encoding | ✅ `the_body_is_encoded_exactly` | ✅ `is wrapped across two lines` |\n"
+        );
+        let outcome = parity_outcome(dir.path(), &doc);
+        assert!(outcome.problems.is_empty(), "{:?}", outcome.problems);
+        assert_eq!(outcome.proven, 4);
+        assert_eq!(outcome.gaps, 0);
+    }
+
+    /// The revert-proof property, in a unit test: rename a test in the matrix
+    /// and the check names the cell that now lies.
+    #[test]
+    fn a_tick_naming_a_test_that_does_not_exist_fails_and_names_the_cell() {
+        let dir = synthetic_sdks("parity-missing");
+        let doc = format!(
+            "{HEADER}| confirm | ✅ `a_confirm_reaches_the_railway` | ✅ `encodes the body exactly` |\n"
+        );
+        let found = problems(&dir, &doc);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let message = found.first().map(String::as_str).unwrap_or_default();
+        assert!(
+            message.contains("a_confirm_reaches_the_railway"),
+            "{message}"
+        );
+        assert!(message.contains("confirm"), "{message}");
+        assert!(message.contains("sdks/rust"), "{message}");
+    }
+
+    #[test]
+    fn a_blank_cell_fails() {
+        let dir = synthetic_sdks("parity-blank");
+        let doc = format!("{HEADER}| confirm | ✅ `a_confirm_reaches_the_rail` |  |\n");
+        let found = problems(&dir, &doc);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found
+                .first()
+                .is_some_and(|m| m.contains("blank") && m.contains("sdks/nodejs")),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_gap_without_a_date_fails_and_one_with_a_date_passes() {
+        let dir = synthetic_sdks("parity-gap");
+        let undated = format!(
+            "{HEADER}| stripe authenticator | ⛔ no async-stripe equivalent | ✅ `encodes the body exactly` |\n"
+        );
+        let found = problems(&dir, &undated);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found.first().is_some_and(|m| m.contains("no date")),
+            "{found:?}"
+        );
+
+        let dated = format!(
+            "{HEADER}| stripe authenticator | ⛔ 2026-09-03 — no async-stripe equivalent (owner: SDK maintainers) | ✅ `encodes the body exactly` |\n"
+        );
+        let outcome = parity_outcome(dir.path(), &dated);
+        assert!(outcome.problems.is_empty(), "{:?}", outcome.problems);
+        assert_eq!(outcome.gaps, 1);
+    }
+
+    #[test]
+    fn a_cell_that_is_neither_a_tick_nor_a_gap_fails() {
+        let dir = synthetic_sdks("parity-prose");
+        let doc =
+            format!("{HEADER}| confirm | partly, see below | ✅ `encodes the body exactly` |\n");
+        let found = problems(&dir, &doc);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found.first().is_some_and(|m| m.contains("must begin with")),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_tick_that_names_no_test_at_all_fails() {
+        let dir = synthetic_sdks("parity-empty-tick");
+        let doc = format!("{HEADER}| confirm | ✅ | ✅ `encodes the body exactly` |\n");
+        let found = problems(&dir, &doc);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found.first().is_some_and(|m| m.contains("names no test")),
+            "{found:?}"
+        );
+    }
+
+    /// A document with no matrix must fail rather than pass by checking
+    /// nothing — the same failure mode `declared_tokens` guards against when
+    /// its heading is renamed away.
+    #[test]
+    fn a_document_with_no_capability_table_fails_rather_than_passing_vacuously() {
+        let dir = synthetic_sdks("parity-no-table");
+        let doc = "# Parity\n\nProse only.\n\n| Gap | Owner |\n|---|---|\n| none | nobody |\n";
+        let found = problems(&dir, doc);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found.first().is_some_and(|m| m.contains("no table")),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_column_that_is_not_a_directory_fails() {
+        let dir = synthetic_sdks("parity-bad-column");
+        let doc = "| Capability | `sdks/kotlin` |\n|---|---|\n| confirm | ✅ `a_confirm_reaches_the_rail` |\n";
+        let found = problems(&dir, doc);
+        assert!(
+            found.iter().any(|m| m.contains("is not a directory")),
+            "{found:?}"
+        );
+    }
+
+    /// An `#[ignore]`d test proves nothing (AGENTS.md rule 2), so a cell may
+    /// not cite one — and `it.skip` is the TypeScript spelling of the same
+    /// thing.
+    #[test]
+    fn an_ignored_or_skipped_test_cannot_satisfy_a_tick() {
+        let dir = synthetic_sdks("parity-ignored");
+        let doc = format!("{HEADER}| refunds | ✅ `a_refund_settles` | ✅ `a refund settles` |\n");
+        let found = problems(&dir, &doc);
+        assert_eq!(found.len(), 2, "{found:?}");
+    }
+
+    /// A vendored dependency's tests are not this SDK's proof.
+    #[test]
+    fn a_test_inside_node_modules_does_not_satisfy_a_tick() {
+        let dir = synthetic_sdks("parity-vendored");
+        let doc = format!(
+            "{HEADER}| confirm | ✅ `a_confirm_reaches_the_rail` | ✅ `a vendored dependency's own test` |\n"
+        );
+        let found = problems(&dir, &doc);
+        assert_eq!(found.len(), 1, "{found:?}");
+    }
+
+    /// A test name containing a backtick is written with a double-backtick
+    /// span; `stripe-auth.test.ts` really does carry one.
+    #[test]
+    fn a_test_name_carrying_a_backtick_is_readable_from_a_double_backtick_span() {
+        let dir = synthetic_sdks("parity-backtick");
+        let doc = format!(
+            "{HEADER}| stripe | ⛔ 2026-09-03 — no equivalent | ✅ ``authenticates a real `stripe` client end to end`` |\n"
+        );
+        let outcome = parity_outcome(dir.path(), &doc);
+        assert!(outcome.problems.is_empty(), "{:?}", outcome.problems);
+        assert_eq!(outcome.proven, 1);
+    }
+
+    #[test]
+    fn a_plain_helper_function_is_not_a_test() {
+        let mut names = BTreeSet::new();
+        rust_test_names("fn a_plain_helper() {}\n", &mut names);
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn a_member_call_and_a_longer_identifier_are_not_test_declarations() {
+        let mut names = BTreeSet::new();
+        ts_test_names(
+            "it.each([1])(\"parameterised\", () => {});\nsubmit(\"not a test\");\nawait(\"neither\");\n",
+            &mut names,
+        );
+        assert!(names.is_empty(), "{names:?}");
+    }
+
+    #[test]
+    fn the_repositorys_own_matrix_passes() {
+        let root = repo_root();
+        let doc = fs::read_to_string(root.join(SDK_PARITY_DOC)).expect("the matrix is readable");
+        let outcome = parity_outcome(&root, &doc);
+        assert!(outcome.problems.is_empty(), "{:#?}", outcome.problems);
+        assert!(
+            outcome.proven > 50,
+            "the matrix should name many tests, named {}",
+            outcome.proven
+        );
     }
 }

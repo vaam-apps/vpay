@@ -12,6 +12,10 @@
 //! and [`delivery_delay`] for webhook delivery. They are deliberately separate
 //! — see [`delivery_delay`].
 //!
+//! [`ssrf`] is the egress guard every webhook delivery goes through before a
+//! socket is opened: it is the only thing standing between a
+//! merchant-supplied URL and the deployment's own network.
+//!
 //! `docs/reference/vpay-worker.md` explains why this crate is shaped the way
 //! it is; `docs/status.md` is the record of what is actually wired up, and it
 //! is the one to trust — this crate holds *handlers*, and a handler no loop
@@ -25,6 +29,7 @@ pub mod jobs;
 pub mod recovery;
 pub mod run_loop;
 pub mod signing;
+pub mod ssrf;
 pub mod webhooks;
 pub use error::{Decision, JobError, tracing_level};
 pub use handlers::{Adapters, RailConfigs, WebhookContext, handle};
@@ -34,6 +39,7 @@ pub use run_loop::{
     Disposition, Drain, LoopReport, Settled, run_loop, run_once, seed_singletons, worker_id,
 };
 pub use signing::signature_header;
+pub use ssrf::{AddressClass, EgressPolicy, EgressRefusal, VettedTarget};
 pub use webhooks::{
     Endpoint, EndpointRegistry, FANOUT_MAX_ATTEMPTS, WEBHOOK_CONNECT_TIMEOUT,
     WEBHOOK_REQUEST_TIMEOUT, handle_deliver, handle_fan_out, handle_scan_deliveries,

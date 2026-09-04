@@ -404,6 +404,60 @@ the caller's job (this adapter holds no state). Returning a `CallbackRef` with
 nothing to compare would hand the caller a hint it cannot check, which is worse
 than refusing to parse.
 
+That check is now load-bearing in a place it was not before. Since Step 8 lane
+C there **is** a caller — `vpay_api::provider_callback` — and it discards
+`CallbackRef::ref_extra` entirely rather than comparing the received
+`notif_token` against the stored one, because that comparison is not built
+(`docs/status.md`). So the adapter refusing the body is the only thing standing
+between an unauthenticated POST and a queued poll, and
+`an_unparseable_callback_body_is_refused_and_moves_no_job` in
+`backends/tests/integration/tests/provider_callback.rs` is decisive about it:
+making `notif_token` optional here makes that test's Orange case fail twice
+over — first on the `400`, and, with that assertion removed, on the poll job's
+`run_at` having been dragged back to now. Measured 2026-09-04, restored
+afterwards.
+
+---
+
+## The callback URL is a contract the mappings hold
+
+Both rails carry vpay's callback URL on every `submit` — MTN in the
+`X-Callback-Url` header, Orange in the request body's `notif_url` — and both
+have done so since Step 3, derived by
+`vpay_config::ProviderHost::effective_callback_url` from
+`{deployment.public_base_url}/provider/{code}/callback` (ADR-0012 is the
+adjacent decision about rail-keyed configuration). Until Step 8 lane C that
+address answered a 404, because nothing mounted the route.
+
+What was missing was not the header; it was any way to *notice* it going away.
+Polling settles a payment perfectly well on its own, so an adapter that quietly
+stopped sending its callback URL would have passed every conformance case,
+settled every payment in `backends/tests/integration`, and been discovered by
+an MTN sandbox registration failing or by a production deployment whose
+settlements were all ten seconds late.
+
+It is now asserted twice, from both directions:
+
+- `requesttopay.json`'s accepted-submit mapping and `webpayment.json`'s
+  **require** the URL to match `.+/provider/{code}/callback`, so an adapter
+  that stops sending it matches no mapping and gets a 404 rather than an
+  accepted submit. Measured: removing MTN's `.header(CALLBACK_URL_HEADER, …)`
+  fails `submit_returns_a_reference_and_a_flow_shaped_result` with
+  `Config("mtn_momo: requesttopay answered HTTP 404 Not Found; check
+  base_url")`, and pointing Orange's `notif_url` at `config.base_url` fails the
+  same case with Orange's own 404. Both restored (2026-09-04).
+- `the_submit_tells_the_rail_where_to_call_back` reads WireMock's request
+  journal and asserts the URL the rail received is the configured one
+  **verbatim** — the half that catches an adapter sending *some* URL rather
+  than *this* one.
+
+The host is left free in the mapping matchers (`.+`) because it genuinely
+varies: the stub's own origin under test, an ingress in production, and MTN
+additionally allows an IP-allowlisted callback host of its own
+(`ProviderHost::callback_url`). The **path** is pinned, because that is the
+half that can drift silently — the route lives in `vpay-api` and the
+derivation in `vpay-config`, and neither crate compiles against the other.
+
 ---
 
 ## Status
@@ -414,6 +468,11 @@ shared bounded read. `cargo nextest run -p vpay-provider
 runs **149 tests, 149 passed, 0 skipped, 0 ignored** (2026-09-03), of which the
 conformance suite is 26 — 11 cases parameterised over both rails, plus 4 that are not rail-specific. `cargo test --doc` over the
 three crates runs **10 doctests**.
+
+Re-measured 2026-09-04 (Step 8 lane C): `cargo nextest run
+-p vpay-tests-conformance` runs **28 tests, 28 passed, 0 skipped, 0 ignored** —
+12 cases over both rails plus the same 4, the new one being
+`the_submit_tells_the_rail_where_to_call_back`.
 
 **Not proven by any of it.** Every conformance case talks to WireMock:
 **neither adapter has ever called MTN's or Orange's real sandbox**, so a mapping

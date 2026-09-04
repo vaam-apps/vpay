@@ -1,6 +1,6 @@
 # Roadmap
 
-**Snapshot date: 2026-08-11, last refreshed 2026-09-03.** A point-in-time read
+**Snapshot date: 2026-08-11, last refreshed 2026-09-04 (the Step 8 addendum at the foot of this page).** A point-in-time read
 of the repository, for someone opening it cold or coming back after a break,
 organized as the sequence of phases from scaffold to a deployable gateway. It
 goes stale the moment code moves and nobody is obliged to update it on the
@@ -40,11 +40,11 @@ true.
 | 2b | Authentication — dashboard login (`/dash/v1`) | ⛔ Not started, unchanged — no `/login`, no `/authorize`, no `SessionStore`, no `/dash/v1` route of any kind; split out of Phase 2 on 2026-09-02 |
 | 3 | Payment API (`/v1`) | ✅ Delivered 2026-09-02→03 (Steps 2–3, PRs #16–#17) — create / retrieve / list / cancel / confirm, form-encoded, idempotent and merchant-scoped, with `confirm` moving the intent to `processing` or `requires_action`. **Against WireMock rails**, which is why the matching `docs/status.md` rows are 🟡 |
 | 4 | The rails | → **split 2026-09-03.** **4a** ✅ delivered (Step 3, PR #17) — both adapters pass the one shared conformance suite, 26 tests, 0 `#[ignore]`s, every one of them against a `wiremock/wiremock` container. **4b** (push-rail recovery) delivered inside Phase 5 (Step 4, PR #18). The two headings below are current; this row is the pre-split one |
-| 5 | The worker | 🟡 In progress — the job loop, the poll ladder, recovery and settlement landed 2026-09-03 (Step 4, PR #18) against WireMock rails, and a confirmed intent reaches `succeeded` unattended; **the callback route (`POST /provider/{code}/callback`) and prompt expiry did not**, and the "crash tests" kill no process |
+| 5 | The worker | 🟡 In progress — the job loop, the poll ladder, recovery and settlement landed 2026-09-03 (Step 4, PR #18) against WireMock rails, and a confirmed intent reaches `succeeded` unattended. **Updated 2026-09-04 (Step 8):** ~~the callback route (`POST /provider/{code}/callback`) … did not~~ — **it exists now** (lane C), and ~~the "crash tests" kill no process~~ — **`worker_kill9.rs` `SIGKILL`s the shipping worker and the shipping server** (lane D), so two of the three kill points are caused rather than written. Lane G additionally fixed a `500` on confirm that this step's demo found. **Still 🟡:** prompt expiry is unbuilt, kill point 1 is still written rather than caused, Orange is not in the kill test, no rail has ever called the callback route, and every rail here is a WireMock host |
 | 5b | Stripe SDK compatibility on `/v1` | ✅ Delivered 2026-09-03 (PR #20) — the real `stripe@22.6.1` package driven out of process against the compose stack: `sdks/stripe-compat`, **25 cases, 0 skipped**, run by CI's `e2e (compose)` job; [flows/stripe-sdk-compat.md](flows/stripe-sdk-compat.md). *`docs/status.md`'s row is 🟡 for the standing limit — the rail and the receiver are both WireMock hosts* |
 | 5c | Stripe.js-compatible browser checkout | ✅ Delivered 2026-09-03 (PR #22), **push rails only** — `/v1/browser` plus `@vpay/stripe-js`, no merchant credential in the browser, proven by `checkout.cy.ts` against the compose stack. **The redirect return trip is a named gap**: there is no bounce endpoint, so an Orange checkout must not be shipped on this package ([flows/browser-checkout.md](flows/browser-checkout.md), "The redirect gap") |
-| 6 | Webhooks | 🟡 In progress — the outbox drain, signing and delivery landed 2026-09-03 (Step 5, PR #19) against a WireMock receiver; no merchant endpoint has ever been POSTed to, there is no SSRF protection of any kind (boot-time `validate_host` is a stub-host guard, not an address check), delivery is unordered, and replaying an exhausted delivery is a hand-written transaction |
-| 7 | Operability — including Step 6's groundwork (PR #21) | 🟡 In progress — **the repo is here now**, on Step 7 (see below). No longer "blocked by environment": CI runs the compose stack, both Cypress specs and the stripe-node conformance suite; the Helm chart is linted, rendered and kubeconform-checked by CI's `deploy` job; `release.yml` has built and signed images on every push to `master` since Step 6; `just demo` runs seven steps. **Not done: no cluster, no Prometheus scrape, no runbook walked against a real fault, and no real rail behind any of it** |
+| 6 | Webhooks | 🟡 In progress — the outbox drain, signing and delivery landed 2026-09-03 (Step 5, PR #19) against a WireMock receiver. **Updated 2026-09-04 (Step 8, lane B):** ~~there is no SSRF protection of any kind~~ — **a runtime egress guard exists**, `vpay_worker::ssrf`, which resolves each endpoint's host once, refuses every non-public address in both families and pins the connection to what it classified; boot-time `validate_host` is still only a stub-host guard and never was an address check. **Still 🟡:** no merchant endpoint has ever been POSTed to, the guard has never refused a real one, delivery is unordered, replaying an exhausted delivery is a hand-written transaction, and the pin cost the shared connection pool |
+| 7 | Operability — including Step 6's groundwork (PR #21) | 🟡 In progress — **the repo is here now**, on Step 7 (see below). No longer "blocked by environment": CI runs the compose stack, both Cypress specs and the stripe-node conformance suite; the Helm chart is linted, rendered and kubeconform-checked by CI's `deploy` job; `release.yml` has built and signed images on every push to `master` since Step 6; ~~`just demo` runs seven steps~~ — **as of 2026-09-04 (Step 8, lane A) `just demo` is four steps whose fourth is six payments across both rails**, with `demo-up`/`demo-walk`/`demo-status`/`demo-down` split out, two stacks able to coexist on one machine, and [runbooks/demo.md](runbooks/demo.md) as the procedure with real pasted output. **Not done: no cluster, no Prometheus scrape, no runbook walked against a real fault, no real rail behind any of it — and the demo has not yet been run on the merged Step 8 gate branch** |
 
 **Where the repo is now, 2026-09-03 (evening).** Steps 5b, 6 and 5c landed on
 `master` in that order (PRs #20, #21, #22), followed by a frontend dependency
@@ -741,8 +741,11 @@ passed, 0 skipped, measured 2026-09-03; `just verify-ignored` pins
   against a stub whose mappings were written from `docs/flows/adapter-*.md`,
   so a document that is wrong about the rail would still pass.
 - The 401 → re-mint → retry path is unproven on both rails.
-- No callback route exists: nothing verifies Orange's `notif_token`, and
-  MTN's callbacks are unsigned.
+- ~~No callback route exists:~~ **the callback route exists (Step 8, lane C)**
+  but nothing verifies Orange's `notif_token`, and MTN's callbacks are
+  unsigned — so a callback is a hint on both rails and always will be. No rail
+  has ever called the route: every body it has parsed was transcribed from
+  `docs/flows/adapter-*.md` by this repository's own tests.
 - `mtn_momo::refund` is still a `NotImplemented` token, and `POST /v1/refunds`
   is unrouted.
 - Orange's duplicate-submit idempotency is an assumption about the rail.
@@ -781,10 +784,12 @@ bookkeeping. A redirect charge stuck in `submitting` is failed instead, keyed
 on `Capabilities::flow`. Each has a test named in
 [`docs/flows/crash-safety.md`](flows/crash-safety.md).
 
-**What is still outstanding from this phase's scope:** the crash tests do not
-kill a process. They write the state each kill point leaves and run the real
-handlers against it, which proves the recovery table but not the process's
-behaviour under a signal. That distinction is stated in
+**What is still outstanding from this phase's scope:** ~~the crash tests do not
+kill a process.~~ **Corrected 2026-09-04 (Step 8, lane D):** two of the three
+kill points are now proven by a real `SIGKILL` to a real shipping process
+(`worker_kill9.rs`); **kill point 1 still writes the state rather than causing
+it**, which proves the recovery table but not that moment's behaviour under a
+signal. That distinction is stated in
 [`crash-safety.md`](flows/crash-safety.md) rather than smoothed over.
 
 *The redirect-rail half of the old scope — "`ref_extra` must commit before
@@ -834,19 +839,30 @@ and CI.
 - 🟡 The three crash-test injection points from
   [`docs/flows/crash-safety.md`](flows/crash-safety.md) — all three are
   exercised, by *writing the state each one leaves* and running the real
-  handlers against it. **No process is killed.**
+  handlers against it. ~~**No process is killed.**~~ **Corrected 2026-09-04
+  (Step 8, lane D): two of the three are now killed for real.**
+  `backends/tests/integration/tests/worker_kill9.rs` `SIGKILL`s the shipping
+  `vpay-worker-bin` mid-status-query and the shipping `vpay-server`
+  mid-`requesttopay`, asserts the exit was *signalled with 9*, and asserts the
+  charge settles exactly once with one submit in the rail's journal. **Kill
+  point 1 is still written rather than caused** — there is no network call to
+  interrupt before the reference is minted — and Orange is not exercised at
+  all.
 - ⛔ Absorbed from Phase 4b but **not** delivered: nothing else. Not in this
-  phase's original scope and still unbuilt: the callback route
-  (`POST /provider/{code}/callback`) and `prompt_ttl_seconds` /
-  `prompt_expired_at` / `payment_intent.processing` — both named in
-  [`docs/flows/reconciler.md`](flows/reconciler.md)'s Status.
+  phase's original scope and still unbuilt: `prompt_ttl_seconds` /
+  `prompt_expired_at` / `payment_intent.processing` — named in
+  [`docs/flows/reconciler.md`](flows/reconciler.md)'s Status. *(The callback
+  route was on this list until 2026-09-04; Step 8's lane C built it.)*
 
 **Definition of done — met in substance, with one honest gap.** The recovery
 table resolves every injection point without a double charge, asserted by a
 single distinct `provider_reference_id` across every `provider_requests` row
-for the charge. What is *not* met is the literal wording: these are not
-kill-the-process tests, and calling them that would be the overstatement this
-repository exists to avoid.
+for the charge. ~~What is *not* met is the literal wording: these are not
+kill-the-process tests~~ — **narrowed 2026-09-04 (Step 8): two of the three
+now are.** The literal wording is unmet for **kill point 1 only**, and for the
+reason above rather than for want of effort. Calling the remaining case a
+kill-the-process test would still be the overstatement this repository exists
+to avoid.
 
 **Unblocks.** Reliable terminal states for Phase 6 to notify on.
 
@@ -899,9 +915,13 @@ singleton (`fanout:events`, seeded at every worker boot) turns it into one
 in one transaction per event. `deliver_webhook` renders the event through the
 same `vpay_api::model::EventObject` that `GET /v1/events` serves, signs those
 exact bytes with HMAC-SHA256 over `"{t}.{body}"`, and POSTs them under
-`Vpay-Signature` and `Stripe-Signature`. `just demo`'s seventh step ends with a
-signed `payment_intent.succeeded` read back out of a WireMock receiver's own
-request journal and verified with the shipping SDK.
+`Vpay-Signature` and `Stripe-Signature`. ~~`just demo`'s seventh step ends with
+a signed `payment_intent.succeeded` read back out of a WireMock receiver's own
+request journal and verified with the shipping SDK.~~ **Corrected 2026-09-04
+(Step 8, lane A): the walkthrough is four steps, and step 4 reads a signed
+webhook back out of the WireMock receiver's own request journal — one per
+outcome, six in all — verifying each with the shipping SDK and asserting its
+`type` against what that outcome must produce.**
 
 **No merchant endpoint has ever been POSTed to.** Every delivery observed so
 far went to a WireMock host on a compose network, on a developer machine and in
@@ -919,7 +939,9 @@ and 5 carry about rails.
 > ([flows/browser-checkout.md](flows/browser-checkout.md)). Both are rows in
 > the table at the top of this page rather than scope here. **The receiver is
 > still a WireMock host, delivery is still unordered, and there is still no
-> SSRF protection of any kind.**
+> SSRF protection of any kind.** *(**Corrected 2026-09-04, Step 8 lane B:** the
+> last clause is retired — `vpay_worker::ssrf` guards every delivery. The other
+> two stand.)*
 
 **Scope, and what became of each item.**
 - ✅ An outbox row written in the same transaction as the state change it
@@ -955,14 +977,22 @@ rather than skips** when `node` is absent; CI sets `VPAY_REQUIRE_NODE=1`.
 last functional phase before the MVP claim in `docs/status.md` can move.
 
 **Risks carried by this phase.**
-- **No SSRF protection at all, and `validate_host` is not any.** Endpoint URLs
-  are checked at **boot** only, and that check is a scheme prefix plus four
-  substrings (`wiremock`, `stub`, `mock`, `localhost`) that never looks at the
-  destination address — so loopback, RFC1918, link-local and cloud-metadata
-  addresses all boot clean in livemode and are all delivered to. The honest fix
-  is a custom reqwest connector — a resolve-then-connect check is TOCTOU — and
-  it is out of scope; decision 4 of
-  `docs/plans/2026-09-03-step5-webhooks.md`.
+- ~~**No SSRF protection at all, and `validate_host` is not any.**~~
+  **Closed 2026-09-04 (Step 8, lane B), and what replaces it is narrower.**
+  Endpoint URLs are still checked at boot only, and that check is still a
+  scheme rule plus four host substrings that never looks at an address — it
+  never could, because an address is not a property of a configuration file.
+  What changed is that the **address is now checked at delivery**:
+  `vpay_worker::ssrf` resolves the host once, classifies every address the
+  lookup answered with, refuses the delivery permanently if any of them is
+  non-public, and pins the client to exactly those addresses with
+  `reqwest::ClientBuilder::resolve_to_addrs` — which is the third answer the
+  Step 5 plan's decision 4 did not consider, and it needs no custom connector.
+  **Three residuals remain and are risks this phase still carries:** the guard
+  is on webhook delivery only; a NAT64 receiver (`64:ff9b::/96`) is refused
+  fail-closed; and the pin cost the shared connection pool, one handshake per
+  delivery, unmeasured under load. And **no deployment has ever refused a real
+  merchant's endpoint.**
 - **Delivery is unordered.** Concurrent claims and the retry ladder can reorder
   two of one merchant's events; merchants must dedupe on `event.id` and reason
   from `event.created` and the object's own `status`, never from arrival order.
@@ -1044,7 +1074,9 @@ about payments.
 > - **`just demo` runs seven steps** end to end against the containerised
 >   stack, the seventh being a signed `payment_intent.succeeded` read back out
 >   of a WireMock receiver's own request journal and verified with the
->   shipping SDK.
+>   shipping SDK. *(**Corrected 2026-09-04, Step 8 lane A:** four steps now,
+>   the fourth being six payments across both rails, each with its own signed
+>   webhook.)*
 > - **Both binaries have an observability listener** on a second port —
 >   `/livez` and `/metrics`, twelve metric names with one seam each.
 >
@@ -1127,11 +1159,96 @@ the cleanup rework, is on a branch and unmerged**; it moves no capability.
 read as having retired: no HTTP call to a **real** rail has ever been made —
 every payment in this repository's history settled against a
 `wiremock/wiremock` host answering the way these documents say a rail answers;
-**no merchant endpoint has ever been POSTed to** and there is no SSRF
-protection on webhook destinations; **no cluster has run the Helm chart and no
+**no merchant endpoint has ever been POSTed to** and ~~there is no SSRF
+protection on webhook destinations~~ *(retired 2026-09-04 by Step 8's egress
+guard — see the fourth addendum)*; **no cluster has run the Helm chart and no
 Prometheus has scraped a vpay process**; the GHCR packages those release runs
 created are **private** — nothing in this repository can publish them, and
 making one pullable is a one-time change a human makes in the package's own
 settings ([runbooks/release.md](runbooks/release.md)); there is still no
 `/dash/v1` login; and **no runbook has been followed against a real fault**.
 [`docs/status.md`](status.md) records each of those per feature, and it wins.
+
+**Fourth addendum, 2026-09-04 (Step 8, the production gate).** One branch,
+`claude/step8-production-gate`, six lanes plus a seventh the step's own reviews
+produced, and the point of the step was to close every gap that does **not**
+need a real rail credential:
+
+- **Lane B — the runtime egress guard.** `vpay_worker::ssrf` on every webhook
+  delivery: resolve once, classify every answered address in both families
+  (mapped and compatible spellings included), refuse the delivery permanently
+  if any is non-public, and pin the client to what was classified. This closed
+  the repository's only ⛔ on a shipping path. Three residuals remain, named in
+  Phase 6's risks.
+- **Lane C — the rail callback route.** `POST /provider/{code}/callback`, plus
+  migration `0027`'s index behind its unauthenticated lookup. It writes no
+  charge or intent state: it pulls the charge's existing poll job forward.
+  Orange's `notif_token` is still not compared against the stored one, and the
+  route discards `CallbackRef::ref_extra` rather than trusting it.
+- **Lane D — a real `SIGKILL`.** The shipping `vpay-worker-bin` killed
+  mid-status-query and the shipping `vpay-server` killed mid-`requesttopay`,
+  against real Postgres and WireMock. Kill point 1 is still written rather than
+  caused, and Orange is not exercised.
+- **Lane G — the confirm/worker race**, which was *not* in the plan. Lane A's
+  demo produced a `500 api_error` on confirm in four of six runs: the worker
+  claimed the poll job the confirm had just committed and applied the
+  crash-recovery table to a charge whose process had not crashed. The fix is a
+  minimum charge age in `recovery_step`. **A demo found a real defect in a
+  payment path, which is the strongest argument this step makes for having a
+  demo at all.**
+- **Lane A — the demo.** Six payments, both rails, three outcomes each, every
+  outcome steered at the stub by a field a merchant controls; split recipes;
+  two stacks on one machine at the Compose layer; and
+  [runbooks/demo.md](runbooks/demo.md) with real pasted output. `.e2e/` is
+  still shared between stacks and that is a named gap.
+- **Lane F — SDK parity**, added at the user's request outside the original
+  plan: [ADR-0015](adr/0015-sdk-parity.md), [docs/sdks/parity.md](sdks/parity.md)
+  and `cargo xtask verify-sdk-parity` in `just verify`. 267 proving tests named,
+  24 dated gaps, **none of them closed by this step**.
+
+- **Lane H — the correctness review's four confirmed findings**, 2026-09-04,
+  after the six lanes above had merged. (1) The recovery window compared
+  Postgres' `charges.created_at` against the **worker host's** clock, so a
+  worker sixty seconds fast made lane G's guard a silent no-op on exactly the
+  deployment whose fleet clocks had drifted; the age now comes from
+  `Charges::get_by_id_as_of`, which selects `now()` beside the row, and
+  `recovery_step` takes durations rather than instants so there is no parameter
+  left for a caller to read off the wrong clock. (2) `RecoveryAction::Wait`
+  rescheduled at `poll_delay(0)`, and every reschedule spends a rung, so a
+  genuinely crashed charge burned six of them waiting the window out; `Wait`
+  now carries `window - age`, clamped, and reschedules once, so the first real
+  recovery rung is `poll_delay(1)` — twenty seconds. (3) The callback route's
+  pull-forward matched any unleased future job, so an anonymous caller drove
+  rail traffic at their own rate and the module doc said the opposite; it now
+  refuses a job already due within `PULL_FORWARD_FLOOR` — ten seconds, the
+  ladder's own fastest rung — and the cost is stated rather than implied: a
+  callback arriving while the charge sits on that first rung no longer settles
+  it early. (4) The egress classifier let `192.88.99.0/24`, `2001:1::/32`,
+  `2001:2::/48` and `2001:20::/28` through as ordinary public addresses; all
+  four are refused now. [plans/step8-notes/lane-h.md](plans/step8-notes/lane-h.md)
+  is the record, including the two findings it deliberately did not fix.
+
+**What Step 8 did not do, stated so it is a decision and not an omission.** No
+real rail was called and the "do not deploy" banner is untouched. The dashboard
+and `/dash/v1` are unbuilt, and the demo says why: there is no data source to
+show. The Orange redirect return trip is still missing, so a redirect-rail
+checkout must not ship on `@vpay/stripe-js`. `mtn_momo::refund` is still the
+one `NotImplemented` token. `just demo` has **not** been run on the merged gate
+branch. And `charges.provider_reference_id` is still not `UNIQUE` — lane C
+recommends it and deliberately left the decision to the maintainer.
+**Lane H adds five more, each named rather than rounded off:** an SSRF-refused
+webhook delivery is exhausted on its first attempt and there is **no replay
+path** (finding 5); the callback route's two `202`s are distinguishable in
+*time*, because the known-reference path runs a transaction the unknown one
+does not (finding 7); **no rate limit** was added to that route, per charge or
+per source, and the pull-forward floor is not one; `scan_live_charges` still
+computes its ten-minute cutoff from the worker host's clock and compares it
+against a column Postgres wrote — the same defect class as the recovery
+window's, in its mildest direction; and **`2001::/23` as a whole is still
+deliverable**, because refusing IANA's whole protocol-assignments block is a
+wider call than the review asked for and is left to the maintainer.
+
+**Issue #11 is answered item by item in the PR and is not auto-closed.** Two of
+its seven items are incomplete (the `.e2e/` half of the concurrency item, and
+the walkthrough's own history), and a closed issue that is not fixed is worse
+than an open one.

@@ -19,7 +19,8 @@
 //! unique index and not a read is what enforces one charge per intent, why the
 //! counter lives in this layer, and what the after-the-commit timing costs.
 
-use sqlx::PgConnection;
+use sqlx::postgres::PgRow;
+use sqlx::{FromRow, PgConnection, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
 use vpay_core::ChargeState;
@@ -130,6 +131,53 @@ pub struct ChargeRow {
     pub created_at: OffsetDateTime,
     /// When the row last changed (migration 0014).
     pub updated_at: OffsetDateTime,
+}
+
+/// One `charges` row, together with the database's own clock at the instant
+/// it was read.
+///
+/// # Why the clock travels with the row
+///
+/// Two of the worker's decisions about a charge are *ages*: whether it is
+/// old enough for `submitting` to be evidence of a crash
+/// (`vpay_worker::recovery_step`), and whether it is past the 24-hour
+/// escalation horizon (`vpay_worker`'s `past_the_horizon`). Both subtract
+/// [`ChargeRow::created_at`] — written by Postgres' `now()` inside the
+/// confirm's transaction — from "now", and a worker that reads that "now"
+/// off its own host clock is subtracting two different clocks. A worker
+/// sixty seconds ahead of Postgres then measures every charge as a minute
+/// older than it is, which makes the age guard a silent no-op and hands
+/// every live confirm back to the recovery table.
+///
+/// So the second operand comes from the same `SELECT` as the first: one
+/// statement, one clock, and no way for a caller to supply the wrong one.
+/// `docs/reference/vpay-db.md` §"The charge read carries Postgres' clock"
+/// carries the argument, and `docs/reference/vpay-worker.md` §"Nothing
+/// younger than the window is recovered" is what depends on it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChargeAsOf {
+    /// The row itself, decoded exactly as [`Charges::get_by_id`] decodes it.
+    pub charge: ChargeRow,
+    /// Postgres' `now()`, evaluated by the statement that read the row.
+    ///
+    /// The transaction timestamp, which for a statement outside an explicit
+    /// transaction is that statement's own start — near enough to "when the
+    /// row was read" for an age measured in seconds, and the same value every
+    /// other write in this crate stamps rows with.
+    pub db_now: OffsetDateTime,
+}
+
+impl FromRow<'_, PgRow> for ChargeAsOf {
+    /// Hand-written rather than `#[derive]`d with a flattened field: the
+    /// derive would need [`ChargeRow`]'s columns to be a nested prefix, and
+    /// what this decodes is one flat row that happens to carry one extra
+    /// column.
+    fn from_row(row: &PgRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            charge: ChargeRow::from_row(row)?,
+            db_now: row.try_get("db_now")?,
+        })
+    }
 }
 
 /// The columns a caller supplies when opening a charge: [`ChargeRow`] minus
@@ -392,6 +440,73 @@ pub trait Charges: Send + Sync {
     ///
     /// Returns [`DbError::Query`] if the read fails.
     async fn get_by_id(&self, id: &str) -> Result<Option<ChargeRow>, DbError>;
+
+    /// The same read as [`Charges::get_by_id`], plus the database's own clock
+    /// at the instant of the read.
+    ///
+    /// # Why the worker's poll uses this one
+    ///
+    /// Everything the worker decides about a `submitting` charge is a
+    /// *duration*: how long it has been sitting there. The subtrahend is
+    /// `charges.created_at`, which Postgres wrote; the minuend used to be the
+    /// worker host's own clock, so the two came from different machines and a
+    /// worker a minute ahead of Postgres saw every charge as a minute older
+    /// than it was — which turns the recovery window into a no-op precisely
+    /// on the deployment whose clocks have drifted. [`ChargeAsOf`] says the
+    /// rest.
+    ///
+    /// One statement rather than a `SELECT now()` beside the row read: two
+    /// statements would be two transaction timestamps with a scheduling gap
+    /// between them, and the gap would be exactly the quantity being
+    /// measured.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if the read fails.
+    async fn get_by_id_as_of(&self, id: &str) -> Result<Option<ChargeAsOf>, DbError>;
+
+    /// Reads the charge a rail's callback names — the reference *we*
+    /// generated, scoped to the rail that is speaking.
+    ///
+    /// # Why the rail is a parameter and not derived from the reference
+    ///
+    /// The one caller is `vpay_api::provider_callback`, serving an
+    /// **unauthenticated** `POST /provider/{code}/callback`. Everything about
+    /// that request is attacker-controlled except the path segment naming the
+    /// rail, and the reference itself arrives inside a body anyone who can
+    /// reach the URL could have written. Scoping the read by `provider_code`
+    /// is what makes "a body posted to one rail's callback path can never
+    /// name a charge on another rail" a property of the query rather than of
+    /// a check a future handler could forget to write.
+    ///
+    /// Served by `charges_provider_reference_idx` (migration `0027`), which
+    /// exists because this read is reachable without a credential — see that
+    /// migration.
+    ///
+    /// # Why the answer is bounded rather than assumed unique
+    ///
+    /// `provider_reference_id` carries no unique constraint. Every insert
+    /// path mints it with `Uuid::new_v4()` before committing
+    /// (`docs/flows/crash-safety.md`), so two charges sharing one would be a
+    /// vpay bug — but this statement must still be *deterministic* rather
+    /// than returning whichever row the plan happened to reach first, so it
+    /// orders newest-first and takes one. The newest is the charge a callback
+    /// arriving now is about if that bug ever exists; and the blast radius is
+    /// small by construction, because all the route does with the answer is
+    /// enqueue an **authenticated** status query, which settles the charge the
+    /// rail actually names or nothing at all.
+    ///
+    /// Not merchant-scoped, for the reason [`Charges::get_for_intent`] gives,
+    /// and more sharply: the caller here is a rail, which has no merchant.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if the read fails.
+    async fn get_by_provider_reference(
+        &self,
+        provider_code: &str,
+        provider_reference_id: Uuid,
+    ) -> Result<Option<ChargeRow>, DbError>;
 }
 
 #[async_trait::async_trait]
@@ -419,10 +534,41 @@ impl Charges for crate::repository::PgRepositories {
     }
 
     async fn get_by_id(&self, id: &str) -> Result<Option<ChargeRow>, DbError> {
-        let sql = format!("SELECT {COLUMNS} FROM charges WHERE id = $1");
+        // Delegated rather than written a second time: two statements
+        // reading one row by its primary key would be free to drift on what
+        // they select, and the only difference between the two answers is a
+        // column this caller does not want.
+        Ok(self.get_by_id_as_of(id).await?.map(|as_of| as_of.charge))
+    }
+
+    async fn get_by_id_as_of(&self, id: &str) -> Result<Option<ChargeAsOf>, DbError> {
+        let sql = format!("SELECT {COLUMNS}, now() AS db_now FROM charges WHERE id = $1");
+
+        sqlx::query_as::<_, ChargeAsOf>(&sql)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(DbError::Query)
+    }
+
+    async fn get_by_provider_reference(
+        &self,
+        provider_code: &str,
+        provider_reference_id: Uuid,
+    ) -> Result<Option<ChargeRow>, DbError> {
+        // `ORDER BY … LIMIT 1` rather than a bare `fetch_optional`: see the
+        // trait method's "bounded rather than assumed unique" section. `id`
+        // breaks a `created_at` tie so the answer is total, not merely
+        // usually-total.
+        let sql = format!(
+            "SELECT {COLUMNS} FROM charges \
+             WHERE provider_code = $1 AND provider_reference_id = $2 \
+             ORDER BY created_at DESC, id DESC LIMIT 1"
+        );
 
         sqlx::query_as::<_, ChargeRow>(&sql)
-            .bind(id)
+            .bind(provider_code)
+            .bind(provider_reference_id)
             .fetch_optional(&self.pool)
             .await
             .map_err(DbError::Query)

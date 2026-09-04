@@ -318,8 +318,11 @@ collapse described above.
   transaction and the real `/v1` renderer — but the approval itself is
   fiction.
 - **The receiver is a WireMock host too.** No merchant endpoint has ever been
-  POSTed to, and there is no SSRF protection on the destination
-  ([webhooks.md](webhooks.md)).
+  POSTed to. ~~and there is no SSRF protection on the destination~~ —
+  **corrected 2026-09-04 (Step 8): every delivery now goes through
+  `vpay_worker::ssrf`**, and the compose stack's private receiver is permitted
+  by the sandbox profile's `webhooks.allow_private_targets` rather than by the
+  guard being absent ([webhooks.md](webhooks.md)).
 - **Nothing pins vpay against a future `stripe` release.** The suite runs
   against `^22.6.1`, tested at exactly `22.6.1`; a dependency bump is what
   will surface a break.
