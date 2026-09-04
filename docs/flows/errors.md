@@ -67,8 +67,8 @@ saying why.
 | `NotImplemented` | us (honest stub) | 501 | `api_error` | `not_implemented` | never | error | 1 |
 | `Internal` | us (a bug) | 500 | `api_error` | `internal_error` | never | **page** | 1 |
 
-The `default code` column is the *default*, and one category now has two
-codes in practice. **`Category::Idempotency` carries
+The `default code` column is the *default*, and two categories now answer
+with more than it. **`Category::Idempotency` carries
 `idempotency_key_in_use` (a key replayed with a different body) and
 `idempotency_key_in_flight` (a key whose first request has not finished).**
 Both are `400`/`idempotency_error` because the status comes from the
@@ -80,6 +80,27 @@ is an ADR-level change and is deliberately left as a maintainer decision;
 pins the three answers apart. Do not edit the table's cell for this: the row
 is transcribed literally into `vpay-core`'s own test, and the *default* is
 still `idempotency_key_in_use`.
+
+**`Category::Conflict` gained two codes on 2026-09-05:
+`checkout_session_expired` and `checkout_session_complete`.**
+`ApiError::CheckoutSessionNotOpen` is a confirm on an intent whose newest
+Checkout Session is no longer `open` ([hosted-checkout.md](hosted-checkout.md)),
+and the argument is the idempotency pair's: a merchant must be able to tell
+"your payer walked away, and we told you an hour ago" from "this intent is
+already processing". `409`, `invalid_request_error`, `Retry::Never` and
+`Severity::Info` all come from the category and none of them is overridden —
+only the `code` and the sentence are the variant's own, which is ADR-0011's
+shape. Two codes rather than one code with a `param`, because `param` on this
+API names a *request parameter* and the request that trips this refusal
+carries no reference to a session at all; the choice between them is carried
+by a two-variant `ClosedSession` enum rather than by the row's `status`
+string, so `Classify::code`'s match stays total and `open` is a state the
+error cannot be constructed in. As above, do not edit the table's cell: the
+row is transcribed literally into `vpay-core`'s own test, and the *default* is
+still `invalid_state`. (`Conflict` also carries `resource_conflict` from
+`DbError::UniqueViolation` and `charge_declined` from
+`ProviderError::Rejected` — both in the leaf table below, both with their own
+reasons.)
 
 **Three categories that were unreachable are now reachable from a real
 request path** (2026-09-03, Step 2): `NotFound` → `resource_missing` (an
@@ -303,7 +324,9 @@ say.** `ApiError` gained four variants — `NotFound { resource, id }`,
 from a real request path**. A running `vpay-server` can now answer `400`,
 `403`, `404 resource_missing`, `409 invalid_state`, `409 resource_conflict`,
 `501 not_implemented` and `503` through this machinery, not only the 404
-fallback and the 401 envelope. `vpay_api::form`'s `VpayForm`/`VpayQuery`
+fallback and the 401 envelope. (Since 2026-09-05 it can also answer
+`409 checkout_session_expired` and `409 checkout_session_complete`, from both
+confirm surfaces — see the policy-table note above.) `vpay_api::form`'s `VpayForm`/`VpayQuery`
 replaced axum's own extractors on `/v1` for exactly this reason: axum's
 `FormRejection` renders plain text, and every rejection must be the Stripe
 envelope naming the part of the request it came from

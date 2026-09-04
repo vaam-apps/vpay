@@ -74,6 +74,8 @@
 //! route whose failure must not depend on this module working. Every other
 //! response in this crate goes through [`ApiError`].
 
+use std::fmt;
+
 use axum::Json;
 use axum::extract::rejection::{FormRejection, JsonRejection, PathRejection, QueryRejection};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
@@ -233,6 +235,100 @@ pub const PUBLISHABLE_KEY_MISSING: &str = "This account has no publishable key r
 /// nothing has been submitted to a rail when it fires.
 pub const CHECKOUT_SESSION_WITHOUT_CHECKOUT_APP: &str = "A checkout session drives this payment, but `checkout.public_base_url` is not configured, so \
      vpay cannot tell the rail where to send the payer back. Restore it, or expire the session.";
+
+/// The state a Checkout Session was found in when it refused a confirm on
+/// the PaymentIntent it drives — the payload of
+/// [`ApiError::CheckoutSessionNotOpen`].
+///
+/// # Why a type and not the row's `status` string
+///
+/// [`Classify::code`] returns `&'static str`, and the two codes this
+/// refusal answers with are chosen by *which* state this is. Carrying the
+/// database's `status` text would make that a fallible match on a `String`
+/// with an "and otherwise?" arm in the middle of the error renderer; a
+/// two-variant enum makes it total, and makes "the session is `open`" a
+/// state this error cannot be constructed in at all.
+///
+/// It deliberately does **not** mirror the column's three labels
+/// (`vpay_db`'s `open`/`complete`/`expired`): the third is not a refusal,
+/// and a type that could express it would need a call site to decide what an
+/// `open` refusal means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClosedSession {
+    /// Past its 24-hour horizon, or expired by the hourly sweep, or expired
+    /// by the merchant through `POST /v1/checkout/sessions/{id}/expire`.
+    ///
+    /// One variant for all three, because they are one fact to whoever reads
+    /// the answer: the checkout was abandoned and this intent will not be
+    /// paid through it. Splitting them would tell a payer's browser which
+    /// *mechanism* ended a session, which nobody can act on.
+    Expired,
+    /// The settlement transaction finished the session — its intent reached
+    /// `succeeded` in the same commit.
+    Complete,
+}
+
+impl ClosedSession {
+    /// The `error.code` an SDK branches on.
+    ///
+    /// Two codes rather than one code plus a `param`, and the argument is
+    /// what `param` means on this API: [`ApiError::param`] renders it only
+    /// for [`ApiError::InvalidParam`], whose own docs say it "must be a field
+    /// name and never a value". A session's state is not a field of the
+    /// request — the request that trips this carries no reference to a
+    /// session at all — so putting it in `param` would tell an SDK to point
+    /// a merchant's form at a parameter they never sent.
+    ///
+    /// Neither is the category default (`invalid_state`), for
+    /// [`ApiError::IdempotencyKeyInFlight`]'s reason: a merchant must be able
+    /// to tell "your payer abandoned this checkout" from "this intent is
+    /// already processing", because the first is fixed by offering a new
+    /// checkout session and the second by waiting.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Expired => "checkout_session_expired",
+            Self::Complete => "checkout_session_complete",
+        }
+    }
+
+    /// The sentence a merchant reads, naming the session that refused.
+    ///
+    /// Beside [`Self::code`] rather than inside `public_message`'s match, so
+    /// the machine-readable half and the human half of one state are written
+    /// together: a third state added here is a compile error in both at once,
+    /// and the renderer stays the dispatch table it is everywhere else.
+    ///
+    /// Two sentences, because the remedies differ. An expired checkout is
+    /// fixed by offering the payer a new session; a complete one means the
+    /// money is already in, and telling a merchant to "create a new checkout
+    /// session" there would invite a second charge attempt on a payment that
+    /// succeeded.
+    #[must_use]
+    pub fn message(self, session_id: &str) -> String {
+        let sentence = match self {
+            Self::Expired => concat!(
+                "for this PaymentIntent has expired, so it can no longer be confirmed. ",
+                "Create a new checkout session for this intent to offer the payer another link.",
+            ),
+            Self::Complete => {
+                "for this PaymentIntent is already complete, so it cannot be confirmed again."
+            }
+        };
+        format!("The checkout session {session_id} {sentence}")
+    }
+}
+
+impl fmt::Display for ClosedSession {
+    /// The **stored** label, so an operator reading a log line can match it
+    /// against `checkout_sessions.status` without a translation table.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Expired => "expired",
+            Self::Complete => "complete",
+        })
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
@@ -474,6 +570,54 @@ pub enum ApiError {
     #[error("checkout is not configured on this deployment: {0}")]
     CheckoutNotConfigured(&'static str),
 
+    /// A confirm was refused because the Checkout Session driving the
+    /// PaymentIntent is no longer `open`.
+    ///
+    /// **Its own variant, not [`Self::Conflict`].** Both are 409s about an
+    /// object's state and both come out of the same category; the difference
+    /// is the `code`, and the `code` is the entire machine-readable content
+    /// of this answer. `invalid_state` is what a confirm on an intent that is
+    /// already `processing` answers, and a merchant handed that string cannot
+    /// tell "your own retry raced you" from "your payer walked away and we
+    /// told you so an hour ago" — which are fixed by waiting and by offering
+    /// a new checkout session respectively. See [`ClosedSession::code`] for
+    /// why there are two codes here and not one code with a `param`.
+    ///
+    /// # Why it exists at all
+    ///
+    /// A session's `status` is a promise vpay has already made to the
+    /// merchant: the hourly sweep emits `checkout.session.expired`, and
+    /// `POST /v1/checkout/sessions/{id}/expire` is the merchant's own
+    /// statement that the checkout is over. Neither of those retracts the
+    /// payer's credential — the intent's `client_secret` is minted at create
+    /// and lives as long as the intent (`docs/flows/browser-checkout.md`) —
+    /// so without this refusal a payer holding a stale checkout link could
+    /// still pay. The charge would then succeed while
+    /// `settle_for_intent`'s own `WHERE status = 'open'` guard correctly
+    /// declined to touch the session, leaving `expired`/`unpaid` under a
+    /// `succeeded` intent and a merchant who was told the opposite.
+    ///
+    /// # It carries the session id, and that is safe on both surfaces
+    ///
+    /// Unlike [`Self::NotFound`]'s `id`, this one is **not** caller text: it
+    /// is read off the row vpay found, so it reflects nothing. On `/v1` the
+    /// caller is the merchant that owns the session; on `/v1/browser` the
+    /// caller has already proved it holds the intent's `client_secret`,
+    /// which is a stronger credential than a `cs_…` id. It is still rendered
+    /// through `bounded_message`, like every other value on this path.
+    #[error(
+        "checkout session {session_id} is `{state}`, so its payment intent cannot be confirmed"
+    )]
+    CheckoutSessionNotOpen {
+        /// The `cs_…` that refuses the confirm, so a merchant reading the
+        /// message can go straight to `GET /v1/checkout/sessions/{id}` and
+        /// to the `checkout.session.expired` event they were already sent.
+        session_id: String,
+        /// Which of the two closed states it is in — the thing that picks the
+        /// `code`.
+        state: ClosedSession,
+    },
+
     /// An invariant this layer guarantees was violated — the "should be
     /// impossible" arm. `String` rather than a wrapped error because there
     /// is no error type to wrap: it is reached when the code discovers a
@@ -706,6 +850,12 @@ impl Classify for ApiError {
             // variant for why it is not `Storage` even though the plan asked
             // for that category's status.
             Self::CheckoutNotConfigured(_) => Category::Configuration,
+            // The object exists, the request is well-formed, and the object's
+            // state forbids it — `Category::Conflict`'s own definition, and
+            // the same category `Self::Conflict` carries. Only the `code`
+            // below differs, which is exactly the shape
+            // `IdempotencyKeyInFlight` established.
+            Self::CheckoutSessionNotOpen { .. } => Category::Conflict,
             // The only variant that pages. If this is ever logged, something
             // this layer promised was true was not.
             Self::Internal(_) => Category::Internal,
@@ -756,6 +906,12 @@ impl Classify for ApiError {
             // is broken in some other way" — the first is a permanent
             // capability answer they design around, the second is an outage.
             Self::CheckoutNotConfigured(_) => "checkout_not_configured",
+            // The fourth deliberate override, and the one that is two codes
+            // rather than one: `ClosedSession` owns the choice so that this
+            // match stays total and a third session state cannot be added
+            // without deciding what it answers. See that type for why the
+            // distinction is a `code` and not a `param`.
+            Self::CheckoutSessionNotOpen { state, .. } => state.code(),
             Self::Internal(_) => Category::Internal.default_code(),
         }
     }
@@ -786,6 +942,7 @@ impl Classify for ApiError {
             | Self::Conflict { .. }
             | Self::Forbidden
             | Self::CheckoutNotConfigured(_)
+            | Self::CheckoutSessionNotOpen { .. }
             | Self::Internal(_) => self.category().default_retry(),
         }
     }
@@ -810,6 +967,7 @@ impl Classify for ApiError {
             | Self::Conflict { .. }
             | Self::Forbidden
             | Self::CheckoutNotConfigured(_)
+            | Self::CheckoutSessionNotOpen { .. }
             | Self::Internal(_) => self.category().default_severity(),
         }
     }
@@ -880,6 +1038,13 @@ impl Classify for ApiError {
             // key name is vpay's own configuration vocabulary, not a value
             // the caller sent, so echoing it reflects nothing.
             Self::CheckoutNotConfigured(reason) => (*reason).to_owned(),
+            // The sentence lives on `ClosedSession`, beside the `code` the
+            // same state picks. It names the session, which is not caller
+            // text (see the variant), and goes through `bounded_message`
+            // here like every other rendered value.
+            Self::CheckoutSessionNotOpen { session_id, state } => {
+                bounded_message(&state.message(session_id))
+            }
             // Never the payload. `Internal(..)` is reached when an invariant
             // broke, and the text describing it is about our internals by
             // definition.
@@ -1231,6 +1396,31 @@ mod tests {
                 "invalid_request_error",
                 "forbidden",
             ),
+            // Two rows for one variant, because the `code` is the entire
+            // difference between them and the whole reason the variant is not
+            // `Conflict`. Same status and same `type` as the `Conflict` row
+            // above, and a different code from it and from each other: if any
+            // two of the three ever collapse, a merchant can no longer tell
+            // "your payer abandoned this checkout" from "this intent is
+            // already processing".
+            (
+                || ApiError::CheckoutSessionNotOpen {
+                    session_id: "cs_00000000000000000000000001".into(),
+                    state: ClosedSession::Expired,
+                },
+                409,
+                "invalid_request_error",
+                "checkout_session_expired",
+            ),
+            (
+                || ApiError::CheckoutSessionNotOpen {
+                    session_id: "cs_00000000000000000000000001".into(),
+                    state: ClosedSession::Complete,
+                },
+                409,
+                "invalid_request_error",
+                "checkout_session_complete",
+            ),
             (
                 || ApiError::Internal("the ledger did not balance".into()),
                 500,
@@ -1238,6 +1428,94 @@ mod tests {
                 "internal_error",
             ),
         ]
+    }
+
+    /// The two checkout-session refusals are 409s a merchant can act on, and
+    /// each says something the other two 409s on the confirm path do not.
+    ///
+    /// ADR-0011's three derived facts are asserted through the
+    /// classification, never chosen here: the category picks 409 and
+    /// `invalid_request_error`, the category picks `Retry::Never`, and only
+    /// the `code` is this variant's own.
+    ///
+    /// **Revert-proof.** Make the variant answer `Category::Conflict`'s
+    /// default code and the two `assert_ne!`s against `invalid_state` fail;
+    /// collapse the two states onto one code and the first `assert_ne!`
+    /// fails.
+    #[tokio::test]
+    async fn a_closed_checkout_session_is_its_own_409_and_not_a_lifecycle_conflict() {
+        const SESSION: &str = "cs_00000000000000000000000001";
+
+        let expired = ApiError::CheckoutSessionNotOpen {
+            session_id: SESSION.to_owned(),
+            state: ClosedSession::Expired,
+        };
+        let complete = ApiError::CheckoutSessionNotOpen {
+            session_id: SESSION.to_owned(),
+            state: ClosedSession::Complete,
+        };
+        let lifecycle = ApiError::Conflict {
+            message: "This PaymentIntent already has a charge.".to_owned(),
+        };
+
+        assert_ne!(
+            expired.code(),
+            complete.code(),
+            "an abandoned checkout and a finished one need different handling"
+        );
+        for (label, error) in [("expired", &expired), ("complete", &complete)] {
+            assert_eq!(error.category(), Category::Conflict, "{label}");
+            assert_eq!(error.category().http_status(), 409, "{label}");
+            assert_eq!(
+                error.retry(),
+                Retry::Never,
+                "{label}: a closed session never reopens"
+            );
+            assert_ne!(
+                error.code(),
+                lifecycle.code(),
+                "{label}: it must not be indistinguishable from `invalid_state`"
+            );
+        }
+
+        let response = expired.into_response();
+        assert_eq!(response.status().as_u16(), 409);
+        let body = body_json(response).await;
+        assert_eq!(error_field(&body, "type"), Some("invalid_request_error"));
+        assert_eq!(error_field(&body, "code"), Some("checkout_session_expired"));
+        // Pinned verbatim, not by `contains`. These sentences are built by
+        // joining fragments across source lines, and a join that lost a space
+        // or gained a run of them would still contain the session id and
+        // still read fine in a diff — the exact string is the only assertion
+        // that catches it.
+        assert_eq!(
+            error_field(&body, "message"),
+            Some(
+                "The checkout session cs_00000000000000000000000001 for this PaymentIntent has \
+                 expired, so it can no longer be confirmed. Create a new checkout session for \
+                 this intent to offer the payer another link."
+            ),
+            "{body:#}"
+        );
+        assert_eq!(
+            body.pointer("/error/param"),
+            None,
+            "the session's state is not a request parameter, so nothing points at one: {body:#}"
+        );
+
+        let body = body_json(complete.into_response()).await;
+        assert_eq!(
+            error_field(&body, "code"),
+            Some("checkout_session_complete")
+        );
+        assert_eq!(
+            error_field(&body, "message"),
+            Some(
+                "The checkout session cs_00000000000000000000000001 for this PaymentIntent is \
+                 already complete, so it cannot be confirmed again."
+            ),
+            "{body:#}"
+        );
     }
 
     /// A 404 for someone else's object must be indistinguishable from a 404
@@ -2153,6 +2431,17 @@ mod tests {
             (
                 || ApiError::idempotency_key_reused("idem_0123456789"),
                 400,
+                "false",
+            ),
+            // A closed checkout session never reopens, so the honest advice
+            // is "not this request again". `Category::Conflict`'s default,
+            // arrived at through the classification rather than chosen here.
+            (
+                || ApiError::CheckoutSessionNotOpen {
+                    session_id: "cs_00000000000000000000000001".into(),
+                    state: ClosedSession::Expired,
+                },
+                409,
                 "false",
             ),
         ];

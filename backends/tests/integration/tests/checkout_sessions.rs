@@ -385,6 +385,27 @@ async fn create_intent_for(h: &Harness, client_id: &str) -> anyhow::Result<Strin
         .with_context(|| format!("the create must answer an intent id: {body:#}"))
 }
 
+/// An intent and the `client_secret` `create` rendered for it (D2), for the
+/// one case that confirms an intent **no session was ever created for** — the
+/// only place a browser credential does not come out of a session read.
+async fn create_intent_with_secret(h: &Harness) -> anyhow::Result<(String, String)> {
+    let body: Value = browser()
+        .post(h.url("/v1/payment_intents"))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .header("idempotency-key", uuid::Uuid::new_v4().to_string())
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(format!(
+            "amount={AMOUNT}&currency={CURRENCY}&payment_method_types[0]={PUSH_RAIL}"
+        ))
+        .send()
+        .await
+        .context("creating a payment intent")?
+        .json()
+        .await
+        .context("the create body is JSON")?;
+    Ok((field(&body, "id")?, field(&body, "client_secret")?))
+}
+
 /// `POST /v1/checkout/sessions`, with whatever fields the caller names.
 async fn create_session(
     h: &Harness,
@@ -504,6 +525,21 @@ async fn return_read(
 /// A browser confirm through the route that already existed — the point being
 /// that Step 9 added no second way to move money.
 async fn browser_confirm(h: &Harness, intent_id: &str, intent_secret: &str) -> anyhow::Result<u16> {
+    Ok(browser_confirm_response(h, intent_id, intent_secret)
+        .await?
+        .0)
+}
+
+/// The same call, with the envelope kept.
+///
+/// A separate function rather than a wider [`browser_confirm`], because most
+/// cases here only ever assert the status and threading a body they ignore
+/// through every one of them would bury the two that read a `code`.
+async fn browser_confirm_response(
+    h: &Harness,
+    intent_id: &str,
+    intent_secret: &str,
+) -> anyhow::Result<(u16, Value)> {
     let response = browser()
         .post(h.url(&format!("/v1/browser/payment_intents/{intent_id}/confirm")))
         .header("content-type", "application/x-www-form-urlencoded")
@@ -514,7 +550,145 @@ async fn browser_confirm(h: &Harness, intent_id: &str, intent_secret: &str) -> a
         .send()
         .await
         .context("confirming through the browser surface")?;
-    Ok(response.status().as_u16())
+    let status = response.status().as_u16();
+    let body: Value = response.json().await.context("the body is JSON")?;
+    Ok((status, body))
+}
+
+/// `POST /v1/payment_intents/{id}/confirm` as the **merchant's** own server
+/// does it, under an `Idempotency-Key` the caller chooses.
+///
+/// The caller chooses the key so a case can send the *same* one twice and
+/// read the replay, which is the half of this surface the browser one does
+/// not have (`docs/flows/browser-checkout.md`, "No `Idempotency-Key`").
+///
+/// A raw body rather than `RequestBuilder::form`, for
+/// [`create_intent_for`]'s reason: `form` percent-encodes the brackets, and
+/// `vpay_api::form` then reads `payment_method_data[type]` as a scalar field
+/// rather than as structure.
+async fn merchant_confirm(
+    h: &Harness,
+    intent_id: &str,
+    idempotency_key: &str,
+) -> anyhow::Result<(u16, Value)> {
+    let response = browser()
+        .post(h.url(&format!("/v1/payment_intents/{intent_id}/confirm")))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .header("idempotency-key", idempotency_key)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(format!(
+            "payment_method_data[type]={PUSH_RAIL}\
+             &payment_method_data[{PUSH_RAIL}][msisdn]={MSISDN}"
+        ))
+        .send()
+        .await
+        .context("confirming through the merchant surface")?;
+    let status = response.status().as_u16();
+    let body: Value = response.json().await.context("the body is JSON")?;
+    Ok((status, body))
+}
+
+/// `GET /v1/payment_intents/{id}` through the shipping router, as the
+/// merchant that owns it.
+async fn retrieve_intent(h: &Harness, intent_id: &str) -> anyhow::Result<(u16, Value)> {
+    let response = browser()
+        .get(h.url(&format!("/v1/payment_intents/{intent_id}")))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .send()
+        .await
+        .context("retrieving a payment intent")?;
+    let status = response.status().as_u16();
+    let body: Value = response.json().await.context("the body is JSON")?;
+    Ok((status, body))
+}
+
+/// Everything a confirm writes before it reaches a rail, counted: the charge
+/// rows for this intent, the `provider_requests` rows hanging off them, and
+/// the poll jobs in the whole deployment.
+///
+/// The third is counted deployment-wide on purpose. A poll job is keyed on a
+/// **charge** id (`vpay_worker::jobs::poll_dedupe_key`), so scoping the count
+/// to this intent would need a charge to scope by — and the claim being made
+/// is that there is no charge. Every case that asserts against this creates
+/// exactly one intent and never completes a confirm, so a non-zero count is
+/// unambiguous.
+async fn write_footprint(pool: &PgPool, intent_id: &str) -> anyhow::Result<(i64, i64, i64)> {
+    let (charges,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM charges WHERE payment_intent_id = $1")
+            .bind(intent_id)
+            .fetch_one(pool)
+            .await
+            .context("counting the charges of an intent")?;
+    let (requests,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM provider_requests r \
+         JOIN charges c ON c.id = r.charge_id \
+         WHERE c.payment_intent_id = $1",
+    )
+    .bind(intent_id)
+    .fetch_one(pool)
+    .await
+    .context("counting the provider requests of an intent")?;
+    let (jobs,): (i64,) = sqlx::query_as("SELECT count(*) FROM jobs WHERE kind = 'poll_charge'")
+        .fetch_one(pool)
+        .await
+        .context("counting the poll jobs")?;
+    Ok((charges, requests, jobs))
+}
+
+/// `status`, `payment_status` and `updated_at` — the third being what proves
+/// a *read* decided something rather than a write.
+async fn stored_session_stamp(
+    pool: &PgPool,
+    id: &str,
+) -> anyhow::Result<(String, String, time::OffsetDateTime)> {
+    let row: (String, String, time::OffsetDateTime) = sqlx::query_as(
+        "SELECT status, payment_status, updated_at FROM checkout_sessions WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .context("reading the session's stamp")?;
+    Ok(row)
+}
+
+/// `POST /v1/checkout/sessions/{id}/expire` as the merchant's own server.
+async fn expire_session(h: &Harness, id: &str) -> anyhow::Result<(u16, Value)> {
+    let response = browser()
+        .post(h.url(&format!("/v1/checkout/sessions/{id}/expire")))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .header("idempotency-key", uuid::Uuid::new_v4().to_string())
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("")
+        .send()
+        .await
+        .context("expiring a checkout session")?;
+    let status = response.status().as_u16();
+    let body: Value = response.json().await.context("the body is JSON")?;
+    Ok((status, body))
+}
+
+/// The `error.code` of an envelope.
+///
+/// The body itself is deliberately **not** in the failure message. A browser
+/// confirm and every `/v1` checkout-session response render a live
+/// `client_secret` (`SecretRendering::Include`, and the hosted `url` carries
+/// the session secret in its fragment), so interpolating one into an
+/// assertion message would print a credential into CI's logs the one moment
+/// the assertion fails — the same `rust/cleartext-logging` fix
+/// `docs/status.md` records for `vpay-config`'s `Debug` test.
+fn error_code(body: &Value) -> anyhow::Result<String> {
+    body.pointer("/error/code")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .context("the body must be the error envelope")
+}
+
+/// [`error_code`] for a failure *message*: the envelope's code, or a
+/// placeholder when the body is not an envelope. Never the body.
+fn error_code_or_none(body: &Value) -> &str {
+    body.pointer("/error/code")
+        .and_then(Value::as_str)
+        .unwrap_or("<not an error envelope>")
 }
 
 /// Runs the shipping worker loop until it has no more work, so the settlement
@@ -2864,6 +3038,25 @@ async fn a_failed_event_insert_leaves_the_session_open() -> anyhow::Result<()> {
 /// the page the sweep would have read, *then* let the payer confirm, then run
 /// the write with the row the sweep is still holding.
 ///
+/// # How the window is opened, and why it changed
+///
+/// It used to be opened by moving the session's stored `expires_at` into the
+/// past and then confirming. That stopped working the moment a confirm began
+/// consulting the session (`vpay_api::v1::return_trip`): a session past its
+/// horizon refuses the confirm on the **read**, whatever its `status`, so the
+/// payer in this story could no longer act — the case failed with `409` where
+/// it expected `200`, which is the new rule doing its job rather than a
+/// regression.
+///
+/// So the window is opened the other way round, using the instant the sweep
+/// carries: the session keeps its real horizon and the payer confirms while
+/// inside it, and the sweep is run *at an instant 25 hours from now*, which
+/// `expire_due`'s own documentation offers for exactly this ("a test can
+/// sweep a future instant instead of rewriting a stored horizon"). Nothing is
+/// staged that a deployment does not do — this is the ordinary shape of the
+/// race, a payer who confirmed shortly before the horizon and a rail that is
+/// still holding the payment when the sweep arrives.
+///
 /// What the guard is worth: without it that session is expired and its
 /// merchant is told the checkout was abandoned, while the rail is holding a
 /// live payment — and the settlement transaction that arrives minutes later
@@ -2887,11 +3080,12 @@ async fn a_payer_confirming_between_the_read_and_the_write_keeps_the_session() -
         .context("the intent credential the page confirms with")?
         .to_owned();
 
-    move_every_session_past_its_horizon(&h).await?;
-
     // The read half, exactly as `expire_due_sessions` runs it. `now` is held
-    // and reused below, because the sweep uses one instant for both halves.
-    let now = time::OffsetDateTime::now_utc();
+    // and reused below, because the sweep uses one instant for both halves —
+    // and it is an hour past this session's 24-hour horizon, so the row is
+    // due to *the sweep* while remaining live to the payer confirming below.
+    // See this case's own doc for why the horizon is not rewritten instead.
+    let now = time::OffsetDateTime::now_utc() + time::Duration::hours(25);
     let due = vpay_db::CheckoutSessions::due_for_expiry(h.repositories.as_ref(), now, 100).await?;
     let row = due
         .iter()
@@ -2943,6 +3137,475 @@ async fn a_payer_confirming_between_the_read_and_the_write_keeps_the_session() -
     assert!(
         events_of_type(&h.pool, SESSION_EXPIRED).await?.is_empty(),
         "and its merchant must not be told the checkout was abandoned"
+    );
+
+    h.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------- a session that is over refuses a confirm
+
+/// The **intent's** `client_secret`, read the way vpay's page reads it: out
+/// of the session read, while the session is still open and inside its
+/// horizon.
+///
+/// Every case below takes it *first* and then ends the session, because that
+/// is the situation being defended against — a payer whose page loaded before
+/// the checkout was abandoned, holding a credential nothing revokes. The
+/// intent's `client_secret` is minted at create and lives as long as the
+/// intent (`docs/flows/browser-checkout.md`): there is no rotation endpoint,
+/// so the session's `status` is the only thing that can stop it.
+async fn intent_secret_of(h: &Harness, session: &Session) -> anyhow::Result<String> {
+    let (status, body) = session_read(h, &session.id, PK_A, &session.secret).await?;
+    anyhow::ensure!(
+        status == 200,
+        "the session read must succeed; it answered {status} ({})",
+        error_code_or_none(&body)
+    );
+    Ok(body
+        .pointer("/payment_intent/client_secret")
+        .and_then(Value::as_str)
+        // Not the body: this is the one that carries the credential.
+        .context("an open session hands the page the intent's client_secret")?
+        .to_owned())
+}
+
+/// The intent is untouched and the confirm wrote nothing — the assertion
+/// every refusal case below ends with.
+///
+/// "Wrote nothing" is asserted against the three rows a confirm creates
+/// before it ever reaches a rail (`docs/reference/vpay-api.md` § the confirm
+/// path, steps 3 and 4), not against the response: a `409` that had already
+/// committed a charge would look identical from outside and would burn the
+/// intent's one charge forever (`one_charge_per_intent`).
+async fn assert_refused_without_writing(h: &Harness, intent_id: &str) -> anyhow::Result<()> {
+    assert_eq!(
+        write_footprint(&h.pool, intent_id).await?,
+        (0, 0, 0),
+        "a refused confirm must leave no charge, no provider_requests row and no job"
+    );
+    // `GET /v1/payment_intents/{id}` renders the intent's `client_secret`
+    // (`SecretRendering::Include`), so the body stays out of the messages.
+    let (status, body) = retrieve_intent(h, intent_id).await?;
+    assert_eq!(
+        status,
+        200,
+        "the intent must still be readable ({})",
+        error_code_or_none(&body)
+    );
+    assert_eq!(
+        body.get("status").and_then(Value::as_str),
+        Some("requires_payment_method"),
+        "the intent must not have moved"
+    );
+    Ok(())
+}
+
+/// Claim 18: the hourly sweep expires a session, and the payer still holding
+/// the intent's credential is refused — `409 checkout_session_expired`,
+/// before any charge is opened.
+///
+/// This is the defect the case exists for, and it was reachable end to end
+/// before this landed: the sweep flips the session to `expired` **and emits
+/// `checkout.session.expired`**, telling the merchant the checkout was
+/// abandoned; the confirm did not consult the session; and the settlement's
+/// own `WHERE status = 'open'` guard then correctly declined to touch the row
+/// — leaving `expired`/`unpaid` under a `succeeded` intent, with the merchant
+/// holding a webhook that said the opposite.
+///
+/// The sweep is the shipping `vpay_worker::run_once` over the shipping
+/// `seed_singletons`, not an `UPDATE`: what is claimed is that a *deployment*
+/// produces this state.
+///
+/// **Revert-proof.** Delete the `return_trip::admit_confirm` call from
+/// `confirm_once` and this fails on the status — the confirm answers `200`
+/// and opens a charge on an abandoned checkout.
+#[tokio::test]
+async fn a_confirm_on_a_swept_session_is_refused_before_any_charge() -> anyhow::Result<()> {
+    let h = harness().await?;
+    let session = hosted_session(&h).await?;
+    let intent_secret = intent_secret_of(&h, &session).await?;
+
+    move_every_session_past_its_horizon(&h).await?;
+    vpay_worker::seed_singletons(h.repositories.as_ref())
+        .await
+        .context("seeding the singleton jobs a worker seeds at boot")?;
+    run_until(&h, &support::no_webhook_endpoints(), "sweep_expired").await?;
+    assert_eq!(
+        stored_session(&h.pool, &session.id).await?,
+        ("expired".to_owned(), "unpaid".to_owned()),
+        "the sweep must have expired the session, or this case proves nothing"
+    );
+
+    let (status, body) = browser_confirm_response(&h, &session.intent_id, &intent_secret).await?;
+    assert_eq!(
+        status,
+        409,
+        "the swept session must refuse the confirm ({})",
+        error_code_or_none(&body)
+    );
+    assert_eq!(error_code(&body)?, "checkout_session_expired");
+    assert!(
+        body.pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains(&session.id)),
+        "the refusal must name the session that refused"
+    );
+
+    assert_refused_without_writing(&h, &session.intent_id).await?;
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Claim 19: the same refusal when the **merchant** ended the checkout
+/// through `POST /v1/checkout/sessions/{id}/expire`.
+///
+/// The session is still inside its 24-hour horizon here — only its `status`
+/// moved — so this case is decided by the `status` and the previous one could
+/// have been decided by either. Together they pin both halves.
+///
+/// The merchant's own abandon emits no event (`docs/flows/webhooks.md`: the
+/// caller already knows), which makes this the *quieter* of the two ways to
+/// end a checkout and the one where a payer paying anyway would be hardest to
+/// notice.
+#[tokio::test]
+async fn a_confirm_on_a_session_the_merchant_expired_is_refused() -> anyhow::Result<()> {
+    let h = harness().await?;
+    let session = hosted_session(&h).await?;
+    let intent_secret = intent_secret_of(&h, &session).await?;
+
+    let (status, body) = expire_session(&h, &session.id).await?;
+    assert_eq!(
+        status,
+        200,
+        "the merchant's own expire must succeed ({})",
+        error_code_or_none(&body)
+    );
+    assert_eq!(field(&body, "status")?, "expired");
+
+    let (status, body) = browser_confirm_response(&h, &session.intent_id, &intent_secret).await?;
+    assert_eq!(
+        status,
+        409,
+        "a session the merchant expired must refuse the confirm ({})",
+        error_code_or_none(&body)
+    );
+    assert_eq!(error_code(&body)?, "checkout_session_expired");
+
+    assert_refused_without_writing(&h, &session.intent_id).await?;
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Claim 20: a session that is still `open` but past `expires_at`, which no
+/// sweep has reached, is refused too — **and the refusal writes nothing to
+/// the session either**.
+///
+/// The read decides, exactly as `browser::checkout_sessions::authenticate`'s
+/// sixth refusal does. That matters twice over. A worker that is down, or a
+/// backlog the hourly sweep has not drained, must not be the difference
+/// between a payer being able to pay and not — and a *confirm* is the wrong
+/// place to repair a row: flipping it here would emit no
+/// `checkout.session.expired` (the sweep's transaction is what does that) and
+/// would skip the `NOT EXISTS` live-charge guard that transaction carries.
+///
+/// So `updated_at` is asserted unchanged, not merely `status`: a write that
+/// set `status = 'expired'` and one that set it to what it already was would
+/// both leave `status` reading `open` if the second were ever attempted, and
+/// only the stamp tells them apart.
+///
+/// **Revert-proof.** Make `return_trip::verdict` consult `status` alone —
+/// drop `now < session.expires_at` from its `open` arm — and this fails with
+/// a `200`: an abandoned checkout the sweep has not reached yet takes a
+/// payment.
+#[tokio::test]
+async fn a_confirm_past_the_horizon_is_refused_by_the_read_and_writes_nothing() -> anyhow::Result<()>
+{
+    let h = harness().await?;
+    let session = hosted_session(&h).await?;
+    let intent_secret = intent_secret_of(&h, &session).await?;
+
+    move_every_session_past_its_horizon(&h).await?;
+    let before = stored_session_stamp(&h.pool, &session.id).await?;
+    assert_eq!(
+        before.0, "open",
+        "the row must still say `open`, or this proves the sweep rather than the read"
+    );
+
+    let (status, body) = browser_confirm_response(&h, &session.intent_id, &intent_secret).await?;
+    assert_eq!(
+        status,
+        409,
+        "an open session past its horizon must refuse the confirm ({})",
+        error_code_or_none(&body)
+    );
+    assert_eq!(error_code(&body)?, "checkout_session_expired");
+
+    assert_eq!(
+        stored_session_stamp(&h.pool, &session.id).await?,
+        before,
+        "the confirm must not have touched the session — not its status, and not its stamp"
+    );
+    assert_refused_without_writing(&h, &session.intent_id).await?;
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Claim 21: a `complete` session answers a **different** code,
+/// `checkout_session_complete`.
+///
+/// # This case stages a row, and says so
+///
+/// `complete` is written by exactly one thing — `vpay_db`'s settlement
+/// transaction, which sets it in the same commit as the intent reaching
+/// `succeeded` — so through the shipping API a `complete` session always sits
+/// under a `succeeded` intent, and `load_confirmable_intent` refuses that one
+/// step earlier with `invalid_state`. **No sequence of shipping operations
+/// reaches this branch today**, and pretending otherwise by driving a real
+/// settlement here would test the status refusal instead.
+///
+/// It is kept, and tested by writing the state directly, because the code is
+/// reached the moment those two facts stop being welded together — a session
+/// completed by anything that is not the settlement, or an intent status the
+/// lifecycle admits a confirm from after a session finished. What the branch
+/// must not do is fall through to "expired": a merchant told their payer
+/// abandoned a checkout that was in fact paid would be vpay reporting the
+/// opposite of what the money did.
+#[tokio::test]
+async fn a_confirm_on_a_complete_session_is_a_different_code() -> anyhow::Result<()> {
+    let h = harness().await?;
+    let session = hosted_session(&h).await?;
+    let intent_secret = intent_secret_of(&h, &session).await?;
+
+    // See this test's own doc: a state the shipping code only ever produces
+    // alongside a `succeeded` intent, written here without one so that the
+    // *session* is what decides the answer.
+    sqlx::query(
+        "UPDATE checkout_sessions SET status = 'complete', payment_status = 'paid' WHERE id = $1",
+    )
+    .bind(&session.id)
+    .execute(&h.pool)
+    .await
+    .context("staging a complete session under an unsettled intent")?;
+
+    let (status, body) = browser_confirm_response(&h, &session.intent_id, &intent_secret).await?;
+    assert_eq!(
+        status,
+        409,
+        "a complete session must refuse the confirm ({})",
+        error_code_or_none(&body)
+    );
+    assert_eq!(
+        error_code(&body)?,
+        "checkout_session_complete",
+        "a finished checkout is not an abandoned one, and the code is the difference"
+    );
+
+    assert_refused_without_writing(&h, &session.intent_id).await?;
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Claim 22: an intent with **no** checkout session confirms exactly as it
+/// did before — the case that keeps the refusal from being a blanket one.
+///
+/// Most confirms in this deployment are this: a merchant's own page, or its
+/// server, against an intent no session was ever created for. The assertion
+/// is not only the `200`; it is the three rows a successful confirm writes,
+/// so a change that refused *everything* and a change that merely answered
+/// `200` are told apart.
+#[tokio::test]
+async fn an_intent_with_no_session_confirms_exactly_as_before() -> anyhow::Result<()> {
+    let h = harness().await?;
+    let (intent_id, intent_secret) = create_intent_with_secret(&h).await?;
+
+    let (status, body) = browser_confirm_response(&h, &intent_id, &intent_secret).await?;
+    assert_eq!(
+        status,
+        200,
+        "an intent with no session must confirm exactly as before ({})",
+        error_code_or_none(&body)
+    );
+    assert_eq!(
+        body.get("id").and_then(Value::as_str),
+        Some(intent_id.as_str())
+    );
+
+    let (charges, requests, jobs) = write_footprint(&h.pool, &intent_id).await?;
+    assert_eq!(charges, 1, "the confirm opened its one charge");
+    assert_eq!(
+        requests, 1,
+        "and recorded the attempt against the rail before making it"
+    );
+    assert_eq!(jobs, 1, "and left the poll job that settles it");
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Claim 23: the **merchant's** `/v1` confirm is refused by the same session,
+/// with the same code — and a retry under the same `Idempotency-Key` replays
+/// the stored `409` rather than re-deciding it.
+///
+/// # Why both surfaces and not only the browser's
+///
+/// The refusal lives in `confirm_once`, which both surfaces share, so this is
+/// what the shared implementation buys rather than a second rule. It is worth
+/// having deliberately rather than by accident: `/v1`'s confirm is not
+/// authenticated by the payer's `client_secret` at all, so a merchant server
+/// that kept confirming after telling its own systems the checkout was
+/// abandoned would produce exactly the contradiction the browser refusal
+/// prevents — a `succeeded` intent under an `expired`/`unpaid` session, and a
+/// `checkout.session.expired` webhook already delivered.
+///
+/// The replay half is this surface's own: `PostRequest::finish` stores a
+/// `4xx`, so the second call under the same key never reaches `confirm_once`.
+///
+/// Byte equality alone does **not** prove that. A retry that re-executed
+/// would decide the same way against the same rows and produce an identical
+/// body, so the assertion would pass either way — measured: with
+/// `PostRequest::finish` mutated to release a `4xx` instead of storing it,
+/// this case still passed. So the world is changed between the two calls,
+/// the way `payment_intents::a_replay_survives_the_rail_being_disabled` does
+/// it: the merchant expires the checkout, is refused, and *then* creates a
+/// second, open session on the same intent — which is precisely the state
+/// `a_second_session_after_an_expiry_makes_the_intent_payable_again` proves a
+/// fresh confirm answers `200` from. A re-executed retry would therefore open
+/// a charge; the stored one is still the `409`, and the intent has still
+/// never been charged.
+#[tokio::test]
+async fn the_merchant_confirm_is_refused_too_and_the_replay_is_the_stored_409() -> anyhow::Result<()>
+{
+    let h = harness().await?;
+    let session = hosted_session(&h).await?;
+
+    let (status, body) = expire_session(&h, &session.id).await?;
+    assert_eq!(
+        status,
+        200,
+        "the merchant's own expire must succeed ({})",
+        error_code_or_none(&body)
+    );
+
+    let key = uuid::Uuid::new_v4().to_string();
+    let (status, first) = merchant_confirm(&h, &session.intent_id, &key).await?;
+    assert_eq!(status, 409, "{first:#}");
+    assert_eq!(error_code(&first)?, "checkout_session_expired");
+
+    // The world the retry would re-decide against, if it re-decided.
+    let (status, body) = create_session(
+        &h,
+        CLIENT_A,
+        &[
+            ("payment_intent", session.intent_id.as_str()),
+            ("success_url", SUCCESS_URL),
+            ("cancel_url", CANCEL_URL),
+        ],
+    )
+    .await?;
+    assert_eq!(
+        status,
+        201,
+        "a second session on the same intent ({})",
+        error_code_or_none(&body)
+    );
+
+    let (status, replayed) = merchant_confirm(&h, &session.intent_id, &key).await?;
+    assert_eq!(
+        status, 409,
+        "the retry answers the stored 409 even though a fresh confirm would now be admitted:          {replayed:#}"
+    );
+    assert_eq!(
+        replayed, first,
+        "the retry under the same key must be the stored response, not a second decision"
+    );
+
+    assert_refused_without_writing(&h, &session.intent_id).await?;
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Claim 24: expiring a session and creating a **second** one leaves the
+/// intent payable — the ordinary "the payer walked away, offer them a fresh
+/// link" flow, which the refusal must not break.
+///
+/// This is the case that makes `find_latest_by_intent` the right question.
+/// An intent can carry several sessions over its life — `create` refuses only
+/// an intent that already has an *open* one — so a rule of the shape "refuse
+/// if any session on this intent is not open" would refuse this confirm, and
+/// a merchant could never re-offer a checkout. The newest row is the one that
+/// decides, and `checkout_sessions_one_open_per_intent` is what makes "the
+/// open one is the newest" true rather than hoped for.
+///
+/// **Revert-proof.** Point the gate at any session on the intent rather than
+/// the newest — or order it ascending — and this fails with a `409`
+/// `checkout_session_expired` on a checkout that is open in front of the
+/// payer.
+#[tokio::test]
+async fn a_second_session_after_an_expiry_makes_the_intent_payable_again() -> anyhow::Result<()> {
+    let h = harness().await?;
+    let first = hosted_session(&h).await?;
+
+    let (status, body) = expire_session(&h, &first.id).await?;
+    assert_eq!(
+        status,
+        200,
+        "the merchant's own expire must succeed ({})",
+        error_code_or_none(&body)
+    );
+
+    // The same intent, a second session. `create` allows it precisely because
+    // no session on this intent is open any more.
+    let (status, body) = create_session(
+        &h,
+        CLIENT_A,
+        &[
+            ("payment_intent", first.intent_id.as_str()),
+            ("success_url", SUCCESS_URL),
+            ("cancel_url", CANCEL_URL),
+        ],
+    )
+    .await?;
+    assert_eq!(
+        status,
+        201,
+        "a second session on the same intent ({})",
+        error_code_or_none(&body)
+    );
+    let second = Session {
+        id: field(&body, "id")?,
+        secret: field(&body, "client_secret")?,
+        intent_id: first.intent_id.clone(),
+        url: field(&body, "url")?,
+    };
+    assert_ne!(second.id, first.id);
+    assert!(!second.url.is_empty());
+
+    let intent_secret = intent_secret_of(&h, &second).await?;
+    let (status, body) = browser_confirm_response(&h, &second.intent_id, &intent_secret).await?;
+    assert_eq!(
+        status,
+        200,
+        "the newest session is open, so the payer on it must be able to pay ({})",
+        error_code_or_none(&body)
+    );
+
+    // And it really opened a charge, rather than answering `200` off some
+    // path that never wrote one.
+    let (charges, requests, jobs) = write_footprint(&h.pool, &second.intent_id).await?;
+    assert_eq!((charges, requests, jobs), (1, 1, 1));
+
+    // The expired session is untouched by the payment that went through the
+    // new one: `settle_for_intent`'s `WHERE status = 'open'` sees the second
+    // row, and this one stays as the merchant left it.
+    assert_eq!(
+        stored_session(&h.pool, &first.id).await?,
+        ("expired".to_owned(), "unpaid".to_owned())
     );
 
     h.shutdown().await;

@@ -617,20 +617,32 @@ whole safety property:
 1. load the intent for this merchant (404), refuse a status that forbids a
    confirm (409), refuse an intent that already has a charge (409, and **before**
    any insert — "one charge per intent, forever");
+
+   **1b**, in the same breath and from one read: ask the intent's **checkout
+   session**, if it has one, whether this confirm may happen at all — a
+   session that is not `open` refuses it with a `409`
+   (`checkout_session_expired` / `checkout_session_complete`) — and, when one
+   does drive it, where the payer must come back to. It is a step of its own
+   rather than a seventh, because it is the same question step 1 asks (may
+   this be confirmed?) about a different object, and because `confirm_once`'s
+   own doc comment counts six;
+
 2. resolve the rail from `payment_method_data[type]` and branch on its
    `vpay_provider::Capabilities::flow` only, never on its code
    ([ADR-0002](../adr/0002-provider-port.md));
 3. mint the `provider_reference_id` and commit the charge row in `submitting`,
    so the reference is durable before anything is sent;
 4. record the attempt in `provider_requests` with no status;
-5. resolve where a redirect rail must send the payer back to, then call the
-   adapter — `submit` is `async`, so the `.await` is what actually sends the
-   request;
+5. call the adapter with the `return_url` step 3 committed on the charge row
+   — `submit` is `async`, so the `.await` is what actually sends the request.
+   (It read the merchant's URL out of the request here until Step 9's lane 1b
+   moved the resolution to 1b and the value into `charges.return_url`, so that
+   what the rail is told is what a crash would leave behind.);
 6. record what came back and answer.
 
 Each step is a named function in the source (`load_confirmable_intent`,
-`resolve_rail` with `payer_instrument`, `open_attempt` covering steps 3 and 4,
-`return_trip::return_url_for_charge` then `submit_to_rail`, `finish_confirm`);
+`return_trip::admit_confirm`, `resolve_rail` with `payer_instrument`,
+`open_attempt` covering steps 3 and 4, `submit_to_rail`, `finish_confirm`);
 `confirm_once` is the sequence and nothing else, so "what order do these
 happen in" is answerable by reading a dozen lines.
 
@@ -656,7 +668,52 @@ deliberately. What the recovery table decides is whether to go and *ask the
 rail*, and an unparseable answer is exactly as unknown as a lost one: "every
 ambiguity resolves toward 'find out', never 'give up'".
 
-### Where the payer comes back to (`v1/return_trip.rs`)
+### What the checkout session says, and where the payer comes back to (`v1/return_trip.rs`)
+
+**A confirm on an intent whose checkout session is over is refused before any
+charge is opened.** Added 2026-09-05. A session's `status` is a promise vpay
+has already made: the hourly sweep emits `checkout.session.expired`, and
+`POST /v1/checkout/sessions/{id}/expire` is the merchant's own statement that
+the checkout is done. Neither retracts the payer's credential — the intent's
+`client_secret` is minted at create and lives as long as the intent — so a
+payer holding a stale checkout link could pay anyway, and the settlement's own
+`WHERE status = 'open'` guard would then correctly decline to touch the
+session, leaving `expired`/`unpaid` under a `succeeded` intent and a merchant
+holding a webhook that said the opposite.
+
+* The refusal is `ApiError::CheckoutSessionNotOpen`, `Category::Conflict`
+  (409, `invalid_request_error`, `Retry::Never`), with **two codes** chosen by
+  the state: `checkout_session_expired` and `checkout_session_complete`. Not
+  the category default `invalid_state`, for the reason
+  `idempotency_key_in_flight` is not `idempotency_key_in_use` — a merchant
+  must be able to tell "your payer walked away" from "this intent is already
+  processing". Not one code plus a `param` either: `param` on this API names a
+  *request parameter* (`ApiError::param` renders it only for `InvalidParam`),
+  and the request that trips this carries no reference to a session at all.
+* It fires on **both** surfaces, because it lives in `confirm_once`, which
+  both share. That is deliberate rather than incidental: `/v1`'s confirm is
+  not authenticated by the payer's `client_secret` at all, so a merchant
+  server that kept confirming after its own systems recorded the checkout as
+  abandoned would produce exactly the contradiction the browser refusal
+  prevents.
+* An `open` session past `expires_at` that no sweep has reached is expired
+  **on the read**, and the read writes nothing. Same rule and same reasoning
+  as `browser::checkout_sessions::authenticate`'s sixth refusal: a worker that
+  is down must not be the difference between a payer being able to pay and
+  not, and a confirm is the wrong place to repair a row — flipping it here
+  would emit no `checkout.session.expired` and would skip the `NOT EXISTS`
+  live-charge guard the sweep's transaction carries.
+* An intent with **no** session is unaffected, and an intent whose session was
+  expired and replaced by a new open one is payable through the new one:
+  `CheckoutSessions::find_latest_by_intent` reads the newest row, and
+  `checkout_sessions_one_open_per_intent` is what makes "an open session is
+  the newest" true rather than hoped for
+  ([vpay-db.md](vpay-db.md#find_latest_by_intent--the-same-question-with-the-status-filter-off)).
+
+The refusal and the return URL are **one read**, not two. Asking separately
+would race the hourly sweep: a gate that read `open`, followed by a
+return-URL lookup running a millisecond after `expire_due` committed, would
+admit the confirm and then submit it to the rail with no return URL at all.
 
 `vpay_provider::ChargeRef::return_url` is filled here and nowhere else (Step
 9's D2; [rails.md](rails.md) has the rail-side half and what it replaced). The
@@ -672,14 +729,19 @@ is a trait and not two lines inside the confirm:
   This is what closes [browser-checkout.md](../flows/browser-checkout.md)'s D4
   for integrations that never create a session.
 
-It runs **after** `open_attempt` and takes the merchant's URL from the
-committed charge row rather than from the request, so the value the rail is
-told is the value that would survive a crash — not a second read that could
-differ from what was made durable.
+It runs **before** `open_attempt`, which is what makes both refusals above cost
+no charge row, no `provider_requests` row and no job — and after
+`load_confirmable_intent`, never before it, because this answer is not the
+uniform 404 and asking it first would let a caller learn that some other
+tenant's intent has a checkout session on it. (Until Step 9's lane 1b it ran
+*after* `open_attempt` and handed its answer straight to the adapter; the
+value now goes into `charges.return_url` before the charge is committed, so
+what the rail is told is the value that would survive a crash rather than a
+second read that could differ from what was made durable.)
 
-`ReturnUrlSource`'s shipping impl is `SessionReturnPage`, which holds the
+`CheckoutSessionGate`'s shipping impl is `SessionGate`, which holds the
 repositories *and* `ResourceConfig::checkout_public_base_url()` — both, because
-the URL needs a row (`CheckoutSessions::find_open_by_intent`) and a configured
+the URL needs a row (`CheckoutSessions::find_latest_by_intent`) and a configured
 origin, and `CheckoutSessionRow::return_page_url` is the one place the two are
 joined. It was a blanket impl over `dyn Repositories` answering `None` for every
 intent while Step 9's lane 2 was ahead of the `checkout_sessions` table; lane 1b
@@ -698,7 +760,10 @@ the silent failure this seam exists to prevent: the payer is forwarded one step
 too early and nothing reports it. The refusal fires for a push rail too, which
 would have ignored the URL, because the deployment's checkout page is gone
 either way and an outage that depended on which rail a payer picked would be
-worse to debug than one that does not.
+worse to debug than one that does not. It is reached only *after* the session
+has admitted the confirm, so an expired session on a deployment that has lost
+its checkout page still answers `checkout_session_expired` — the more specific
+and more actionable of the two.
 
 ### Why `confirm_once` takes seven loose arguments and not a struct
 

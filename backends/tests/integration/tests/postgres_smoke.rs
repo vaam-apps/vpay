@@ -148,8 +148,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 29,
-        "all twenty-nine migrations under backends/migrations should be recorded as applied \
+        applied, 30,
+        "all thirty migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -165,9 +165,13 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          /v1/browser authenticates with, and Step 8's 0027 \
          charges_provider_reference_idx, which keeps the unauthenticated \
          POST /provider/{{code}}/callback lookup off a sequential scan, \
-         and Step 9's 0028 checkout_sessions, the hosted/embedded checkout \
+         Step 9's 0028 checkout_sessions, the hosted/embedded checkout \
          object with its two payer credentials and the partial unique index \
-         that is what actually enforces one open session per intent)"
+         that is what actually enforces one open session per intent, \
+         0029 the checkout.session.expired event type, \
+         and 0030 checkout_sessions_intent_seq_idx, which keeps the confirm \
+         path's find_latest_by_intent off a sequential scan for the same \
+         reason 0027 keeps the rail callback off one)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -615,6 +619,91 @@ async fn a_duplicate_disabled_client_id_is_rejected_by_the_database() -> anyhow:
         db_err.constraint(),
         Some("disabled_clients_pkey"),
         "the rejection must come from the client_id primary key specifically"
+    );
+
+    Ok(())
+}
+
+// --- migration 0030 (checkout_sessions_intent_seq_idx) ---------------------
+
+/// The confirm path's session lookup is served by an index, and not by a scan
+/// of `checkout_sessions`.
+///
+/// `vpay_db::CheckoutSessions::find_latest_by_intent` — "the newest session on
+/// this intent, whatever its `status`" — is asked once per confirm by
+/// `vpay_api::v1::return_trip`, **including** for the majority of confirms
+/// that have no checkout session at all. 0028 gave this table only a
+/// *partial* lookup by intent (`WHERE status = 'open'`), which this query
+/// cannot use, because dropping that predicate is the entire point of it: it
+/// has to tell "no session was ever created" from "the session that was
+/// created is over". Without 0030 the planner's only choices are a sequential
+/// scan of the table or a full backward scan of `checkout_sessions_seq_key`,
+/// and the case with no matching row — the common one — never stops early.
+///
+/// Measured on this image with 200,000 sessions and an intent that has none:
+/// a parallel sequential scan removing 200,000 rows, 11.7 ms, against
+/// 0.047 ms through this index.
+///
+/// # Why the plan and not only the index
+///
+/// `pg_indexes` alone would pass for an index of the wrong shape — one that
+/// carried a `WHERE`, or that led on `seq` — so the plan is asserted too.
+/// `enable_seqscan = off` is what makes that assertion meaningful on an empty
+/// table: the planner would otherwise pick a sequential scan over any index
+/// here whatever the schema says, and what is being pinned is that *an index
+/// can serve this query at all*. Delete 0030 and the same query plans as an
+/// `Index Scan Backward using checkout_sessions_seq_key` with
+/// `payment_intent_id` demoted to a filter — which is the defect, and which
+/// this test then fails on.
+#[tokio::test]
+async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    let definition: Option<String> = sqlx::query_scalar(
+        "SELECT indexdef FROM pg_indexes WHERE indexname = 'checkout_sessions_intent_seq_idx'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .context("reading checkout_sessions_intent_seq_idx must succeed")?;
+    let definition = definition.context("0030 must create checkout_sessions_intent_seq_idx")?;
+    assert!(
+        definition.contains("(payment_intent_id, seq DESC)"),
+        "the index must lead on payment_intent_id and carry seq DESC, or `ORDER BY seq DESC \
+         LIMIT 1` is a sort rather than a first entry: {definition}"
+    );
+    assert!(
+        !definition.contains(" WHERE "),
+        "a partial index is what created this gap — 0028's checkout_sessions_open_by_intent_idx \
+         is unusable here precisely because it carries a predicate the query does not: \
+         {definition}"
+    );
+
+    // One connection for both statements: `SET` is session-scoped, and a
+    // pool hands the `EXPLAIN` a different connection otherwise.
+    let mut connection = pool
+        .acquire()
+        .await
+        .context("taking one connection for the SET and the EXPLAIN")?;
+    sqlx::query("SET enable_seqscan = off")
+        .execute(&mut *connection)
+        .await
+        .context("disabling sequential scans for this session must succeed")?;
+
+    // The query `find_latest_by_intent` builds, in shape.
+    let plan: Vec<String> = sqlx::query_scalar(
+        "EXPLAIN SELECT id FROM checkout_sessions \
+         WHERE payment_intent_id = 'pi_00000000000000000000000001' \
+         ORDER BY seq DESC LIMIT 1",
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .context("explaining the confirm path's session lookup must succeed")?;
+    let plan = plan.join("\n");
+    assert!(
+        plan.contains("checkout_sessions_intent_seq_idx"),
+        "the lookup must be servable by 0030's index; without it the planner falls back to a \
+         full backward scan of checkout_sessions_seq_key with payment_intent_id demoted to a \
+         filter, which is the defect this migration exists for: {plan}"
     );
 
     Ok(())

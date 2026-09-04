@@ -78,7 +78,7 @@ methods across nine paths since Step 9:
 | POST | `/v1/payment_intents` | `amount` (integer minor units, `1 ..= 2^53-1`), `currency` (lowercase, must be one this deployment configures), `payment_method_types[]` (rail codes, each enabled here), `metadata[…]` (≤50 keys, ≤40-char keys, ≤500-char values), `description` (≤1000 chars) | `200` + `payment_intent` in `requires_payment_method` (`create_then_retrieve_round_trips_through_the_sdk`) |
 | GET | `/v1/payment_intents/{id}` | | `200` + `payment_intent`, or `404 resource_missing` — **including for another merchant's id**, byte for byte (`merchant_b_cannot_read_merchant_as_intent`) |
 | GET | `/v1/payment_intents` | `limit` (default 10, capped at 100), `starting_after`, `ending_before` (ids; not both) | `200` + `list` envelope (`list_pages_forward_and_backward_with_cursors`) |
-| POST | `/v1/payment_intents/{id}/confirm` | `payment_method_data[type]`, `payment_method_data[<type>][msisdn]` (push), `return_url` (redirect) | `200` + `payment_intent` in **`processing`** (push) or **`requires_action`** with `next_action.redirect_to_url` (redirect); `409 charge_declined`; `502 provider_unavailable`; `400` (see below) |
+| POST | `/v1/payment_intents/{id}/confirm` | `payment_method_data[type]`, `payment_method_data[<type>][msisdn]` (push), `return_url` (redirect) | `200` + `payment_intent` in **`processing`** (push) or **`requires_action`** with `next_action.redirect_to_url` (redirect); `409 charge_declined`; `409 checkout_session_expired` / `checkout_session_complete` when a checkout session drives this intent and is no longer `open` — **before any charge is opened** (Step 9); `502 provider_unavailable`; `400` (see below) |
 | POST | `/v1/payment_intents/{id}/cancel` | | `200` + `payment_intent` in `canceled`, or `409 invalid_state` (`cancel_is_legal_only_from_requires_payment_method`, `a_confirmed_intent_cannot_be_canceled`) |
 | GET | `/v1/events` | `limit` (default 10, capped at 100), `starting_after`, `ending_before` (`evt_…` ids; not both) | `200` + `list` envelope of `event` objects, newest first, scoped to your merchant (`events_are_listed_newest_first_scoped_to_the_merchant`) |
 | GET | `/v1/events/{id}` | | `200` + `event`, or `404 resource_missing` — **including for another merchant's id**, byte for byte (same test) |
@@ -313,14 +313,21 @@ branch on. Recorded in `ApiError::IdempotencyKeyInFlight`'s own doc comment.
 /`malformed_authorization_header` (401), `forbidden` (403),
 `resource_missing` (404), `unknown_route` (404), `invalid_state` (409),
 `resource_conflict` (409, a database uniqueness refusal),
-`charge_declined` (409), `provider_unavailable` (502),
-`service_unavailable` (503), `internal_error` (500). *(`not_implemented`
+`charge_declined` (409), `checkout_session_expired` (409),
+`checkout_session_complete` (409), `provider_unavailable` (502),
+`service_unavailable` (503), `checkout_not_configured` (500),
+`internal_error` (500). *(`not_implemented`
 (501) was on this list until 2026-09-03; the one remaining
 `NotImplemented` token is `mtn_momo::refund`, reachable only through
 `POST /v1/refunds`, which is not routed — so no `/v1` caller can provoke a
 `501` today.)*
 Every one is derived from a `Category`; see
-[../flows/errors.md](../flows/errors.md).
+[../flows/errors.md](../flows/errors.md). `Category::Conflict` now carries
+three codes rather than its default alone — `invalid_state`,
+`checkout_session_expired` and `checkout_session_complete` — for the reason
+`Category::Idempotency` carries two: the status comes from the category and
+the `code` is what an SDK branches on, and a merchant must be able to tell
+"this intent is already processing" from "your payer's checkout is over".
 
 ### Using the official Stripe SDKs
 
