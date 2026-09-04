@@ -33,9 +33,14 @@ commonAnnotations: {}
 
 images:
   # Registry and repository owner. Step-6 decision (1): the release workflow
-  # (block A) publishes to `ghcr.io/vaam-store/vpay-{server,worker,dashboard}`.
+  # (block A) publishes to `ghcr.io/vaam-apps/vpay-{server,worker,dashboard}`.
+  # The release workflow derives this from the repository owner rather than
+  # a literal (`.github/workflows/release.yml`'s `namespace` job) — this
+  # value must be kept in step by hand whenever that owner changes, because
+  # the chart has no equivalent of `github.repository_owner` to read from.
+  # It was `vaam-store` until the organisation was renamed 2026-09-04.
   registry: ghcr.io
-  namespace: vaam-store
+  namespace: vaam-apps
   pullPolicy: IfNotPresent
   # `imagePullSecrets` entries, e.g. `[{name: ghcr-pull}]`. Empty is correct
   # for a public GHCR package.
@@ -65,7 +70,7 @@ images:
 
 # The dashboard is NOT deployed by this chart.
 #
-# `ghcr.io/vaam-store/vpay-dashboard` is published by the release workflow,
+# `ghcr.io/vaam-apps/vpay-dashboard` is published by the release workflow,
 # but templating a workload for it here would be a guess: `frontends/Dockerfile`
 # is `node:22-alpine`-based (not `scratch`), declares no `USER`, and Next's
 # standalone server's filesystem needs under `readOnlyRootFilesystem` have
@@ -79,7 +84,7 @@ dashboard:
 # ------------------------------------------------------------- checkout ----
 
 # vpay's own hosted/embedded payment page — `frontends/apps/checkout`,
-# published as `ghcr.io/vaam-store/vpay-checkout` (Step 9, D3).
+# published as `ghcr.io/vaam-apps/vpay-checkout` (Step 9, D3).
 #
 # **Off by default, and that is the fail-closed answer rather than a
 # preference.** A deployment with no checkout page is a complete deployment:

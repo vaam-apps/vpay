@@ -1,7 +1,7 @@
 {{- include "vpay.validate" . -}}
 {{- if .Values.checkout.enabled }}
 # vpay's own hosted/embedded payment page — `frontends/apps/checkout`,
-# published as `ghcr.io/vaam-store/vpay-checkout` (Step 9, D3).
+# published as `ghcr.io/vaam-apps/vpay-checkout` (Step 9, D3).
 #
 # **The one workload in this chart that is NOT a `FROM scratch` binary**, and
 # the differences all follow from that:
