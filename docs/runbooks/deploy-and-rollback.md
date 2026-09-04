@@ -214,7 +214,7 @@ Everything operational on this page. Specifically:
 - ~~**The liveness probes point at a listener no image has.**~~ Corrected
   2026-09-03: the listener landed the same day. See the note at the top for
   what is still true about older images.
-- **No image exists** at `ghcr.io/vaam-store/vpay-server` or `-worker`;
+- **No image exists** at `ghcr.io/vaam-apps/vpay-server` or `-worker`;
   `release.yml` has never run, so every digest a values file could pin today
   would be invented ([release.md](release.md)).
 - ~~The server's drain timeout has no test.~~ Corrected 2026-09-03: it has

@@ -174,7 +174,7 @@ dashboard-not-templated — see values.yaml. The image is published; the
 workload is not written. This is the chart's `NotImplemented`.
 */}}
 {{- if .Values.dashboard.enabled -}}
-{{- fail "vpay chart guard \"dashboard-not-templated\": dashboard.enabled is true, but this chart templates no dashboard workload. ghcr.io/vaam-store/vpay-dashboard is published by the release workflow; its Deployment is not written, because the image is node:22-alpine-based, declares no USER, and its behaviour under readOnlyRootFilesystem has never been observed. Deploy it separately, or leave this false — do not expect a silent no-op." -}}
+{{- fail "vpay chart guard \"dashboard-not-templated\": dashboard.enabled is true, but this chart templates no dashboard workload. ghcr.io/vaam-apps/vpay-dashboard is published by the release workflow; its Deployment is not written, because the image is node:22-alpine-based, declares no USER, and its behaviour under readOnlyRootFilesystem has never been observed. Deploy it separately, or leave this false — do not expect a silent no-op." -}}
 {{- end -}}
 
 {{/* --------------------------------------------------------------- 13 */}}

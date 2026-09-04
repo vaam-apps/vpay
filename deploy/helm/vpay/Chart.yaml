@@ -30,9 +30,9 @@ appVersion: "0.1.0"
 # tested against it. Nothing here has been tested against any version.
 kubeVersion: ">=1.27.0-0"
 
-home: https://github.com/vaam-store/vpay
+home: https://github.com/vaam-apps/vpay
 sources:
-  - https://github.com/vaam-store/vpay
+  - https://github.com/vaam-apps/vpay
 keywords:
   - payments
   - mobile-money

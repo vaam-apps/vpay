@@ -920,7 +920,7 @@ twelve lanes):
   any script runs, plus the page's own origin check against the same list.
 - **`initEmbeddedCheckout`** in `@vpay/stripe-js` and `checkout.sessions` in
   both merchant SDKs, in one PR per [ADR-0015](adr/0015-sdk-parity.md).
-- **A fourth image** (`ghcr.io/vaam-store/vpay-checkout`), a Helm workload
+- **A fourth image** (`ghcr.io/vaam-apps/vpay-checkout`), a Helm workload
   behind `checkout.enabled`, and an eight-service demo stack.
 - **`examples/shop`** — a Next.js merchant site with a seeded XAF catalogue,
   tRPC and ZenStack over Prisma, whose orders turn `paid` only from vpay's

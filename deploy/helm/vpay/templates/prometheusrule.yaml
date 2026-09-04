@@ -1,7 +1,7 @@
 {{- include "vpay.validate" . -}}
 {{- if .Values.metrics.prometheusRule.enabled }}
 {{- $r := .Values.metrics.prometheusRule -}}
-{{- $repo := "https://github.com/vaam-store/vpay/blob/master/docs/runbooks" -}}
+{{- $repo := "https://github.com/vaam-apps/vpay/blob/master/docs/runbooks" -}}
 # ⚠⚠ READ THIS BEFORE TRUSTING ANY NUMBER BELOW ⚠⚠
 #
 # 1. EVERY THRESHOLD HERE IS PROPOSED, NOT DERIVED. Step-6 decision (5): the

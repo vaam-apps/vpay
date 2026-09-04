@@ -268,7 +268,7 @@ Prefer `checkout.ingress.host`.
 
 ## The dashboard is not deployed by this chart
 
-`ghcr.io/vaam-store/vpay-dashboard` is published by the release workflow.
+`ghcr.io/vaam-apps/vpay-dashboard` is published by the release workflow.
 Its Deployment is not written here, and `dashboard.enabled: true` is a named
 template failure rather than a silent no-op.
 
@@ -298,7 +298,7 @@ the reasoning; this table is maintained by hand and can drift from it.
 | Key | Default | Meaning |
 |---|---|---|
 | `images.registry` | `ghcr.io` | Registry host |
-| `images.namespace` | `vaam-store` | Registry namespace/owner |
+| `images.namespace` | `vaam-apps` | Registry namespace/owner |
 | `images.pullPolicy` | `IfNotPresent` | |
 | `images.pullSecrets` | `[]` | `imagePullSecrets` entries; empty is right for a public package |
 | `images.server.name` | `vpay-server` | |

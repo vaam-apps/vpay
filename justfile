@@ -765,6 +765,15 @@ helm-check:
 
 # --------------------------------------------------------------- release ---
 
+# The GHCR namespace `release-dry-run` tags into. `release.yml` derives this
+# from `github.repository_owner` at run time (its `namespace` job); a local
+# recipe has no such context, so it is a variable instead, defaulting to the
+# current owner. It was `vaam-store` until the organisation was renamed
+# 2026-09-04. `--push=false` below means this default only ever labels a
+# local, unpushed image — override with `just --set image_namespace <ns>
+# release-dry-run` if that ever stops being true.
+image_namespace := "vaam-apps"
+
 # What `.github/workflows/release.yml` does, minus everything that needs a
 # registry — and minus one thing that needs a runner it cannot have here.
 #
@@ -791,6 +800,7 @@ helm-check:
 release-dry-run:
     #!/usr/bin/env bash
     set -euo pipefail
+    image_namespace="{{ image_namespace }}"
     for tool in docker helm kubeconform; do
         command -v "$tool" >/dev/null 2>&1 || { echo "release-dry-run: needs '$tool' on PATH" >&2; exit 1; }
     done
@@ -829,7 +839,7 @@ release-dry-run:
             --platform "$platform" \
             --file "$file" \
             --target "$target" \
-            --tag "ghcr.io/vaam-store/$name:dry-run" \
+            --tag "ghcr.io/$image_namespace/$name:dry-run" \
             --provenance=false \
             --sbom=false \
             --push=false \

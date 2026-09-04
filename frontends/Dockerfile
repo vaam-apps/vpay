@@ -1,8 +1,8 @@
 # The two Next.js images this repository publishes, built from the REPOSITORY
 # ROOT (`docker build -f frontends/Dockerfile .`):
 #
-#   --target runner    ghcr.io/vaam-store/vpay-dashboard   (unchanged)
-#   --target checkout  ghcr.io/vaam-store/vpay-checkout    (Step 9, lane 4)
+#   --target runner    ghcr.io/vaam-apps/vpay-dashboard   (unchanged)
+#   --target checkout  ghcr.io/vaam-apps/vpay-checkout    (Step 9, lane 4)
 #
 # **Every consumer names its target explicitly** — `.github/workflows/release.yml`
 # and both `dashboard` and `vpay-checkout` in `compose.e2e.yml`. Nothing here
