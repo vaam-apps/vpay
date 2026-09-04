@@ -147,9 +147,16 @@ measured from the *send*, not the answer
 - Item 1 of the list above (does the notification carry `pay_token`?). The
   adapter carries it through *when present* and never requires it.
 - `notif_token` equality is **not** performed by the adapter — it holds no
-  state. `parse_callback` returns the received `notif_token` in `ref_extra` and
-  fails closed when there is none; comparing it with the stored one is the
-  callback route's job, and that route is not built yet.
+  state — and, since Step 8 (2026-09-04), ~~comparing it with the stored one is
+  the callback route's job, and that route is not built yet~~ **not by the
+  callback route either**. `parse_callback` returns the received `notif_token`
+  in `ref_extra` and fails closed when there is none;
+  `vpay_api::provider_callback` **discards that `ref_extra`** rather than
+  merging unverified rail material onto the charge, so the comparison is still
+  unbuilt and `ref_extra` repair from a callback is still unavailable. The
+  adapter's fail-closed check is now load-bearing in production, not only in
+  tests: it is the only thing between an unauthenticated POST and a queued poll
+  ([../reference/rails.md](../reference/rails.md)).
 - The hosted page's `lang` defaults to `fr` when a deployment configures none.
   It is the one defaulted field in the request body.
 - **The 401 → re-mint → retry path is unproven.** No mapping returns 401 from

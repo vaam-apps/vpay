@@ -222,23 +222,27 @@ async fn harness() -> anyhow::Result<Harness> {
     })
 }
 
-/// The outbound client the worker binary builds at boot: the same call, and
-/// the same two budgets read from the same constants.
+/// The egress policy this suite's deliveries run under.
 ///
-/// `vpay_worker::WEBHOOK_{CONNECT,REQUEST}_TIMEOUT`, which is where the
-/// handler that spends them lives — not `5` and `10` written out a third
-/// time. Nothing used to pin the binary's pair to this one, so a change there
-/// would have left this suite proving a client that no longer ships.
+/// `ALLOW_PRIVATE`, and it has to be: the receiver is a container this process
+/// reaches at `127.0.0.1:<mapped>`, which `vpay_worker::ssrf` classifies as
+/// loopback. That is the same reason `compose.e2e.yml`'s sandbox profile sets
+/// `webhooks.allow_private_targets: true` for `wiremock-webhook` — the suite
+/// and the stack are private receivers for the same reason, and the flag is
+/// the config value both read (ADR-0003; livemode plus this value does not
+/// boot).
 ///
-/// Not `reqwest::Client::new()`: that one panics in the `scratch` runtime
-/// image, and a test that used it would not be exercising the client that
-/// ships.
-fn delivery_client() -> reqwest::Client {
-    vpay_provider::http::client_with_timeouts(
-        vpay_worker::WEBHOOK_CONNECT_TIMEOUT,
-        vpay_worker::WEBHOOK_REQUEST_TIMEOUT,
-    )
-    .expect("the vendored-roots client builds")
+/// It is **not** a way of switching the guard off for the suite: the guard
+/// still resolves and still classifies, and
+/// `a_delivery_to_a_private_address_is_refused_and_recorded_permanent` proves
+/// the other verdict with `DENY_PRIVATE` against this same receiver.
+///
+/// There is no `delivery_client()` helper any more: since Step 8 the client is
+/// built inside the handler, per delivery, pinned to that delivery's vetted
+/// addresses (`vpay_worker::ssrf::pinned_client`), which is also where the two
+/// budgets this helper used to single-source are now read.
+fn delivery_egress() -> vpay_worker::EgressPolicy {
+    vpay_worker::EgressPolicy::ALLOW_PRIVATE
 }
 
 // ------------------------------------------------------------- fixtures ---
@@ -618,7 +622,7 @@ async fn deliver_one(
         .await
         .expect("the delivery job");
 
-    let outcome = handle_deliver(h.repositories.as_ref(), &delivery_client(), endpoints, &job)
+    let outcome = handle_deliver(h.repositories.as_ref(), delivery_egress(), endpoints, &job)
         .await
         .expect("the delivery handler ran");
     assert!(
@@ -860,7 +864,6 @@ async fn a_rotation_signs_with_both_secrets_and_either_one_verifies() {
 async fn the_ladder_walks_delivery_delay_and_then_succeeds() {
     let h = harness().await.expect("harness");
     let endpoints = h.flaky_registry();
-    let http = delivery_client();
     let (metrics_addr, metrics_task) = serve_metrics().await.expect("the metrics listener");
 
     let event = insert_event(h.repositories.as_ref(), MERCHANT_A, "pi_flaky")
@@ -892,7 +895,7 @@ async fn the_ladder_walks_delivery_delay_and_then_succeeds() {
             .await
             .expect("the delivery job");
         let before = OffsetDateTime::now_utc();
-        let outcome = handle_deliver(h.repositories.as_ref(), &http, &endpoints, &job)
+        let outcome = handle_deliver(h.repositories.as_ref(), delivery_egress(), &endpoints, &job)
             .await
             .expect("the handler ran");
 
@@ -950,7 +953,7 @@ async fn the_ladder_walks_delivery_delay_and_then_succeeds() {
     let job = claim_delivery_job(&h.pool, delivery_id)
         .await
         .expect("the delivery job");
-    let outcome = handle_deliver(h.repositories.as_ref(), &http, &endpoints, &job)
+    let outcome = handle_deliver(h.repositories.as_ref(), delivery_egress(), &endpoints, &job)
         .await
         .expect("the handler ran");
     assert!(matches!(outcome, Outcome::Done), "{outcome:?}");
@@ -1039,14 +1042,9 @@ async fn a_delivery_past_the_last_rung_is_exhausted_and_not_rescheduled() {
     let job = claim_delivery_job(&h.pool, delivery_id)
         .await
         .expect("the delivery job");
-    let outcome = handle_deliver(
-        h.repositories.as_ref(),
-        &delivery_client(),
-        &endpoints,
-        &job,
-    )
-    .await
-    .expect("the handler ran");
+    let outcome = handle_deliver(h.repositories.as_ref(), delivery_egress(), &endpoints, &job)
+        .await
+        .expect("the handler ran");
     assert!(
         matches!(outcome, Outcome::Done),
         "an exhausted delivery is finished, not retried: {outcome:?}"
@@ -1340,6 +1338,7 @@ fn events_config(base_url: &str, jwks_a: Value, jwks_b: Value, scopes: &[&str]) 
             ),
             merchant_client_with(CLIENT_B, MERCHANT_B, jwks_b, scopes, Vec::new(), Vec::new()),
         ],
+        webhooks: vpay_config::WebhookPolicy::default(),
         dashboard_client: None,
     }
 }
@@ -1631,14 +1630,9 @@ async fn one_merchants_unfannable_event_does_not_block_another_merchants() {
     let job = claim_delivery_job(&h.pool, delivery.id)
         .await
         .expect("the delivery job");
-    let outcome = handle_deliver(
-        h.repositories.as_ref(),
-        &delivery_client(),
-        &endpoints,
-        &job,
-    )
-    .await
-    .expect("the delivery handler ran");
+    let outcome = handle_deliver(h.repositories.as_ref(), delivery_egress(), &endpoints, &job)
+        .await
+        .expect("the delivery handler ran");
     assert!(matches!(outcome, Outcome::Done), "{outcome:?}");
     let recorded = journal(&h.receiver_url)
         .await
@@ -1996,7 +1990,7 @@ async fn the_backstop_re_enqueues_a_delivery_whose_job_vanished() {
         .expect("the re-enqueued delivery job");
     let outcome = handle_deliver(
         h.repositories.as_ref(),
-        &delivery_client(),
+        delivery_egress(),
         &h.endpoints,
         &job,
     )
@@ -2251,7 +2245,6 @@ async fn the_real_run_loop_delivers_a_backlog_event_to_the_receiver() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let repositories = Arc::clone(&h.repositories);
     let endpoints = std::sync::Arc::new(h.endpoints.clone());
-    let http = delivery_client();
     let loop_handle = tokio::spawn(async move {
         vpay_worker::run_loop(
             repositories,
@@ -2261,7 +2254,7 @@ async fn the_real_run_loop_delivers_a_backlog_event_to_the_receiver() {
             std::sync::Arc::new(vpay_worker::RailConfigs::new()),
             vpay_worker::RecoveryPolicy::default(),
             endpoints,
-            http,
+            delivery_egress(),
             1,
             Duration::from_secs(5),
             "webhooks-run-loop".to_owned(),
@@ -2383,14 +2376,9 @@ async fn a_delivery_with_no_configured_endpoint_records_a_failure_and_no_digest(
     let job = claim_delivery_job(&h.pool, delivery.id)
         .await
         .expect("the delivery job");
-    let outcome = handle_deliver(
-        h.repositories.as_ref(),
-        &delivery_client(),
-        &forgotten,
-        &job,
-    )
-    .await
-    .expect("the delivery handler ran");
+    let outcome = handle_deliver(h.repositories.as_ref(), delivery_egress(), &forgotten, &job)
+        .await
+        .expect("the delivery handler ran");
     assert!(
         matches!(outcome, Outcome::RescheduleAfter(delay) if delay == delivery_delay(0)
             .expect("the first rung")),
@@ -2421,5 +2409,333 @@ async fn a_delivery_with_no_configured_endpoint_records_a_failure_and_no_digest(
             .expect("the journal reads")
             .is_empty(),
         "an unsigned webhook must never leave the process — a receiver may not act on one"
+    );
+}
+
+// ------------------------------------------------------ the egress guard ---
+
+/// A registry whose only endpoint is `url`, signed with [`SECRET`].
+///
+/// The endpoint URL is what the guard vets, so the cases below vary exactly
+/// that and nothing else — same merchant, same id, same secret, same receiver
+/// container.
+fn registry_at(url: &str) -> EndpointRegistry {
+    EndpointRegistry::from_pairs([(
+        MERCHANT_A.to_owned(),
+        vec![Endpoint {
+            id: ENDPOINT_ID.to_owned(),
+            url: url.to_owned(),
+            secrets: vec![SECRET.to_owned()],
+        }],
+    )])
+}
+
+/// Fans out `object_id` and hands back the `deliver_webhook` job for its one
+/// delivery, claimed — the state every case below starts from.
+///
+/// The singleton fan-out job's lease is released first, because these cases
+/// run **two** passes in one test and `handle_fan_out` does not settle its own
+/// row: in a running worker `run_loop` calls `jobs::reschedule` afterwards,
+/// and a test that drives the handler directly has to do the equivalent or the
+/// second `jobs::claim` finds a job that is still leased to the first pass.
+async fn delivery_job_for(
+    h: &Harness,
+    endpoints: &EndpointRegistry,
+    object_id: &str,
+) -> (EventRow, DeliveryRow, JobRow) {
+    let event = insert_event(h.repositories.as_ref(), MERCHANT_A, object_id)
+        .await
+        .expect("an event");
+    sqlx::query("UPDATE jobs SET locked_at = NULL, locked_by = NULL WHERE dedupe_key = $1")
+        .bind(FANOUT_DEDUPE_KEY)
+        .execute(&h.pool)
+        .await
+        .expect("the singleton's lease is released, as the loop would");
+    let fanout = claim_fanout_job(h.repositories.as_ref())
+        .await
+        .expect("the fan-out job");
+    handle_fan_out(h.repositories.as_ref(), endpoints, &fanout)
+        .await
+        .expect("fan-out");
+    let delivery = h
+        .repositories
+        .for_event(&event.id)
+        .await
+        .expect("deliveries")
+        .pop()
+        .expect("one delivery");
+    let job = claim_delivery_job(&h.pool, delivery.id)
+        .await
+        .expect("the delivery job");
+    (event, delivery, job)
+}
+
+/// **The whole of lane B, against a real receiver: the same address, both
+/// verdicts.**
+///
+/// The receiver container answers on `127.0.0.1:<mapped>`, which
+/// `vpay_worker::ssrf` classifies as loopback — the same class the compose
+/// stack's `wiremock-webhook` would be, and the same class
+/// `169.254.169.254` and a Postgres service on `10/8` fall into. So one
+/// harness proves both halves:
+///
+/// * under `EgressPolicy::DENY_PRIVATE` (what a deployment gets by default,
+///   and the only thing livemode may have) the delivery is refused
+///   **permanently** — `state = 'exhausted'` on the first attempt, no next
+///   attempt, and no digest, because nothing was rendered into a signed body
+///   that left the process;
+/// * under `EgressPolicy::ALLOW_PRIVATE` (`webhooks.allow_private_targets`,
+///   which `config/application-sandbox.yml` sets and livemode cannot) the
+///   *same URL* is delivered and answered `200`.
+///
+/// # The decisive assertion is the receiver's own journal
+///
+/// A row saying `exhausted` proves what vpay wrote down, not what it sent. So
+/// the refusal is checked against `GET /__admin/requests` — the merchant-side
+/// view — and the journal must hold **exactly one** POST at the end of the
+/// test: the allowed one. A guard that recorded a refusal and sent the
+/// request anyway would leave two, and that is precisely the failure a
+/// classifier bypass produces (see the revert proof in
+/// `docs/plans/step8-notes/lane-b.md`).
+#[tokio::test]
+async fn a_delivery_to_a_private_address_is_refused_permanently_and_delivered_when_allowed() {
+    let h = harness().await.expect("harness");
+    let endpoints = registry_at(&format!("{}/webhooks", h.receiver_url));
+
+    // --- refused -----------------------------------------------------------
+    let (event, delivery, job) = delivery_job_for(&h, &endpoints, "pi_ssrf_refused").await;
+    let outcome = handle_deliver(
+        h.repositories.as_ref(),
+        vpay_worker::EgressPolicy::DENY_PRIVATE,
+        &endpoints,
+        &job,
+    )
+    .await
+    .expect("a refused target is not a job failure");
+    assert!(
+        matches!(outcome, Outcome::Done),
+        "a refused target must end the job rather than reschedule it: {outcome:?}"
+    );
+
+    let row = h
+        .repositories
+        .get(delivery.id)
+        .await
+        .expect("the delivery row")
+        .expect("it still exists");
+    assert_eq!(
+        row.state, "exhausted",
+        "a refused target is permanent — the ladder exists to outlast an outage, and this \
+         is not one"
+    );
+    assert_eq!(
+        row.attempt, 1,
+        "refused on the first attempt, not the eighth"
+    );
+    assert_eq!(
+        row.next_attempt_at, None,
+        "a refused delivery must not claim a next attempt it will never make"
+    );
+    assert_eq!(
+        row.status_code, None,
+        "nothing answered, because nothing was asked"
+    );
+    assert_eq!(
+        row.payload_sha256, None,
+        "the guard runs before the body is signed, so there are no signed bytes to be the \
+         digest of"
+    );
+    let excerpt = row
+        .response_excerpt
+        .clone()
+        .expect("the refusal is recorded where an operator reads it");
+    assert!(
+        excerpt.starts_with("ssrf_blocked: "),
+        "the reason a runbook greps for: {excerpt}"
+    );
+    assert!(
+        excerpt.contains("loopback"),
+        "the reason must name the class that fired: {excerpt}"
+    );
+    assert!(
+        !excerpt.contains("127.0.0.1"),
+        "the recorded reason must not answer `what is reachable from inside this \
+         deployment?`: {excerpt}"
+    );
+
+    assert!(
+        journal(&h.receiver_url)
+            .await
+            .expect("the journal reads")
+            .is_empty(),
+        "the receiver was POSTed to despite the refusal — the guard recorded a decision it \
+         did not enforce"
+    );
+
+    // The job is finished, and re-running it changes nothing: `record_*`'s
+    // `state = 'pending'` guard is what makes a second pass a no-op rather
+    // than a second refusal.
+    let again = handle_deliver(
+        h.repositories.as_ref(),
+        vpay_worker::EgressPolicy::DENY_PRIVATE,
+        &endpoints,
+        &job,
+    )
+    .await
+    .expect("a second pass over a settled delivery is not an error");
+    assert!(matches!(again, Outcome::Done));
+    assert_eq!(
+        h.repositories
+            .get(delivery.id)
+            .await
+            .expect("the delivery row")
+            .expect("it still exists")
+            .attempt,
+        1,
+        "an exhausted delivery must not be re-attempted"
+    );
+
+    // --- allowed -----------------------------------------------------------
+    let (allowed_event, allowed_delivery, allowed_job) =
+        delivery_job_for(&h, &endpoints, "pi_ssrf_allowed").await;
+    let outcome = handle_deliver(
+        h.repositories.as_ref(),
+        vpay_worker::EgressPolicy::ALLOW_PRIVATE,
+        &endpoints,
+        &allowed_job,
+    )
+    .await
+    .expect("the delivery handler ran");
+    assert!(
+        matches!(outcome, Outcome::Done),
+        "the same address, allowed, is an ordinary delivery: {outcome:?}"
+    );
+
+    let row = h
+        .repositories
+        .get(allowed_delivery.id)
+        .await
+        .expect("the delivery row")
+        .expect("it still exists");
+    assert_eq!(row.state, "succeeded");
+    assert_eq!(row.status_code, Some(200));
+    assert_eq!(
+        row.payload_sha256.as_deref(),
+        Some(payload_sha256(&event_bytes(&allowed_event).expect("renders")).as_str()),
+        "the delivered bytes are the signed bytes"
+    );
+
+    let recorded = journal(&h.receiver_url).await.expect("the journal reads");
+    assert_eq!(
+        recorded.len(),
+        1,
+        "exactly one POST reached the receiver: the allowed one. The refused delivery for \
+         event `{}` must not appear, and the allowed one must",
+        event.id
+    );
+    let sent = recorded.first().expect("one recorded POST");
+    assert_eq!(sent.url, "/webhooks");
+    assert_eq!(
+        sent.header("vpay-event-id"),
+        Some(allowed_event.id.as_str()),
+        "and it is the allowed event, not the refused one"
+    );
+}
+
+/// The guard classifies what the host **resolved to**, not what it was
+/// written as.
+///
+/// This is the case a substring check on the URL cannot answer and the reason
+/// `vpay_config::validate_webhook_url`'s four host markers are not SSRF
+/// protection: `localhost` here is a *name*, and a merchant can just as
+/// easily register a name of their own that has an `A` record for
+/// `169.254.169.254`. The endpoint is the same receiver container as every
+/// other test in this file, reached by a different spelling — so a refusal
+/// here is the resolution step and nothing else.
+///
+/// The `.invalid` half is the other half of the same rule, and the one that
+/// would be easy to get wrong: a host that does not resolve at all is a
+/// **transient** failure that walks `delivery_delay`, because a resolver
+/// outage must not cost a merchant their event on the first attempt.
+#[tokio::test]
+async fn a_host_that_resolves_to_a_private_address_is_refused_and_an_unresolvable_one_retries() {
+    let h = harness().await.expect("harness");
+    let port = h
+        .receiver_url
+        .rsplit(':')
+        .next()
+        .expect("the harness url carries a port")
+        .to_owned();
+
+    let by_name = registry_at(&format!("http://localhost:{port}/webhooks"));
+    let (_, delivery, job) = delivery_job_for(&h, &by_name, "pi_ssrf_by_name").await;
+    let outcome = handle_deliver(
+        h.repositories.as_ref(),
+        vpay_worker::EgressPolicy::DENY_PRIVATE,
+        &by_name,
+        &job,
+    )
+    .await
+    .expect("a refused target is not a job failure");
+    assert!(matches!(outcome, Outcome::Done), "{outcome:?}");
+
+    let row = h
+        .repositories
+        .get(delivery.id)
+        .await
+        .expect("the delivery row")
+        .expect("it still exists");
+    assert_eq!(
+        row.state, "exhausted",
+        "a name resolving to loopback is refused exactly as the literal is"
+    );
+    assert!(
+        row.response_excerpt
+            .as_deref()
+            .is_some_and(
+                |excerpt| excerpt.starts_with("ssrf_blocked: ") && excerpt.contains("loopback")
+            ),
+        "the class comes from the resolved address: {:?}",
+        row.response_excerpt
+    );
+    assert!(
+        journal(&h.receiver_url)
+            .await
+            .expect("the journal reads")
+            .is_empty(),
+        "the receiver answers on this address under both spellings; a POST here would mean \
+         the name was never resolved before connecting"
+    );
+
+    // And a host that resolves to nothing is not the same thing at all.
+    // `.invalid` is reserved by RFC 2606 and resolves nowhere.
+    let unresolvable = registry_at("https://receiver.invalid/webhooks");
+    let (_, transient, job) = delivery_job_for(&h, &unresolvable, "pi_ssrf_unresolvable").await;
+    let outcome = handle_deliver(
+        h.repositories.as_ref(),
+        vpay_worker::EgressPolicy::DENY_PRIVATE,
+        &unresolvable,
+        &job,
+    )
+    .await
+    .expect("an unresolvable host is not a job failure either");
+    assert!(
+        matches!(outcome, Outcome::RescheduleAfter(delay) if delay == delivery_delay(0)
+            .expect("the first rung")),
+        "a resolver failure must walk the ladder, not exhaust the delivery: {outcome:?}"
+    );
+    let row = h
+        .repositories
+        .get(transient.id)
+        .await
+        .expect("the delivery row")
+        .expect("it still exists");
+    assert_eq!(row.state, "pending", "another attempt is still owed");
+    assert!(
+        row.response_excerpt
+            .as_deref()
+            .is_some_and(|excerpt| excerpt.starts_with("delivery_target_unavailable: ")),
+        "an unresolvable host is not recorded as a blocked one: {:?}",
+        row.response_excerpt
     );
 }

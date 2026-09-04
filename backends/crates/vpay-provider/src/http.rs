@@ -146,8 +146,77 @@ pub fn client_with_timeouts(
         .map_err(HttpClientError::Client)
 }
 
+/// The same timed client, but connecting **only** to addresses the caller has
+/// already vetted.
+///
+/// # Why this exists
+///
+/// A caller that resolves a host, decides the addresses are acceptable, and
+/// then hands the *URL* to an ordinary client has decided nothing: the client
+/// resolves the name again, and between the two lookups the answer may change
+/// — a DNS rebind is one record with a one-second TTL, and the second lookup
+/// is the one that picks the address. `vpay_worker::ssrf` is the only caller
+/// today, and that gap is exactly the SSRF it exists to close, so the vetted
+/// addresses are installed as reqwest's answer for `host` and the name is
+/// never resolved again.
+///
+/// `addrs` should be every address the caller vetted, not just the first:
+/// reqwest hands the list to hyper, which tries them in order, so dropping the
+/// tail turns a host with one unreachable A record into a failed delivery.
+///
+/// # What the port in `addrs` does, which is nothing
+///
+/// reqwest replaces it with the URL's own port
+/// (`ClientBuilder::resolve_to_addrs`: "Ports in the URL itself will always be
+/// used instead of the port in the overridden addr"). The caller therefore
+/// vets an *address*, not a socket, and cannot pin a different port by
+/// accident. `host` is matched case-insensitively — reqwest lowercases the
+/// override key and hyper looks it up by the URI's host — so passing
+/// `Url::host_str` (already normalised) is right.
+///
+/// # The cost, stated because it is a per-call client
+///
+/// Every call builds a new `reqwest::Client`: a fresh `rustls::ClientConfig`
+/// over the vendored root store, and a fresh connection pool that shares
+/// nothing with the last one. The construction itself is not the cost —
+/// **4.0 µs** per build against 2.9 µs for [`client_with_timeouts`], measured
+/// over 200 builds each in a debug build on the authoring machine
+/// (`docs/plans/step8-notes/lane-b.md`), because `tls_backend_preconfigured`
+/// never touches the platform verifier and the vendored anchors clone from
+/// static data. The **pool** is: two deliveries to one receiver no longer
+/// share a connection, so each pays a fresh TCP and TLS handshake.
+///
+/// Both are accepted rather than optimised away with a per-host cache. The
+/// resolve override is a property of the *builder*, not of a request, so a
+/// cache would be a cache of *pins* — and a pinned client held past its DNS
+/// answer keeps sending a merchant's events to the address that name used to
+/// have. Re-resolving per attempt is the behaviour a merchant who moves their
+/// receiver expects, and one handshake per delivery is affordable at a rate
+/// bounded by settlements.
+///
+/// Everything else is [`client_with_timeouts`]: vendored roots, no redirects,
+/// no proxy. A pinned client that followed redirects would be pinned to
+/// nothing — the hop's host is resolved fresh, and would not be vetted.
+///
+/// # Errors
+///
+/// As [`client`]: [`HttpClientError::Tls`] or [`HttpClientError::Client`].
+pub fn client_pinned_to(
+    connect: Duration,
+    request: Duration,
+    host: &str,
+    addrs: &[std::net::SocketAddr],
+) -> Result<reqwest::Client, HttpClientError> {
+    preconfigured_builder()?
+        .connect_timeout(connect)
+        .timeout(request)
+        .resolve_to_addrs(host, addrs)
+        .build()
+        .map_err(HttpClientError::Client)
+}
+
 /// The vendored-roots TLS configuration, already installed on a
-/// `reqwest::ClientBuilder`, shared by the two constructors above so neither
+/// `reqwest::ClientBuilder`, shared by the three constructors above so none
 /// can drift onto a different trust store, a different ALPN list, a redirect
 /// policy or a proxy.
 ///
@@ -434,6 +503,77 @@ mod tests {
             vec!["/submitted".to_owned()],
             "the Location was requested; a redirect would have replayed the rail headers \
              and body at whatever host answered: {seen:?}"
+        );
+    }
+
+    /// The pin is *used*: a name that cannot resolve reaches the address the
+    /// caller vetted anyway.
+    ///
+    /// `.invalid` is reserved by RFC 2606 and resolves nowhere, so a client
+    /// that consulted DNS at all would fail here rather than succeed at a
+    /// different address — which is the only way to prove an override was
+    /// consulted without depending on what the machine's resolver says about
+    /// some real name. The listener is the same raw-socket shape the redirect
+    /// test above uses, and stands in for no rail (ADR-0006 is not in play:
+    /// the thing under test is this module's transport configuration).
+    ///
+    /// It also asserts the `Host` header, because that is the half a pin must
+    /// **not** change: the request has to arrive claiming the name the caller
+    /// wrote, or a receiver's virtual hosting — and, over TLS, its
+    /// certificate — would be answering for the wrong site.
+    #[tokio::test]
+    async fn a_pinned_client_reaches_the_vetted_address_for_a_name_dns_cannot_answer() {
+        use std::io::{Read as _, Write as _};
+        use std::sync::{Arc, Mutex};
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("binding a loopback listener");
+        let address = listener.local_addr().expect("the bound address");
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let recorded = Arc::clone(&seen);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut buffer = [0_u8; 1024];
+                let read = stream.read(&mut buffer).unwrap_or(0);
+                recorded
+                    .lock()
+                    .expect("the request recorder is not poisoned")
+                    .push(
+                        String::from_utf8_lossy(buffer.get(..read).unwrap_or_default())
+                            .into_owned(),
+                    );
+                let _ = stream.write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+
+        let client = client_pinned_to(
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            "receiver.invalid",
+            &[address],
+        )
+        .expect("the pinned client builds");
+        let response = client
+            .post(format!("http://receiver.invalid:{}/hook", address.port()))
+            .send()
+            .await
+            .expect("the pin must carry the request to the vetted address");
+
+        assert_eq!(response.status().as_u16(), 204);
+        let requests = seen
+            .lock()
+            .expect("the request recorder is not poisoned")
+            .clone();
+        let first = requests.first().expect("the listener saw the request");
+        assert!(
+            first
+                .to_ascii_lowercase()
+                .contains("host: receiver.invalid"),
+            "the pin must not rewrite the Host header: {first:?}"
         );
     }
 

@@ -48,6 +48,11 @@
       "request": {
         "method": "POST",
         "urlPath": "/collection/v1_0/requesttopay",
+        "headers": {
+          "X-Callback-Url": {
+            "matches": ".+/provider/mtn_momo/callback"
+          }
+        },
         "bodyPatterns": [
           {
             "matchesJsonPath": {
@@ -80,7 +85,13 @@
           "Answers 202 -- the ordinary accepted submit -- because this mapping exists to",
           "MOVE THE SCENARIO, not to change what a confirm sees. worker_e2e.rs asserts a",
           "confirm here is indistinguishable from any other accepted confirm right up to",
-          "the point the worker starts polling."
+          "the point the worker starts polling.",
+          "",
+          "The X-Callback-Url matcher is the same contract requesttopay.json's catch-all",
+          "carries and is here for the same reason plus one more: this is the mapping the",
+          "settling end-to-end confirms enter through, so a deployment that stopped",
+          "telling MTN where to call back would fail the suites that actually watch a",
+          "payment settle, not only the adapter-level one."
         ]
       }
     },

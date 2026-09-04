@@ -1,14 +1,41 @@
 {
   "mappings": [
     {
-      "name": "requestToPay accepted (202, empty body \u2014 the id is the caller's)",
+      "name": "requestToPay accepted (202, empty body \u2014 the id is the caller's), and only with a callback URL",
       "priority": 10,
       "request": {
         "method": "POST",
-        "urlPath": "/collection/v1_0/requesttopay"
+        "urlPath": "/collection/v1_0/requesttopay",
+        "headers": {
+          "X-Callback-Url": {
+            "matches": ".+/provider/mtn_momo/callback"
+          }
+        }
       },
       "response": {
         "status": 202
+      },
+      "metadata": {
+        "why": [
+          "The X-Callback-Url matcher is a CONTRACT, added in Step 8 lane C: MTN's",
+          "documented protocol is push-then-callback, a real sandbox registration",
+          "requires a callback host, and a deployment that stopped sending the header",
+          "would settle only by polling with nothing anywhere saying so.",
+          "",
+          "The value is matched, not merely required to exist, because the path is the",
+          "half that can silently drift: vpay_api mounts POST /provider/{code}/callback",
+          "and vpay_config::ProviderHost::effective_callback_url derives",
+          "{public_base_url}/provider/{code}/callback, and those two live in different",
+          "crates. The host is left free (.+) because it genuinely varies -- it is the",
+          "stub's own origin here, an ingress in production, and MTN allows an",
+          "IP-allowlisted host of its own (ProviderHost::callback_url).",
+          "",
+          "Decisive: delete the .header(CALLBACK_URL_HEADER, ...) line from",
+          "vpay_adapter_mtn_momo::Adapter::submit and this mapping stops matching, so",
+          "WireMock answers 404 and the adapter raises ProviderError::Config('check",
+          "base_url') -- submit_returns_a_reference_and_a_flow_shaped_result fails, and",
+          "so does every confirm in backends/tests/integration."
+        ]
       }
     },
     {

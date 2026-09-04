@@ -58,7 +58,10 @@ since Step 3 the same day, confirmed one and watched the intent move to
 `processing`. **It has still never taken a payment:** the rail behind that
 confirm is a WireMock container, nothing polls the charge, and no intent has
 ever reached `succeeded`. The Node SDK is still tested only against stubs of
-the contract.
+the contract. The two SDKs are held to the same capability matrix, checked
+on every `just verify` — see [`docs/sdks/parity.md`](docs/sdks/parity.md)
+(record: [ADR-0015](docs/adr/0015-sdk-parity.md)) for where they agree and
+the dated, owned list of where they still don't.
 
 Two rails ship in the MVP, and they have genuinely different payer journeys:
 
@@ -132,8 +135,8 @@ just up               # Postgres + a WireMock host per rail
 
 **Prerequisites:** Docker (with Compose v2.24+ — the demo overlay uses `!reset`),
 the Rust toolchain `rust-toolchain.toml` pins, `just`, `jq`, `curl` and
-`openssl`. `pnpm` is needed only if you want to work on the dashboard; `just
-demo` builds it in a container.
+`openssl`. `pnpm` is needed only if you want to work on the dashboard; the demo
+does not start it (see below).
 
 ```bash
 just demo
@@ -144,63 +147,87 @@ local Postgres proxy, anything — pass a different one; nothing else needs
 changing:
 
 ```bash
-just demo_port=18080 demo
-just demo-down                # teardown needs no port
+just demo_port=18080 demo_receiver_port=18083 demo
+just demo_project=vpay-demo demo-down          # teardown needs no port
 ```
 
-That number is the *host* port only: the server still binds 8080 inside its
-container, and the dashboard still reaches it over the compose network. `just
-demo` propagates it to the three places that must agree — the published port,
-the demo profile's `deployment.public_base_url` (which the OP turns into the
-`issuer` on every token), and `VPAY_BASE_URL` for the demo binary — and
-regenerates the profile overlay if you change it. `compose.e2e.yml` and CI are
-untouched by the override; they keep 8080.
+Those are three `just` variables — `demo_project`, `demo_port`,
+`demo_receiver_port` — and between them **two demos can run on one machine at
+once**, sharing nothing: a different `demo_project` is a different Compose
+project, so different containers, a different network and a different `pgdata`
+volume. `demo_port`/`demo_receiver_port` are *host* ports only; the server
+still binds 8080 inside its container. `just demo` propagates `demo_port` to
+the three places that must agree — the published port, the demo profile's
+`deployment.public_base_url` (which the OP turns into the `issuer` on every
+token), and `VPAY_BASE_URL` for the demo binary — and regenerates the profile
+overlay if you change it. `compose.e2e.yml` and CI are untouched by the
+override; they keep 8080.
 
-`just demo` generates a throwaway RS256 key for the server's OAuth provider and a
-second one for a demo merchant (`.e2e/`, git-ignored, both discarded with the
-stack), registers the merchant's **public** JWK in a `demo` profile overlay,
-brings up Postgres + both WireMock rail stubs + `vpay-server` + `vpay-worker` +
-the dashboard, waits for `/healthz`, and then runs
-[`examples/merchant-demo`](examples/merchant-demo/) — a small Rust binary built
-on the real merchant SDK ([`sdks/rust`](sdks/rust/)).
+`just demo` is `just demo-up` then `just demo-walk`, and both exist separately
+so the walkthrough is re-runnable against a stack that is already up. `just
+demo-status` says what is running and under which project.
 
-What you will see, five steps, one line each:
+It generates a throwaway RS256 key for the server's OAuth provider and a second
+one for a demo merchant (`.e2e/`, git-ignored, both discarded with the stack),
+registers the merchant's **public** JWK in a `demo` profile overlay, brings up
+Postgres + both WireMock rail stubs + the merchant webhook receiver +
+`vpay-server` + `vpay-worker`, waits on their healthchecks (`up --wait`, not a
+sleep), and then runs [`examples/merchant-demo`](examples/merchant-demo/) — a
+small Rust binary built on the real merchant SDK ([`sdks/rust`](sdks/rust/)).
+
+What you will see, four steps, the last of which is a table:
 
 1. the OP's discovery document and JWKS — its issuer and the `kid` it signs with;
 2. an access token obtained with `client_credentials` + `private_key_jwt`, shown
    as its decoded `iss`/`aud`/`sub`/`exp` claims (never the token itself);
 3. a `/v1` call **without** a token — a `401` carrying vpay's error envelope,
    so you can see the authentication boundary is real;
-4. `payment_intents().create(…)` then `.retrieve(…)` through the SDK — a real
-   `pi_…` written to a real database, printed with its status, amount and
-   `livemode`, and read back to prove the retrieve returns what the create did;
-5. `payment_intents().confirm(…)` through the SDK — the intent comes back
-   **`processing`**, because the confirm reached the stack's MTN rail stub
-   over HTTP and it accepted the charge. The demo then re-reads the intent
-   and asserts the confirm's response and the retrieve are the same object,
-   so a status that was rendered but not committed fails the run.
+4. **six payments, on both rails, to every outcome each rail documents.** Each
+   one creates a PaymentIntent through the SDK, reads it back, confirms it,
+   waits for `vpay-worker` to settle it, and then reads the webhook that
+   settlement produced out of the receiver's own request journal and verifies
+   its `Vpay-Signature` with the SDK:
 
-Step 5 is the point, and what it does *not* say is the important half.
-`processing` means the request is with the rail — not that anyone paid.
-**Nothing polls that charge**, so the intent stays `processing` forever; no
-intent in this repository has ever reached `succeeded`. And the rail is a
-WireMock container in the compose stack, reached over HTTP exactly as a real
-rail would be (that is the rule in [AGENTS.md](AGENTS.md): a stub rail is a
-*host*, never a linked implementation) — **MTN and Orange have never been
-called by this code.** If the demo ever prints a **succeeded** payment
-intent, something fabricated one; treat that as a defect, not a feature.
+   | # | Rail | Outcome | `last_payment_error.code` | Event delivered |
+   |---|---|---|---|---|
+   | 1 | `mtn_momo` | the payer approves → `succeeded` | — | `payment_intent.succeeded` |
+   | 2 | `mtn_momo` | no balance → `requires_payment_method` | `insufficient_funds` | `payment_intent.payment_failed` |
+   | 3 | `mtn_momo` | the prompt expires → `requires_payment_method` | `payer_timeout` | `payment_intent.payment_failed` |
+   | 4 | `orange_money` | `requires_action` + the redirect URL → `succeeded` | — | `payment_intent.succeeded` |
+   | 5 | `orange_money` | the hosted page expires → `requires_payment_method` | `payer_timeout` | `payment_intent.payment_failed` |
+   | 6 | `orange_money` | the rail refuses → `requires_payment_method` | `provider_error` | `payment_intent.payment_failed` |
 
-The demo's intent is in **EUR**, not XAF: `config/application.yml` puts
-`mtn_momo` on EUR because MTN's sandbox rejects XAF, and `/v1` refuses a
-confirm whose intent currency is not the rail's settlement currency. That is
-a property of the profile, expressed as configuration — never a code
-branch.
+**Every outcome is chosen at the rail stub, never in the demo.** MTN's is
+selected by the payer's MSISDN (a documentation number in the `2376000000xx`
+block) and Orange's by the amount, because those are the only fields of each
+rail's protocol a merchant actually controls. Nothing rewrites stored state to
+make an outcome happen. The stubs are WireMock containers reached over HTTP
+exactly as a real rail would be — that is the rule in [AGENTS.md](AGENTS.md): a
+stub rail is a *host*, never a linked implementation — and **MTN's and Orange's
+real endpoints have never been called by this code.** A `succeeded` here means
+`vpay-worker` asked a stub and the stub said `SUCCESSFUL`; it does not mean
+anyone paid.
+
+The MTN intents are in **EUR** and the Orange ones in **XAF**:
+`config/application.yml` puts `mtn_momo` on EUR because MTN's sandbox rejects
+XAF, and `/v1` refuses a confirm whose intent currency is not the rail's
+settlement currency. That is a property of the profile, expressed as
+configuration — never a code branch.
+
+**The dashboard is deliberately not started**, and that is a statement rather
+than an optimisation: per [`docs/status.md`](docs/status.md) it renders a static
+scaffold notice and makes no call to `vpay-server`, so there is no data source
+that could show the six payments the walkthrough just made.
 
 Then:
 
 ```bash
 just demo-down        # containers and volumes
 ```
+
+**[`docs/runbooks/demo.md`](docs/runbooks/demo.md) is the full procedure** — the
+exact commands, the real output of a real run, what that run proves and what it
+does not, and the two hazards it does not close.
 
 > **Note on the runtime image.** The first `just demo` run on 2026-09-02
 > found that `vpay-server` could not boot inside its own `FROM scratch`
@@ -337,7 +364,9 @@ Start with [`docs/status.md`](docs/status.md), then:
 - [Flows](docs/flows/) — one document per process, with invariants
 - [ADRs](docs/adr/) — decisions and what they cost
 - [RFCs](docs/rfc/) — proposals not yet decided
-- [Runbooks](docs/runbooks/) — what to do when an alert fires
+- [Runbooks](docs/runbooks/) — what to do when an alert fires, including
+  [demo.md](docs/runbooks/demo.md), the one procedure whose output is a real
+  run rather than a design
 
 ## Licence
 

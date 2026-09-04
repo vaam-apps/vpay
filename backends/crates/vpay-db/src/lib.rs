@@ -54,7 +54,7 @@ mod migrations;
 mod pool;
 mod signing_keys;
 
-pub use charges::{ChargeRow, Charges, NewCharge};
+pub use charges::{ChargeAsOf, ChargeRow, Charges, NewCharge};
 pub use client_assertion::{ClientAssertions, SqlClientAssertionStore};
 pub use config_reconcile::{ConfigReconcile, CurrencySeed, ProviderSeed};
 pub use disabled_clients::DisabledClients;

@@ -65,6 +65,13 @@ in configuration, reached over HTTP exactly as a merchant's endpoint would be
 (ADR-0006) — which is the same limit the rails carry, and the reason
 [../status.md](../status.md)'s Webhooks row is 🟡.
 
+**Updated 2026-09-04 (Step 8): since this step every delivery goes through the
+egress guard first** (`vpay_worker::ssrf`), including the ones in the compose
+stack — the sandbox profile *permits* its private receiver explicitly rather
+than the guard being absent. "No merchant endpoint has ever been POSTed to"
+stands, and so does its corollary: **no deployment has ever refused one
+either.**
+
 **TX 1 — the business transaction.** `vpay_db::Settlement::apply_succeeded` /
 `apply_failed` move the charge, move the intent and insert one `events` row in
 a single transaction, with `fanout_state = 'pending'`. Two types only, both
@@ -150,9 +157,11 @@ operator already has and keeps "connection refused" in its `source()`. The
 excerpt is bounded by migration `0022`'s `excerpt_length` CHECK either way.
 
 **Acknowledge first, then work.** The delivery client is
-`vpay_provider::http::client_with_timeouts(5s, 10s)` — 5 seconds to connect,
-**10 seconds for the whole request**, redirects refused and the proxy
-environment ignored — and it reads at most 8 KiB of the acknowledgement body,
+`vpay_provider::http::client_pinned_to`, built per delivery from
+`vpay_worker::ssrf`'s vetted addresses over the same two budgets
+(`WEBHOOK_CONNECT_TIMEOUT` = 5 s to connect, `WEBHOOK_REQUEST_TIMEOUT` = **10 s
+for the whole request**), with redirects refused and the proxy environment
+ignored — and it reads at most 8 KiB of the acknowledgement body,
 which nothing parses. A receiver that finishes its own processing before
 answering turns a slow database into a failed delivery. Any `2xx` is success;
 a `3xx` arrives as an ordinary non-2xx failed attempt, because following it
@@ -222,11 +231,68 @@ tests are right for a bare origin and wrong for a URL. **Neither ever inspects
 the destination address.** Under `livemode: false` neither rule applies.
 
 So `https://127.0.0.1/hook`, `https://10.0.0.5/hook` and
-`https://169.254.169.254/latest/meta-data/…` all boot cleanly in livemode and
-are all delivered to. **This is not SSRF protection and must not be described as
-any.** It is a guard against shipping a stub host into production, which is a
-different problem. The residual is stated in "What is not built" below and in
-[../status.md](../status.md)'s own row for it.
+`https://169.254.169.254/latest/meta-data/…` all boot cleanly in livemode.
+**This is not SSRF protection and must not be described as any.** It is a guard
+against shipping a stub host into production, which is a different problem.
+What stops those three being *delivered to* is the next section, and it is a
+different mechanism at a different time.
+
+**The egress guard, at delivery time.** `vpay_worker::ssrf` runs on every
+attempt, immediately before the socket and after the body has been rendered but
+before it is signed. It parses the URL and refuses any scheme but
+`http`/`https`; resolves the host **once**, with `tokio::net::lookup_host`;
+classifies **every** address that lookup returned — loopback, unspecified,
+RFC 1918, IPv6 unique-local `fc00::/7`, link-local `169.254.0.0/16` and
+`fe80::/10`, CGNAT `100.64.0.0/10`, multicast, broadcast, `0.0.0.0/8`,
+`240.0.0.0/4`, the IANA special-purpose IPv4 blocks (including the 6to4 relay
+anycast `192.88.99.0/24`), every IPv6 address outside global unicast
+`2000::/3`, the special-purpose prefixes inside it — 6to4 `2002::/16`, Teredo
+`2001::/32`, IETF protocol assignments `2001:1::/32`, benchmarking
+`2001:2::/48`, ORCHIDv2 `2001:20::/28` and documentation `2001:db8::/32` — and
+the **IPv4-mapped (`::ffff:10.0.0.1`) and IPv4-compatible (`::10.0.0.1`)
+spellings of all of them** — and refuses the delivery if *any* of them is not
+public, because a name answering with one public and one private address is the
+shape of a rebind and hyper would try them in order. It then builds the
+delivery client with `reqwest::ClientBuilder::resolve_to_addrs` pinned to those
+addresses. **That pin is what makes the check mean anything**: reqwest never
+resolves the name again, so the address that was classified is the address the
+socket connects to. The Step 5 plan's decision 4 concluded that a
+resolve-then-connect check is TOCTOU "unless reqwest is given a custom
+connector"; `resolve_to_addrs` is the third answer it did not consider, and it
+needs no connector. Redirects remain `Policy::none()` — a followed `302` would
+resolve the hop's host freshly and be the one way back out of the pin.
+
+A refused target is a **permanent** delivery failure: `state = 'exhausted'` on
+the first attempt, `next_attempt_at` null, `payload_sha256` null (the guard runs
+before signing, so no bytes were signed), `response_excerpt` beginning
+`ssrf_blocked: ` and naming the address *class* — `loopback`, `link_local`,
+`private`, `cgnat`, … — and **never the address**, because the address is
+exactly what the request was trying to learn and `response_excerpt` is a column
+the merchant's operator reads. Exactly one `ERROR … alert = true` is emitted, at
+that transition, naming the endpoint id, the delivery, the event, the merchant
+and the class. The ladder is not walked: eight identical refusals over 31 hours
+tell nobody anything. A host that merely fails to **resolve** is *not* a refusal
+— it is an ordinary failed attempt recorded `delivery_target_unavailable: …`
+that walks `delivery_delay` exactly as the transport error it replaces did,
+because a resolver outage heals and a merchant must not lose an event to one.
+
+`webhooks.allow_private_targets` (default `false`) is the only value that
+changes the verdict, and it changes nothing else: the guard resolves
+identically either way, and under `true` it simply does not classify what it
+resolved (`ssrf.rs:420-427`). `config/application-sandbox.yml` and the
+generated `demo` overlay set it `true` because `wiremock-webhook` is a service
+on a compose network, and `deployment.livemode: true` together with it is a
+refusal to boot (`ConfigError::PrivateWebhookTargetsInLivemode`) — a profile
+selects a file, never a code path (ADR-0003).
+
+**The cost, stated where it is paid.** A pin belongs to a `reqwest::Client`
+builder, so each delivery builds its own client and no two deliveries share a
+pooled connection: a receiver taking many events pays a TCP and TLS handshake
+per event. Building the client itself is 4.0 µs (measured); the handshakes are
+the real price. A per-host client cache would keep the pool and would be a cache
+of pins — a client held past its DNS answer keeps delivering to the address that
+name used to have — so the pool was the thing given up. Nothing has measured
+this under load.
 
 **`GET /v1/events` and `GET /v1/events/{id}`** are mounted, merchant-scoped and
 cursor-paged, for the merchant who missed a delivery
@@ -306,19 +372,43 @@ delivery has been observed reaching a receiver.**
 
 **What is not built.**
 
-- **No SSRF protection of any kind.** `validate_webhook_url` checks the scheme
-  and four host substrings and never looks at the destination address, so
-  `https://127.0.0.1/…`, `https://10.0.0.5/…` and
-  `https://169.254.169.254/latest/meta-data/…` are all valid livemode endpoints
-  and all delivered to, with the answer's first 512 characters stored in
-  `webhook_deliveries.response_excerpt`. A resolve-then-connect check is TOCTOU
-  without a custom reqwest connector, so the honest options were "nothing" or
-  "a connector", and the connector is out of scope (decision 4 of the Step 5
-  plan). Stated here rather than implied.
+- **The egress guard covers webhook delivery and nothing else.** The rail
+  adapters are not behind it: `providers[].host` is operator-configured, not
+  merchant-supplied, and `validate_host` already refuses a stub host in
+  livemode. If a rail host ever becomes merchant-supplied, `vpay_worker::ssrf`
+  moves to `vpay-provider` and both callers use it.
+- **A receiver behind NAT64 (`64:ff9b::/96`) is refused**, even when the IPv4
+  address it embeds is public, because the guard treats everything outside
+  IPv6 global unicast as non-public rather than guessing at IANA's
+  special-purpose space. That is fail-closed and has never been met in
+  practice; it is written down so it is a decision rather than a surprise.
+- **Pinning cost the shared connection pool.** One client per delivery, one
+  handshake per delivery to the same receiver. Unmeasured under load.
+- **No deployment has ever refused a real merchant's endpoint.** The evidence
+  for all of the above is nine unit cases, two container-backed cases against a
+  real receiver, and a revert proof in which bypassing the classifier makes the
+  private delivery `succeed` — not production.
 - **No `?type=` filter** on `GET /v1/events`. Unknown query parameters are
   ignored by every handler on this surface, so it is accepted and has no
   effect; [../api/README.md](../api/README.md) says so where the route is
   documented.
+- **An SSRF-refused delivery is exhausted on its first attempt, and there is
+  no replay path — F5, found 2026-09-04 by Step 8's correctness review and
+  deliberately not fixed.** An egress refusal is permanent by design
+  (`state = 'exhausted'` on attempt 1, no next attempt), and replay is the
+  hand-written transaction in the runbook, so a transiently poisoned DNS answer
+  — or a receiver behind a resolver that briefly returns a private address —
+  destroys the event with nothing to re-drive it. "Fail closed" and "destroy
+  the event" are the same thing while replay does not exist. The remedy is a
+  design decision about a merchant-visible delivery state machine (a replay
+  path, or a retryable `ssrf_blocked` state with a bounded ladder) and belongs
+  with whoever owns this document; **lane H's recommendation** is to treat the
+  *resolution* half the way an unresolvable host is already treated — an
+  ordinary failed attempt on `delivery_delay` — and keep the permanent refusal
+  for an address that classifies as private on every attempt of the ladder.
+  That distinction is already made once in this code
+  (`a_host_that_resolves_to_a_private_address_is_refused_and_an_unresolvable_one_retries`),
+  which is why it is worth naming rather than inventing.
 - **No replay endpoint and no CLI.** `scan:deliveries` recovers a *deleted or
   lost* job; it resurrects neither an `exhausted` delivery nor one whose job
   was dead-lettered (its `dedupe_key` is still held by the parked row), and

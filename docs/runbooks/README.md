@@ -14,6 +14,7 @@ do, and how do I know it is fixed.
 | [rotate-signing-key.md](rotate-signing-key.md) | Rotating the OAuth signing key; a server crash-looping on a retired `kid` | — |
 | [rotate-rail-credentials.md](rotate-rail-credentials.md) | Rotating an MTN or Orange credential; revoking a merchant client (ADR-0010's dual-authority check) | — |
 | [restore-from-backup.md](restore-from-backup.md) | Restoring a database, and the quarterly drill [ADR-0013](../adr/0013-database-backups-and-retention.md) proposes | — |
+| [demo.md](demo.md) | Bringing vpay up from nothing and walking six payments through both rails — the one page here whose output is a real run | — |
 
 The `Alert` column names the rule in
 `deploy/helm/vpay/templates/prometheusrule.yaml` whose `runbook_url` points at
@@ -48,6 +49,21 @@ threshold to tune.
 **Status:** written from the design, never exercised against a running system.
 No runbook here has been followed against a deployment, because no deployment
 exists. See [../status.md](../status.md).
+
+**[demo.md](demo.md) is the exception, and is a different kind of page.** It
+describes no alert and no incident: it is the procedure for bringing the whole
+stack up on one machine and driving six payments through it, and every command
+and every line of output on it was run on 2026-09-03/04. It is also the only
+page here that reports its own failure — the walkthrough found a real race
+between `vpay-api`'s confirm and `vpay-worker`'s first poll (its §9). ~~`just
+demo` end to end has not been observed green~~ **— corrected 2026-09-04: that
+race was fixed the same day (`docs/status.md`'s confirm/worker race row).** What
+exists is this: **one green run from nothing (lane A's rebased branch,
+2026-09-04, *without* lane G; the race is timing-dependent and did not fire),
+lane A's own earlier count was two greens in six attempts and zero for three
+from nothing, lane G did not re-run the demo. Run on the merged branch, 2026-09-04, in the `vpay-ci` VM (code as of `4b5a9d7`, lanes G and H in): `just demo` from nothing six times, **four green** (six outcomes for six each, exit 0); the two failures were the VM's Postgres answering single statements in 14–36 s under host I/O pressure, with the settlement and the webhook both landing in the worker's log after the demo's budgets; `write_matched_no_row` appeared in no run. Three from nothing is met in count, not consecutively.** The
+rails it drives are WireMock hosts, so nothing on that page is evidence about
+MTN or Orange.
 
 - [worker-queue.md](worker-queue.md) and
   [webhook-delivery-failures.md](webhook-delivery-failures.md) are the two

@@ -285,6 +285,7 @@ fn config_with(base_url: &str, jwks_a: Value, mtn: &RailSetup, orange: &RailSetu
             },
         ],
         merchant_clients: vec![merchant_client(CLIENT_A, MERCHANT_A, jwks_a)],
+        webhooks: vpay_config::WebhookPolicy::default(),
         dashboard_client: None,
     }
 }

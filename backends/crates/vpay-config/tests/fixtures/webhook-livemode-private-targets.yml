@@ -1,0 +1,38 @@
+# Fixture for `a_livemode_deployment_may_not_allow_private_webhook_targets`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# Its only defect is the pair `deployment.livemode: true` +
+# `webhooks.allow_private_targets: true`. Everything else is the shape
+# `livemode-resolved-secret.yml` proves loads: an https rail host, an https
+# webhook endpoint on a non-stub host, and a `${VAR}` secret over the
+# livemode length floor.
+#
+# `allow_private_targets: true` turns off the *verdict* of
+# `vpay_worker::ssrf` — the guard still resolves and classifies, it just
+# stops refusing. In a deployment taking real money that is a merchant-
+# supplied URL reaching 169.254.169.254 from inside the network, which is why
+# the combination is refused at boot rather than warned about.
+
+deployment:
+  name: vpay-prod
+  livemode: true
+  public_base_url: https://api.vpay.example
+
+webhooks:
+  allow_private_targets: true
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    webhooks:
+      - id: primary
+        url: https://hooks.acme.example/vpay
+        secrets: ["${MERCHANT_WEBHOOK_SECRET}"]

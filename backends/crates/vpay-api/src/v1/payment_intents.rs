@@ -1422,7 +1422,8 @@ fn currencies_agree(rail: &RailConfig, intent_currency: &str) -> Result<(), ApiE
     ))
 }
 
-/// The `jobs.kind` and `jobs.dedupe_key` this handler enqueues under.
+/// The `jobs.kind` and `jobs.dedupe_key` the confirm path and
+/// [`crate::provider_callback`] enqueue under.
 ///
 /// Written out as literals rather than imported from `vpay_worker::jobs`,
 /// which is where they are otherwise spelled. Not a preference: `vpay-worker`
@@ -1439,7 +1440,11 @@ fn currencies_agree(rail: &RailConfig, intent_currency: &str) -> Result<(), ApiE
 ///   both values from `vpay_worker::jobs` and fails if either moves;
 /// * `worker_e2e.rs` drives a real confirm through a real worker, so a
 ///   dedupe key the worker cannot recognise means the payment never settles.
-const POLL_CHARGE_KIND: &str = "poll_charge";
+///
+/// `pub(crate)` since Step 8: [`crate::provider_callback`] enqueues the same
+/// work from the rail callback route, and a *second* literal there would be
+/// a second chance for the drift the three checks above exist to catch.
+pub(crate) const POLL_CHARGE_KIND: &str = "poll_charge";
 
 /// Commits the charge row in `submitting`, **and the job that will poll it**,
 /// in one transaction, before any network call.
@@ -1543,7 +1548,12 @@ async fn insert_charge(
 /// in a way the `kind` is not: a *different* key here would not fail any
 /// constraint, it would quietly produce a second job for the same charge that
 /// the worker's own enqueues would never deduplicate against.
-fn poll_dedupe_key(charge_id: &str) -> String {
+///
+/// `pub(crate)` for [`POLL_CHARGE_KIND`]'s reason, and more sharply: the
+/// callback route's whole job is to reach *the charge's existing* poll job,
+/// which it can only do by spelling this key exactly as the confirm path and
+/// the worker do.
+pub(crate) fn poll_dedupe_key(charge_id: &str) -> String {
     format!("poll:{charge_id}")
 }
 
@@ -2331,6 +2341,7 @@ mod tests {
                 "acme-cameroon",
                 &["payments:write"],
             )],
+            webhooks: vpay_config::WebhookPolicy::default(),
             dashboard_client: None,
         })
         .expect("the fixture's rails project onto the port")

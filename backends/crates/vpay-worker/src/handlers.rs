@@ -30,7 +30,8 @@ use vpay_core::{
     Classify, FailureCode, Money, Settlement, Severity, StatusKind, contradiction, ids, settle,
 };
 use vpay_db::{
-    ChargeRow, Charges, DbError, PaymentIntents, Repositories, TxOutcome, UnitOfWork as _,
+    ChargeAsOf, ChargeRow, Charges, DbError, PaymentIntents, Repositories, TxOutcome,
+    UnitOfWork as _,
 };
 use vpay_provider::{
     ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig, ProviderError, RefExtra,
@@ -59,27 +60,40 @@ pub type Adapters = BTreeMap<String, Box<dyn ProviderAdapter>>;
 pub type RailConfigs = BTreeMap<String, ProviderConfig>;
 
 /// What the two webhook jobs need and no other job may touch: the endpoint
-/// table and the outbound HTTP client.
+/// table and the deployment's egress policy.
 ///
 /// Borrowed as one struct rather than added as two parameters to every
 /// handler, for the reason [`RailConfigs`] is a projection: a poll job has no
 /// business reaching a merchant's signing secrets, and grouping the two makes
 /// the dispatch signature say so.
 ///
-/// The client is built **by the binary**, once, with
-/// `vpay_provider::http::client_with_timeouts` over
-/// [`crate::WEBHOOK_CONNECT_TIMEOUT`] and [`crate::WEBHOOK_REQUEST_TIMEOUT`],
-/// and cloned. Never here and never by `reqwest::Client::new()`, which panics
-/// in the `scratch` runtime image — and one client per job would throw away
-/// every pooled connection between attempts.
+/// # Why there is no shared client here any more
+///
+/// Until Step 8 this carried a `&reqwest::Client` the binary built once and
+/// cloned. It cannot: pinning a delivery to the addresses
+/// [`crate::ssrf::vet`] classified is a property of the *builder*
+/// (`resolve_to_addrs`), so the client that connects has to be built after the
+/// lookup, per delivery. The shared one would have resolved the host a second
+/// time — which is the TOCTOU the guard exists to close — so keeping it as
+/// well would have meant a field that is never the client anything sends on.
+///
+/// The cost is stated where it is paid
+/// (`vpay_provider::http::client_pinned_to`): two deliveries to one receiver
+/// no longer share a pooled connection. The budgets are unchanged and still
+/// single-sourced — [`crate::WEBHOOK_CONNECT_TIMEOUT`] and
+/// [`crate::WEBHOOK_REQUEST_TIMEOUT`], read by [`crate::ssrf::pinned_client`]
+/// rather than by the binary.
 #[derive(Debug, Clone, Copy)]
 pub struct WebhookContext<'a> {
     /// Every merchant's configured endpoints, by `events.merchant_id`.
     pub endpoints: &'a EndpointRegistry,
-    /// The outbound client. Refuses redirects and ignores the proxy
-    /// environment, which is what keeps a signed event body from being
-    /// replayed at a host the operator never configured.
-    pub http: &'a reqwest::Client,
+    /// Whether this deployment may deliver to a non-public address —
+    /// `webhooks.allow_private_targets`, projected out of YAML by the binary.
+    ///
+    /// By value, not by reference: it is one `bool` and [`Copy`], and a
+    /// borrowed policy would only add a lifetime to every signature that
+    /// carries it.
+    pub egress: crate::ssrf::EgressPolicy,
 }
 
 /// How often the housekeeping sweep runs. Hourly, and unconditionally: the
@@ -105,6 +119,20 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(10 * 60);
 /// rows in one transaction. The scan repeats every [`SCAN_INTERVAL`], so a
 /// backlog drains rather than being dropped.
 const SCAN_BATCH: i64 = 500;
+
+/// Added to a [`RecoveryAction::Wait`]'s remaining time before the job is
+/// rescheduled.
+///
+/// The wait is `not_found_window - charge_age` measured at the moment the
+/// charge was read, and the reschedule writes `run_at = now() + delay` a
+/// moment later, so the next claim already lands past the window without any
+/// margin at all. One second is there so that "past" is not measured in
+/// microseconds: the guard's comparison is `<`, and a claim that arrives
+/// exactly on the boundary of it would answer `Wait(0)` and spend a second
+/// rung of the ladder proving the same thing. Small enough to be invisible
+/// against a sixty-second window, and it is added to the *delay*, never to
+/// the window — the policy number stays the one number.
+const RECOVERY_WAIT_MARGIN: Duration = Duration::from_secs(1);
 
 /// Runs one claimed job, and says what the loop should do with the row.
 ///
@@ -173,7 +201,7 @@ async fn dispatch(
         // this file's header refuses.
         JobKind::FanOutEvents => handle_fan_out(repositories, webhooks.endpoints, job).await,
         JobKind::DeliverWebhook => {
-            handle_deliver(repositories, webhooks.http, webhooks.endpoints, job).await
+            handle_deliver(repositories, webhooks.egress, webhooks.endpoints, job).await
         }
         // The delivery queue's backstop. `policy.lease` and not a constant of
         // its own: the never-attempted arm of the scan's query asks "has this
@@ -204,7 +232,9 @@ async fn poll_charge(
     job: &vpay_db::JobRow,
 ) -> Result<Outcome, JobError> {
     let payload: PollChargePayload = decode(job)?;
-    let charge = load_charge(repositories, job, &payload.charge_id).await?;
+    let as_of = load_charge(repositories, job, &payload.charge_id).await?;
+    let charge_age = charge_age(&as_of);
+    let ChargeAsOf { charge, db_now } = as_of;
     let mut state = parse_state(job, &charge)?;
     if state.is_terminal() {
         // A duplicate job, a callback that arrived after the answer, or a
@@ -214,18 +244,37 @@ async fn poll_charge(
 
     let (adapter, config) = rail(rails, adapters, job, &charge.provider_code)?;
     let flow = adapter.capabilities().flow;
-    let now = OffsetDateTime::now_utc();
+    // **Postgres' clock, not this host's**, and every duration below is
+    // measured against it. `charges.created_at` and `jobs.run_at` are written
+    // by the database, so a `now` read here from `OffsetDateTime::now_utc()`
+    // would put the two ends of every age on two different machines — which
+    // is how a worker sixty seconds fast turned the recovery window into a
+    // no-op. It arrives on the same `SELECT` as the row
+    // (`vpay_db::ChargeAsOf`), and `first_not_found_at` is stamped from it
+    // too, so the streak's window is on that clock as well.
+    let now = db_now;
 
     // Evaluated once, here, and carried down. **Above** the crash-recovery
     // block, which can return without ever reaching this line — see
     // [`past_the_horizon`].
-    let past_horizon = past_the_horizon(&charge, policy, now);
+    let past_horizon = past_the_horizon(charge_age, policy);
 
     // Only for `submitting`: past that state the payer may already hold a
     // redirect URL, which is what makes `FailDeadOrder` safe there and unsafe
-    // everywhere else. See `recovery_step`'s precondition.
+    // everywhere else. See `recovery_step`'s precondition — and its age
+    // guard, which is why a charge whose confirm is still running comes out
+    // of this block as `Wait` rather than as a recovery.
     if state == ChargeState::Submitting {
-        let action = recovery_action(repositories, &charge, flow, policy, now, &payload).await?;
+        let action = recovery_action(
+            repositories,
+            &charge,
+            flow,
+            policy,
+            now,
+            charge_age,
+            &payload,
+        )
+        .await?;
         match act_on_recovery(repositories, job, &charge, action, past_horizon, &payload).await? {
             Recovered::Answered(outcome) => return Ok(outcome),
             Recovered::StillPolling(recovered) => state = recovered,
@@ -282,6 +331,7 @@ async fn poll_charge(
                 flow,
                 policy,
                 now,
+                charge_age,
                 past_horizon,
                 &payload,
             )
@@ -296,7 +346,16 @@ async fn poll_charge(
 /// The two callers reach the same decision from different evidence — the
 /// crash-recovery step at the top of a poll, and a `NotFound` the poll itself
 /// received — and they must not drift, which is why the read and the table are
-/// one step rather than two lines written twice.
+/// one step rather than two lines written twice. That is also why the charge's
+/// age is passed here and not tested at either call site: a guard written
+/// twice is a guard one caller can lose (`recovery_step` §"Nothing younger
+/// than the window is recovered").
+///
+/// Both durations are Postgres-measured: `charge_age` is computed in
+/// [`poll_charge`] from the `now()` that came back with the row, and the
+/// streak's age is `now - first_not_found_at` where the stored instant was
+/// stamped from that same clock. [`recovery_step`] takes no instant at all —
+/// see its §"Both ages are measured by one clock".
 ///
 /// # Errors
 ///
@@ -307,6 +366,7 @@ async fn recovery_action(
     flow: vpay_core::ProviderFlow,
     policy: &RecoveryPolicy,
     now: OffsetDateTime,
+    charge_age: time::Duration,
     payload: &PollChargePayload,
 ) -> Result<RecoveryAction, JobError> {
     let evidence = submit_evidence(repositories, &charge.id).await?;
@@ -314,8 +374,8 @@ async fn recovery_action(
         flow,
         evidence,
         payload.not_found_streak,
-        payload.first_not_found_at,
-        now,
+        payload.first_not_found_at.map(|first| now - first),
+        charge_age,
         policy,
     ))
 }
@@ -340,6 +400,12 @@ enum Recovered {
 /// the poll continues as normal. A compare-and-swap that matched nothing means
 /// something else moved the row first, and this poll carries on in the state it
 /// read.
+///
+/// The `Wait` arm is the one that ends the job without writing anything: the
+/// charge is too young for its `submitting` state to be evidence of a crash,
+/// so the poll returns a rung of the ladder and the rail is never asked. See
+/// [`crate::recovery::recovery_step`] §"Nothing younger than the window is
+/// recovered".
 ///
 /// # Errors
 ///
@@ -389,6 +455,26 @@ async fn act_on_recovery(
             Ok(Recovered::StillPolling(ChargeState::Submitting))
         }
         RecoveryAction::Poll => Ok(Recovered::StillPolling(ChargeState::Submitting)),
+        // Too young to be evidence of anything: a confirm may be inside its
+        // rail call right now. The rail is deliberately **not** asked either
+        // — see [`RecoveryAction::Wait`] — so this poll ends here, having
+        // written nothing, and comes back **once**, when the charge is old
+        // enough to be evidence of something.
+        //
+        // The horizon is not consulted, and no escalation can be lost to
+        // this: a charge this arm sees is at most `not_found_window` — sixty
+        // seconds — old, and the horizon it would be escalated at is
+        // twenty-four hours (`RecoveryPolicy::unresolved_after`).
+        RecoveryAction::Wait(remaining) => {
+            let delay = remaining.saturating_add(RECOVERY_WAIT_MARGIN);
+            tracing::debug!(
+                job_id = %job.id,
+                charge_id = %charge.id,
+                delay_secs = delay.as_secs_f64(),
+                "a `submitting` charge younger than the recovery window was left alone"
+            );
+            Ok(Recovered::Answered(Outcome::RescheduleAfter(delay)))
+        }
     }
 }
 
@@ -526,6 +612,7 @@ async fn recover(
     flow: vpay_core::ProviderFlow,
     policy: &RecoveryPolicy,
     now: OffsetDateTime,
+    charge_age: time::Duration,
     past_horizon: bool,
     payload: &PollChargePayload,
 ) -> Result<Outcome, JobError> {
@@ -550,7 +637,17 @@ async fn recover(
         .await;
     }
 
-    match recovery_action(repositories, charge, flow, policy, now, &next_payload).await? {
+    match recovery_action(
+        repositories,
+        charge,
+        flow,
+        policy,
+        now,
+        charge_age,
+        &next_payload,
+    )
+    .await?
+    {
         RecoveryAction::FailDeadOrder => fail_dead_order(repositories, job, charge).await,
         RecoveryAction::Resubmit => {
             resubmit_then_escalate_if_late(
@@ -566,7 +663,14 @@ async fn recover(
         // `Advance` cannot follow a `NotFound` on an answered submit for a
         // charge still in `submitting` without the state having moved under
         // us; polling again is the harmless answer either way.
-        RecoveryAction::Poll | RecoveryAction::Advance(_) => {
+        //
+        // `Wait` cannot be reached here at all: `poll_charge` evaluates the
+        // same table over the same `now` and the same `charges.created_at`
+        // before it asks the rail, and a `Wait` there returns without ever
+        // reaching a rail answer. It is written into this arm rather than
+        // given one of its own because the answer would be identical if the
+        // clock ever made it reachable — take another rung, touch nothing.
+        RecoveryAction::Poll | RecoveryAction::Advance(_) | RecoveryAction::Wait(_) => {
             keep_polling(
                 repositories,
                 job,
@@ -594,7 +698,13 @@ async fn resubmit_charge(
     job: &vpay_db::JobRow,
 ) -> Result<Outcome, JobError> {
     let payload: ResubmitPayload = decode(job)?;
-    let charge = load_charge(repositories, job, &payload.charge_id).await?;
+    // The clock that comes back with the row is discarded here, and only
+    // here: a resubmit decides nothing from an age — the decision that
+    // scheduled it did — so there is no subtraction for it to be the second
+    // half of.
+    let charge = load_charge(repositories, job, &payload.charge_id)
+        .await?
+        .charge;
     let state = parse_state(job, &charge)?;
     if state != ChargeState::Submitting {
         // Something already resolved the ambiguity — a concurrent poll, or a
@@ -872,22 +982,45 @@ async fn keep_polling(
     ))))
 }
 
+/// How long this charge has been live, as **Postgres** measures it.
+///
+/// Both operands come off one `SELECT` (`vpay_db::Charges::get_by_id_as_of`):
+/// `created_at` is what the confirm's transaction wrote, and `db_now` is the
+/// `now()` the read evaluated. Nothing here consults
+/// [`OffsetDateTime::now_utc`], and that is the whole point — this quantity
+/// decides whether a `submitting` charge is a crash or a confirm still in
+/// flight (`crate::recovery::recovery_step`) and whether a live charge is
+/// escalated to `unresolved` ([`past_the_horizon`]), and a worker host whose
+/// clock is a minute ahead of the database gets both wrong while every
+/// timestamp involved still looks perfectly ordinary in `psql`.
+fn charge_age(as_of: &ChargeAsOf) -> time::Duration {
+    as_of.db_now - as_of.charge.created_at
+}
+
 /// Has this charge been live longer than `docs/flows/reconciler.md`'s
 /// 24-hour horizon?
 ///
-/// Measured from `charges.created_at`, which is written *before* the rail is
-/// called — so it is the age of the payer's exposure and not of our
-/// bookkeeping. A `Duration` that does not fit `time::Duration` saturates to
-/// "never", which is the safe direction.
+/// `charge_age` is measured from `charges.created_at`, which is written
+/// *before* the rail is called — so it is the age of the payer's exposure and
+/// not of our bookkeeping. A `Duration` that does not fit `time::Duration`
+/// saturates to "never", which is the safe direction.
+///
+/// **The age is Postgres', not this host's**, for the reason
+/// [`crate::recovery::recovery_step`] §"Both ages are measured by one clock"
+/// gives: `created_at` is written by the database, so subtracting it from a
+/// host clock compares two machines. Here the direction of that defect was
+/// the milder one — a fast worker escalated a charge to `unresolved` early,
+/// waking an operator rather than losing a payment — but it is the same
+/// subtraction, so it takes the same age.
 ///
 /// Called from exactly one place, [`poll_charge`], which evaluates it *above*
 /// the crash-recovery block and carries the answer down. Both the placement
 /// and the fact that this is not a gate on asking the rail are load-bearing:
 /// `docs/reference/vpay-worker.md` §"The horizon is evaluated above the
 /// crash-recovery block".
-fn past_the_horizon(charge: &ChargeRow, policy: &RecoveryPolicy, now: OffsetDateTime) -> bool {
+fn past_the_horizon(charge_age: time::Duration, policy: &RecoveryPolicy) -> bool {
     let horizon = time::Duration::try_from(policy.unresolved_after).unwrap_or(time::Duration::MAX);
-    now - charge.created_at >= horizon
+    charge_age >= horizon
 }
 
 /// Marks a charge `unresolved` and fails the job with [`JobError::Exhausted`].
@@ -1455,8 +1588,8 @@ async fn load_charge(
     repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
     charge_id: &str,
-) -> Result<ChargeRow, JobError> {
-    Charges::get_by_id(repositories, charge_id)
+) -> Result<ChargeAsOf, JobError> {
+    Charges::get_by_id_as_of(repositories, charge_id)
         .await?
         .ok_or_else(|| poisoned(job, format!("charge {charge_id} does not exist")))
 }
@@ -1671,15 +1804,14 @@ mod tests {
     /// worth pinning at its edge: `>=`, so a charge exactly 24 hours old is
     /// past it, and one a second short is not.
     ///
-    /// This and the skew case below are the only unit tests in this file, and
-    /// they do not contradict the module header: `past_the_horizon` is a pure
-    /// function of a timestamp and a policy, not one of the write sequences
-    /// that header is about.
+    /// These three are the only unit tests in this file, and they do not
+    /// contradict the module header: `charge_age` and `past_the_horizon` are
+    /// pure functions of a timestamp pair and a policy, not one of the write
+    /// sequences that header is about.
     #[test]
     fn the_horizon_is_twenty_four_hours_of_real_time() {
         let policy = RecoveryPolicy::default();
-        let now = OffsetDateTime::UNIX_EPOCH + time::Duration::days(365);
-        let aged = |d: time::Duration| past_the_horizon(&charge_created(now - d), &policy, now);
+        let aged = |d: time::Duration| past_the_horizon(d, &policy);
 
         assert!(
             !aged(time::Duration::hours(23) + time::Duration::minutes(59)),
@@ -1703,18 +1835,53 @@ mod tests {
 
     /// A charge from the future is not past the horizon.
     ///
-    /// `now - created_at` is signed, so a row written by a replica whose
+    /// `db_now - created_at` is signed, so a row written by a replica whose
     /// clock is ahead produces a negative age. It must read as "young", not
     /// wrap into an escalation: `time::Duration` is signed and the comparison
     /// is against a positive horizon, which is what makes that hold.
     #[test]
     fn a_clock_skewed_charge_is_not_escalated() {
         let policy = RecoveryPolicy::default();
-        let now = OffsetDateTime::UNIX_EPOCH + time::Duration::days(365);
-        assert!(!past_the_horizon(
-            &charge_created(now + time::Duration::hours(1)),
-            &policy,
-            now
-        ));
+        assert!(!past_the_horizon(-time::Duration::hours(1), &policy));
+    }
+
+    /// **The age is the database's measurement, and this host's clock has no
+    /// vote.**
+    ///
+    /// The charge was written at the epoch and read by a statement whose
+    /// `now()` was five seconds later, so its age is five seconds — however
+    /// far from the epoch the machine running this test happens to be. The
+    /// second half is what makes the case decisive rather than tautological:
+    /// the age the *host* clock would have produced for the same row is
+    /// measured too, and it is past the 24-hour horizon, so an implementation
+    /// that reached for `OffsetDateTime::now_utc()` here would escalate this
+    /// charge to `unresolved` on its first poll instead of leaving it on the
+    /// ladder. The same subtraction decides the recovery window, where the
+    /// same skew silently disables the guard
+    /// (`crate::recovery::recovery_step` §"Both ages are measured by one
+    /// clock").
+    #[test]
+    fn the_age_is_measured_by_the_database_and_not_by_this_host() {
+        let policy = RecoveryPolicy::default();
+        let created_at = OffsetDateTime::UNIX_EPOCH;
+        let as_of = ChargeAsOf {
+            charge: charge_created(created_at),
+            db_now: created_at + time::Duration::seconds(5),
+        };
+
+        assert_eq!(
+            charge_age(&as_of),
+            time::Duration::seconds(5),
+            "the age must be `db_now - created_at`, both off the one statement that read \
+             the row"
+        );
+        assert!(!past_the_horizon(charge_age(&as_of), &policy));
+
+        let by_this_host = OffsetDateTime::now_utc() - created_at;
+        assert!(
+            past_the_horizon(by_this_host, &policy),
+            "the case is only decisive while the host clock disagrees with the fixture's \
+             `db_now`; a machine set to 1970 would make it prove nothing"
+        );
     }
 }

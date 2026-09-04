@@ -151,6 +151,7 @@ pub(crate) fn config_with(public_base_url: &str, merchants: Vec<MerchantClient>)
         providers: Vec::new(),
         currencies: Vec::new(),
         merchant_clients: merchants,
+        webhooks: vpay_config::WebhookPolicy::default(),
         dashboard_client: None,
     }
 }

@@ -50,6 +50,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
+use serde_json::json;
 use sqlx::PgPool;
 use testcontainers::{ContainerAsync, GenericImage};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
@@ -61,8 +62,8 @@ use vpay_worker::{Adapters, Disposition, RailConfigs, RecoveryPolicy, Settled};
 mod support;
 
 use support::{
-    attempted_references, confirmed_intent, crashed_charge, make_every_job_runnable,
-    migrated_postgres, rail_configs, reconcile_from_config,
+    RECOVERABLE_CRASH_AGE, age_the_crash, attempted_references, confirmed_intent, crashed_charge,
+    make_every_job_runnable, migrated_postgres, rail_configs, reconcile_from_config,
 };
 
 const MERCHANT: &str = "acme-cameroon-tenant";
@@ -133,7 +134,7 @@ impl Harness {
     /// background loop.
     async fn step(&self, policy: &RecoveryPolicy) -> anyhow::Result<Settled> {
         let endpoints = support::no_webhook_endpoints();
-        let http = support::webhook_client();
+        let egress = support::default_egress_policy();
         vpay_worker::run_once(
             self.repositories.as_ref(),
             &self.adapters,
@@ -141,7 +142,7 @@ impl Harness {
             policy,
             &vpay_worker::WebhookContext {
                 endpoints: &endpoints,
-                http: &http,
+                egress,
             },
             "worker-recovery-suite",
         )
@@ -217,6 +218,7 @@ fn config_with(mtn_url: &str, orange_url: &str) -> Config {
             exponent: 0,
         }],
         merchant_clients: vec![],
+        webhooks: vpay_config::WebhookPolicy::default(),
         dashboard_client: None,
     }
 }
@@ -322,6 +324,41 @@ struct StoredJob {
     /// which has no finite offset — the encoding is exactly what distinguishes
     /// "rescheduled far out" from "dead-lettered".
     seconds_until_runnable: Option<f64>,
+}
+
+/// A deferred poll came back **once, when the charge is old enough** — not on
+/// the ladder's first rung.
+///
+/// `RecoveryAction::Wait` carries `not_found_window - charge_age` and the
+/// handler adds a one-second margin, so for a charge staged milliseconds ago
+/// the delay lands just above the window. The band is wide enough for a
+/// loaded machine's few hundred milliseconds and still excludes the number
+/// this is a regression test for: `poll_delay(0)`, ten seconds.
+///
+/// Why it matters that it is not ten: every reschedule is re-claimed,
+/// `vpay_db::Jobs::claim` increments `jobs.attempts`, and `poll_delay` is
+/// indexed by that count — so waiting the window out in ten-second rungs
+/// spent six attempts doing nothing and left a genuinely crashed charge
+/// starting its real recovery at `poll_delay(6)`, two minutes a rung.
+fn assert_waited_out_the_rest_of_the_window(deferred: &Settled, policy: &RecoveryPolicy) {
+    let Disposition::Rescheduled(delay) = deferred.disposition else {
+        panic!(
+            "a charge too young to recover must be rescheduled, not {:?}; error: {:?}",
+            deferred.disposition, deferred.error
+        );
+    };
+    assert!(
+        delay > vpay_worker::poll_delay(0),
+        "the deferral is back on the ladder's first rung ({delay:?}): six of those cross \
+         the window, each one spending an attempt"
+    );
+    assert!(
+        delay > policy.not_found_window - Duration::from_secs(2)
+            && delay <= policy.not_found_window + Duration::from_secs(1),
+        "a charge staged a moment ago must wait about the whole window; got {delay:?} \
+         against a window of {:?}",
+        policy.not_found_window
+    );
 }
 
 async fn jobs(pool: &PgPool) -> anyhow::Result<Vec<StoredJob>> {
@@ -532,6 +569,9 @@ async fn a_charge_whose_submit_never_left_is_resubmitted_under_the_same_referenc
         Some(MSISDN),
     )
     .await?;
+    // The crash is old enough for the recovery table to apply to it at all
+    // (`support::age_the_crash`).
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
 
     // Nothing was ever sent. This is the fact the whole branch turns on.
     assert!(
@@ -608,6 +648,9 @@ async fn a_submit_whose_answer_was_lost_is_resolved_by_asking_the_rail() -> anyh
         Some(MSISDN),
     )
     .await?;
+    // The crash is old enough for the recovery table to apply to it at all
+    // (`support::age_the_crash`).
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
     record_submit_attempt(
         h.repositories.as_ref(),
         &charge_id,
@@ -668,6 +711,9 @@ async fn an_answered_submit_advances_the_bookkeeping_rather_than_submitting_agai
         Some(MSISDN),
     )
     .await?;
+    // The crash is old enough for the recovery table to apply to it at all
+    // (`support::age_the_crash`).
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
     record_submit_attempt(
         h.repositories.as_ref(),
         &charge_id,
@@ -695,6 +741,364 @@ async fn an_answered_submit_advances_the_bookkeeping_rather_than_submitting_agai
         "a charge the rail had already answered was submitted a second time; jobs: {queued:?}"
     );
     assert_one_reference(&h.pool, &charge_id, reference).await;
+    Ok(())
+}
+
+/// The confirm's own window: a `submitting` charge younger than
+/// `not_found_window` is not recovered, and the same charge is once it is
+/// older.
+///
+/// `submitting` is not only the state a crash leaves. It is also the ordinary
+/// state of a **confirm that is still running** — `vpay-api` commits the
+/// charge and this very poll job in one transaction with `run_at = now()`,
+/// calls the rail, and only then compare-and-swaps `submitting → submitted`.
+/// The evidence staged here is kill point 3's, byte for byte
+/// (`an_answered_submit_advances_the_bookkeeping_rather_than_submitting_again`
+/// is the same fixture aged past the window), because that is precisely the
+/// point: nothing on disk distinguishes a crashed confirm from a live one, so
+/// the only thing that can is how long the row has been sitting there.
+///
+/// Found by Step 8's demo, four runs in six on a loaded machine: the worker
+/// advanced the charge, the confirm's compare-and-swap then matched no row and
+/// the merchant was answered `500 write_matched_no_row` — while a
+/// `payment_intent.succeeded` webhook was delivered for the payment it had
+/// just been told failed (`docs/plans/step8-notes/lane-a.md` §3).
+///
+/// The second half is what stops the guard from being a way to never recover
+/// anything: the identical charge, ninety seconds old, is advanced and settled.
+#[tokio::test]
+async fn a_young_push_charge_is_not_advanced_until_it_is_older_than_the_window()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let policy = RecoveryPolicy::default();
+
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
+    let reference = Uuid::new_v4();
+    // Deliberately **not** aged: this is a charge whose confirm may still be
+    // inside `submit`, which is what the fixture is staging.
+    let charge_id = crashed_charge(
+        h.repositories.as_ref(),
+        &intent,
+        PUSH_RAIL,
+        reference,
+        AMOUNT,
+        CURRENCY,
+        Some(MSISDN),
+    )
+    .await?;
+    record_submit_attempt(
+        h.repositories.as_ref(),
+        &charge_id,
+        PUSH_RAIL,
+        reference,
+        Some(ANSWERED_SENTINEL),
+    )
+    .await?;
+
+    let deferred = h.step(&policy).await?;
+    assert_eq!(deferred.kind, "poll_charge");
+    assert_waited_out_the_rest_of_the_window(&deferred, &policy);
+    assert_eq!(deferred.error, None, "waiting is not a failure");
+
+    let stored = charge(&h.pool, &charge_id).await?;
+    assert_eq!(
+        stored.state, "submitting",
+        "the worker advanced a charge whose confirm may still be running; the confirm's \
+         own compare-and-swap would now match no row"
+    );
+    assert_eq!(
+        intent_status(&h.pool, &intent).await?.0,
+        "requires_payment_method",
+        "the intent moved under a confirm that has not answered yet"
+    );
+    assert_eq!(
+        status_queries(&h.pool, &charge_id).await?,
+        0,
+        "the rail was asked about a submission that may be in flight at that moment"
+    );
+    assert!(
+        events(&h.pool, &intent).await?.is_empty(),
+        "a payment nobody has settled produced an event"
+    );
+    let queued = jobs(&h.pool).await?;
+    assert!(
+        !queued.iter().any(|job| job.kind == "resubmit_charge"),
+        "a resubmit was enqueued for a charge that is still being confirmed; jobs: {queued:?}"
+    );
+
+    // What was *committed*, not what the handler returned: one wait, priced
+    // at one attempt. `run_at` is Postgres' own `now() + delay`, and
+    // `attempts` was incremented by the claim that ran this poll — a second
+    // increment here would mean the wait had been split into rungs again.
+    let poll = queued
+        .iter()
+        .find(|job| job.kind == "poll_charge")
+        .expect("the poll job the confirm enqueued is still queued");
+    assert_eq!(
+        poll.attempts, 1,
+        "waiting for the window must cost exactly the one claim that decided to wait; \
+         jobs: {queued:?}"
+    );
+    let seconds = poll
+        .seconds_until_runnable
+        .expect("a waiting poll job is scheduled, not parked");
+    assert!(
+        seconds > 55.0 && seconds <= 61.0,
+        "the committed `run_at` must be about the rest of the window away, not the \
+         ladder's ten-second first rung; got {seconds}s"
+    );
+
+    // The same charge, a minute and a half old: now it really is a crash, and
+    // the recovery table applies exactly as it always did.
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
+    make_every_job_runnable(&h.pool).await?;
+
+    let settled = h.step(&policy).await?;
+    assert_eq!(
+        settled.disposition,
+        Disposition::Finished,
+        "the aged charge was not recovered at all; error: {:?}",
+        settled.error
+    );
+    let stored = charge(&h.pool, &charge_id).await?;
+    assert_eq!(
+        stored.state, "succeeded",
+        "the guard delays recovery by the window, it does not cancel it"
+    );
+    assert_one_reference(&h.pool, &charge_id, reference).await;
+    Ok(())
+}
+
+/// The same window on a redirect rail, where the branch that must not fire is
+/// `RecoveryAction::FailDeadOrder`.
+///
+/// The worse half of the same race. `FailDeadOrder` is correct for a charge
+/// whose submit response was genuinely lost — the payer was never handed a URL
+/// — and catastrophic for one whose confirm is about to hand over exactly that
+/// URL: Step 8's demo watched a live order be killed as
+/// `provider_unavailable`, with `failure_raw` saying the payer "was never
+/// handed a redirect URL" while the confirm held it
+/// (`docs/plans/step8-notes/lane-a.md` §3).
+///
+/// The evidence is an **answered** submit, which on a redirect rail changes
+/// nothing (the flow shape decides first) and here says the thing the fixture
+/// is about: the rail had answered, so the response the recovery reasons about
+/// was not lost at all.
+#[tokio::test]
+async fn a_young_redirect_charge_is_not_failed_as_a_dead_order_until_it_is_older()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let policy = RecoveryPolicy::default();
+
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        REDIRECT_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
+    let reference = Uuid::new_v4();
+    let charge_id = crashed_charge(
+        h.repositories.as_ref(),
+        &intent,
+        REDIRECT_RAIL,
+        reference,
+        AMOUNT,
+        CURRENCY,
+        None,
+    )
+    .await?;
+    record_submit_attempt(
+        h.repositories.as_ref(),
+        &charge_id,
+        REDIRECT_RAIL,
+        reference,
+        Some(ANSWERED_SENTINEL),
+    )
+    .await?;
+
+    let deferred = h.step(&policy).await?;
+    assert_waited_out_the_rest_of_the_window(&deferred, &policy);
+
+    let stored = charge(&h.pool, &charge_id).await?;
+    assert_eq!(
+        stored.state, "submitting",
+        "a live order was killed as a dead one while its confirm was still running"
+    );
+    assert_eq!(stored.failure_code, None);
+    let (status, error_code) = intent_status(&h.pool, &intent).await?;
+    assert_eq!(status, "requires_payment_method");
+    assert_eq!(
+        error_code, None,
+        "the merchant was told the rail was unavailable while it was answering"
+    );
+    assert!(
+        events(&h.pool, &intent).await?.is_empty(),
+        "a `payment_intent.payment_failed` event was written for a payment nobody failed"
+    );
+
+    // Aged: the response really was lost, and the order really is dead.
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
+    make_every_job_runnable(&h.pool).await?;
+
+    let settled = h.step(&policy).await?;
+    assert_eq!(
+        settled.disposition,
+        Disposition::Finished,
+        "the aged redirect charge was not resolved; error: {:?}",
+        settled.error
+    );
+    let stored = charge(&h.pool, &charge_id).await?;
+    assert_eq!(
+        stored.state, "failed",
+        "past the window `FailDeadOrder` is still the answer for a redirect charge"
+    );
+    assert_eq!(stored.failure_code.as_deref(), Some("provider_unavailable"));
+    assert_eq!(
+        intent_status(&h.pool, &intent).await?.1.as_deref(),
+        Some("provider_unavailable")
+    );
+    Ok(())
+}
+
+/// The race itself, run: the real loop against the confirm's own
+/// compare-and-swap, and the confirm wins.
+///
+/// The two cases above pin the decision one claimed job at a time. This one
+/// stages the ordering that produced the defect — the worker claims and runs
+/// the poll job **first**, and the confirm's `mark_submitted` lands after it —
+/// against `vpay_worker::run_loop`, the loop `vpay-worker-bin` runs, with the
+/// job at `run_at = now()` exactly as `insert_charge` writes it.
+///
+/// A redirect rail with no attempt row, because that is the shortest path to a
+/// write: `SubmitAttempt::Never` on `ProviderFlow::Redirect` was
+/// `FailDeadOrder` unconditionally, so before the age guard this test's
+/// compare-and-swap matched no row and `vpay-api` answered the merchant
+/// `500 write_matched_no_row` — which is exactly what
+/// `docs/plans/step8-notes/lane-a.md` §3 recorded from the demo.
+///
+/// **What is staged and what is real.** The write performed here is
+/// `TxRepositories::mark_submitted`, the compare-and-swap
+/// `vpay_api::v1::payment_intents::persist_submitted` makes, with the
+/// arguments a redirect confirm makes it with; the rest — the claim, the
+/// recovery decision, the reschedule — is the shipping loop. What is *not*
+/// here is the HTTP confirm handler around it, which this suite has no router
+/// for; `confirm_rails.rs` owns that half.
+#[tokio::test]
+async fn a_confirms_compare_and_swap_wins_against_the_worker_that_claimed_its_poll_job()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let policy = RecoveryPolicy::default();
+
+    park_the_housekeeping_jobs(h.repositories.as_ref(), &h.pool).await?;
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        REDIRECT_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
+    let reference = Uuid::new_v4();
+    // As `insert_charge` leaves it: `submitting`, its poll job runnable now,
+    // and the confirm still inside the rail call.
+    let charge_id = crashed_charge(
+        h.repositories.as_ref(),
+        &intent,
+        REDIRECT_RAIL,
+        reference,
+        AMOUNT,
+        CURRENCY,
+        None,
+    )
+    .await?;
+
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let repositories = Arc::clone(&h.repositories);
+    let adapters = Arc::clone(&h.adapters);
+    let rails = Arc::clone(&h.rails);
+    let worker = tokio::spawn(async move {
+        vpay_worker::run_loop(
+            repositories,
+            adapters,
+            rails,
+            policy,
+            support::no_webhook_endpoints(),
+            support::default_egress_policy(),
+            1,
+            Duration::from_secs(10),
+            "worker-recovery-suite".to_owned(),
+            async move {
+                let _ = stopped.await;
+            },
+        )
+        .await
+    });
+
+    // The ordering under test. Waiting for the worker to have *finished* with
+    // the job is what makes this a reproduction rather than a race the test
+    // might win by being quick: whatever the worker was going to do to this
+    // charge, it has already done by the time the confirm's write runs.
+    let ran = wait_for_the_poll_job_to_run(&h.pool, &charge_id, Duration::from_secs(20)).await;
+
+    // The confirm's own compare-and-swap, with a redirect rail's arguments.
+    let ref_extra = json!({ "pay_token": "tok-the-rail-answered-with" });
+    let confirmed = h
+        .repositories
+        .transaction(|tx| {
+            let charge_id = &charge_id;
+            let ref_extra = &ref_extra;
+            Box::pin(async move {
+                let charge = tx
+                    .mark_submitted(
+                        charge_id,
+                        vpay_core::ChargeState::Submitted.as_wire_str(),
+                        Some(ref_extra),
+                        Some("https://webpay.orange.example/pay/tok"),
+                    )
+                    .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(charge))
+            })
+        })
+        .await;
+
+    let _ = stop.send(());
+    let report = worker.await.context("the worker task panicked")?;
+    ran?;
+    assert!(
+        report.claimed >= 1,
+        "the loop never claimed the poll job, so nothing raced the confirm"
+    );
+
+    let committed = confirmed.context(
+        "the confirm's `submitting` -> `submitted` compare-and-swap matched no row: the \
+         worker moved the charge first. This is the `write_matched_no_row` 500 the \
+         merchant saw, with a live order failed as `provider_unavailable` behind it",
+    )?;
+    let committed = match committed {
+        TxOutcome::Commit(charge) => charge,
+        TxOutcome::Abandon(charge) => charge,
+    };
+    assert_eq!(committed.state, "submitted");
+
+    let stored = charge(&h.pool, &charge_id).await?;
+    assert_eq!(
+        stored.state, "submitted",
+        "the final state must be the confirm's, not the recovery's"
+    );
+    assert_eq!(stored.failure_code, None);
+    assert!(
+        events(&h.pool, &intent).await?.is_empty(),
+        "a failure event was written for an order the payer is about to be handed"
+    );
     Ok(())
 }
 
@@ -737,6 +1141,9 @@ async fn three_not_founds_over_the_window_resubmit_and_two_do_not() -> anyhow::R
         Some(MSISDN),
     )
     .await?;
+    // The crash is old enough for the recovery table to apply to it at all
+    // (`support::age_the_crash`).
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
     // Kill point 2: the POST was issued and lost. Without an attempt row the
     // very first poll would resubmit for a different reason
     // (`SubmitAttempt::Never`), and this case would prove nothing about the
@@ -829,6 +1236,9 @@ async fn a_charge_past_the_horizon_is_unresolved_polled_hourly_and_alerted_never
         Some(MSISDN),
     )
     .await?;
+    // The crash is old enough for the recovery table to apply to it at all
+    // (`support::age_the_crash`).
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
     record_submit_attempt(
         h.repositories.as_ref(),
         &charge_id,
@@ -938,6 +1348,9 @@ async fn a_redirect_charge_with_no_token_is_failed_without_ever_asking_the_rail(
         None,
     )
     .await?;
+    // The crash is old enough for the recovery table to apply to it at all
+    // (`support::age_the_crash`).
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
 
     let settled = h.step(&policy).await?;
     assert_eq!(
@@ -1025,6 +1438,9 @@ async fn a_settlement_lands_on_the_intent_a_crashed_confirm_left_behind() -> any
         Some(MSISDN),
     )
     .await?;
+    // The crash is old enough for the recovery table to apply to it at all
+    // (`support::age_the_crash`).
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
     // Kill point 2: the POST went out and the answer was lost. The rail has
     // the payment; vpay's intent says nothing was attempted.
     record_submit_attempt(
@@ -1131,6 +1547,9 @@ async fn a_rail_that_never_answers_is_still_escalated_at_the_horizon() -> anyhow
         Some(MSISDN),
     )
     .await?;
+    // The crash is old enough for the recovery table to apply to it at all
+    // (`support::age_the_crash`).
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
     // Kill point 3, so the recovery table advances the bookkeeping and the
     // run reaches the point where it would ask the rail — which is the point
     // under test.
@@ -1223,7 +1642,8 @@ async fn a_late_success_past_the_horizon_still_settles() -> anyhow::Result<()> {
         CURRENCY,
     )
     .await?;
-    let charge_id = charge_that_settles_in_one_poll(h.repositories.as_ref(), &intent).await?;
+    let charge_id =
+        charge_that_settles_in_one_poll(h.repositories.as_ref(), &h.pool, &intent).await?;
 
     let settled = h.step(&policy).await?;
     assert_eq!(
@@ -1347,6 +1767,9 @@ async fn a_resubmit_past_the_horizon_still_escalates() -> anyhow::Result<()> {
         Some(MSISDN),
     )
     .await?;
+    // The crash is old enough for the recovery table to apply to it at all
+    // (`support::age_the_crash`).
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
     // Kill point 2, exactly as the streak case stages it: without an attempt
     // row the very first poll would resubmit for a different reason
     // (`SubmitAttempt::Never`) and this case would never reach the arm it is
@@ -1463,6 +1886,9 @@ async fn a_never_submitted_charge_past_the_horizon_escalates_after_enqueuing_the
         Some(MSISDN),
     )
     .await?;
+    // The crash is old enough for the recovery table to apply to it at all
+    // (`support::age_the_crash`).
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
     age_past_the_horizon(&h.pool, &charge_id).await?;
 
     let settled = h.step(&policy).await?;
@@ -1537,6 +1963,9 @@ async fn a_poisoned_job_past_the_horizon_is_parked_rather_than_rescheduled_hourl
         Some(MSISDN),
     )
     .await?;
+    // The crash is old enough for the recovery table to apply to it at all
+    // (`support::age_the_crash`).
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
     // Kill point 2, so the recovery table answers `Poll` and the run reaches
     // the status query — which is where the unparseable row is read.
     record_submit_attempt(
@@ -1631,6 +2060,9 @@ async fn a_second_hourly_poll_of_an_unresolved_charge_re_alerts_without_writing_
         Some(MSISDN),
     )
     .await?;
+    // The crash is old enough for the recovery table to apply to it at all
+    // (`support::age_the_crash`).
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
     // Kill point 3: the rail answered the submit, so the recovery table
     // advances the bookkeeping and the poll runs the ordinary path.
     record_submit_attempt(
@@ -1739,6 +2171,9 @@ async fn a_decline_past_the_horizon_settles_an_unresolved_charge_and_clears_the_
         Some(MSISDN),
     )
     .await?;
+    // The crash is old enough for the recovery table to apply to it at all
+    // (`support::age_the_crash`).
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
     escalated_charge(&h.pool, &charge_id).await?;
 
     let settled = h.step(&policy).await?;
@@ -1869,6 +2304,7 @@ async fn strand_the_poll_job(pool: &PgPool, charge_id: &str, age: Duration) -> a
 /// "still on the ladder".
 async fn charge_that_settles_in_one_poll(
     repositories: &dyn Repositories,
+    pool: &PgPool,
     intent: &str,
 ) -> anyhow::Result<String> {
     let reference = Uuid::new_v4();
@@ -1882,6 +2318,9 @@ async fn charge_that_settles_in_one_poll(
         Some(MSISDN),
     )
     .await?;
+    // The crash is old enough for the recovery table to apply to it at all
+    // (`support::age_the_crash`).
+    age_the_crash(pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
     record_submit_attempt(
         repositories,
         &charge_id,
@@ -1891,6 +2330,46 @@ async fn charge_that_settles_in_one_poll(
     )
     .await?;
     Ok(charge_id)
+}
+
+/// Waits until the charge's poll job has been claimed **and** settled by a
+/// running loop.
+///
+/// `attempts` is incremented by `jobs::claim` and `locked_by` is cleared by
+/// the write that ends the lease, so the pair says "a worker took this job and
+/// is finished with it" — which is the ordering the race case needs before it
+/// may run the confirm's write. Polling the row rather than sleeping a fixed
+/// interval is what keeps that ordering true on a loaded machine, where the
+/// window this whole guard is about was measured at 3.7 seconds.
+async fn wait_for_the_poll_job_to_run(
+    pool: &PgPool,
+    charge_id: &str,
+    within: Duration,
+) -> anyhow::Result<()> {
+    let deadline = Instant::now() + within;
+    loop {
+        let row: Option<(i32, Option<String>)> =
+            sqlx::query_as("SELECT attempts, locked_by FROM jobs WHERE dedupe_key = $1")
+                .bind(vpay_worker::jobs::poll_dedupe_key(charge_id))
+                .fetch_optional(pool)
+                .await
+                .context("reading the poll job")?;
+        match row {
+            Some((attempts, None)) if attempts >= 1 => return Ok(()),
+            // The job is gone: the handler answered `Outcome::Done`, which for
+            // a `submitting` charge means it resolved it. That is the failure
+            // this case is about, and the assertions below name it.
+            None => return Ok(()),
+            _ => {}
+        }
+        if Instant::now() >= deadline {
+            let queued = jobs(pool).await.unwrap_or_default();
+            anyhow::bail!(
+                "no worker claimed and settled the poll job within {within:?}; the race                  this case stages never happened. jobs: {queued:?}"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// Waits for a charge to reach `succeeded`, or says what the queue looked like
@@ -1947,7 +2426,8 @@ async fn a_lease_stranded_by_a_crash_is_freed_at_boot_before_any_sweep_runs() ->
         CURRENCY,
     )
     .await?;
-    let charge_id = charge_that_settles_in_one_poll(h.repositories.as_ref(), &intent).await?;
+    let charge_id =
+        charge_that_settles_in_one_poll(h.repositories.as_ref(), &h.pool, &intent).await?;
     strand_the_poll_job(&h.pool, &charge_id, Duration::from_secs(120)).await?;
 
     assert!(
@@ -1968,7 +2448,7 @@ async fn a_lease_stranded_by_a_crash_is_freed_at_boot_before_any_sweep_runs() ->
             rails,
             policy,
             support::no_webhook_endpoints(),
-            support::webhook_client(),
+            support::default_egress_policy(),
             1,
             Duration::from_secs(10),
             "worker-recovery-suite".to_owned(),
@@ -2029,7 +2509,8 @@ async fn a_lease_that_expires_while_the_worker_runs_is_reaped_on_its_own_timer()
         CURRENCY,
     )
     .await?;
-    let charge_id = charge_that_settles_in_one_poll(h.repositories.as_ref(), &intent).await?;
+    let charge_id =
+        charge_that_settles_in_one_poll(h.repositories.as_ref(), &h.pool, &intent).await?;
     // Taken *now*: at boot this lease has zero age, so it is younger than the
     // lease and the boot reap must leave it alone.
     strand_the_poll_job(&h.pool, &charge_id, Duration::ZERO).await?;
@@ -2045,7 +2526,7 @@ async fn a_lease_that_expires_while_the_worker_runs_is_reaped_on_its_own_timer()
             rails,
             policy,
             support::no_webhook_endpoints(),
-            support::webhook_client(),
+            support::default_egress_policy(),
             1,
             Duration::from_secs(10),
             "worker-recovery-suite".to_owned(),
@@ -2154,7 +2635,7 @@ async fn a_poisoned_job_is_parked_with_its_lease_cleared_and_its_reason_recorded
             &policy,
             &vpay_worker::WebhookContext {
                 endpoints: &support::no_webhook_endpoints(),
-                http: &support::webhook_client(),
+                egress: support::default_egress_policy(),
             },
             "worker-recovery-suite"
         )
@@ -2259,6 +2740,9 @@ async fn the_backstop_scan_re_enqueues_an_unattended_charge_and_leaves_attended_
         Some(MSISDN),
     )
     .await?;
+    // The crash is old enough for the recovery table to apply to it at all
+    // (`support::age_the_crash`).
+    age_the_crash(&h.pool, &attended_charge, RECOVERABLE_CRASH_AGE).await?;
 
     let orphan = confirmed_intent(
         h.repositories.as_ref(),
@@ -2278,6 +2762,9 @@ async fn the_backstop_scan_re_enqueues_an_unattended_charge_and_leaves_attended_
         Some(MSISDN),
     )
     .await?;
+    // The crash is old enough for the recovery table to apply to it at all
+    // (`support::age_the_crash`).
+    age_the_crash(&h.pool, &orphan_charge, RECOVERABLE_CRASH_AGE).await?;
     // Operator error, or a row from before migration 0021: the charge is live
     // and nothing is polling it.
     sqlx::query("DELETE FROM jobs WHERE dedupe_key = $1")

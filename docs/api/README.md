@@ -440,4 +440,19 @@ as Phase 2b in [../roadmap.md](../roadmap.md); see
 Public and unauthenticated by necessity. A callback **never changes state** — it
 only enqueues a status query. See [../flows/reconciler.md](../flows/reconciler.md).
 
-**Status: not implemented.**
+~~**Status: not implemented.**~~ **Status: implemented 2026-09-04 (Step 8, lane
+C), and never called by a rail.** `POST` only: it resolves the adapter by
+`code`, `parse_callback`s the body, finds the charge by its rail reference and
+pulls that charge's poll job forward. ~~That is one `UPDATE jobs SET run_at =
+now()` and no other write.~~ **Corrected 2026-09-04: two statements, in one
+transaction** — `enqueue_in_tx` (`ON CONFLICT DO NOTHING`, a no-op in the
+ordinary case, but it inserts a fresh poll job when the charge's job was deleted
+or already finished) and `pull_forward_in_tx`, an `UPDATE jobs SET run_at =
+now()`. **It writes no charge or intent state.** Unknown rail code → `404` (byte-identical to the router's
+fallback); unparseable body → `400`; unknown reference → `202` (a rail must not
+be told to retry forever, and a different answer would be an oracle); accepted →
+`202`. Body bounded at 16 KiB. **A `GET` on this path is axum's bare `405`, not
+the Stripe error envelope** — the same precedent `GET /v1/oauth/token` already
+sets. Neither rail signs a callback, so it is a hint on both, and every body the
+route has parsed was transcribed from `docs/flows/adapter-*.md` by this
+repository's own tests.

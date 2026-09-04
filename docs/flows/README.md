@@ -20,6 +20,7 @@ code expresses it belongs in `../reference/`.
 | [provider-port.md](provider-port.md) | The adapter interface and the checklist for adding a rail |
 | [configuration.md](configuration.md) | Boot sequence, validation rules, what refuses to start |
 | [merchant-auth.md](merchant-auth.md) | The `client_credentials` + `private_key_jwt` handshake and the `/v1` wire contract the Rust and Node SDKs implement |
+| [../sdks/parity.md](../sdks/parity.md) | The cross-SDK capability matrix — does `sdks/rust` agree with `sdks/nodejs`, capability by capability, each cell naming its proving test or a dated gap (ADR-0015), machine-checked in `just verify` |
 | [stripe-sdk-compat.md](stripe-sdk-compat.md) | Driving the official Stripe SDKs against vpay: the `config.authenticator` seam, what carries over, and every divergence |
 | [browser-checkout.md](browser-checkout.md) | `/v1/browser` and `@vpay/stripe-js`: publishable keys, per-intent `client_secret`, the uniform-404 confidentiality property, the redirect gap |
 | [dashboard-auth.md](dashboard-auth.md) | Staff login: vpay as its own OpenID Provider for `/dash/v1` |

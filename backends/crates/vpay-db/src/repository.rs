@@ -203,6 +203,30 @@ pub trait TxRepositories: Send {
         run_at: time::OffsetDateTime,
     ) -> Result<bool, DbError>;
 
+    /// `jobs`: brings an already-queued job's `run_at` forward to now, so a
+    /// rail's callback is answered by a status query now rather than at the
+    /// poll ladder's next rung.
+    ///
+    /// `false` means nothing moved — the job was due within `floor` (which
+    /// includes "already claimable"), a worker holds its lease, or it is
+    /// parked. All three are normal, and [`crate::jobs::pull_forward_in_tx`]
+    /// says why each is refused and why the floor is the caller's number
+    /// rather than this crate's.
+    ///
+    /// Transactional-only for [`TxRepositories::enqueue_in_tx`]'s reason:
+    /// its one caller enqueues *and* pulls forward, and the two must reach
+    /// the same commit or a callback can leave a job it created at a
+    /// `run_at` it never moved.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Query`].
+    async fn pull_forward_in_tx(
+        &mut self,
+        dedupe_key: &str,
+        floor: std::time::Duration,
+    ) -> Result<bool, DbError>;
+
     /// `payment_intents`: the merchant-scoped compare-and-swap on `status`.
     ///
     /// `Ok(None)` means the intent was not in `expected` — a lost race, not
@@ -298,6 +322,14 @@ impl TxRepositories for PendingTransaction {
         run_at: time::OffsetDateTime,
     ) -> Result<bool, DbError> {
         crate::jobs::enqueue_in_tx(self.conn(), kind, dedupe_key, payload, run_at).await
+    }
+
+    async fn pull_forward_in_tx(
+        &mut self,
+        dedupe_key: &str,
+        floor: std::time::Duration,
+    ) -> Result<bool, DbError> {
+        crate::jobs::pull_forward_in_tx(self.conn(), dedupe_key, floor).await
     }
 
     async fn transition_in_tx(

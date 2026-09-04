@@ -85,7 +85,14 @@ uuid.workspace = true
 # decoding. Feature-only addition: no new package anywhere.
 time = { workspace = true, features = ["serde-well-known"] }
 axum.workspace = true
-tokio.workspace = true
+# `net` on top of the workspace pin, for one call: `tokio::net::lookup_host`
+# in `ssrf.rs`, which resolves a webhook endpoint's host exactly once so the
+# addresses that were classified are the addresses the connection is pinned
+# to. Feature-only addition — reqwest, hyper and sqlx already enable `net` in
+# both binaries' graphs, so nothing new is compiled — and the alternative,
+# `std::net::ToSocketAddrs` inside a `spawn_blocking`, is what tokio's own
+# implementation of this function is.
+tokio = { workspace = true, features = ["net"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -95,6 +102,13 @@ tracing.workspace = true
 # calls `reqwest::Client::new()` — see that module for why that call panics in
 # a `scratch` image. This crate names the type and issues the POST.
 reqwest.workspace = true
+# The webhook endpoint URL is parsed once, in `ssrf.rs`, before anything is
+# resolved: `url::Host` is what distinguishes a domain from an IP literal, and
+# an IPv6 literal without the brackets a URL writes it in. reqwest re-exports
+# `Url` but not `Host`, so the crate is named here rather than reached through
+# it. No new package in any binary's graph — reqwest already resolves this
+# exact pin, which is why the workspace lists it (see the root `Cargo.toml`).
+url.workspace = true
 # `Vpay-Signature`: HMAC-SHA256 over `"{t}.{body}"`, lowercase hex
 # (docs/flows/webhooks.md). The same three crates `sdks/rust`'s verifier uses,
 # at the same workspace pins, because the sender and the verifier computing

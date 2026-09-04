@@ -124,6 +124,26 @@ rails — run live against a real `wiremock/wiremock` container started by
 WireMock. **Neither adapter has ever called MTN's or Orange's real
 sandbox**, so a mapping that is faithful to the flow doc but not to the rail
 would pass. The 401-after-a-good-token re-mint path has no mapping in the
-suite and is unproven on both rails. No callback route exists, so
-`parse_callback`'s output is verified by tests and by nothing in production.
+suite and is unproven on both rails. ~~No callback route exists, so
+`parse_callback`'s output is verified by tests and by nothing in production.~~
+**Corrected 2026-09-04 (Step 8, lane C): since Step 8 `parse_callback`'s output
+*is* consumed in production**, by `vpay_api::provider_callback` — but only to
+name a charge and pull its poll job forward, and only from a body no rail has
+ever actually sent to this deployment. **The route is still a hint that never
+moves state**, and since 2026-09-04 (Step 8, lane H) what it costs is measured
+rather than asserted. It runs **two statements in one transaction** —
+`TxRepositories::enqueue_in_tx` (`ON CONFLICT DO NOTHING`, so nothing in the
+ordinary case) and `TxRepositories::pull_forward_in_tx` — and the pull-forward
+now takes a **floor**: `vpay_api::provider_callback::PULL_FORWARD_FLOOR`, ten
+seconds, the poll ladder's own fastest rung, below which a job already due is
+left exactly where the ladder put it. **The true bound, stated because the
+module used to overstate it:** a charge the queue was about to ask about anyway
+costs a caller nothing, but the ladder's rungs grow (20 s, 30 s, 45 s …) while
+the floor stays at ten, so a charge parked further out is still brought forward
+by every callback and a caller repeating against one live charge can hold it at
+roughly one authenticated `query_status` per worker claim. **There is no rate
+limit**, per charge or per source. **And the floor has a behavioural cost:** a
+rail calling back while the charge sits on the ladder's *first* rung no longer
+settles it early — it settles at that rung, up to ten seconds later than before
+(`a_callback_does_not_accelerate_a_poll_that_is_already_about_to_run`).
 See [../status.md](../status.md).

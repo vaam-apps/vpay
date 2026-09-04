@@ -1,0 +1,181 @@
+{
+  "mappings": [
+    {
+      "name": "demo: a confirm that will DECLINE for want of funds, armed by MSISDN",
+      "scenarioName": "mtn-demo-decline",
+      "newScenarioState": "decline-armed",
+      "priority": 4,
+      "request": {
+        "method": "POST",
+        "urlPath": "/collection/v1_0/requesttopay",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.payer.partyId",
+              "equalTo": "237600000f01"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 202
+      },
+      "metadata": {
+        "why": [
+          "FILE: the outcomes examples/merchant-demo drives that requesttopay-status.json",
+          "cannot reach from an end-to-end confirm. Added 2026-09-03 (Step 8, lane A) for",
+          "issue #11's 'drives the stub to succeeded and to failed/expired'.",
+          "",
+          "THE PROBLEM THIS FILE SOLVES. requesttopay-status.json keys every decline on the",
+          "reference (...0f01 = NOT_ENOUGH_FUNDS, ...0f02 = COULD_NOT_PERFORM_TRANSACTION),",
+          "and a confirm CANNOT choose its reference: the handler mints",
+          "provider_reference_id with Uuid::new_v4() before committing the charge, and a seam",
+          "to fix it from outside would be a code path that exists only outside production",
+          "(AGENTS.md's first rule). MTN's status query is a GET carrying no body, so it",
+          "cannot be steered there either. The MSISDN is the one field of this exchange that",
+          "comes from the merchant's own request -- so, exactly as requesttopay.json's",
+          "'a payer the rail does not know' mapping and requesttopay-scenario.json's",
+          "'mtn-e2e-poll' already do, the steering happens HERE, on the POST, and is carried",
+          "to the status query by SCENARIO STATE. Nothing rewrites stored state in the demo.",
+          "",
+          "NO requiredScenarioState, deliberately. This mapping matches in ANY state and",
+          "always transitions to `decline-armed`, which is what makes `just demo-walk`",
+          "re-runnable against a container it has already driven once. A mapping that",
+          "required `Started` would arm on the first walk and silently fall through to the",
+          "catch-all SUCCESSFUL on the second -- a demo reporting a settled payment where it",
+          "asserted a decline is the exact false green this repository is written against.",
+          "",
+          "237600000f01 is a documentation MSISDN in the same 2376000000xx block the",
+          "conformance charges use (237600000000) and requesttopay.json's decline-at-submit",
+          "mapping uses (237600000400). Its `0f01` suffix names the reference-keyed status",
+          "mapping it mirrors, so the two can be read together.",
+          "",
+          "202, the ordinary accepted submit, because this mapping exists to MOVE THE",
+          "SCENARIO and not to change what a confirm sees: the demo asserts this confirm is",
+          "indistinguishable from the settling one right up to the point the worker polls."
+        ]
+      }
+    },
+    {
+      "name": "demo: the armed decline answers NOT_ENOUGH_FUNDS once, then disarms",
+      "scenarioName": "mtn-demo-decline",
+      "requiredScenarioState": "decline-armed",
+      "newScenarioState": "Started",
+      "priority": 4,
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/collection/v1_0/requesttopay/.*"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": "NOT_ENOUGH_FUNDS"
+        }
+      },
+      "metadata": {
+        "why": [
+          "-> insufficient_funds (vpay_adapter_mtn_momo::mapping::FAILURE_REASONS,",
+          "docs/flows/adapter-mtn-momo.md). The same body requesttopay-status.json serves",
+          "for reference ...0f01; this one is reachable from a real confirm.",
+          "",
+          "MATCHES ANY REFERENCE, which is what makes it usable at all, so four things keep",
+          "it from swallowing anything else:",
+          "",
+          "1. requiredScenarioState. A container starts every scenario in `Started`, and only",
+          "   the POST above -- which no conformance case sends, they all use 237600000000 --",
+          "   moves this one out of it. In a conformance run this mapping is unreachable.",
+          "2. priority 4 is BELOW the reference-keyed status mappings (priority 1, lower",
+          "   number wins), so ...0404, ...0f01, ...05aa and the rest keep winning even while",
+          "   this scenario is armed.",
+          "3. priority 4 is ABOVE requesttopay-scenario.json's `mtn-e2e-poll` mappings",
+          "   (priority 5) and above requesttopay-status.json's catch-all SUCCESSFUL",
+          "   (priority 10). That ordering is load-bearing: a demo run settles the success",
+          "   outcome first, which leaves mtn-e2e-poll RESTING in `e2e-settled` answering",
+          "   SUCCESSFUL to every later status query. Without the 4-beats-5 rule the decline",
+          "   outcome would be told SUCCESSFUL and the demo would report a payment.",
+          "4. newScenarioState `Started` disarms it after ONE answer. FAILED is terminal, so",
+          "   the worker settles on that first poll and asks nothing more about this charge;",
+          "   disarming means the next outcome in the walk is not answered by this mapping.",
+          "",
+          "THE COUPLING, STATED: this works because examples/merchant-demo drives its",
+          "outcomes STRICTLY SEQUENTIALLY -- each charge reaches a terminal state before the",
+          "next confirm is sent. Two MTN outcomes in flight at once against one container",
+          "would be two charges sharing one scenario, and the wrong one could be declined.",
+          "The demo says so where it iterates."
+        ]
+      }
+    },
+    {
+      "name": "demo: a confirm whose PROMPT WILL EXPIRE, armed by MSISDN",
+      "scenarioName": "mtn-demo-expiry",
+      "newScenarioState": "expiry-armed",
+      "priority": 4,
+      "request": {
+        "method": "POST",
+        "urlPath": "/collection/v1_0/requesttopay",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.payer.partyId",
+              "equalTo": "237600000f02"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 202
+      },
+      "metadata": {
+        "why": [
+          "The prompt-expiry outcome: the payer never entered their PIN and MTN's ~5 minute",
+          "window closed. Same mechanism, same justification and the same documentation-MSISDN",
+          "block as the decline pair above; `0f02` names requesttopay-status.json's",
+          "reference-keyed equivalent.",
+          "",
+          "IT IS NOT SPELLED `EXPIRED`, AND THAT IS DELIBERATE. `EXPIRED` is ORANGE's status",
+          "string (orange/mappings/transactionstatus.json, -> payer_timeout). MTN documents no",
+          "`EXPIRED`: its status vocabulary is PENDING / SUCCESSFUL / FAILED, and the reason on",
+          "a FAILED prompt that timed out is COULD_NOT_PERFORM_TRANSACTION -- which is exactly",
+          "the row vpay_adapter_mtn_momo::mapping::FAILURE_REASONS annotates 'The payer never",
+          "entered their PIN; MTN gives them about five minutes'. Inventing an MTN `EXPIRED`",
+          "to make the two rails look alike would be this stub asserting something about a",
+          "rail nobody has called. Both outcomes still land on the SAME core code,",
+          "payer_timeout, which is the thing a merchant integrates against."
+        ]
+      }
+    },
+    {
+      "name": "demo: the armed expiry answers COULD_NOT_PERFORM_TRANSACTION once, then disarms",
+      "scenarioName": "mtn-demo-expiry",
+      "requiredScenarioState": "expiry-armed",
+      "newScenarioState": "Started",
+      "priority": 4,
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/collection/v1_0/requesttopay/.*"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": {
+            "code": "COULD_NOT_PERFORM_TRANSACTION",
+            "message": "The transaction could not be performed"
+          }
+        }
+      },
+      "metadata": {
+        "why": [
+          "-> payer_timeout. The OBJECT-shaped `reason`, mirroring requesttopay-status.json's",
+          "...0f02 mapping: MTN documents both a bare string and this object, and the",
+          "adapter must read either (mapping::failure_code, fed by the `Reason` enum in wire.rs). The decline mapping above",
+          "uses the string shape, so one demo run exercises both readings over the wire.",
+          "",
+          "The four properties that keep the mapping above from swallowing anything else",
+          "apply here unchanged, and so does the strictly-sequential coupling."
+        ]
+      }
+    }
+  ]
+}

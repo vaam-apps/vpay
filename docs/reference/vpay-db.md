@@ -21,6 +21,7 @@ application's side of them.
   - [`set_payload` is a separate write from `reschedule`](#set_payload-is-a-separate-write-from-reschedule)
 - [`charges`](#charges)
   - [One charge per intent is the index's job](#one-charge-per-intent-is-the-indexs-job)
+  - [The charge read carries Postgres' clock](#the-charge-read-carries-postgres-clock)
   - [`mark_submitted` merges rather than assigns](#mark_submitted-merges-rather-than-assigns)
   - [The transition counter, and why its timing moved out](#the-transition-counter-and-why-its-timing-moved-out)
 - [`settlement`](#settlement)
@@ -33,6 +34,7 @@ application's side of them.
 - [`jobs`](#jobs)
   - [The lease is the whole design](#the-lease-is-the-whole-design)
   - [`enqueue_in_tx` exists only in the transactional form](#enqueue_in_tx-exists-only-in-the-transactional-form)
+  - [`pull_forward_in_tx` is the exception, and it has to be asked for](#pull_forward_in_tx-is-the-exception-and-it-has-to-be-asked-for)
   - [Why claiming does not consider lease expiry](#why-claiming-does-not-consider-lease-expiry)
   - [Why a dead letter is parked and not deleted](#why-a-dead-letter-is-parked-and-not-deleted)
 - [TLS: no `CryptoProvider` is installed here](#tls-no-cryptoprovider-is-installed-here)
@@ -238,6 +240,35 @@ answer `409` instead of the `503`-with-retry-advice an unclassified storage
 error would produce. A handler may still read first (`get_for_intent`) to answer
 a *friendly* `409` without attempting the write — but that read is an
 optimisation, never the guard.
+
+### The charge read carries Postgres' clock
+
+`Charges::get_by_id_as_of` answers a `ChargeAsOf` — the row, plus the `now()`
+the same `SELECT` evaluated — and `get_by_id` is that read with the clock
+dropped, so there is one statement and not two spellings of it.
+
+The extra column exists because everything the worker decides about a
+`submitting` charge is a **duration**: whether the state is evidence of a crash
+or of a confirm still inside its rail call (sixty seconds,
+[vpay-worker.md](vpay-worker.md#nothing-younger-than-the-window-is-recovered)),
+and whether the charge is past the 24-hour escalation horizon. The subtrahend of
+both is `charges.created_at`, which Postgres wrote. Until Step 8's review the
+minuend was `OffsetDateTime::now_utc()` on the worker host, so the subtraction
+spanned two machines' clocks: a worker sixty seconds ahead of the database
+measured every charge as a minute older than it was, which made the recovery
+window pass for every live confirm — the guard became a silent no-op on exactly
+the deployment whose fleet clocks had drifted, and nothing in the data looked
+wrong. The horizon leaned the milder way, escalating charges to `unresolved`
+early.
+
+Two statements (`SELECT now()` beside the row read) would not have fixed it
+either: the gap between them is a scheduling delay, and a scheduling delay is
+the quantity being measured. One statement, one transaction timestamp, and the
+worker subtracts two values that came out of the same one — see
+`vpay_worker::handlers`' `charge_age`, whose only job is that subtraction, and
+`the_charge_read_carries_the_databases_own_clock_beside_the_row` in
+`backends/crates/vpay-db/tests/repositories.rs`, which asserts the age moves
+with `created_at` across the sixty-second boundary the worker compares against.
 
 ### `mark_submitted` merges rather than assigns
 
@@ -624,6 +655,48 @@ backstop scan drag a job already scheduled for an hour's time back to now, which
 is how a poll ladder silently becomes a hot loop. `Ok(false)` — the `dedupe_key`
 was already queued — is the normal answer for the backstop scan and for a
 re-enqueue after a crash, not an error.
+
+### `pull_forward_in_tx` is the exception, and it has to be asked for
+
+Step 8 lane C added one write that *does* move a scheduled job back to now:
+`UPDATE jobs SET run_at = now() WHERE dedupe_key = $1 AND locked_at IS NULL
+AND run_at > now() + $2 AND run_at < 'infinity'`. Its only caller is
+`vpay_api::provider_callback` — a rail said something happened, and the point
+of a callback is to ask the rail *now* instead of at the ladder's next rung,
+which is ten seconds away at best and fifteen minutes away after half an hour.
+
+It is a separate method rather than the `DO UPDATE` the section above rules
+out, and that is the whole distinction: an upserting `enqueue_in_tx` would
+apply the pull-forward to every caller, including the backstop scan that
+re-enqueues every live charge's key every ten minutes. One caller asking for
+it is a callback; every caller getting it is a hot loop.
+
+The three guards are each refusing a different thing:
+
+- `locked_at IS NULL` — a leased job is being polled right now, and that poll
+  will see the rail's answer. It is also the only way this write stays out of
+  the `locked_by` discipline the lease section describes: it never touches a
+  row someone holds.
+- `run_at > now() + $2` — a job whose time has come needs nothing, and
+  skipping the write is what makes a burst of duplicate callbacks (which both
+  rails send) free rather than a queue of writers contending for one row lock.
+  `$2` is the **floor**, added by Step 8's review: a job due within it is
+  about to run, so moving it buys the rail nothing and costs an
+  unauthenticated caller one rail request. The value is the poll ladder's
+  fastest rung, and it is a *parameter* because the ladder is
+  `vpay_worker::poll_delay` — a policy about how often a rail is asked
+  anything, which this crate must not hold (ADR-0002). The caller passes
+  `vpay_api::provider_callback::PULL_FORWARD_FLOOR`, and
+  [vpay-api.md](vpay-api.md#what-an-anonymous-caller-can-and-cannot-get-out-of-it)
+  states what it does and does not bound.
+- `run_at < 'infinity'` — a dead letter stays parked. The section below states
+  that the occupied `dedupe_key` is what keeps a scan *or a callback* from
+  re-creating work a human has to look at first; this is the clause that makes
+  the "or a callback" half true.
+
+`Ok(false)` is therefore "nothing to do" in all of these cases and never a
+failure, which matters because the caller always calls `enqueue_in_tx` first:
+a job it just inserted at `now()` is the ordinary `false`.
 
 ### Why claiming does not consider lease expiry
 

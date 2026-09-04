@@ -21,7 +21,7 @@ pub mod config;
 pub mod oauth;
 pub mod signal;
 pub use cli::{CommonArgs, LogFormat, ServerArgs, WorkerArgs};
-pub use config::{Config, CurrencyEntry, ProviderHost};
+pub use config::{Config, CurrencyEntry, ProviderHost, WebhookPolicy};
 pub use oauth::{DashboardClient, GrantType, MERCHANT_AUDIENCE, MerchantClient, WebhookEndpoint};
 pub use signal::ShutdownSignals;
 
@@ -582,6 +582,34 @@ pub enum ConfigError {
         /// both halves of the contradiction.
         livemode: bool,
     },
+
+    /// `webhooks.allow_private_targets: true` under
+    /// `deployment.livemode: true`.
+    ///
+    /// **Not an environment branch** (ADR-0003), and the distinction is the
+    /// same one [`Self::PublishableKeyLivemodeMismatch`] draws: the guard in
+    /// `vpay_worker::ssrf` runs identically in both deployments and
+    /// classifies every resolved address the same way. This flag changes one
+    /// thing — the verdict on an address it classified as non-public — and
+    /// that verdict is the whole of the protection.
+    ///
+    /// A livemode deployment that sets it is one where a merchant can name
+    /// `https://169.254.169.254/latest/meta-data/…`, or the Postgres service,
+    /// or any peer on the deployment's network, and have vpay POST a signed
+    /// event body at it from the inside. The flag exists so the compose stack
+    /// and the integration suite can deliver to their own private receivers
+    /// (`compose.e2e.yml`'s `wiremock-webhook`); there is no deployment
+    /// taking real money for which it is the right answer, so the two values
+    /// together are refused rather than warned about.
+    ///
+    /// A unit variant: there is nothing to name. The two keys are fixed and
+    /// the message spells both.
+    #[error(
+        "deployment.livemode is true and webhooks.allow_private_targets is true; a livemode \
+         deployment must not deliver webhooks to loopback, private, link-local or CGNAT \
+         addresses (see docs/flows/webhooks.md)"
+    )]
+    PrivateWebhookTargetsInLivemode,
 }
 
 impl vpay_core::Classify for ConfigError {

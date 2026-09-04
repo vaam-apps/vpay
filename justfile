@@ -1,11 +1,13 @@
 # vpay task runner. `just` with no argument lists everything.
 #
-# Three invariants this repo enforces on itself, all wired into `just verify`:
+# Four invariants this repo enforces on itself, all wired into `just verify`:
 #   * no test double is reachable from a shipping binary
 #   * every unimplemented item is declared in docs/status.md
 #   * every error type is classified (ADR-0011) and anyhow stays in the binaries
+#   * the merchant SDKs stay at parity (ADR-0015): every claimed capability
+#     names a test that exists, every gap is dated and owned
 #
-# `just verify` prints a fourth thing that is NOT an invariant and never fails
+# `just verify` prints a fifth thing that is NOT an invariant and never fails
 # the build: `verify-docs`, a report on doc-comment volume, long functions,
 # ```ignore fences and #[allow]s (Step 7, decision 4).
 
@@ -211,15 +213,25 @@ audit-web:
 # ---------------------------------------------------- self-verification ----
 
 # The checks that keep this repository honest, plus one report. CI's
-# `self-checks` job runs exactly this list, in this order.
+# `self-checks` job runs exactly this list, in this order:
+# verify-no-mocks, verify-status, verify-errors, verify-sdk-parity, and then
+# verify-docs last.
 #
-# `verify-docs` is last and is NOT a check: it exits 0 whatever it finds, so
-# the "verify: ok" below means the three gates passed and says nothing about
-# the numbers printed above it.
+# That sentence was false until 2026-09-04: `verify-sdk-parity` ran here but
+# had no step in `.github/workflows/ci.yml`, so ADR-0015's decision 3 ("CI
+# enforces parity") was a claim nothing executed on a pull request — and the
+# list ran `verify-docs` in the middle rather than last. Both are fixed
+# together, and they have to move together, because the only thing that keeps
+# this comment honest is someone reading the workflow beside it.
 #
-# The three self-checks, plus the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-docs
-    @echo "verify: ok — the three gates above passed; the verify-docs report is advisory"
+# `verify-docs` is NOT a check: it exits 0 whatever it finds, so the
+# "verify: ok" below means the four gates passed and says nothing about the
+# numbers `verify-docs` printed. It is last so that the report a human reads
+# is the final thing on the terminal, after every gate has had its say.
+#
+# The four self-checks, then the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-docs
+    @echo "verify: ok — the four gates above passed; the verify-docs report is advisory"
 
 verify-no-mocks:
     cargo xtask verify-no-mocks
@@ -231,6 +243,11 @@ verify-status:
 # vpay_core::error::Classify, and anyhow stays in backends/apps.
 verify-errors:
     cargo xtask verify-errors
+
+# ADR-0015: every ✅ in docs/sdks/parity.md names a test that exists in that
+# SDK's sources, and every ⛔ carries a dated, owned gap.
+verify-sdk-parity:
+    cargo xtask verify-sdk-parity
 
 # A REPORT, not a gate: doc-comment lines against code lines per crate, the
 # production functions of 80 lines or more, every ```ignore doctest fence and
@@ -316,9 +333,52 @@ verify-docs:
 # built are **not** in that number and cannot be — `cargo nextest list` does
 # not see doctests at all, which is the whole reason `just test-doc` exists as
 # a separate recipe and a separate CI step. Their count is in docs/status.md.
+#
+# 39 -> 40 (Step 8, lane D) for
+# `backends/tests/integration/tests/worker_kill9.rs` — the real-`SIGKILL`
+# crash test named in `docs/plans/2026-09-03-step8-production-gate.md`
+# (`docs/plans/step8-notes/lane-d.md` has the full account). It spawns the
+# shipping `vpay-worker-bin`/`vpay-server` as real OS processes and
+# `Child::kill()`s them mid-request, so it is a new binary rather than a
+# case added to an existing one — its own `mod support;` and its own
+# process-spawning harness would not belong inside `worker_recovery.rs`,
+# which proves the same recovery table without ever causing a signal.
+#
+# Re-measured 2026-09-04 on the Step 8 gate branch, with Step 7 merged and
+# lanes B and D on top of it: `just verify-ignored` lists **1016
+# total, 40 test binaries, 0 ignored** — the 999 above, plus lane D's two
+# `worker_kill9` cases (the fortieth binary) and lane B's fifteen (nine
+# `vpay_worker::ssrf` unit cases, three `vpay-config` cases, one
+# `vpay-provider` pin case and two container-backed `webhooks` cases), all of
+# which landed in files that already existed.
+#
+# 40 -> 41 (Step 8, lane C, the rail callback route), merged onto lanes B and
+# D above: `just verify-ignored` on the gate branch lists **1054 total, 41 test
+# binaries, 0 ignored**. 41 because `backends/tests/integration/tests/provider_callback.rs`
+# is a new binary — the first suite whose subject is a request a *rail* makes
+# — and the counts below move with it, in this commit and not a follow-up.
+# The 17 new cases are 9 in that binary, 2 conformance cases
+# (`the_submit_tells_the_rail_where_to_call_back`, once per rail), 2
+# `vpay-api` router cases (a third asserts the 405 a payer's GET now gets), 2
+# `vpay-db` repository cases and one unit test in
+# `vpay_api::provider_callback`. The rest of the way from 1033 to 1054 is lane
+# G (four `vpay-worker` unit cases for the age guard and three
+# `worker_recovery` cases, one of them the confirm/worker race run without a
+# seam) and lane F (the fourteen `sdk_parity_tests` in `xtask`); lane A adds
+# no test, and none of these is a new binary.
+#
+# Re-measured 2026-09-04 after Step 8's correctness-review remediation (lane
+# H): **1059 total, still 41 test binaries, 0 ignored**. Neither counter
+# below moves. The five new cases all landed in files that already existed —
+# two `vpay-worker` units (the age is the database's, and a `Wait` carries the
+# rest of the window), one `vpay-db` unit (the charge read carries Postgres'
+# clock), and two `provider_callback` integration cases (the pull-forward
+# floor is the ladder's first rung, and a poll already about to run is not
+# accelerated) — so `expected_suites` stays 41, and `min_tests` is a floor
+# that 1059 clears with the same margin 1054 did.
 expected_ignored := "0"
-expected_suites := "39"
-# A floor, not a target — set a little under the measured 999
+expected_suites := "41"
+# A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.
 #
@@ -326,7 +386,17 @@ expected_suites := "39"
 # and the suite has grown by 30 since, so the old floor had drifted
 # far enough below the count that a whole crate's unit tests could vanish
 # under it.
-min_tests := "950"
+#
+# 950 -> 990 on 2026-09-04 (Step 8, lanes B and D): 950 was set against Step
+# 7's 999 and the suite has grown by 17 since, so the floor is moved with it
+# rather than being left to drift far enough below the count that a whole
+# crate's unit tests could vanish under it.
+# 990 -> 1000 on 2026-09-04 (Step 8, lane C merged), against the measured
+# 1054 and on the same terms: still a floor set under the count, not at it.
+# Left at 1000 on 2026-09-04 (lane H, measured 1059): five tests is not a
+# reason to move a floor, and moving it every time one is added is how a
+# floor becomes a number nobody reads.
+min_tests := "1000"
 
 verify-ignored:
     #!/usr/bin/env bash
@@ -601,12 +671,44 @@ down:
 # `down -v` against a different file set leaves volumes behind.
 demo_compose := "-f compose.yml -f compose.e2e.yml -f compose.demo.yml"
 
+# The six services `just demo-up` starts, named rather than left to compose's
+# "everything in the file set". The seventh is `dashboard`, and leaving it out
+# is a statement, not an optimisation: per docs/status.md it renders a static
+# scaffold notice and makes no call to `vpay-server`, so there is no data
+# source that could show the payments this walkthrough makes — see
+# docs/runbooks/demo.md's "what this does not prove". Building
+# `frontends/Dockerfile` also costs minutes the demo does not buy anything
+# with. `just stripe-compat` already brought up exactly these six, for the
+# second of those reasons; `just demo` now agrees with it.
+demo_services := "postgres wiremock-mtn wiremock-orange wiremock-webhook vpay-server vpay-worker"
+
+# The COMPOSE PROJECT NAME the demo stack lives under, and the variable that
+# makes two demos on one machine possible:
+#
+#     just demo_project=vpay-demo-b demo_port=18088 demo_receiver_port=18089 demo
+#
+# `compose.demo.yml` reads it as `${VPAY_DEMO_PROJECT}` (that file's `name:`),
+# and EVERY recipe below exports it, so `demo-up`, `demo-walk`, `demo-status`
+# and `demo-down` all address the same stack — a `demo-down` that derived a
+# different project would leave the containers and the volumes of the one you
+# started, and report success.
+#
+# It is a project name, not a port: compose matches containers by project and
+# label, so `just demo_project=vpay-demo-b demo-down` needs no port to tear
+# down what the line above brought up.
+#
+# The default is `vpay-demo` and not `vpay`, which is what compose.demo.yml
+# hardcoded until Step 8. `vpay` is `just up`'s and CI's e2e project, and
+# sharing it meant `just demo` adopted a running development stack and `just
+# demo-down` deleted its volumes.
+demo_project := "vpay-demo"
+
 # The host port `just demo` publishes `vpay-server` on. Override it per
 # invocation when 8080 is taken on your machine:
 #
 #     just demo_port=18080 demo
 #
-# `just demo-down` needs no port — see that recipe.
+# `just demo-down` needs no port — see `demo_project` above and that recipe.
 #
 # Three things have to agree about this number or the demo fails in a way that
 # does not name the port, which is why it is one variable and not three:
@@ -669,6 +771,30 @@ gen-demo-keys: gen-e2e-signing-key
     key=.e2e/demo-merchant/oauth-signing-key.pem
     overlay=.e2e/application-demo.yml
 
+    # The MERCHANT's endpoint list, which is a different thing from the
+    # top-level `webhooks:` block and lives at a different indentation:
+    #
+    #     webhooks:                 <- top level, Step 8's allow_private_targets
+    #       allow_private_targets: true
+    #     merchant_clients:
+    #       - client_id: demo-merchant
+    #         webhooks:             <- THIS one, the endpoint list
+    #           - id: demo
+    #             url: http://wiremock-webhook:8080/webhooks
+    #
+    # A bare `grep -q '^\s*webhooks:'` matches both, so from the moment Step 8
+    # added the top-level block the merchant check could no longer fail.
+    # Reproduced by the Step 8 review: delete the indented block, keep the
+    # top-level one, and `just gen-demo-keys` answered "already exist, keeping
+    # them" — after which the demo's webhook step fails against a receiver
+    # nothing points at, which is exactly the failure this check exists to
+    # pre-empt. Anchored on the endpoint URL as well as on the indentation,
+    # because the URL line cannot appear anywhere but inside that list.
+    merchant_webhooks_present() {
+        grep -qE '^[[:space:]]+webhooks:[[:space:]]*$' "$overlay" \
+            && grep -qE '^[[:space:]]+url: http://wiremock-webhook' "$overlay"
+    }
+
     if [ -e "$key" ] && [ -e "$overlay" ]; then
         # ...unless the overlay predates a required field. `merchant_id`
         # became required on `merchant_clients` in Step 2, and an overlay
@@ -688,21 +814,31 @@ gen-demo-keys: gen-e2e-signing-key
         # port. The overlay is generated and git-ignored, so it is rebuilt
         # rather than patched.
         if grep -q '^\s*merchant_id:' "$overlay" \
-            && grep -q '^\s*webhooks:' "$overlay" \
+            && merchant_webhooks_present \
             && grep -q '^\s*publishable_keys:' "$overlay" \
+            && grep -q '^\s*allow_private_targets:' "$overlay" \
             && grep -q "^\s*public_base_url: http://localhost:{{demo_port}}$" "$overlay"; then
             echo "gen-demo-keys: $key and $overlay already exist, keeping them"
             exit 0
         fi
         if ! grep -q '^\s*merchant_id:' "$overlay"; then
             echo "gen-demo-keys: $overlay predates the required \`merchant_id\` field — regenerating the pair"
-        elif ! grep -q '^\s*webhooks:' "$overlay"; then
+        elif ! merchant_webhooks_present; then
             # Added 2026-09-03 (Step 5). Not fatal the way a missing
             # `merchant_id` is — the overlay still loads — but the demo's
-            # step 7 would then poll a receiver no endpoint points at and
-            # fail for a reason that has nothing to do with the worker. Same
-            # class of stale-generated-file failure, so the same shape check.
-            echo "gen-demo-keys: $overlay predates the \`webhooks\` block — regenerating the pair"
+            # webhook step would then poll a receiver no endpoint points at
+            # and fail for a reason that has nothing to do with the worker.
+            # Same class of stale-generated-file failure, so the same shape
+            # check. Narrowed 2026-09-04: see `merchant_webhooks_present`.
+            echo "gen-demo-keys: $overlay is missing the merchant's \`webhooks\` endpoint list — regenerating the pair"
+        elif ! grep -q '^\s*allow_private_targets:' "$overlay"; then
+            # Added 2026-09-03 (Step 8). The worst of the three to inherit
+            # silently: an overlay without it gets the shipping default —
+            # private targets refused — and `wiremock-webhook` is a compose
+            # service, so every delivery would be recorded `ssrf_blocked` and
+            # the demo's webhook step would fail naming a receiver that is
+            # working perfectly.
+            echo "gen-demo-keys: $overlay predates the \`webhooks.allow_private_targets\` flag — regenerating the pair"
         elif ! grep -q '^\s*publishable_keys:' "$overlay"; then
             # Added 2026-09-03 (Step 5c). Same class again: the overlay still
             # loads without it, but `examples/checkout-browser` and the
@@ -754,6 +890,19 @@ gen-demo-keys: gen-e2e-signing-key
       # goes wrong when the two disagree.
       public_base_url: http://localhost:{{demo_port}}
 
+    # The demo's receiver is \`wiremock-webhook\`, a service on the compose
+    # network, so every delivery resolves to a private address — and
+    # \`vpay_worker::ssrf\` refuses those by default. This one value changes the
+    # verdict and nothing else: the guard still resolves the host once and
+    # still pins the connection to what it resolved (ADR-0003 — a profile
+    # selects a file, never a code path).
+    #
+    # This overlay does not set \`livemode\`, so the base file's \`false\` stands.
+    # It has to: \`livemode: true\` with this flag is a refusal to boot
+    # (ConfigError::PrivateWebhookTargetsInLivemode).
+    webhooks:
+      allow_private_targets: true
+
     merchant_clients:
       - client_id: demo-merchant
         # The tenant, separate from the credential: every payment intent the
@@ -793,9 +942,19 @@ gen-demo-keys: gen-e2e-signing-key
         # has to be regenerated with the overlay. It is a sandbox label for a
         # throwaway stack; there is nothing here to keep secret.
         #
-        # `pk_test_` because this overlay does not set livemode, so the base
-        # config's `false` stands — Config::validate_all refuses a `pk_live_`
+        # \`pk_test_\` because this overlay does not set livemode, so the base
+        # config's \`false\` stands — Config::validate_all refuses a \`pk_live_\`
         # key under it (ConfigError::PublishableKeyLivemodeMismatch).
+        #
+        # Those three backticks are ESCAPED, like every other backtick in this
+        # heredoc. The delimiter is unquoted (\`<<YAML\`, so that "\$kid" and
+        # "\$n" expand), which means an unescaped backtick pair is COMMAND
+        # SUBSTITUTION: until 2026-09-03 these three lines ran \`pk_test_\`,
+        # \`false\` and \`pk_live_\` as commands, printed two "command not found"
+        # lines into the middle of \`just demo\`, and wrote the comment into the
+        # overlay with the backticked words deleted. Harmless as it stood and
+        # not harmless as a pattern — a word between backticks here is a
+        # command this recipe runs.
         publishable_keys: ["pk_test_demomerchantsandbox01"]
         # Where this merchant's events are POSTed once the worker's job loop
         # delivers them (docs/flows/webhooks.md). \`wiremock-webhook\` is the
@@ -821,66 +980,131 @@ gen-demo-keys: gen-e2e-signing-key
     echo "gen-demo-keys: wrote $key (3072-bit RSA, mode 0600, host-only)"
     echo "gen-demo-keys: wrote $overlay — client_id=demo-merchant kid=$kid"
 
-# Exits with the demo's own status, so `just demo` failing means the demo
-# failed — and still prints the URLs, because a failed demo run is exactly
-# when you want to go and look at the dashboard and the discovery document
-# yourself. (The earlier `/healthz` timeout is the one path that does not
-# print them: if the server never answered, there is nothing to visit. It
-# dumps `docker compose logs vpay-server` instead.)
+# Keys, stack, walkthrough — the one command issue #11 asks for.
 #
-# Boot the full stack and run the merchant demo against it.
-demo: gen-demo-keys
+# It is a composition and holds no body of its own, which is the point: `just
+# demo` and `just demo-up && just demo-walk` are the SAME two commands, so a
+# reader of docs/runbooks/demo.md is never running a path the one-liner does
+# not. `demo-walk` prints the URLs and exits with the walkthrough's own
+# status, so `just demo` failing still means the demo failed.
+#
+# Boot the demo stack and run the merchant walkthrough against it.
+demo: demo-up demo-walk
+
+# Generate the keys, build the images, bring the six services up, and return
+# only once the server answers.
+#
+# Split out of `demo` so the walkthrough is re-runnable against a stack that
+# is already up (`just demo-walk`), which is what you want while reading its
+# output — and so a stack that will not boot fails HERE, with compose's own
+# diagnostics, rather than inside a demo that would blame `/healthz`.
+#
+# Generate keys, build the images and bring the demo stack up.
+demo-up: gen-demo-keys
     #!/usr/bin/env bash
     set -euo pipefail
     # Fail fast with a named tool rather than a 120 s readiness timeout whose
     # message blames /healthz (review finding, 2026-09-02).
-    for tool in docker curl jq cargo; do
-        command -v "$tool" >/dev/null 2>&1 || { echo "demo: needs '$tool' on PATH" >&2; exit 1; }
+    for tool in docker curl; do
+        command -v "$tool" >/dev/null 2>&1 || { echo "demo-up: needs '$tool' on PATH" >&2; exit 1; }
     done
-    # Read by compose.demo.yml's `ports:` for vpay-server. Exported rather
-    # than passed per command, because `docker compose` interpolates each
-    # file from its own environment.
+    # Read by compose.demo.yml: `${VPAY_DEMO_PROJECT}` is its `name:`, the two
+    # ports are `vpay-server`'s and `wiremock-webhook`'s `ports:`. Exported
+    # rather than passed per command, because `docker compose` interpolates
+    # each file from its own environment.
+    export VPAY_DEMO_PROJECT={{demo_project}}
     export VPAY_DEMO_PORT={{demo_port}}
     export VPAY_DEMO_RECEIVER_PORT={{demo_receiver_port}}
-    docker compose {{demo_compose}} up -d --build
+    echo "demo-up: project {{demo_project}}, server :{{demo_port}}, receiver :{{demo_receiver_port}}"
 
-    # `vpay-server` has no container healthcheck — its image is FROM scratch
-    # and holds no shell to run one (compose.e2e.yml's own note). Readiness is
-    # observed from outside instead, the same way .github/workflows/ci.yml's
-    # e2e job does it.
-    echo "demo: waiting for http://localhost:{{demo_port}}/healthz"
+    # `--wait`, not a sleep. Postgres and all three WireMock containers carry
+    # healthchecks (compose.yml, compose.e2e.yml), so this returns when the
+    # database is accepting connections and each stub has LOADED ITS MAPPINGS
+    # — which a TCP probe cannot tell from a JVM that has merely bound its
+    # port. Readiness is then a property of the containers, checkable with
+    # `docker compose ps`, rather than a number in this file.
+    docker compose {{demo_compose}} up -d --build --wait {{demo_services}}
+
+    # The two services `--wait` can only report as *started*: `vpay-server`
+    # and `vpay-worker` are `FROM scratch` (ADR-0004) and hold no shell to run
+    # a healthcheck in, so neither can have one until the binary grows a
+    # `--healthcheck` self-check mode (compose.e2e.yml's own note; not this
+    # lane's change). Readiness is therefore observed from outside for the
+    # server, exactly as .github/workflows/ci.yml's e2e job does it. This is a
+    # poll of a real endpoint, not a fixed wait — it returns as soon as the
+    # server answers.
+    echo "demo-up: waiting for http://localhost:{{demo_port}}/healthz"
     deadline=$((SECONDS + 120))
     until curl -fsS -o /dev/null http://localhost:{{demo_port}}/healthz; do
         if [ "$SECONDS" -ge "$deadline" ]; then
-            echo "demo: FAIL — /healthz did not answer within 120s. Last 80 log lines:" >&2
+            echo "demo-up: FAIL — /healthz did not answer within 120s. Last 80 log lines:" >&2
             docker compose {{demo_compose}} ps >&2
             docker compose {{demo_compose}} logs --tail 80 vpay-server >&2
-            echo "demo: (exit 78 in that log means a config/CLI prerequisite is missing)" >&2
+            echo "demo-up: (exit 78 in that log means a config/CLI prerequisite is missing)" >&2
             exit 1
         fi
         sleep 2
     done
-    echo "demo: /healthz answered"
-    echo
+    echo "demo-up: /healthz answered"
 
-    set +e
-    # The demo runs on the host, so it needs the *published* port — the same
-    # one the overlay's `public_base_url` names, or step 2 is an
-    # `invalid_client` (see `demo_port`).
+# Run `examples/merchant-demo` against a stack that is already up.
+#
+# On the HOST, as a merchant's own process would be, so it needs the
+# *published* ports — `demo_port` is the same number the generated overlay's
+# `public_base_url` names, or the token exchange is an `invalid_client` that
+# mentions no port (see `demo_port`).
+#
+# Prints the URLs whether or not the walkthrough passed: a failed run is
+# exactly when you want to go and read the receiver's journal yourself.
+#
+# Run the merchant walkthrough against a demo stack that is already up.
+demo-walk:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    for tool in cargo curl; do
+        command -v "$tool" >/dev/null 2>&1 || { echo "demo-walk: needs '$tool' on PATH" >&2; exit 1; }
+    done
+    if ! curl -fsS -o /dev/null --max-time 5 http://localhost:{{demo_port}}/healthz; then
+        echo "demo-walk: FAIL — nothing answers http://localhost:{{demo_port}}/healthz." >&2
+        echo "demo-walk: bring the stack up first: just demo_project={{demo_project}} demo_port={{demo_port}} demo_receiver_port={{demo_receiver_port}} demo-up" >&2
+        exit 1
+    fi
+
     VPAY_BASE_URL=http://localhost:{{demo_port}} \
       VPAY_RECEIVER_URL=http://localhost:{{demo_receiver_port}} \
       cargo run -q -p merchant-demo
     status=$?
-    set -e
 
     echo
-    echo "  dashboard   http://localhost:3000"
     echo "  server      http://localhost:{{demo_port}}"
     echo "  discovery   http://localhost:{{demo_port}}/v1/oauth/.well-known/openid-configuration"
     echo "  receiver    http://localhost:{{demo_receiver_port}}/__admin/requests"
+    echo "  rail journal  docker compose {{demo_compose}} exec wiremock-mtn curl -s localhost:8080/__admin/requests"
+    echo "  (no dashboard: it has no data source to show — docs/runbooks/demo.md)"
     echo
-    echo "  tear down with: just demo-down"
+    echo "  tear down with: just demo_project={{demo_project}} demo-down"
     exit $status
+
+# What is running, under which project, on which host ports.
+#
+# The answer to "is anything of mine still up, and whose is that other stack"
+# — which is the question two concurrent demos create. `docker compose ps`
+# reports the project this variable set addresses; the `docker ps` line below
+# it reports EVERY vpay-ish project on the machine, because a collision is by
+# definition something the current variables do not name.
+#
+# Show what the demo stack is running, and every vpay-ish container.
+demo-status:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export VPAY_DEMO_PROJECT={{demo_project}}
+    export VPAY_DEMO_PORT={{demo_port}}
+    export VPAY_DEMO_RECEIVER_PORT={{demo_receiver_port}}
+    echo "demo-status: project {{demo_project}}, server :{{demo_port}}, receiver :{{demo_receiver_port}}"
+    docker compose {{demo_compose}} ps
+    echo
+    echo "demo-status: every vpay-ish container on this machine —"
+    docker ps -a --filter name=vpay --format 'table {{{{.Names}}\t{{{{.Status}}\t{{{{.Ports}}'
 
 # Removes the containers AND the volumes, so the next `just demo` starts on a
 # freshly migrated database rather than one carrying a previous run's rows.
@@ -891,9 +1115,22 @@ demo: gen-demo-keys
 # variable is not even a warning. Measured, not assumed — brought up on 18080,
 # torn down with the variable unset, container and volume both gone.
 #
+# It DOES need the project name, and that is the one thing this recipe cannot
+# guess: `just demo_project=vpay-demo-b demo` must be torn down with `just
+# demo_project=vpay-demo-b demo-down`, or it tears down the default project
+# instead — which is either nothing at all or, worse, somebody else's demo.
+# `just demo-status` prints every vpay-ish project on the machine for exactly
+# this moment.
+#
 # Stop the demo stack and delete its volumes.
 demo-down:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export VPAY_DEMO_PROJECT={{demo_project}}
+    export VPAY_DEMO_PORT={{demo_port}}
+    export VPAY_DEMO_RECEIVER_PORT={{demo_receiver_port}}
     docker compose {{demo_compose}} down -v
+    echo "demo-down: project {{demo_project}} is gone (containers and volumes)"
 
 # ------------------------------------------------------- stripe compat ----
 
@@ -933,10 +1170,16 @@ stripe-compat: gen-demo-keys build-sdk-node
     for tool in docker curl pnpm cargo jq; do
         command -v "$tool" >/dev/null 2>&1 || { echo "stripe-compat: needs '$tool' on PATH" >&2; exit 1; }
     done
+    # Same three variables as `just demo-up`, so this recipe addresses the
+    # same project and `just demo-down` tears down either. Without the project
+    # export it would run under compose.demo.yml's `${VPAY_DEMO_PROJECT:-…}`
+    # default while a `just demo_project=… demo-down` addressed another one.
+    export VPAY_DEMO_PROJECT={{demo_project}}
     export VPAY_DEMO_PORT={{demo_port}}
     export VPAY_DEMO_RECEIVER_PORT={{demo_receiver_port}}
-    docker compose {{demo_compose}} up -d --build \
-        postgres wiremock-mtn wiremock-orange wiremock-webhook vpay-server vpay-worker
+    # The same six services `demo_services` names, and `--wait` for the same
+    # reason `just demo-up` uses it.
+    docker compose {{demo_compose}} up -d --build --wait {{demo_services}}
 
     # `vpay-server`'s image is FROM scratch and carries no healthcheck, so
     # readiness is observed from outside — the same way `just demo` and CI do
@@ -972,7 +1215,7 @@ stripe-compat: gen-demo-keys build-sdk-node
     set -e
 
     echo
-    echo "  tear down with: just demo-down"
+    echo "  tear down with: just demo_project={{demo_project}} demo-down"
     exit $status
 
 storybook:

@@ -4,7 +4,7 @@ Runnable merchant-side integrations.
 
 | Example | What it shows |
 |---|---|
-| [merchant-demo](merchant-demo/) | **The only one that runs against a real vpay.** `just demo` boots the stack and drives it: discovery, JWKS, a real token, the 401 boundary, and the honest 404 where payment intents will land |
+| [merchant-demo](merchant-demo/) | **The one the demo runbook runs.** `just demo` boots the stack and drives it: discovery, JWKS, a real token, the 401 boundary, then **six payments on both rails** — succeeded, declined and expired on MTN; succeeded, expired and refused on Orange — each settled by the worker and each webhook signature-verified ([docs/runbooks/demo.md](../docs/runbooks/demo.md)) |
 | [merchant-curl](merchant-curl/) | The raw HTTP shape: the `client_credentials` + `private_key_jwt` handshake, form-encoded bodies, idempotency keys, both flow shapes |
 | [merchant-node](merchant-node/) | The same flow through vpay's own Node SDK, [`@vpay/sdk`](../sdks/nodejs/), which performs the `private_key_jwt` handshake ([ADR-0010](../docs/adr/0010-merchant-auth-private-key-jwt.md)) |
 | [merchant-stripe-node](merchant-stripe-node/) | **The second one that runs against a real vpay.** The same payment through the *official* `stripe` package, authenticated by `@vpay/sdk/stripe` — create, confirm, poll to `succeeded` ([stripe-sdk-compat.md](../docs/flows/stripe-sdk-compat.md)) |

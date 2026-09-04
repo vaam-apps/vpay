@@ -1,7 +1,7 @@
 //! `merchant-demo` — a runnable walk through **everything vpay's `/v1`
 //! surface answers today**, and a deliberate demonstration of where it stops.
 //!
-//! Seven steps:
+//! Four steps, the last of which is a table:
 //!
 //! 1. Read the OP's discovery document and JWKS, and show the issuer and the
 //!    `kid` the server signs `/v1` access tokens with.
@@ -10,44 +10,65 @@
 //!    itself.
 //! 3. Show that the same `/v1` path with no bearer token is a `401` carrying
 //!    vpay's error envelope, so the authentication boundary is real.
-//! 4. Create a PaymentIntent through the merchant SDK and read it back,
-//!    printing its id, status, amount and currency.
-//! 5. Confirm it against the push rail, which accepts it: the MTN adapter
-//!    submits to the WireMock rail `compose.yml` configures, and the intent
-//!    moves to `processing`.
-//! 6. Wait for `vpay-worker` to drive it to `succeeded`, polling
-//!    `GET /v1/payment_intents/{id}` exactly as a merchant integration would.
-//! 7. Read the webhook that settlement produced out of the receiver's own
-//!    request journal, and verify its `Vpay-Signature` with the shipping
-//!    SDK — the same call a merchant's handler makes.
+//! 4. Drive [`OUTCOMES`] — **six payments, on both rails, to every outcome
+//!    each rail documents**. Each one creates a PaymentIntent through the
+//!    merchant SDK, reads it back, confirms it, waits for `vpay-worker` to
+//!    settle it, and then reads the webhook that settlement produced out of
+//!    the receiver's own request journal and verifies its `Vpay-Signature`
+//!    with the shipping SDK — the same call a merchant's handler makes.
 //!
-//! **Each of the last three steps changed once the code behind it landed,
-//! and that is the point.** Step 5 used to assert a `501 not_implemented`,
-//! because no adapter implemented `submit`; step 6 did not exist, because
-//! nothing polled a charge and the demo said so in place of a payment; step
-//! 7 used to report an *absent* webhook, because nothing wrote an `events`
-//! row and nothing drained one. All three now assert what the code actually
-//! does, and all three are the first thing to break when that stops being
-//! true.
+//! **Step 4 used to be one payment: MTN, succeeded.** That under-specified
+//! the contract an integrator writes against, which is what issue #11 asked
+//! to fix. A merchant integrating against vpay has to handle a decline, an
+//! expiry and a redirect, and until Step 8 none of the three had ever been
+//! demonstrated end to end.
 //!
-//! **Why the demo can end in `succeeded` at all.** Step 6 is not a poll that
-//! hopes: the rail stub answers `PENDING` on the first status query and
-//! `SUCCESSFUL` on the second, and it does so because the confirm's MSISDN
-//! ([`DEMO_MSISDN`]) enters a WireMock scenario keyed on that number
-//! (`backends/tests/conformance/wiremock/mtn/mappings/requesttopay-scenario.json`).
-//! Nothing here fakes an approval; a real worker asks a real stub twice, over
-//! HTTP, and the second answer is the one that moves the money.
+//! # How an outcome is chosen, and why it is not chosen here
 //!
-//! **What step 6 still cannot show:** `amount_received`. The settlement
-//! transaction writes that column (`vpay_db::settlement::apply_succeeded`),
-//! but the `payment_intent` object does not carry it, so a merchant's client
-//! cannot see it and neither can this demo. Printing it would mean reading
-//! the database behind the API this demo exists to demonstrate. It is named
-//! here rather than quietly omitted.
+//! Nothing in this program tells vpay what should happen. Every outcome is
+//! selected at the **rail stub**, by a field of the request that a merchant
+//! genuinely controls, and the stub is a WireMock host reached over HTTP
+//! exactly as a real rail would be (ADR-0006). The two rails give a merchant
+//! different handles, and that difference is why the table has a
+//! `selected_by` column:
+//!
+//! * **MTN** — the payer's MSISDN. `confirm` mints the rail reference itself
+//!   (`Uuid::new_v4()`) and MTN's status query is a `GET` carrying no body,
+//!   so the number on the submit is the only field of the whole exchange a
+//!   merchant can steer. The stub carries the choice forward to the status
+//!   query with a WireMock scenario
+//!   (`backends/tests/conformance/wiremock/mtn/mappings/`).
+//! * **Orange** — the amount. Orange's status call is a `POST` whose body
+//!   carries `amount` beside `order_id`, so the stub can select on the status
+//!   request itself, with no scenario and no state
+//!   (`backends/tests/conformance/wiremock/orange/mappings/`).
+//!
+//! **The MTN half is order-sensitive and this program is what keeps it
+//! honest.** Its scenarios are armed by a submit and answer the *next* status
+//! query whatever reference it carries, so two MTN charges in flight at once
+//! against one stub could be answered the wrong way round. [`run_outcomes`]
+//! therefore drives the table strictly sequentially: each charge reaches a
+//! terminal state, and its webhook is verified, before the next confirm is
+//! sent. Do not parallelise it without re-reading those mapping files.
+//!
+//! # What this demo still cannot show
+//!
+//! * **`amount_received`.** The settlement transaction writes that column
+//!   (`vpay_db::settlement::apply_succeeded`), but the `payment_intent`
+//!   object does not carry it, so a merchant's client cannot see it and
+//!   neither can this demo. Printing it would mean reading the database
+//!   behind the API this demo exists to demonstrate.
+//! * **A payer actually visiting Orange's hosted page.** Outcome 4 prints the
+//!   `next_action.redirect_to_url` a merchant would send a browser to, and
+//!   then the rail stub answers the status query as though the payer had
+//!   completed it. Nothing here opens that URL. The browser return trip is a
+//!   named gap, not an oversight — see `docs/runbooks/demo.md`.
+//! * **A rail calling *us*.** The route exists; nothing in this demo
+//!   makes a rail use it. See [`CALLBACK_NOT_EXERCISED`].
 //!
 //! Nothing here prints a secret: not the access token, not the private key,
-//! not a rail credential, and not the webhook signing secret step 7 verifies
-//! with. Steps 4-6 print the intent's own public fields.
+//! not a rail credential, and not the webhook signing secret step 4 verifies
+//! with. Every payment prints the intent's own public fields.
 //!
 //! # Why the token exchange in step 2 is not `Client`'s
 //!
@@ -76,7 +97,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 use vpay_sdk::{
     Client, ConfirmPaymentIntentParams, CreatePaymentIntentParams, Credentials, IntentStatus,
-    PaymentMethodType, RequestOptions,
+    NextAction, PaymentIntent, PaymentMethodType, RequestOptions,
 };
 
 /// Where `just demo` publishes the stack, and what `config/application.yml`'s
@@ -98,13 +119,13 @@ const DEFAULT_PRIVATE_KEY_FILE: &str = ".e2e/demo-merchant/oauth-signing-key.pem
 /// endpoint at. `just demo_receiver_port=…` moves it, and the recipe exports
 /// the matching `VPAY_RECEIVER_URL`.
 ///
-/// Step 7 reads this container's request *journal*
+/// Every outcome reads this container's request *journal*
 /// (`GET /__admin/requests`), which is the merchant-side view: what actually
 /// arrived, headers and body, rather than what vpay believes it sent.
 const DEFAULT_RECEIVER_URL: &str = "http://localhost:8083";
 
-/// The webhook signing secret `compose.e2e.yml` gives both binaries, so step
-/// 7 can verify a delivery the same way a merchant's own handler would.
+/// The webhook signing secret `compose.e2e.yml` gives both binaries, so the
+/// demo can verify a delivery the same way a merchant's own handler would.
 ///
 /// A **stub** value for a stub receiver, and not a secret in any meaningful
 /// sense: it is written in `compose.e2e.yml` in plain sight, and the demo
@@ -119,14 +140,14 @@ const DEFAULT_RECEIVER_URL: &str = "http://localhost:8083";
 /// wrong.
 const DEFAULT_WEBHOOK_SECRET: &str = "wiremock-stub-webhook-secret-32-bytes";
 
-/// How long step 7 waits for the delivery before failing.
+/// How long an outcome waits for its webhook before failing.
 ///
-/// Step 6 has already seen the intent reach `succeeded`, so the `events` row
-/// exists before this wait starts; what is left is the fan-out drain (a
-/// singleton that reschedules every five seconds) and one `deliver_webhook`
-/// job that runs immediately. Thirty seconds is several times that, which
-/// makes a timeout here mean "the drain or the delivery is broken" rather
-/// than "the demo was impatient".
+/// The settlement has already been observed through the API by the time this
+/// wait starts, so the `events` row exists; what is left is the fan-out drain
+/// (a singleton that reschedules every five seconds) and one
+/// `deliver_webhook` job that runs immediately. Thirty seconds is several
+/// times that, which makes a timeout here mean "the drain or the delivery is
+/// broken" rather than "the demo was impatient".
 const RECEIVER_WAIT: Duration = Duration::from_secs(30);
 
 /// The id step 3 asks for without a token. Deliberately one no merchant
@@ -136,58 +157,209 @@ const DEMO_INTENT_ID: &str = "pi_demo";
 
 /// The one sentence this demo exists to put on a terminal.
 ///
-/// It is no longer about the adapters, and no longer about delivery — both
-/// ship, and steps 6 and 7 prove it. What is still missing is the *inbound*
-/// half: nothing accepts a rail's callback, so every settlement this demo
-/// shows came from vpay asking rather than from being told.
-const NOT_BUILT_YET: &str = concat!(
-    "there is still no callback route — `POST /provider/{code}/callback` does not exist, ",
-    "so a rail that calls back is ignored and every settlement above came from the ",
-    "worker's own authenticated query_status (docs/status.md)"
+/// This replaced a constant that said no callback route existed. Since Step 8
+/// one does — `vpay_api::provider_callback` mounts
+/// `POST /provider/{code}/callback` — so the honest claim is no longer about
+/// the route's absence but about what this run exercised: the demo's rail
+/// stubs are request/response WireMock mappings that call nothing back, so
+/// not one of the settlements above was prompted by a callback.
+///
+/// That is a statement about coverage, not a caveat about correctness. A
+/// callback is only ever a hint that pulls an already-queued poll forward;
+/// the authenticated `query_status` is the only thing that moves money
+/// (`docs/flows/provider-port.md`). So the settlement path this demo did
+/// exercise is the same one a callback would have reached, sooner.
+///
+/// Like its predecessor this is the one claim in this file no assertion
+/// backs — the demo cannot prove a negative about traffic it never sent. If
+/// a future stub is given a `postServeAction` that posts to the callback
+/// nest, this line stops being true and the compiler will not catch it.
+const CALLBACK_NOT_EXERCISED: &str = concat!(
+    "the callback route exists — `POST /provider/{code}/callback` — but this demo's rail ",
+    "stubs never call it, so every settlement above came from the worker's own ",
+    "authenticated query_status; a callback would only have been a hint that pulled that ",
+    "same poll forward (docs/flows/provider-port.md)"
 );
 
-/// The intent step 4 creates: 5,000 minor units on the push rail.
+/// What the demo asks the payer to do, and therefore what the rail stub keys
+/// its answer on.
 ///
-/// **EUR, not XAF, and that is a property of the rail rather than a
-/// preference.** `config/application.yml` configures `mtn_momo` with
-/// `currency: EUR` because MTN's sandbox rejects XAF (`docs/flows/money.md`),
-/// and `/v1` refuses a confirm whose intent currency is not the chosen
-/// rail's — before any charge exists (`vpay_api`'s `currencies_agree`). An
-/// XAF intent here would therefore be a `400` at step 5 rather than a
-/// payment, which is exactly the mistake the rule exists to catch, and
-/// exactly the wrong thing for a demo to model. EUR has two decimals, so
-/// `5000` is €50.00.
-const DEMO_AMOUNT: i64 = 5000;
-const DEMO_CURRENCY: &str = "eur";
+/// An enum rather than two `Option`s because the rails do not take the same
+/// field and three of the four combinations would be nonsense — the same
+/// reasoning as [`ConfirmPaymentIntentParams`]'s own shape.
+enum Steering {
+    /// MTN: the payer's MSISDN, which is the one field of a push exchange a
+    /// merchant chooses. A documentation number in the `2376000000xx` block.
+    Msisdn(&'static str),
+    /// Orange: where the rail returns the payer afterwards. The *outcome* on
+    /// this rail is steered by the amount instead (see [`Outcome::amount`]),
+    /// because the return URL never reaches the status query.
+    ReturnUrl(&'static str),
+}
 
-/// The MSISDN step 5 prompts. A documentation number, not anyone's — and a
-/// *specific* one, which is load-bearing rather than arbitrary.
+/// One row of the outcome table: a whole payment, from create to the webhook
+/// it produced, and what must be true at each point.
 ///
-/// `backends/tests/conformance/wiremock/mtn/mappings/requesttopay-scenario.json`
-/// keys a WireMock scenario (`mtn-e2e-poll`, priority 5) on this value: a
-/// `requestToPay` carrying it is accepted normally, and the two *status*
-/// queries that follow answer `PENDING` then `SUCCESSFUL`. That is what lets
-/// step 6 end in a settled payment instead of a demo that waits forever.
-///
-/// It has to be steered on the submit because it cannot be steered anywhere
-/// else. `confirm` mints the rail reference itself (`Uuid::new_v4()`), and
-/// MTN's status query is a `GET` carrying no body — so the payer's number,
-/// which comes from the merchant's own request, is the only field of this
-/// exchange a demo can choose. Change this constant and the demo stops
-/// settling; that is the coupling, stated rather than buried.
-const DEMO_MSISDN: &str = "237600000ce0";
+/// A table rather than six functions because every row runs the *identical*
+/// code path ([`run_outcome`]) and differs only in these values. Six
+/// hand-written walk-throughs would let one of them quietly stop asserting
+/// what the others do.
+struct Outcome {
+    /// What a human should understand happened, in a payer's terms.
+    label: &'static str,
+    /// The rail. Also the intent's single `payment_method_types` entry.
+    rail: PaymentMethodType,
+    /// Lowercase, as `/v1` wants it. **Per rail, not per taste**:
+    /// `config/application.yml` puts `mtn_momo` on EUR (MTN's sandbox rejects
+    /// XAF — `docs/flows/money.md`) and `orange_money` on XAF, and `/v1`
+    /// refuses a confirm whose intent currency is not the chosen rail's,
+    /// before any charge exists (`vpay_api`'s `currencies_agree`).
+    currency: &'static str,
+    /// Minor units (`docs/flows/money.md`). On Orange this is also the field
+    /// the stub selects the outcome on — see [`Outcome::selected_by`].
+    amount: i64,
+    /// What the confirm carries.
+    steering: Steering,
+    /// The sentence printed above the payment saying what makes this outcome
+    /// happen, so a reader can go and check the mapping rather than trust
+    /// the demo.
+    selected_by: &'static str,
+    /// What `confirm` must answer. `processing` on a push rail (the handset
+    /// is prompting), `requires_action` on a redirect rail (the payer has
+    /// somewhere to go). Anything else fails the run.
+    after_confirm: IntentStatus,
+    /// Where the worker must leave it. There is no `failed` status: a
+    /// rail-reported failure returns the intent to `requires_payment_method`
+    /// carrying `last_payment_error` (`docs/flows/payment-lifecycle.md`).
+    settled: IntentStatus,
+    /// The `charges.failure_code` this outcome must produce, as it reaches a
+    /// merchant on `last_payment_error.code` — `None` for a payment that
+    /// succeeded. The closed vocabulary is `docs/flows/failures.md`.
+    failure_code: Option<&'static str>,
+    /// The event the settlement must have written, as the receiver records
+    /// it. Asserted against the *verified* event's `type`, not against the
+    /// journal's raw text.
+    event_type: &'static str,
+}
 
-/// How long step 6 waits for the worker to settle the charge.
-///
-/// The poll ladder's first rung is ten seconds (`vpay_worker::poll_delay`)
-/// and the stub answers `PENDING` first, so the earliest possible settlement
-/// is about eleven seconds after the confirm. This is a *ceiling* on a wait
-/// that normally ends well before it — generous enough that a cold compose
-/// stack does not fail the demo, tight enough that a worker which is not
-/// running fails it in under a minute with a message saying so.
-const SETTLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// Where a redirect rail sends the payer back to. Never fetched by anything:
+/// it is handed to the rail, stored on the charge, and echoed to the merchant
+/// as `next_action.redirect_to_url.return_url`. `example` is reserved for
+/// documentation (RFC 2606), so this cannot resolve to anyone's host.
+const DEMO_RETURN_URL: &str = "https://shop.example/orders/demo-1234/return";
 
-/// How often step 6 asks. A merchant integration polls; this is what that
+/// The six payments this demo makes: **both rails, every outcome each rail
+/// documents**.
+///
+/// The MTN rows come first and the order within a rail does not matter, but
+/// the *sequencing* does — see this module's header and the mapping files.
+///
+/// # Why MTN's expiry is not spelled `EXPIRED`
+///
+/// Because MTN does not spell it that way. `EXPIRED` is Orange's status
+/// string; MTN's status vocabulary is `PENDING`/`SUCCESSFUL`/`FAILED`, and
+/// the reason on a prompt nobody answered is `COULD_NOT_PERFORM_TRANSACTION`
+/// (`vpay_adapter_mtn_momo::mapping::FAILURE_REASONS`). Both land on the same
+/// core code, `payer_timeout`, which is what a merchant integrates against —
+/// so the outcome is demonstrated on both rails and neither stub is made to
+/// claim something about a rail nobody has called.
+const OUTCOMES: [Outcome; 6] = [
+    Outcome {
+        label: "mtn_momo · the payer approves on their handset",
+        rail: PaymentMethodType::MtnMomo,
+        currency: "eur",
+        amount: 5000,
+        steering: Steering::Msisdn("237600000ce0"),
+        selected_by: "MSISDN 237600000ce0 enters the `mtn-e2e-poll` scenario \
+                      (requesttopay-scenario.json): PENDING on the first status query, \
+                      SUCCESSFUL on the second",
+        after_confirm: IntentStatus::Processing,
+        settled: IntentStatus::Succeeded,
+        failure_code: None,
+        event_type: "payment_intent.succeeded",
+    },
+    Outcome {
+        label: "mtn_momo · the payer has no balance",
+        rail: PaymentMethodType::MtnMomo,
+        currency: "eur",
+        amount: 5000,
+        steering: Steering::Msisdn("237600000f01"),
+        selected_by: "MSISDN 237600000f01 arms the `mtn-demo-decline` scenario \
+                      (demo-outcomes.json), which answers the next status query \
+                      FAILED/NOT_ENOUGH_FUNDS",
+        after_confirm: IntentStatus::Processing,
+        settled: IntentStatus::RequiresPaymentMethod,
+        failure_code: Some("insufficient_funds"),
+        event_type: "payment_intent.payment_failed",
+    },
+    Outcome {
+        label: "mtn_momo · the prompt expires unanswered",
+        rail: PaymentMethodType::MtnMomo,
+        currency: "eur",
+        amount: 5000,
+        steering: Steering::Msisdn("237600000f02"),
+        selected_by: "MSISDN 237600000f02 arms the `mtn-demo-expiry` scenario \
+                      (demo-outcomes.json), which answers FAILED with the OBJECT-shaped \
+                      reason COULD_NOT_PERFORM_TRANSACTION — MTN's ~5-minute PIN window",
+        after_confirm: IntentStatus::Processing,
+        settled: IntentStatus::RequiresPaymentMethod,
+        failure_code: Some("payer_timeout"),
+        event_type: "payment_intent.payment_failed",
+    },
+    Outcome {
+        label: "orange_money · the payer completes the hosted page",
+        rail: PaymentMethodType::OrangeMoney,
+        currency: "xaf",
+        amount: 5000,
+        steering: Steering::ReturnUrl(DEMO_RETURN_URL),
+        selected_by: "5000 XAF is claimed by no amount-keyed mapping, so the status query \
+                      falls through to transactionstatus.json's catch-all SUCCESS",
+        after_confirm: IntentStatus::RequiresAction,
+        settled: IntentStatus::Succeeded,
+        failure_code: None,
+        event_type: "payment_intent.succeeded",
+    },
+    Outcome {
+        label: "orange_money · the hosted page expires before the payer finishes",
+        rail: PaymentMethodType::OrangeMoney,
+        currency: "xaf",
+        amount: 5001,
+        steering: Steering::ReturnUrl(DEMO_RETURN_URL),
+        selected_by: "5001 XAF selects demo-outcomes.json's EXPIRED mapping — the amount \
+                      travels on Orange's status body, so no scenario is needed",
+        after_confirm: IntentStatus::RequiresAction,
+        settled: IntentStatus::RequiresPaymentMethod,
+        failure_code: Some("payer_timeout"),
+        event_type: "payment_intent.payment_failed",
+    },
+    Outcome {
+        label: "orange_money · the rail refuses, and documents no reason for it",
+        rail: PaymentMethodType::OrangeMoney,
+        currency: "xaf",
+        amount: 5002,
+        steering: Steering::ReturnUrl(DEMO_RETURN_URL),
+        selected_by: "5002 XAF selects demo-outcomes.json's FAILED mapping. Orange \
+                      documents no sub-reason vocabulary for FAILED, so the adapter \
+                      refuses to guess: `provider_error` carrying the raw text",
+        after_confirm: IntentStatus::RequiresAction,
+        settled: IntentStatus::RequiresPaymentMethod,
+        failure_code: Some("provider_error"),
+        event_type: "payment_intent.payment_failed",
+    },
+];
+
+/// How long an outcome waits for the worker to settle its charge.
+///
+/// The poll ladder's rungs are 10 s, 20 s, 30 s … (`vpay_worker::poll_delay`)
+/// and the settling MTN outcome is answered `PENDING` first, so its earliest
+/// possible settlement is about thirty seconds after the confirm; every other
+/// outcome is terminal on the first rung. This is a *ceiling* on a wait that
+/// normally ends well before it — generous enough that a cold compose stack
+/// does not fail the demo, tight enough that a worker which is not running
+/// fails it in under two minutes with a message saying so.
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How often an outcome asks. A merchant integration polls; this is what that
 /// looks like, at a rate that will not annoy the API.
 const SETTLE_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -214,7 +386,11 @@ async fn main() -> ExitCode {
     match run().await {
         Ok(()) => {
             println!();
-            println!("✔ all seven steps behaved as expected.");
+            println!(
+                "✔ all four steps behaved as expected — {} payments on 2 rails, every one \
+                 settled by the worker asking the rail and evidenced by a signed webhook.",
+                OUTCOMES.len(),
+            );
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -256,45 +432,38 @@ async fn run() -> anyhow::Result<()> {
     step_2_access_token(&http, &client_id, &pem, &endpoints).await?;
     step_3_unauthenticated(&http, &base_url).await?;
 
-    // One SDK client for both of the remaining steps, configured the way
+    // One SDK client for the whole table, configured the way
     // `docs/flows/merchant-auth.md` tells a merchant to configure one: a base
     // URL and a credential. The issuer, the token endpoint and the `vpay:v1`
     // audience are the SDK's own derivations, not values handed to it here —
     // which is what makes this a test of that derivation.
     let client = Client::builder(&base_url)
-        .credentials(credentials(&client_id, &pem).context("step 4 (create + retrieve)")?)
+        .credentials(credentials(&client_id, &pem).context("step 4 (the outcome table)")?)
         .timeout(REQUEST_TIMEOUT)
         .build()
-        .context("step 4 (create + retrieve): building the SDK client")?;
+        .context("step 4 (the outcome table): building the SDK client")?;
 
-    // One id per run, shared by step 4's and step 5's idempotency keys.
-    let run = run_id()?;
-    let intent_id = step_4_create_and_retrieve(&client, &run).await?;
-    step_5_confirm(&client, &intent_id, &run).await?;
-    step_6_await_settlement(&client, &intent_id).await?;
-    step_7_webhook(&http, &receiver_url, &intent_id).await?;
-
-    Ok(())
+    run_outcomes(&client, &http, &receiver_url).await
 }
 
-/// A value unique to this run, which the two `POST`s below derive their
+/// A value unique to this run, which every `POST` below derives its
 /// `Idempotency-Key`s from.
 ///
 /// # Why not a fixed string
 ///
-/// It was one, and that was a bug the moment step 5 started succeeding. The
-/// keys are kept for 24 hours (`docs/api/README.md`), and `just demo` does
-/// not tear the database down between runs — so a second run under a fixed
-/// key *replayed* step 4's stored response, which says
-/// `requires_payment_method`, while the retrieve that follows it read the
-/// row step 5 had since moved to `processing`. The demo then failed with
-/// "the create's response and the stored row disagree", which was true and
-/// was entirely the demo's own doing.
+/// It was one, and that was a bug the moment the confirm started succeeding.
+/// The keys are kept for 24 hours (`docs/api/README.md`), and `just demo`
+/// does not tear the database down between runs — so a second run under a
+/// fixed key *replayed* the create's stored response, which says
+/// `requires_payment_method`, while the retrieve that followed it read the
+/// row the confirm had since moved on. The demo then failed with "the
+/// create's response and the stored row disagree", which was true and was
+/// entirely the demo's own doing.
 ///
-/// A per-run key makes each run a new payment, which is what a merchant
-/// running this twice means. Wall-clock nanoseconds rather than a UUID
-/// because that would be a dependency for one line; the value only has to
-/// differ between runs on one machine, and it is never a security token.
+/// A per-run key makes each run a new set of payments, which is what a
+/// merchant running this twice means. Wall-clock nanoseconds rather than a
+/// UUID because that would be a dependency for one line; the value only has
+/// to differ between runs on one machine, and it is never a security token.
 fn run_id() -> anyhow::Result<String> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -321,7 +490,7 @@ struct Endpoints {
 async fn step_1_discovery(http: &reqwest::Client, base_url: &str) -> anyhow::Result<Endpoints> {
     const STEP: &str = "step 1 (discovery + JWKS)";
 
-    println!("[1/7] discovery + JWKS");
+    println!("[1/4] discovery + JWKS");
 
     let discovery_url = format!("{base_url}/v1/oauth/.well-known/openid-configuration");
     let discovery = get_json(http, &discovery_url)
@@ -402,7 +571,7 @@ async fn step_2_access_token(
     const STEP: &str = "step 2 (access token)";
 
     println!();
-    println!("[2/7] access token (client_credentials + private_key_jwt)");
+    println!("[2/4] access token (client_credentials + private_key_jwt)");
 
     let credentials = credentials(client_id, pem).with_context(|| STEP)?;
     let assertion = vpay_sdk::auth::mint_client_assertion(
@@ -503,7 +672,7 @@ async fn step_3_unauthenticated(http: &reqwest::Client, base_url: &str) -> anyho
     const STEP: &str = "step 3 (unauthenticated /v1 is 401)";
 
     println!();
-    println!("[3/7] the same path with no bearer token");
+    println!("[3/4] the same path with no bearer token");
 
     let url = format!("{base_url}/v1/payment_intents/{DEMO_INTENT_ID}");
     let response = http
@@ -559,148 +728,260 @@ async fn step_3_unauthenticated(http: &reqwest::Client, base_url: &str) -> anyho
 
 // ------------------------------------------------------------------ step 4
 
-/// Creates a PaymentIntent through the SDK and reads it back.
+/// Drives every row of [`OUTCOMES`], one at a time, and prints a summary.
 ///
-/// This is a real write to a real database: the row exists after this step,
-/// filed under the demo merchant's tenant, and `just demo-down` is what
-/// throws it away. The retrieve is not decoration — it is what proves the
-/// create *persisted* rather than merely rendered an object, and comparing
-/// the two is what would catch a retrieve that answered from somewhere else.
-///
-/// The `Idempotency-Key` is fixed rather than random on purpose: run this
-/// demo twice against the same stack and the second run replays the first
-/// run's stored answer instead of creating a second intent, which is the
-/// property `docs/flows/merchant-auth.md` promises and the reason the header
-/// is required at all. (`just demo-down` deletes the volumes, so a fresh
-/// stack starts over.)
-async fn step_4_create_and_retrieve(client: &Client, run: &str) -> anyhow::Result<String> {
-    const STEP: &str = "step 4 (create + retrieve a payment intent)";
+/// **Sequential on purpose, and not merely for readable output.** The MTN
+/// stub's decline and expiry mappings are armed by a submit and answer the
+/// next status query *whatever reference it carries* — the only steering a
+/// push rail's `GET` status query allows (see this module's header and
+/// `mtn/mappings/demo-outcomes.json`). Two MTN charges in flight against one
+/// stub could therefore be answered the wrong way round, and the demo would
+/// report the wrong outcome for both. Each row finishes — settled and its
+/// webhook verified — before the next confirm is sent.
+async fn run_outcomes(
+    client: &Client,
+    http: &reqwest::Client,
+    receiver_url: &str,
+) -> anyhow::Result<()> {
+    let run = run_id()?;
+    let total = OUTCOMES.len();
 
     println!();
-    println!("[4/7] payment_intents().create(…) then .retrieve(…) through vpay-sdk");
+    println!("[4/4] {total} payments, on both rails, to every outcome each rail documents");
+    println!(
+        "      each one: create → retrieve → confirm → the worker settles it → the signed \
+         webhook it produced"
+    );
+
+    let mut settled = Vec::with_capacity(total);
+    for (index, outcome) in OUTCOMES.iter().enumerate() {
+        let intent = run_outcome(client, http, receiver_url, &run, index, outcome).await?;
+        settled.push((outcome, intent));
+    }
+
+    println!();
+    println!("      what just happened, in one table:");
+    // The widths are the widest value each column can actually hold, not a
+    // guess: `orange_money` is 12, and an intent id is `pi_` plus a 24-char
+    // ULID-ish suffix. A column narrower than its content does not truncate
+    // in Rust's formatter — it overflows and pushes every later column out of
+    // line, which is what this table did until 2026-09-03.
+    println!(
+        "        {:<3} {:<12} {:<27} {:<24} failure_code",
+        "#", "rail", "intent", "status"
+    );
+    for (index, (outcome, intent)) in settled.iter().enumerate() {
+        println!(
+            "        {:<3} {:<12} {:<27} {:<24} {}",
+            index + 1,
+            outcome.rail.as_wire_str(),
+            intent.id,
+            status_label(intent.status),
+            intent
+                .last_payment_error
+                .as_ref()
+                .map_or("—", |error| error.code.as_str()),
+        );
+    }
+
+    println!();
+    println!("      {CALLBACK_NOT_EXERCISED}");
+
+    Ok(())
+}
+
+/// One payment, from create to the webhook it produced.
+///
+/// Returns the settled intent so [`run_outcomes`] can print the summary from
+/// the objects it actually observed rather than from [`OUTCOMES`]'s
+/// expectations — a table printed from what was *expected* would say the same
+/// thing whether or not the run had gone that way.
+async fn run_outcome(
+    client: &Client,
+    http: &reqwest::Client,
+    receiver_url: &str,
+    run: &str,
+    index: usize,
+    outcome: &Outcome,
+) -> anyhow::Result<PaymentIntent> {
+    println!();
+    println!(
+        "  ── {}/{}  {} ─────────────────────────",
+        index + 1,
+        OUTCOMES.len(),
+        outcome.label
+    );
+    println!("     selected by: {}", outcome.selected_by);
+
+    let key = format!("{run}-{index}");
+    let created = create_and_retrieve(client, outcome, &key).await?;
+    let confirmed = confirm(client, outcome, &created.id, &key).await?;
+    let settled = await_settlement(client, outcome, &confirmed.id).await?;
+    webhook(http, receiver_url, outcome, &settled.id).await?;
+
+    Ok(settled)
+}
+
+/// Creates the intent through the SDK and reads it back.
+///
+/// This is a real write to a real database: the row exists after this, filed
+/// under the demo merchant's tenant, and `just demo-down` is what throws it
+/// away. The retrieve is not decoration — it is what proves the create
+/// *persisted* rather than merely rendered an object, and comparing the two
+/// is what would catch a retrieve that answered from somewhere else.
+async fn create_and_retrieve(
+    client: &Client,
+    outcome: &Outcome,
+    key: &str,
+) -> anyhow::Result<PaymentIntent> {
+    let step = format!("{} — create + retrieve", outcome.label);
 
     let params = CreatePaymentIntentParams {
-        amount: DEMO_AMOUNT,
-        currency: DEMO_CURRENCY.to_owned(),
-        payment_method_types: vec![PaymentMethodType::MtnMomo],
-        metadata: BTreeMap::from([("order_id".to_owned(), "demo-1234".to_owned())]),
-        description: Some("merchant-demo order".to_owned()),
+        amount: outcome.amount,
+        currency: outcome.currency.to_owned(),
+        payment_method_types: vec![outcome.rail],
+        metadata: BTreeMap::from([("order_id".to_owned(), format!("demo-{key}"))]),
+        description: Some(format!("merchant-demo · {}", outcome.label)),
     };
 
     let created = client
         .payment_intents()
         .create(
             params,
-            RequestOptions::new().with_idempotency_key(format!("{run}-create")),
+            RequestOptions::new().with_idempotency_key(format!("{key}-create")),
         )
         .await
-        .map_err(|error| describe(STEP, "creating a payment intent", &error))?;
+        .map_err(|error| describe(&step, "creating a payment intent", &error))?;
 
-    println!("  ✔ POST /v1/payment_intents — HTTP 200");
-    println!("      id        {}", created.id);
-    println!("      status    {}", status_label(created.status));
-    println!(
-        "      amount    {} {}   (minor units — {} has two decimals, so this is 50.00)",
-        created.amount, created.currency, created.currency
-    );
-    println!(
-        "      rails     {}",
-        created.payment_method_types.join(", ")
-    );
-    println!("      livemode  {}", created.livemode);
+    println!("     ✔ POST /v1/payment_intents");
+    print_intent(&created, "       ");
 
     let retrieved = client
         .payment_intents()
         .retrieve(&created.id)
         .await
-        .map_err(|error| describe(STEP, "retrieving the intent just created", &error))?;
+        .map_err(|error| describe(&step, "retrieving the intent just created", &error))?;
 
     if retrieved != created {
         bail!(
-            "{STEP}: the retrieve returned a different object than the create did. The create's \
+            "{step}: the retrieve returned a different object than the create did. The create's \
              response and the stored row disagree, which means one of them is not what it says \
              it is."
         );
     }
     println!(
-        "  ✔ GET /v1/payment_intents/{} — identical object",
+        "     ✔ GET /v1/payment_intents/{} — identical object",
         created.id
     );
 
-    Ok(created.id)
+    Ok(created)
 }
 
-// ------------------------------------------------------------------ step 5
-
-/// Confirms the intent against the push rail, which accepts it.
+/// Confirms the intent against its rail and asserts the flow's one success
+/// state.
 ///
-/// `processing` is this step's success condition, and every other outcome
-/// fails the demo — including the `501` that used to be the success
-/// condition here. The request is real all the way down: vpay resolves the
-/// adapter, commits the charge row with the reference it will submit under,
-/// records the attempt, calls MTN's `requesttopay` over HTTP against the
-/// `wiremock-mtn` host `config/application.yml` names, and commits what came
-/// back before answering (`docs/flows/crash-safety.md`).
+/// The request is real all the way down: vpay resolves the adapter, commits
+/// the charge row with the reference it will submit under, records the
+/// attempt, calls the rail over HTTP against the WireMock host
+/// `config/application.yml` names, and commits what came back before
+/// answering (`docs/flows/crash-safety.md`).
 ///
-/// # What `processing` does and does not mean
+/// # What the two success states mean, and do not
 ///
-/// It means the rail has the request and the payer's handset should be
-/// prompting. It does **not** mean money moved: only an authenticated
-/// `query_status` can say that, and nothing in this stack asks yet. The demo
-/// prints that sentence rather than letting a reader infer a completed
-/// payment from a green tick.
+/// `processing` on a push rail means the rail has the request and the payer's
+/// handset should be prompting. `requires_action` on a redirect rail means
+/// the rail minted a hosted page and vpay has **already committed** its URL
+/// and key material — "the commit is the gate on the redirect". Neither means
+/// money moved: only an authenticated `query_status` can say that, which is
+/// what [`await_settlement`] waits for.
 ///
 /// # Why no charge id is printed
 ///
 /// There is none on the wire. `/v1` exposes payment intents, not charges —
 /// there is no `/v1/charges` and the `payment_intent` object carries no
 /// charge id (`docs/api/README.md`) — so a demo that printed one would have
-/// had to read the database behind the API it is demonstrating. What it
-/// prints instead is everything the merchant's own client can see.
-async fn step_5_confirm(client: &Client, intent_id: &str, run: &str) -> anyhow::Result<()> {
-    const STEP: &str = "step 5 (confirm reaches the rail and is accepted)";
+/// had to read the database behind the API it is demonstrating.
+async fn confirm(
+    client: &Client,
+    outcome: &Outcome,
+    intent_id: &str,
+    key: &str,
+) -> anyhow::Result<PaymentIntent> {
+    let step = format!("{} — confirm", outcome.label);
 
-    println!();
-    println!("[5/7] payment_intents().confirm(\"{intent_id}\") through vpay-sdk");
+    let params = match outcome.steering {
+        Steering::Msisdn(msisdn) => ConfirmPaymentIntentParams::mtn_momo(msisdn),
+        Steering::ReturnUrl(return_url) => ConfirmPaymentIntentParams::orange_money(return_url),
+    };
 
     let confirmed = client
         .payment_intents()
         .confirm(
             intent_id,
-            ConfirmPaymentIntentParams::mtn_momo(DEMO_MSISDN),
-            RequestOptions::new().with_idempotency_key(format!("{run}-confirm")),
+            params,
+            RequestOptions::new().with_idempotency_key(format!("{key}-confirm")),
         )
         .await
-        .map_err(|error| describe(STEP, "confirming the payment intent", &error))?;
+        .map_err(|error| describe(&step, "confirming the payment intent", &error))?;
 
-    if confirmed.status != IntentStatus::Processing {
+    if confirmed.status != outcome.after_confirm {
         bail!(
-            "{STEP}: the rail accepted the charge and the intent is `{}` rather than \
-             `processing`. A push rail's confirm has exactly one success state \
-             (docs/flows/payment-lifecycle.md); anything else means the response and the \
-             stored row disagree about what happened.",
+            "{step}: the confirm answered `{}` rather than `{}`. Each flow has exactly one \
+             success state (docs/flows/payment-lifecycle.md); anything else means the response \
+             and the stored row disagree about what happened.{}",
             status_label(confirmed.status),
+            status_label(outcome.after_confirm),
+            confirmed
+                .last_payment_error
+                .as_ref()
+                .map_or_else(String::new, |error| format!(
+                    " The rail refused it at submit: {} ({}).",
+                    error.code, error.message
+                )),
         );
     }
-    if confirmed.next_action.is_some() {
-        bail!(
-            "{STEP}: a push rail returned a next_action. There is nothing for a browser to do \
+
+    println!(
+        "     ✔ POST /v1/payment_intents/{intent_id}/confirm — HTTP 200, the rail accepted the \
+         charge"
+    );
+    print_intent(&confirmed, "       ");
+
+    match (&confirmed.next_action, outcome.after_confirm) {
+        (None, IntentStatus::Processing) => {
+            println!(
+                "       next_action    null   (a push rail prompts the handset; there is \
+                 nothing for a browser to do)"
+            );
+        }
+        (Some(NextAction::RedirectToUrl { redirect_to_url }), IntentStatus::RequiresAction) => {
+            println!("       next_action    redirect_to_url — send the payer here:");
+            println!("         url          {}", redirect_to_url.url);
+            println!(
+                "         return_url   {}",
+                redirect_to_url.return_url.as_deref().unwrap_or("(none)")
+            );
+            println!(
+                "       (this demo does NOT open that URL. The rail stub answers the status \
+                 query as though the payer had completed the page — the browser return trip is \
+                 a named gap, docs/runbooks/demo.md)"
+            );
+        }
+        (Some(_), IntentStatus::Processing) => bail!(
+            "{step}: a push rail returned a next_action. There is nothing for a browser to do \
              while a payer types a PIN into their own handset, so a redirect here would be \
              pointing them somewhere invented."
-        );
+        ),
+        (None, IntentStatus::RequiresAction) => bail!(
+            "{step}: the intent is `requires_action` and carries no next_action, so the payer \
+             has nowhere to go. The charge's redirect_url is committed before this response is \
+             built (docs/flows/crash-safety.md), so this cannot be a race — it is a defect."
+        ),
+        (_, other) => bail!(
+            "{step}: this demo has no expectation for a confirm that lands in `{}`",
+            status_label(other)
+        ),
     }
-
-    println!("  ✔ HTTP 200 — the rail accepted the charge");
-    println!("      id             {}", confirmed.id);
-    println!(
-        "      status         {}   (was requires_payment_method)",
-        status_label(confirmed.status)
-    );
-    println!("      next_action    null   (push rails prompt the handset)");
-    println!(
-        "      charge         not on the wire — /v1 has no charges resource; the charge row, \
-         its provider_reference_id and the provider_requests attempt are in Postgres"
-    );
 
     // The response and the stored row agree. This is the assertion that
     // would fail if `confirm` rendered a status it had not committed.
@@ -717,69 +998,57 @@ async fn step_5_confirm(client: &Client, intent_id: &str, run: &str) -> anyhow::
         .payment_intents()
         .retrieve(intent_id)
         .await
-        .map_err(|error| describe(STEP, "re-reading the intent after the confirm", &error))?;
+        .map_err(|error| describe(&step, "re-reading the intent after the confirm", &error))?;
     let mut after_without_secret = after.clone();
     after_without_secret.client_secret = None;
     if after_without_secret != confirmed {
         bail!(
-            "{STEP}: the confirm's response and a later retrieve are different objects (apart \
+            "{step}: the confirm's response and a later retrieve are different objects (apart \
              from client_secret, which is expected to differ). One of them is not what the \
              database holds."
         );
     }
     println!(
-        "  ✔ GET /v1/payment_intents/{intent_id} — identical object, so the `{}` a merchant \
+        "     ✔ GET /v1/payment_intents/{intent_id} — identical object, so the `{}` a merchant \
          was told is the `{}` vpay stored",
         status_label(after.status),
         status_label(after.status),
     );
-    println!(
-        "      the payer's handset is prompting; nothing here knows yet whether they \
-         approved. Only an authenticated query_status can say, and that is step 6."
-    );
 
-    Ok(())
+    Ok(confirmed)
 }
 
-// ------------------------------------------------------------------ step 6
-
 /// Waits for `vpay-worker` to drive the charge to a terminal state, polling
-/// the merchant API exactly as a merchant integration would.
-///
-/// `succeeded` is this step's success condition and every other outcome fails
-/// the demo — including `requires_payment_method`, which is what a *declined*
-/// payment looks like and would mean the rail stub answered something other
-/// than the scenario this MSISDN selects.
+/// the merchant API exactly as a merchant integration would, and asserts the
+/// outcome the stub was steered to.
 ///
 /// # What is actually happening while this loop waits
 ///
 /// Nothing in this process. The work is in the `vpay-worker` container: it
 /// claimed the `poll_charge` job the confirm committed *in the same
-/// transaction as the charge*, asked MTN over HTTP, was told `PENDING`, put
-/// the job back on the ladder ten seconds out, asked again, was told
-/// `SUCCESSFUL`, and committed the charge, the intent and one
-/// `payment_intent.succeeded` event together. This loop only observes the
-/// result through the same `GET` any merchant has.
+/// transaction as the charge*, asked the rail over HTTP, and either put the
+/// job back on the ladder or committed the charge, the intent and one event
+/// together.
 ///
-/// # Why a merchant polls at all, when step 7 shows a webhook
+/// # Why a merchant polls at all, when the next step shows a webhook
 ///
 /// Because a poll is the fallback a merchant is told to keep
 /// (`docs/api/README.md`): a delivery can be missed, and `GET
 /// /v1/payment_intents/{id}` is the authoritative answer that cannot be. The
-/// two steps deliberately observe the *same* settlement by the two routes a
-/// merchant has — this one through the API, step 7 through the event the
-/// same transaction wrote.
-async fn step_6_await_settlement(client: &Client, intent_id: &str) -> anyhow::Result<()> {
-    const STEP: &str = "step 6 (the worker drives the charge to a terminal state)";
+/// two observations are of the *same* settlement by the two routes a merchant
+/// has — this one through the API, [`webhook`] through the event the same
+/// transaction wrote.
+async fn await_settlement(
+    client: &Client,
+    outcome: &Outcome,
+    intent_id: &str,
+) -> anyhow::Result<PaymentIntent> {
+    let step = format!("{} — settlement", outcome.label);
 
-    println!();
     println!(
-        "[6/7] polling payment_intents().retrieve(\"{intent_id}\") until it is no longer \
-         processing"
-    );
-    println!(
-        "      (the vpay-worker container is asking the rail; the ladder's first rung is \
-         10s, so this normally takes ~10-15s)"
+        "     … polling until it leaves `{}` (the worker is asking the rail; the ladder's \
+         first rung is 10s)",
+        status_label(outcome.after_confirm)
     );
 
     let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
@@ -789,29 +1058,29 @@ async fn step_6_await_settlement(client: &Client, intent_id: &str) -> anyhow::Re
             .payment_intents()
             .retrieve(intent_id)
             .await
-            .map_err(|error| describe(STEP, "re-reading the intent while it settles", &error))?;
+            .map_err(|error| describe(&step, "re-reading the intent while it settles", &error))?;
         polls += 1;
-        if intent.status != IntentStatus::Processing {
+        if intent.status != outcome.after_confirm {
             break intent;
         }
         if std::time::Instant::now() >= deadline {
             bail!(
-                "{STEP}: the intent was still `processing` after {SETTLE_TIMEOUT:?} and \
-                 {polls} polls. Nothing drove the charge to a terminal state — the usual \
-                 cause is that vpay-worker is not running or cannot reach the rail. Try \
-                 `docker compose logs vpay-worker`."
+                "{step}: the intent was still `{}` after {SETTLE_TIMEOUT:?} and {polls} polls. \
+                 Nothing drove the charge to a terminal state — the usual cause is that \
+                 vpay-worker is not running or cannot reach the rail. Try \
+                 `docker compose logs vpay-worker`.",
+                status_label(outcome.after_confirm),
             );
         }
         tokio::time::sleep(SETTLE_POLL_INTERVAL).await;
     };
 
-    if settled.status != IntentStatus::Succeeded {
+    if settled.status != outcome.settled {
         bail!(
-            "{STEP}: the charge resolved to `{}` rather than `succeeded`{}. The MSISDN this \
-             demo confirms with ({DEMO_MSISDN}) selects a rail stub that answers PENDING \
-             then SUCCESSFUL, so anything else means the stub, the mapping or the \
-             settlement path changed.",
+            "{step}: the charge resolved to `{}` rather than `{}`{}. {} — so anything else \
+             means the stub, the mapping or the settlement path changed.",
             status_label(settled.status),
+            status_label(outcome.settled),
             settled
                 .last_payment_error
                 .as_ref()
@@ -819,42 +1088,62 @@ async fn step_6_await_settlement(client: &Client, intent_id: &str) -> anyhow::Re
                     " ({}: {})",
                     error.code, error.message
                 )),
+            outcome.selected_by,
         );
     }
 
-    println!("  ✔ settled after {polls} polls — the rail confirmed the payer approved it");
-    println!("      id             {}", settled.id);
-    println!(
-        "      status         {}   (was processing)",
-        status_label(settled.status)
-    );
-    println!(
-        "      amount         {} {}   (integer minor units — docs/flows/money.md)",
-        settled.amount,
-        settled.currency.to_ascii_uppercase()
-    );
-    // Named, not printed, because it is genuinely not on the wire — see this
-    // file's header. A demo that invented a number here, or that read the
-    // database behind the API it is demonstrating, would be worse than one
-    // that says what is missing.
-    println!(
-        "      amount_received  not on the wire — the settlement transaction writes \
-         payment_intents.amount_received (= amount, {}), but the payment_intent object \
-         does not carry it yet",
-        settled.amount
-    );
-    println!(
-        "      charge         succeeded in Postgres, with the rail's own provider_txn_id; \
-         /v1 has no charges resource (docs/api/README.md)"
-    );
+    // The failure code is the merchant-visible half of `charges.failure_code`
+    // — the closed vocabulary of docs/flows/failures.md, stamped onto the
+    // intent by the settlement transaction. Asserting the *code* and not just
+    // "it failed" is the difference between a demo that shows a decline and
+    // one that shows the adapter's mapping table working.
+    let observed = settled
+        .last_payment_error
+        .as_ref()
+        .map(|error| error.code.as_str());
+    if observed != outcome.failure_code {
+        bail!(
+            "{step}: expected last_payment_error.code = {:?}, got {observed:?}. The taxonomy code \
+             is what a merchant integrates against (docs/flows/failures.md); a charge that \
+             failed for the wrong stated reason is worse than one that failed loudly.",
+            outcome.failure_code,
+        );
+    }
 
-    Ok(())
+    println!("     ✔ settled after {polls} polls — the rail was asked, and answered");
+    print_intent(&settled, "       ");
+    match &settled.last_payment_error {
+        Some(error) => {
+            println!(
+                "       failure_code   {}   (charges.failure_code, the closed vocabulary of \
+                 docs/flows/failures.md)",
+                error.code
+            );
+            println!("       message        {}", error.message);
+            println!(
+                "       the rail's own raw words are in charges.failure_raw and in the \
+                 worker's log; only the taxonomy code and this generic message are public"
+            );
+        }
+        None => {
+            // Named, not printed, because it is genuinely not on the wire —
+            // see this file's header. A demo that invented a number here, or
+            // that read the database behind the API it is demonstrating,
+            // would be worse than one that says what is missing.
+            println!(
+                "       amount_received  not on the wire — the settlement transaction writes \
+                 payment_intents.amount_received (= amount, {}), but the payment_intent object \
+                 does not carry it yet",
+                settled.amount
+            );
+        }
+    }
+
+    Ok(settled)
 }
 
-// ------------------------------------------------------------------ step 7
-
-/// Reads the webhook the settlement in step 6 produced out of the receiver's
-/// own request journal, and verifies it with the shipping SDK.
+/// Reads the webhook the settlement produced out of the receiver's own
+/// request journal, and verifies it with the shipping SDK.
 ///
 /// # Why the receiver's journal, and not vpay's own tables
 ///
@@ -863,15 +1152,6 @@ async fn step_6_await_settlement(client: &Client, intent_id: &str) -> anyhow::Re
 /// sent; `GET /__admin/requests` is what a receiver actually got, headers
 /// and body, byte for byte. A demo that read the first would be quoting the
 /// sender back to itself.
-///
-/// # Why a missing delivery fails the run
-///
-/// Every link now exists: the rail answered, the worker settled the charge
-/// and wrote an `events` row in the same transaction, the `fanout:events`
-/// drain turned it into a `webhook_deliveries` row and a `deliver_webhook`
-/// job, and that job POSTed it. This step used to report an absent webhook
-/// and pass, because the first two links were unbuilt; they are built, so an
-/// absence here is a defect and is reported as one.
 ///
 /// # What is checked, beyond "something arrived"
 ///
@@ -882,16 +1162,17 @@ async fn step_6_await_settlement(client: &Client, intent_id: &str) -> anyhow::Re
 /// `Stripe-Signature` is asserted to carry the *same* value as
 /// `Vpay-Signature`, because that duplicate header exists so a merchant can
 /// keep a Stripe-shaped handler, and one that drifted from the header it
-/// mirrors would verify in the SDK and fail in their code.
-async fn step_7_webhook(
+/// mirrors would verify in the SDK and fail in their code. And the verified
+/// event's `type` is asserted against [`Outcome::event_type`], so a run in
+/// which every payment was delivered as `payment_intent.succeeded` could not
+/// pass.
+async fn webhook(
     http: &reqwest::Client,
     receiver_url: &str,
+    outcome: &Outcome,
     intent_id: &str,
 ) -> anyhow::Result<()> {
-    const STEP: &str = "step 7 (the webhook the settled payment produced)";
-
-    println!();
-    println!("[7/7] polling {receiver_url}/__admin/requests for the delivery of {intent_id}");
+    let step = format!("{} — webhook", outcome.label);
 
     let deadline = std::time::Instant::now() + RECEIVER_WAIT;
     let mut delivered = None;
@@ -918,31 +1199,22 @@ async fn step_7_webhook(
             |error| format!("the last read of the journal failed: {error:#}"),
         );
         bail!(
-            "{STEP}: no webhook was delivered for {intent_id} within {}s ({reason}). Step 6 \
-             already saw the intent reach `succeeded`, so the `events` row exists and this \
-             is the fan-out or the delivery failing, not a missing producer. Try \
+            "{step}: no webhook was delivered for {intent_id} within {}s ({reason}). The \
+             settlement was already observed through the API, so the `events` row exists and \
+             this is the fan-out or the delivery failing, not a missing producer. Try \
              `docker compose logs vpay-worker`, and check that {receiver_url} is the port \
              `just demo` published wiremock-webhook on (VPAY_RECEIVER_URL).",
             RECEIVER_WAIT.as_secs()
         );
     };
 
-    println!(
-        "  ✔ the receiver recorded a POST carrying Vpay-Event-Id: {}",
-        delivery.event_id
-    );
-
     if delivery.stripe_signature != delivery.signature {
         bail!(
-            "{STEP}: the delivery's Stripe-Signature and Vpay-Signature differ. They are the \
+            "{step}: the delivery's Stripe-Signature and Vpay-Signature differ. They are the \
              same bytes by construction (vpay_worker::webhooks) so a merchant can keep a \
              Stripe-shaped handler; a drift here verifies in our SDK and fails in theirs."
         );
     }
-    println!(
-        "      Vpay-Signature   present, t=…,v1=… (not printed: it is a MAC, not a secret, but it is noise)"
-    );
-    println!("      Stripe-Signature present, and byte-identical to Vpay-Signature");
 
     let secret = env_or("MERCHANT_WEBHOOK_SECRET", DEFAULT_WEBHOOK_SECRET);
     let event = vpay_sdk::webhooks::verify(
@@ -953,19 +1225,32 @@ async fn step_7_webhook(
     )
     .map_err(|error| {
         anyhow!(
-            "{STEP}: a webhook arrived and its Vpay-Signature does not verify ({error}). vpay \
+            "{step}: a webhook arrived and its Vpay-Signature does not verify ({error}). vpay \
              signed something this merchant cannot check, which is worse than sending nothing. \
              The secret came from MERCHANT_WEBHOOK_SECRET (or the compose stub); check it \
              matches `webhooks[0].secrets` in .e2e/application-demo.yml."
         )
     })?;
 
-    println!("  ✔ Vpay-Signature verifies with vpay-sdk — the same call a handler makes");
-    println!("      id             {}", event.id);
-    println!("      type           {}", event.kind);
-    println!("      livemode       {}", event.livemode);
+    if event.kind != outcome.event_type {
+        bail!(
+            "{step}: the delivered event is `{}`, not `{}`. The event type is what a merchant's \
+             handler branches on — a failed payment delivered as a success is the worst \
+             possible defect in this system.",
+            event.kind,
+            outcome.event_type,
+        );
+    }
+
     println!(
-        "      data.object.id {}",
+        "     ✔ the receiver recorded a POST, and its Vpay-Signature verifies with vpay-sdk \
+         (Stripe-Signature is byte-identical)"
+    );
+    println!("       event.id       {}", event.id);
+    println!("       event.type     {}", event.kind);
+    println!("       livemode       {}", event.livemode);
+    println!(
+        "       data.object.id {}",
         event
             .data
             .object
@@ -973,9 +1258,15 @@ async fn step_7_webhook(
             .and_then(Value::as_str)
             .unwrap_or("(absent)")
     );
-
-    println!();
-    println!("      {NOT_BUILT_YET}");
+    println!(
+        "       data.object.status {}",
+        event
+            .data
+            .object
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("(absent)")
+    );
 
     Ok(())
 }
@@ -986,8 +1277,6 @@ async fn step_7_webhook(
 /// same string and a tuple would let a careless caller compare a value with
 /// itself and call it a check.
 struct Delivered {
-    /// `Vpay-Event-Id` — the `evt_…` the delivery names.
-    event_id: String,
     /// The recorded request body, verbatim. Never re-serialised.
     body: String,
     /// `Vpay-Signature`.
@@ -1004,9 +1293,10 @@ struct Delivered {
 /// (`backends/tests/webhook-receiver/wiremock/mappings/`) and a stray request
 /// from something else on the machine must not be mistaken for a delivery.
 /// The body's `data.object.id`, because the journal survives for the life of
-/// the container and a previous run's delivery would otherwise satisfy this
-/// run — a demo that passed on last run's evidence is exactly the false green
-/// this repository is written against.
+/// the container and holds every earlier outcome's delivery as well as every
+/// previous run's — without it, outcome 2 would happily pass on outcome 1's
+/// webhook, which is exactly the false green this repository is written
+/// against.
 ///
 /// The body is taken as the journal's recorded text and never re-serialised:
 /// the signature covers bytes, and a parse-and-reprint is the single most
@@ -1046,7 +1336,7 @@ async fn recorded_webhook(
                     .and_then(|(_, value)| value.as_str())
             })
         };
-        let (Some(event_id), Some(signature), Some(stripe_signature)) = (
+        let (Some(_event_id), Some(signature), Some(stripe_signature)) = (
             header("Vpay-Event-Id"),
             header("Vpay-Signature"),
             header("Stripe-Signature"),
@@ -1067,7 +1357,6 @@ async fn recorded_webhook(
             continue;
         }
         return Ok(Some(Delivered {
-            event_id: event_id.to_owned(),
             body: body.to_owned(),
             signature: signature.to_owned(),
             stripe_signature: stripe_signature.to_owned(),
@@ -1077,6 +1366,26 @@ async fn recorded_webhook(
 }
 
 // ------------------------------------------------------------------ helpers
+
+/// The intent's public fields, as a merchant's own client sees them.
+///
+/// One function so every outcome prints the same fields in the same order: a
+/// per-step `println!` block is how one of six payments quietly stops showing
+/// the field that would have exposed a defect.
+fn print_intent(intent: &PaymentIntent, indent: &str) {
+    println!("{indent}id             {}", intent.id);
+    println!("{indent}status         {}", status_label(intent.status));
+    println!(
+        "{indent}amount         {} {}   (integer minor units — docs/flows/money.md)",
+        intent.amount,
+        intent.currency.to_ascii_uppercase()
+    );
+    println!(
+        "{indent}rails          {}",
+        intent.payment_method_types.join(", ")
+    );
+    println!("{indent}livemode       {}", intent.livemode);
+}
 
 /// One `IntentStatus` as its wire label.
 ///

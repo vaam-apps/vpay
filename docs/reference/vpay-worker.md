@@ -302,6 +302,105 @@ payment. A `NotFound` on a `submitted` charge is therefore handled as an
 ordinary pending answer by the caller (`vpay_core::settle` answers
 `Settlement::Stay` for the states past this one).
 
+### Nothing younger than the window is recovered
+
+`submitting` is not only the state a crash leaves behind. It is also the
+ordinary state of a **confirm that is still running**: `vpay-api`'s
+`insert_charge` commits the charge and its `poll_charge` job in one transaction
+with `run_at = now()`, calls the rail, and only then compare-and-swaps
+`submitting → submitted` (`vpay_db::charges::mark_submitted`). A worker that
+claims that job in between reads exactly the rows a crash leaves, and every
+branch of the table would then move a charge out from under a live confirm,
+whose own compare-and-swap matches no row and answers the merchant `500`
+`write_matched_no_row`.
+
+That is not hypothetical. Step 8's demo hit it in four walkthrough runs out of
+six on a loaded machine, with the confirm's rail call taking 3.7 seconds: on the
+push rail the merchant was told the confirm failed and was then delivered a
+`payment_intent.succeeded` webhook; on the redirect rail `FailDeadOrder` killed
+a live order as `provider_unavailable`, with `failure_raw` saying the payer
+"was never handed a redirect URL" while the confirm held exactly that URL
+(`docs/plans/step8-notes/lane-a.md` §3, `lane-g.md`).
+
+So the first question the table asks is not what the evidence says but whether
+the charge is old enough for the evidence to mean anything, and the answer is
+`RecoveryPolicy::not_found_window` — the same sixty seconds the `Unanswered`
+row already waits before concluding a rail never received a charge, and three
+times `vpay_provider::DEFAULT_REQUEST_TIMEOUT`, which bounds how long a confirm
+can be inside its rail call. Younger than that, every branch answers
+`RecoveryAction::Wait`: the poll writes nothing, does not ask the rail, and
+comes back **once**, when the charge is old enough.
+
+That "once" is the whole of the arm's arithmetic. `Wait` carries
+`not_found_window - charge_age` (clamped into `[0, window]`, so a row whose
+`created_at` leads the database's `now()` waits one window rather than one
+skew), and the handler reschedules at that plus a one-second margin. It used
+to reschedule at `poll_delay(0)` — ten seconds — and that was not free:
+`vpay_db::Jobs::claim` increments `jobs.attempts` and `poll_delay` is indexed
+by that count, so a genuinely crashed charge spent **six** claims waiting the
+window out and began its real recovery at `poll_delay(6)`, two minutes a rung,
+with the fast end of the ladder already gone. With one wait it costs one
+claim: the second claim is the first real recovery pass, and the rung after it
+is `poll_delay(1)` — twenty seconds. The cost of the guard to a crashed charge
+is therefore the window itself and one rung of the ladder, not six.
+
+That "one claim" is what the worker does on its own. A parked `Wait` is still
+a future job, and the callback route's pull-forward (`PULL_FORWARD_FLOOR`, ten
+seconds) applies to any job more than ten seconds out — a sixty-second wait
+qualifies. So a rail's duplicate notifications, or anyone holding the
+reference, can force extra claims inside the window; each asks the rail
+nothing and moves no state (the `Wait` arm is the one that touches neither),
+but each spends an attempt, and the rung after the window is then later than
+twenty seconds. Nothing is lost — the 24 h horizon still escalates and no
+attempt count dead-letters — and it is recorded here rather than clamped
+(review of lane H, 2026-09-04). The same review noted that `run_loop`'s
+`queue_age` gauge subtracts Postgres-written `run_at`s from the host clock:
+observability only, decides nothing, and a drifted fleet would report a false
+backlog on exactly the metric an operator would use to notice the drift.
+
+Three things about that shape are deliberate:
+
+- **It is one predicate, in the pure function**, not a test at each call site.
+  `recovery_step` is reached from both the crash-recovery block and `recover`
+  through the same `recovery_action` helper, and a guard written twice is a
+  guard one caller can lose — which is how the `Unanswered` row came to have a
+  window and the other two rows none.
+- **The clock is `charges.created_at`**, not the first
+  `provider_requests.sent_at`. The branch this most has to protect is
+  `SubmitAttempt::Never`, where there is no attempt row at all, so a clock read
+  from `provider_requests` is `None` exactly when it is needed. `created_at` is
+  written by Postgres' own `now()` inside the confirm's first transaction,
+  before any network call by construction (`vpay_db::NewCharge`), so it dates
+  the window from the moment the race opens; it is the same column
+  `past_the_horizon` measures the 24-hour escalation from.
+- **And it is Postgres' clock at *both* ends.** The guard shipped comparing
+  `created_at` against `OffsetDateTime::now_utc()` on the worker host, which is
+  a different machine: a worker sixty seconds ahead of the database measured
+  every charge as a minute older than it was, so every live confirm passed the
+  guard and the whole thing was a silent no-op — on precisely the deployment
+  whose fleet clocks had drifted, and with nothing in the data looking wrong.
+  The age now comes from `vpay_db::Charges::get_by_id_as_of`, which selects
+  `now()` on the same statement that reads the row
+  ([vpay-db.md](vpay-db.md#the-charge-read-carries-postgres-clock)), and
+  `recovery_step` takes **durations** rather than instants, so there is no
+  parameter left for a caller to read off the wrong clock. `past_the_horizon`
+  takes the same age; its skew was the milder direction (escalating early,
+  waking an operator) but it was the same subtraction. `first_not_found_at` is
+  stamped from that clock too, so the streak's own window is on it as well.
+- **The cost is stated rather than hidden.** A charge orphaned by a genuine
+  crash now waits up to a minute for its first recovery pass. It is live and
+  queued either way, and a payment nobody can double-charge loses nothing by
+  being asked about a minute later — whereas the alternative reading loses a
+  live order. The deferral cannot swallow the horizon: a charge younger than
+  sixty seconds is not twenty-four hours old.
+
+The alternatives were a delayed first rung (`run_at = now + first_rung`, which
+weakens crash recovery by the same delay *and* leaves the race open for any
+confirm slower than the rung) and a lease the confirm holds on the charge
+(more correct, and a schema change plus a second failure mode when the holder
+dies). The age guard is the smallest change that closes it and reuses a number
+the table already carries.
+
 **A count alone is not enough** for the "the rail never received it" conclusion.
 Three polls can happen in under a second on the first rungs of the ladder, and a
 rail that is merely slow to index a new charge would look identical to one that
@@ -438,14 +537,25 @@ to and *which one* would depend on iteration order.
 
 ### What is not checked here
 
-**The URL.** Validation is boot-time (`vpay_config::validate_webhook_url` —
-https-only under livemode, no stub markers) and there is **no runtime
-private/link-local filtering**, so a livemode operator who configures
-`https://169.254.169.254/…` gets exactly that. A resolve-then-connect check is
-TOCTOU unless `reqwest` is given a custom connector, so the honest options were
-"nothing" or "a custom connector", and the second is out of scope (decision 4 of
-the Step 5 plan). [webhooks.md](../flows/webhooks.md) states the residual as
-what it is: not SSRF protection.
+**The URL, at boot.** `vpay_config::validate_webhook_url` is https-only under
+livemode plus four stub markers (`wiremock`, `stub`, `mock`, `localhost`), and
+it never inspects an address — it never could, because an address is not a
+property of a configuration file.
+
+~~There is **no runtime private/link-local filtering**, so a livemode operator
+who configures `https://169.254.169.254/…` gets exactly that. A
+resolve-then-connect check is TOCTOU unless `reqwest` is given a custom
+connector, so the honest options were "nothing" or "a custom connector", and
+the second is out of scope (decision 4 of the Step 5 plan).~~ **Since
+2026-09-04 (Step 8, lane B) the address is checked at delivery instead**:
+`vpay_worker::ssrf::vet` resolves the host once, classifies every answered
+address in both families, refuses the delivery permanently if any is
+non-public, and `pinned_client` pins reqwest to exactly those addresses with
+`resolve_to_addrs` — the third answer the Step 5 plan's decision 4 did not
+consider, needing no custom connector. Three residuals stand and are named in
+[webhooks.md](../flows/webhooks.md): the guard is on webhook delivery only,
+NAT64 (`64:ff9b::/96`) is refused fail-closed, and the pin cost the shared
+connection pool.
 
 **Redirects** are refused by the client, not by this code
 (`vpay_provider::http`): a 3xx therefore arrives as an ordinary non-2xx and
@@ -540,14 +650,27 @@ test one in-process would be to introduce a fake pool or a fake
 from a shipping binary (ADR-0006 — the stub rail and the stub receiver are hosts
 in configuration, reached over HTTP exactly as the real ones are). So the proofs
 live in `backends/tests/integration/tests/`, which drives *these functions*
-against a Postgres container and a WireMock container, reproduces each
-crash-safety kill point by writing the state a crash leaves behind, and reads
+against a Postgres container and a WireMock container, reproduces kill point 1
+by writing the state a crash leaves behind and kill point 2 and the mid-poll
+crash by really killing the shipping binaries (`worker_kill9.rs`), and reads
 the deliveries back from the receiver's own `GET /__admin/requests`.
 
 The **pure parts are unit-tested and doctested here**, which is why they are
 separate modules at all: the two ladders, the recovery table, the settlement
 table (in `vpay-core`), the payload encoding, the signature, the rendering and
 digest, `EndpointRegistry`, `fan_out_disposition` and `past_the_horizon`.
+
+The one place those two meet is the confirm/worker race: the age guard's
+decision is a unit table (`nothing_younger_than_the_window_is_recovered`,
+`a_young_charge_is_left_alone_on_every_shape_of_evidence`), and its effect is
+three cases in `worker_recovery.rs` —
+`a_young_push_charge_is_not_advanced_until_it_is_older_than_the_window`,
+`a_young_redirect_charge_is_not_failed_as_a_dead_order_until_it_is_older` and
+`a_confirms_compare_and_swap_wins_against_the_worker_that_claimed_its_poll_job`,
+the last of which runs the shipping `run_loop` against the confirm's own
+`mark_submitted` and asserts the confirm wins. Deleting the guard fails all
+three, the last with the merchant-visible message itself: "no row in charges
+matched ch_…, or it was no longer in the required state".
 
 `vpay-worker` has **no `sqlx` dependency and cannot grow one**. Every statement
 lives behind a `vpay_db` repository trait reached through `&dyn Repositories`,

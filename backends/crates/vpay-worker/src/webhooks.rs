@@ -60,10 +60,25 @@ pub const FANOUT_MAX_ATTEMPTS: i32 = 5;
 /// be reached is retried on [`crate::delivery_delay`] within seconds, so
 /// holding a worker task open longer buys nothing.
 ///
-/// The client itself is built by `vpay-worker-bin` — this crate must not build
-/// one, see [`crate::handlers::WebhookContext`] — but the budget lives beside
-/// the handler that spends it, for the reason
-/// `docs/reference/vpay-worker.md` §"Two retry ladders" gives.
+/// # Why the budgets live here
+///
+/// They used to live in `vpay-worker-bin`, which built the one shared
+/// delivery client, and the integration suite's two helpers wrote them out
+/// again — three copies of a number nothing pinned together, so a change to
+/// the binary's pair would have left every test exercising a client that no
+/// longer ships and the suite would have stayed green saying so. They live
+/// beside the handler that spends them instead.
+///
+/// Since Step 8 there is exactly **one** reader:
+/// [`crate::ssrf::pinned_client`], which builds the client for one delivery
+/// after that delivery's target has been vetted
+/// ([`crate::handlers::WebhookContext`] says why a shared client cannot be
+/// pinned). The binary builds no webhook client at all any more, and neither
+/// does the test harness, so the copies this note exists to prevent no longer
+/// have anywhere to be.
+///
+/// `docs/reference/vpay-worker.md` §"Two retry ladders" is why the budget
+/// lives beside the handler that spends it rather than in the binary.
 pub const WEBHOOK_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long a webhook delivery waits for the whole request/response.
@@ -132,9 +147,13 @@ pub struct Endpoint {
     /// delivery row. Not a hash of the URL: an operator fixing a typo'd URL
     /// must not orphan the delivery history (migration 0022).
     pub id: String,
-    /// The absolute URL to POST to. Validated at **boot**
-    /// (`vpay_config::validate_webhook_url`), never here — see
-    /// [`handle_deliver`].
+    /// The absolute URL to POST to.
+    ///
+    /// Its *shape* is validated at boot (`vpay_config`'s
+    /// `validate_webhook_url`: https-only under livemode, no stub markers in
+    /// the host); its *destination* is checked here, on every attempt, by
+    /// [`crate::ssrf::vet`] — because an address is not a property of the
+    /// configuration and cannot be checked at boot at all.
     pub url: String,
     /// The signing secrets, in configuration order. One normally; two during
     /// a rotation, which is why this is a `Vec` and not a `String`.
@@ -666,9 +685,28 @@ const PARKED_NAMED_IN_LOG: usize = 20;
 /// request went out and nothing came back", distinct from a heard refusal,
 /// and the one distinction this row must never blur.
 ///
-/// The URL is deliberately not checked here and redirects are refused by the
-/// client rather than by this function. `docs/reference/vpay-worker.md`
-/// §"Delivering one webhook" states what that leaves possible and why.
+/// # Where the URL is checked, since Step 8
+///
+/// Here, immediately before the request, by [`crate::ssrf::vet`]: the host is
+/// resolved once, every address it answers with is classified, and the client
+/// that sends is pinned to those addresses. The Step 5 plan's decision 4 —
+/// "a resolve-then-connect check is TOCTOU unless reqwest is given a custom
+/// connector", so the options were "nothing" or "a connector" — had a third
+/// answer it did not consider: `resolve_to_addrs` makes reqwest skip the
+/// second lookup entirely, which needs no connector. That module's header is
+/// the argument; this function only spends it.
+///
+/// A refusal is **permanent** and never walks the ladder
+/// ([`crate::ssrf::EgressRefusal::is_permanent`]): retrying
+/// `https://169.254.169.254/…` for 31 hours changes nothing except how many
+/// times the request is made. A host that merely fails to *resolve* is not a
+/// refusal and does walk it, exactly as the transport failure it replaces did.
+///
+/// Redirects are refused by the client, not by this function
+/// (`vpay_provider::http`): a 3xx therefore arrives as an ordinary non-2xx
+/// and becomes a failed attempt, instead of replaying a signed event body at
+/// a host the operator never configured — and, since the delivery client is
+/// now pinned, following one would also be the one way back out of the pin.
 ///
 /// # Errors
 ///
@@ -685,7 +723,7 @@ const PARKED_NAMED_IN_LOG: usize = 20;
 /// attempt and `Ok(RescheduleAfter)`, or `Ok(Done)` once the ladder is spent.
 pub async fn handle_deliver(
     repositories: &dyn Repositories,
-    http: &reqwest::Client,
+    egress: crate::ssrf::EgressPolicy,
     endpoints: &EndpointRegistry,
     job: &JobRow,
 ) -> Result<Outcome, JobError> {
@@ -704,7 +742,29 @@ pub async fn handle_deliver(
         return record_unsigned(repositories, job, &delivery, &event).await;
     };
 
-    match signed_post(http, &delivery, &event, endpoint, body)
+    // The last thing before a socket, and the reason this is *here* rather
+    // than at boot: an endpoint whose host was public when the deployment
+    // started may not be now, and the address is not a property of the
+    // configuration at all. It is also before [`signed_post`], so a refused
+    // delivery has signed nothing — which is what lets
+    // [`record_refused_target`] leave `payload_sha256` alone, for
+    // [`record_unsigned`]'s reason.
+    let target = match crate::ssrf::vet(&delivery.url, egress).await {
+        Ok(target) => target,
+        Err(refusal) => {
+            return record_refused_target(repositories, job, &delivery, &event, endpoint, &refusal)
+                .await;
+        }
+    };
+    let http = match crate::ssrf::pinned_client(&target) {
+        Ok(client) => client,
+        Err(refusal) => {
+            return record_refused_target(repositories, job, &delivery, &event, endpoint, &refusal)
+                .await;
+        }
+    };
+
+    match signed_post(&http, &delivery, &event, endpoint, body)
         .send()
         .await
     {
@@ -1079,6 +1139,102 @@ async fn record_failure(
             Ok(Outcome::Done)
         }
     }
+}
+
+/// Records a delivery the egress guard would not let out
+/// ([`crate::ssrf::vet`]), and says whether it may be tried again.
+///
+/// Two shapes, and the split is [`crate::ssrf::EgressRefusal::is_permanent`]'s:
+///
+/// * **Permanent** — a scheme that is not `http`/`https`, a URL that does not
+///   parse, a host that is not there, or a host that resolves to an address
+///   this deployment refuses. The delivery is exhausted **on the first
+///   attempt**: the ladder exists to outlast a receiver's outage, and none of
+///   these is one. Walking it would make eight identical refusals over 31
+///   hours, and would leave the row saying `pending` for a day and a half
+///   about something that was never going to be sent.
+/// * **Transient** — the host did not resolve, or (unreachably) the pinned
+///   client did not build. Recorded by [`record_failure`] exactly as the
+///   reqwest transport error it replaces was, so a resolver blip still costs
+///   a merchant nothing but a rung.
+///
+/// `payload_sha256` is `None` in both arms, for the unconfigured-endpoint
+/// arm's reason: the guard runs *before* [`crate::signing::signature_header`],
+/// so no bytes were signed and stamping the column would make it say
+/// otherwise about a delivery that has still never been signed.
+///
+/// # The alert, and exactly one of it
+///
+/// The permanent arm logs one `ERROR … alert = true` naming the endpoint, the
+/// delivery, the event and the classified reason — and **never the resolved
+/// address**. It is one line per refused delivery because the row is
+/// `exhausted` at the end of it and nothing re-runs the job, which is the same
+/// discipline `handle_fan_out` uses for an abandoned event: alert at the
+/// transition, not on every pass. An operator seeing it has two questions —
+/// which endpoint, and what class of address — and both are in the line.
+/// The third, "which address", is the one an attacker is asking, so it is in
+/// neither the log nor the row.
+async fn record_refused_target(
+    repositories: &dyn Repositories,
+    job: &JobRow,
+    delivery: &DeliveryRow,
+    event: &EventRow,
+    endpoint: &Endpoint,
+    refusal: &crate::ssrf::EgressRefusal,
+) -> Result<Outcome, JobError> {
+    let excerpt = refusal_excerpt(refusal);
+    if !refusal.is_permanent() {
+        return record_failure(repositories, job, delivery, None, None, Some(&excerpt)).await;
+    }
+
+    repositories
+        .record_attempt(
+            delivery.id,
+            // No status and no `next_attempt_at`: nothing answered, and there
+            // is no next attempt. `true` is what writes `state = 'exhausted'`.
+            None,
+            Some(&excerpt),
+            None,
+            None,
+            true,
+        )
+        .await?;
+    metrics::counter!(
+        WEBHOOK_DELIVERIES_TOTAL,
+        "outcome" => webhook_outcome::EXHAUSTED
+    )
+    .increment(1);
+    tracing::error!(
+        alert = true,
+        job_id = %job.id,
+        delivery_id = %delivery.id,
+        event_id = %event.id,
+        endpoint_id = %endpoint.id,
+        merchant_id = %event.merchant_id,
+        reason = %excerpt,
+        "webhook delivery refused by the egress guard; the endpoint is not a target this \
+         deployment will connect to, the delivery will not be retried, and the merchant has \
+         not been told about this event"
+    );
+    Ok(Outcome::Done)
+}
+
+/// The refused delivery's reason, as `webhook_deliveries.response_excerpt`
+/// records it and the alert line repeats it.
+///
+/// `"<token>: <display>: <source>…"`, so a runbook greps `ssrf_blocked` and a
+/// human reads the rest. The chain is rendered by
+/// [`vpay_core::error::display_with_chain`] — the same function
+/// [`no_response_excerpt`] and `jobs.last_error` use — because the transient
+/// arm's cause, what the resolver actually said, lives in the source and is
+/// the only part of it worth having; the permanent arms have no source, by
+/// construction, because the thing they would name is the address.
+fn refusal_excerpt(refusal: &crate::ssrf::EgressRefusal) -> String {
+    format!(
+        "{}: {}",
+        refusal.token(),
+        vpay_core::error::display_with_chain(refusal)
+    )
 }
 
 /// The receiver's answer, bounded and truncated for an operator to read.

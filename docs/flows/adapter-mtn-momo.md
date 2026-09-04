@@ -177,8 +177,14 @@ inherits three refusals that are not MTN-specific:
   500 with an HTML body (`…05ff`) exist and are correct per this document, but
   no conformance case drives them yet; their outcomes are proven instead by
   `submit_outcome`'s unit tests, which take the same status and body.
-* **No callback route exists.** `parse_callback` is implemented and tested,
-  and nothing in a running vpay calls it — and when something does, MTN
-  signs nothing, so it will still be a hint.
+* ~~**No callback route exists.**~~ **Corrected 2026-09-04 (Step 8, lane C):
+  the callback route exists, and nothing has ever called it but this
+  repository's own tests.** `POST /provider/mtn_momo/callback`
+  (`vpay_api::provider_callback`) parses this document's notification body into
+  identifiers and pulls the charge's poll job forward; MTN signs nothing, so it
+  is still a hint and the route writes no charge state.
+  `backends/tests/integration/tests/provider_callback.rs` POSTs the body
+  transcribed above to the URL MTN was handed on the submit, so **a body
+  faithful to this document but not to MTN would pass**.
 * The crate runs **48 tests, 48 passed, 0 skipped**
   (`cargo nextest run -p vpay-adapter-mtn-momo`, measured 2026-09-03).

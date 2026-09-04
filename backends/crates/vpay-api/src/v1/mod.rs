@@ -673,6 +673,7 @@ mod tests {
                 "acme-cameroon",
                 &["payments:write"],
             )],
+            webhooks: vpay_config::WebhookPolicy::default(),
             dashboard_client: None,
         }
     }

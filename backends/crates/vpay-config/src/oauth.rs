@@ -110,13 +110,20 @@ pub struct WebhookEndpoint {
     /// it must parse, name a host and carry no userinfo, and under `livemode`
     /// [`crate::validate_webhook_url`] additionally requires the `https`
     /// scheme and refuses a stub marker in the *host*.
-    /// **That is the only URL validation there is** — there is no runtime
-    /// private/link-local filtering, so a livemode operator who writes
-    /// `https://169.254.169.254/…` gets exactly that
-    /// (`docs/plans/2026-09-03-step5-webhooks.md`, decision 4: a
-    /// resolve-then-connect check is TOCTOU unless reqwest is given a custom
-    /// connector, so the honest options were "nothing" or "a connector", and
-    /// the second is out of scope).
+    /// That is the only *boot-time* URL validation there is, and it is a
+    /// guard against shipping a stub host into production rather than any
+    /// kind of SSRF protection: it never inspects the destination address,
+    /// because at boot there is no address to inspect — a name resolves
+    /// differently tomorrow.
+    ///
+    /// **The address is checked at delivery**, since Step 8, by
+    /// `vpay_worker::ssrf`: the host is resolved once, every address it
+    /// answers with is classified, a loopback/private/link-local/CGNAT
+    /// answer is a permanent delivery failure, and the connection is pinned
+    /// to the addresses that were classified so a second lookup cannot
+    /// substitute another. `webhooks.allow_private_targets`
+    /// ([`crate::WebhookPolicy`]) is the one value that changes that verdict,
+    /// and livemode refuses it.
     pub url: String,
     /// The HMAC-SHA256 signing secrets, in configuration order, one per
     /// `v1=` in the `Vpay-Signature` header.

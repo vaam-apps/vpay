@@ -1,0 +1,106 @@
+{
+  "mappings": [
+    {
+      "name": "demo: transactionstatus EXPIRED, selected by AMOUNT rather than by order_id",
+      "priority": 4,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.amount",
+              "equalTo": "5001"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"status\":\"EXPIRED\",\"order_id\":\"{{jsonPath request.body '$.order_id'}}\"}"
+      },
+      "metadata": {
+        "comment": [
+          "FILE: the outcomes examples/merchant-demo drives that transactionstatus.json",
+          "cannot reach from an end-to-end confirm. Added 2026-09-03 (Step 8, lane A) for",
+          "issue #11's 'drives the stub to succeeded and to failed/expired'.",
+          "",
+          "THE PROBLEM THIS FILE SOLVES, and why it is not a scenario the way the MTN half",
+          "is. transactionstatus.json keys every case on `order_id`, which is",
+          "ChargeRef::reference_id -- a Uuid::new_v4() the confirm handler mints before it",
+          "commits the charge, and therefore not something a merchant can choose (the same",
+          "constraint mtn/mappings/demo-outcomes.json opens with). Orange's status call is a",
+          "POST, though, and its body is TransactionStatusRequest { order_id, amount,",
+          "pay_token } -- so `amount` travels on the status query itself, comes straight",
+          "from the merchant's own CreatePaymentIntent, and can be matched on directly. No",
+          "scenario, no state, no ordering constraint: this rail's outcomes are selected by",
+          "the request in front of WireMock, which is strictly better than the MTN half and",
+          "is only possible because of that one difference in the two protocols.",
+          "",
+          "5001 XAF is a documentation amount in the same 500x block the settling outcome",
+          "uses (5000, which falls through to transactionstatus.json's priority-10 catch-all",
+          "SUCCESS). XAF is zero-decimal (docs/flows/money.md), so this is 5,001 FCFA.",
+          "",
+          "IT IS AN AMOUNT AND SO IT IS GLOBAL: any charge on this rail for exactly 5001",
+          "XAF gets this answer, in a conformance run as much as in a demo. Nothing collides",
+          "today -- every conformance case and every integration test uses 5000",
+          "(adapter_conformance.rs, confirm_rails.rs, worker_e2e.rs, payment_intents.rs,",
+          "worker_recovery.rs, browser_checkout.rs) -- and a future test that wants a",
+          "settling Orange charge must not pick 5001 or 5002. Priority 4 keeps it BELOW the",
+          "reference-keyed cases (priority 1, lower number wins), so ...0404, ...05aa,",
+          "...0f01 and the rest still win whatever amount they carry.",
+          "",
+          "EXPIRED -> payer_timeout (vpay_adapter_orange_money::mapping::STATUS_TABLE,",
+          "docs/flows/adapter-orange-money.md): the payer never entered the one-time code",
+          "before the hosted page aged out. This is the rail that actually documents",
+          "`EXPIRED`; MTN's equivalent outcome is COULD_NOT_PERFORM_TRANSACTION and its own",
+          "mapping file says why it is not spelled the same.",
+          "",
+          "order_id is templated back out of the request so a captured body says which",
+          "charge was answered (--global-response-templating is on in compose.yml and in",
+          "vpay_testkit::containers::start_wiremock)."
+        ]
+      }
+    },
+    {
+      "name": "demo: transactionstatus FAILED, selected by AMOUNT rather than by order_id",
+      "priority": 4,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.amount",
+              "equalTo": "5002"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"status\":\"FAILED\",\"order_id\":\"{{jsonPath request.body '$.order_id'}}\",\"message\":\"Transaction refused by the payer's bank\"}"
+      },
+      "metadata": {
+        "comment": [
+          "FAILED -> provider_error, carrying `message` through as the raw reason. NOT a",
+          "gap in the demo: Orange documents no sub-reason vocabulary for FAILED, so the",
+          "adapter refuses to guess and lands it in the 'unmapped, carries the raw reason'",
+          "bucket that docs/flows/failures.md says is a thing to ALERT on rather than a",
+          "settled mapping. The demo prints `provider_error` and says that out loud, because",
+          "a merchant integrating against this rail today will meet it.",
+          "",
+          "The same body transactionstatus.json serves for reference ...0f02; this one is",
+          "reachable from a real confirm. 5002 XAF, same documentation block and same",
+          "global-by-amount caveat as the EXPIRED mapping above."
+        ]
+      }
+    }
+  ]
+}

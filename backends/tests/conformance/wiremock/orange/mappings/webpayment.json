@@ -34,13 +34,40 @@
           "scenario below.",
           "",
           "201 with pay_token + payment_url + notif_token, per",
-          "docs/flows/adapter-orange-money.md."
+          "docs/flows/adapter-orange-money.md.",
+          "",
+          "The notif_url bodyPattern is a CONTRACT, added in Step 8 lane C, and the",
+          "twin of the X-Callback-Url matcher on MTN's requesttopay.json catch-all --",
+          "see that mapping's `why` for the whole argument. Orange's notification is",
+          "the only thing that can tell vpay a hosted-page payment finished before the",
+          "poll ladder's next rung, and a submit that carried no notif_url would be a",
+          "redirect rail settled by polling alone with nothing saying so.",
+          "",
+          "The value is matched and not merely required to exist, because the PATH is",
+          "the half that drifts: vpay_api mounts POST /provider/{code}/callback and",
+          "vpay_config::ProviderHost::effective_callback_url derives it from",
+          "public_base_url, in two crates that do not compile against each other. The",
+          "host stays free (.+).",
+          "",
+          "Decisive: change WebPaymentRequest's notif_url to config.base_url (or drop",
+          "the field) and this mapping stops matching -- WireMock answers 404 and the",
+          "adapter raises ProviderError::Config, failing",
+          "submit_returns_a_reference_and_a_flow_shaped_result and every Orange confirm",
+          "in backends/tests/integration."
         ]
       },
       "priority": 5,
       "request": {
         "method": "POST",
-        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/webpayment"
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/webpayment",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.notif_url",
+              "matches": ".+/provider/orange_money/callback"
+            }
+          }
+        ]
       },
       "response": {
         "status": 201,

@@ -17,7 +17,8 @@ browser hold) and renders `pk` + `client_secret` into the page; the
 
 1. `just demo` — boots the compose stack (server, worker, Postgres, both rail
    stubs) and registers the `demo-merchant` keypair `mint.mjs` needs. Leave it
-   running; `just demo` already runs `examples/merchant-demo`'s own 7 steps
+   running; `just demo` already runs `examples/merchant-demo`'s own
+   walkthrough (four steps, the last of which is six payments on both rails)
    and prints the URLs it used — this example is separate from that.
 2. `just build-checkout-browser` — builds `@vpay/stripe-js` and vendors its
    `dist/` into `dist/stripe-js/` here (gitignored, rebuilt on every run).

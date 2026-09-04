@@ -499,6 +499,48 @@ pub(crate) async fn crashed_charge(
     Ok(id)
 }
 
+/// How old a `submitting` charge must be before `vpay_worker::recovery_step`
+/// will recover it at all, at the default policy, with margin.
+///
+/// `RecoveryPolicy::not_found_window` is sixty seconds; ninety is comfortably
+/// past it and still nowhere near the twenty-four-hour horizon, so a fixture
+/// that uses this crosses exactly one boundary.
+pub(crate) const RECOVERABLE_CRASH_AGE: Duration = Duration::from_secs(90);
+
+/// Back-dates `charges.created_at`, so a crash the fixture staged a moment ago
+/// is as old as the crash it stands for.
+///
+/// **Why a fixture needs this at all.** `recovery_step` refuses to recover a
+/// `submitting` charge younger than `RecoveryPolicy::not_found_window`,
+/// because that state is also the ordinary state of a confirm that is still
+/// running — `vpay-api` commits the charge and its poll job in one transaction
+/// and only then compare-and-swaps `submitting → submitted`. A charge inserted
+/// milliseconds ago is therefore *indistinguishable from a live confirm*, and a
+/// suite whose crash fixtures were that young would be asserting the recovery
+/// table against the one input the worker must not act on. Ageing the charge is
+/// how a crash gets to be a minute old without the suite sleeping for a minute;
+/// it is the same lever `age_past_the_horizon` pulls for the 24-hour
+/// escalation, on the same column, and it leaves `RecoveryPolicy` exactly as a
+/// deployment has it.
+pub(crate) async fn age_the_crash(
+    pool: &PgPool,
+    charge_id: &str,
+    age: Duration,
+) -> anyhow::Result<()> {
+    let aged = sqlx::query(
+        "UPDATE charges SET created_at = now() - ($2::BIGINT * INTERVAL '1 second') \
+         WHERE id = $1",
+    )
+    .bind(charge_id)
+    .bind(i64::try_from(age.as_secs()).context("a fixture's crash age fits in an i64")?)
+    .execute(pool)
+    .await
+    .context("ageing the crashed charge")?
+    .rows_affected();
+    anyhow::ensure!(aged == 1, "the charge was not there to age");
+    Ok(())
+}
+
 /// Brings every future-dated job back to now.
 ///
 /// The poll ladder's first rung is ten seconds (`vpay_worker::poll_delay`), so
@@ -654,24 +696,25 @@ pub(crate) fn no_webhook_endpoints() -> Arc<vpay_worker::EndpointRegistry> {
     ))
 }
 
-/// The outbound client the worker binary builds at boot: the same call, and
-/// the same two budgets read from the same constants.
+/// The egress policy `vpay_worker::{run_loop, run_once}` take, for a suite
+/// whose subject is not webhook delivery.
 ///
-/// `vpay_worker::WEBHOOK_{CONNECT,REQUEST}_TIMEOUT` and not `5` and `10`
-/// spelled again. Those numbers used to be written out in three places —
-/// `vpay-worker-bin`'s `main`, this helper, and `webhooks.rs`'s own — with
-/// nothing pinning them together, so a change to the binary's pair would have
-/// left every test exercising a client that no longer ships, and the suite
-/// would have stayed green saying so.
+/// The **shipping default** — a private address is refused — because that is
+/// what a deployment gets, and a suite that quietly allowed private targets
+/// would be exercising a worker no deployment runs. It costs these suites
+/// nothing: they register no endpoints (see [`no_webhook_endpoints`]), so no
+/// delivery is ever attempted and the guard never runs. The suite whose
+/// subject *is* delivery — `webhooks.rs` — passes
+/// `EgressPolicy::ALLOW_PRIVATE`, because its receiver container answers on
+/// loopback, and proves both verdicts.
 ///
-/// Not `reqwest::Client::new()`: that one panics in the `scratch` runtime
-/// image (`vpay_provider::http`), so a suite using it would not be exercising
-/// the client that ships.
-pub(crate) fn webhook_client() -> reqwest::Client {
+/// There is no `webhook_client()` helper any more: since Step 8 the delivery
+/// client is built per delivery and pinned to the addresses that delivery's
+/// host resolved to (`vpay_worker::ssrf`), so there is no client for a
+/// harness to build. The two budgets it used to single-source are still
+/// `vpay_worker::WEBHOOK_{CONNECT,REQUEST}_TIMEOUT`, read now by
+/// `vpay_worker::ssrf::pinned_client`.
+pub(crate) fn default_egress_policy() -> vpay_worker::EgressPolicy {
     ensure_crypto_provider_installed();
-    vpay_provider::http::client_with_timeouts(
-        vpay_worker::WEBHOOK_CONNECT_TIMEOUT,
-        vpay_worker::WEBHOOK_REQUEST_TIMEOUT,
-    )
-    .expect("the vendored-roots client builds")
+    vpay_worker::EgressPolicy::DENY_PRIVATE
 }

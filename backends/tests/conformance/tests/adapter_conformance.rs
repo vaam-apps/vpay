@@ -427,8 +427,24 @@ async fn start(rail: RailUnderTest, credentials: Credentials, request_timeout: D
 /// `{"count": N, "requestJournalDisabled": false}` — one integer, after one
 /// key.
 async fn requests_recorded_for(rail: &Rail, path: &str) -> usize {
+    requests_matching(rail, &format!(r#"{{"method":"ANY","url":"{path}"}}"#)).await
+}
+
+/// How many requests this rail's stub has recorded matching an arbitrary
+/// WireMock request pattern.
+///
+/// [`requests_recorded_for`]'s general form, extracted when
+/// [`the_submit_tells_the_rail_where_to_call_back`] needed to ask about a
+/// *header* on one rail and a *body field* on the other. The pattern itself
+/// is rail-specific data ([`callback_url_pattern`]) for the same reason
+/// [`documented_declines`] is: one shared assertion, one table row per rail,
+/// and no `if rail == …` in a test body.
+///
+/// Same hand-rolled count extraction as its caller, and for the same reason
+/// — see that function.
+async fn requests_matching(rail: &Rail, pattern: &str) -> usize {
     let http = vpay_provider::http::client().expect("the vendored-roots client builds");
-    let body = format!(r#"{{"method":"ANY","url":"{path}"}}"#);
+    let body = pattern.to_owned();
     let text = http
         .post(format!("{}/__admin/requests/count", rail.stub_origin))
         .body(body)
@@ -508,6 +524,96 @@ fn documented_callback_body(rail: RailUnderTest, reference: Uuid) -> Vec<u8> {
         )
         .into_bytes(),
     }
+}
+
+/// Where each rail is documented to carry vpay's callback URL on a `submit`,
+/// as a WireMock request pattern over that rail's submit endpoint.
+///
+/// Rail-specific *data*, one shared test body — the same line
+/// [`documented_declines`] and [`documented_callback_body`] hold. Both rails'
+/// protocol is push-then-callback and both carry the URL per request, but
+/// they carry it in different *places*: MTN in the `X-Callback-Url` header
+/// (`docs/flows/adapter-mtn-momo.md`), Orange in the request body's
+/// `notif_url` (`docs/flows/adapter-orange-money.md`). A `Capabilities` value
+/// could say *whether* a rail takes a per-request callback URL
+/// (`delivers_callbacks`, which both set) but not *where* it puts it — that
+/// is wire shape, and wire shape belongs to the adapter and to the mapping
+/// directory. So it is a table row, exactly as a decline vocabulary is.
+///
+/// The pattern asserts the URL vpay was configured with arrived **verbatim**,
+/// not merely that some URL did: `ProviderConfig::callback_url` is what
+/// `vpay_config::ProviderHost::effective_callback_url` derives, and an
+/// adapter that sent its `base_url`, an empty string or a hard-coded
+/// constant would satisfy a presence check and be exactly as broken.
+fn callback_url_pattern(rail: RailUnderTest, callback_url: &str) -> String {
+    match rail {
+        RailUnderTest::MtnMomo => format!(
+            r#"{{"method":"POST","urlPath":"/collection/v1_0/requesttopay",
+                 "headers":{{"X-Callback-Url":{{"equalTo":"{callback_url}"}}}}}}"#
+        ),
+        RailUnderTest::OrangeMoney => format!(
+            r#"{{"method":"POST","urlPathPattern":"/orange-money-webpay/[^/]+/v1/webpayment",
+                 "bodyPatterns":[{{"matchesJsonPath":
+                   {{"expression":"$.notif_url","equalTo":"{callback_url}"}}}}]}}"#
+        ),
+    }
+}
+
+/// Every `submit` tells the rail where to call back, with the URL this
+/// deployment was configured with.
+///
+/// # Why this is a conformance case and not an adapter unit test
+///
+/// Because the failure it exists to catch is invisible from inside an
+/// adapter. Both rails' documented protocol is push-then-callback; polling
+/// alone settles a payment perfectly well (Step 4 proves it), so an adapter
+/// that quietly stopped sending its callback URL would pass every other
+/// assertion in this suite, settle every payment in
+/// `backends/tests/integration`, and be discovered only by an MTN sandbox
+/// registration failing or by a production deployment whose settlements were
+/// all ten seconds late. The only witness is what the rail *received*, which
+/// is what WireMock's request journal is.
+///
+/// The mappings assert the same thing a second way and from the other
+/// direction: `requesttopay.json`'s catch-all and `webpayment.json`'s both
+/// **require** the callback URL to match, so an adapter that stopped sending
+/// it fails to match any mapping and gets a 404 rather than an accepted
+/// submit. That belt is deliberate — this case is the braces, and it is the
+/// half that names the exact value.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn the_submit_tells_the_rail_where_to_call_back(#[case] rail_under_test: RailUnderTest) {
+    let rail = start(rail_under_test, Credentials::Valid, Duration::from_secs(10)).await;
+    let charge = rail.charge(REF_ACCEPTED);
+
+    // The path `vpay_api::provider_callback` mounts, which is also what
+    // `ProviderHost::effective_callback_url` derives — `start` builds this
+    // config the same way, so a change to either end shows up here as a
+    // mismatch rather than as a silent agreement.
+    assert!(
+        rail.config
+            .callback_url
+            .ends_with(&format!("/provider/{}/callback", rail.adapter.code())),
+        "the configuration under test must carry the route vpay actually mounts, got {}",
+        rail.config.callback_url
+    );
+
+    rail.adapter
+        .submit(&charge, &rail.config)
+        .await
+        .expect("an accepted submit must be Ok");
+
+    let pattern = callback_url_pattern(rail_under_test, &rail.config.callback_url);
+    assert_eq!(
+        requests_matching(&rail, &pattern).await,
+        1,
+        "{}: the rail received no submit carrying {} where its protocol documents one; \
+         a rail told nothing can only ever be settled by the poll ladder",
+        rail.adapter.code(),
+        rail.config.callback_url
+    );
 }
 
 /// Proves an accepted submit is `Ok` on both rails, and that the shape of what
