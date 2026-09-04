@@ -105,9 +105,10 @@ would let it answer a different question from the one the webhook asked. The
 ```
 
 `created` is unix **seconds**, like every other `created` on this surface.
-`type` is one of the seven in [../flows/webhooks.md](../flows/webhooks.md); only
-`payment_intent.succeeded` and `payment_intent.payment_failed` are ever written
-today, and the CHECK `type_is_a_documented_event` (migration `0018`) closes the
+`type` is one of the eight in [../flows/webhooks.md](../flows/webhooks.md); only
+`payment_intent.succeeded`, `payment_intent.payment_failed` and
+`checkout.session.expired` are ever written today, and the CHECK
+`type_is_a_documented_event` (migrations `0018` and `0029`) closes the
 vocabulary at the database. `livemode` comes off the stored row, not from
 configuration read at render time, so redeploying does not change what a
 delivered event says about itself.
@@ -122,6 +123,19 @@ afterwards still shows what was true when the event was emitted. Neither the
 delivered body nor this endpoint re-validates it against a payment-intent shape,
 so an SDK version that predates a future object type can still receive the
 event rather than failing to decode it.
+
+**Except on `checkout.session.expired`, whose `data.object` is a
+`checkout.session`** — the only type whose payload is not a `payment_intent` or
+a refund. It is the 13-key object documented below, with `status` already
+`expired`, `payment_status` whatever the money did, and **`url` always
+`null`**: a hosted session's `url` carries its `client_secret` in the fragment,
+and a webhook body is stored, delivered at-least-once and replayed. So `url:
+null` here does **not** mean the session was embedded — read `ui_mode`.
+`client_secret` is absent entirely. The event is emitted when vpay's hourly
+sweep expires a session past its horizon, and **only** then: a session the
+settlement finished already produced a `payment_intent.*` event for the same
+thing, and `POST /v1/checkout/sessions/{id}/expire` emits nothing because you
+asked for it.
 
 ### The `checkout.session` object (Step 9)
 

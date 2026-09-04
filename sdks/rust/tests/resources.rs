@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
-use serde_json::json;
+use serde_json::{Value, json};
 use vpay_sdk::checkout::{
     CheckoutPaymentStatus, CheckoutSessionStatus, CheckoutUiMode, CreateCheckoutSessionParams,
     ListCheckoutSessionsParams,
@@ -31,8 +31,8 @@ use vpay_sdk::payment_intents::{
     PaymentMethodType,
 };
 use vpay_sdk::{
-    Client, CreateRefundParams, Credentials, Error, IntentStatus, ListEventsParams, NextAction,
-    RefundStatus, RequestOptions,
+    Client, CreateRefundParams, Credentials, Error, IntentStatus, KnownEventType, ListEventsParams,
+    NextAction, RefundStatus, RequestOptions,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -598,6 +598,150 @@ async fn a_full_refund_omits_the_amount_entirely() {
 
     let request = only_request(&server, "/v1/refunds").await;
     assert_eq!(body_string(&request), "payment_intent=pi_1");
+}
+
+/// `checkout.session.expired` is in this SDK's event vocabulary, and its
+/// payload decodes as a Checkout Session through the whole `events.list`
+/// path — the object a merchant actually receives, not a hand-built one.
+///
+/// The **decisive** assertions are the last two: the delivered session
+/// carries no `client_secret` and a `null` `url`, because both are live payer
+/// credentials and an event body is stored, delivered at-least-once and
+/// replayable (`vpay_api::model::CheckoutSessionObject::expired_snapshot`).
+/// A server that started sending either would fail here rather than in a
+/// merchant's log aggregator.
+#[tokio::test]
+async fn a_checkout_session_expired_event_is_a_known_type_and_decodes_as_a_session() {
+    let (server, client) = fixture().await;
+    // The event body the server actually emits: the session with `status`
+    // already `expired`, `url` null, and no `client_secret` member at all.
+    let mut object = support::checkout_session_json("cs_1", None);
+    object["status"] = json!("expired");
+    object["url"] = Value::Null;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/events"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list",
+            "data": [
+                {
+                    "id": "evt_9",
+                    "object": "event",
+                    "type": "checkout.session.expired",
+                    "created": 1_753_401_600,
+                    "livemode": false,
+                    "data": { "object": object },
+                }
+            ],
+            "has_more": false,
+            "url": "/v1/events",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let list = client
+        .events()
+        .list(ListEventsParams {
+            event_type: Some(KnownEventType::CheckoutSessionExpired.to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let event = &list.data[0];
+    assert_eq!(event.kind, "checkout.session.expired");
+    assert_eq!(
+        KnownEventType::from_wire(&event.kind),
+        Some(KnownEventType::CheckoutSessionExpired),
+        "the type must be in this SDK's vocabulary, not merely a string"
+    );
+    // …and the vocabulary's spelling is what went out on the wire as the
+    // filter, so a typo in the constant would fail here too.
+    let request = only_request(&server, "/v1/events").await;
+    assert_eq!(request.url.query(), Some("type=checkout.session.expired"));
+
+    let session = event.checkout_session().unwrap();
+    assert_eq!(session.id, "cs_1");
+    assert_eq!(session.status, CheckoutSessionStatus::Expired);
+    assert_eq!(session.payment_status, CheckoutPaymentStatus::Unpaid);
+    // The session is `hosted`, so a reader must not infer the mode from a
+    // null `url`: it is null because the credential in its fragment may not
+    // be delivered, not because there was no page.
+    assert_eq!(session.ui_mode, CheckoutUiMode::Hosted);
+    assert_eq!(
+        session.url, None,
+        "a delivered session must not carry the url whose fragment is its credential"
+    );
+    assert_eq!(
+        session.client_secret, None,
+        "a delivered session must not carry its client_secret"
+    );
+    // Asserted on the serialised body, not only on the decoded struct: a
+    // field this SDK does not model would still be in the bytes.
+    let raw = serde_json::to_string(&event.data.object).unwrap();
+    assert!(
+        !raw.contains("_secret_"),
+        "no credential in the payload: {raw}"
+    );
+}
+
+/// An unknown type is not a decode failure, and the wrong accessor is an
+/// error rather than a wrong answer.
+///
+/// The counterpart to the case above: `Event::kind` stays a `String`
+/// precisely so a type this SDK version predates is still deliverable, and
+/// `KnownEventType::from_wire` answering `None` is how a caller finds out.
+#[test]
+fn an_unknown_event_type_is_none_rather_than_a_failure_and_the_wrong_accessor_errs() {
+    for (wire, expected) in [
+        (
+            "payment_intent.succeeded",
+            Some(KnownEventType::PaymentIntentSucceeded),
+        ),
+        (
+            "charge.refund.updated",
+            Some(KnownEventType::ChargeRefundUpdated),
+        ),
+        (
+            "checkout.session.expired",
+            Some(KnownEventType::CheckoutSessionExpired),
+        ),
+        // Real Stripe types vpay does not document. Neither is an error.
+        ("checkout.session.completed", None),
+        ("some.future.type", None),
+    ] {
+        assert_eq!(KnownEventType::from_wire(wire), expected, "{wire}");
+    }
+    // Every variant round-trips through its own wire spelling, so a constant
+    // that disagreed with `from_wire` could not pass.
+    for known in [
+        KnownEventType::PaymentIntentCreated,
+        KnownEventType::PaymentIntentProcessing,
+        KnownEventType::PaymentIntentSucceeded,
+        KnownEventType::PaymentIntentPaymentFailed,
+        KnownEventType::PaymentIntentCanceled,
+        KnownEventType::ChargeRefunded,
+        KnownEventType::ChargeRefundUpdated,
+        KnownEventType::CheckoutSessionExpired,
+    ] {
+        assert_eq!(KnownEventType::from_wire(known.as_wire_str()), Some(known));
+    }
+
+    let event: vpay_sdk::Event = serde_json::from_value(json!({
+        "id": "evt_9",
+        "object": "event",
+        "type": "checkout.session.expired",
+        "created": 1_753_401_600,
+        "livemode": false,
+        "data": { "object": support::checkout_session_json("cs_1", None) },
+    }))
+    .unwrap();
+    assert!(event.checkout_session().is_ok());
+    assert!(
+        event.payment_intent().is_err(),
+        "asking for the wrong shape must fail rather than answer something plausible"
+    );
 }
 
 #[tokio::test]

@@ -23,7 +23,7 @@ application's side of them.
   - [The repository trait, for the lanes that call it](#the-repository-trait-for-the-lanes-that-call-it)
   - [Why the settlement flip is `pub(crate)` and not a trait method](#why-the-settlement-flip-is-pubcrate-and-not-a-trait-method)
   - [`expire` checks for a live charge inside the statement](#expire-checks-for-a-live-charge-inside-the-statement)
-  - [`expire_due` is the same guard on a clock](#expire_due-is-the-same-guard-on-a-clock)
+  - [`expire_due` is the same guard on a clock, and it emits the event](#expire_due-is-the-same-guard-on-a-clock-and-it-emits-the-event)
   - [`publishable_key` is a column, and `return_page_url` is a method](#publishable_key-is-a-column-and-return_page_url-is-a-method)
 - [`charges`](#charges)
   - [One charge per intent is the index's job](#one-charge-per-intent-is-the-indexs-job)
@@ -339,14 +339,14 @@ that was already `paid` keeps saying so: the money is a fact about the intent,
 and an expiry that rewrote it would be vpay telling a merchant a completed
 payment had not happened.
 
-### `expire_due` is the same guard on a clock
+### `expire_due` is the same guard on a clock, and it emits the event
 
-`expire` is a merchant saying "I am done with this". `expire_due(now)` is
-D10's 24 hours arriving, and it is what `vpay_worker::handlers::sweep_expired`
-calls on its hourly pass. Until Step 9's lane 1b `expires_at` was written at
-create and read by **nothing**: a session past its horizon reported
-`status: open` until a merchant expired it by hand or the intent settled, so
-`status` could not tell "still payable" from "abandoned yesterday".
+`expire` is a merchant saying "I am done with this". `expire_due` is D10's 24
+hours arriving, and it is what `vpay_worker::handlers::sweep_expired` calls on
+its hourly pass. Until Step 9's lane 1b `expires_at` was written at create and
+read by **nothing**: a session past its horizon reported `status: open` until
+a merchant expired it by hand or the intent settled, so `status` could not
+tell "still payable" from "abandoned yesterday".
 
 It carries the identical `NOT EXISTS` live-charge predicate, and the reason
 sharpens rather than weakens on a sweep: nobody is watching. A session whose
@@ -359,18 +359,59 @@ clause deleted, `the_housekeeping_sweep_expires_a_stale_session_and_spares_a_pay
 (`backends/tests/integration/tests/checkout_sessions.rs`) fails with the
 paying session `expired`.
 
-Three things about the signature. It is **not** merchant-scoped, unlike every
-other read here, because its caller acts for the deployment and not for a
-tenant — the name says `due` rather than `all` for exactly that reason. It
-takes `now` rather than comparing against Postgres's `now()` as the other two
+**One statement became two functions on 2026-09-04**, when expiry started
+emitting `checkout.session.expired` (migration `0029`). The read is
+`due_for_expiry(now, limit)` and the write is
+`expire_due(id, now, event_id, event_data)`, and the split is forced by what
+an event *is*: `events.data` holds the **rendered wire object**, which only
+`vpay-api` knows how to shape, so the row has to be read and rendered before
+the write that describes it. That is the same order
+`Settlement::apply_succeeded` and `vpay_worker::handlers::intent_snapshot`
+have been in since Step 4, and it is why neither function can be the other's
+`RETURNING`.
+
+**The event and the flip are one transaction, and that is the whole point.**
+`expire_due` opens its own transaction, runs the compare-and-swap, and — only
+if it matched — appends the event before committing. The settlement's
+argument, sharpened again: a session that says `expired` with no event is
+**invisible**. There is no sweep over "expired sessions with no event", no
+fan-out backlog row naming it, and D10 adds neither; the merchant simply never
+hears, and their reconciliation sees an abandoned checkout they were not told
+about. `a_failed_event_insert_leaves_the_session_open` proves the rollback
+against a real CHECK violation, and the reverse — the flip committed before
+the insert — was measured failing it on 2026-09-04.
+
+The `type` is this module's own `EVENT_SESSION_EXPIRED` constant, not the
+caller's, for the reason `settlement::EVENT_SUCCEEDED` is a constant: the type
+is a property of *which transition this is*, and a caller free to choose it
+could report an abandoned checkout as a settled payment.
+
+**The guard is evaluated twice, on purpose.** `due_for_expiry` carries the
+same `status`/horizon/`NOT EXISTS` predicate the write does. The write needs
+its own copy because the read's answer is stale the moment it returns — a
+payer can confirm in between, and `Ok(None)` on that path is the *normal*
+answer rather than an error. The read needs one because rendering a session a
+rail is still holding would mint an `evt_…` and build an object claiming the
+checkout was abandoned, for a write that would then correctly refuse it: work
+done for nothing, and one more place a future change could leak that object
+out of.
+
+Three things about the signatures. Neither is merchant-scoped, unlike every
+other read here, because their caller acts for the deployment and not for a
+tenant — the name says `due` rather than `all` for exactly that reason. Both
+take `now` rather than comparing against Postgres's `now()` as the other two
 sweeps do, because the horizon on the other side of that comparison was
 computed in Rust at create (D10's constant belongs to the API, not to a
 migration), and because it lets a test sweep a future instant instead of
-rewriting a stored horizon. And it returns a count rather than the rows: the
-caller logs a number, and materialising every swept row would put an unbounded
-number of live payer credentials into memory for it.
+rewriting a stored horizon; the sweep takes the instant **once** and passes it
+to both, so a session that was due for the read cannot be undue for the write
+a few milliseconds later. And `due_for_expiry` has a `limit` where the bulk
+statement had none: an `UPDATE` that returned nothing cost one number however
+many rows it touched, while this one materialises rows that each carry two
+live payer credentials and each get their own transaction.
+`vpay_worker::handlers::EXPIRY_PAGE` owns the value.
 
-`payment_status` is untouched, exactly as in `expire`.
+`payment_status` is untouched by either, exactly as in `expire`.
 
 ### `publishable_key` is a column, and `return_page_url` is a method
 

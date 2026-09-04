@@ -189,6 +189,11 @@ A checkout session also ends on its own: the worker's hourly housekeeping sweep
 moves an `open` session past its 24-hour horizon to `expired`, unless its intent
 has a charge the rail may still be acting on — the clock never overrules a live
 payment. `payment_status` is untouched by that, exactly as by a merchant's own
-`expire`.
+`expire`. Since 2026-09-04 that transition also emits one
+`checkout.session.expired`, in the same commit as the flip, and it is the
+**only** one of the session's four movers that emits anything: a settlement
+already sends a `payment_intent.*` event for the same thing happening, and a
+merchant's own `expire` tells them what they just asked for
+([webhooks.md](webhooks.md), [hosted-checkout.md](hosted-checkout.md)).
 
 See [../status.md](../status.md).

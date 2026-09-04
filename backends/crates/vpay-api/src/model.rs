@@ -432,6 +432,17 @@ impl ExpandableIntent {
     }
 }
 
+/// The `status` a session is in once its horizon has passed (D10).
+///
+/// A constant rather than a literal inside
+/// [`CheckoutSessionObject::expired_snapshot`], because the same label is
+/// written by `vpay_db::CheckoutSessions::expire_due`'s `UPDATE` and the two
+/// have to agree: the event's `data.object` claiming one status while the row
+/// holds another is precisely the disagreement rendering-before-the-write
+/// risks, and it is the reason `GET /v1/events` and `GET /v1/checkout/sessions`
+/// can be compared at all.
+const EXPIRED: &str = "expired";
+
 /// A `checkout.session`, exactly as the wire contract in
 /// `docs/plans/2026-09-04-step9-hosted-checkout.md` describes it.
 ///
@@ -551,6 +562,74 @@ impl CheckoutSessionObject {
             url,
             expires_at: row.expires_at.unix_timestamp(),
             created: row.created_at.unix_timestamp(),
+        }
+    }
+
+    /// The object as it will stand once the expiry sweep's transaction
+    /// commits — the `data.object` of a `checkout.session.expired` event.
+    ///
+    /// # Why the projection is applied before the write
+    ///
+    /// `vpay_db::CheckoutSessions::expire_due` takes `event_data` as an
+    /// input, because the event is written inside the same transaction as the
+    /// row it describes and therefore cannot be rendered from the result. So
+    /// the caller renders what the row is *about to* say, exactly as
+    /// `vpay_worker::handlers::intent_snapshot` does for a settlement. The
+    /// one field patched is the one field that transition changes:
+    /// `payment_status` is deliberately untouched by an expiry (an expired
+    /// session that was already `paid` keeps saying so), and every other
+    /// column is already what it will be.
+    ///
+    /// # Why `url` is `None`, and is not the caller's choice here
+    ///
+    /// [`Self::url`] carries the session's `client_secret` in its fragment
+    /// (D6), and this object is **stored** in `events.data` and delivered
+    /// at-least-once to every endpoint the merchant configured. A credential
+    /// in a webhook body is a credential in the merchant's logs, in their
+    /// queue, and in every replay of it — for a session that has just stopped
+    /// being payable, which is the one case where the link is worth nothing
+    /// to its holder and everything to anyone else. [`Self::from_row`] leaves
+    /// that to the caller because three routes want three different answers;
+    /// here there is only one right answer, so this is a constructor rather
+    /// than a parameter.
+    ///
+    /// `return_token` is not on this object at all — it is a column, and
+    /// [`Self::from_row`] never reads it.
+    ///
+    /// ```
+    /// # use vpay_api::model::CheckoutSessionObject;
+    /// # use time::OffsetDateTime;
+    /// # let row = vpay_db::CheckoutSessionRow {
+    /// #     id: "cs_0123456789abcdefghjkmnpq".to_owned(),
+    /// #     seq: 1,
+    /// #     merchant_id: "acme-cameroon-tenant".to_owned(),
+    /// #     payment_intent_id: "pi_0123456789abcdefghjkmnpq".to_owned(),
+    /// #     livemode: false,
+    /// #     ui_mode: "hosted".to_owned(),
+    /// #     status: "open".to_owned(),
+    /// #     payment_status: "unpaid".to_owned(),
+    /// #     success_url: None,
+    /// #     cancel_url: None,
+    /// #     return_url: None,
+    /// #     publishable_key: "pk_test_acmecameroonsandbox01".to_owned(),
+    /// #     client_secret_suffix: "0".repeat(32),
+    /// #     return_token: "wxyz0123456789abcdefghjkmnpqrstv".to_owned(),
+    /// #     expires_at: OffsetDateTime::UNIX_EPOCH,
+    /// #     created_at: OffsetDateTime::UNIX_EPOCH,
+    /// #     updated_at: OffsetDateTime::UNIX_EPOCH,
+    /// # };
+    /// let expired = CheckoutSessionObject::expired_snapshot(&row);
+    /// assert_eq!(expired.status, "expired");
+    /// // …while the row it was built from still says `open`: the event
+    /// // describes what the transaction is about to commit.
+    /// assert_eq!(row.status, "open");
+    /// assert_eq!(expired.url, None);
+    /// ```
+    #[must_use]
+    pub fn expired_snapshot(row: &vpay_db::CheckoutSessionRow) -> Self {
+        Self {
+            status: EXPIRED.to_owned(),
+            ..Self::from_row(row, None)
         }
     }
 
@@ -921,9 +1000,9 @@ pub struct EventObject {
     ///
     /// A `String` rather than a closed enum for the reason both SDKs give:
     /// the vocabulary is closed by the database (`type_is_a_documented_event`,
-    /// migration 0018) where it is *written*, and a value that failed to parse
-    /// on the read path would turn a merchant's `GET /v1/events` into a 500
-    /// instead of showing them the event.
+    /// migrations 0018 and 0029) where it is *written*, and a value that
+    /// failed to parse on the read path would turn a merchant's
+    /// `GET /v1/events` into a 500 instead of showing them the event.
     #[serde(rename = "type")]
     pub kind: String,
     /// Unix **seconds**, like every other `created` on this API.
@@ -1607,6 +1686,98 @@ mod tests {
         assert_eq!(
             object.get("success_url"),
             Some(&json!("https://shop.example/ok?sid={CHECKOUT_SESSION_ID}"))
+        );
+    }
+
+    /// The `data.object` of a `checkout.session.expired` event: the thirteen
+    /// documented keys, `status` already `expired`, and **no credential of
+    /// any kind**.
+    ///
+    /// This is the one rendering whose output is *stored* (`events.data`,
+    /// migration 0018), signed, POSTed to every endpoint the merchant
+    /// configured, and replayed on every rung of the retry ladder. So the
+    /// assertions that matter are the negative ones, and they are made
+    /// against the serialised **string** rather than the parsed object: a
+    /// `Value` comparison would pass for a body that carried the credential
+    /// under a key this test did not think to look at.
+    ///
+    /// Decisive: change `expired_snapshot` to pass a `Some(url)` through, or
+    /// to render `CheckoutSessionWithSecret`, and this fails.
+    #[test]
+    fn an_expired_session_snapshot_is_the_thirteen_keys_and_carries_no_credential() {
+        let row = session_row();
+        let secret = vpay_core::ids::client_secret(&row.id, &row.client_secret_suffix);
+
+        let rendered = serde_json::to_value(CheckoutSessionObject::expired_snapshot(&row))
+            .expect("a wire DTO always serialises");
+        let object = rendered.as_object().expect("an object");
+
+        for key in [
+            "id",
+            "object",
+            "livemode",
+            "payment_intent",
+            "ui_mode",
+            "status",
+            "payment_status",
+            "success_url",
+            "cancel_url",
+            "return_url",
+            "url",
+            "expires_at",
+            "created",
+        ] {
+            assert!(object.contains_key(key), "{key} is missing: {rendered:#}");
+        }
+        assert_eq!(
+            object.len(),
+            13,
+            "an undocumented key appeared in a webhook body: {rendered:#}"
+        );
+        assert!(
+            !object.contains_key("client_secret"),
+            "a delivered event must not carry the session credential: {rendered:#}"
+        );
+
+        // The projection, and only the projection: `status` moves, and
+        // nothing else does. `payment_status` in particular is untouched by
+        // an expiry — the money is a fact about the intent.
+        assert_eq!(object.get("status"), Some(&json!("expired")));
+        assert_eq!(object.get("payment_status"), Some(&json!("unpaid")));
+        assert_eq!(object.get("url"), Some(&Value::Null));
+        // `url` is null because it carries a credential, *not* because the
+        // session was embedded. A reader must be able to tell.
+        assert_eq!(object.get("ui_mode"), Some(&json!("hosted")));
+        assert_eq!(
+            object.get("payment_intent"),
+            Some(&json!("pi_3MtwBwLkdIwHu7ix28a3tqPa")),
+            "the id, never the expanded intent — that carries a second credential"
+        );
+        // The row is not mutated: the caller renders what the transaction is
+        // *about to* commit, and then hands the row to nobody else.
+        assert_eq!(row.status, "open");
+
+        // Every negative assertion, on the bytes.
+        let body = serde_json::to_string(&rendered).expect("serialises");
+        assert!(
+            !body.contains(&secret),
+            "the joined client_secret is in a webhook body: {body}"
+        );
+        assert!(
+            !body.contains(&row.client_secret_suffix),
+            "the stored half of it is in a webhook body: {body}"
+        );
+        assert!(
+            !body.contains(&row.return_token),
+            "the return token is in a webhook body: {body}"
+        );
+        assert!(
+            !body.contains("neverlog"),
+            "not even a prefix of either credential: {body}"
+        );
+        assert!(
+            !body.contains("_secret_"),
+            "nothing shaped like a credential at all: {body}"
         );
     }
 

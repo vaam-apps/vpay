@@ -90,7 +90,8 @@ fn decode_settled(row: &sqlx::postgres::PgRow) -> Result<(String, ChargeRow), Db
 
 /// The `type` of the event a successful settlement emits.
 ///
-/// One of the seven `type_is_a_documented_event` allows (migration 0018),
+/// One of the eight `type_is_a_documented_event` allows (migrations 0018
+/// and 0029),
 /// spelled here rather than passed in by the caller: the event type is a
 /// property of *which settlement this is*, and a caller free to choose it
 /// could emit `payment_intent.succeeded` for a failure. The `data` — the

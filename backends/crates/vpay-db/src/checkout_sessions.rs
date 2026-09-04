@@ -47,6 +47,20 @@ const COLUMNS: &str = "id, seq, merchant_id, payment_intent_id, livemode, ui_mod
 /// first.
 const OPEN: &str = "open";
 
+/// The `type` of the event a horizon expiry emits.
+///
+/// One of the eight `type_is_a_documented_event` allows (migration `0029`),
+/// spelled here rather than passed in by the caller for
+/// [`crate::settlement`]'s reason: the event type is a property of *which
+/// transition this is*, and a caller free to choose it could report an
+/// abandoned checkout as a settled payment. The `data` — the wire object,
+/// which only `vpay-api` knows how to shape — is the caller's.
+///
+/// It is Stripe's own spelling. `docs/flows/webhooks.md`'s rule is "only real
+/// Stripe event types", because a custom one is silently dropped by any
+/// merchant switching exhaustively over `stripe-node`'s typed event union.
+const EVENT_SESSION_EXPIRED: &str = "checkout.session.expired";
+
 /// One `checkout_sessions` row, exactly as stored.
 ///
 /// Not the wire object: `vpay-api` owns that shape (`expires_at`/`created`
@@ -572,34 +586,114 @@ pub trait CheckoutSessions: Send + Sync {
         id: &str,
     ) -> Result<Option<CheckoutSessionRow>, DbError>;
 
-    /// Moves every `open` session whose horizon has passed to `expired`, and
-    /// reports how many went.
+    /// Every `open` session whose horizon has passed and which nothing is
+    /// driving, oldest first, at most `limit` of them — the sweep's backlog
+    /// query.
     ///
-    /// The other half of [`CheckoutSessions::expire`]: that one is a
-    /// merchant saying "I am done with this", this one is D10's 24 hours
-    /// arriving. `expires_at` was written at create and read by **nothing**
-    /// until Step 9's lane 1b — a session past its horizon reported
-    /// `status: open` forever, so a merchant reading it could not tell
-    /// "still payable" from "abandoned yesterday". The consequence was
-    /// bounded (the payment behind it is still guarded by
-    /// `one_charge_per_intent`) and the field was still a claim the database
-    /// did not keep.
+    /// The **read** half of what used to be one bulk `UPDATE`. It was split
+    /// in two when expiry started emitting `checkout.session.expired`
+    /// (migration `0029`): the event's `data` is the *rendered* wire object,
+    /// which only `vpay-api` knows how to shape, so the caller has to hold
+    /// the row before the write that describes it — the same order
+    /// `vpay_worker::handlers::intent_snapshot` and
+    /// [`crate::Settlement::apply_succeeded`] have always been in.
     ///
-    /// # Not tenant-scoped, and unbounded, because its caller is a sweep
+    /// # Not tenant-scoped, because its caller is a sweep
     ///
     /// Every other read in this module is merchant-scoped in SQL. This one
     /// has no merchant to scope by: it is called by
     /// `vpay_worker::handlers::sweep_expired`, the hourly housekeeping job,
-    /// which acts for the deployment rather than for a tenant. The name is
-    /// `expire_due` and not `expire_all` for that reason — what it selects
-    /// is a *time*, not a tenant.
+    /// which acts for the deployment rather than for a tenant. It selects a
+    /// *time*, not a tenant.
     ///
-    /// No `LIMIT`. The set is bounded by what one deployment created in a
-    /// day and the predicate is
-    /// `checkout_sessions_open_by_intent_idx`'s label, so a sweep after an
-    /// outage touches hours of sessions, not a table scan of history — and a
-    /// partial sweep that had to remember where it stopped would need a
-    /// cursor this job has nowhere to keep.
+    /// # It carries the same live-charge guard the write does
+    ///
+    /// `NOT EXISTS` over [`crate::payment_intents::LIVE_CHARGE_STATES`],
+    /// identical to [`CheckoutSessions::expire_due`]'s. Duplicated rather
+    /// than left to the write alone so a session a rail is still holding is
+    /// never *rendered* either: rendering it would mint an `evt_…` and build
+    /// an object claiming the checkout was abandoned, which the write would
+    /// then correctly refuse — work done for nothing, and one more place a
+    /// future change could leak that object out of. The write keeps its own
+    /// copy because this read's answer is stale the moment it returns; see
+    /// that function.
+    ///
+    /// # `limit`, where the bulk statement had none
+    ///
+    /// The old statement returned nothing, so an unbounded `UPDATE` cost one
+    /// number. This one materialises rows that each carry two live payer
+    /// credentials, and the sweep now does a transaction *per* row, so the
+    /// page is what bounds both the memory and the time one housekeeping
+    /// pass may take. `vpay_worker::handlers::EXPIRY_PAGE` owns the value and
+    /// the sweep reschedules itself immediately when a page comes back full,
+    /// exactly as `vpay_worker::webhooks::handle_fan_out` does — so a backlog
+    /// drains rather than waiting an hour a page.
+    ///
+    /// Ordered by `expires_at`, so the session that has been over its horizon
+    /// longest is the one a merchant hears about first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if the read fails.
+    async fn due_for_expiry(
+        &self,
+        now: OffsetDateTime,
+        limit: i64,
+    ) -> Result<Vec<CheckoutSessionRow>, DbError>;
+
+    /// Moves one `open` session past its horizon to `expired` **and** appends
+    /// the `checkout.session.expired` event that tells its merchant so — in
+    /// one transaction.
+    ///
+    /// The other half of [`CheckoutSessions::expire`]: that one is a merchant
+    /// saying "I am done with this", this one is D10's 24 hours arriving.
+    /// `expires_at` was written at create and read by **nothing** until Step
+    /// 9's lane 1b — a session past its horizon reported `status: open`
+    /// forever, so a merchant reading it could not tell "still payable" from
+    /// "abandoned yesterday" — and until migration `0029` it moved silently:
+    /// nothing was emitted, nothing was delivered, and a merchant learned by
+    /// polling.
+    ///
+    /// # Why the event is written here and not by the caller
+    ///
+    /// The same argument [`crate::Settlement::apply_succeeded`] makes, and it
+    /// is the whole point of this function existing rather than the caller
+    /// running two writes. A crash between the flip and the event would leave
+    /// a session reporting `expired` that no merchant will ever be told
+    /// about, and nothing would notice: there is no sweep over "expired
+    /// sessions with no event", and D10 adds none. One transaction makes that
+    /// window not exist. The `type` is this module's own constant for
+    /// [`crate::settlement`]'s reason too — it is a property of *which
+    /// transition this is*, and a caller free to choose it could emit
+    /// `payment_intent.succeeded` for an expiry.
+    ///
+    /// `event_data` is the wire object as it will stand once this commits
+    /// (`vpay-api`'s shape — this crate does not know it) and `event_id` is a
+    /// caller-generated `evt_…` ([`crate::events::event_id`]). Both are the
+    /// caller's for exactly the reasons the settlement's are.
+    ///
+    /// # The guard is the statement, and it is checked again here
+    ///
+    /// `status = 'open'`, `expires_at <= now`, and the `NOT EXISTS` over
+    /// [`crate::payment_intents::LIVE_CHARGE_STATES`] — the same predicate
+    /// [`CheckoutSessions::expire`] carries, re-evaluated inside this
+    /// transaction rather than trusted from
+    /// [`CheckoutSessions::due_for_expiry`]. A payer can confirm between the
+    /// read and the write, and a session whose rail is holding a live payment
+    /// must not be told the checkout was abandoned — it would be contradicted
+    /// by the settlement transaction minutes later, with no request anywhere
+    /// to correlate the two.
+    ///
+    /// `Ok(None)` therefore means "no longer due", covering all four ways
+    /// that can be true, and is the **normal** answer for a concurrent sweep
+    /// or a merchant who expired the session by hand in between. No event is
+    /// written on that path — which is what makes a second sweep produce no
+    /// second event.
+    ///
+    /// `payment_status` is untouched, exactly as in
+    /// [`CheckoutSessions::expire`] — the money is a fact about the intent,
+    /// and a sweep that rewrote it would be vpay telling a merchant a
+    /// completed payment had not happened.
     ///
     /// # `now` is the caller's, unlike the other two sweeps
     ///
@@ -611,28 +705,21 @@ pub trait CheckoutSessions: Send + Sync {
     /// rule. It also means a test can sweep a future instant instead of
     /// rewriting a stored horizon.
     ///
-    /// # The live-charge guard is the same predicate `expire` carries
-    ///
-    /// `NOT EXISTS` over `payment_intents::LIVE_CHARGE_STATES`, in the
-    /// `UPDATE` itself. A session whose payer confirmed thirty seconds before
-    /// the horizon has a rail holding a live payment, and expiring it would
-    /// tell a merchant the checkout was abandoned while the handset is still
-    /// prompting — and would then be contradicted by the settlement
-    /// transaction flipping the same row to `complete`/`paid`. The charge, not
-    /// the clock, is what says whether a session is still in play. Such a
-    /// session stays `open` until it settles, which is the honest answer:
-    /// something *is* still driving it.
-    ///
-    /// `payment_status` is untouched, exactly as in [`CheckoutSessions::expire`] —
-    /// the money is a fact about the intent, and a sweep that rewrote it
-    /// would be vpay telling a merchant a completed payment had not happened.
-    ///
-    /// `Ok(0)` is the healthy case and never an error.
-    ///
     /// # Errors
     ///
-    /// Returns [`DbError::Query`] if the write fails.
-    async fn expire_due(&self, now: OffsetDateTime) -> Result<u64, DbError>;
+    /// [`DbError::UniqueViolation`] on `events_pkey` if `event_id` has
+    /// already been emitted. [`DbError::Query`] if any statement or the
+    /// commit fails — including an `event_data` that is not a JSON object
+    /// (`data_is_object`) or a `type` outside migration `0029`'s eight, both
+    /// of which are vpay bugs. **The transaction is rolled back either way,
+    /// so the session is left `open` and the next sweep retries it.**
+    async fn expire_due(
+        &self,
+        id: &str,
+        now: OffsetDateTime,
+        event_id: &str,
+        event_data: &serde_json::Value,
+    ) -> Result<Option<CheckoutSessionRow>, DbError>;
 }
 
 #[async_trait::async_trait]
@@ -784,28 +871,94 @@ impl CheckoutSessions for crate::repository::PgRepositories {
             .map_err(classify_write)
     }
 
-    async fn expire_due(&self, now: OffsetDateTime) -> Result<u64, DbError> {
-        // No `RETURNING`: the caller is a sweep that logs a count, and
-        // materialising every swept row would put an unbounded number of
-        // sessions — each carrying two payer credentials — into memory for a
-        // number nobody reads them for.
+    async fn due_for_expiry(
+        &self,
+        now: OffsetDateTime,
+        limit: i64,
+    ) -> Result<Vec<CheckoutSessionRow>, DbError> {
+        // Postgres refuses a negative LIMIT, and a zero-row page is never
+        // what a caller means — `Events::pending_page`'s clamp, for the same
+        // reason.
+        let limit = limit.max(1);
         let sql = format!(
-            "UPDATE checkout_sessions SET status = 'expired', updated_at = now() \
+            "SELECT {COLUMNS} FROM checkout_sessions \
              WHERE status = '{OPEN}' AND expires_at <= $1 \
                AND NOT EXISTS (SELECT 1 FROM charges \
                                WHERE charges.payment_intent_id \
                                      = checkout_sessions.payment_intent_id \
-                                 AND charges.state IN ({LIVE_CHARGE_STATES}))"
+                                 AND charges.state IN ({LIVE_CHARGE_STATES})) \
+             ORDER BY expires_at \
+             LIMIT $2"
         );
 
-        let affected = sqlx::query(&sql)
+        sqlx::query_as::<_, CheckoutSessionRow>(&sql)
             .bind(now)
-            .execute(&self.pool)
+            .bind(limit)
+            .fetch_all(&self.pool)
             .await
-            .map_err(classify_write)?
-            .rows_affected();
+            .map_err(DbError::Query)
+    }
 
-        Ok(affected)
+    async fn expire_due(
+        &self,
+        id: &str,
+        now: OffsetDateTime,
+        event_id: &str,
+        event_data: &serde_json::Value,
+    ) -> Result<Option<CheckoutSessionRow>, DbError> {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+
+        // The whole guard, re-evaluated here: `due_for_expiry`'s answer is
+        // stale the moment it returns, and a payer who confirmed in between
+        // is exactly the case the `NOT EXISTS` exists for.
+        let sql = format!(
+            "UPDATE checkout_sessions SET status = 'expired', updated_at = now() \
+             WHERE id = $1 AND status = '{OPEN}' AND expires_at <= $2 \
+               AND NOT EXISTS (SELECT 1 FROM charges \
+                               WHERE charges.payment_intent_id \
+                                     = checkout_sessions.payment_intent_id \
+                                 AND charges.state IN ({LIVE_CHARGE_STATES})) \
+             RETURNING {COLUMNS}"
+        );
+
+        let expired = sqlx::query_as::<_, CheckoutSessionRow>(&sql)
+            .bind(id)
+            .bind(now)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(classify_write)?;
+
+        let Some(expired) = expired else {
+            // Not due any more. Nothing was written, so there is nothing to
+            // commit and nothing to roll back either — but the transaction is
+            // closed explicitly rather than dropped, exactly as
+            // `settlement::apply_succeeded` closes its already-settled arm,
+            // so the connection returns to the pool without waiting for a
+            // background rollback.
+            tx.rollback().await.map_err(DbError::Query)?;
+            return Ok(None);
+        };
+
+        crate::events::insert_in_tx(
+            &mut tx,
+            &crate::events::NewEvent {
+                id: event_id.to_owned(),
+                // From the row this transaction just wrote, never from
+                // configuration read at emit time — the event has to describe
+                // what was true of the object, and the session is the object.
+                merchant_id: expired.merchant_id.clone(),
+                livemode: expired.livemode,
+                event_type: EVENT_SESSION_EXPIRED.to_owned(),
+                // The `cs_…`, which is what a merchant's handler re-reads.
+                object_id: expired.id.clone(),
+                data: event_data.clone(),
+            },
+        )
+        .await?;
+
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(Some(expired))
     }
 }
 

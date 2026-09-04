@@ -120,6 +120,25 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(10 * 60);
 /// backlog drains rather than being dropped.
 const SCAN_BATCH: i64 = 500;
 
+/// How many checkout sessions past their horizon one housekeeping pass will
+/// expire.
+///
+/// A hundred, matching `crate::webhooks::FAN_OUT_PAGE` rather than
+/// [`SCAN_BATCH`], because this page is the same *kind* of work: each row
+/// costs a render and its own transaction, and each one produces an event that
+/// the fan-out will turn into one delivery per configured endpoint. A pass
+/// that filled five hundred slots would hand the outbox drain five pages of
+/// backlog in one go. `SCAN_BATCH` is five hundred because its rows cost one
+/// `INSERT … ON CONFLICT DO NOTHING` each.
+///
+/// The bound is real rather than defensive: before migration `0029` this was
+/// one unbounded `UPDATE` returning a count, which cost nothing to leave
+/// unbounded. It now materialises rows carrying two live payer credentials
+/// apiece. `sweep_expired` reschedules itself immediately when a page comes
+/// back full and something moved, so a backlog drains at this page per pass
+/// rather than waiting an hour for the next one.
+const EXPIRY_PAGE: i64 = 100;
+
 /// Added to a [`RecoveryAction::Wait`]'s remaining time before the job is
 /// rescheduled.
 ///
@@ -193,7 +212,7 @@ async fn dispatch(
     match kind {
         JobKind::PollCharge => poll_charge(repositories, adapters, rails, policy, job).await,
         JobKind::ResubmitCharge => resubmit_charge(repositories, adapters, rails, job).await,
-        JobKind::SweepExpired => sweep_expired(repositories, policy).await,
+        JobKind::SweepExpired => sweep_expired(repositories, job, policy).await,
         JobKind::ScanLiveCharges => scan_live_charges(repositories, job).await,
         // Both live in `crate::webhooks`, which owns every decision they make.
         // This module only routes: a second copy of the delivery ladder or of
@@ -857,23 +876,21 @@ async fn commit_resubmission(
 ///
 /// The first three were previously run once at `vpay-server` boot, which meant
 /// a process that stayed up for a month never swept anything
-/// (`docs/status.md`). Four independent statements, each its own transaction:
-/// they share nothing, and one failing should not roll back the others' work.
-/// Always reschedules — a sweep that found nothing is the healthy case.
+/// (`docs/status.md`). They are three independent statements, each its own
+/// transaction: they share nothing, and one failing should not roll back the
+/// others' work. Always reschedules — a sweep that found nothing is the
+/// healthy case.
 ///
-/// The fourth is **not** a delete. `checkout_sessions.expire_due` moves rows
-/// from `open` to `expired` (D10's 24 hours) and touches `payment_status`
-/// never: a merchant asking a session what happened must still be told, and
-/// only the label "is this still payable?" changes. Until Step 9's lane 1b
-/// `expires_at` was written and read by nothing, so a session past its horizon
-/// reported `open` until a merchant expired it by hand or the intent settled.
+/// The fourth is **not** a delete, and is not one statement either. See
+/// [`expire_due_sessions`].
 ///
-/// It lives here rather than in a job of its own because it is the same shape
-/// as the other three — one unconditional statement, hourly, whose healthy
-/// answer is zero — and a fifth `jobs.kind` would have needed a migration to
-/// say nothing this one does not.
+/// It lives here rather than in a job of its own because it runs on the same
+/// schedule as the other three and its healthy answer is zero too — and a
+/// fifth `jobs.kind` would have needed a migration to say nothing this one
+/// does not.
 async fn sweep_expired(
     repositories: &dyn Repositories,
+    job: &vpay_db::JobRow,
     policy: &RecoveryPolicy,
 ) -> Result<Outcome, JobError> {
     let idempotency = repositories.sweep_expired().await?;
@@ -886,19 +903,167 @@ async fn sweep_expired(
     // therefore the reaping — unclaimable forever. Reaping here as well costs
     // one statement an hour and keeps the sweep's own description honest.
     let leases = repositories.reap_expired_leases(policy.lease).await?;
-    // The instant is this process's, not Postgres's, because the horizon it
-    // is compared against was computed in Rust at create — see
-    // `vpay_db::CheckoutSessions::expire_due`.
-    let sessions = repositories.expire_due(OffsetDateTime::now_utc()).await?;
+    let sessions = expire_due_sessions(repositories, job).await?;
 
     tracing::info!(
         idempotency_keys = idempotency,
         client_assertion_jtis = assertions,
         expired_leases = leases,
-        checkout_sessions = sessions,
+        checkout_sessions = sessions.expired,
+        checkout_sessions_page = sessions.page,
         "housekeeping sweep"
     );
-    Ok(Outcome::RescheduleAfter(SWEEP_INTERVAL))
+    // Immediately rather than in an hour when the page came back full **and**
+    // something moved, exactly as `webhooks::handle_fan_out` reschedules:
+    // otherwise a deployment with more than one page of abandoned sessions
+    // would drain at `EXPIRY_PAGE` an hour and every merchant behind the
+    // backlog would wait. Conditional on progress, because a full page that
+    // expired nothing is a page every row of which lost its compare-and-swap,
+    // and rescheduling on that is a tight loop against Postgres. The other
+    // three statements run again with it; they are three bounded deletes
+    // whose healthy answer is zero, and paying for them is cheaper than a
+    // second job kind.
+    Ok(Outcome::RescheduleAfter(
+        if sessions.page_was_full && sessions.expired > 0 {
+            Duration::ZERO
+        } else {
+            SWEEP_INTERVAL
+        },
+    ))
+}
+
+/// What one pass of the session expiry did, for the sweep's log line and for
+/// its reschedule.
+///
+/// Three numbers rather than one, because they answer different questions:
+/// `expired` is what a merchant experienced, `page` is how much work the pass
+/// found, and `page_was_full` is the only one that changes what the sweep does
+/// next. Folding them into a count would make a backlog indistinguishable from
+/// a quiet hour in both the log and the schedule.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SweptSessions {
+    /// How many sessions actually moved `open` -> `expired`, each with its
+    /// event committed beside it.
+    expired: u64,
+    /// How many due sessions this pass read.
+    page: usize,
+    /// Whether the read filled [`EXPIRY_PAGE`], i.e. there may be more.
+    page_was_full: bool,
+}
+
+/// Expires checkout sessions past D10's 24-hour horizon, emitting one
+/// `checkout.session.expired` per session in the same transaction as the flip.
+///
+/// # Why this is a loop over single-row transactions and not one `UPDATE`
+///
+/// Until migration `0029` it *was* one unconditional `UPDATE` that returned a
+/// count, and the count was the whole of what a merchant ever learned: an
+/// expired session notified nobody, and they found out by polling. Emitting
+/// the event makes each expiry two writes that have to reach the same commit —
+/// a crash between the flip and the event would leave a session reporting
+/// `expired` that no merchant is ever told about, and nothing would notice,
+/// because there is no sweep over "expired sessions with no event" and D10
+/// adds none.
+///
+/// The event's `data` is the **rendered** wire object, and only `vpay-api`
+/// knows that shape, so the row has to be read and rendered before the write
+/// that describes it. That is the same order `intent_snapshot` and
+/// `vpay_db::Settlement::apply_succeeded` have been in since Step 4, and it is
+/// what turns one bulk statement into a page of small transactions.
+///
+/// # One session's failure does not stop the page
+///
+/// The same shape `webhooks::handle_fan_out` uses, for the same reason: an
+/// event that will not render — or a session whose write fails — must not hold
+/// up every other merchant's expiries behind it. The failure is logged at
+/// `WARN` naming the session, its merchant and no credential, and the pass
+/// moves on; the session keeps `status = 'open'`, so the next pass retries it.
+/// There is deliberately **no** attempt counter here, unlike
+/// `events.fanout_attempts` — but not because a failing session gets out of
+/// the way. It does **not**: `due_for_expiry` orders by `expires_at`, and a
+/// session whose write keeps failing keeps both its `status = 'open'` and its
+/// horizon, so it sorts to the head of every subsequent page and stays there.
+/// What bounds the damage is that the pass moves on rather than stopping, so
+/// one poisoned session costs one `WARN` an hour and one of a hundred slots.
+///
+/// **What is not bounded**, and is the reason to revisit this if it ever
+/// happens: a hundred of them fill the page, `expired` is then zero, the
+/// full-page reschedule below is conditional on progress and so does not
+/// fire, and every healthy session behind them waits an hour a pass and never
+/// reaches the front. Nothing today makes a *deterministic* per-session
+/// failure reachable — the render cannot fail for this DTO, and the `type`,
+/// the `data` shape and the `evt_…` are not derived from the session — so the
+/// realistic failure is a transient one that clears itself. If a
+/// deterministic one is ever found, the fix is `events.fanout_attempts`'
+/// shape: a counter on the row and a page that skips what has exhausted it.
+///
+/// # Errors
+///
+/// [`JobError::Db`] only for a failure to **read** the page — there is nothing
+/// to isolate at that point and the backlog is still there for the next pass.
+/// A per-session failure is logged and counted, never returned.
+async fn expire_due_sessions(
+    repositories: &dyn Repositories,
+    job: &vpay_db::JobRow,
+) -> Result<SweptSessions, JobError> {
+    // The instant is this process's, not Postgres's, because the horizon it is
+    // compared against was computed in Rust at create — see
+    // `vpay_db::CheckoutSessions::due_for_expiry`. Taken once and used for
+    // both halves, so a session that was due for the read cannot be undue for
+    // the write a few milliseconds later.
+    let now = OffsetDateTime::now_utc();
+    let due = repositories.due_for_expiry(now, EXPIRY_PAGE).await?;
+
+    let mut swept = SweptSessions {
+        page: due.len(),
+        page_was_full: i64::try_from(due.len()).unwrap_or(i64::MAX) >= EXPIRY_PAGE,
+        ..SweptSessions::default()
+    };
+
+    for row in &due {
+        match expire_one_session(repositories, job, row, now).await {
+            Ok(true) => swept.expired = swept.expired.saturating_add(1),
+            // The compare-and-swap matched nothing: a concurrent sweep, a
+            // merchant who expired it by hand, or a payer who confirmed
+            // between the read and the write. All three are normal, and none
+            // of them emits an event.
+            Ok(false) => {}
+            Err(error) => tracing::warn!(
+                job_id = %job.id,
+                checkout_session_id = %row.id,
+                merchant_id = %row.merchant_id,
+                %error,
+                "a checkout session past its horizon could not be expired; it stays open and \
+                 the next sweep retries it"
+            ),
+        }
+    }
+
+    Ok(swept)
+}
+
+/// One session: render what it is about to say, then flip it and emit that in
+/// one transaction. `Ok(false)` means it was no longer due.
+async fn expire_one_session(
+    repositories: &dyn Repositories,
+    job: &vpay_db::JobRow,
+    row: &vpay_db::CheckoutSessionRow,
+    now: OffsetDateTime,
+) -> Result<bool, JobError> {
+    // Rendered through `vpay_api::model::CheckoutSessionObject`, the same type
+    // `GET /v1/checkout/sessions/{id}` returns, because `events.data` is a
+    // snapshot *of the object* (migration 0018). A second hand-written copy of
+    // that shape is how a webhook body and an API response start disagreeing
+    // about a field. `expired_snapshot` is what decides the session's `url` is
+    // `null` here — see its own comment.
+    let data = encode(
+        job,
+        &vpay_api::model::CheckoutSessionObject::expired_snapshot(row),
+    )?;
+    Ok(repositories
+        .expire_due(&row.id, now, &ids::event_id(), &data)
+        .await?
+        .is_some())
 }
 
 /// Enqueues a poll for every live charge nothing appears to be driving.

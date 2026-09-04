@@ -36,7 +36,10 @@ pub enum JobKind {
     /// `provider_reference_id`. Enqueued only by the recovery table.
     ResubmitCharge,
     /// The housekeeping sweep: expired idempotency records, expired
-    /// client-assertion `jti`s, and job leases whose worker died.
+    /// client-assertion `jti`s, job leases whose worker died, and checkout
+    /// sessions past their horizon — the last of which also emits one
+    /// `checkout.session.expired` per session, in the same transaction as the
+    /// flip (`crate::handlers`' `expire_due_sessions`).
     SweepExpired,
     /// The backstop scan that finds live charges nothing is polling — rows
     /// written before the queue existed, or a job lost to operator error.

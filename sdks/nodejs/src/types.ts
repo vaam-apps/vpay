@@ -101,6 +101,12 @@ export interface Refund {
  * Stripe's own typed union — this SDK types `type` as `string` rather than
  * this literal union so an event carrying a type it does not yet know about
  * is still deliverable, and narrows with the exported guards below instead.
+ *
+ * `checkout.session.expired` is emitted when vpay's hourly sweep moves a
+ * session past its 24-hour horizon (Step 9's D10); its `data.object` is a
+ * {@link CheckoutSession}, which makes it the only member here whose payload
+ * is neither a {@link PaymentIntent} nor a {@link Refund}. Narrow it with
+ * {@link isCheckoutSessionEvent}.
  */
 export type KnownEventType =
   | "payment_intent.created"
@@ -109,7 +115,8 @@ export type KnownEventType =
   | "payment_intent.payment_failed"
   | "payment_intent.canceled"
   | "charge.refunded"
-  | "charge.refund.updated";
+  | "charge.refund.updated"
+  | "checkout.session.expired";
 
 export interface Event {
   id: string;
@@ -138,6 +145,28 @@ export function isRefundEvent(
   event: Event,
 ): event is Event & { data: { object: Refund } } {
   return event.type.startsWith("charge.refund");
+}
+
+/**
+ * Narrows a {@link CheckoutSession}-shaped value out of `event.data.object`.
+ *
+ * Matched on the `checkout.session.` prefix rather than on the one literal
+ * type vpay emits today, exactly as the two guards above are: a later
+ * `checkout.session.*` type carries the same object, and a guard that had to
+ * be edited for each one is a guard that will be out of date before the
+ * `switch` that calls it is.
+ *
+ * The session on an event **never** carries `client_secret`, and its `url` is
+ * always `null`: both would put a live payer credential in a body that is
+ * stored, delivered at-least-once and replayed
+ * (`vpay_api::model::CheckoutSessionObject::expired_snapshot`). So
+ * {@link CheckoutSession.url} being `null` here does not mean the session was
+ * embedded — read {@link CheckoutSession.ui_mode} for that.
+ */
+export function isCheckoutSessionEvent(
+  event: Event,
+): event is Event & { data: { object: CheckoutSession } } {
+  return event.type.startsWith("checkout.session.");
 }
 
 /**

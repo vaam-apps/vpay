@@ -15,9 +15,23 @@ No cell may be blank. Rename a test without editing this file and `just
 verify` fails naming the cell.
 
 **Measured by reading both SDKs, 2026-09-03**, again for the Checkout Session
-rows on **2026-09-04** (Step 9), and again on **2026-09-04** for the
-assertion-audience row (Step 9, lane 5b). Nothing here is inferred from a file
-name or a doc comment.
+rows on **2026-09-04** (Step 9), again on **2026-09-04** for the
+assertion-audience row (Step 9, lane 5b), and again on **2026-09-04** for the
+two `checkout.session.expired` rows. Nothing here is inferred from a file name
+or a doc comment.
+
+A note on the first of those two, because the two SDKs are at parity on the
+*capability* and not on the shape: `@vpay/sdk` has always carried a
+`KnownEventType` string union, and `sdks/rust` had no event-type vocabulary at
+all until 2026-09-04. Adding the type meant adding
+`vpay_sdk::KnownEventType` — a `#[non_exhaustive]` enum with `as_wire_str` /
+`from_wire`, mirroring `PaymentMethodType`'s shape in the same file — so the
+Rust column names an enum where the Node column names a union. Both keep
+`Event::kind` / `Event.type` a plain string, so an event type either SDK
+version predates is still deliverable rather than a decode failure; that is
+the property the proving tests assert, and it is what makes the two cells
+comparable at all (ADR-0015's decision 1: parity is per capability, not per
+method name).
 
 > A capability absent from *both* SDKs is still recorded ⛔/⛔ — the SDKs are
 > at parity with each other and both short of the server. That is a different
@@ -87,6 +101,8 @@ name or a doc comment.
 | `payment_intents.cancel` | ✅ `cancel_posts_an_empty_body_and_still_carries_an_idempotency_key` | ✅ `payment_intents.cancel: exact path and method` |
 | `payment_intents.list`, with `limit` and both cursors | ✅ `list_payment_intents_encodes_its_pagination_into_the_query_string`, `a_list_call_with_no_parameters_sends_no_query_string_at_all` | ✅ `payment_intents.list: exact query string` |
 | `refunds.create`, and a full refund omitting `amount` | ✅ `create_refund_sends_the_documented_body_and_decodes_the_object`, `a_full_refund_omits_the_amount_entirely` | ✅ `refunds.create: exact path and body, amount omitted for a full refund` |
+| The `checkout.session.expired` event type is in this SDK's vocabulary, and its payload decodes as a session | ✅ `a_checkout_session_expired_event_is_a_known_type_and_decodes_as_a_session`, `an_unknown_event_type_is_none_rather_than_a_failure_and_the_wrong_accessor_errs` | ✅ `is a member of KnownEventType and narrows with isCheckoutSessionEvent`, `is not narrowed by the payment-intent or refund guards`, `leaves an unknown checkout.session.* type deliverable rather than a failure` |
+| A delivered `checkout.session.expired` carries no `client_secret` and a null `url`, and a null `url` is still distinguishable from an embedded session | ✅ `a_checkout_session_expired_event_is_a_known_type_and_decodes_as_a_session` | ✅ `carries no client_secret and a null url, so a webhook body holds no payer credential` |
 | `events.list`, with cursors and the `type` filter | ✅ `list_events_filters_by_type_and_keeps_data_object_as_raw_json` | ✅ `events.list: exact query string including type` |
 | `events.retrieve` — `GET /v1/events/{id}` | ⛔ 2026-09-03 — the route is mounted and served (`vpay_api::v1::V1_ROUTES`, `events::retrieve`) and this SDK has no method for it. A merchant who missed a webhook is told to re-read the event, and cannot. Owner: SDK maintainers | ⛔ 2026-09-03 — same: `EventsResource` exposes `list` only. Owner: SDK maintainers |
 | `balance.retrieve` | ✅ `retrieve_balance_is_a_bare_get_and_decodes_both_buckets` | ✅ `balance.retrieve: exact path, no body` |

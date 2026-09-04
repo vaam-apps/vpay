@@ -695,3 +695,12 @@ and the fifth addendum), `docs/flows/hosted-checkout.md` and the thirteen existi
 flow docs Step 9 bears on (its README included), `docs/runbooks/checkout.md` and `demo.md`, and
 `docs/api/README.md`.
 
+**Follow-up, 2026-09-05: `checkout.session.expired`** — built by the opus tier
+in the three-tier experiment, reviewed with eight mutations; the experiment's
+record is in this session's notes
+(`docs/plans/step9-notes/session-expired.md` and
+`session-expired-review.md`). It closes the "nothing is notified" sentence the
+lane 1b sweep row carried: the sweep now writes an event inside the same
+transaction as the `open` → `expired` flip, and it fans out and delivers like
+every other event. The confirm-after-expiry desync lane 1b created is
+unchanged and is filed separately.

@@ -65,8 +65,8 @@ pub use client::{Client, ClientBuilder, DEFAULT_AUDIENCE};
 pub use error::{ConfigError, Error, WebhookError};
 pub use model::{
     Balance, BalanceEntry, CheckoutPaymentStatus, CheckoutSession, CheckoutSessionStatus,
-    CheckoutUiMode, Event, EventData, IntentStatus, LastPaymentError, List, NextAction,
-    PaymentIntent, PaymentMethodType, RedirectToUrl, Refund, RefundStatus,
+    CheckoutUiMode, Event, EventData, IntentStatus, KnownEventType, LastPaymentError, List,
+    NextAction, PaymentIntent, PaymentMethodType, RedirectToUrl, Refund, RefundStatus,
 };
 pub use resources::{
     BalanceResource, CheckoutResource, CheckoutSessionsResource, ConfirmPaymentIntentParams,
@@ -106,6 +106,7 @@ pub mod refunds {
 
 /// See [`payment_intents`].
 pub mod events {
+    pub use crate::model::KnownEventType;
     pub use crate::resources::{EventsResource, ListEventsParams};
 }
 

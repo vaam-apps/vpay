@@ -144,28 +144,71 @@ dead process, and the charge behind it is on a ladder whose fastest rung is ten
 seconds. The floor exists so that a deployment (or a test) with a very short
 lease does not turn the reaper into a hot loop against Postgres.
 
-### The housekeeping sweep retires a fourth thing
+### The housekeeping sweep retires a fourth thing, and tells someone about it
 
-`sweep_expired` runs four independent statements, each its own transaction so
-one failing does not roll back the others: expired idempotency records, expired
-client-assertion `jti`s, dead job leases, and — since Step 9's lane 1b —
-checkout sessions past D10's 24-hour horizon
-(`vpay_db::CheckoutSessions::expire_due`). Its count joins the same log line,
-as `checkout_sessions`.
+`sweep_expired` runs three independent statements, each its own transaction so
+one failing does not roll back the others — expired idempotency records,
+expired client-assertion `jti`s, dead job leases — and then a fourth thing that
+is not a statement: checkout sessions past D10's 24-hour horizon, since Step
+9's lane 1b. Their count joins the same log line, as `checkout_sessions`.
 
 The fourth is **not** a delete. It moves `open` to `expired` and leaves
 `payment_status` exactly as it stands, because a merchant asking a finished
 session what happened must still be told; only the label "is this still
 payable?" changes. A session whose intent has a live charge is skipped by a
-`NOT EXISTS` inside that `UPDATE` — see
-[vpay-db.md](vpay-db.md#expire_due-is-the-same-guard-on-a-clock) for why the
-guard has to be in the statement.
+`NOT EXISTS` inside the `UPDATE` — see
+[vpay-db.md](vpay-db.md#expire_due-is-the-same-guard-on-a-clock-and-it-emits-the-event)
+for why the guard has to be in the statement.
 
-It is here rather than in a job of its own because it is the same shape as the
-other three — one unconditional statement, hourly, whose healthy answer is zero
-— and a fifth `jobs.kind` would have needed a migration to say nothing this one
-does not. Before it existed, `expires_at` was a column written by `create` and
-read by nothing.
+It is here rather than in a job of its own because it runs on the same schedule
+as the other three and its healthy answer is zero too — and a fifth `jobs.kind`
+would have needed a migration to say nothing this one does not. Before it
+existed, `expires_at` was a column written by `create` and read by nothing.
+
+**Since 2026-09-04 it emits `checkout.session.expired`**, and that is what
+turned one unconditional `UPDATE` into `expire_due_sessions`: a page of due
+sessions read through `vpay_db::CheckoutSessions::due_for_expiry`, each
+rendered through `vpay_api::model::CheckoutSessionObject::expired_snapshot`,
+each flipped and evented in its own transaction by
+`vpay_db::CheckoutSessions::expire_due`. The render has to happen *before* the
+write because `events.data` is the wire object and the write takes it as an
+input — the shape `intent_snapshot` and `Settlement::apply_succeeded` have had
+since Step 4.
+
+Three properties, and each is the fan-out drain's, for the fan-out drain's
+reasons:
+
+- **A page, not the table.** `EXPIRY_PAGE` is 100 — `webhooks::FAN_OUT_PAGE`'s
+  number rather than `SCAN_BATCH`'s 500, because each of these rows costs a
+  render and a transaction and produces an event the drain will turn into one
+  delivery per endpoint, where a `scan_live_charges` row costs one
+  `INSERT … ON CONFLICT DO NOTHING`. The bound is new: the statement it
+  replaced returned nothing and cost one number however many rows it touched.
+- **A full page reschedules immediately**, and only when something moved —
+  `handle_fan_out`'s exact condition, for its exact reason. Without it a
+  backlog would drain at a hundred an hour; conditional on progress, because a
+  full page that expired nothing is a page every row of which lost its
+  compare-and-swap, and rescheduling on that is a tight loop against Postgres.
+  The other three statements run again with it, which is three bounded deletes
+  whose healthy answer is zero — cheaper than a second job kind.
+- **One session's failure does not stop the page.** It is logged at `WARN`
+  naming the session, its merchant and no credential, and the pass moves on;
+  the session keeps `status = 'open'`, so the next pass retries it. There is
+  deliberately no attempt counter here, unlike `events.fanout_attempts` — and
+  a failing session does **not** get out of the way, because `due_for_expiry`
+  orders by `expires_at` and that session keeps both its `status` and its
+  horizon, so it heads every subsequent page. What bounds it is that the pass
+  moves on: one poisoned session costs one `WARN` an hour and one of a hundred
+  slots. A hundred of them fill the page and stall the healthy sessions behind
+  them, because the immediate reschedule is conditional on progress; nothing
+  today makes a deterministic per-session failure reachable, and if one is
+  found the fix is `events.fanout_attempts`' shape. Only a failure to read the
+  page is returned as a `JobError`.
+
+The event's `data.object` renders `url` as `null` and carries no
+`client_secret` — `expired_snapshot`, not `from_row`, is what decides that,
+and its own doc comment says why a webhook body is the wrong place for a
+credential.
 
 ### Where a job failure is logged, and how often
 

@@ -582,6 +582,39 @@ expected_suites := "42"
 # and 6 added no test binary — and `just test-doc` measures **84 passed, 1
 # ignored** (the ignored one is `sdks/rust`'s README block and is
 # pre-existing).
+#
+# Re-measured 2026-09-04 for `checkout.session.expired` (the event and webhook
+# a Checkout Session emits when the sweep expires it): `just verify-ignored`
+# reports **1146 total, 42 test binaries, 0 ignored** — 1137 plus nine cases,
+# every one of them in a file that already existed. Six in
+# `backends/tests/integration/tests/checkout_sessions.rs` (the event and its
+# deliveries, the second sweep, a live charge, a settled session, the
+# `/v1/events` read with its tenant boundary, and the transactionality proof),
+# one `vpay-api` `model` unit for the rendered snapshot, and two `sdks/rust`
+# `resources` cases for the event-type vocabulary. `expected_suites` stays 42:
+# no test binary was added, so the checkout suite is where the sweep's own
+# case already lives and where a reader looks for it.
+#
+# The floor **stays at 1080**, on lane E's and lane H's terms: nine tests is
+# not a reason to move a floor, and moving it every time one is added is how a
+# floor becomes a number nobody reads. `just test-doc` measures **86 passed, 1
+# ignored** — 84 plus the two examples this change added
+# (`CheckoutSessionObject::expired_snapshot` and `vpay_sdk::KnownEventType`);
+# the ignored one is still `sdks/rust`'s README block and still pre-existing.
+#
+# Re-measured 2026-09-04 after the sabotage review of that change
+# (`docs/plans/step9-notes/session-expired-review.md`): **1147 total, 42 test binaries, 0
+# ignored**, and `just test-doc` still **86 passed, 1 ignored**. One case
+# added — `a_payer_confirming_between_the_read_and_the_write_keeps_the_session`
+# — because deleting the live-charge `NOT EXISTS` from `expire_due`'s write
+# half left all 23 cases in the checkout suite green. Still no new test
+# binary, so `expected_suites` stays 42, and the floor stays 1080.
+#
+# Re-measured 2026-09-05 on the tree rebased onto `master` for landing:
+# `just verify-ignored` reports **1147 total, 42 test binaries, 0 ignored**
+# and `just test-doc` **86 passed, 1 ignored** — both unchanged. The rebase
+# brought in `61bce45` (assertion messages, test-only) and this pass changed
+# four more of the same shape; neither adds or removes a case.
 min_tests := "1080"
 
 verify-ignored:

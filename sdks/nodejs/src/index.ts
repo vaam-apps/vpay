@@ -57,4 +57,8 @@ export type {
   RequestOptions,
 } from "./types.js";
 
-export { isPaymentIntentEvent, isRefundEvent } from "./types.js";
+export {
+  isCheckoutSessionEvent,
+  isPaymentIntentEvent,
+  isRefundEvent,
+} from "./types.js";

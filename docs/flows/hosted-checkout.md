@@ -63,6 +63,10 @@ existing invariant already guards them.
 `complete` (the intent reached `succeeded`) or `expired` (24 hours from create,
 or the intent reached a terminal non-success state — reported as `expired` with
 `payment_status: failed`). `payment_status` is `unpaid` / `paid` / `failed`.
+**Exactly one of the four transitions below emits an event**
+(`checkout.session.expired`, [webhooks.md](webhooks.md)), and it is the
+horizon: the other three either already send a `payment_intent.*` event for
+the same thing happening, or are the merchant's own action.
 There are no `line_items`, no `mode`, no `amount_total` and no refunds. Field
 names mirror Stripe's **only** where the semantics match, and
 `sdks/stripe-compat` gets no row for any of it: the compat suite proves claims
@@ -78,9 +82,13 @@ Four things move a session, and only four:
    is a compare-and-swap with a `NOT EXISTS` live-charge guard *in the same
    statement*: a session whose payer is mid-payment refuses with `409`.
 3. **The worker's hourly housekeeping sweep**, which expires `open` sessions
-   past `expires_at` that have no live charge. No new `jobs.kind`, no
-   migration — a fourth statement in the sweep that already retires idempotency
-   keys, client-assertion JTIs and expired leases.
+   past `expires_at` that have no live charge — **and, since 2026-09-04, emits
+   one `checkout.session.expired` per session in the same transaction as the
+   flip.** No new `jobs.kind`: it is still a fourth thing the sweep that
+   already retires idempotency keys, client-assertion JTIs and expired leases
+   does. It is no longer one statement, though — the event's `data.object` is
+   the rendered session, so the sweep reads a page of due sessions, renders
+   each, and runs one small transaction per session. See below.
 4. **Nothing else.** In particular, a payer's browser cannot move a session.
 
 **One open session per intent, enforced by a partial unique index** and not
@@ -283,13 +291,64 @@ content policy while forbidding nothing.
   control is a native focusable element with an accessible name, the live region
   is mounted from first render, focus moves to the new screen's heading, and the
   MSISDN error is tied to its field.
-- **An expired session notifies nobody.** No event, no webhook; a merchant
-  learns by reading it.
 - **`checkout_not_configured` answers `500`, not `503`.** A truthful `503`
   needs either a new `Category` or `Category::Configuration` moving — an
   ADR-level change to [ADR-0011](../adr/0011-error-modelling.md) touching every
   error in the workspace, **left to the maintainer**.
 - **The auto-forward countdown is 5 seconds and not configurable.**
+
+## What the horizon emits, and what it does not
+
+A session the sweep expires produces one `events` row of type
+`checkout.session.expired`, in the **same transaction** as the `open` ->
+`expired` compare-and-swap (`vpay_db::CheckoutSessions::expire_due`,
+migration `0029`), and from there it is an ordinary event: the fan-out creates
+one `webhook_deliveries` row and one `deliver_webhook` job per endpoint the
+merchant configured, signed and delivered on the same ladder as
+`payment_intent.succeeded`, and readable at `GET /v1/events` and
+`GET /v1/events/{id}` scoped to the merchant.
+
+`data.object` is the **thirteen documented keys** — `status` already
+`expired`, `payment_status` whatever the money did, and **`url: null`**.
+A hosted session's `url` carries its `client_secret` in the fragment (D6),
+and an event body is stored, signed, delivered at-least-once and replayed;
+`client_secret` is absent entirely and `return_token` is on no wire object at
+all. So a `null` `url` in an event does not mean the session was embedded —
+read `ui_mode`.
+
+The transaction is what matters here, not the event. A session that says
+`expired` with no event is invisible: no sweep looks for one, no backlog names
+it, and the merchant simply never hears. `a_failed_event_insert_leaves_the_session_open`
+proves the flip rolls back with the insert, and the reverse — committing the
+flip first — was measured failing it on 2026-09-04.
+
+**Three transitions emit nothing, deliberately.** A settlement moving a
+session to `complete`/`paid` or `expired`/`failed` already emits
+`payment_intent.succeeded` / `payment_intent.payment_failed` from the same
+commit, and a second event for one payment is a dedupe problem vpay would have
+created. `POST /v1/checkout/sessions/{id}/expire` emits nothing because the
+caller already knows — a narrower rule than Stripe's, recorded as an open
+question in [webhooks.md](webhooks.md)'s "What is not built" rather than
+decided here. And a session a rail is still holding is neither expired nor
+evented, because the `NOT EXISTS` live-charge guard is a predicate of the
+`UPDATE`.
+
+**The sweep is now paged.** It reads at most `vpay_worker::handlers`'
+`EXPIRY_PAGE` (100) due sessions a pass and reschedules itself immediately
+when a page comes back full and something moved — the device
+`vpay_worker::webhooks::handle_fan_out` already used — so a backlog drains
+rather than waiting an hour a page. One session's failure is logged at `WARN`
+naming the session, its merchant and no credential, and the pass moves on;
+that session stays `open` and the next pass retries it. There is no attempt
+counter, unlike `events.fanout_attempts` — and a failing session does **not**
+get out of the way: it keeps its `status` and its horizon, and `due_for_expiry`
+orders by `expires_at`, so it heads every subsequent page. What bounds it is
+that the pass moves on: one poisoned session costs one `WARN` an hour and one
+of a hundred slots. A hundred of them would fill the page, and because the
+immediate reschedule is conditional on something having moved, the healthy
+sessions behind them would wait an hour a pass. Nothing today makes a
+deterministic per-session failure reachable; if one is ever found, the fix is
+`events.fanout_attempts`' shape.
 
 ## Status
 
@@ -301,6 +360,17 @@ completed inside the frame, Orange breaking out, and an unregistered framer
 refused), green from nothing in the `vpay-ci` VM. Proven not to pass with
 `vpay-worker` stopped. The page's own suite is 302 vitest cases in 17 files, 0
 skipped.
+
+**Updated 2026-09-04: the horizon emits an event.** Six container-backed cases
+in `backends/tests/integration/tests/checkout_sessions.rs`, all driving the
+shipping `vpay_worker::run_once` over the shipping `seed_singletons`: one
+event per sweep with no credential in its serialised body and one delivery and
+one job per configured endpoint, no second event on a second sweep, no event
+for a session with a live charge, no event for a session the settlement
+finished, the event listable and retrievable through `/v1/events` with the
+tenant boundary, and the transaction proof above. **No merchant endpoint
+outside this repository has received one** — the same limit every other event
+type carries.
 
 See [../status.md](../status.md) for the per-feature ledger and the reasons
 several of those rows are 🟡 where this document says "built".
