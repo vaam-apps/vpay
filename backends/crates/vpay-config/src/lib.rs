@@ -21,7 +21,7 @@ pub mod config;
 pub mod oauth;
 pub mod signal;
 pub use cli::{CommonArgs, LogFormat, ServerArgs, WorkerArgs};
-pub use config::{Config, CurrencyEntry, ProviderHost, WebhookPolicy};
+pub use config::{CheckoutConfig, Config, CurrencyEntry, ProviderHost, WebhookPolicy};
 pub use oauth::{DashboardClient, GrantType, MERCHANT_AUDIENCE, MerchantClient, WebhookEndpoint};
 pub use signal::ShutdownSignals;
 
@@ -581,6 +581,213 @@ pub enum ConfigError {
         /// What `deployment.livemode` actually says, so the message names
         /// both halves of the contradiction.
         livemode: bool,
+    },
+
+    /// `checkout.public_base_url` is not a URL vpay can mint a payer link
+    /// from.
+    ///
+    /// One variant with a `&'static str` reason rather than six, following
+    /// [`Self::MissingProviderSetting`]'s `section`: the reason is chosen by
+    /// the check itself and never by anything a file contains, so it cannot
+    /// name a defect that does not exist, and the six shapes
+    /// (`validate_checkout_base_url`) are all "this string cannot be the
+    /// origin of a page".
+    ///
+    /// Refused at boot rather than when a session is created, because the
+    /// failure would otherwise be a `500` on a merchant's `POST
+    /// /v1/checkout/sessions` — an error about *their* request for what is a
+    /// deployment defect — long after the deploy that introduced it.
+    ///
+    /// The URL is named because it is not a secret (userinfo, which would
+    /// be, is one of the shapes this refuses outright) and it is the line an
+    /// operator has to edit.
+    #[error("checkout.public_base_url `{url}` is not usable: {reason}")]
+    MalformedCheckoutBaseUrl {
+        /// The value as written.
+        url: String,
+        /// Which of `validate_checkout_base_url`'s rules it broke.
+        reason: &'static str,
+    },
+    /// `checkout.public_base_url` is `http://` under
+    /// `deployment.livemode: true`.
+    ///
+    /// Its own variant rather than a [`Self::MalformedCheckoutBaseUrl`]
+    /// reason, for [`Self::PublishableKeyLivemodeMismatch`]'s reason: this is
+    /// deployment *policy*, not a shape defect, and the fix is different
+    /// (terminate TLS in front of the checkout app, or correct `livemode`)
+    /// from the fix for a malformed URL.
+    ///
+    /// It matters more here than for most hosts: every payer link vpay mints
+    /// is `{public_base_url}/c/{cs_id}#{client_secret}`, so a plaintext base
+    /// URL is a live payer credential sent in clear over the network on every
+    /// checkout — the one thing a URL fragment's own protection cannot help
+    /// with.
+    #[error(
+        "checkout.public_base_url `{url}` is not https under deployment.livemode: true; every \
+         payer link vpay mints carries a session credential in its fragment"
+    )]
+    InsecureCheckoutBaseUrl {
+        /// The value as written.
+        url: String,
+    },
+    /// A `merchant_clients[].display_name` is not a name a payer can be
+    /// shown.
+    ///
+    /// One variant with a `&'static str` reason rather than two, following
+    /// [`Self::MalformedCheckoutBaseUrl`]: the reason is chosen by the check
+    /// and never by anything a file contains.
+    ///
+    /// Refused at boot rather than truncated at render time. The value is
+    /// painted into "Pay {merchant}" on a phone-sized page, so the failure it
+    /// prevents is cosmetic rather than dangerous — but it is a *payer's*
+    /// first impression of a merchant they are about to hand money to, and an
+    /// operator who typed a paragraph into this field wants to hear about it
+    /// on the deploy that introduced it rather than from a merchant's
+    /// customer.
+    ///
+    /// The value is echoed because it is not a secret — it is rendered to
+    /// every payer of this merchant by construction — and because it is the
+    /// line an operator has to edit.
+    #[error("merchant client {client_id} declares display_name `{display_name}`: {reason}")]
+    MalformedDisplayName {
+        /// The registration the name belongs to.
+        client_id: String,
+        /// The value as written.
+        display_name: String,
+        /// Which of `validate_display_name`'s rules it broke.
+        reason: &'static str,
+    },
+    /// A `merchant_clients[].checkout_origins` entry is not an origin.
+    ///
+    /// An **origin** is a scheme, a host and optionally a port — nothing
+    /// else. `frame-ancestors` (D4) matches origins, so a path, a query, a
+    /// fragment or a trailing slash in this list is at best ignored by the
+    /// browser and at worst turns the whole source-expression into one the
+    /// browser drops, which fails *open* in the direction that matters:
+    /// the merchant's site stops being able to frame the page, and the
+    /// operator has no error to read.
+    ///
+    /// Refused at boot for [`Self::MalformedCheckoutBaseUrl`]'s reason, and
+    /// one more: nothing at request time can tell a mistyped origin from a
+    /// site that simply is not allowed, so the only symptom would be a payer
+    /// seeing an empty iframe.
+    #[error(
+        "merchant client {client_id} declares checkout origin `{origin}`, which is not an \
+         origin: {reason}"
+    )]
+    MalformedCheckoutOrigin {
+        /// The registration the entry belongs to.
+        client_id: String,
+        /// The entry as written.
+        origin: String,
+        /// Which of `validate_checkout_origins`' rules it broke.
+        reason: &'static str,
+    },
+    /// A `merchant_clients[].checkout_origins` entry is an origin, but not
+    /// the *canonical spelling* of one.
+    ///
+    /// `https://Shop.example`, `https://shop.example:443` and
+    /// `https://shöp.example` are all origins a human would call correct, and
+    /// all three are silently dropped by the checkout app's own filter
+    /// (`frontends/apps/checkout/src/lib/origins.ts`), which compares each
+    /// entry against `URL.origin` — the browser's canonical, ASCII,
+    /// default-port-elided form. The merchant then gets
+    /// `frame-ancestors 'none'`, their site cannot frame the page, and there
+    /// is no error anywhere: the list loaded, the route answered `200`, and
+    /// one member of it quietly did not count.
+    ///
+    /// Its own variant rather than a [`Self::MalformedCheckoutOrigin`]
+    /// reason, because the useful thing to say is not *which rule* but *what
+    /// to write instead* — and that is a value, which a `&'static str` reason
+    /// cannot carry. The fix is always the same edit: replace the entry with
+    /// [`Self::NonCanonicalCheckoutOrigin::canonical`].
+    ///
+    /// Refused rather than normalised on load. Normalising would make the
+    /// configuration file and the running policy two different documents, and
+    /// the next person to read the YAML would see a spelling vpay is not
+    /// using. `docs/reference/vpay-config.md` says the same about why nothing
+    /// else here rewrites what an operator wrote.
+    #[error(
+        "merchant client {client_id} declares checkout origin `{origin}`, which is not the \
+         canonical spelling a browser compares against; write `{canonical}` instead"
+    )]
+    NonCanonicalCheckoutOrigin {
+        /// The registration the entry belongs to.
+        client_id: String,
+        /// The entry as written.
+        origin: String,
+        /// What `url::Origin::ascii_serialization` makes of it — the exact
+        /// text the entry has to be replaced with.
+        canonical: String,
+    },
+    /// A `checkout_origins` entry is `http://` under
+    /// `deployment.livemode: true`.
+    ///
+    /// Separate from [`Self::MalformedCheckoutOrigin`] for
+    /// [`Self::InsecureCheckoutBaseUrl`]'s reason. `http://localhost:3000` is
+    /// exactly right for a merchant developing against a sandbox and exactly
+    /// wrong for one taking real money: an embedded checkout framed by a
+    /// plaintext page is a page an active network attacker can rewrite before
+    /// the iframe is ever created.
+    #[error(
+        "merchant client {client_id} declares checkout origin `{origin}` under \
+         deployment.livemode: true; a livemode origin must be https"
+    )]
+    InsecureCheckoutOrigin {
+        /// The registration the entry belongs to.
+        client_id: String,
+        /// The entry as written.
+        origin: String,
+    },
+    /// Two merchants — or one merchant twice — declare the same checkout
+    /// origin.
+    ///
+    /// Fatal rather than first-wins, and for a sharper reason than
+    /// [`Self::DuplicatePublishableKey`]'s. An origin is what
+    /// `frame-ancestors` is derived from, and the checkout app looks the list
+    /// up **by publishable key**: two merchants sharing an origin means
+    /// whichever of them a payer's key names decides whether the other's site
+    /// may frame the page. That is a security answer with two values
+    /// depending on iteration order.
+    ///
+    /// One merchant listing it twice is the same variant with `first ==
+    /// second`, because it is the same mistake and the same fix: delete a
+    /// line.
+    #[error(
+        "duplicate checkout origin `{origin}` (declared by merchant clients {first} and \
+         {second})"
+    )]
+    DuplicateCheckoutOrigin {
+        /// The origin declared twice.
+        origin: String,
+        /// The `client_id` that declared it first.
+        first: String,
+        /// The `client_id` that declared it again — the same value when one
+        /// registration lists it twice.
+        second: String,
+    },
+    /// A merchant declares `checkout_origins` but the deployment has no
+    /// `checkout.public_base_url`.
+    ///
+    /// The list only means anything relative to a page: it is the set of
+    /// sites allowed to *frame* `{checkout.public_base_url}/e/{cs_id}`. With
+    /// no base URL there is no such page — `POST /v1/checkout/sessions`
+    /// answers `checkout_not_configured` — so the origins describe permission
+    /// to embed something that cannot exist.
+    ///
+    /// Fatal rather than ignored, because the two shapes are
+    /// indistinguishable from outside and only one of them is intended: an
+    /// operator who wrote the origins believes embedding works. The opposite
+    /// pairing — a base URL with no origins anywhere — is **legal and
+    /// normal**: it is a deployment that serves hosted checkout only, which
+    /// needs no `frame-ancestors` beyond `'none'`.
+    #[error(
+        "merchant client {client_id} declares checkout_origins but the deployment sets no \
+         checkout.public_base_url; there is no page for those origins to frame"
+    )]
+    CheckoutOriginsWithoutBaseUrl {
+        /// The registration that declares them.
+        client_id: String,
     },
 
     /// `webhooks.allow_private_targets: true` under

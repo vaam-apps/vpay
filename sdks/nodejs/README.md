@@ -28,9 +28,10 @@ Every merchant is a statically registered OAuth2 client authenticating with
 (RFC 7523). Concretely:
 
 1. **Mint an assertion.** The SDK signs a short-lived RS256 JWT with your
-   private key: `iss`/`sub` are your `client_id`, `aud` is the token
-   endpoint, `jti` is a fresh UUIDv4, and `exp` is `now + assertionLifetimeSeconds`
-   (default 60s, capped at 300s — the OP refuses anything further out).
+   private key: `iss`/`sub` are your `client_id`, `aud` is the OP's own token
+   endpoint (see `assertionAudience`), `jti` is a fresh UUIDv4, and `exp` is
+   `now + assertionLifetimeSeconds` (default 60s, capped at 300s — the OP
+   refuses anything further out).
 2. **Exchange it for an access token.** The SDK `POST`s the assertion to the
    token endpoint alongside `grant_type=client_credentials` and
    `audience=vpay:v1`. No `client_secret` is ever sent — there is nothing to
@@ -98,6 +99,29 @@ await vpay.refunds.create({
 });
 await vpay.events.list({ type: "payment_intent.succeeded", limit: 20 });
 await vpay.balance.retrieve();
+
+// Checkout Sessions (Step 9). A session references an intent you already
+// created; it never creates one, and it carries where the payer goes next.
+const hosted = await vpay.checkout.sessions.create({
+  payment_intent: intent.id,
+  ui_mode: "hosted",
+  // vpay substitutes {CHECKOUT_SESSION_ID} when it forwards the payer, and
+  // appends nothing else. Omit it and the return has no correlation.
+  success_url: "https://shop.example/ok?sid={CHECKOUT_SESSION_ID}",
+  cancel_url: "https://shop.example/cancel",
+});
+// Send the payer to hosted.url — the session secret is in its fragment.
+
+const embedded = await vpay.checkout.sessions.create({
+  payment_intent: intent.id,
+  ui_mode: "embedded",
+  return_url: "https://shop.example/order/42",
+});
+// Hand embedded.client_secret to @vpay/stripe-js's initEmbeddedCheckout.
+
+await vpay.checkout.sessions.retrieve(hosted.id);
+await vpay.checkout.sessions.list({ payment_intent: intent.id, limit: 10 });
+await vpay.checkout.sessions.expire(hosted.id); // open -> expired
 ```
 
 `create()` and `retrieve()` responses carry a `client_secret` (`intent.client_secret`,
@@ -109,6 +133,16 @@ every other response shape: a `list()` item and `event.data.object` never
 carry it, so a merchant's own listing view or a stored/forwarded webhook body
 never receives a live payer credential for intents it did not just create.
 
+A Checkout Session's own `client_secret` (`cs_…_secret_…`) is a **different**
+credential from the intent's: it authorises reading that session, never
+confirming the intent. Like the intent's, it is present on `create()` and
+`retrieve()` only and absent from every `list()` item. Unlike the intent's, it
+does not print: every `CheckoutSession` this SDK returns redacts it — and the
+fragment of a hosted session's `url`, which holds the same value — from
+`util.inspect`, so `console.log(session)` cannot leak it. `JSON.stringify` is
+left faithful, because an embedded integration has to serialise the secret to
+get it to the browser at all.
+
 ## Configuration
 
 | Option                     | Default               | Notes                                                                                                                                                                                                                                                                                        |
@@ -118,7 +152,8 @@ never receives a live payer credential for intents it did not just create.
 | `privateKey`               | —                     | Required. PEM text or a `crypto.KeyObject`. Never logged, never serialized.                                                                                                                                                                                                                  |
 | `kid`                      | —                     | Required only if you registered more than one JWK.                                                                                                                                                                                                                                           |
 | `issuer`                   | `${baseUrl}/v1/oauth` | This default is what the server does: `vpay_api::op::issuer_for` builds the issuer as `{public_base_url}/v1/oauth` from the deployment YAML, and `vpay_api::router` mounts the OP there. Override only for a deployment behind a path prefix.                                                |
-| `tokenEndpoint`            | `${issuer}/token`     | The server's token route, and also the assertion's `aud` claim.                                                                                                                                                                                                                              |
+| `tokenEndpoint`            | `${issuer}/token`     | The URL this package POSTs the token request to. A **reachability** setting: it must resolve from wherever your server runs. It is also the default `assertionAudience`, but the two are separate settings — see the row below.                                                              |
+| `assertionAudience`        | `tokenEndpoint`       | The client assertion's `aud` claim: the OP's own token endpoint (or issuer) **as vpay is configured publicly** — `{deployment.public_base_url}/v1/oauth/token`. Set it when your server reaches vpay by a different URL than payers do. See "Reaching vpay by an internal URL" below.        |
 | `audience`                 | `vpay:v1`             | The OAuth2 `audience` request parameter. Load-bearing: without it the OP mints a token whose `aud` is the `client_id`, which the resource server rejects. Server-side the same string is `vpay_config::MERCHANT_AUDIENCE`; this package keeps its own copy, so the two must change together. |
 | `scope`                    | —                     | Omitted from the token request unless set.                                                                                                                                                                                                                                                   |
 | `assertionLifetimeSeconds` | `60`                  | Must be an integer in `1..=300`; anything else throws `VpayConfigError` at construction, not at request time. Keep the default — see the note below the table.                                                                                                                               |
@@ -133,6 +168,40 @@ reads as 301 seconds out, and every assertion is refused — the failure looks
 like `invalid_client`, arrives all at once, and clears up on its own when the
 clocks drift back. The default of 60 leaves 240 seconds of headroom for a
 value that only has to outlive one HTTP round trip.
+
+### Reaching vpay by an internal URL
+
+Two things look like one and are not:
+
+- **`tokenEndpoint`** — where this process sends the HTTP request. It has to
+  be reachable from _your_ server: a compose service name, a private DNS
+  name, a service-mesh address.
+- **`assertionAudience`** — what the OP calls _itself_. The OP's
+  `authenticate_client` compares the assertion's `aud` claim against its own
+  two names, `{deployment.public_base_url}/v1/oauth/token` and
+  `{deployment.public_base_url}/v1/oauth`, and against nothing else. The URL
+  you happened to POST to is never consulted.
+
+They coincide for a merchant on the public internet, which is why
+`assertionAudience` defaults to `tokenEndpoint`. They do not coincide the
+moment your server reaches vpay by an internal name, and then every token
+request answers `invalid_client` (`InvalidAudience`) with nothing in the
+response pointing at the cause — the signature, the `client_id`, the `kid`
+and the lifetime are all correct.
+
+```ts
+// The demo stack: the shop's container reaches vpay at the compose service
+// name, but vpay's `deployment.public_base_url` is the published host port.
+const vpay = new VpayClient({
+  baseUrl: "http://vpay-server:8080",
+  assertionAudience: "http://localhost:8080/v1/oauth/token",
+  clientId: "shop-merchant",
+  privateKey,
+});
+```
+
+The issuer works too — `http://localhost:8080/v1/oauth` — because the OP
+accepts either.
 
 ## Error handling
 
@@ -530,6 +599,16 @@ through `paymentIntents.retrieve` and nothing else. `/v1/events` is served
 `404 unknown_route`. **This package has no client method for any of that
 beyond the payment-intent routes it already wraps.**
 
+**`checkout.sessions` is newer than this paragraph and less proven than the
+rest.** The four methods are implemented and tested against this package's
+`node:http` stub, in the shape of Step 9's wire contract. The routes they
+call — `/v1/checkout/sessions` and its three siblings — are built by lane 1
+of the same step; until that lands and
+`backends/tests/integration/tests/checkout_sessions.rs` is green, "the stub
+answers the way this SDK expects" is the whole of the evidence, and a
+mismatch would show up as a `VpayApiError` rather than as anything this
+package could catch earlier.
+
 **No test in _this package_ has ever talked to a vpay** — every server in
 these tests is a `node:http` stub started by the test. What has talked to a
 real one is `sdks/stripe-compat`, which drives the official `stripe` package
@@ -563,6 +642,16 @@ none of them touches the network:
 - That `create()` and `retrieve()` surface `client_secret` typed (`string`)
   when the server sends it, and that a `list()` item without one reads back
   `undefined` rather than a cast or a runtime crash.
+- All four `checkout.sessions` operations: the exact path, method,
+  `Idempotency-Key` and body of `create` (including that an unset `ui_mode`
+  or URL is omitted rather than sent empty), the `GET` paths of `retrieve`
+  and `list` with its `payment_intent` filter, `expire`'s empty-bodied
+  `POST`, percent-encoding of a hostile id on both, and the `404`/`409`
+  envelopes. The body strings are the ones `sdks/rust/tests/resources.rs`
+  pins byte for byte, so the two SDKs cannot drift.
+- That a `CheckoutSession`'s `client_secret` — and the fragment of a hosted
+  session's `url`, which carries the same value — are redacted from
+  `util.inspect` while `JSON.stringify` stays faithful.
 - The form encoder's nested-object/array/boolean/percent-encoding rules, and
   that a non-integer `amount` throws `TypeError` before any request is sent.
 - Error mapping for a Stripe-shaped `400`, an unexpected `502` HTML body, a

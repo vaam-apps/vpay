@@ -236,6 +236,7 @@ async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
             scopes,
         )],
         webhooks: vpay_config::WebhookPolicy::default(),
+        checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
     };
 

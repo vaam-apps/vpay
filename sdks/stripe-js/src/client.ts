@@ -23,9 +23,14 @@ import {
   unexpectedResponseError,
   type StripeError,
 } from "./errors.js";
+import { createEmbeddedCheckout, originOf } from "./embedded.js";
 import { encodeForm, FormEncodingError, type FormValue } from "./form.js";
 import type {
+  CheckoutSession,
+  CheckoutSessionResult,
   ConfirmPaymentOptions,
+  EmbeddedCheckout,
+  InitEmbeddedCheckoutOptions,
   MobileMoneyData,
   PaymentIntent,
   PaymentIntentResult,
@@ -36,8 +41,10 @@ import type {
 
 /** The separator `vpay_core::ids::client_secret` joins an id and its suffix with. */
 const SECRET_SEPARATOR = "_secret_";
-/** Every id on this surface is a payment-intent id. */
+/** A payment-intent id. */
 const INTENT_ID_PREFIX = "pi_";
+/** A checkout-session id (Step 9, D1) — a second credential, same shape. */
+const SESSION_ID_PREFIX = "cs_";
 /** `"/".charCodeAt(0)`, spelled out once for {@link stripTrailingSlashes}. */
 const SLASH_CHAR_CODE = 47;
 
@@ -54,17 +61,25 @@ function errorResult(error: StripeError): PaymentIntentResult {
 }
 
 /**
- * Splits `pi_abc_secret_xyz` into the intent id.
+ * Splits `{prefix}abc_secret_xyz` into the object's id.
  *
  * Deliberately not a regex over the suffix alphabet: the suffix's shape is
  * the server's business (32–128 characters, per migration `0023`'s CHECK),
  * and a client-side pattern that disagreed with it would refuse a valid
  * secret after a server change. What *is* checked is only what this package
  * needs to build a URL — that there is a separator, that something precedes
- * it, that it looks like a payment intent, and that something follows it.
+ * it, that it carries the expected id prefix, and that something follows it.
+ *
+ * Parameterised over the prefix because Step 9's Checkout Session is a
+ * **second** credential of exactly this shape (`cs_…_secret_…`, D1), and
+ * two near-identical parsers would drift the first time either object's id
+ * rules moved. `shape` names the object in the refusal message; the
+ * offending value itself is never quoted.
  */
 function parseClientSecret(
   clientSecret: unknown,
+  prefix: string,
+  shape: string,
 ): { id: string } | { error: StripeError } {
   if (typeof clientSecret !== "string" || clientSecret.length === 0) {
     return {
@@ -84,8 +99,8 @@ function parseClientSecret(
       : clientSecret.slice(separator + SECRET_SEPARATOR.length);
   if (
     separator === -1 ||
-    !id.startsWith(INTENT_ID_PREFIX) ||
-    id.length <= INTENT_ID_PREFIX.length ||
+    !id.startsWith(prefix) ||
+    id.length <= prefix.length ||
     suffix.length === 0
   ) {
     // The malformed value is **not** echoed. It is a credential the payer's
@@ -95,12 +110,26 @@ function parseClientSecret(
       error: stripeError(
         "invalid_request_error",
         "invalid_request",
-        "clientSecret is not a vpay payment-intent client secret (expected `pi_…_secret_…`).",
+        `clientSecret is not a vpay ${shape} client secret.`,
         "clientSecret",
       ),
     };
   }
   return { id };
+}
+
+/** {@link parseClientSecret} for a `pi_…_secret_…`. */
+function parseIntentSecret(
+  clientSecret: unknown,
+): { id: string } | { error: StripeError } {
+  return parseClientSecret(clientSecret, INTENT_ID_PREFIX, "payment-intent");
+}
+
+/** {@link parseClientSecret} for a `cs_…_secret_…` (Step 9, D1). */
+function parseSessionSecret(
+  clientSecret: unknown,
+): { id: string } | { error: StripeError } {
+  return parseClientSecret(clientSecret, SESSION_ID_PREFIX, "checkout-session");
 }
 
 /** The URL a `next_action` asks the browser to visit, if this intent has one. */
@@ -141,6 +170,16 @@ function isPaymentIntent(body: unknown): body is PaymentIntent {
     typeof body === "object" &&
     body !== null &&
     (body as { object?: unknown }).object === "payment_intent" &&
+    typeof (body as { id?: unknown }).id === "string"
+  );
+}
+
+/** Narrows a decoded 2xx body to something that is actually a checkout session. */
+function isCheckoutSession(body: unknown): body is CheckoutSession {
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    (body as { object?: unknown }).object === "checkout.session" &&
     typeof (body as { id?: unknown }).id === "string"
   );
 }
@@ -194,22 +233,25 @@ function neverSettles(): Promise<PaymentIntentResult> {
 export class VpayStripe implements Stripe {
   readonly #publishableKey: string;
   readonly #baseUrl: string;
+  readonly #checkoutBaseUrl: string | undefined;
   readonly #fetchImpl: typeof fetch;
 
   constructor(
     publishableKey: string,
     baseUrl: string,
+    checkoutBaseUrl: string | undefined,
     fetchImpl: typeof fetch,
   ) {
     this.#publishableKey = publishableKey;
     this.#baseUrl = baseUrl;
+    this.#checkoutBaseUrl = checkoutBaseUrl;
     this.#fetchImpl = fetchImpl;
   }
 
   async retrievePaymentIntent(
     clientSecret: string,
   ): Promise<PaymentIntentResult> {
-    const parsed = parseClientSecret(clientSecret);
+    const parsed = parseIntentSecret(clientSecret);
     if ("error" in parsed) {
       return errorResult(parsed.error);
     }
@@ -227,7 +269,7 @@ export class VpayStripe implements Stripe {
   async confirmPayment(
     options: ConfirmPaymentOptions,
   ): Promise<PaymentIntentResult> {
-    const parsed = parseClientSecret(options.clientSecret);
+    const parsed = parseIntentSecret(options.clientSecret);
     if ("error" in parsed) {
       return errorResult(parsed.error);
     }
@@ -357,18 +399,103 @@ export class VpayStripe implements Stripe {
     }
   }
 
-  /** A safe, redacted representation. This object holds no secret to redact. */
-  [INSPECT_CUSTOM](): string {
-    return `VpayStripe { publishableKey: '${this.#publishableKey}', baseUrl: '${this.#baseUrl}' }`;
+  async retrieveCheckoutSession(
+    clientSecret: string,
+  ): Promise<CheckoutSessionResult> {
+    const parsed = parseSessionSecret(clientSecret);
+    if ("error" in parsed) {
+      return { error: parsed.error };
+    }
+    const query = encodeForm({
+      key: this.#publishableKey,
+      client_secret: clientSecret,
+    });
+    const answer = await this.#fetchJson(
+      "GET",
+      `${this.#baseUrl}/v1/browser/checkout/sessions/${encodeURIComponent(parsed.id)}?${query}`,
+      undefined,
+    );
+    if ("error" in answer) {
+      return { error: answer.error };
+    }
+    if (!answer.ok) {
+      return {
+        error:
+          parseErrorEnvelope(answer.parsed) ??
+          unexpectedResponseError(answer.status),
+      };
+    }
+    return isCheckoutSession(answer.parsed)
+      ? { checkoutSession: answer.parsed }
+      : { error: unexpectedResponseError(answer.status) };
+  }
+
+  async initEmbeddedCheckout(
+    options: InitEmbeddedCheckoutOptions,
+  ): Promise<EmbeddedCheckout> {
+    const checkoutBaseUrl = this.#checkoutBaseUrl;
+    if (checkoutBaseUrl === undefined) {
+      throw new TypeError(
+        "initEmbeddedCheckout: loadStripe was not given options.checkoutBaseUrl, so there is no page to frame",
+      );
+    }
+    if (typeof options?.fetchClientSecret !== "function") {
+      throw new TypeError(
+        "initEmbeddedCheckout: options.fetchClientSecret must be a function returning a Promise<string>",
+      );
+    }
+    // Awaited before anything is built, and its rejection is *not* wrapped:
+    // this is the merchant's own call to its own server, and a message this
+    // package invented on top of it would hide the fault the merchant needs
+    // to see.
+    const clientSecret = await options.fetchClientSecret();
+    const parsed = parseSessionSecret(clientSecret);
+    if ("error" in parsed) {
+      // The offending value is a live credential; `parseSessionSecret`'s
+      // message never quotes it, and neither does this.
+      throw new TypeError(
+        "initEmbeddedCheckout: fetchClientSecret did not return a vpay checkout-session client secret",
+      );
+    }
+    return createEmbeddedCheckout({
+      publishableKey: this.#publishableKey,
+      checkoutBaseUrl,
+      sessionId: parsed.id,
+      clientSecret,
+      onComplete: options.onComplete,
+    });
   }
 
   /** A safe, redacted representation. This object holds no secret to redact. */
-  toJSON(): { object: "vpay_stripe"; publishableKey: string; baseUrl: string } {
-    return {
+  [INSPECT_CUSTOM](): string {
+    const checkout =
+      this.#checkoutBaseUrl === undefined
+        ? ""
+        : `, checkoutBaseUrl: '${this.#checkoutBaseUrl}'`;
+    return `VpayStripe { publishableKey: '${this.#publishableKey}', baseUrl: '${this.#baseUrl}'${checkout} }`;
+  }
+
+  /** A safe, redacted representation. This object holds no secret to redact. */
+  toJSON(): {
+    object: "vpay_stripe";
+    publishableKey: string;
+    baseUrl: string;
+    checkoutBaseUrl?: string;
+  } {
+    const rendered: {
+      object: "vpay_stripe";
+      publishableKey: string;
+      baseUrl: string;
+      checkoutBaseUrl?: string;
+    } = {
       object: "vpay_stripe",
       publishableKey: this.#publishableKey,
       baseUrl: this.#baseUrl,
     };
+    if (this.#checkoutBaseUrl !== undefined) {
+      rendered.checkoutBaseUrl = this.#checkoutBaseUrl;
+    }
+    return rendered;
   }
 
   #intentUrl(id: string): string {
@@ -386,6 +513,39 @@ export class VpayStripe implements Stripe {
     url: string,
     body: string | undefined,
   ): Promise<PaymentIntentResult> {
+    const answer = await this.#fetchJson(method, url, body);
+    if ("error" in answer) {
+      return errorResult(answer.error);
+    }
+    if (answer.ok) {
+      return isPaymentIntent(answer.parsed)
+        ? { paymentIntent: answer.parsed }
+        : errorResult(unexpectedResponseError(answer.status));
+    }
+    return errorResult(
+      parseErrorEnvelope(answer.parsed) ??
+        unexpectedResponseError(answer.status),
+    );
+  }
+
+  /**
+   * The transport, shared by every route this package speaks.
+   *
+   * Returns the decoded body rather than an object, because the two
+   * surfaces decode to different objects (a payment intent, a checkout
+   * session) and the *transport* rules — `credentials: 'omit'`, the one
+   * header, the body read inside the same `try`, and above all that no
+   * thrown value ever reaches a message — must be written once. A second
+   * copy of this method for sessions is exactly how one of the two would
+   * quietly stop omitting credentials.
+   */
+  async #fetchJson(
+    method: "GET" | "POST",
+    url: string,
+    body: string | undefined,
+  ): Promise<
+    { status: number; ok: boolean; parsed: unknown } | { error: StripeError }
+  > {
     let status: number;
     let ok: boolean;
     let text: string;
@@ -415,7 +575,7 @@ export class VpayStripe implements Stripe {
       // arrive, so a truncated or stalled body rejects here.
       text = await response.text();
     } catch {
-      return errorResult(connectionError());
+      return { error: connectionError() };
     }
 
     let parsed: unknown;
@@ -425,14 +585,7 @@ export class VpayStripe implements Stripe {
       parsed = undefined;
     }
 
-    if (ok) {
-      return isPaymentIntent(parsed)
-        ? { paymentIntent: parsed }
-        : errorResult(unexpectedResponseError(status));
-    }
-    return errorResult(
-      parseErrorEnvelope(parsed) ?? unexpectedResponseError(status),
-    );
+    return { status, ok, parsed };
   }
 
   /**
@@ -568,5 +721,26 @@ export async function loadStripe(
   // Trailing slashes stripped once, so `${baseUrl}/v1/browser/...` cannot
   // produce a `//` that some ingresses redirect and others 404.
   const baseUrl = stripTrailingSlashes(options.baseUrl.trim());
-  return new VpayStripe(publishableKey, baseUrl, fetchImpl);
+  // Checked here rather than at `initEmbeddedCheckout`, for the same reason
+  // the two above are: a misconfigured checkout origin is an integration
+  // mistake, and `event.origin` is compared against this value — a bad one
+  // does not fail loudly at message time, it silently accepts nothing.
+  let checkoutBaseUrl: string | undefined;
+  if (options.checkoutBaseUrl !== undefined) {
+    if (
+      typeof options.checkoutBaseUrl !== "string" ||
+      options.checkoutBaseUrl.trim().length === 0
+    ) {
+      throw new TypeError(
+        "loadStripe: options.checkoutBaseUrl must be a non-empty string",
+      );
+    }
+    checkoutBaseUrl = stripTrailingSlashes(options.checkoutBaseUrl.trim());
+    if (!isSafeRedirectUrl(checkoutBaseUrl)) {
+      throw new TypeError(
+        "loadStripe: options.checkoutBaseUrl must be an absolute http(s) URL",
+      );
+    }
+  }
+  return new VpayStripe(publishableKey, baseUrl, checkoutBaseUrl, fetchImpl);
 }

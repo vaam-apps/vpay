@@ -598,6 +598,10 @@ mod tests {
             amount: Money::new(5_000, Currency::Eur).expect("non-negative"),
             payer_ref: Some("237600000000".to_owned()),
             ref_extra: BTreeMap::new(),
+            // A push rail has no browser, so nothing fills this on the way
+            // in either. `a_return_url_is_not_carried_on_a_push_rails_body`
+            // is the case that sets one anyway and proves it is dropped.
+            return_url: None,
         }
     }
 

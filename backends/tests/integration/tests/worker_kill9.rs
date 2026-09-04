@@ -476,6 +476,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
         // this file's whole subject is what the shipping binaries do, and a
         // config literal that hid a field would let one drift.
         webhooks: vpay_config::WebhookPolicy::default(),
+        checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
     }
 }

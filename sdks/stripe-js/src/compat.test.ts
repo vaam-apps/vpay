@@ -28,16 +28,33 @@
  *   `next_action` — **are** assignable to Stripe's, and the
  *   `PaymentIntentResult` union has the same two-member discriminated shape
  *   in both packages, which is what makes the narrowing idiom portable.
+ *
+ * Step 9 adds two more, about Embedded Checkout — the one place the README
+ * used to say "not compatible, ever" and now does not:
+ *
+ * - The **handle** is assignable in both directions. Stripe's
+ *   `StripeEmbeddedCheckout` is exactly `mount(string | HTMLElement)`,
+ *   `unmount()`, `destroy()`, and so is ours, so a merchant's mount/unmount
+ *   plumbing is portable verbatim.
+ * - The **options** are not, in either direction, and that is the honest
+ *   half: ours requires `fetchClientSecret` where Stripe's makes it optional
+ *   (Stripe also accepts a bare `clientSecret`, which vpay does not), and
+ *   our `onComplete` is handed the completing session where Stripe's takes
+ *   no argument at all.
  */
 import type {
   PaymentIntent as TheirIntent,
   PaymentIntentResult as Theirs,
+  StripeEmbeddedCheckout as TheirEmbedded,
+  StripeEmbeddedCheckoutOptions as TheirEmbeddedOptions,
   StripeError as TheirError,
   StripeErrorType,
 } from "@stripe/stripe-js";
 import { describe, expect, it } from "vitest";
 import type { StripeError as OurError } from "./errors.js";
 import type {
+  EmbeddedCheckout as OurEmbedded,
+  InitEmbeddedCheckoutOptions as OurEmbeddedOptions,
   PaymentIntent as OurIntent,
   PaymentIntentResult as Ours,
 } from "./types.js";
@@ -80,6 +97,24 @@ const clientSecretIsAStripeClientSecret: Is<
   TheirIntent["client_secret"]
 > = true;
 
+// --- embedded checkout: the handle matches, the options do not ----------
+
+const ourHandleIsAStripeHandle: Is<OurEmbedded, TheirEmbedded> = true;
+const theirHandleIsAVpayHandle: Is<TheirEmbedded, OurEmbedded> = true;
+// Ours requires `fetchClientSecret`; Stripe's makes it optional and also
+// accepts a bare `clientSecret`.
+const stripeOptionsAreNotVpayOptions: Is<
+  TheirEmbeddedOptions,
+  OurEmbeddedOptions
+> = false;
+// Ours passes the completing session to `onComplete`; Stripe's `onComplete`
+// takes no parameters, so a callback of ours cannot stand in for one of
+// theirs.
+const vpayOptionsAreNotStripeOptions: Is<
+  OurEmbeddedOptions,
+  TheirEmbeddedOptions
+> = false;
+
 // --- the union shape is identical, which is what makes narrowing portable
 
 const theirsIsTheShape: Is<Theirs, ResultShape<TheirIntent, TheirError>> = true;
@@ -114,6 +149,10 @@ describe("@stripe/stripe-js compatibility", () => {
       clientSecretIsAStripeClientSecret,
       theirsIsTheShape,
       oursIsTheSameShape,
+      ourHandleIsAStripeHandle,
+      theirHandleIsAVpayHandle,
+      stripeOptionsAreNotVpayOptions,
+      vpayOptionsAreNotStripeOptions,
     ]).toEqual([
       true,
       false,
@@ -126,6 +165,10 @@ describe("@stripe/stripe-js compatibility", () => {
       true,
       true,
       true,
+      true,
+      true,
+      false,
+      false,
     ]);
   });
 

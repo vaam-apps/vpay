@@ -64,12 +64,14 @@ pub use auth::Credentials;
 pub use client::{Client, ClientBuilder, DEFAULT_AUDIENCE};
 pub use error::{ConfigError, Error, WebhookError};
 pub use model::{
-    Balance, BalanceEntry, Event, EventData, IntentStatus, LastPaymentError, List, NextAction,
+    Balance, BalanceEntry, CheckoutPaymentStatus, CheckoutSession, CheckoutSessionStatus,
+    CheckoutUiMode, Event, EventData, IntentStatus, LastPaymentError, List, NextAction,
     PaymentIntent, PaymentMethodType, RedirectToUrl, Refund, RefundStatus,
 };
 pub use resources::{
-    BalanceResource, ConfirmPaymentIntentParams, CreatePaymentIntentParams, CreateRefundParams,
-    EventsResource, ListEventsParams, ListPaymentIntentsParams, PaymentIntentsResource,
+    BalanceResource, CheckoutResource, CheckoutSessionsResource, ConfirmPaymentIntentParams,
+    CreateCheckoutSessionParams, CreatePaymentIntentParams, CreateRefundParams, EventsResource,
+    ListCheckoutSessionsParams, ListEventsParams, ListPaymentIntentsParams, PaymentIntentsResource,
     RefundsResource, RequestOptions,
 };
 
@@ -83,6 +85,17 @@ pub mod payment_intents {
     pub use crate::resources::{
         ConfirmPaymentIntentParams, CreatePaymentIntentParams, ListPaymentIntentsParams,
         PaymentIntentsResource,
+    };
+}
+
+/// See [`payment_intents`].
+pub mod checkout {
+    pub use crate::model::{
+        CheckoutPaymentStatus, CheckoutSession, CheckoutSessionStatus, CheckoutUiMode,
+    };
+    pub use crate::resources::{
+        CheckoutResource, CheckoutSessionsResource, CreateCheckoutSessionParams,
+        ListCheckoutSessionsParams,
     };
 }
 

@@ -16,6 +16,7 @@ of it.
   - [Exit codes](#exit-codes)
 - [Optional flags that are required in practice](#optional-flags-that-are-required-in-practice)
 - [OAuth client shapes](#oauth-client-shapes)
+- [The `checkout:` block, and `checkout_origins`](#the-checkout-block-and-checkout_origins)
 
 ---
 
@@ -238,6 +239,169 @@ refused at boot (`ConfigError::ClientSecretPresent`, checked in
 just vanish into "unknown YAML key" territory, which is not the fail-fast story
 ADR-0003 promises. Never populate it in a real config; it is a trap, not a
 feature.
+
+---
+
+## The `checkout:` block, and `checkout_origins`
+
+Step 9. Two additions, one deployment-wide and one per merchant, and the
+reason they are separate is that they answer different questions:
+*where is vpay's own checkout page*, and *who may frame it*.
+
+### `checkout.public_base_url`
+
+Its own block rather than a field on `deployment`, because it describes a
+**second deployable**: `frontends/apps/checkout` is its own image and its own
+Ingress, while `deployment.public_base_url` is the API's origin and is what
+every rail callback URL is derived from. Conflating them would mean a
+deployment serving checkout on its own host could not say so without also
+moving every rail callback.
+
+Every payer link vpay mints is built on it:
+
+```text
+hosted    {public_base_url}/c/{cs_id}#{client_secret}
+embedded  {public_base_url}/e/{cs_id}?key={pk}#{client_secret}
+return    {public_base_url}/c/{cs_id}/return?t={return_token}
+```
+
+`Option`, and **absent is a complete answer rather than a missing one**: most
+deployments of this repository serve no checkout page, and the honest
+behaviour for one of them is to refuse `POST /v1/checkout/sessions` with
+`checkout_not_configured` rather than hand a merchant a `url` that resolves to
+nothing. That is AGENTS.md's second rule applied to a configuration gap.
+
+The rules (`validate_checkout_base_url`) are: a parseable `http(s)` URL with a
+host, no userinfo, no query, no fragment, at most 2048 characters — and
+`https` under `deployment.livemode`, as its own variant
+(`InsecureCheckoutBaseUrl`) rather than one more shape reason, because the fix
+is different. That last rule matters more here than for most hosts: a
+plaintext base URL puts a live payer credential in clear on the wire on every
+checkout, which is the one thing a URL fragment's own protection cannot help
+with.
+
+**A path prefix is accepted on purpose.** Whether production puts the checkout
+app on its own host (`https://checkout.example`) or under a path on the API
+host (`https://api.example/checkout`) is a decision the Step 9 plan reserves
+for the maintainer, and the chart templates both — so refusing a path here
+would be this crate taking a decision that was reserved. A query or a fragment
+*is* refused, because vpay appends path segments to this value and there is no
+correct way to append a path to a URL that already has one.
+
+A trailing slash is accepted and normalised away once, in
+`vpay_api::ResourceConfig::from_config`, so no link-building call site has to
+remember: `format!("{base}/c/{id}")` over `https://checkout.example/` would
+otherwise produce `//c/…`, which is a protocol-relative URL naming a
+different host entirely.
+
+Stub markers (`localhost`, `wiremock`) are **not** refused, unlike
+`validate_host`. Those markers describe a *rail* host that a livemode
+deployment must never talk to; this is a page a developer's own browser opens,
+and the livemode `https` rule already refuses `http://localhost:3001`.
+
+### `merchant_clients[].checkout_origins`
+
+The list `Content-Security-Policy: frame-ancestors` is built from (D4) —
+which sites may put vpay's embedded checkout page in an iframe.
+
+Each entry is an **origin**: scheme, host, optional port, and nothing else.
+That is what a CSP `host-source` is, and the check is unusually literal about
+it — including refusing a bare trailing slash — because the failure mode is
+silent. A browser handed `https://shop.example/checkout` in `frame-ancestors`
+does not treat it as `https://shop.example`; depending on the browser it
+ignores that source or discards the whole directive, and both look, from the
+merchant's side, exactly like "vpay will not let me embed". The check is
+against the **raw text** rather than the parse for the same reason:
+`url::Url::parse` normalises `https://shop.example` to a `path()` of `/`, so
+asking the parse "is there a path?" answers yes for the one spelling that is
+correct.
+
+**Not secret**, on the same footing as `publishable_keys` and for a stronger
+reason: an origin is the merchant's own public website. `GET
+/v1/browser/checkout/origins?key=…` therefore takes a publishable key and no
+`client_secret` at all — there is nothing here to protect, and a secret in a
+lookup the checkout app makes server-side would end up in the Next server's
+logs.
+
+**An empty list is the fail-closed default and is what most registrations
+should have.** It means no site may embed; the page answers `frame-ancestors
+'none'`, and hosted checkout is unaffected because it is never framed.
+
+Uniqueness is checked across *every* merchant, before any single origin's
+shape, for the reason the publishable-key walk runs in that order — and the
+consequence is sharper here than for a key. The checkout app looks the list up
+**by publishable key**, so two merchants sharing an origin means whichever of
+them a payer's key names decides whether the *other* merchant's site may frame
+the page: a security answer with two values depending on iteration order.
+
+Origins with **no** `checkout.public_base_url` are refused
+(`CheckoutOriginsWithoutBaseUrl`): there would be no page for them to frame,
+and an operator who wrote them believes embedding works. The reverse pairing —
+a base URL and no origins anywhere — is legal and normal; it is a
+hosted-checkout-only deployment.
+
+### An origin must be spelled the way a browser spells it
+
+Every rule above is about a value that is not an origin. This one is about a
+value that *is* one, spelled a way the thing that consumes it does not
+recognise: `https://Shop.example`, `https://shop.example:443` and
+`https://shöp.example` all parse, name a host, are `https`, and carry no path,
+query, fragment or credentials.
+
+The checkout app filters its `frame-ancestors` list by comparing each entry
+against the browser's `URL.origin`
+(`frontends/apps/checkout/src/lib/origins.ts`) — lower-cased host, IDNA-encoded
+to ASCII, default port elided. An entry that differs from that is an entry the
+browser never sees, and the symptom is *silence*: the list loads, the route
+answers `200`, and the merchant's site simply cannot frame the page.
+
+So the raw text must equal `parsed.origin().ascii_serialization()`, and
+`ConfigError::NonCanonicalCheckoutOrigin` names **what to write instead**
+rather than which rule was broken — the useful part of that message is a value,
+which the `&'static str` reason on `MalformedCheckoutOrigin` cannot carry.
+
+Refused rather than normalised on load, for the reason nothing else here
+rewrites what an operator wrote: normalising would make the configuration file
+and the running policy two different documents, and the next person to read the
+YAML would see a spelling vpay is not using.
+
+### `merchant_clients[].display_name`
+
+What a payer is told they are paying, on vpay's own checkout page. Optional;
+non-blank and at most 80 characters when present.
+
+The bound is a **rendering** rule, not a storage one — the value is painted
+into "Pay {merchant}" in a heading on a phone-sized page — and it is refused at
+boot rather than truncated at render time because a payer's first impression of
+a merchant they are about to pay is worth hearing about on the deploy that
+introduced it. Characters, not bytes: a name in any script gets the same 80.
+
+There is no character-class rule. A merchant's name is theirs, in whatever
+language their payers read, and the page escapes it as text.
+
+Absent is legal and is what most registrations carry. The browser reads then
+fall back to `merchant_id`, which is a true name for who is being paid but an
+internal one — see
+[vpay-api.md](vpay-api.md#merchantname-and-why-there-is-a-fallback) for why the
+fallback exists at all rather than the read answering without a name. A
+deployment that serves hosted checkout should set this for every merchant.
+
+There is nowhere else this could live: there is no merchants table (ADR-0003),
+so a registration is the only place a human-readable name for a tenant exists.
+
+### One unreachable branch, and the test that proves it is
+
+Both validators refuse a URL that names no host. Neither branch is reachable:
+`url::Url::parse` rejects `http://` and `https://` outright with `EmptyHost`,
+and every other scheme is refused a line earlier. The branch is kept anyway —
+a total expression rather than an assumption about a third-party parser's
+exhaustiveness, the same posture `vpay_core::ids::push_base32`'s
+`.unwrap_or(b'0')` takes — and
+`a_hostless_http_url_never_reaches_the_host_branch` is what *proves* it
+unreachable rather than merely asserting it. It is a tripwire on a dependency:
+if a future `url` release started accepting an empty host, that test says so
+before the branch quietly becomes the only thing between a config file and a
+payer link with no host in it.
 
 ---
 

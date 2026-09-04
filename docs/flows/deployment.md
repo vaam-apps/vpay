@@ -12,17 +12,51 @@ and what stops a bad configuration before it becomes an outage.
 
 ## 1. What ships
 
-Three images, published to `ghcr.io/vaam-store/vpay-{server,worker,dashboard}`
-(step-6 decision (1)).
+**Four** images since 2026-09-04, published to
+`ghcr.io/vaam-store/vpay-{server,worker,dashboard,checkout}` (step-6
+decision (1), extended by Step 9).
 
 | Image | Base | Contents |
 |---|---|---|
 | `vpay-server` | `scratch` | one static musl binary, plus `config/` baked at `/config` |
 | `vpay-worker` | `scratch` | ditto, the worker binary |
 | `vpay-dashboard` | `node:22-alpine` | the Next standalone server |
+| `vpay-checkout` | `node:22-alpine` | vpay's own hosted/embedded payment page |
 
-The two backend images have **no shell, no package manager and no writable
-path** ([ADR-0004](../adr/0004-musl-mimalloc.md)). Three consequences follow
+**`ghcr.io/vaam-store/vpay-checkout`** — vpay's own hosted/embedded payment
+page (`frontends/apps/checkout`), built from `frontends/Dockerfile`'s
+`checkout` target. A second Next.js image beside the dashboard's, and the
+first one this repository deploys: the chart templates it under
+`checkout.enabled` (default false). It runs as `node` (uid 1000) with a
+read-only root filesystem and a memory-backed `emptyDir` on `/tmp`, holds no
+merchant credential, no rail credential and no signing key, and reads no
+YAML — its whole configuration is two environment variables. Published and
+signed by `release.yml` exactly as the other three are, and like them it has
+never actually been published.
+
+### The checkout page is a second deployable, and it needs two API URLs
+
+`checkout.apiUrl` is **this pod's** view of vpay — `middleware.ts` calls
+`GET {apiUrl}/v1/browser/checkout/origins?key=…` server-side to build the
+embedded page's `Content-Security-Policy: frame-ancestors`. Empty means this
+release's own server Service, which is right in-cluster. Missing entirely is
+not an error: the embedded page's CSP becomes `frame-ancestors 'none'` —
+correct, fail-closed, and it means no merchant can embed.
+
+`checkout.publicApiUrl` is **a payer's browser's** view: the `/v1/browser`
+origin every confirm and poll goes to. It is required when the page is
+enabled, enforced by a named guard rather than defaulted, because the app
+throws on a missing `NEXT_PUBLIC_VPAY_API_URL` and a default would be a pod
+that starts, fails readiness and never says why.
+
+A third value lives outside the chart and must agree with the page's
+Ingress: **`checkout.public_base_url` in vpay's own profile overlay**, which
+is the origin every payer link vpay mints is built on. The chart cannot
+check it — the overlay is opaque YAML to it — and a disagreement is a
+`session.url` that resolves to nothing, with no log anywhere naming a port.
+
+The two **backend** images have no shell, no package manager and no writable
+path ([ADR-0004](../adr/0004-musl-mimalloc.md)). Three consequences follow
 from that and they show up everywhere below:
 
 * there is no `HEALTHCHECK` and no `kubectl exec` debugging — everything is

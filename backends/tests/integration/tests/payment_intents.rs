@@ -314,6 +314,7 @@ fn config_with(
             merchant_client_with_scopes(CLIENT_C, MERCHANT_C, jwks_c, &[]),
         ],
         webhooks: vpay_config::WebhookPolicy::default(),
+        checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
     }
 }

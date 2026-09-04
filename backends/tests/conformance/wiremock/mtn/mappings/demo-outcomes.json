@@ -12,7 +12,7 @@
           {
             "matchesJsonPath": {
               "expression": "$.payer.partyId",
-              "equalTo": "237600000f01"
+              "matches": "237600000(f01|101)"
             }
           }
         ]
@@ -22,6 +22,23 @@
       },
       "metadata": {
         "why": [
+          "TWO PARTYID FAMILIES, added Step 9 lane 2b (2026-09-04): `237600000f01` and its",
+          "digits-only twin `237600000101`. `f01` carries a hex letter so a WireMock",
+          "mapping can key on it -- exactly why it is unusable from a real payer:",
+          "`frontends/apps/checkout/src/lib/msisdn.ts` validates Cameroon E.164 (`237` +",
+          "`6` + eight DIGITS) and refuses it, as it refuses any other letters",
+          "(`docs/plans/step9-notes/lane-3.md` #4c). `237600000101` is what that page's",
+          "form actually accepts, in the same `2376000000xx` documentation block, `101`",
+          "naming no hex value it could be confused with. The `matches` regex joins both",
+          "into the SAME `mtn-demo-decline` scenario rather than forking it, so a payer who",
+          "typed a real number gets the identical NOT_ENOUGH_FUNDS walk `237600000f01` has",
+          "always gotten. Proven directly by",
+          "`a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin::case_2_insufficient_funds`",
+          "in `backends/tests/conformance/tests/adapter_conformance.rs`, which is also what",
+          "makes the GET mapping below's 'no conformance case sends that MSISDN' claim no",
+          "longer true for `237600000101` -- corrected there. The full steering table, both",
+          "families, is in `docs/plans/step9-notes/lane-2b.md`.",
+          "",
           "FILE: the outcomes examples/merchant-demo drives that requesttopay-status.json",
           "cannot reach from an end-to-end confirm. Added 2026-09-03 (Step 8, lane A) for",
           "issue #11's 'drives the stub to succeeded and to failed/expired'.",
@@ -83,8 +100,14 @@
           "it from swallowing anything else:",
           "",
           "1. requiredScenarioState. A container starts every scenario in `Started`, and only",
-          "   the POST above -- which no conformance case sends, they all use 237600000000 --",
-          "   moves this one out of it. In a conformance run this mapping is unreachable.",
+          "   the POST above moves this one out of it. Every OTHER conformance case sends",
+          "   the fixed placeholder 237600000000, which matches neither PartyId family",
+          "   above, so for them this mapping stays unreachable. Corrected Step 9 lane 2b:",
+          "   one conformance case now DOES send 237600000101 on purpose --",
+          "   `a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin` -- to prove the",
+          "   digits-only twin reaches this exact decline from the adapter. That case starts",
+          "   its own container, same as every other one here, so it does not change what",
+          "   any other case sees.",
           "2. priority 4 is BELOW the reference-keyed status mappings (priority 1, lower",
           "   number wins), so ...0404, ...0f01, ...05aa and the rest keep winning even while",
           "   this scenario is armed.",
@@ -118,7 +141,7 @@
           {
             "matchesJsonPath": {
               "expression": "$.payer.partyId",
-              "equalTo": "237600000f02"
+              "matches": "237600000(f02|102)"
             }
           }
         ]
@@ -128,6 +151,14 @@
       },
       "metadata": {
         "why": [
+          "TWO PARTYID FAMILIES, added Step 9 lane 2b (2026-09-04): `237600000f02` and its",
+          "digits-only twin `237600000102`, for the same reason and by the same mechanism",
+          "as the decline pair's mapping above (`237600000f01`/`237600000101`) -- see that",
+          "mapping's comment for the full explanation. Proven directly by",
+          "`a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin::case_3_payer_timeout`",
+          "in `backends/tests/conformance/tests/adapter_conformance.rs`. The full steering",
+          "table, both families, is in `docs/plans/step9-notes/lane-2b.md`.",
+          "",
           "The prompt-expiry outcome: the payer never entered their PIN and MTN's ~5 minute",
           "window closed. Same mechanism, same justification and the same documentation-MSISDN",
           "block as the decline pair above; `0f02` names requesttopay-status.json's",

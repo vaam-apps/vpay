@@ -115,6 +115,21 @@ export interface VpayStripeOptions {
    */
   baseUrl: string;
   /**
+   * The origin vpay's **checkout app** is served from, e.g.
+   * `https://checkout.vpay.example` — the deployment's
+   * `checkout.public_base_url`. A different host from {@link baseUrl}: one
+   * serves the API, the other serves the page that goes in the iframe.
+   *
+   * Optional, and **required for {@link Stripe.initEmbeddedCheckout}**,
+   * which rejects without it rather than guessing. It is also the value the
+   * `message` listener pins `event.origin` against, so a wrong one does not
+   * fail open — it silently accepts nothing.
+   *
+   * Validated here when supplied: an absolute `http:`/`https:` URL, trailing
+   * slashes stripped.
+   */
+  checkoutBaseUrl?: string | undefined;
+  /**
    * Injected `fetch`, for tests and for a host that wants its own
    * instrumentation. Defaults to `globalThis.fetch`.
    */
@@ -188,4 +203,162 @@ export interface Stripe {
     clientSecret: string,
     options?: WaitForPaymentIntentOptions,
   ): Promise<PaymentIntentResult>;
+  /**
+   * `GET /v1/browser/checkout/sessions/{id}` — reads a Checkout Session by
+   * its own `client_secret`. Never rejects.
+   */
+  retrieveCheckoutSession(clientSecret: string): Promise<CheckoutSessionResult>;
+  /**
+   * Frames vpay's checkout page on the merchant's own page (Step 9's D8).
+   *
+   * **This one rejects**, like {@link loadStripe}: a missing
+   * `checkoutBaseUrl` or a `client_secret` that is not a session's is an
+   * integration mistake visible on the first render, not a payer-facing
+   * failure, and a rejection from `fetchClientSecret` is the merchant's own
+   * server call failing.
+   */
+  initEmbeddedCheckout(
+    options: InitEmbeddedCheckoutOptions,
+  ): Promise<EmbeddedCheckout>;
+}
+
+/**
+ * A Checkout Session's lifecycle state — Step 9's D10, and deliberately
+ * vpay's own three values rather than Stripe's.
+ *
+ * There is no `failed`: a session whose intent reached a terminal
+ * non-success state is reported `expired` with
+ * {@link CheckoutSession.payment_status} `failed`, the same way a
+ * PaymentIntent has no `failed` status either.
+ */
+export type CheckoutSessionStatus = "open" | "complete" | "expired";
+
+/** Whether the session's intent has been paid. D10's second axis. */
+export type CheckoutPaymentStatus = "unpaid" | "paid" | "failed";
+
+/**
+ * Which surface the session is rendered on: `hosted` (vpay serves a
+ * top-level page and returns its `url`) or `embedded` (the merchant frames
+ * vpay's page with {@link Stripe.initEmbeddedCheckout}).
+ */
+export type CheckoutSessionUiMode = "hosted" | "embedded";
+
+/**
+ * `checkout.session` as the **browser** surface renders it — the object in
+ * §"The wire contract" of `docs/plans/2026-09-04-step9-hosted-checkout.md`,
+ * with `payment_intent` expanded.
+ *
+ * The one place this differs from the merchant SDKs' `CheckoutSession`
+ * (`@vpay/sdk`, `vpay_sdk`) is {@link payment_intent}, and the difference is
+ * deliberate rather than a skew: on `/v1` the field is the `pi_…` **id**; on
+ * `GET /v1/browser/checkout/sessions/{id}` it is the whole intent, because
+ * vpay's checkout page has to confirm and poll it through the existing
+ * browser routes and a second round trip to fetch it would need a credential
+ * the page does not have yet. Stripe's own `expand` convention, applied at
+ * exactly one route.
+ *
+ * **This means `retrieveCheckoutSession` hands its caller a live *confirm*
+ * credential** (`session.payment_intent.client_secret`), not only a
+ * session-read one. That is a wider exposure than the session's own secret
+ * and is stated here rather than buried: a merchant's outer page that only
+ * wants the session's status should read `status` and `payment_status` and
+ * leave the intent alone.
+ *
+ * `client_secret` is `string`, not `string | null`, for the same reason
+ * {@link PaymentIntent.client_secret} is: this route is reachable *only* by
+ * presenting one.
+ */
+export interface CheckoutSession {
+  /** `cs_…`. */
+  id: string;
+  object: "checkout.session";
+  livemode: boolean;
+  /**
+   * The intent this session drives, **expanded** — every
+   * {@link PaymentIntent} field, `client_secret` included. A session never
+   * creates its intent; it references one that already exists.
+   *
+   * Typed as the object rather than `string | PaymentIntent` because this
+   * package calls exactly one route and that route always expands it. The
+   * *return* read (`…/{id}/return?t=…`) expands it too but omits the
+   * intent's `client_secret` — nothing here calls that route, it is vpay's
+   * own return page, and typing a union for a response this package never
+   * receives would push a needless narrowing onto every caller.
+   */
+  payment_intent: PaymentIntent;
+  ui_mode: CheckoutSessionUiMode;
+  status: CheckoutSessionStatus;
+  payment_status: CheckoutPaymentStatus;
+  /** Hosted mode only; `null` on an embedded session. May carry `{CHECKOUT_SESSION_ID}` (D5). */
+  success_url: string | null;
+  /** Hosted mode only; `null` on an embedded session. */
+  cancel_url: string | null;
+  /** Embedded mode only; `null` on a hosted session. */
+  return_url: string | null;
+  /** The page vpay serves for a hosted session, secret in the fragment (D6); `null` when embedded. */
+  url: string | null;
+  /** Unix **seconds**. 24 h from create (D10). */
+  expires_at: number;
+  /** Unix **seconds**. */
+  created: number;
+  /** `cs_…_secret_…`. Never log this. */
+  client_secret: string;
+}
+
+/**
+ * {@link Stripe.retrieveCheckoutSession}'s answer, shaped like
+ * {@link PaymentIntentResult} so the same `if (result.error)` narrowing
+ * works. It never rejects — see the package README's "Errors".
+ */
+export type CheckoutSessionResult =
+  | { checkoutSession: CheckoutSession; error?: undefined }
+  | { checkoutSession?: undefined; error: StripeError };
+
+/**
+ * What vpay's page sends the parent when the payer is finished
+ * (`{type:'vpay:complete', session, status}`, D8).
+ *
+ * Both members are strings on the wire and a message whose `session` or
+ * `status` is anything else is **ignored**, not coerced: this crosses an
+ * origin boundary, and a callback fired with a half-understood payload is
+ * worse than one that did not fire.
+ */
+export interface EmbeddedCheckoutCompleteEvent {
+  /** The `cs_…` that completed. Look the outcome up server-side; do not trust `status` alone. */
+  session: string;
+  /** The session's {@link CheckoutSessionStatus} as the page saw it. */
+  status: string;
+}
+
+/** Options for {@link Stripe.initEmbeddedCheckout}. */
+export interface InitEmbeddedCheckoutOptions {
+  /**
+   * Returns the session's `client_secret` — the merchant's own server call
+   * to `POST /v1/checkout/sessions`, proxied through its page. Called once
+   * per {@link Stripe.initEmbeddedCheckout}; a rejection propagates.
+   */
+  fetchClientSecret: () => Promise<string>;
+  /**
+   * Called when vpay's page reports the payer is finished. **Not** proof of
+   * payment: it is a message from an iframe, so treat it as a cue to
+   * re-read the session from the merchant's own server.
+   */
+  onComplete?: ((event: EmbeddedCheckoutCompleteEvent) => void) | undefined;
+}
+
+/**
+ * The handle {@link Stripe.initEmbeddedCheckout} resolves to.
+ *
+ * Member for member `@stripe/stripe-js`'s own `StripeEmbeddedCheckout` —
+ * pinned as a compile-time assertion in `src/compat.test.ts`, in both
+ * directions, because this is the one part of Checkout where the two
+ * packages' shapes genuinely do coincide.
+ */
+export interface EmbeddedCheckout {
+  /** Attaches the frame to a CSS selector or an element. */
+  mount(location: string | HTMLElement): void;
+  /** Detaches the frame. The handle stays usable — {@link mount} may be called again. */
+  unmount(): void;
+  /** Detaches the frame, drops the `message` listener, and makes the handle unusable. */
+  destroy(): void;
 }

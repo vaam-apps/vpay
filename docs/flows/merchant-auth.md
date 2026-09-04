@@ -51,7 +51,7 @@ merchant backend (SDK)                         vpay (as OP for /v1)
 | Header `kid` | Optional. If the merchant registered more than one key it is **required** and must match one registered `kid` exactly; with one registered key it may be omitted | `select_key`: no `kid` ⇒ the JWK Set must hold exactly one key, otherwise the assertion is refused rather than guessed |
 | `iss` | `client_id` | RFC 7523 §3 points 1–2; the OP checks `iss == sub == client_id` of the registration it loaded |
 | `sub` | `client_id` | same |
-| `aud` | The token endpoint URL, as a single string | RFC 7523 §3; the OP accepts either its token endpoint URL or its issuer identifier (`handlers/token.rs`, `authenticate_client`). The SDKs send the token endpoint |
+| `aud` | The OP's own token endpoint URL or issuer, as a single string | RFC 7523 §3; the OP accepts either its token endpoint URL or its issuer identifier (`handlers/token.rs`, `authenticate_client`), **both derived from `deployment.public_base_url` and from nothing else**. The SDKs default it to the URL they POST to, which is right only when the merchant reaches vpay at the URL vpay publishes as its own — see below |
 | `jti` | UUIDv4, fresh per assertion | Spent exactly once server-side (`ClientAssertionStore`, backed by `oauth_client_assertion_jtis` — see [status](../status.md)). Reusing one is indistinguishable from a replay and is refused |
 | `exp` | `now + lifetime`, lifetime **1..=300 s**, default 60 | `MAX_CLIENT_ASSERTION_LIFETIME_SECS = 300` on both the minting (`authkestra-engine`) and verifying side; anything further out is refused. The SDKs reject a configured lifetime outside that range at construction rather than clamping silently |
 | `iat` | `now` | Emitted by `authkestra-engine`'s own minter; harmless to the OP, useful in logs |
@@ -59,6 +59,28 @@ merchant backend (SDK)                         vpay (as OP for /v1)
 
 The OP allows 60 s of clock leeway (`jsonwebtoken`'s default), so a merchant
 clock a few seconds off still authenticates.
+
+**`aud` is the OP's own name for itself, not the URL you POST to.**
+`authenticate_client` compares the claim against exactly two strings —
+`{deployment.public_base_url}/v1/oauth/token` and the
+`{deployment.public_base_url}/v1/oauth` issuer (`vpay_api::op::issuer_for`) —
+and against nothing else. A merchant whose server reaches vpay by an internal
+URL (a compose service name, a private DNS name, a mesh address) must say so:
+`assertionAudience` in `@vpay/sdk`, `ClientBuilder::assertion_audience` in
+`sdks/rust`. Both default to the token endpoint, which is right only when the
+two coincide. Left wrong, every token request answers `invalid_client` /
+`InvalidAudience` while the signature, the `client_id`, the `kid` and the
+lifetime are all correct — the response says nothing about audiences, so this
+is not a failure a merchant diagnoses from the wire.
+
+That is a **third** string, not a redefinition of either of the two beside it,
+and the three are worth keeping apart: the *token endpoint* is where the request
+is POSTed and nobody compares it; the *assertion audience* is what the OP calls
+itself; and the `audience` **request parameter** (`vpay:v1`, the next table) is
+the resource server the minted token is for. It is
+[ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md)-adjacent and changes
+nothing that ADR decided — what changed on 2026-09-04 is that both SDKs stopped
+conflating the first two.
 
 ### 2. The token request
 
@@ -537,5 +559,18 @@ What the SDKs themselves prove is unchanged by any of this:
 - **Form-body parity** between the two SDKs is pinned by tests in
   `sdks/rust/src/form.rs` that carry the exact string the Node encoder
   emitted for the same parameters.
+- **Both SDKs separate the assertion's `aud` from the URL the token request is
+  POSTed to** (2026-09-04, Step 9 lane 5b). Proven by
+  `sdks/rust/tests/op_conformance.rs`'s
+  `the_real_verifier_refuses_a_client_that_reaches_vpay_internally_and_sets_no_audience`
+  and `the_real_verifier_accepts_the_same_client_once_assertion_audience_is_set`,
+  which run a real `Client`'s assertion through the real pinned
+  `authkestra_op` verifier, and by `examples/shop/src/server/vpay.test.ts` on
+  the Node side — verifier-*shaped* rather than the verifier itself, which is
+  the standing Node gap two bullets up. [`docs/sdks/parity.md`](../sdks/parity.md)
+  records the capability ✅/✅. **The defect this closed had never been caught by
+  a test on either side**: it needed a merchant's server reaching vpay by a name
+  vpay does not publish as its own, and until `examples/shop` ran inside the
+  compose network, nothing in this repository did.
 
 See [`docs/status.md`](../status.md) for the row-by-row account.

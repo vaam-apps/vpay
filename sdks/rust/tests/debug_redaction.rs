@@ -1,8 +1,9 @@
-//! The private key, the live access token, and a `PaymentIntent`'s
-//! `client_secret` must never reach a `{:?}`.
+//! The private key, the live access token, a `PaymentIntent`'s
+//! `client_secret` and a `CheckoutSession`'s must never reach a `{:?}`.
 //!
 //! This file is named by the `Debug` implementations of
-//! [`vpay_sdk::Credentials`], `Client`, and `PaymentIntent` themselves: they
+//! [`vpay_sdk::Credentials`], `Client`, `PaymentIntent` and
+//! `CheckoutSession` themselves: they
 //! are hand-written rather than derived *because* of these tests, and
 //! replacing any of them with `#[derive(Debug)]` must fail here. A
 //! merchant's private key, bearer token, or payer credential in a log line
@@ -20,7 +21,7 @@
 
 use std::sync::LazyLock;
 
-use vpay_sdk::{Client, Credentials, PaymentIntent};
+use vpay_sdk::{CheckoutSession, Client, Credentials, PaymentIntent};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -128,6 +129,66 @@ fn a_payment_intents_debug_output_never_contains_its_client_secret() {
     assert!(rendered.contains("[redacted]") || rendered.contains("chars redacted"));
     // The rest of the object is still useful for debugging.
     assert!(rendered.contains("pi_1"));
+}
+
+#[test]
+fn a_checkout_sessions_debug_output_never_contains_its_client_secret_or_its_url_fragment() {
+    // Two credentials in one object, not one. D6 puts the session's
+    // `client_secret` in the hosted page's URL fragment, so a `Debug` that
+    // redacted only the named field would print the same bytes through
+    // `url` — which is exactly what the first version of the Node SDK's
+    // equivalent did, and what the test there now catches too.
+    let secret = "cs_1_secret_super_secret_value";
+    let session: CheckoutSession = serde_json::from_str(&format!(
+        r#"{{"id":"cs_1","object":"checkout.session","livemode":false,
+            "payment_intent":"pi_1","ui_mode":"hosted","status":"open",
+            "payment_status":"unpaid",
+            "success_url":"https://shop.example/ok?sid={{CHECKOUT_SESSION_ID}}",
+            "cancel_url":"https://shop.example/cancel","return_url":null,
+            "url":"https://checkout.example/c/cs_1#{secret}",
+            "expires_at":86401,"created":1,
+            "client_secret":"{secret}"}}"#
+    ))
+    .unwrap();
+
+    let rendered = format!("{session:?}");
+    assert!(
+        !rendered.contains(secret),
+        "Debug output must not contain the client_secret: {rendered}"
+    );
+    assert!(rendered.contains("chars redacted"), "{rendered}");
+    // A redaction, not a blackout: which page the session points at is the
+    // whole diagnostic value of `url`, and it survives.
+    assert!(
+        rendered.contains("https://checkout.example/c/cs_1#["),
+        "{rendered}"
+    );
+    assert!(rendered.contains("cs_1"));
+    assert!(rendered.contains("pi_1"));
+    // The merchant's own forwarding URLs are not credentials and are not
+    // touched.
+    assert!(rendered.contains("{CHECKOUT_SESSION_ID}"), "{rendered}");
+}
+
+#[test]
+fn a_checkout_session_without_a_secret_or_a_fragment_renders_no_redaction_marker() {
+    // The list shape: no `client_secret` key at all, and an embedded
+    // session has no `url`. Nothing to redact, and nothing pretending
+    // there was.
+    let session: CheckoutSession = serde_json::from_str(
+        r#"{"id":"cs_2","object":"checkout.session","livemode":false,
+            "payment_intent":"pi_2","ui_mode":"embedded","status":"open",
+            "payment_status":"unpaid","success_url":null,"cancel_url":null,
+            "return_url":"https://shop.example/order/42","url":null,
+            "expires_at":86401,"created":1}"#,
+    )
+    .unwrap();
+
+    assert_eq!(session.client_secret, None);
+    let rendered = format!("{session:?}");
+    assert!(!rendered.contains("chars redacted"), "{rendered}");
+    assert!(rendered.contains("client_secret: None"), "{rendered}");
+    assert!(rendered.contains("url: None"), "{rendered}");
 }
 
 #[test]

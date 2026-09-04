@@ -15,6 +15,13 @@
 // family's own trait, not for free functions. Why, in full: [docs/reference/vpay-db.md
 // § what stays pub, and why](../../../../docs/reference/vpay-db.md#what-stays-pub-and-why).
 pub mod charges;
+// The hosted/embedded checkout object (Step 9). Its own module rather than
+// functions on `payment_intents`, because a session is not a property of an
+// intent: it is one *attempt* to drive one through vpay's own page, it
+// carries two payer credentials of its own, and the one write that belongs
+// to neither table alone — the settlement flip — is `pub(crate)` here and
+// reachable only from `settlement`.
+pub mod checkout_sessions;
 pub mod config_reconcile;
 pub mod events;
 pub mod idempotency;
@@ -55,6 +62,9 @@ mod pool;
 mod signing_keys;
 
 pub use charges::{ChargeAsOf, ChargeRow, Charges, NewCharge};
+pub use checkout_sessions::{
+    CheckoutSessionRow, CheckoutSessions, NewCheckoutSession, SessionListPage,
+};
 pub use client_assertion::{ClientAssertions, SqlClientAssertionStore};
 pub use config_reconcile::{ConfigReconcile, CurrencySeed, ProviderSeed};
 pub use disabled_clients::DisabledClients;

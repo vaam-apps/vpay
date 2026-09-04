@@ -329,6 +329,73 @@ pub struct MerchantClient {
     #[garde(skip)]
     #[serde(default)]
     pub publishable_keys: Vec<String>,
+    /// What a payer is told they are paying — the one fact about the
+    /// merchant vpay's own checkout page shows (Step 9).
+    ///
+    /// `None` is legal and is the default. The browser session reads then
+    /// fall back to [`Self::merchant_id`], which is a true name for who is
+    /// being paid but an *internal* one: `acme-cameroon-tenant` is not what a
+    /// payer recognises from the site they were on. A deployment that serves
+    /// hosted checkout should set this for every merchant, and lane 1b's note
+    /// says so; nothing refuses to boot without it, because a merchant who
+    /// never uses the checkout page has no payer to show anything to.
+    ///
+    /// **Not derived from anything.** There is no merchants table
+    /// (ADR-0003), so this is the only place a human-readable name for a
+    /// tenant exists at all. It is deliberately not `client_id` either: a
+    /// credential's name is not a business's name, and one merchant may hold
+    /// several credentials.
+    ///
+    /// **Not secret**, on the same footing as [`Self::publishable_keys`]: it
+    /// is rendered to every payer of this merchant by construction, so it
+    /// prints in `Debug`.
+    ///
+    /// Bounded at 80 characters by `Config::validate_all`
+    /// ([`ConfigError::MalformedDisplayName`](crate::ConfigError::MalformedDisplayName)),
+    /// which is a rendering rule rather than a storage one: it is painted
+    /// into a heading on a phone-sized page, and a value that wrapped to four
+    /// lines would push the amount and the pay button below the fold. Empty
+    /// or whitespace-only is refused rather than treated as absent — an
+    /// operator who wrote `display_name: ""` meant to write something.
+    #[garde(skip)]
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// The origins allowed to **frame** vpay's embedded checkout page for
+    /// this merchant (Step 9, D4) — the source list
+    /// `Content-Security-Policy: frame-ancestors` is built from.
+    ///
+    /// Each entry is an *origin*: a scheme, a host and optionally a port
+    /// (`https://shop.example`, `https://shop.example:8443`). No path, no
+    /// query, no fragment, no trailing slash — that is what `frame-ancestors`
+    /// matches, and a source-expression the browser cannot parse makes the
+    /// whole directive unusable. `Config::validate_all` refuses anything
+    /// else ([`ConfigError::MalformedCheckoutOrigin`](crate::ConfigError::MalformedCheckoutOrigin)).
+    ///
+    /// **Not secret**, on the same footing as [`Self::publishable_keys`] and
+    /// for a stronger reason: an origin is the merchant's own public website.
+    /// The checkout app fetches this list by publishable key alone
+    /// (`GET /v1/browser/checkout/origins?key=…`, no secret) precisely
+    /// because there is nothing here to protect, and because a secret in a
+    /// server-side lookup would end up in the Next server's logs.
+    ///
+    /// **An empty list is the fail-closed default and is what most
+    /// registrations should have.** It means this merchant may not embed
+    /// vpay's page anywhere: the embedded route answers `frame-ancestors
+    /// 'none'`, so a page that tries is refused by the payer's own browser.
+    /// Hosted checkout is unaffected — it is never framed.
+    ///
+    /// A deployment with **no** `checkout.public_base_url` and a merchant
+    /// with origins is refused at boot
+    /// ([`ConfigError::CheckoutOriginsWithoutBaseUrl`](crate::ConfigError::CheckoutOriginsWithoutBaseUrl)):
+    /// there would be no page for those origins to frame.
+    ///
+    /// Validated in `Config::validate_all`, not here, for
+    /// [`Self::publishable_keys`]'s reason — uniqueness is a property of the
+    /// whole `merchant_clients` list and cannot be seen from one
+    /// registration.
+    #[garde(skip)]
+    #[serde(default)]
+    pub checkout_origins: Vec<String>,
 }
 
 /// Redacts [`MerchantClient::client_secret`] (which must always be `None` —
@@ -343,6 +410,11 @@ impl fmt::Debug for MerchantClient {
         f.debug_struct("MerchantClient")
             .field("client_id", &self.client_id)
             .field("merchant_id", &self.merchant_id)
+            // In full: it is rendered to every payer of this merchant by
+            // construction, so there is nothing here to hide, and "which
+            // name did this deployment load?" is what an operator asks when
+            // a payer reports the wrong shop name on the checkout page.
+            .field("display_name", &self.display_name)
             .field("jwks", &self.jwks)
             .field("grant_types", &self.grant_types)
             .field("scopes", &self.scopes)
@@ -359,6 +431,11 @@ impl fmt::Debug for MerchantClient {
             // actually load?" is the first question asked when a merchant's
             // checkout page answers 404 for every payer.
             .field("publishable_keys", &self.publishable_keys)
+            // In full too, and for a stronger version of the same reason: an
+            // origin is the merchant's own public website, and "which origins
+            // did this deployment load?" is the *only* question worth asking
+            // when an embedded checkout renders an empty iframe.
+            .field("checkout_origins", &self.checkout_origins)
             .finish()
     }
 }
@@ -469,6 +546,7 @@ mod tests {
         let client = MerchantClient {
             client_id: "acme".to_owned(),
             merchant_id: "acme".to_owned(),
+            display_name: Some("Acme Cameroun".to_owned()),
             jwks: Some(serde_json::json!({"keys": [{"kid": "k1"}]})),
             grant_types: vec![GrantType::ClientCredentials],
             scopes: vec!["payments:write".to_owned()],
@@ -480,6 +558,7 @@ mod tests {
                 secrets: vec!["whsec_never_log_me".to_owned()],
             }],
             publishable_keys: vec!["pk_test_visibleonpurpose01".to_owned()],
+            checkout_origins: Vec::new(),
         };
 
         let formatted = format!("{client:?}");
@@ -507,6 +586,13 @@ mod tests {
         assert!(
             formatted.contains("pk_test_visibleonpurpose01"),
             "Debug output must still show the (public) publishable key"
+        );
+        // The display name is rendered to every payer of this merchant by
+        // construction, so hiding it would cost an operator the answer to
+        // "which name did this deployment load?" and protect nothing.
+        assert!(
+            formatted.contains("Acme Cameroun"),
+            "Debug output must still show the (public) display name"
         );
     }
 

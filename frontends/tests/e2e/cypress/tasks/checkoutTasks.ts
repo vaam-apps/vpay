@@ -61,14 +61,19 @@ export async function mintCheckoutPaymentIntent(): Promise<MintedCheckout> {
 
   const intent = await vpay.paymentIntents.create(
     {
-      // EUR, not XAF: the demo overlay's `mtn_momo` rail settles in EUR
-      // (matches `examples/merchant-demo`'s `DEMO_CURRENCY`) — confirmed by
-      // running `examples/checkout-browser/mint.mjs` against `just demo` and
-      // getting back a real `invalid_request_error/invalid_request: rail
-      // 'mtn_momo' settles in EUR; this PaymentIntent is XAF` when this used
-      // to say `"xaf"`. See that script's own comment.
+      // XAF since 2026-09-04 (Step 9, lane 4): the demo overlay
+      // `just gen-demo-keys` writes now settles BOTH rails in XAF, because
+      // the demo shop prices its catalogue in XAF and offers both. CI's `e2e`
+      // job brings this stack up with `-f compose.demo.yml`, so this spec
+      // reads that overlay and not `config/application.yml` — which still
+      // puts `mtn_momo` on EUR, because MTN's real sandbox rejects XAF.
+      //
+      // If this and the rail disagree, the failure is a real refusal at
+      // confirm and not a silent mismatch: `invalid_request_error/
+      // invalid_request: rail 'mtn_momo' settles in <x>; this PaymentIntent
+      // is <y>`. 5 000 FCFA — XAF is zero-decimal.
       amount: 5000,
-      currency: "eur",
+      currency: "xaf",
       payment_method_types: ["mtn_momo"],
       metadata: { source: "checkout.cy.ts" },
     },

@@ -1,0 +1,16 @@
+# An ENABLED checkout page with no `publicApiUrl`.
+#
+# That value becomes `NEXT_PUBLIC_VPAY_API_URL`, the origin every payer's
+# browser sends its `/v1/browser` confirm and poll to. The app throws on a
+# missing one rather than defaulting (lane 3's decision, and the right one:
+# a checkout page pointed at the wrong API is an operator's 500, not a
+# payer's "something went wrong"). So the pod starts, fails readiness, never
+# joins the Service, and nothing says why.
+#
+# The guard covers two more combinations this file does not exercise — an
+# Ingress with neither `host` nor `path` or with both, and TLS with nothing to
+# populate the Secret. One values file per guard is the convention here, and
+# this is the failure an operator meets first.
+checkout:
+  enabled: true
+  publicApiUrl: ""

@@ -35,6 +35,8 @@ use authkestra_op::{ClientRegistration, GrantType, TokenEndpointAuthMethod};
 use serde_json::Value;
 use vpay_sdk::auth::mint_client_assertion;
 use vpay_sdk::{Client, ConfigError, Credentials};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
 
@@ -234,4 +236,104 @@ fn the_issuer_is_accepted_as_an_audience_too() {
 
     let client = registration(support::jwks(&[&KEY_NO_KID]));
     assert!(verify_client_assertion(&assertion, &client, &expected_audiences()).is_ok());
+}
+
+/// Drives a real [`Client`] through one token exchange against a local stub
+/// and hands back the `client_assertion` it actually put on the wire.
+///
+/// The stub's address is `http://127.0.0.1:<port>` — an address reachable
+/// only from this process, standing in for `http://vpay-server:8080` inside a
+/// compose network or a private DNS name in production. That is the whole
+/// setup this pair of tests needs: the URL the merchant POSTs to is not one
+/// of the two names the OP calls itself.
+async fn assertion_sent_by(build: impl FnOnce(&MockServer) -> Client) -> String {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/oauth/token"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(support::token_response("tok_1", 300)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/balance"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "object": "balance",
+            "available": [],
+            "pending": [],
+        })))
+        .mount(&server)
+        .await;
+
+    let client = build(&server);
+    client.balance().retrieve().await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let token_request = requests
+        .iter()
+        .find(|r| r.url.path() == "/v1/oauth/token")
+        .expect("the token endpoint was called");
+    let pairs = support::form_pairs(&token_request.body);
+    let raw = support::form_field(&pairs, "client_assertion").expect("a client_assertion was sent");
+    support::percent_decode(raw)
+}
+
+#[tokio::test]
+async fn the_real_verifier_refuses_a_client_that_reaches_vpay_internally_and_sets_no_audience() {
+    // The defect, run through the OP's own code rather than argued about.
+    // Everything else in the assertion is correct — the signature verifies,
+    // `iss`/`sub` are the client id, the lifetime is in range — and the OP
+    // still refuses it, because `aud` names a URL the OP has never called
+    // itself.
+    let assertion = assertion_sent_by(|server| {
+        Client::builder(server.uri())
+            .credentials(Credentials::rsa_pem(CLIENT_ID, &KEY_NO_KID.pem).unwrap())
+            .build()
+            .unwrap()
+    })
+    .await;
+
+    let client = registration(support::jwks(&[&KEY_NO_KID]));
+    assert!(
+        verify_client_assertion(&assertion, &client, &expected_audiences()).is_err(),
+        "an assertion addressed to the internal URL must be refused"
+    );
+}
+
+#[tokio::test]
+async fn the_real_verifier_accepts_the_same_client_once_assertion_audience_is_set() {
+    // The fix, through the same verifier and the same registration: only
+    // `assertion_audience` differs from the test above. The token request
+    // still goes to the internal address; the claim names the OP.
+    let assertion = assertion_sent_by(|server| {
+        Client::builder(server.uri())
+            .credentials(Credentials::rsa_pem(CLIENT_ID, &KEY_NO_KID.pem).unwrap())
+            .assertion_audience(TOKEN_ENDPOINT)
+            .build()
+            .unwrap()
+    })
+    .await;
+
+    let client = registration(support::jwks(&[&KEY_NO_KID]));
+    verify_client_assertion(&assertion, &client, &expected_audiences())
+        .expect("the real OP verifier accepts the assertion once its audience names the OP");
+}
+
+#[tokio::test]
+async fn the_issuer_works_as_an_assertion_audience_too() {
+    // `expected_audiences` holds both names; a merchant that configured the
+    // issuer rather than the token endpoint must authenticate as well.
+    let assertion = assertion_sent_by(|server| {
+        Client::builder(server.uri())
+            .credentials(Credentials::rsa_pem(CLIENT_ID, &KEY_NO_KID.pem).unwrap())
+            .assertion_audience(ISSUER)
+            .build()
+            .unwrap()
+    })
+    .await;
+
+    let client = registration(support::jwks(&[&KEY_NO_KID]));
+    verify_client_assertion(&assertion, &client, &expected_audiences())
+        .expect("the OP accepts its issuer identifier as the assertion audience");
 }

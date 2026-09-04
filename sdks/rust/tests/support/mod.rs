@@ -119,6 +119,32 @@ pub(crate) fn form_field<'a>(pairs: &'a [(String, String)], key: &str) -> Option
         .map(|(_, v)| v.as_str())
 }
 
+/// Percent-decodes a form value from [`form_pairs`].
+///
+/// [`form_pairs`] deliberately hands back the raw wire bytes; a test that
+/// wants the *value* (a client assertion, say) decodes it here rather than
+/// assuming the encoder happened to leave it alone.
+pub(crate) fn percent_decode(input: &str) -> String {
+    let mut out = Vec::new();
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes.get(i) {
+            Some(b'%') => {
+                let hex = input.get(i + 1..i + 3).expect("a %XX escape is complete");
+                out.push(u8::from_str_radix(hex, 16).expect("a %XX escape is hex"));
+                i += 3;
+            }
+            Some(b) => {
+                out.push(*b);
+                i += 1;
+            }
+            None => break,
+        }
+    }
+    String::from_utf8(out).expect("a decoded form value is UTF-8")
+}
+
 /// A `TokenResponse` body shaped exactly like
 /// `authkestra_op::handlers::token::TokenResponse`
 /// (`docs/flows/merchant-auth.md`, "Success response").
@@ -146,4 +172,29 @@ pub(crate) fn payment_intent_json(id: &str) -> Value {
         "created": 1_753_401_600,
         "livemode": false,
     })
+}
+
+/// A `checkout.session` object with every field the wire contract lists —
+/// the hosted shape, whose `url` carries the session secret in its fragment
+/// (Step 9's D6).
+pub(crate) fn checkout_session_json(id: &str, client_secret: Option<&str>) -> Value {
+    let mut object = json!({
+        "id": id,
+        "object": "checkout.session",
+        "livemode": false,
+        "payment_intent": "pi_123",
+        "ui_mode": "hosted",
+        "status": "open",
+        "payment_status": "unpaid",
+        "success_url": "https://shop.example/ok?sid={CHECKOUT_SESSION_ID}",
+        "cancel_url": "https://shop.example/cancel",
+        "return_url": null,
+        "url": format!("https://checkout.example/c/{id}#{id}_secret_abc123"),
+        "expires_at": 1_700_086_400,
+        "created": 1_700_000_000,
+    });
+    if let Some(secret) = client_secret {
+        object["client_secret"] = json!(secret);
+    }
+    object
 }

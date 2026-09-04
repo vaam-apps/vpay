@@ -44,6 +44,7 @@ use crate::model::{
     ListObject, NextAction, PaymentIntentObject, PaymentIntentWithSecret, RedirectToUrl,
 };
 use crate::v1::paging::{self, CursorKind};
+use crate::v1::return_trip;
 use crate::v1::{MerchantScope, RailConfig, ResourceConfig};
 
 /// The object type this module speaks about, in the API's own vocabulary.
@@ -414,8 +415,11 @@ pub(crate) async fn retrieve(
     scope: MerchantScope,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let row = repositories
-        .get_for_merchant(scope.merchant_id(), &id)
+    // Fully qualified, like `PaymentIntents::list_page` below: since Step 9
+    // `CheckoutSessions` offers a `get_for_merchant` of its own, so the bare
+    // method call on `&dyn Repositories` is ambiguous. Naming the trait is
+    // also the more readable answer — it says which table is being read.
+    let row = PaymentIntents::get_for_merchant(repositories.as_ref(), scope.merchant_id(), &id)
         .await?
         .ok_or_else(|| not_found(&id))?;
     // The merchant surface renders the credential too, so a merchant who
@@ -572,8 +576,7 @@ async fn cancel_once(
     // intent that is *still* `requires_payment_method` can only have been
     // refused by the other one — the live charge. Anything else is the
     // status.
-    let current = repositories
-        .get_for_merchant(scope.merchant_id(), id)
+    let current = PaymentIntents::get_for_merchant(repositories, scope.merchant_id(), id)
         .await?
         .ok_or_else(|| not_found(id))?;
     if current.status == IntentStatus::INITIAL.as_wire_str() {
@@ -781,7 +784,22 @@ pub(crate) async fn confirm_once(
     rendering: SecretRendering,
 ) -> Result<Response, ApiError> {
     let intent = load_confirmable_intent(repositories, scope, id).await?;
-    let target = resolve_rail(config, adapters, &intent, &params)?;
+    // Before the rail is resolved and before anything is written, so that a
+    // session-driven confirm commits *vpay's* return page as the charge's
+    // `return_url` and a deployment that can no longer serve one costs no
+    // charge row at all. See `return_trip::session_return_page`.
+    let session_return_page = return_trip::session_return_page(
+        &return_trip::SessionReturnPage::new(repositories, config.checkout_public_base_url()),
+        &intent.id,
+    )
+    .await?;
+    let target = resolve_rail(
+        config,
+        adapters,
+        &intent,
+        &params,
+        session_return_page.as_deref(),
+    )?;
     let attempt = open_attempt(repositories, &intent, &target).await?;
     let submitted = submit_to_rail(&target, &attempt).await;
     finish_confirm(
@@ -821,8 +839,7 @@ async fn load_confirmable_intent(
     scope: &MerchantScope,
     id: &str,
 ) -> Result<vpay_db::PaymentIntentRow, ApiError> {
-    let intent = repositories
-        .get_for_merchant(scope.merchant_id(), id)
+    let intent = PaymentIntents::get_for_merchant(repositories, scope.merchant_id(), id)
         .await?
         .ok_or_else(|| not_found(id))?;
     let status = IntentStatus::from_wire(&intent.status).ok_or_else(|| {
@@ -867,6 +884,7 @@ fn resolve_rail<'a>(
     adapters: &'a BTreeMap<String, Box<dyn ProviderAdapter>>,
     intent: &vpay_db::PaymentIntentRow,
     params: &'a ConfirmParams,
+    session_return_page: Option<&str>,
 ) -> Result<ConfirmTarget<'a>, ApiError> {
     let data = params
         .payment_method_data
@@ -908,7 +926,7 @@ fn resolve_rail<'a>(
     currencies_agree(rail, &intent.currency_code)?;
 
     let flow = adapter.capabilities().flow;
-    let (payer_ref, return_url) = payer_instrument(flow, code, data, params)?;
+    let (payer_ref, return_url) = payer_instrument(flow, code, data, params, session_return_page)?;
     let currency = Currency::from_code(&intent.currency_code)?;
     let amount = Money::new(intent.amount, currency)?;
 
@@ -944,6 +962,7 @@ fn payer_instrument(
     code: &str,
     data: &Map<String, Value>,
     params: &ConfirmParams,
+    session_return_page: Option<&str>,
 ) -> Result<(Option<String>, Option<String>), ApiError> {
     match flow {
         ProviderFlow::Push => {
@@ -963,6 +982,36 @@ fn payer_instrument(
             Ok((Some(msisdn.to_owned()), None))
         }
         ProviderFlow::Redirect => {
+            // A checkout session wins, and its page is where the payer must
+            // come back to: vpay has to read the intent's real status before
+            // it can forward them to the merchant's `success_url` (D5's
+            // `{CHECKOUT_SESSION_ID}` substitution happens there). Sending
+            // them straight to the merchant would skip the only step that
+            // knows whether the payment succeeded.
+            //
+            // So `return_url` is **not required** here, and vpay's own
+            // checkout page sends none — it has no merchant URL to send, and
+            // the one it would be given is the one it is already standing on.
+            if let Some(page) = session_return_page {
+                if params.return_url.is_some() {
+                    // Debug and not a `400`: a merchant's server integrating
+                    // both surfaces may send its own `return_url` on every
+                    // confirm, and refusing that would make the two paths
+                    // differ for no gain. The value is simply not used.
+                    tracing::debug!(
+                        "a confirm on an intent with an open checkout session sent its own \
+                         return_url; the session's return page is used instead"
+                    );
+                }
+                // Not put through `checked_return_url`: this is vpay's own
+                // URL, built from configuration validated at boot
+                // (`checkout.public_base_url`) and from a row's own columns —
+                // not caller input. Refusing it would answer `400` naming a
+                // parameter the caller may not have sent. The
+                // `return_url_length` CHECK on `charges` is the backstop.
+                return Ok((None, Some(page.to_owned())));
+            }
+
             let return_url = params
                 .return_url
                 .as_deref()
@@ -1041,6 +1090,14 @@ async fn open_attempt(
 /// "submit" that never reached the rail while the charge row already said
 /// `submitting`.
 ///
+/// `return_url` is read from the **committed charge row** and from nowhere
+/// else: a redirect rail is told where the payer goes when its page is done
+/// with them, and a push rail's row carries `None` because it has no browser
+/// (Step 9's D2). Taking it from the row rather than as an argument is what
+/// makes "what the rail was told" and "what a later read renders as
+/// `next_action.redirect_to_url.return_url`" the same value by construction —
+/// see [`return_trip::session_return_page`] for the version that did not.
+///
 /// # Errors
 ///
 /// Whatever the adapter answers, unclassified and unmapped: deciding what a
@@ -1049,11 +1106,13 @@ async fn submit_to_rail(
     target: &ConfirmTarget<'_>,
     attempt: &SubmitAttempt,
 ) -> Result<Submitted, ProviderError> {
+    let return_url = attempt.charge.return_url.clone();
     let charge_ref = ChargeRef {
         reference_id: attempt.reference,
         amount: target.amount,
         payer_ref: target.payer_ref.clone(),
         ref_extra: BTreeMap::new(),
+        return_url,
     };
     target
         .adapter
@@ -1964,7 +2023,14 @@ fn value_response(status: StatusCode, value: &Value) -> Response {
 /// request whole here, then handing the same bytes to [`VpayForm`], keeps
 /// one decoder for the wire format instead of a second one written for this
 /// path.
-struct PostRequest {
+///
+/// `pub(crate)` since Step 9: `crate::v1::checkout_sessions` has the same two
+/// POSTs to serve under the same D7 rule, and a second copy of the
+/// claim/finish/release dance is exactly how one of the two ends up leaving a
+/// merchant's key stuck `in_flight` — the bug this type's own `finish` docs
+/// spend three paragraphs on. The fields stay private, so the only way to use
+/// it is the sequence it exposes.
+pub(crate) struct PostRequest {
     key: IdempotencyKey,
     parts: Parts,
     body: Bytes,
@@ -1972,7 +2038,7 @@ struct PostRequest {
 }
 
 impl PostRequest {
-    async fn read(request: Request) -> Result<Self, ApiError> {
+    pub(crate) async fn read(request: Request) -> Result<Self, ApiError> {
         let (mut parts, body) = request.into_parts();
         // Through the extractor rather than by reading the header here, so
         // the length and charset rules — and D7's exact sentence for a
@@ -2001,7 +2067,7 @@ impl PostRequest {
 
     /// Decodes the body through the same [`VpayForm`] extractor every other
     /// handler uses, by handing it back the request it came from.
-    async fn form<T: serde::de::DeserializeOwned>(&self) -> Result<T, ApiError> {
+    pub(crate) async fn form<T: serde::de::DeserializeOwned>(&self) -> Result<T, ApiError> {
         let mut request = Request::new(axum::body::Body::from(self.body.clone()));
         *request.method_mut() = self.parts.method.clone();
         *request.uri_mut() = self.parts.uri.clone();
@@ -2036,7 +2102,7 @@ impl PostRequest {
     /// sites, because the `claim_id` must not be droppable: a handler that
     /// destructured [`IdempotencyClaim::Fresh`] and threw the id away would
     /// compile, and would then have nothing to end the claim with.
-    async fn claim_or_answer(
+    pub(crate) async fn claim_or_answer(
         &self,
         repositories: &dyn Repositories,
         scope: &MerchantScope,
@@ -2120,7 +2186,7 @@ impl PostRequest {
     ///
     /// [release]: vpay_db::idempotency::release
     /// [`IdempotencyStoreOutcome::StaleClaim`]: vpay_db::IdempotencyStoreOutcome::StaleClaim
-    async fn finish(
+    pub(crate) async fn finish(
         self,
         repositories: &dyn Repositories,
         scope: &MerchantScope,
@@ -2212,7 +2278,7 @@ impl PostRequest {
     /// Deleting nothing is also not a failure: `claim_id` scopes the delete
     /// to *this* claim, so a request whose claim has already been reclaimed
     /// leaves the new owner's row alone — which is the point.
-    async fn release(
+    pub(crate) async fn release(
         &self,
         repositories: &dyn Repositories,
         scope: &MerchantScope,
@@ -2239,7 +2305,7 @@ impl PostRequest {
 /// An enum rather than `Option<Response>` because the owning case carries
 /// the `claim_id` every later write needs. See
 /// [`PostRequest::claim_or_answer`].
-enum ClaimOutcome {
+pub(crate) enum ClaimOutcome {
     /// This request owns the key under this `claim_id`, and must end the
     /// claim with `PostRequest::finish` or `PostRequest::release`.
     Owned(Uuid),
@@ -2342,6 +2408,7 @@ mod tests {
                 &["payments:write"],
             )],
             webhooks: vpay_config::WebhookPolicy::default(),
+            checkout: vpay_config::CheckoutConfig::default(),
             dashboard_client: None,
         })
         .expect("the fixture's rails project onto the port")
@@ -2702,6 +2769,95 @@ mod tests {
         // Namespaced, so the worker's own `resubmit:<id>` cannot collide with
         // it and lose to its `ON CONFLICT DO NOTHING`.
         assert!(poll_dedupe_key("ch_abc").starts_with("poll:"));
+    }
+
+    /// A redirect confirm on an intent an **open checkout session** drives
+    /// needs no `return_url`, and ignores one that is sent.
+    ///
+    /// This is what vpay's own checkout page does: it calls
+    /// `POST /v1/browser/payment_intents/{id}/confirm` with the instrument
+    /// and nothing else, because it has no merchant URL to send and the page
+    /// it would send is the one it is already standing on. Before Step 9's
+    /// lane 1b that confirm answered `400 invalid_param: return_url` and the
+    /// hosted Orange flow could not complete at all.
+    ///
+    /// The third case is the one that makes it a *precedence* rather than a
+    /// default: a merchant's server that sends its own URL on every confirm
+    /// gets the session's page anyway, because vpay has to see the payer
+    /// before the merchant does.
+    ///
+    /// **Revert-proof.** Drop the session branch and the first two cases
+    /// fail with `invalid_param`; make it a fallback instead of a precedence
+    /// and the third returns the merchant's URL.
+    #[test]
+    fn a_session_driven_redirect_confirm_needs_no_return_url_and_ignores_one() {
+        const SESSION: &str = "https://checkout.example/c/cs_1/return?t=tok&key=pk_test_x";
+        const MERCHANT: &str = "https://shop.example/order/1234/return";
+
+        let data = Map::new();
+        let params = |return_url: Option<&str>| ConfirmParams {
+            payment_method_data: None,
+            return_url: return_url.map(ToOwned::to_owned),
+            unsupported: UnsupportedStripeParams::default(),
+        };
+
+        // No `return_url`, no session: the rule that has been there since
+        // Step 3, unchanged.
+        let error = payer_instrument(
+            ProviderFlow::Redirect,
+            "orange_money",
+            &data,
+            &params(None),
+            None,
+        )
+        .expect_err("a redirect confirm with no session still needs a return_url");
+        assert_eq!(invalid_param_of(error).as_deref(), Some("return_url"));
+
+        // No `return_url`, with a session: the page's own call.
+        let (payer_ref, return_url) = payer_instrument(
+            ProviderFlow::Redirect,
+            "orange_money",
+            &data,
+            &params(None),
+            Some(SESSION),
+        )
+        .expect("a session-driven confirm needs no return_url");
+        assert_eq!(payer_ref, None);
+        assert_eq!(return_url.as_deref(), Some(SESSION));
+
+        // A merchant's own URL, with a session: the session wins.
+        let (_payer_ref, return_url) = payer_instrument(
+            ProviderFlow::Redirect,
+            "orange_money",
+            &data,
+            &params(Some(MERCHANT)),
+            Some(SESSION),
+        )
+        .expect("a session-driven confirm accepts a return_url and does not use it");
+        assert_eq!(
+            return_url.as_deref(),
+            Some(SESSION),
+            "the payer must come back to vpay, which is the only thing that knows whether the \
+             payment succeeded"
+        );
+
+        // A push rail ignores the session's page entirely: it has no browser,
+        // and `charges.return_url` for such a charge stays NULL.
+        let mut push_data = Map::new();
+        push_data.insert(
+            "mtn_momo".to_owned(),
+            serde_json::json!({ "msisdn": "237670000000" }),
+        );
+        let (payer_ref, return_url) = payer_instrument(
+            ProviderFlow::Push,
+            "mtn_momo",
+            &push_data,
+            &params(None),
+            Some(SESSION),
+        )
+        .expect("a push confirm under a session is an ordinary push confirm");
+        assert_eq!(payer_ref.as_deref(), Some("237670000000"));
+        assert_eq!(return_url, None);
     }
 
     /// `return_url` is persisted and then rendered back into a browser, so

@@ -61,17 +61,19 @@ async function main() {
   const idempotencyKey = `checkout-browser-mint-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const intent = await vpay.paymentIntents.create(
     {
-      // 50.00 EUR — matches `examples/merchant-demo`'s own `DEMO_AMOUNT`/
-      // `DEMO_CURRENCY`. Confirmed the hard way, running this script against
-      // `just demo`: the `mtn_momo` rail in the demo overlay's provider
-      // config settles in EUR, and a `currency: "xaf"` create here produced
-      // a real refusal on confirm — `invalid_request_error/invalid_request:
-      // rail 'mtn_momo' settles in EUR; this PaymentIntent is XAF` — rather
-      // than a silent mismatch. `docs/flows/money.md` covers XAF vs. EUR
-      // minor units generally; this constant just has to match the rail this
-      // demo stack actually configures.
+      // 5 000 FCFA — XAF is zero-decimal, so this is the integer 5000 on the
+      // wire. It has to match the rail THIS DEMO STACK configures, which
+      // since 2026-09-04 (Step 9, lane 4) is XAF on both rails: the overlay
+      // `just gen-demo-keys` writes now carries its own `providers:` block.
+      // `config/application.yml` still settles `mtn_momo` in EUR, because
+      // MTN's real sandbox rejects XAF (`docs/flows/money.md`) — do not read
+      // this line as a statement about the sandbox.
+      //
+      // A disagreement here is a real refusal on confirm and not a silent
+      // mismatch: `invalid_request_error/invalid_request: rail 'mtn_momo'
+      // settles in <x>; this PaymentIntent is <y>`.
       amount: 5000,
-      currency: "eur",
+      currency: "xaf",
       payment_method_types: ["mtn_momo"],
       metadata: { source: "examples/checkout-browser" },
     },

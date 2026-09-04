@@ -140,6 +140,86 @@ export function isRefundEvent(
   return event.type.startsWith("charge.refund");
 }
 
+/**
+ * A Checkout Session's lifecycle state (Step 9's D10) — vpay's own three
+ * values, not Stripe's. There is no `failed`: a session whose intent
+ * reached a terminal non-success state is `expired` with
+ * {@link CheckoutSession.payment_status} `failed`.
+ */
+export type CheckoutSessionStatus = "open" | "complete" | "expired";
+
+/** Whether the session's intent has been paid. D10's second axis. */
+export type CheckoutPaymentStatus = "unpaid" | "paid" | "failed";
+
+/**
+ * Which surface the session is rendered on. `hosted` gets a
+ * {@link CheckoutSession.url} to send the payer to; `embedded` gets a
+ * `client_secret` to hand `@vpay/stripe-js`'s `initEmbeddedCheckout`.
+ */
+export type CheckoutSessionUiMode = "hosted" | "embedded";
+
+/**
+ * A `/v1/checkout/sessions` object (Step 9's D1).
+ *
+ * The session **references** an existing PaymentIntent; it never creates
+ * one. Amount, currency and the allowed rails stay on the intent, where
+ * every existing invariant already guards them — which is why there is no
+ * `line_items`, no `mode` and no `amount_total` here, however Stripe-shaped
+ * the rest of the field names are.
+ */
+export interface CheckoutSession {
+  /** `cs_…`. */
+  id: string;
+  object: "checkout.session";
+  livemode: boolean;
+  /**
+   * The `pi_…` this session drives — an **id**, on every `/v1` route.
+   *
+   * `@vpay/stripe-js`'s `CheckoutSession` types the same field as the whole
+   * expanded {@link PaymentIntent}, because the *browser* session read
+   * expands it (the checkout page confirms and polls the intent through the
+   * browser routes and cannot fetch it separately). That is a deliberate
+   * per-route difference, ruled on 2026-09-04, not a skew between the
+   * SDKs: nothing on `/v1` ever expands it, so a merchant integration reads
+   * an id here and calls `paymentIntents.retrieve` if it wants the object.
+   */
+  payment_intent: string;
+  ui_mode: CheckoutSessionUiMode;
+  status: CheckoutSessionStatus;
+  payment_status: CheckoutPaymentStatus;
+  /** Hosted mode only; `null` when embedded. May carry `{CHECKOUT_SESSION_ID}` (D5). */
+  success_url: string | null;
+  /** Hosted mode only; `null` when embedded. */
+  cancel_url: string | null;
+  /** Embedded mode only; `null` when hosted. */
+  return_url: string | null;
+  /** The page to send the payer to, hosted mode only; `null` when embedded. */
+  url: string | null;
+  /** Unix seconds. 24 h from create. */
+  expires_at: number;
+  /** Unix seconds. */
+  created: number;
+  /**
+   * `cs_…_secret_…` — the payer credential the browser presents to read
+   * this session, and what `initEmbeddedCheckout`'s `fetchClientSecret`
+   * must return.
+   *
+   * Present **only** on `create()` and `retrieve()` responses; absent —
+   * missing entirely, not `null` — on every `list()` item. It is a
+   * different credential from the intent's `client_secret`: it authorises
+   * reading this session, never confirming the intent.
+   *
+   * Never log this value. Unlike {@link PaymentIntent}, whose plain
+   * interface prints its secret through `console.log`, every
+   * `CheckoutSession` this SDK returns carries a custom
+   * `util.inspect` representation that redacts this field — see
+   * `src/resources/checkout-sessions.ts`. `JSON.stringify` is deliberately
+   * left faithful: an embedded integration has to serialise the secret to
+   * get it to the browser at all.
+   */
+  client_secret?: string;
+}
+
 export interface BalanceAmount {
   amount: number;
   currency: string;
@@ -200,6 +280,42 @@ export type OrangeMoneyPaymentMethodData = {
 export type ConfirmPaymentIntentParams =
   | { payment_method_data: MtnMomoPaymentMethodData }
   | { payment_method_data: OrangeMoneyPaymentMethodData; return_url: string };
+
+/**
+ * `POST /v1/checkout/sessions` request fields.
+ *
+ * The URL rules are the server's and are not duplicated here: `success_url`
+ * and `cancel_url` are required for `hosted` and refused for `embedded`,
+ * `return_url` the other way round, all http(s) and at most 2048
+ * characters, `https` only under livemode. This SDK sends what it is given
+ * and lets the server say no — a second copy of those rules here would be a
+ * second thing to keep in step with them, and would refuse a combination a
+ * later server version allows.
+ */
+export interface CreateCheckoutSessionParams {
+  /** The `pi_…` to drive. Required; the session never creates one. */
+  payment_intent: string;
+  /** Defaults to `hosted` server-side when omitted. */
+  ui_mode?: CheckoutSessionUiMode | undefined;
+  /** Where to send a payer who paid. Hosted mode. May contain `{CHECKOUT_SESSION_ID}`. */
+  success_url?: string | undefined;
+  /** Where to send a payer who gave up. Hosted mode. */
+  cancel_url?: string | undefined;
+  /** Where vpay's framed page forwards the payer at the end. Embedded mode. */
+  return_url?: string | undefined;
+}
+
+/**
+ * `GET /v1/checkout/sessions` query parameters. A `type` alias for the same
+ * index-signature reason as {@link ListParams}.
+ */
+export type ListCheckoutSessionsParams = {
+  limit?: number | undefined;
+  starting_after?: string | undefined;
+  ending_before?: string | undefined;
+  /** Only sessions for this `pi_…`. */
+  payment_intent?: string | undefined;
+};
 
 export interface CreateRefundParams {
   payment_intent: string;

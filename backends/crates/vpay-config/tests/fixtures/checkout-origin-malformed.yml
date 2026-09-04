@@ -1,0 +1,33 @@
+# Fixture for `a_checkout_origin_with_a_path_is_rejected`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# `checkout_origins` takes *origins* — scheme, host, optional port — because
+# that is what a CSP `frame-ancestors` source-expression is. A browser handed
+# `https://shop.example/checkout` there does not read it as
+# `https://shop.example`; it either ignores that source or discards the whole
+# directive, and both failures are silent. The merchant then sees an empty
+# iframe with nothing to fix.
+#
+# The deployment sets `checkout.public_base_url`, so this fixture does not
+# also trip `CheckoutOriginsWithoutBaseUrl`.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+checkout:
+  public_base_url: http://localhost:3001
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    checkout_origins: ["https://shop.example/checkout"]

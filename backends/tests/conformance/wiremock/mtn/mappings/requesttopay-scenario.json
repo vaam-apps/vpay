@@ -57,7 +57,7 @@
           {
             "matchesJsonPath": {
               "expression": "$.payer.partyId",
-              "equalTo": "237600000ce0"
+              "matches": "237600000(ce0|100)"
             }
           }
         ]
@@ -91,7 +91,29 @@
           "carries and is here for the same reason plus one more: this is the mapping the",
           "settling end-to-end confirms enter through, so a deployment that stopped",
           "telling MTN where to call back would fail the suites that actually watch a",
-          "payment settle, not only the adapter-level one."
+          "payment settle, not only the adapter-level one.",
+          "",
+          "TWO PARTYID FAMILIES, added Step 9 lane 2b (2026-09-04). `237600000ce0` is the",
+          "original: it carries a hex suffix so a WireMock mapping can key on it, and that",
+          "is exactly why it is unusable from a real payer. `examples/merchant-demo`",
+          "(`Steering::Msisdn`, DEMO_MSISDN) and `frontends/tests/e2e/cypress/e2e/checkout.cy.ts`",
+          "(`MTN_E2E_POLL_MSISDN`) both type it directly into a request body they build",
+          "themselves, never through a form. `frontends/apps/checkout`'s MSISDN field",
+          "cannot do that: `src/lib/msisdn.ts` validates Cameroon E.164 -- `237` + `6` +",
+          "eight DIGITS -- and refuses `ce0` as it refuses any other letters, which is",
+          "documented there and in `docs/plans/step9-notes/lane-3.md` #4c. `237600000100`",
+          "is the digits-only twin that page's form actually accepts: same country code",
+          "and documentation block, `100` naming no hex value so it cannot be confused for",
+          "one. The `matches` regex joins both into the SAME scenario rather than forking",
+          "it, so the walk a payer who typed a real number gets is provably the walk",
+          "`237600000ce0` has always gotten -- not a second, only-tested-once path. Proven",
+          "directly (not merely by inspection) by",
+          "`a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin::case_1_settles` in",
+          "`backends/tests/conformance/tests/adapter_conformance.rs`, which is what makes",
+          "the reachability claim two mappings below -- 'no conformance case sends that",
+          "MSISDN' -- no longer true for `237600000100` and had to be corrected there.",
+          "The full steering table, both families, is in",
+          "`docs/plans/step9-notes/lane-2b.md`."
         ]
       }
     },
@@ -118,10 +140,16 @@
           "it from swallowing a conformance case:",
           "",
           "1. requiredScenarioState. A container starts every scenario in `Started`, and",
-          "   only the POST above moves this one out of it. No conformance case sends that",
-          "   MSISDN (they all use 237600000000, adapter_conformance.rs), so in a",
-          "   conformance run this mapping is unreachable and every status query falls",
-          "   through to requesttopay-status.json's priority-10 catch-all exactly as before.",
+          "   only the POST above moves this one out of it. Every OTHER conformance case",
+          "   sends the fixed placeholder 237600000000 (adapter_conformance.rs, Rail::charge),",
+          "   which matches neither PartyId family above, so for them this mapping stays",
+          "   unreachable and their status queries fall through to",
+          "   requesttopay-status.json's priority-10 catch-all exactly as before. Corrected",
+          "   Step 9 lane 2b: one conformance case now DOES send 237600000100 on purpose --",
+          "   `a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin` -- to prove the",
+          "   digits-only twin reaches this exact walk from the adapter, not only from",
+          "   `examples/merchant-demo` or the e2e spec. That case starts its own container,",
+          "   same as every other one here, so it does not change what any other case sees.",
           "2. priority 5, below the reference-keyed status mappings (priority 1), so",
           "   ...0404, ...0f01, ...05aa and the rest keep winning even inside this",
           "   scenario -- which is what lets worker_e2e.rs drive a DECLINE through the same",
@@ -142,8 +170,10 @@
           "   scenario's state, not a change in behaviour. `just demo-down` removes the",
           "   container, which is what returns it to `Started`.",
           "",
-          "Verified by running the conformance suite (26 cases) against this tree after",
-          "adding these three mappings."
+          "Verified by running the conformance suite (26 cases, at the time) against this",
+          "tree after adding these three mappings. Step 9 lane 2b (2026-09-04) grew the",
+          "suite to 33 by adding three cases that steer this same tree by the digits-only",
+          "PartyId family -- see the entry mapping above."
         ]
       }
     },

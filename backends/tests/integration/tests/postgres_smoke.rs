@@ -148,8 +148,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 27,
-        "all twenty-seven migrations under backends/migrations should be recorded as applied \
+        applied, 28,
+        "all twenty-eight migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -164,7 +164,10 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          Step 5c's 0026 payment_intents.client_secret_suffix, the payer credential \
          /v1/browser authenticates with, and Step 8's 0027 \
          charges_provider_reference_idx, which keeps the unauthenticated \
-         POST /provider/{{code}}/callback lookup off a sequential scan)"
+         POST /provider/{{code}}/callback lookup off a sequential scan, \
+         and Step 9's 0028 checkout_sessions, the hosted/embedded checkout \
+         object with its two payer credentials and the partial unique index \
+         that is what actually enforces one open session per intent)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -194,6 +197,12 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         "provider_requests",
         "refunds",
         "events",
+        // Step 9's. Unlike `refunds` and `events` above, this one has both a
+        // reader and a writer from the day it landed
+        // (`vpay_db::checkout_sessions`, `vpay_api::v1::checkout_sessions`),
+        // so listing it here proves the table the code queries is the table
+        // the migration creates.
+        "checkout_sessions",
     ] {
         sqlx::query(&format!("SELECT COUNT(*) FROM {table}"))
             .fetch_one(&pool)

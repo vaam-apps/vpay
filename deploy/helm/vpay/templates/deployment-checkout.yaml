@@ -1,0 +1,196 @@
+{{- include "vpay.validate" . -}}
+{{- if .Values.checkout.enabled }}
+# vpay's own hosted/embedded payment page — `frontends/apps/checkout`,
+# published as `ghcr.io/vaam-store/vpay-checkout` (Step 9, D3).
+#
+# **The one workload in this chart that is NOT a `FROM scratch` binary**, and
+# the differences all follow from that:
+#
+#   * `runAsNonRoot: true` with NO explicit `runAsUser`. The image declares
+#     `USER node` and is `node:22-alpine`, so /etc/passwd exists and the
+#     kubelet can resolve the name — unlike the scratch images, where a
+#     missing numeric UID is a pod the kubelet refuses to start.
+#   * `readOnlyRootFilesystem: true` **with an emptyDir on /tmp**. The Rust
+#     binaries need no writable path at all; this one does — Node and Next's
+#     standalone server want `HOME` and `XDG_CACHE_HOME`, which the image
+#     already points at /tmp for exactly this reason.
+#   * No `envFrom` for the rails Secret and no signing key. This pod holds no
+#     merchant credential and no rail credential; every credential it ever
+#     touches arrives in a payer's URL and lives in that payer's tab.
+#   * No `VPAY_PROFILE`/`VPAY_CONFIG`: it is not a vpay binary and reads no
+#     YAML. Its whole configuration is the two API URLs below.
+#
+# **What is observed and what is not.** The image has been built from a clean
+# context, run non-root under `--read-only --tmpfs /tmp`, and answered
+# `GET /healthz` 200 with its security headers — that is where the two
+# securityContext claims above come from. **No pod has ever run**: the probes'
+# thresholds, the resource numbers and the Ingress are reasoned, exactly like
+# the rest of this chart.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vpay.fullname" . }}-checkout
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "checkout") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.checkout.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "vpay.componentSelectorLabels" (dict "ctx" . "component" "checkout") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vpay.componentLabels" (dict "ctx" . "component" "checkout") | nindent 8 }}
+      {{- with .Values.checkout.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "vpay.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.images.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        # NOT `vpay.podSecurityContext`: that helper pins UID/GID 65532, which
+        # is `backends/Dockerfile`'s user and is not this image's. `node` is
+        # uid 1000 here, and naming it numerically in two places is how the
+        # two drift.
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # This process has no drain of its own — it serves stateless HTML and
+      # holds no lease — so it gets the chart's value rather than a longer one.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: checkout
+          image: {{ include "vpay.image" (dict "ctx" . "component" "checkout") | quote }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: http
+              containerPort: {{ .Values.checkout.port }}
+              protocol: TCP
+          env:
+            # The standalone server's own knobs. Set here as well as in the
+            # image so that changing `checkout.port` cannot leave the
+            # container listening on the image's default with a Service
+            # pointing at the new number.
+            - name: PORT
+              value: {{ .Values.checkout.port | quote }}
+            - name: HOSTNAME
+              value: "0.0.0.0"
+            # This pod's view of vpay's API, for `middleware.ts`'s
+            # server-side origins lookup. Empty in values means "this
+            # release's own server Service", which is the right answer for an
+            # in-cluster deployment and cannot be a wrong one for any other.
+            #
+            # It is optional to the app: without it the embedded page's CSP is
+            # `frame-ancestors 'none'` — correct, fail-closed, and it means no
+            # merchant can embed.
+            - name: VPAY_API_URL
+              value: {{ default (printf "http://%s:%d" (include "vpay.fullname" .) (int .Values.service.port)) .Values.checkout.apiUrl | quote }}
+            # A payer's browser's view. The app THROWS on a missing one rather
+            # than defaulting, which is why the guard requires it: an
+            # operator's 500 at boot beats a payer's "something went wrong".
+            - name: NEXT_PUBLIC_VPAY_API_URL
+              value: {{ .Values.checkout.publicApiUrl | quote }}
+            {{- with .Values.checkout.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # `/healthz` is a route handler in the app that takes no dependency:
+          # it answers "Next is serving", never "vpay is reachable". That is
+          # deliberate, and it is why the SAME path is safe as both probes
+          # here where the server's two differ — this pod has no database to
+          # blip, and the one upstream it has already fails closed rather than
+          # erroring. Probing vpay from here would take the payment page down
+          # during a rolling vpay-server deploy.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24
+          resources:
+            {{- toYaml .Values.checkout.resources | nindent 12 }}
+          volumeMounts:
+            # Load-bearing, not hygiene: `readOnlyRootFilesystem: true`
+            # without this is a container that cannot start, because the
+            # image points `HOME` and `XDG_CACHE_HOME` at /tmp. `emptyDir`
+            # with `medium: Memory` so nothing a payment page touches is
+            # written to a node's disk.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+      {{- with .Values.checkout.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.checkout.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.checkout.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vpay.fullname" . }}-checkout
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "checkout") | nindent 4 }}
+  {{- if or .Values.commonAnnotations .Values.checkout.service.annotations }}
+  annotations:
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.checkout.service.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  type: {{ .Values.checkout.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.checkout.service.port }}
+      targetPort: http
+      protocol: TCP
+  # No `metrics` port. This app emits none, and a Service port pointing at a
+  # container port that does not exist is a ServiceMonitor that scrapes
+  # nothing while reporting a target.
+  selector:
+    {{- include "vpay.componentSelectorLabels" (dict "ctx" . "component" "checkout") | nindent 4 }}
+{{- end }}

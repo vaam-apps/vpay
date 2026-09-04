@@ -326,3 +326,29 @@ collapse described above.
 - **Nothing pins vpay against a future `stripe` release.** The suite runs
   against `^22.6.1`, tested at exactly `22.6.1`; a dependency bump is what
   will surface a break.
+
+**2026-09-04 (Step 9).** `@vpay/stripe-js`'s README no longer lists
+"Checkout (hosted or embedded)" under "Not compatible, ever". The retraction
+is narrower than the removal looks and is worded that way in the README:
+vpay now serves its **own** checkout page, hosted and embedded, and
+`initEmbeddedCheckout`/`retrieveCheckoutSession` speak to it. It is not
+`@stripe/stripe-js`'s Checkout — Stripe's own method is
+`createEmbeddedCheckoutPage` in the pinned 9.15.0, its options are not ours
+in either direction, and vpay's `checkout.session` has no `line_items`,
+`mode` or `amount_total` (Step 9's D10). What *is* portable, and is pinned as
+a compile-time assertion in both directions in `src/compat.test.ts`, is the
+handle: `{ mount(string | HTMLElement), unmount(), destroy() }` is
+assignable to and from Stripe's `StripeEmbeddedCheckout`. The mounting
+plumbing moves; the session model does not. `sdks/stripe-compat` gains no
+row for any of this — D10 says the Checkout Session is evidence-free of a
+Stripe promise, and the compat suite proves claims rather than making them.
+
+**One thing about the compat suite itself moved with Step 9, and it is a
+constant rather than a claim:** `sdks/stripe-compat`'s `CURRENCY` is now
+`xaf`. CI's `e2e` job brings the stack up with `-f compose.demo.yml`, whose
+generated overlay settles **both** rails in XAF so the demo shop's MTN button
+is payable; left on `eur`, every confirm in this suite would have been refused
+with `rail 'mtn_momo' settles in XAF; this PaymentIntent is EUR`.
+`config/application.yml` is unchanged and still puts `mtn_momo` on EUR, because
+MTN's real sandbox rejects XAF ([money.md](money.md)).
+

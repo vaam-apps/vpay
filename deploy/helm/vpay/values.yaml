@@ -54,6 +54,12 @@ images:
     name: vpay-worker
     tag: ""
     digest: ""
+  # The hosted/embedded payment page (Step 9, D3). Only read when
+  # `checkout.enabled` is true.
+  checkout:
+    name: vpay-checkout
+    tag: ""
+    digest: ""
 
 # ------------------------------------------------------------ dashboard ----
 
@@ -69,6 +75,125 @@ images:
 # `ProviderError::NotImplemented` (AGENTS.md rule 2).
 dashboard:
   enabled: false
+
+# ------------------------------------------------------------- checkout ----
+
+# vpay's own hosted/embedded payment page — `frontends/apps/checkout`,
+# published as `ghcr.io/vaam-store/vpay-checkout` (Step 9, D3).
+#
+# **Off by default, and that is the fail-closed answer rather than a
+# preference.** A deployment with no checkout page is a complete deployment:
+# `checkout.public_base_url` is optional in vpay's own config, and without it
+# `POST /v1/checkout/sessions` answers `checkout_not_configured` rather than
+# minting a `url` that resolves to nothing. Turning this on without also
+# setting that value in the profile overlay gives you a page nothing points at
+# — which is the "checkout-templated-when-enabled" guard's second half.
+#
+# Unlike `dashboard` above, this one IS templated when enabled, and the
+# difference is evidence rather than taste: this image declares `USER node`,
+# has been run non-root under `--read-only --tmpfs /tmp` and answered
+# `/healthz` 200 (see `frontends/Dockerfile`'s own commit), and the app writes
+# nothing outside /tmp. The dashboard image does none of those things.
+#
+# **What is still unproven, and it is the same sentence the rest of this chart
+# carries: no pod has ever run.** The probes, the securityContext and the
+# Ingress below are reasoned from the image and from Kubernetes' documented
+# behaviour, not observed in a cluster.
+checkout:
+  enabled: false
+  replicaCount: 2
+  # The port the container's Next.js server binds (`PORT` in
+  # `frontends/Dockerfile`). Changing this needs the image's `PORT` changed
+  # with it — the chart sets it as an env var so the two cannot drift.
+  port: 3000
+  # Placeholders, NOT measurements, exactly as `server.resources` is. Nothing
+  # has profiled a Next.js standalone server's RSS under load. Node's heap is
+  # the reason there IS a memory limit here at all: an unbounded one on a
+  # process with a garbage collector is how a node gets evicted instead of a
+  # pod being restarted.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Extra environment variables, as a list of core/v1 EnvVar objects. The
+  # three names this chart sets itself are reserved — the
+  # "extra-env-collision" guard covers them.
+  extraEnv: []
+
+  # The two API URLs, which are the same API seen from two places. Inside a
+  # cluster they differ, which is the whole reason there are two.
+  #
+  #   apiUrl        THIS POD's view. `middleware.ts` calls
+  #                 `GET {apiUrl}/v1/browser/checkout/origins?key=…`
+  #                 server-side to build the embedded page's
+  #                 `Content-Security-Policy: frame-ancestors`. Empty means
+  #                 "use this release's own server Service", which is right
+  #                 for an in-cluster deployment and is what the default
+  #                 renders.
+  #   publicApiUrl  A PAYER'S BROWSER's view: the `/v1/browser` origin every
+  #                 confirm and poll goes to. **Required when enabled** — the
+  #                 app throws on a missing one rather than defaulting, and a
+  #                 checkout page pointed at the wrong API is an operator's
+  #                 500 rather than a payer's "something went wrong". There is
+  #                 no sensible default: it is whatever hostname your Ingress
+  #                 serves `/v1` on, which this chart cannot know when
+  #                 `ingress.enabled` is false.
+  apiUrl: ""
+  publicApiUrl: ""
+
+  service:
+    type: ClusterIP
+    port: 3000
+    annotations: {}
+
+  # The page's own Ingress — a SEPARATE object from the API's two, because a
+  # payer's browser reaches it directly and it carries no `/v1` traffic.
+  #
+  # Two shapes, and exactly one may be set (the
+  # "checkout-templated-when-enabled" guard):
+  #
+  #   host: checkout.example.com          — its own hostname. This is the
+  #                                         shape `checkout.public_base_url`
+  #                                         is happiest with, and the one to
+  #                                         prefer.
+  #   path: /checkout (with ingress.host) — a prefix on the API's hostname.
+  #                                         vpay APPENDS path segments to
+  #                                         `checkout.public_base_url`, so
+  #                                         this works, but the app is not
+  #                                         basePath-aware: its own routes are
+  #                                         `/c/…` and `/e/…` at the root, so
+  #                                         the controller must REWRITE the
+  #                                         prefix away. That is
+  #                                         `nginx.ingress.kubernetes.io/rewrite-target`
+  #                                         and it is left to
+  #                                         `checkout.ingress.annotations`
+  #                                         because the correct value depends
+  #                                         on your controller. **Nobody has
+  #                                         run this shape.**
+  ingress:
+    enabled: false
+    className: nginx
+    host: ""
+    path: ""
+    pathType: Prefix
+    annotations: {}
+    # A payer's credential rides in this URL's fragment. Plaintext here is not
+    # a downgrade of an internal call — it is the payment page.
+    tls:
+      enabled: true
+      clusterIssuer: letsencrypt-prod
+      secretName: ""
+    # The page is HTML and a handful of static chunks, and a payer reloads it
+    # freely. Looser than `/v1`'s on purpose; it is not an authenticated
+    # write surface.
+    limitRps: 50
+    limitBurstMultiplier: 3
 
 # ------------------------------------------------------------- workloads ---
 

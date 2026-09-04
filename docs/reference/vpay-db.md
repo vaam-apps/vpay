@@ -19,6 +19,12 @@ application's side of them.
 - [`payment_intents`](#payment_intents)
   - [`cancel` checks for a live charge inside the statement](#cancel-checks-for-a-live-charge-inside-the-statement)
   - [`set_payload` is a separate write from `reschedule`](#set_payload-is-a-separate-write-from-reschedule)
+- [`checkout_sessions`](#checkout_sessions)
+  - [The repository trait, for the lanes that call it](#the-repository-trait-for-the-lanes-that-call-it)
+  - [Why the settlement flip is `pub(crate)` and not a trait method](#why-the-settlement-flip-is-pubcrate-and-not-a-trait-method)
+  - [`expire` checks for a live charge inside the statement](#expire-checks-for-a-live-charge-inside-the-statement)
+  - [`expire_due` is the same guard on a clock](#expire_due-is-the-same-guard-on-a-clock)
+  - [`publishable_key` is a column, and `return_page_url` is a method](#publishable_key-is-a-column-and-return_page_url-is-a-method)
 - [`charges`](#charges)
   - [One charge per intent is the index's job](#one-charge-per-intent-is-the-indexs-job)
   - [The charge read carries Postgres' clock](#the-charge-read-carries-postgres-clock)
@@ -203,6 +209,205 @@ is *when* a resubmit happens. Making them one statement would mean either a
 `reschedule` that silently rewrites a payload its caller did not mean to touch,
 or a payload update that cannot happen without also moving the schedule. Neither
 trade is worth the atomicity of a retry heuristic.
+
+## `checkout_sessions`
+
+Migration `0028`. One *checkout attempt* driven through a page vpay serves —
+`cs_…`, referencing an existing `pi_…`, carrying the merchant's forward URLs
+and **two** payer credentials of its own. The three rules the module keeps are
+`payment_intents`' two (merchant-scoped in SQL; compare-and-swap on status)
+plus one: the single unscoped read is named `get_by_id_unscoped` so a `/v1`
+handler that reaches for it has to type the word.
+
+**Two credentials, not one, and that is the whole of D6.**
+`client_secret_suffix` joins with the row's `id` into `cs_…_secret_…` and
+rides in a URL *fragment*, which never leaves the browser; presenting it buys
+the intent's own `client_secret`, and therefore the ability to confirm.
+`return_token` rides in a *query string* — it has to, because a fragment does
+not survive a rail's redirect back to vpay — and buys strictly less: the
+session and its intent without that credential. Both are 160 bits from the
+same generator and both are redacted in `CheckoutSessionRow`'s hand-written
+`Debug`; what differs is what they authorise, not how strong they are.
+
+### The repository trait, for the lanes that call it
+
+Written down here because Step 9's lanes build in parallel against it and a
+signature is a contract before it is code.
+
+```rust
+#[async_trait]
+pub trait CheckoutSessions: Send + Sync {
+    async fn create(&self, new: &NewCheckoutSession)
+        -> Result<CheckoutSessionRow, DbError>;
+
+    async fn get_for_merchant(&self, merchant_id: &str, id: &str)
+        -> Result<Option<CheckoutSessionRow>, DbError>;
+
+    async fn get_by_id_unscoped(&self, id: &str)
+        -> Result<Option<CheckoutSessionRow>, DbError>;
+
+    async fn find_open_by_intent(&self, payment_intent_id: &str)
+        -> Result<Option<CheckoutSessionRow>, DbError>;
+
+    async fn list_page(&self, merchant_id: &str, page: &SessionListPage)
+        -> Result<(Vec<CheckoutSessionRow>, bool), DbError>;
+
+    async fn expire(&self, merchant_id: &str, id: &str)
+        -> Result<Option<CheckoutSessionRow>, DbError>;
+}
+```
+
+`find_open_by_intent` is the one lane 2 calls. Its contract, stated precisely
+because a confirm depends on it:
+
+- **Unscoped**, deliberately. The confirm path has already resolved and
+  authorised the intent through a `MerchantScope`, so the id it passes is one
+  the caller may act on; re-filtering by a tenant derived from that same
+  intent would be an authorisation check against itself. That is
+  `PaymentIntents::get_by_id`'s argument, unchanged.
+- **`None` is the common answer and never an error.** Most intents are
+  confirmed with no session in the picture at all, and the confirm path falls
+  back to the merchant's stored `charges.return_url` for those.
+- **At most one row, by construction.** The partial unique index
+  `checkout_sessions_one_open_per_intent` is built over exactly this
+  predicate, so "the open session" is a well-formed phrase rather than a
+  `LIMIT 1` over an ambiguous set.
+- **The whole row**, not the `return_token` alone: building the return URL
+  needs the `id` too, and a two-value tuple is a shape that grows a third
+  value the next time something is needed.
+
+`get_for_merchant` collides by name with `PaymentIntents::get_for_merchant`,
+so every call site names its trait — `PaymentIntents::get_for_merchant(repos,
+…)` — exactly as `list_page`'s callers already had to. That is more readable,
+not less: the call now says which table it reads.
+
+`SessionListPage` is a separate type from `ListPage` rather than that one with
+a `payment_intent` field added, because `ListPage` is the payment-intent
+list's contract and a filter on it would be a parameter that resource
+silently ignores. The filter is applied *in the statement*, beside the tenant
+filter: applied after `LIMIT` it would return short pages and a `has_more`
+describing the wrong set.
+
+### Why the settlement flip is `pub(crate)` and not a trait method
+
+`checkout_sessions.payment_status` denormalises what the intent says, so a
+payer's page can render an outcome from one read. That is only safe while the
+two cannot disagree — and they cannot only if the session's write lands in the
+*same transaction* as the intent's.
+
+So `checkout_sessions::settle_for_intent(tx, intent_id, paid)` takes a
+`&mut PgConnection` and is `pub(crate)`, reachable from `settlement` and
+nowhere else. The visibility is what enforces that rather than this paragraph:
+a caller elsewhere — a handler, a repair script, a worker hook written after
+the fact — would have to move a `pub` in the same diff, which is the moment
+the argument has to be re-made. Same device, same reasoning, as
+`payment_intents::succeed_after_submission`.
+
+The Step 9 plan calls this "the worker hook" and locates it in
+`vpay-worker/src/handlers.rs`. The *decision* is indeed the worker's —
+`settle_succeeded` or `settle_failed` — but the write is not: a second write
+after the commit would leave a window in which the intent is `succeeded` and
+the session still `open`/`unpaid`, and a crash in that window would make it
+permanent, with no job that would ever notice. D10 adds none.
+
+It is guarded on `status = 'open'`, so it is idempotent by compare-and-swap
+like every other write in that transaction, and `Ok(0)` — no session, or one
+already finished — is the normal answer rather than an error. `paid: true`
+writes `paid`/`complete`; `paid: false` writes `failed`/`expired`, because
+D10 has no `failed` session status: a session whose intent failed terminally
+is reported as `expired` carrying `payment_status: failed`.
+
+### `expire` checks for a live charge inside the statement
+
+The same argument [`cancel`](#cancel-checks-for-a-live-charge-inside-the-statement)
+makes, over the same `LIVE_CHARGE_STATES` constant, and worth repeating
+because the consequence is different. `status = 'open'` is not on its own
+enough to make an expiry safe: a payer's page may have confirmed seconds ago,
+and a `confirm` commits its charge *before* it calls the rail. Expiring there
+would tell a merchant the checkout was abandoned while the rail may still take
+the payment — and would then be contradicted by the settlement transaction
+flipping the same row to `complete`/`paid`.
+
+A check in the caller cannot close that window either, so the `NOT EXISTS` is
+a predicate of the `UPDATE`. `Ok(None)` therefore carries three meanings — no
+such session for this merchant, one that is no longer `open`, or a live charge
+— and `vpay_api::v1::checkout_sessions::expire_once` re-reads to turn them
+into a `404` and two different `409`s.
+
+`payment_status` is deliberately untouched by an expiry. An expired session
+that was already `paid` keeps saying so: the money is a fact about the intent,
+and an expiry that rewrote it would be vpay telling a merchant a completed
+payment had not happened.
+
+### `expire_due` is the same guard on a clock
+
+`expire` is a merchant saying "I am done with this". `expire_due(now)` is
+D10's 24 hours arriving, and it is what `vpay_worker::handlers::sweep_expired`
+calls on its hourly pass. Until Step 9's lane 1b `expires_at` was written at
+create and read by **nothing**: a session past its horizon reported
+`status: open` until a merchant expired it by hand or the intent settled, so
+`status` could not tell "still payable" from "abandoned yesterday".
+
+It carries the identical `NOT EXISTS` live-charge predicate, and the reason
+sharpens rather than weakens on a sweep: nobody is watching. A session whose
+payer confirmed thirty seconds before the horizon has a rail holding a live
+payment, and a background job that expired it would be contradicted by the
+settlement transaction minutes later, with no request anywhere to correlate
+the two. Such a session stays `open` until it settles — which is the honest
+answer, because something is still driving it. Measured 2026-09-04: with the
+clause deleted, `the_housekeeping_sweep_expires_a_stale_session_and_spares_a_paying_one`
+(`backends/tests/integration/tests/checkout_sessions.rs`) fails with the
+paying session `expired`.
+
+Three things about the signature. It is **not** merchant-scoped, unlike every
+other read here, because its caller acts for the deployment and not for a
+tenant — the name says `due` rather than `all` for exactly that reason. It
+takes `now` rather than comparing against Postgres's `now()` as the other two
+sweeps do, because the horizon on the other side of that comparison was
+computed in Rust at create (D10's constant belongs to the API, not to a
+migration), and because it lets a test sweep a future instant instead of
+rewriting a stored horizon. And it returns a count rather than the rows: the
+caller logs a number, and materialising every swept row would put an unbounded
+number of live payer credentials into memory for it.
+
+`payment_status` is untouched, exactly as in `expire`.
+
+### `publishable_key` is a column, and `return_page_url` is a method
+
+All three `/v1/browser/checkout` routes authenticate by publishable key plus a
+session credential, so every URL vpay mints has to carry one as `?key=`: the
+hosted page, the embedded iframe, and the return page.
+
+**Why a column rather than a lookup at render time.** The return page is
+reached from a URL the *rail* holds — built once at submit, stored, and
+replayed when the payer finishes. The documented key rotation is "add the new
+one, deploy, remove the old", and a return URL derived from `merchant_id`
+would stop resolving the moment the old key came out, stranding every payer
+already sitting on a rail's page. Pinning the choice on the row makes the URL
+stable for the session's life.
+
+It is **not a secret** — it names a tenant and authorises nothing — so it is
+printed in `CheckoutSessionRow`'s `Debug` while the two credentials beside it
+are redacted. The column's CHECK is a shape backstop (`pk_` plus 1–124
+characters) and deliberately looser than `vpay_config`'s
+`pk_(test|live)_[A-Za-z0-9]{16,64}`: that rule includes a livemode agreement
+this table cannot see, and a constraint restating two thirds of a rule is a
+second copy that can drift. The real rule — *the key belongs to this session's
+merchant* — is the registration list, which no constraint can see either
+(there is no merchants table; ADR-0003), so
+`vpay_api::v1::checkout_sessions::chosen_publishable_key` is what enforces it.
+
+**`CheckoutSessionRow::return_page_url(checkout_base)`** builds
+`{base}/c/{id}/return?t={return_token}&key={publishable_key}`. It is a method
+on the row rather than a `format!` in `vpay-api` because two callers construct
+it — the confirm path, when a session drives the charge, and the return trip —
+and every character has to be identical between them, since the *rail* holds
+the copy that matters. Both values are URL-safe by construction (`vpay_core`'s
+base32 alphabet, and `pk_` plus `[A-Za-z0-9]`), so it is a `format!` and not
+an escaping routine; a future alphabet that needed escaping would break
+`vpay_core::ids`' own test first. A trailing slash on `checkout_base` is
+absorbed, so `//c/…` — a protocol-relative URL naming a different host — is
+not reachable through it.
 
 ## `charges`
 

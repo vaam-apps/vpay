@@ -11,6 +11,7 @@ Runnable merchant-side integrations.
 | [`sdks/rust/examples`](../sdks/rust/examples/) | The same flow through the Rust SDK, `vpay-sdk` |
 | [webhook-receiver](webhook-receiver/) | Verifying the `Vpay-Signature` header correctly |
 | [checkout-browser](checkout-browser/) | **The third one that runs against a real vpay, and the only PAYER-facing one.** Plain HTML + JS on [`@vpay/stripe-js`](../sdks/stripe-js/): confirms an MTN MoMo push and polls to `succeeded`, with no merchant credential ever in the browser ([browser-checkout.md](../docs/flows/browser-checkout.md)) |
+| [shop](shop/) | **A merchant SITE, not a script** (Step 9's D11): Next.js + tRPC + ZenStack over Prisma, a five-product catalogue priced in XAF, a cart, and a checkout that creates the PaymentIntent and a hosted Checkout Session **server-side** through [`@vpay/sdk`](../sdks/nodejs/) and redirects the payer to vpay's page — or frames it with `initEmbeddedCheckout`. Its order page says *paid* only once its `/api/vpay/webhook` endpoint has verified a signature and written the row. **Never yet run against a real vpay**: `/v1/checkout/sessions` is built in the same step and its unit tests speak to a local server shaped like the wire contract ([shop/README.md](shop/README.md)) |
 
 **Status, corrected 2026-09-03.** This section used to say "**no `/v1`
 business resource exists**", which was true when it was written on

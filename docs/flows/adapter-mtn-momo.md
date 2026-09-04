@@ -137,6 +137,15 @@ identifier the port gives an adapter — so the "charge id" in the request body
 above is that reference, rendered. A body with neither field is refused as
 `Malformed` rather than guessed at.
 
+`ChargeRef::return_url` is ignored, and that is asserted rather than assumed
+(`a_return_url_is_not_carried_on_a_push_rails_body` in `wire.rs`, and the
+push half of `the_submit_tells_the_rail_where_to_send_the_payer_back` in the
+conformance suite, which checks the stub's whole request journal). The core
+fills the field for any charge whose merchant sent a URL and leaves it to
+each adapter to decide whether its rail has a use for one; `requesttopay`
+has no browser step, and a field MTN does not document would at best be
+dropped.
+
 ### What the transport refuses, and why
 
 Every call this adapter makes goes through `vpay_provider::http`, so it
@@ -188,3 +197,39 @@ inherits three refusals that are not MTN-specific:
   faithful to this document but not to MTN would pass**.
 * The crate runs **48 tests, 48 passed, 0 skipped**
   (`cargo nextest run -p vpay-adapter-mtn-momo`, measured 2026-09-03).
+
+## Documentation MSISDNs (steering table)
+
+Every one of these is a WireMock scenario key, not a real subscriber. Each
+row's two MSISDNs enter the **same** scenario by the **same** mapping (one
+`matches` regex, not two mappings) and therefore the same walk — proven by
+`a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin` in
+`backends/tests/conformance/tests/adapter_conformance.rs`.
+
+| Outcome | Hex MSISDN (not a valid E.164 number — `examples/merchant-demo`, `checkout.cy.ts`) | Digits-only MSISDN (a real Cameroon E.164 number — `frontends/apps/checkout`) | Scenario | First status query | Second status query |
+|---|---|---|---|---|---|
+| The payer approves | `237600000ce0` | `237600000100` | `mtn-e2e-poll` (`requesttopay-scenario.json`) | `PENDING` | `SUCCESSFUL` |
+| The payer has no balance | `237600000f01` | `237600000101` | `mtn-demo-decline` (`demo-outcomes.json`) | `FAILED` / `NOT_ENOUGH_FUNDS` → `insufficient_funds` | — (terminal on the first query) |
+| The prompt expires unanswered | `237600000f02` | `237600000102` | `mtn-demo-expiry` (`demo-outcomes.json`) | `FAILED` / `COULD_NOT_PERFORM_TRANSACTION` → `payer_timeout` | — (terminal on the first query) |
+
+The hex family is what `examples/merchant-demo` (`Steering::Msisdn`) and
+`frontends/tests/e2e/cypress/e2e/checkout.cy.ts` (`MTN_E2E_POLL_MSISDN`) send —
+both build the confirm request body themselves, never through a phone-number
+form, so the letters never have to survive validation. The digits-only family
+is what a real payer typing into `frontends/apps/checkout`'s MSISDN field
+(`src/lib/msisdn.ts`, Cameroon E.164: `237` + `6` + eight digits) can actually
+send — that validator correctly refuses the hex family, as it refuses any other
+non-digit input, which is why this table has two columns and not one.
+`shop-hosted.cy.ts` types the digits-only ones.
+
+**There is no Orange equivalent, and there is no gap.** Orange Money is a
+redirect rail whose submit body carries an `order_id` and no MSISDN, so there
+is no payer-typed field on that rail for a documentation number to steer by;
+its outcomes are steered by the amount.
+
+**The demo stack settles both rails in XAF, and this table is unaffected by
+that**: no MTN mapping matches on a currency at all, in a request body or
+anywhere else, and `vpay_adapter_mtn_momo::wire::StatusResponse` never
+deserialises one. `config/application.yml` still puts `mtn_momo` on EUR
+because **MTN's real sandbox rejects XAF** ([money.md](money.md)); only the
+generated demo overlay diverges, and it says so in its own comment.

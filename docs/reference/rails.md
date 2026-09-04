@@ -460,6 +460,93 @@ derivation in `vpay-config`, and neither crate compiles against the other.
 
 ---
 
+## The payer's return URL is the *core's* answer, not a rail's
+
+A redirect rail hands the payer to a page vpay does not control, and it has to
+be told where to send them back. Until 2026-09-04
+`vpay-adapter-orange-money` answered that out of **deployment** settings
+(`settings.return_url` / `settings.cancel_url`, falling back to the
+notification endpoint): one value per deployment for a question that is per
+charge. The merchant's own `return_url` was validated by
+`vpay_api`'s `checked_return_url`, written to `charges.return_url` before the
+rail was called, and echoed back to them as
+`next_action.redirect_to_url.return_url` — and never sent to the rail that
+would act on it. Every conformance case and every integration case passed
+throughout. That is
+[browser-checkout.md](../flows/browser-checkout.md)'s D4, and Step 9's D2 is
+the decision that closes it.
+
+`ChargeRef` now carries `return_url: Option<String>`. Three things follow, and
+the order matters:
+
+- **The core fills it.** `vpay_api::v1::return_trip::return_url_for_charge`
+  answers with vpay's own return page when a checkout session drives the
+  charge and with the merchant's committed `charges.return_url` otherwise. The
+  value handed to the rail is read off the *committed row*, not recomputed, so
+  what the rail is told is what would survive a crash
+  ([crash-safety.md](../flows/crash-safety.md)).
+- **The adapter decides whether its rail has a use for it.** Orange sends it
+  as `return_url` **and** `cancel_url`; a charge with none is
+  `ProviderError::Config`, the twin of MTN's "payer_ref required on a push
+  rail", because a redirect rail that invents this answer is exactly the
+  defect being fixed. MTN ignores it: `requesttopay` has no browser, and a
+  field MTN does not document would at best be dropped.
+- **Both fields get the same URL, deliberately.** Orange's page distinguishes
+  "paid" from "cancelled" and vpay cannot: the outcome comes from the
+  authenticated status query, and a charge the payer abandoned is `Pending`
+  until it expires. Two different URLs would encode a distinction nothing
+  checks.
+
+Asserted from both directions, exactly as the callback URL is.
+`webpayment.json` **requires** an `http(s)` `return_url` and `cancel_url` on
+every accepted submit — measured 2026-09-04: `#[serde(skip)]` on
+`WebPaymentRequest`'s two link fields makes the stub answer 404 and
+`the_submit_tells_the_rail_where_to_send_the_payer_back::case_2_orange_money`
+fail on `ProviderError::Config`; restored. The matcher is `^https?://.+` and
+**not** a prefix under the deployment's own origin, because the correct value
+is by design sometimes the merchant's own site. The exact value is pinned by
+the conformance case over the request journal, and end to end by
+`a_direct_confirm_sends_the_merchants_return_url_to_the_rail` in
+`backends/tests/integration/tests/confirm_rails.rs`.
+
+The push rail's half of that case is the sharper one. `Rail::charge` fills
+`return_url` for **both** rails — a push charge included, which is not what
+production does — because "MTN sent no return URL" proves nothing when there
+was none to send. The assertion is that the value appears nowhere in the MTN
+stub's whole request journal: not in a body, not in a header, not in a query
+string.
+
+### The stub's hosted page, and where it is not the rail
+
+`webpayment.json` has answered every accepted submit with a `payment_url`
+under `/stub-hosted-page/{pay_token}` since Step 3, and until Step 9 nothing
+served it — a payer following the URL vpay handed them got WireMock's 404.
+`stub-hosted-page.json` now serves it as HTML with a Pay link and a Cancel
+link, so the redirect leg can be finished by a browser (ADR-0006: it is a stub
+of the *rail's* page, a WireMock host in configuration, and never a stub of a
+vpay page).
+
+It differs from Orange in one way, and the mapping says so at length rather
+than leaving it to be discovered. The real rail *stores* `return_url` and
+`cancel_url` against the `pay_token` at submit and renders them from its own
+state; WireMock's response templating can only read the current request, and
+there is no helper that reaches into the journal for the POST that minted the
+token. So the submit's `payment_url` carries the two URLs as query parameters
+and the page templates them back out. The pairing is preserved — these are the
+bytes *that* submit sent — but nothing here demonstrates that Orange would
+accept a `return_url` it had not been told about, and nothing in this
+repository claims it would.
+
+`payment_url`'s host is the literal `localhost:8082` that `compose.yml`
+publishes, for the same reason: a stub reached over the compose network cannot
+know what the host mapped it to. `compose.demo.yml` publishes
+`wiremock-orange` on `${VPAY_DEMO_ORANGE_PORT:-8082}` (it used to `!reset` the
+publication, so `just demo`'s redirect URL was unopenable), and `just
+gen-demo-keys` reads the port back out of the mapping and refuses a
+`demo_orange_port` that disagrees with it.
+
+---
+
 ## Status
 
 **Built and proven.** The port, both adapters, the shared token cache and the
@@ -473,6 +560,20 @@ Re-measured 2026-09-04 (Step 8 lane C): `cargo nextest run
 -p vpay-tests-conformance` runs **28 tests, 28 passed, 0 skipped, 0 ignored** —
 12 cases over both rails plus the same 4, the new one being
 `the_submit_tells_the_rail_where_to_call_back`.
+
+Re-measured again 2026-09-04 (Step 9 lane 2): **30 tests, 30 passed, 0
+skipped, 0 ignored** — 13 cases over both rails plus the same 4, the new one
+being `the_submit_tells_the_rail_where_to_send_the_payer_back`.
+
+**Not proven by the return-trip work either.** No payer has been redirected
+anywhere by this repository: the *page* that receives one is
+`frontends/apps/checkout`, which is Step 9 lane 3's, and vpay serves no route
+at a return URL of its own. What is built and proven here is the rail half —
+the value reaches the rail, and the rail's stub page links to it.
+`vpay_api::v1::return_trip`'s session branch answers `None` for every intent
+because there is no `checkout_sessions` table in this tree; that is the truth
+today, and the doc comment on that impl names the method Step 9 lane 1 has to
+replace it with.
 
 **Not proven by any of it.** Every conformance case talks to WireMock:
 **neither adapter has ever called MTN's or Orange's real sandbox**, so a mapping

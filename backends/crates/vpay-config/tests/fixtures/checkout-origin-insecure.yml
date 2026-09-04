@@ -1,0 +1,32 @@
+# Fixture for `a_plaintext_checkout_origin_is_refused_in_livemode`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# `http://localhost:3000` is exactly right for a merchant developing against a
+# sandbox and exactly wrong for one taking real money: an embedded checkout
+# framed by a plaintext page is a page an active network attacker can rewrite
+# before the iframe is ever created.
+#
+# Everything else is livemode-clean — https everywhere, no stub markers, no
+# literal secrets — so this fixture fails on exactly one rule.
+
+deployment:
+  name: vpay
+  livemode: true
+  public_base_url: https://api.vpay.example
+
+checkout:
+  public_base_url: https://checkout.example
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    publishable_keys: ["pk_live_acmecameroonlive00001"]
+    checkout_origins: ["http://localhost:3000"]

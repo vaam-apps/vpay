@@ -168,10 +168,9 @@ function parseBoundOrigin(baseUrl: string): BoundOrigin {
   try {
     url = new URL(baseUrl);
   } catch (err) {
-    throw new VpayConfigError(
-      `baseUrl is not an absolute URL: ${baseUrl}`,
-      { cause: err },
-    );
+    throw new VpayConfigError(`baseUrl is not an absolute URL: ${baseUrl}`, {
+      cause: err,
+    });
   }
   const protocol = normaliseProtocol(url.protocol);
   return {

@@ -6,6 +6,7 @@ import {
 } from "./auth.js";
 import { HttpClient } from "./http.js";
 import { BalanceResource } from "./resources/balance.js";
+import { CheckoutResource } from "./resources/checkout-sessions.js";
 import { EventsResource } from "./resources/events.js";
 import { PaymentIntentsResource } from "./resources/payment-intents.js";
 import { RefundsResource } from "./resources/refunds.js";
@@ -58,6 +59,7 @@ export class VpayClient {
   readonly #tokenManager: TokenManager;
 
   readonly paymentIntents: PaymentIntentsResource;
+  readonly checkout: CheckoutResource;
   readonly refunds: RefundsResource;
   readonly events: EventsResource;
   readonly balance: BalanceResource;
@@ -81,6 +83,7 @@ export class VpayClient {
     });
 
     this.paymentIntents = new PaymentIntentsResource(httpClient);
+    this.checkout = new CheckoutResource(httpClient);
     this.refunds = new RefundsResource(httpClient);
     this.events = new EventsResource(httpClient);
     this.balance = new BalanceResource(httpClient);

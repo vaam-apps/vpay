@@ -16,13 +16,16 @@ Status for what changed and what still has no evidence behind it.
 |---|---|---|
 | `Deployment` | `<release>-server` | `server.replicaCount` (2 by default) |
 | `Deployment` | `<release>-worker` | `worker.replicaCount` (1); `strategy: Recreate` |
+| `Deployment` | `<release>-checkout` | Optional (`checkout.enabled`, **false** by default) — vpay's own payment page |
 | `Service` | `<release>` | ClusterIP, ports `http` (8080) and `metrics` (9090) |
 | `Service` | `<release>-worker` | Headless, `metrics` only — exists so the worker can be scraped |
+| `Service` | `<release>-checkout` | Optional; `http` only — the page emits no metrics |
 | `ServiceAccount` | `<release>` | `automountServiceAccountToken: false` |
 | `PodDisruptionBudget` | `<release>-server` | `minAvailable: 1`; server only |
 | `ConfigMap` | `<release>-config-overlay` | Optional; the profile overlay, mounted with `subPath` |
 | `Ingress` | `<release>-api` | `/v1`, ingress-nginx annotations incl. `limit-rps` |
 | `Ingress` | `<release>-token` | `/v1/oauth/token`, a tighter `limit-rps` |
+| `Ingress` | `<release>-checkout` | Optional; the payment page, on its own host or a path prefix |
 | `NetworkPolicy` | `<release>-server`, `<release>-worker` | Optional, default-deny both directions |
 | `ServiceMonitor` | `<release>-server`, `<release>-worker` | Optional; needs the prometheus-operator CRDs |
 | `PrometheusRule` | `<release>` | Optional; **every threshold is proposed, every metric unemitted** |
@@ -218,6 +221,8 @@ still draining in-flight work. Set terminationGracePeriodSeconds to at least 30.
 | `ingress-host` | ingress enabled with an empty host, or TLS enabled with neither issuer nor secret | A host-less rule answers for other applications' hostnames; a TLS block nothing populates serves the controller's default certificate |
 | `overlay-empty` | overlay ConfigMap requested with empty content, or an empty profile | The process treats an empty overlay as success and runs on baked sandbox placeholders |
 | `dashboard-not-templated` | `dashboard.enabled: true` | This chart templates no dashboard workload — see below |
+| `checkout-not-templated-by-default` | `checkout.ingress.enabled` with `checkout.enabled: false` | An Ingress routing to a Service the chart did not template: a 503 on the payment page, found by a payer |
+| `checkout-templated-when-enabled` | enabled with no `publicApiUrl`; or an Ingress with neither `host` nor `path`, or with both; or TLS with nothing to populate the Secret | The app throws on a missing `NEXT_PUBLIC_VPAY_API_URL`, so the pod starts and never passes readiness; a host-less rule answers for other applications; a payer's session credential rides in that URL's fragment |
 | `networkpolicy-database` | NetworkPolicy enabled with no database destination, or with two | Locks the server away from its own database, and the symptom blames the database |
 
 `deploy/helm/vpay/ci/guards/<guard>.yaml` is one values file per guard, each
@@ -229,6 +234,37 @@ disabling a guard and watching the check fail (2026-09-03).
 `values.schema.json` is separate and does a different job: it checks *shape*
 (types, enums, unknown keys) before a template renders. Semantics live in the
 guards, so the error can explain the consequence.
+
+## The checkout page IS deployed by this chart, and the dashboard is not
+
+The two look like the same decision and are not, which is worth stating
+because `checkout.enabled` and `dashboard.enabled` sit next to each other in
+`values.yaml` and behave in opposite ways.
+
+`vpay-checkout` is templated when enabled, because the evidence exists:
+`frontends/Dockerfile`'s `checkout` target declares `USER node`, the image has
+been built from a clean context and run with `--read-only --tmpfs /tmp`, and
+it answered `GET /healthz` 200 in that state. That is what the Deployment's
+`runAsNonRoot` (with no invented UID — the image has an `/etc/passwd`),
+`readOnlyRootFilesystem` and single `emptyDir` on `/tmp` are derived from, and
+`/tmp` is a mount rather than an omission for exactly that reason.
+
+**No pod has ever run.** The probe thresholds, the resource numbers and the
+Ingress are reasoned from the image and from Kubernetes' documented behaviour,
+like the rest of this chart. What is new is only that the *container* has been
+observed running the way the chart asks it to.
+
+Off by default, and that is a complete deployment rather than a missing one:
+`checkout.public_base_url` is optional in vpay's own config, and without it
+`POST /v1/checkout/sessions` answers `checkout_not_configured` rather than
+minting a `url` that resolves to nothing.
+
+The path-prefix Ingress shape (`checkout.ingress.path`) is templated and has
+**not** been run by anyone. The app's routes are `/c/…`, `/e/…` and `/healthz`
+at the root and it is not `basePath`-aware, so a prefix needs a controller
+rewrite that this chart deliberately leaves to
+`checkout.ingress.annotations` — the correct value depends on your controller.
+Prefer `checkout.ingress.host`.
 
 ## The dashboard is not deployed by this chart
 
@@ -271,6 +307,9 @@ the reasoning; this table is maintained by hand and can drift from it.
 | `images.worker.name` | `vpay-worker` | |
 | `images.worker.tag` | `""` | |
 | `images.worker.digest` | `""` | |
+| `images.checkout.name` | `vpay-checkout` | Only read when `checkout.enabled` |
+| `images.checkout.tag` | `""` | |
+| `images.checkout.digest` | `""` | |
 
 ### Workloads
 
@@ -374,6 +413,18 @@ no HPA either — nothing has measured what would drive one.
 | `logFilter` | `info` | `RUST_LOG` |
 | `logFormat` | `json` | `VPAY_LOG_FORMAT` — already the binary's default |
 | `dashboard.enabled` | `false` | `true` is a named template failure |
+| `checkout.enabled` | `false` | vpay's own payment page. Off is a complete deployment — see below |
+| `checkout.replicaCount` | `2` | |
+| `checkout.port` | `3000` | The Next.js standalone server's `PORT`; set as an env var so it cannot drift from the Service |
+| `checkout.resources` | `100m` / `128Mi` request, `512Mi` limit | **Placeholders**, as everywhere else here. The limit exists because an unbounded heap on a GC'd process evicts a node rather than restarting a pod |
+| `checkout.apiUrl` | `""` | This pod's view of vpay, for the server-side origins lookup. Empty renders this release's own server Service |
+| `checkout.publicApiUrl` | `""` | **Required when enabled.** A payer's browser's view of vpay; the app throws on a missing one |
+| `checkout.service.type` / `.port` | `ClusterIP` / `3000` | |
+| `checkout.ingress.enabled` | `false` | |
+| `checkout.ingress.host` | `""` | Its own hostname — prefer this shape |
+| `checkout.ingress.path` | `""` | A prefix on `ingress.host`. Needs a `rewrite-target` annotation, and **nobody has run this shape** |
+| `checkout.ingress.limitRps` | `50` | Looser than `/v1`'s on purpose: it is a page, not an authenticated write surface |
+| `checkout.extraEnv` | `[]` | `PORT`, `HOSTNAME`, `VPAY_API_URL` and `NEXT_PUBLIC_VPAY_API_URL` are reserved (`extra-env-collision`) |
 
 ## Why two Ingress objects
 
@@ -498,4 +549,6 @@ Written 2026-09-03, step 6 block B.
   errors. Deferred by decision (9), worth doing.
 * `helm unittest` for the object shapes, rather than kubeconform alone.
 * A dashboard workload, once someone has run that image with a non-root UID.
+* A cluster run of the checkout page's path-prefix Ingress shape, which is
+  templated and unexercised.
 * An HPA, once anything has measured what would drive it.

@@ -1,9 +1,10 @@
 # Everything this chart can render, on at once.
 #
 # CI templates the chart twice: once with the defaults (the path an operator
-# takes first) and once with this file, so that the optional objects — both
-# Ingresses, both NetworkPolicies, both ServiceMonitors, the PrometheusRule
-# and the overlay ConfigMap — are actually produced and handed to kubeconform.
+# takes first) and once with this file, so that the optional objects — all
+# three Ingresses, both NetworkPolicies, both ServiceMonitors, the
+# PrometheusRule, the overlay ConfigMap and the checkout page's Deployment,
+# Service and Ingress — are actually produced and handed to kubeconform.
 # Without it those templates would be validated by nobody.
 #
 # It is not an example production configuration. The Secret names are the
@@ -16,6 +17,10 @@ images:
     # digest-pinning path (`repo@sha256:...`) rather than the tag path. It
     # points at nothing.
     digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  checkout:
+    # Ditto, and on this component specifically because the
+    # "image-digest-format" guard was widened to cover it.
+    digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
   pullSecrets:
     - name: ghcr-pull
 
@@ -63,3 +68,26 @@ networkPolicy:
 podDisruptionBudget:
   enabled: true
   minAvailable: 2
+
+# vpay's own payment page, on its own hostname — the shape to prefer, and the
+# one `checkout.public_base_url` is happiest with. The path-prefix shape is
+# templated too and is deliberately NOT exercised here: nobody has run it, and
+# rendering it in the file called "everything this chart can render" would read
+# as more confidence than exists. See templates/ingress-checkout.yaml.
+checkout:
+  enabled: true
+  replicaCount: 2
+  # The origin a PAYER's browser sends /v1/browser calls to. The same hostname
+  # the API's Ingress serves above — which is the usual arrangement, and is
+  # what makes it worth stating that this value and `apiUrl` are different
+  # questions: the second is this pod's own view and defaults to the in-cluster
+  # Service.
+  publicApiUrl: https://api.vpay.example
+  podAnnotations:
+    example.vpay/rendered-by: ci
+  ingress:
+    enabled: true
+    host: checkout.vpay.example
+    tls:
+      enabled: true
+      clusterIssuer: letsencrypt-prod

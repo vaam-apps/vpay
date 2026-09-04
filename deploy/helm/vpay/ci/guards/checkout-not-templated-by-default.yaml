@@ -1,0 +1,14 @@
+# The checkout page's Ingress turned on while the page itself is off.
+#
+# Well-typed, reads exactly like "I enabled the checkout", and renders an
+# Ingress routing to a Service this chart did not template. The failure is a
+# 503 on the payment page, in a cluster, found by a payer.
+#
+# The other half of "not templated by default" — that `helm template` with
+# stock values emits no `-checkout` object at all — cannot be a `fail`, so
+# `just helm-check` greps the default render for it instead.
+checkout:
+  enabled: false
+  ingress:
+    enabled: true
+    host: checkout.example.com

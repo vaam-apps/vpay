@@ -23,7 +23,8 @@ use crate::auth::{self, CLIENT_ASSERTION_TYPE_JWT_BEARER, Credentials};
 use crate::error::{ConfigError, Error};
 use crate::form::FormValue;
 use crate::resources::{
-    BalanceResource, EventsResource, PaymentIntentsResource, RefundsResource, RequestOptions,
+    BalanceResource, CheckoutResource, EventsResource, PaymentIntentsResource, RefundsResource,
+    RequestOptions,
 };
 
 /// The `aud` value `/v1` access tokens must carry. Requested by default on
@@ -228,8 +229,15 @@ impl CachedToken {
 struct Inner {
     http: reqwest::Client,
     credentials: Credentials,
+    /// Where the token request is POSTed — reachable from *this* process.
     token_endpoint: String,
     resource_base: String,
+    /// The client assertion's `aud` claim: what the OP calls itself. Defaults
+    /// to [`Inner::token_endpoint`] at build time; see
+    /// [`ClientBuilder::assertion_audience`].
+    assertion_audience: String,
+    /// The OAuth2 `audience` **request parameter** (`vpay:v1`), not the `aud`
+    /// claim above. Two different strings with two different jobs.
     audience: String,
     scope: Option<String>,
     assertion_lifetime: Duration,
@@ -257,6 +265,7 @@ impl fmt::Debug for Client {
             .field("credentials", &self.inner.credentials)
             .field("token_endpoint", &self.inner.token_endpoint)
             .field("resource_base", &self.inner.resource_base)
+            .field("assertion_audience", &self.inner.assertion_audience)
             .field("audience", &self.inner.audience)
             .field("scope", &self.inner.scope)
             .field("assertion_lifetime", &self.inner.assertion_lifetime)
@@ -279,6 +288,12 @@ impl Client {
     #[must_use]
     pub fn payment_intents(&self) -> PaymentIntentsResource<'_> {
         PaymentIntentsResource { client: self }
+    }
+
+    /// `/v1/checkout` — today only `checkout().sessions()`.
+    #[must_use]
+    pub fn checkout(&self) -> CheckoutResource<'_> {
+        CheckoutResource { client: self }
     }
 
     /// `/v1/refunds`.
@@ -362,9 +377,14 @@ impl Client {
     }
 
     async fn fetch_token(&self) -> Result<CachedToken, Error> {
+        // `aud` is the OP's own name for itself, NOT the URL this line then
+        // POSTs to. `authkestra_op`'s `authenticate_client` compares the
+        // claim against `[token endpoint, issuer]` built from
+        // `deployment.public_base_url`; a merchant reaching vpay by an
+        // internal name has to say so (`ClientBuilder::assertion_audience`).
         let assertion = auth::mint_client_assertion(
             &self.inner.credentials,
-            &self.inner.token_endpoint,
+            &self.inner.assertion_audience,
             self.inner.assertion_lifetime,
         )?;
 
@@ -576,6 +596,7 @@ pub struct ClientBuilder {
     credentials: Option<Credentials>,
     issuer: Option<String>,
     token_endpoint: Option<String>,
+    assertion_audience: Option<String>,
     audience: String,
     scope: Option<String>,
     assertion_lifetime: Duration,
@@ -591,6 +612,7 @@ impl fmt::Debug for ClientBuilder {
             .field("credentials", &self.credentials)
             .field("issuer", &self.issuer)
             .field("token_endpoint", &self.token_endpoint)
+            .field("assertion_audience", &self.assertion_audience)
             .field("audience", &self.audience)
             .field("scope", &self.scope)
             .field("assertion_lifetime", &self.assertion_lifetime)
@@ -606,6 +628,7 @@ impl ClientBuilder {
             credentials: None,
             issuer: None,
             token_endpoint: None,
+            assertion_audience: None,
             audience: DEFAULT_AUDIENCE.to_string(),
             scope: None,
             assertion_lifetime: Duration::from_secs(60),
@@ -628,16 +651,58 @@ impl ClientBuilder {
         self
     }
 
-    /// Overrides the default `{issuer}/token` token endpoint (also the
-    /// assertion's `aud`).
+    /// Overrides the default `{issuer}/token` token endpoint — the URL this
+    /// client POSTs the token request to.
+    ///
+    /// A **reachability** setting: it must resolve from wherever this process
+    /// runs. It is also the default [`ClientBuilder::assertion_audience`],
+    /// but the two are separate facts; see that method.
     #[must_use]
     pub fn token_endpoint(mut self, token_endpoint: impl Into<String>) -> Self {
         self.token_endpoint = Some(token_endpoint.into());
         self
     }
 
+    /// The client assertion's `aud` claim: the OP's own token endpoint (or
+    /// issuer) **as vpay is configured publicly** —
+    /// `{deployment.public_base_url}/v1/oauth/token`, or that
+    /// `{deployment.public_base_url}/v1/oauth` issuer
+    /// (`vpay_api::op::issuer_for`). Set it when this server reaches vpay by
+    /// a different URL than payers do.
+    ///
+    /// Defaults to the token endpoint, which is correct only when the two are
+    /// the same string. When they are not — a merchant server calling
+    /// `http://vpay-server:8080` inside a compose network, or a private DNS
+    /// name in production — `authkestra_op`'s `authenticate_client` compares
+    /// the `aud` claim against its own `[token endpoint, issuer]` pair,
+    /// neither of which is the internal URL, and every token request answers
+    /// `invalid_client` / `InvalidAudience`. The signature, the `client_id`,
+    /// the `kid` and the lifetime are all correct in that failure, which is
+    /// why the symptom carries no hint at the cause.
+    ///
+    /// Distinct from [`ClientBuilder::audience`], which is the OAuth2
+    /// `audience` *request parameter* (`vpay:v1`) — a third string, naming
+    /// the resource server rather than the OP.
+    ///
+    /// ```
+    /// # use vpay_sdk::{Client, Credentials};
+    /// # fn demo(credentials: Credentials) -> Result<Client, vpay_sdk::ConfigError> {
+    /// Client::builder("http://vpay-server:8080")
+    ///     .credentials(credentials)
+    ///     .assertion_audience("http://localhost:8080/v1/oauth/token")
+    ///     .build()
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn assertion_audience(mut self, assertion_audience: impl Into<String>) -> Self {
+        self.assertion_audience = Some(assertion_audience.into());
+        self
+    }
+
     /// Overrides the default [`DEFAULT_AUDIENCE`] (`"vpay:v1"`) requested on
-    /// the token exchange.
+    /// the token exchange — the OAuth2 `audience` **request parameter**,
+    /// naming the resource server. Not the assertion's `aud` claim; that is
+    /// [`ClientBuilder::assertion_audience`].
     #[must_use]
     pub fn audience(mut self, audience: impl Into<String>) -> Self {
         self.audience = audience.into();
@@ -695,6 +760,12 @@ impl ClientBuilder {
         let token_endpoint = self
             .token_endpoint
             .unwrap_or_else(|| format!("{issuer}/token"));
+        // Defaults to the URL we POST to — unchanged behaviour for every
+        // merchant whose server reaches vpay at the URL vpay publishes as its
+        // own. A merchant reaching it by an internal name sets it explicitly.
+        let assertion_audience = self
+            .assertion_audience
+            .unwrap_or_else(|| token_endpoint.clone());
         let resource_base = format!("{base_url}/v1");
 
         let http = reqwest::Client::builder()
@@ -713,6 +784,7 @@ impl ClientBuilder {
                 credentials,
                 token_endpoint,
                 resource_base,
+                assertion_audience,
                 audience: self.audience,
                 scope: self.scope,
                 assertion_lifetime: self.assertion_lifetime,
@@ -769,6 +841,57 @@ mod tests {
             "https://auth.vpay.example/token"
         );
         assert_eq!(client.inner.resource_base, "https://api.vpay.example/v1");
+    }
+
+    #[test]
+    fn the_assertion_audience_defaults_to_the_token_endpoint() {
+        // Unchanged behaviour for every merchant that reaches vpay at the URL
+        // vpay publishes as its own: the option's existence changes nothing
+        // until it is set.
+        let client = Client::builder("https://api.vpay.example")
+            .credentials(creds())
+            .build()
+            .unwrap();
+        assert_eq!(client.inner.assertion_audience, client.inner.token_endpoint);
+        assert_eq!(
+            client.inner.assertion_audience,
+            "https://api.vpay.example/v1/oauth/token"
+        );
+    }
+
+    #[test]
+    fn an_explicit_assertion_audience_does_not_move_the_token_endpoint() {
+        // The whole point of the option: the URL we POST to must stay
+        // reachable from *this* process while the `aud` claim names the OP.
+        let client = Client::builder("http://vpay-server:8080")
+            .credentials(creds())
+            .assertion_audience("http://localhost:8080/v1/oauth/token")
+            .build()
+            .unwrap();
+        assert_eq!(
+            client.inner.token_endpoint,
+            "http://vpay-server:8080/v1/oauth/token"
+        );
+        assert_eq!(
+            client.inner.assertion_audience,
+            "http://localhost:8080/v1/oauth/token"
+        );
+        // And it is still not the `audience` request parameter, a third
+        // string with a third job.
+        assert_eq!(client.inner.audience, DEFAULT_AUDIENCE);
+    }
+
+    #[test]
+    fn an_overridden_token_endpoint_still_supplies_the_default_assertion_audience() {
+        let client = Client::builder("https://api.vpay.example")
+            .credentials(creds())
+            .token_endpoint("https://auth.vpay.example/oauth2/token")
+            .build()
+            .unwrap();
+        assert_eq!(
+            client.inner.assertion_audience,
+            "https://auth.vpay.example/oauth2/token"
+        );
     }
 
     #[test]

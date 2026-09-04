@@ -107,6 +107,18 @@ against a charge you cannot query.
 
 **The commit is the gate on the redirect.**
 
+**Since Step 9 one more value is written before that first commit rather than
+after it: the charge's `return_url`.** When a Checkout Session drives the
+charge, `charges.return_url` holds vpay's own return page —
+`{checkout.public_base_url}/c/{cs_id}/return?t={return_token}&key={pk}` — and
+it is written *before* the charge is committed and read back from that row at
+submit. So what the rail is told, what `next_action.redirect_to_url.return_url`
+renders on every later read, and what a resubmit would send are **one column**
+rather than three reads that could differ. The alternative — resolving it
+between the write and the rail call — left a window in which the durable row
+and the rail disagreed about where the payer would land
+([hosted-checkout.md](hosted-checkout.md)).
+
 ## Why Orange is integrable at all
 
 Orange's `transactionstatus` requires `order_id` + `amount` + `pay_token`, and

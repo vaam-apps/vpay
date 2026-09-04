@@ -49,6 +49,8 @@ fn configured_merchant() -> MerchantClient {
     MerchantClient {
         client_id: CLIENT_ID.to_owned(),
         merchant_id: MERCHANT_ID.to_owned(),
+        // Nothing the OP does renders a name to anyone.
+        display_name: None,
         jwks: Some(serde_json::json!({
             "keys": [{
                 "kty": "RSA",
@@ -70,6 +72,7 @@ fn configured_merchant() -> MerchantClient {
         // And neither is a publishable key: it names a tenant for a payer's
         // browser, never a credential this store resolves.
         publishable_keys: Vec::new(),
+        checkout_origins: Vec::new(),
     }
 }
 

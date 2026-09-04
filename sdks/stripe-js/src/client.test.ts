@@ -521,6 +521,7 @@ describe("no logging", () => {
     );
     expect(shipping.sort()).toEqual([
       "client.ts",
+      "embedded.ts",
       "errors.ts",
       "form.ts",
       "index.ts",
@@ -536,5 +537,24 @@ describe("no logging", () => {
         .replace(/(^|[^:])\/\/.*$/gmu, "$1");
       expect(code, `${name} must not log`).not.toMatch(/console\s*\./u);
     }
+  });
+
+  it("posts no message into the frame, so there is no target origin to get wrong", async () => {
+    // D8 forbids `postMessage(…, '*')` between vpay's embedded page and its
+    // framer. The strongest form of that guarantee is that this side posts
+    // nothing at all, and the cheapest way to keep it is to read the
+    // shipping source — the same technique the test above uses to forbid a
+    // `console` call. It lives here rather than in `embedded.test.ts`
+    // because that file runs under jsdom, where `import.meta.url` is not a
+    // file URL.
+    const { readFile } = await import("node:fs/promises");
+    const { fileURLToPath } = await import("node:url");
+    const dir = fileURLToPath(new URL(".", import.meta.url));
+    const source = await readFile(`${dir}embedded.ts`, "utf8");
+    const code = source
+      .replace(/\/\*[\s\S]*?\*\//gu, "")
+      .replace(/(^|[^:])\/\/.*$/gmu, "$1");
+
+    expect(code).not.toMatch(/postMessage/u);
   });
 });

@@ -1,7 +1,7 @@
 //! `merchant-demo` — a runnable walk through **everything vpay's `/v1`
 //! surface answers today**, and a deliberate demonstration of where it stops.
 //!
-//! Four steps, the last of which is a table:
+//! Five steps, the fourth of which is a table:
 //!
 //! 1. Read the OP's discovery document and JWKS, and show the issuer and the
 //!    `kid` the server signs `/v1` access tokens with.
@@ -16,7 +16,14 @@
 //!    settle it, and then reads the webhook that settlement produced out of
 //!    the receiver's own request journal and verifies its `Vpay-Signature`
 //!    with the shipping SDK — the same call a merchant's handler makes.
+//! 5. Create **one hosted and one embedded Checkout Session** for a fresh
+//!    intent each, and print what a merchant does with them: the `url` to
+//!    send a payer to, and the two values `initEmbeddedCheckout` needs. It
+//!    stops there — this program has no browser and does not pretend to. The
+//!    proof that the page works is `frontends/tests/e2e` and a human
+//!    following `docs/runbooks/demo.md` §7.
 //!
+
 //! **Step 4 used to be one payment: MTN, succeeded.** That under-specified
 //! the contract an integrator writes against, which is what issue #11 asked
 //! to fix. A merchant integrating against vpay has to handle a decline, an
@@ -96,8 +103,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 use vpay_sdk::{
-    Client, ConfirmPaymentIntentParams, CreatePaymentIntentParams, Credentials, IntentStatus,
-    NextAction, PaymentIntent, PaymentMethodType, RequestOptions,
+    CheckoutPaymentStatus, CheckoutSession, CheckoutSessionStatus, CheckoutUiMode, Client,
+    ConfirmPaymentIntentParams, CreateCheckoutSessionParams, CreatePaymentIntentParams,
+    Credentials, IntentStatus, NextAction, PaymentIntent, PaymentMethodType, RequestOptions,
 };
 
 /// Where `just demo` publishes the stack, and what `config/application.yml`'s
@@ -209,11 +217,21 @@ struct Outcome {
     label: &'static str,
     /// The rail. Also the intent's single `payment_method_types` entry.
     rail: PaymentMethodType,
-    /// Lowercase, as `/v1` wants it. **Per rail, not per taste**:
-    /// `config/application.yml` puts `mtn_momo` on EUR (MTN's sandbox rejects
-    /// XAF — `docs/flows/money.md`) and `orange_money` on XAF, and `/v1`
+    /// Lowercase, as `/v1` wants it. **Per rail, not per taste**: `/v1`
     /// refuses a confirm whose intent currency is not the chosen rail's,
     /// before any charge exists (`vpay_api`'s `currencies_agree`).
+    ///
+    /// Every row below is `"xaf"`, because the overlay this demo runs against
+    /// — the one `just gen-demo-keys` writes — settles **both** rails in XAF
+    /// since 2026-09-04 (Step 9). It did not always: `config/application.yml`
+    /// puts `mtn_momo` on EUR and still does, because **MTN's real sandbox
+    /// rejects XAF** (`docs/flows/money.md`). What this stack talks to is a
+    /// WireMock host that matches on no currency at all, and the demo shop
+    /// beside this walkthrough prices its catalogue in XAF and offers a payer
+    /// both rails — which one currency for both rails is the only way to
+    /// make payable. The field stays per-row rather than becoming a constant
+    /// precisely so a future deployment that splits them again has somewhere
+    /// to say so.
     currency: &'static str,
     /// Minor units (`docs/flows/money.md`). On Orange this is also the field
     /// the stub selects the outcome on — see [`Outcome::selected_by`].
@@ -267,7 +285,7 @@ const OUTCOMES: [Outcome; 6] = [
     Outcome {
         label: "mtn_momo · the payer approves on their handset",
         rail: PaymentMethodType::MtnMomo,
-        currency: "eur",
+        currency: "xaf",
         amount: 5000,
         steering: Steering::Msisdn("237600000ce0"),
         selected_by: "MSISDN 237600000ce0 enters the `mtn-e2e-poll` scenario \
@@ -281,7 +299,7 @@ const OUTCOMES: [Outcome; 6] = [
     Outcome {
         label: "mtn_momo · the payer has no balance",
         rail: PaymentMethodType::MtnMomo,
-        currency: "eur",
+        currency: "xaf",
         amount: 5000,
         steering: Steering::Msisdn("237600000f01"),
         selected_by: "MSISDN 237600000f01 arms the `mtn-demo-decline` scenario \
@@ -295,7 +313,7 @@ const OUTCOMES: [Outcome; 6] = [
     Outcome {
         label: "mtn_momo · the prompt expires unanswered",
         rail: PaymentMethodType::MtnMomo,
-        currency: "eur",
+        currency: "xaf",
         amount: 5000,
         steering: Steering::Msisdn("237600000f02"),
         selected_by: "MSISDN 237600000f02 arms the `mtn-demo-expiry` scenario \
@@ -387,8 +405,9 @@ async fn main() -> ExitCode {
         Ok(()) => {
             println!();
             println!(
-                "✔ all four steps behaved as expected — {} payments on 2 rails, every one \
-                 settled by the worker asking the rail and evidenced by a signed webhook.",
+                "✔ all five steps behaved as expected — {} payments on 2 rails, every one \
+                 settled by the worker asking the rail and evidenced by a signed webhook, \
+                 plus one hosted and one embedded Checkout Session a browser can open.",
                 OUTCOMES.len(),
             );
             ExitCode::SUCCESS
@@ -443,7 +462,8 @@ async fn run() -> anyhow::Result<()> {
         .build()
         .context("step 4 (the outcome table): building the SDK client")?;
 
-    run_outcomes(&client, &http, &receiver_url).await
+    run_outcomes(&client, &http, &receiver_url).await?;
+    step_5_checkout_sessions(&client).await
 }
 
 /// A value unique to this run, which every `POST` below derives its
@@ -490,7 +510,7 @@ struct Endpoints {
 async fn step_1_discovery(http: &reqwest::Client, base_url: &str) -> anyhow::Result<Endpoints> {
     const STEP: &str = "step 1 (discovery + JWKS)";
 
-    println!("[1/4] discovery + JWKS");
+    println!("[1/5] discovery + JWKS");
 
     let discovery_url = format!("{base_url}/v1/oauth/.well-known/openid-configuration");
     let discovery = get_json(http, &discovery_url)
@@ -571,7 +591,7 @@ async fn step_2_access_token(
     const STEP: &str = "step 2 (access token)";
 
     println!();
-    println!("[2/4] access token (client_credentials + private_key_jwt)");
+    println!("[2/5] access token (client_credentials + private_key_jwt)");
 
     let credentials = credentials(client_id, pem).with_context(|| STEP)?;
     let assertion = vpay_sdk::auth::mint_client_assertion(
@@ -672,7 +692,7 @@ async fn step_3_unauthenticated(http: &reqwest::Client, base_url: &str) -> anyho
     const STEP: &str = "step 3 (unauthenticated /v1 is 401)";
 
     println!();
-    println!("[3/4] the same path with no bearer token");
+    println!("[3/5] the same path with no bearer token");
 
     let url = format!("{base_url}/v1/payment_intents/{DEMO_INTENT_ID}");
     let response = http
@@ -747,7 +767,7 @@ async fn run_outcomes(
     let total = OUTCOMES.len();
 
     println!();
-    println!("[4/4] {total} payments, on both rails, to every outcome each rail documents");
+    println!("[4/5] {total} payments, on both rails, to every outcome each rail documents");
     println!(
         "      each one: create → retrieve → confirm → the worker settles it → the signed \
          webhook it produced"
@@ -1363,6 +1383,325 @@ async fn recorded_webhook(
         }));
     }
     Ok(None)
+}
+
+// ------------------------------------------------------------------ step 5
+
+/// The rails a session's intent is created with — both, because vpay's page
+/// renders a rail selector and refusing to show one of them here would make
+/// this demo's session narrower than the shop's.
+const SESSION_RAILS: [PaymentMethodType; 2] =
+    [PaymentMethodType::MtnMomo, PaymentMethodType::OrangeMoney];
+
+/// XAF on both rails, which is what the overlay `just gen-demo-keys` writes
+/// settles. See [`Outcome::currency`] for why, and for what
+/// `config/application.yml` still says.
+const SESSION_CURRENCY: &str = "xaf";
+
+/// 5 000 FCFA. XAF is zero-decimal, so this integer is the whole price.
+const SESSION_AMOUNT: i64 = 5_000;
+
+/// Where a hosted session forwards a payer afterwards.
+///
+/// `{CHECKOUT_SESSION_ID}` is a literal template placeholder vpay substitutes
+/// when it forwards (D5) — it is NOT a value this program fills in, and the
+/// point of printing it unsubstituted is that a reader can see vpay do the
+/// substitution in their browser's address bar. `example` is reserved for
+/// documentation (RFC 2606), so neither URL can resolve to anyone's host.
+const SESSION_SUCCESS_URL: &str = "https://shop.example/orders/demo/paid?cs={CHECKOUT_SESSION_ID}";
+const SESSION_CANCEL_URL: &str = "https://shop.example/orders/demo/cancelled";
+/// Where an embedded session's framed page forwards the payer at the end.
+const SESSION_RETURN_URL: &str = "https://shop.example/orders/demo/return?cs={CHECKOUT_SESSION_ID}";
+
+/// Creates one hosted and one embedded Checkout Session, on a fresh
+/// PaymentIntent each, and prints what a merchant does with them.
+///
+/// # What this step proves, and what it deliberately does not
+///
+/// It proves that `POST /v1/checkout/sessions` answers — with a `url` for a
+/// hosted session and with the `client_secret` an embedded one needs — for a
+/// real intent this program has just created, against a running server, with
+/// a merchant token this program minted. That is a genuine end-to-end
+/// exercise of lane 1's route through the shipping Rust SDK.
+///
+/// It proves **nothing about the page**. This program has no browser. Nobody
+/// has clicked the URL it prints, no rail has been asked for anything on
+/// behalf of these two sessions, and both intents are still
+/// `requires_payment_method` when this step returns. The browser proof is
+/// `frontends/tests/e2e` and a human following `docs/runbooks/demo.md` §7;
+/// this step's job is to hand that human a URL that works.
+///
+/// # Why a fresh intent each, and not one of step 4's
+///
+/// `checkout_sessions.payment_intent_id` is unique (migration `0028`: one open
+/// session per intent), and every intent step 4 leaves behind already carries
+/// a charge. `POST /v1/checkout/sessions` requires an intent in
+/// `requires_payment_method` with no charge, so reusing one would be a `400`
+/// this step could not distinguish from a real defect.
+async fn step_5_checkout_sessions(client: &Client) -> anyhow::Result<()> {
+    const STEP: &str = "step 5 (checkout sessions)";
+    let run = run_id()?;
+
+    println!();
+    println!("[5/5] one hosted and one embedded Checkout Session (Step 9, D1/D6)");
+    println!(
+        "      each on its own fresh PaymentIntent: a session requires one in \
+         requires_payment_method with no charge, and every intent above has a charge"
+    );
+
+    let hosted = create_session(
+        client,
+        &run,
+        "hosted",
+        CheckoutUiMode::Hosted,
+        |payment_intent| CreateCheckoutSessionParams {
+            payment_intent,
+            ui_mode: Some(CheckoutUiMode::Hosted),
+            success_url: Some(SESSION_SUCCESS_URL.to_owned()),
+            cancel_url: Some(SESSION_CANCEL_URL.to_owned()),
+            return_url: None,
+        },
+    )
+    .await?;
+
+    let url = hosted.url.as_deref().ok_or_else(|| {
+        anyhow!(
+            "{STEP}: a hosted session answered no `url`. That is the one field hosted mode \
+             exists to produce, and without `checkout.public_base_url` in the loaded config the \
+             route answers `checkout_not_configured` instead — check the `checkout:` block in \
+             .e2e/application-demo.yml (`just gen-demo-keys` writes it)."
+        )
+    })?;
+
+    println!();
+    println!("      HOSTED — open this in a browser:");
+    println!();
+    println!("        {url}");
+    println!();
+    println!(
+        "      That URL's #fragment IS the session's client_secret (D6). It is printed \
+         here in full and NOWHERE else — it is not logged, and the SDK's own Debug for \
+         CheckoutSession redacts it (`{:?}`).",
+        RedactedUrl(url)
+    );
+    println!(
+        "      A fragment never leaves the browser: it is not sent to a server, not written \
+         to an access log, and not carried across the rail's redirect — which is why the \
+         return page gets its own weaker `return_token` in a query string instead."
+    );
+
+    let embedded = create_session(
+        client,
+        &run,
+        "embedded",
+        CheckoutUiMode::Embedded,
+        |payment_intent| CreateCheckoutSessionParams {
+            payment_intent,
+            ui_mode: Some(CheckoutUiMode::Embedded),
+            success_url: None,
+            cancel_url: None,
+            return_url: Some(SESSION_RETURN_URL.to_owned()),
+        },
+    )
+    .await?;
+
+    let secret = embedded.client_secret.as_deref().ok_or_else(|| {
+        anyhow!(
+            "{STEP}: an embedded session answered no `client_secret`. That is the value \
+             `initEmbeddedCheckout`'s `fetchClientSecret` must return, and an embedded session \
+             without one cannot be mounted at all."
+        )
+    })?;
+
+    println!();
+    println!("      EMBEDDED — what a merchant's own page does with it:");
+    println!();
+    println!("        import {{ initEmbeddedCheckout }} from '@vpay/stripe-js';");
+    println!("        const checkout = await initEmbeddedCheckout({{");
+    println!("          publishableKey: 'pk_test_demomerchantsandbox01',");
+    println!(
+        "          fetchClientSecret: async () => '{}',",
+        redacted(secret)
+    );
+    println!("        }});");
+    println!("        checkout.mount('#vpay-checkout');");
+    println!();
+    println!(
+        "      The secret above is REDACTED on purpose — the same treatment step 2 gives the \
+         access token. It is a live payer credential, this output ends up in CI logs and in \
+         pasted terminal transcripts, and a demo that printed it would be teaching the habit."
+    );
+    println!(
+        "      Read the real one with:  vpay.checkout().sessions().retrieve(\"{}\")",
+        embedded.id
+    );
+    println!(
+        "      It only mounts from an origin in this merchant's `checkout_origins` \
+         (D4): vpay serves `Content-Security-Policy: frame-ancestors <that list>` on the \
+         embedded page, and the page independently compares its own framer against the same \
+         list. The second of those is the one a browser has been observed performing — see \
+         docs/runbooks/checkout.md §5."
+    );
+
+    println!();
+    println!("      what just happened, in one table:");
+    println!(
+        "        {:<10} {:<27} {:<27} {:<8} {:<14} url",
+        "ui_mode", "session", "payment_intent", "status", "payment_status"
+    );
+    for session in [&hosted, &embedded] {
+        println!(
+            "        {:<10} {:<27} {:<27} {:<8} {:<14} {}",
+            session.ui_mode.as_wire_str(),
+            session.id,
+            session.payment_intent,
+            session_status_label(session.status),
+            payment_status_label(session.payment_status),
+            session
+                .url
+                .as_deref()
+                .map_or("— (embedded sessions have none)", |_| "printed above"),
+        );
+    }
+
+    println!();
+    println!(
+        "      NEITHER SESSION HAS BEEN PAID, and this program cannot pay one: both intents \
+         are still requires_payment_method, no rail has been called for either, and no \
+         browser has rendered either page. Open the hosted URL to change that."
+    );
+
+    Ok(())
+}
+
+/// Creates a fresh intent and one session on it.
+///
+/// The closure builds the params so the two call sites differ in exactly the
+/// fields that make hosted and embedded different — `success_url`/`cancel_url`
+/// against `return_url` — and in nothing else. `/v1` refuses the wrong pair
+/// for a mode (`urls_match_ui_mode`, migration `0028`), so writing the two
+/// out separately would be two places to get that wrong.
+async fn create_session(
+    client: &Client,
+    run: &str,
+    label: &str,
+    mode: CheckoutUiMode,
+    params: impl FnOnce(String) -> CreateCheckoutSessionParams,
+) -> anyhow::Result<CheckoutSession> {
+    let step = format!("step 5 (checkout sessions) — {label}");
+    let key = format!("{run}-session-{label}");
+
+    let intent = client
+        .payment_intents()
+        .create(
+            CreatePaymentIntentParams {
+                amount: SESSION_AMOUNT,
+                currency: SESSION_CURRENCY.to_owned(),
+                payment_method_types: SESSION_RAILS.to_vec(),
+                metadata: BTreeMap::from([("order_id".to_owned(), key.clone())]),
+                description: Some(format!("merchant-demo · {label} checkout session")),
+            },
+            RequestOptions::new().with_idempotency_key(format!("{key}-intent")),
+        )
+        .await
+        .map_err(|error| describe(&step, "creating the session's payment intent", &error))?;
+
+    println!();
+    println!("      ✔ POST /v1/payment_intents   ({label})");
+    print_intent(&intent, "        ");
+
+    let session = client
+        .checkout()
+        .sessions()
+        .create(
+            params(intent.id.clone()),
+            RequestOptions::new().with_idempotency_key(format!("{key}-session")),
+        )
+        .await
+        .map_err(|error| describe(&step, "creating the checkout session", &error))?;
+
+    println!("      ✔ POST /v1/checkout/sessions ({label})");
+
+    // Read back, exactly as step 4's create does and for the same reason: it
+    // is what proves the create PERSISTED rather than merely rendered an
+    // object. `client_secret` is excluded from the comparison because
+    // `retrieve` is documented to answer it too and a difference there would
+    // be the interesting failure, not an expected one — so it is compared.
+    let retrieved = client
+        .checkout()
+        .sessions()
+        .retrieve(&session.id)
+        .await
+        .map_err(|error| describe(&step, "reading the session back", &error))?;
+    if retrieved != session {
+        bail!(
+            "{step}: the create's response and the stored session disagree. Created \
+             {session:?}, retrieved {retrieved:?}"
+        );
+    }
+    println!(
+        "      ✔ GET  /v1/checkout/sessions/{}  (identical)",
+        session.id
+    );
+
+    if session.ui_mode != mode {
+        bail!(
+            "{step}: asked for ui_mode {} and got {}",
+            mode.as_wire_str(),
+            session.ui_mode.as_wire_str()
+        );
+    }
+
+    Ok(session)
+}
+
+/// One `CheckoutSessionStatus` as its wire label.
+///
+/// Written out rather than `{:?}`-formatted, for the reason
+/// [`status_label`] is: the wire spelling is lowercase, and a demo that
+/// printed `Open` would be showing a Rust identifier where a reader is
+/// trying to match a value they will see in an API response.
+fn session_status_label(status: CheckoutSessionStatus) -> &'static str {
+    match status {
+        CheckoutSessionStatus::Open => "open",
+        CheckoutSessionStatus::Complete => "complete",
+        CheckoutSessionStatus::Expired => "expired",
+    }
+}
+
+/// One `CheckoutPaymentStatus` as its wire label. Same reasoning.
+fn payment_status_label(status: CheckoutPaymentStatus) -> &'static str {
+    match status {
+        CheckoutPaymentStatus::Unpaid => "unpaid",
+        CheckoutPaymentStatus::Paid => "paid",
+        CheckoutPaymentStatus::Failed => "failed",
+    }
+}
+
+/// A credential rendered as its length and nothing else.
+///
+/// The same treatment step 2 gives the access token, and the same the Rust
+/// SDK's own `Debug` for `CheckoutSession` gives `client_secret`. This
+/// program's output is pasted into runbooks and captured by CI.
+fn redacted(secret: &str) -> String {
+    format!("[{} chars redacted]", secret.len())
+}
+
+/// A hosted `url` with its fragment replaced by a length marker, for the one
+/// line that demonstrates the redaction rather than performing it.
+///
+/// A newtype with a `Debug` rather than a function, so the demonstration is
+/// literally `{:?}` on a value — which is what a merchant's own logging would
+/// do, and the thing this line is telling them is safe.
+struct RedactedUrl<'a>(&'a str);
+
+impl std::fmt::Debug for RedactedUrl<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.split_once('#') {
+            Some((head, fragment)) => write!(f, "{head}#[{} chars redacted]", fragment.len()),
+            None => write!(f, "{}", self.0),
+        }
+    }
 }
 
 // ------------------------------------------------------------------ helpers

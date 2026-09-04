@@ -207,6 +207,195 @@ impl std::fmt::Debug for PaymentIntent {
     }
 }
 
+/// A [`CheckoutSession`]'s lifecycle state — Step 9's D10, and deliberately
+/// vpay's own three values rather than Stripe's.
+///
+/// There is no `Failed`, for the same reason [`IntentStatus`] has none: a
+/// session whose intent reached a terminal non-success state is reported
+/// [`CheckoutSessionStatus::Expired`] with
+/// [`CheckoutSession::payment_status`] [`CheckoutPaymentStatus::Failed`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckoutSessionStatus {
+    /// The payer has not finished. The only state `expire` accepts.
+    Open,
+    /// The session's intent reached `succeeded`.
+    Complete,
+    /// 24 h elapsed, the merchant expired it, or the intent failed
+    /// terminally — the three are one status, distinguished by
+    /// [`CheckoutSession::payment_status`].
+    Expired,
+}
+
+/// Whether a [`CheckoutSession`]'s intent has been paid — D10's second axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckoutPaymentStatus {
+    /// Nothing has settled.
+    Unpaid,
+    /// The intent reached `succeeded`.
+    Paid,
+    /// The intent reached a terminal non-success state.
+    Failed,
+}
+
+/// Which surface a [`CheckoutSession`] is rendered on.
+///
+/// `#[non_exhaustive]` for the same reason [`PaymentMethodType`] is: a third
+/// mode would otherwise be a breaking change for a caller who matched on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum CheckoutUiMode {
+    /// vpay serves a top-level page and answers with [`CheckoutSession::url`].
+    Hosted,
+    /// The merchant frames vpay's page with `@vpay/stripe-js`.
+    Embedded,
+}
+
+impl CheckoutUiMode {
+    /// The exact string this mode is named by on the wire.
+    ///
+    /// Hand-written beside the `serde` rename for the same reason
+    /// [`PaymentMethodType::as_wire_str`] is: the form encoder does not go
+    /// through `serde`, so without this the wire spelling would exist in
+    /// only one of the two paths.
+    #[must_use]
+    pub fn as_wire_str(self) -> &'static str {
+        match self {
+            CheckoutUiMode::Hosted => "hosted",
+            CheckoutUiMode::Embedded => "embedded",
+        }
+    }
+}
+
+impl std::fmt::Display for CheckoutUiMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_wire_str())
+    }
+}
+
+/// A `/v1/checkout/sessions` object (Step 9's D1).
+///
+/// The session **references** an existing [`PaymentIntent`]; it never
+/// creates one. Amount, currency and the allowed rails stay on the intent,
+/// where every existing invariant already guards them — which is why there
+/// is no `line_items`, no `mode` and no `amount_total` here, however
+/// Stripe-shaped the rest of the field names are (D10).
+///
+/// `Debug` is **hand-written** below rather than derived, for the same
+/// reason [`PaymentIntent`]'s is: [`Self::client_secret`] is a live payer
+/// credential, and so — on a hosted session — is the fragment of
+/// [`Self::url`].
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckoutSession {
+    /// `cs_…`.
+    pub id: String,
+    /// Always `"checkout.session"`. Carried verbatim rather than asserted,
+    /// so an unexpected value is visible to the caller instead of becoming
+    /// a decode failure.
+    pub object: String,
+    /// `false` for a sandbox deployment's objects.
+    pub livemode: bool,
+    /// The `pi_…` this session drives — an **id**, on every `/v1` route.
+    ///
+    /// `@vpay/stripe-js`'s browser-side `CheckoutSession` types the same
+    /// field as the whole expanded intent, because the browser session read
+    /// expands it (the checkout page confirms and polls the intent through
+    /// the browser routes and cannot fetch it separately). A deliberate
+    /// per-route difference, ruled on 2026-09-04, not a skew between the
+    /// SDKs: nothing on `/v1` expands it, so a merchant integration reads an
+    /// id here and calls [`PaymentIntentsResource::retrieve`] if it wants
+    /// the object.
+    ///
+    /// [`PaymentIntentsResource::retrieve`]: crate::PaymentIntentsResource::retrieve
+    pub payment_intent: String,
+    /// Hosted or embedded — the two have different required URLs.
+    pub ui_mode: CheckoutUiMode,
+    /// The session's own lifecycle state.
+    pub status: CheckoutSessionStatus,
+    /// Whether the intent behind it has been paid.
+    pub payment_status: CheckoutPaymentStatus,
+    /// Where a paying payer is forwarded (hosted mode); `None` when
+    /// embedded. May contain the literal `{CHECKOUT_SESSION_ID}`, which vpay
+    /// substitutes at forward time and nothing here touches (D5).
+    pub success_url: Option<String>,
+    /// Where a payer who gave up is forwarded (hosted mode); `None` when
+    /// embedded.
+    pub cancel_url: Option<String>,
+    /// Where vpay's framed page forwards the payer at the end (embedded
+    /// mode); `None` when hosted.
+    pub return_url: Option<String>,
+    /// The page to send a payer to, hosted mode only; `None` when embedded.
+    ///
+    /// **Carries the session's `client_secret` in its fragment** (D6). It is
+    /// the value to redirect a payer's browser to, and it is not a value to
+    /// log — see this type's hand-written `impl Debug`.
+    pub url: Option<String>,
+    /// Unix seconds. 24 h from create (D10).
+    pub expires_at: i64,
+    /// Unix seconds.
+    pub created: i64,
+    /// `cs_…_secret_…` — the payer credential the browser presents to read
+    /// this session, and what `@vpay/stripe-js`'s
+    /// `initEmbeddedCheckout`'s `fetchClientSecret` must return.
+    ///
+    /// A **different** credential from [`PaymentIntent::client_secret`]: it
+    /// authorises reading this session, never confirming the intent.
+    /// Present only on `POST /v1/checkout/sessions` and
+    /// `GET /v1/checkout/sessions/{id}` responses — never on a `list()`
+    /// item — so `#[serde(default)]` is what makes it decode to `None`
+    /// there rather than failing.
+    ///
+    /// Never log this value: see this type's hand-written `impl Debug`.
+    #[serde(default)]
+    pub client_secret: Option<String>,
+}
+
+/// Replaces everything after the first `#` with a length marker.
+///
+/// A hosted session's [`CheckoutSession::url`] is
+/// `{base}/c/{cs_id}#{client_secret}` (D6), so redacting `client_secret`
+/// alone and rendering `url` verbatim would print the very value the
+/// redaction exists to hide. The path stays visible, because knowing *which*
+/// page a session points at is the whole diagnostic value of the field.
+fn redact_url_fragment(url: &str) -> String {
+    match url.split_once('#') {
+        Some((head, fragment)) => format!("{head}#[{} chars redacted]", fragment.len()),
+        None => url.to_owned(),
+    }
+}
+
+/// Redacts the two fields of a [`CheckoutSession`] that are live
+/// credentials — `client_secret`, and the fragment of `url` — leaving every
+/// other field exactly as a derived `Debug` would render it.
+impl std::fmt::Debug for CheckoutSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CheckoutSession")
+            .field("id", &self.id)
+            .field("object", &self.object)
+            .field("livemode", &self.livemode)
+            .field("payment_intent", &self.payment_intent)
+            .field("ui_mode", &self.ui_mode)
+            .field("status", &self.status)
+            .field("payment_status", &self.payment_status)
+            .field("success_url", &self.success_url)
+            .field("cancel_url", &self.cancel_url)
+            .field("return_url", &self.return_url)
+            .field("url", &self.url.as_deref().map(redact_url_fragment))
+            .field("expires_at", &self.expires_at)
+            .field("created", &self.created)
+            .field(
+                "client_secret",
+                &self
+                    .client_secret
+                    .as_ref()
+                    .map(|s| format!("[{} chars redacted]", s.len())),
+            )
+            .finish()
+    }
+}
+
 /// A refund's lifecycle state. Independent of [`IntentStatus`] — a refund
 /// never changes its intent's status (`docs/flows/payment-lifecycle.md`:
 /// "Refunds do not change intent status").

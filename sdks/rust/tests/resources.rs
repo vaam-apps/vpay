@@ -22,6 +22,10 @@ use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use serde_json::json;
+use vpay_sdk::checkout::{
+    CheckoutPaymentStatus, CheckoutSessionStatus, CheckoutUiMode, CreateCheckoutSessionParams,
+    ListCheckoutSessionsParams,
+};
 use vpay_sdk::payment_intents::{
     ConfirmPaymentIntentParams, CreatePaymentIntentParams, ListPaymentIntentsParams,
     PaymentMethodType,
@@ -838,4 +842,332 @@ async fn retrieve_balance_is_a_bare_get_and_decodes_both_buckets() {
     assert_eq!(request.method.as_str(), "GET");
     assert_eq!(request.url.query(), None);
     assert!(request.body.is_empty());
+}
+
+// --------------------------------------------------------------------------
+// /v1/checkout/sessions — Step 9's four merchant operations.
+//
+// These mirror `sdks/nodejs/src/client.test.ts`'s `checkout.sessions` block
+// one for one, down to the encoded body strings, because ADR-0015's parity
+// rule is about *wire semantics*: two SDKs that both "support checkout
+// sessions" but encode `ui_mode` differently are not at parity, and only a
+// byte-level assertion on both sides catches that.
+// --------------------------------------------------------------------------
+
+#[tokio::test]
+async fn create_checkout_session_sends_the_documented_body_and_decodes_the_object() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/checkout/sessions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(support::checkout_session_json(
+                "cs_123",
+                Some("cs_123_secret_abc123"),
+            )),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let session = client
+        .checkout()
+        .sessions()
+        .create(
+            CreateCheckoutSessionParams {
+                payment_intent: "pi_123".to_string(),
+                ui_mode: Some(CheckoutUiMode::Hosted),
+                success_url: Some("https://shop.example/ok?sid={CHECKOUT_SESSION_ID}".to_string()),
+                cancel_url: Some("https://shop.example/cancel".to_string()),
+                return_url: None,
+            },
+            RequestOptions::new().with_idempotency_key("order_1234_session_1"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(session.id, "cs_123");
+    assert_eq!(session.object, "checkout.session");
+    assert_eq!(session.ui_mode, CheckoutUiMode::Hosted);
+    assert_eq!(session.status, CheckoutSessionStatus::Open);
+    assert_eq!(session.payment_status, CheckoutPaymentStatus::Unpaid);
+    assert_eq!(session.payment_intent, "pi_123");
+    assert_eq!(
+        session.client_secret.as_deref(),
+        Some("cs_123_secret_abc123")
+    );
+
+    let request = only_request(&server, "/v1/checkout/sessions").await;
+    assert_eq!(request.method.as_str(), "POST");
+    assert_eq!(
+        header_value(&request, "content-type").as_deref(),
+        Some("application/x-www-form-urlencoded")
+    );
+    assert_eq!(
+        header_value(&request, "idempotency-key").as_deref(),
+        Some("order_1234_session_1")
+    );
+    assert_eq!(
+        body_string(&request),
+        "payment_intent=pi_123&ui_mode=hosted&success_url=https%3A%2F%2Fshop.example%2Fok%3Fsid%3D%7BCHECKOUT_SESSION_ID%7D&cancel_url=https%3A%2F%2Fshop.example%2Fcancel"
+    );
+}
+
+#[tokio::test]
+async fn create_checkout_session_body_matches_the_node_sdk_byte_for_byte() {
+    // The exact string `sdks/nodejs/src/client.test.ts` asserts in
+    // "checkout.sessions.create: exact path, method, Idempotency-Key, and
+    // body". Written as a literal on both sides on purpose: a re-parsing
+    // comparison would pass while the two SDKs sent different bodies.
+    let params = CreateCheckoutSessionParams {
+        payment_intent: "pi_123".to_string(),
+        ui_mode: Some(CheckoutUiMode::Embedded),
+        success_url: None,
+        cancel_url: None,
+        return_url: Some("https://shop.example/order/42".to_string()),
+    };
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/checkout/sessions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(support::checkout_session_json(
+                "cs_123",
+                Some("cs_123_secret_abc123"),
+            )),
+        )
+        .mount(&server)
+        .await;
+    client
+        .checkout()
+        .sessions()
+        .create(params, RequestOptions::new())
+        .await
+        .unwrap();
+
+    let request = only_request(&server, "/v1/checkout/sessions").await;
+    assert_eq!(
+        body_string(&request),
+        "payment_intent=pi_123&ui_mode=embedded&return_url=https%3A%2F%2Fshop.example%2Forder%2F42"
+    );
+}
+
+#[tokio::test]
+async fn create_checkout_session_omits_absent_optional_fields_rather_than_sending_them_empty() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/checkout/sessions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(support::checkout_session_json("cs_123", None)),
+        )
+        .mount(&server)
+        .await;
+
+    client
+        .checkout()
+        .sessions()
+        .create(
+            CreateCheckoutSessionParams {
+                payment_intent: "pi_123".to_string(),
+                ..Default::default()
+            },
+            RequestOptions::new(),
+        )
+        .await
+        .unwrap();
+
+    let request = only_request(&server, "/v1/checkout/sessions").await;
+    // `ui_mode=` and no `ui_mode` are different requests; only the second
+    // means "let the server default it to hosted".
+    assert_eq!(body_string(&request), "payment_intent=pi_123");
+    // Generated when the caller supplied none, exactly as every other POST.
+    let key = header_value(&request, "idempotency-key").unwrap();
+    assert_eq!(key.len(), 36, "a UUIDv4: {key}");
+}
+
+#[tokio::test]
+async fn retrieve_checkout_session_is_a_get_with_no_body_and_surfaces_client_secret() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/checkout/sessions/cs_123"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(support::checkout_session_json(
+                "cs_123",
+                Some("cs_123_secret_abc123"),
+            )),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let session = client
+        .checkout()
+        .sessions()
+        .retrieve("cs_123")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        session.client_secret.as_deref(),
+        Some("cs_123_secret_abc123")
+    );
+    assert_eq!(
+        session.success_url.as_deref(),
+        Some("https://shop.example/ok?sid={CHECKOUT_SESSION_ID}")
+    );
+
+    let request = only_request(&server, "/v1/checkout/sessions/cs_123").await;
+    assert_eq!(request.method.as_str(), "GET");
+    assert!(request.body.is_empty());
+    assert!(request.url.query().is_none());
+}
+
+#[tokio::test]
+async fn list_checkout_sessions_encodes_its_pagination_and_intent_filter() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/checkout/sessions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list",
+            "data": [support::checkout_session_json("cs_123", None)],
+            "has_more": false,
+            "url": "/v1/checkout/sessions",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let list = client
+        .checkout()
+        .sessions()
+        .list(ListCheckoutSessionsParams {
+            limit: Some(10),
+            payment_intent: Some("pi_123".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(list.data.len(), 1);
+    // A list item never carries the payer credential — the same rule the
+    // intent list obeys, for the same reason.
+    assert_eq!(list.data[0].client_secret, None);
+
+    let request = only_request(&server, "/v1/checkout/sessions").await;
+    assert_eq!(request.url.query(), Some("limit=10&payment_intent=pi_123"));
+}
+
+#[tokio::test]
+async fn expire_checkout_session_posts_an_empty_body_and_still_carries_an_idempotency_key() {
+    let (server, client) = fixture().await;
+    let mut expired = support::checkout_session_json("cs_123", None);
+    expired["status"] = json!("expired");
+    Mock::given(method("POST"))
+        .and(path("/v1/checkout/sessions/cs_123/expire"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(expired))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let session = client
+        .checkout()
+        .sessions()
+        .expire("cs_123", RequestOptions::new())
+        .await
+        .unwrap();
+
+    assert_eq!(session.status, CheckoutSessionStatus::Expired);
+
+    let request = only_request(&server, "/v1/checkout/sessions/cs_123/expire").await;
+    assert_eq!(request.method.as_str(), "POST");
+    assert!(request.body.is_empty());
+    assert!(header_value(&request, "idempotency-key").is_some());
+}
+
+#[tokio::test]
+async fn a_checkout_session_id_with_url_metacharacters_is_percent_encoded_into_the_path() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(support::checkout_session_json("cs_1", None)),
+        )
+        .mount(&server)
+        .await;
+
+    let _ = client.checkout().sessions().retrieve("../../admin").await;
+
+    let requests = server.received_requests().await.unwrap();
+    let paths: Vec<String> = requests
+        .iter()
+        .map(|r| r.url.path().to_string())
+        .filter(|p| p != "/v1/oauth/token")
+        .collect();
+    assert_eq!(paths, vec!["/v1/checkout/sessions/..%2F..%2Fadmin"]);
+}
+
+#[tokio::test]
+async fn a_404_for_an_unknown_checkout_session_maps_to_an_api_error() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/checkout/sessions/cs_nope"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "error": {
+                "type": "invalid_request_error",
+                "code": "resource_missing",
+                "message": "No such checkout session: cs_nope",
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let err = client
+        .checkout()
+        .sessions()
+        .retrieve("cs_nope")
+        .await
+        .expect_err("an unknown session is refused");
+
+    match err {
+        Error::Api {
+            status,
+            code,
+            message,
+            ..
+        } => {
+            assert_eq!(status, 404);
+            assert_eq!(code.as_deref(), Some("resource_missing"));
+            assert_eq!(message, "No such checkout session: cs_nope");
+        }
+        other => panic!("expected Error::Api, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_409_on_expiring_a_session_with_a_live_charge_maps_to_an_api_error() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/checkout/sessions/cs_123/expire"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+            "error": {
+                "type": "invalid_request_error",
+                "code": "invalid_state",
+                "message": "This checkout session has a charge in flight.",
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let err = client
+        .checkout()
+        .sessions()
+        .expire("cs_123", RequestOptions::new())
+        .await
+        .expect_err("a session with a live charge cannot be expired");
+
+    match err {
+        Error::Api { status, code, .. } => {
+            assert_eq!(status, 409);
+            assert_eq!(code.as_deref(), Some("invalid_state"));
+        }
+        other => panic!("expected Error::Api, got {other:?}"),
+    }
 }

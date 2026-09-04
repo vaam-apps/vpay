@@ -384,6 +384,77 @@ pub struct WebhookPolicy {
     pub allow_private_targets: bool,
 }
 
+/// The `checkout:` block: where vpay's own hosted/embedded checkout page is
+/// served from (Step 9, D3/D6).
+///
+/// Its own block rather than a field on [`Deployment`] because it describes a
+/// **second deployable** — `frontends/apps/checkout`, a separate image and a
+/// separate Ingress — and `deployment.public_base_url` is the API's own
+/// origin, which a rail's callback URL is derived from. Conflating the two
+/// would mean a deployment that serves checkout on its own host could not
+/// say so without also moving every rail callback.
+///
+/// One field today, and a struct for [`WebhookPolicy`]'s reason: the next
+/// checkout-wide setting has a home that does not move this one.
+///
+/// # Examples
+///
+/// Absent entirely is the fail-closed default — a deployment that has never
+/// heard of this key serves no checkout page, and `POST
+/// /v1/checkout/sessions` answers `checkout_not_configured` rather than
+/// minting a `url` pointing at nothing:
+///
+/// ```
+/// use vpay_config::CheckoutConfig;
+///
+/// let absent = CheckoutConfig::default();
+/// assert_eq!(absent.public_base_url, None);
+/// ```
+///
+/// ```
+/// use vpay_config::CheckoutConfig;
+///
+/// let checkout: CheckoutConfig =
+///     serde_yaml_ng::from_str("public_base_url: https://checkout.example\n")
+///         .expect("the block a config file writes");
+/// assert_eq!(
+///     checkout.public_base_url.as_deref(),
+///     Some("https://checkout.example")
+/// );
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
+pub struct CheckoutConfig {
+    /// The origin (and optionally the path prefix) the checkout app is
+    /// served from — what every payer link vpay mints is built on:
+    /// `{public_base_url}/c/{cs_id}#{client_secret}` for hosted,
+    /// `{public_base_url}/e/{cs_id}?key={pk}#{client_secret}` for embedded,
+    /// and `{public_base_url}/c/{cs_id}/return?t={return_token}` for the
+    /// return trip.
+    ///
+    /// `Option`, and `None` is a complete answer rather than a missing one:
+    /// most deployments of this repository today serve no checkout page at
+    /// all, and the honest behaviour for one of them is to refuse to create a
+    /// session rather than to hand a merchant a `url` nothing serves.
+    ///
+    /// **A path prefix is allowed on purpose.** Whether production puts the
+    /// checkout app on its own host (`https://checkout.example`) or under a
+    /// path on the API host (`https://api.example/checkout`) is left to the
+    /// maintainer by `docs/plans/2026-09-04-step9-hosted-checkout.md`'s
+    /// "Decisions left to the maintainer", and the chart templates both. A
+    /// query, a fragment or userinfo are refused —
+    /// [`ConfigError::MalformedCheckoutBaseUrl`] — because vpay appends path
+    /// segments to this value and there is no correct way to append a path to
+    /// a URL that already has a query.
+    ///
+    /// Validated in `Config::validate_all`, not here, for
+    /// [`MerchantClient::publishable_keys`]'s reason: the livemode rule
+    /// cannot be seen from this struct alone.
+    #[garde(skip)]
+    #[serde(default)]
+    pub public_base_url: Option<String>,
+}
+
 /// One entry in the currency table
 /// (`backends/migrations/0001_create-currencies.sql`).
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -431,6 +502,12 @@ pub struct Config {
     #[garde(dive)]
     #[serde(default)]
     pub webhooks: WebhookPolicy,
+    /// Where vpay's own checkout page is served from
+    /// (`docs/flows/browser-checkout.md`). Absent means this deployment
+    /// serves none — see [`CheckoutConfig::public_base_url`].
+    #[garde(dive)]
+    #[serde(default)]
+    pub checkout: CheckoutConfig,
     /// The dashboard's OAuth2 client (`docs/flows/dashboard-auth.md`).
     /// `Option` because not every deployment needs the dashboard wired up
     /// yet — unlike a merchant client, there is exactly one of these ever,
@@ -681,9 +758,42 @@ impl Config {
             }
         }
 
+        // Uniqueness across every merchant, before any single origin's own
+        // shape is checked, for the reason the publishable-key walk above
+        // runs in that order.
+        let mut seen_checkout_origins: BTreeMap<&str, &str> = BTreeMap::new();
+        for merchant in &self.merchant_clients {
+            for origin in &merchant.checkout_origins {
+                if let Some(first) =
+                    seen_checkout_origins.insert(origin.as_str(), merchant.client_id.as_str())
+                {
+                    return Err(ConfigError::DuplicateCheckoutOrigin {
+                        origin: origin.clone(),
+                        first: first.to_owned(),
+                        second: merchant.client_id.clone(),
+                    });
+                }
+            }
+        }
+
+        // The deployment's own checkout block, before the per-merchant rule
+        // that depends on it: an operator whose base URL is malformed should
+        // be told *that*, not that a merchant's origins have no page to
+        // frame.
+        if let Some(base_url) = self.checkout.public_base_url.as_deref() {
+            validate_checkout_base_url(base_url, livemode)?;
+        }
+
         for merchant in &self.merchant_clients {
             validate_merchant_client(merchant)?;
             validate_publishable_keys(merchant, livemode)?;
+            validate_display_name(merchant)?;
+            validate_checkout_origins(merchant, livemode)?;
+            if !merchant.checkout_origins.is_empty() && self.checkout.public_base_url.is_none() {
+                return Err(ConfigError::CheckoutOriginsWithoutBaseUrl {
+                    client_id: merchant.client_id.clone(),
+                });
+            }
             validate_webhook_endpoints(merchant, livemode, raw_secrets)?;
         }
         if let Some(dashboard) = &self.dashboard_client {
@@ -1058,6 +1168,265 @@ fn validate_publishable_keys(merchant: &MerchantClient, livemode: bool) -> Resul
                 client_id: merchant.client_id.clone(),
                 key: key.clone(),
                 livemode,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The ceiling on `checkout.public_base_url` and on each
+/// `checkout_origins` entry, in characters.
+///
+/// The same 2048 every URL bound in this system uses (`charges.return_url`'s
+/// `return_url_length`, migration 0019; `webhook_deliveries.url`, 0022). It
+/// is not a database bound here — neither value is stored — but a
+/// `public_base_url` longer than this produces payer links no browser will
+/// follow, and discovering that as a blank page is worse than discovering it
+/// at boot.
+const CHECKOUT_URL_CHARS: std::ops::RangeInclusive<usize> = 1..=2048;
+
+/// The two schemes a payer's browser may reach vpay's own page over.
+///
+/// A closed list rather than a denylist, exactly as
+/// `vpay_api::v1::payment_intents`' `RETURN_URL_SCHEMES` is and for the same
+/// reason: `javascript:` is the obvious hazard, `data:` and `vbscript:` are
+/// the ones a denylist forgets, and the set that legitimately belongs here is
+/// exactly two.
+const CHECKOUT_SCHEMES: [&str; 2] = ["http", "https"];
+
+/// How long a `merchant_clients[].display_name` may be, in characters.
+///
+/// A rendering bound, not a storage one: the value is painted into "Pay
+/// {merchant}" in a heading on a phone-sized page (`frontends/apps/checkout`),
+/// and something that wrapped to four lines would push the amount and the pay
+/// button below the fold. 80 is generous for a business name and small enough
+/// that no layout has to cope with a paragraph.
+const DISPLAY_NAME_MAX_CHARS: usize = 80;
+
+/// `checkout.public_base_url`: a bounded `http(s)` URL with a host, no
+/// userinfo, no query and no fragment — and `https` under livemode.
+///
+/// # What is deliberately *not* refused
+///
+/// A path. `https://api.example/checkout` is one of the two production
+/// topologies the plan leaves to the maintainer, so refusing a path here
+/// would be this function taking a decision that was reserved. A trailing
+/// slash is not refused either; the API strips it once when it builds a link,
+/// so both spellings mint the same URL.
+///
+/// A stub marker (`localhost`, `wiremock`) is not refused either, unlike
+/// [`validate_host`]: those markers describe a *rail* host, and this one is a
+/// page a developer's own browser opens. The livemode https rule below is
+/// what a livemode deployment actually needs from this value, and
+/// `http://localhost:3001` is refused by it already.
+///
+/// # Errors
+///
+/// [`ConfigError::MalformedCheckoutBaseUrl`] for each shape rule, and
+/// [`ConfigError::InsecureCheckoutBaseUrl`] for `http` under livemode.
+fn validate_checkout_base_url(raw: &str, livemode: bool) -> Result<(), ConfigError> {
+    let malformed = |reason: &'static str| ConfigError::MalformedCheckoutBaseUrl {
+        url: raw.to_owned(),
+        reason,
+    };
+
+    // Characters, not bytes: the bound is about what a browser will follow,
+    // and counting bytes would refuse a legal URL with a non-ASCII host.
+    if !CHECKOUT_URL_CHARS.contains(&raw.chars().count()) {
+        return Err(malformed("it must be between 1 and 2048 characters"));
+    }
+    let parsed = url::Url::parse(raw).map_err(|error| {
+        // `url::ParseError`'s own text ("relative URL without a base",
+        // "empty host") names the defect more precisely than this crate
+        // could restate it — but `reason` is `&'static str` by design, so
+        // the precise text goes nowhere and this is the general answer.
+        // The three specific shapes worth naming get their own reasons
+        // below, where they are reachable.
+        let _ = error;
+        malformed("it is not a URL")
+    })?;
+
+    if !CHECKOUT_SCHEMES.contains(&parsed.scheme()) {
+        return Err(malformed("its scheme must be http or https"));
+    }
+    // Not reachable through any string this function can be given: `url`
+    // refuses `http://` and `https://` outright with `EmptyHost`, and every
+    // other scheme was refused a line above. Kept as a total expression
+    // rather than an assumption about a third-party parser's exhaustiveness
+    // — the same posture `vpay_core::ids::push_base32`'s
+    // `.unwrap_or(b'0')` takes — and *proved* unreachable by
+    // `a_hostless_http_url_never_reaches_the_host_branch` rather than merely
+    // asserted here.
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return Err(malformed("it names no host"));
+    }
+    // Refused rather than stripped, exactly as a webhook URL's is
+    // (`ConfigError::WebhookUrlHasCredentials`): this value is rendered into
+    // a link vpay hands a merchant, printed by `Debug` and logged, so it must
+    // never be a secret.
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(malformed("it carries embedded credentials"));
+    }
+    // vpay *appends* path segments to this value (`/c/{id}`, `/e/{id}`), and
+    // there is no correct way to append a path to a URL that already has a
+    // query or a fragment — the appended segments would land after the `?`
+    // and the payer's link would address nothing.
+    if parsed.query().is_some() {
+        return Err(malformed("it must carry no query string"));
+    }
+    if parsed.fragment().is_some() {
+        return Err(malformed(
+            "it must carry no fragment; vpay puts the session credential there",
+        ));
+    }
+
+    if livemode && parsed.scheme() != "https" {
+        return Err(ConfigError::InsecureCheckoutBaseUrl {
+            url: raw.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// The bounds on `display_name`: present means non-blank and at most
+/// [`DISPLAY_NAME_MAX_CHARS`] characters (Step 9).
+///
+/// Characters, not bytes, because the limit is about what fits in a heading
+/// and `Boutique Kribi — Épicerie` is 27 characters in any script. No
+/// character-class rule: a merchant's name is theirs, in whatever language
+/// their payers read, and the page escapes it as text (React) rather than
+/// interpolating it into markup.
+///
+/// # Errors
+///
+/// [`ConfigError::MalformedDisplayName`] for each rule.
+fn validate_display_name(merchant: &MerchantClient) -> Result<(), ConfigError> {
+    let Some(display_name) = merchant.display_name.as_deref() else {
+        return Ok(());
+    };
+
+    let malformed = |reason: &'static str| ConfigError::MalformedDisplayName {
+        client_id: merchant.client_id.clone(),
+        display_name: display_name.to_owned(),
+        reason,
+    };
+
+    // Blank rather than empty: `display_name: " "` renders as a heading with
+    // nothing in it, which is the same failure as `""` and is what an
+    // operator gets from a YAML quoting mistake.
+    if display_name.trim().is_empty() {
+        return Err(malformed(
+            "it must not be blank; omit the key entirely to fall back to the merchant id",
+        ));
+    }
+    if display_name.chars().count() > DISPLAY_NAME_MAX_CHARS {
+        return Err(malformed(
+            "it must be at most 80 characters; it is painted into a heading on a phone-sized \
+             page",
+        ));
+    }
+    Ok(())
+}
+
+/// One merchant's `checkout_origins` (D4): each a bounded `http(s)` **origin**
+/// — scheme, host, optional port, and nothing else — and `https` under
+/// livemode.
+///
+/// Uniqueness is **not** here: it is a property of the whole
+/// `merchant_clients` list and is checked in `Config::validate_all`, for the
+/// same reason `publishable_keys`' uniqueness is.
+///
+/// # Why "nothing else" is checked so literally
+///
+/// A CSP `host-source` is `scheme "://" host [":" port]`. A browser given
+/// `https://shop.example/checkout` in `frame-ancestors` does not treat it as
+/// `https://shop.example`; depending on the browser it either ignores that
+/// one source or discards the directive. Both failures are silent and both
+/// look, from the merchant's side, exactly like "vpay will not let me embed"
+/// — so the trailing slash `url::Url::parse` helpfully adds is checked for
+/// explicitly against the *raw* text rather than against the parse.
+///
+/// # Errors
+///
+/// [`ConfigError::MalformedCheckoutOrigin`] for each shape rule, and
+/// [`ConfigError::InsecureCheckoutOrigin`] for `http` under livemode.
+fn validate_checkout_origins(merchant: &MerchantClient, livemode: bool) -> Result<(), ConfigError> {
+    for origin in &merchant.checkout_origins {
+        let malformed = |reason: &'static str| ConfigError::MalformedCheckoutOrigin {
+            client_id: merchant.client_id.clone(),
+            origin: origin.clone(),
+            reason,
+        };
+
+        if !CHECKOUT_URL_CHARS.contains(&origin.chars().count()) {
+            return Err(malformed("it must be between 1 and 2048 characters"));
+        }
+        let parsed = url::Url::parse(origin).map_err(|_error| malformed("it is not a URL"))?;
+
+        if !CHECKOUT_SCHEMES.contains(&parsed.scheme()) {
+            return Err(malformed("its scheme must be http or https"));
+        }
+        // Unreachable for the same reason `validate_checkout_base_url`'s is
+        // — see that function's comment and the test it names.
+        if parsed.host_str().is_none_or(str::is_empty) {
+            return Err(malformed("it names no host"));
+        }
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            return Err(malformed("an origin carries no credentials"));
+        }
+        if parsed.query().is_some() {
+            return Err(malformed("an origin carries no query string"));
+        }
+        if parsed.fragment().is_some() {
+            return Err(malformed("an origin carries no fragment"));
+        }
+        // Against the raw text, not the parse: `Url::parse` normalises
+        // `https://shop.example` to a `path()` of `/`, so asking the parse
+        // "is there a path?" answers yes for the one spelling that is
+        // correct. What must be refused is a path the operator *wrote* —
+        // which is exactly "something after the authority".
+        //
+        // `rsplit_once` on the scheme separator rather than counting
+        // slashes: a host cannot contain `//`, so everything after the first
+        // one is the authority plus whatever follows it.
+        let after_scheme = origin
+            .split_once("://")
+            .map_or(origin.as_str(), |(_scheme, rest)| rest);
+        if after_scheme.contains('/') {
+            return Err(malformed(
+                "an origin is scheme://host[:port] with no path, not even a trailing slash",
+            ));
+        }
+
+        if livemode && parsed.scheme() != "https" {
+            return Err(ConfigError::InsecureCheckoutOrigin {
+                client_id: merchant.client_id.clone(),
+                origin: origin.clone(),
+            });
+        }
+
+        // Last, because every rule above says something more specific about a
+        // value that is not an origin at all, and this one is about a value
+        // that *is* one — spelled a way the thing that consumes it does not
+        // recognise.
+        //
+        // `Origin::ascii_serialization` is what a browser's `URL.origin`
+        // produces: lower-cased host, IDNA-encoded to ASCII, default port
+        // elided. The checkout app filters its `frame-ancestors` list by
+        // comparing against exactly that (`src/lib/origins.ts`), so an entry
+        // that differs from it is an entry the browser never sees — and the
+        // symptom is silence: the list loads, the route answers 200, and the
+        // merchant's site simply cannot frame the page.
+        //
+        // Compared against the *raw text* rather than against the parse, for
+        // the reason the path check above is: what has to be right is what
+        // the operator wrote, because that is what is served.
+        let canonical = parsed.origin().ascii_serialization();
+        if origin != &canonical {
+            return Err(ConfigError::NonCanonicalCheckoutOrigin {
+                client_id: merchant.client_id.clone(),
+                origin: origin.clone(),
+                canonical,
             });
         }
     }
@@ -1666,6 +2035,7 @@ mod tests {
             merchant_clients: vec![MerchantClient {
                 client_id: "acme-cameroon".to_owned(),
                 merchant_id: "acme-cameroon-tenant".to_owned(),
+                display_name: None,
                 jwks: Some(serde_json::json!({ "keys": [{ "kty": "RSA", "kid": "k1" }] })),
                 grant_types: vec![crate::oauth::GrantType::ClientCredentials],
                 scopes: vec!["payments:write".to_owned()],
@@ -1673,7 +2043,9 @@ mod tests {
                 client_secret: None,
                 webhooks: Vec::new(),
                 publishable_keys: Vec::new(),
+                checkout_origins: Vec::new(),
             }],
+            checkout: CheckoutConfig::default(),
             dashboard_client: None,
         }
     }
@@ -2400,6 +2772,7 @@ mod tests {
             currencies: Vec::new(),
             webhooks: WebhookPolicy::default(),
             merchant_clients: Vec::new(),
+            checkout: CheckoutConfig::default(),
             dashboard_client: None,
         };
 
@@ -2746,6 +3119,420 @@ mod tests {
         );
     }
 
+    // --- checkout (Step 9, D4/D6) ---
+
+    /// Every checkout rule, one fixture each — the same table shape
+    /// `every_webhook_endpoint_rule_refuses_its_own_fixture` uses and for the
+    /// same reason: a *missing* rule shows up as a missing row.
+    ///
+    /// Each fixture's own header states what its only defect is, which is
+    /// what stops a case from passing because some earlier rule fired.
+    #[test]
+    fn every_checkout_rule_refuses_its_own_fixture() {
+        let cases: Vec<(&str, ConfigError)> = vec![
+            (
+                "checkout-base-url-malformed.yml",
+                ConfigError::MalformedCheckoutBaseUrl {
+                    url: "https://checkout.example?tenant=acme".to_owned(),
+                    reason: "it must carry no query string",
+                },
+            ),
+            (
+                "checkout-base-url-insecure.yml",
+                ConfigError::InsecureCheckoutBaseUrl {
+                    url: "http://checkout.example".to_owned(),
+                },
+            ),
+            (
+                "checkout-origin-malformed.yml",
+                ConfigError::MalformedCheckoutOrigin {
+                    client_id: "acme-cameroon".to_owned(),
+                    origin: "https://shop.example/checkout".to_owned(),
+                    reason: "an origin is scheme://host[:port] with no path, not even a \
+                             trailing slash",
+                },
+            ),
+            (
+                "checkout-origin-insecure.yml",
+                ConfigError::InsecureCheckoutOrigin {
+                    client_id: "acme-cameroon".to_owned(),
+                    origin: "http://localhost:3000".to_owned(),
+                },
+            ),
+            (
+                "checkout-origin-duplicate.yml",
+                ConfigError::DuplicateCheckoutOrigin {
+                    origin: "https://shop.example".to_owned(),
+                    first: "acme-cameroon".to_owned(),
+                    second: "beta-douala".to_owned(),
+                },
+            ),
+            (
+                "checkout-origins-without-base-url.yml",
+                ConfigError::CheckoutOriginsWithoutBaseUrl {
+                    client_id: "acme-cameroon".to_owned(),
+                },
+            ),
+            (
+                "checkout-origin-non-canonical.yml",
+                ConfigError::NonCanonicalCheckoutOrigin {
+                    client_id: "acme-cameroon".to_owned(),
+                    origin: "https://Shop.example:443".to_owned(),
+                    canonical: "https://shop.example".to_owned(),
+                },
+            ),
+            (
+                "merchant-display-name-too-long.yml",
+                ConfigError::MalformedDisplayName {
+                    client_id: "acme-cameroon".to_owned(),
+                    display_name: "Acme Cameroun Societe Anonyme de Distribution Generale et \
+                                   de Services Divers SARL"
+                        .to_owned(),
+                    reason: "it must be at most 80 characters; it is painted into a heading \
+                             on a phone-sized page",
+                },
+            ),
+        ];
+
+        for (fixture, expected) in cases {
+            let error = load_fixture(fixture)
+                .map(|_| ())
+                .expect_err(&format!("{fixture} must be refused"));
+            assert_eq!(error, expected, "{fixture}");
+        }
+    }
+
+    /// The shapes `validate_checkout_base_url` accepts and refuses, as a
+    /// table over the function itself — the fixtures above prove one of these
+    /// arrives through a YAML document; this proves the rest of the rule.
+    ///
+    /// The two rows worth reading twice: a **path prefix is accepted**,
+    /// because whether production serves the checkout app on its own host or
+    /// under a path on the API host is a decision the plan reserves for the
+    /// maintainer and refusing one of them here would take it; and
+    /// `http://localhost:3001` is accepted in sandbox, because that is where
+    /// a developer's checkout app actually runs.
+    #[test]
+    fn a_checkout_base_url_may_carry_a_path_and_must_not_carry_a_query() {
+        for accepted in [
+            "https://checkout.example",
+            "https://checkout.example/",
+            // The other production topology the plan leaves open.
+            "https://api.vpay.example/checkout",
+            "https://checkout.example:8443",
+            "HTTPS://Checkout.Example",
+        ] {
+            validate_checkout_base_url(accepted, true)
+                .unwrap_or_else(|e| panic!("{accepted} must be accepted in livemode: {e}"));
+        }
+        // Sandbox: a developer's own machine.
+        validate_checkout_base_url("http://localhost:3001", false)
+            .expect("a developer's checkout app is plain HTTP");
+
+        let refusals: [(&str, &str); 6] = [
+            ("not-a-url", "it is not a URL"),
+            ("ftp://checkout.example", "its scheme must be http or https"),
+            // The scheme is checked before the host, so a `file:` URL is
+            // reported as the scheme problem it is rather than as a missing
+            // host — which is what an operator has to fix.
+            ("file:///srv/checkout", "its scheme must be http or https"),
+            (
+                "https://user:pass@checkout.example",
+                "it carries embedded credentials",
+            ),
+            (
+                "https://checkout.example?tenant=acme",
+                "it must carry no query string",
+            ),
+            (
+                "https://checkout.example#frag",
+                "it must carry no fragment; vpay puts the session credential there",
+            ),
+        ];
+        for (raw, reason) in refusals {
+            assert_eq!(
+                validate_checkout_base_url(raw, false),
+                Err(ConfigError::MalformedCheckoutBaseUrl {
+                    url: raw.to_owned(),
+                    reason,
+                }),
+                "{raw}"
+            );
+        }
+
+        // The livemode rule is its own variant, not a `reason`, because the
+        // fix is different: terminate TLS, or correct `livemode`.
+        assert_eq!(
+            validate_checkout_base_url("http://checkout.example", true),
+            Err(ConfigError::InsecureCheckoutBaseUrl {
+                url: "http://checkout.example".to_owned(),
+            })
+        );
+    }
+
+    /// The proof that both validators' "it names no host" branch is
+    /// unreachable: `url::Url::parse` refuses every hostless `http(s)`
+    /// spelling before either function can look at the parse.
+    ///
+    /// This is a **tripwire on a dependency**, not a test of vpay's own
+    /// logic. If a future `url` release started accepting `http://` with an
+    /// empty host, that branch would become live — and this test is what
+    /// says so, instead of the branch quietly becoming the only thing
+    /// standing between a config file and a payer link with no host in it.
+    #[test]
+    fn a_hostless_http_url_never_reaches_the_host_branch() {
+        for raw in ["http://", "https://", "http://?x=1", "https://#f"] {
+            assert!(
+                url::Url::parse(raw).is_err(),
+                "{raw} parsed; the `it names no host` branch is now reachable and its message                  is what an operator would see"
+            );
+        }
+        // And a scheme that *can* have no host never gets that far, because
+        // the scheme check runs first.
+        assert_eq!(
+            validate_checkout_base_url("file:///srv", false),
+            Err(ConfigError::MalformedCheckoutBaseUrl {
+                url: "file:///srv".to_owned(),
+                reason: "its scheme must be http or https",
+            })
+        );
+    }
+
+    /// What is and is not an origin.
+    ///
+    /// The trailing-slash row is the one that would otherwise slip through:
+    /// `url::Url::parse` normalises `https://shop.example` to a `path()` of
+    /// `/`, so a validator that asked the *parse* "is there a path?" would
+    /// answer yes for the one spelling that is correct — and would then have
+    /// to accept `https://shop.example/checkout` too. The check is against
+    /// the raw text for exactly that reason.
+    #[test]
+    fn a_checkout_origin_is_scheme_host_and_port_and_nothing_else() {
+        let accepted = ["https://shop.example", "https://shop.example:8443"];
+        let merchant = |origins: &[&str]| {
+            let mut client = valid_config().merchant_clients.remove(0);
+            client.checkout_origins = origins.iter().map(|o| (*o).to_owned()).collect();
+            client
+        };
+
+        validate_checkout_origins(&merchant(&accepted), true)
+            .expect("https origins with an optional port are what a CSP source is");
+        // http is the merchant's development host, and only outside livemode.
+        validate_checkout_origins(&merchant(&["http://localhost:3000"]), false)
+            .expect("a merchant's own dev server");
+        assert_eq!(
+            validate_checkout_origins(&merchant(&["http://localhost:3000"]), true),
+            Err(ConfigError::InsecureCheckoutOrigin {
+                client_id: "acme-cameroon".to_owned(),
+                origin: "http://localhost:3000".to_owned(),
+            })
+        );
+
+        let path_reason =
+            "an origin is scheme://host[:port] with no path, not even a trailing slash";
+        let refusals: [(&str, &str); 7] = [
+            // The trailing slash: the row this test exists for.
+            ("https://shop.example/", path_reason),
+            ("https://shop.example/checkout", path_reason),
+            // The query is checked before the path, so this reports the
+            // query. Either answer is true; the rule is that it reports
+            // exactly one and always the same one.
+            (
+                "https://shop.example/?x=1",
+                "an origin carries no query string",
+            ),
+            ("shop.example", "it is not a URL"),
+            ("ftp://shop.example", "its scheme must be http or https"),
+            ("file:///srv", "its scheme must be http or https"),
+            (
+                "https://user:pass@shop.example",
+                "an origin carries no credentials",
+            ),
+        ];
+        for (raw, reason) in refusals {
+            assert_eq!(
+                validate_checkout_origins(&merchant(&[raw]), false),
+                Err(ConfigError::MalformedCheckoutOrigin {
+                    client_id: "acme-cameroon".to_owned(),
+                    origin: raw.to_owned(),
+                    reason,
+                }),
+                "{raw}"
+            );
+        }
+
+        // The fail-closed default: no origins at all is a complete answer,
+        // and it is what every registration without embedded checkout has.
+        validate_checkout_origins(&merchant(&[]), true).expect("an empty list is valid");
+    }
+
+    /// An origin a human would call correct, spelled a way the *browser* does
+    /// not — the case that fails silently.
+    ///
+    /// All three of these parse, name a host, carry no path, no query, no
+    /// fragment and no credentials, and are `https`. Every rule above them
+    /// passes. And the checkout app drops all three, because it filters its
+    /// `frame-ancestors` list by comparing each entry against `URL.origin`
+    /// (`frontends/apps/checkout/src/lib/origins.ts`) — the browser's
+    /// canonical, ASCII, default-port-elided form. The merchant gets
+    /// `frame-ancestors 'none'` and no diagnostic anywhere.
+    ///
+    /// The refusal names what to write instead, because "it is not
+    /// canonical" is not something an operator can act on and
+    /// `https://xn--shp-tna.example` is.
+    #[test]
+    fn a_checkout_origin_must_be_spelled_the_way_a_browser_spells_it() {
+        let merchant = |origin: &str| {
+            let mut client = valid_config().merchant_clients.remove(0);
+            client.checkout_origins = vec![origin.to_owned()];
+            client
+        };
+
+        let refusals = [
+            // An upper-case host: legal DNS, and not what `URL.origin` says.
+            ("https://Shop.example", "https://shop.example"),
+            // The default port, written out.
+            ("https://shop.example:443", "https://shop.example"),
+            // A unicode host, which a browser compares IDNA-encoded.
+            ("https://shöp.example", "https://xn--shp-tna.example"),
+        ];
+        for (raw, canonical) in refusals {
+            assert_eq!(
+                validate_checkout_origins(&merchant(raw), false),
+                Err(ConfigError::NonCanonicalCheckoutOrigin {
+                    client_id: "acme-cameroon".to_owned(),
+                    origin: raw.to_owned(),
+                    canonical: canonical.to_owned(),
+                }),
+                "{raw}"
+            );
+        }
+
+        // The canonical spellings of the same three are accepted, so this
+        // test cannot pass by refusing everything.
+        for accepted in [
+            "https://shop.example",
+            "https://xn--shp-tna.example",
+            "https://shop.example:8443",
+        ] {
+            validate_checkout_origins(&merchant(accepted), false)
+                .unwrap_or_else(|error| panic!("{accepted} must be accepted: {error}"));
+        }
+    }
+
+    /// `display_name` is what a payer is told they are paying, and its two
+    /// rules are about a heading on a phone.
+    ///
+    /// Absent is legal and is the default — the browser reads fall back to
+    /// the merchant id — so the accepted half of this test includes `None`,
+    /// which is the shape most registrations have.
+    #[test]
+    fn a_display_name_is_present_and_non_blank_or_absent() {
+        let merchant = |display_name: Option<&str>| {
+            let mut client = valid_config().merchant_clients.remove(0);
+            client.display_name = display_name.map(ToOwned::to_owned);
+            client
+        };
+
+        validate_display_name(&merchant(None)).expect("absent is the default and is legal");
+        validate_display_name(&merchant(Some("Boutique Kribi — Épicerie")))
+            .expect("a merchant's own name, in their own script");
+        validate_display_name(&merchant(Some(&"a".repeat(DISPLAY_NAME_MAX_CHARS))))
+            .expect("exactly the bound is inside it");
+
+        // Characters, not bytes: 80 accented characters are 80 characters.
+        validate_display_name(&merchant(Some(&"é".repeat(DISPLAY_NAME_MAX_CHARS))))
+            .expect("the bound counts characters, not bytes");
+
+        for (raw, reason) in [
+            (
+                "",
+                "it must not be blank; omit the key entirely to fall back to the merchant id",
+            ),
+            (
+                "   ",
+                "it must not be blank; omit the key entirely to fall back to the merchant id",
+            ),
+        ] {
+            assert_eq!(
+                validate_display_name(&merchant(Some(raw))),
+                Err(ConfigError::MalformedDisplayName {
+                    client_id: "acme-cameroon".to_owned(),
+                    display_name: raw.to_owned(),
+                    reason,
+                }),
+                "{raw:?}"
+            );
+        }
+
+        let too_long = "a".repeat(DISPLAY_NAME_MAX_CHARS + 1);
+        assert_eq!(
+            validate_display_name(&merchant(Some(&too_long))),
+            Err(ConfigError::MalformedDisplayName {
+                client_id: "acme-cameroon".to_owned(),
+                display_name: too_long,
+                reason: "it must be at most 80 characters; it is painted into a heading on a \
+                         phone-sized page",
+            })
+        );
+    }
+
+    /// A registration that lists the same origin twice is the same defect and
+    /// the same refusal as two merchants sharing one.
+    ///
+    /// Written in memory rather than as a fixture for
+    /// `one_merchant_listing_a_publishable_key_twice_is_rejected`'s reason: a
+    /// repeated list item reads as a copy/paste slip in a file and as a
+    /// deliberate case here.
+    #[test]
+    fn one_merchant_listing_a_checkout_origin_twice_is_rejected() {
+        let mut config = valid_config();
+        config.checkout.public_base_url = Some("https://checkout.example".to_owned());
+        config
+            .merchant_clients
+            .first_mut()
+            .expect("the fixture registers one merchant")
+            .checkout_origins = vec![
+            "https://shop.example".to_owned(),
+            "https://shop.example".to_owned(),
+        ];
+
+        let error = config
+            .validate_all(&RawSecrets::default())
+            .expect_err("one registration listing an origin twice must be rejected");
+        assert_eq!(
+            error,
+            ConfigError::DuplicateCheckoutOrigin {
+                origin: "https://shop.example".to_owned(),
+                first: "acme-cameroon".to_owned(),
+                second: "acme-cameroon".to_owned(),
+            }
+        );
+    }
+
+    /// The two shapes a deployment without embedded checkout has, both legal:
+    /// no `checkout:` block at all, and a base URL with no origins anywhere.
+    ///
+    /// The second is the *hosted-only* deployment — the common one — and it
+    /// must boot. Only the reverse pairing (origins with no base URL) is
+    /// refused, and `every_checkout_rule_refuses_its_own_fixture` covers it.
+    #[test]
+    fn a_deployment_may_serve_no_checkout_at_all_or_hosted_checkout_with_no_origins() {
+        let mut config = valid_config();
+        assert_eq!(
+            config.checkout.public_base_url, None,
+            "an absent `checkout:` block is the default, not an error"
+        );
+        config
+            .validate_all(&RawSecrets::default())
+            .expect("a deployment that serves no checkout page is valid");
+
+        config.checkout.public_base_url = Some("https://checkout.example".to_owned());
+        config
+            .validate_all(&RawSecrets::default())
+            .expect("hosted checkout with no embedding configured anywhere is valid");
+    }
+
     // --- publishable keys (Step 5c D1) ---
 
     /// One key, two tenants. Every other rule passes, so this fires on the
@@ -2992,6 +3779,54 @@ mod tests {
         assert!(
             key.starts_with("pk_test_"),
             "the example deployment is livemode: false, so its key must say so: {key}"
+        );
+    }
+
+    /// The shipped example actually configures checkout, and both halves of
+    /// it reach the loaded `Config`.
+    ///
+    /// The sibling of `the_example_config_registers_a_publishable_key`, and
+    /// it exists for the same reason that one does: `checkout:` and
+    /// `checkout_origins:` are both `#[serde(default)]`, so a field-name typo
+    /// in `config/application.yml` would be silently an absent block and an
+    /// empty list — a deployment that boots clean, looks healthy, and answers
+    /// `checkout_not_configured` to every session a merchant creates.
+    #[test]
+    fn the_example_config_configures_checkout() {
+        let example = Config::load_with_env(
+            Some(Path::new(EXAMPLE_BASE)),
+            "does-not-exist",
+            &example_env(BTreeMap::new()),
+        )
+        .expect("the example config loads");
+
+        let base_url = example
+            .checkout
+            .public_base_url
+            .as_deref()
+            .expect("config/application.yml sets checkout.public_base_url");
+        assert!(
+            base_url.starts_with("http://"),
+            "the example deployment is livemode: false, so a plain-HTTP dev host is right:              {base_url}"
+        );
+        // Not the API's own origin: the two are different deployables, and a
+        // sample that conflated them would teach the wrong topology.
+        assert_ne!(base_url, example.deployment.public_base_url);
+
+        let acme = example
+            .merchant_clients
+            .iter()
+            .find(|client| client.client_id == "acme-cameroon")
+            .expect("the example merchant is registered");
+        assert_eq!(
+            acme.checkout_origins.len(),
+            1,
+            "the example merchant carries one embedding origin"
+        );
+        let origin = acme.checkout_origins.first().expect("one origin");
+        assert!(
+            !origin.trim_start_matches("http://").contains('/'),
+            "an origin carries no path, not even a trailing slash: {origin}"
         );
     }
 

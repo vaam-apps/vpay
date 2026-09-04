@@ -108,6 +108,19 @@ merchant_clients:
     # deliberately a separate value from `client_id` — see
     # `MerchantClient::merchant_id` for why a rotated key must not change it.
     merchant_id: acme-cameroon
+    # What a payer is told they are paying, on vpay's own checkout page
+    # (Step 9). Optional; a registration without it falls back to
+    # `merchant_id` above, which is a true name for who is being paid but an
+    # internal one — `acme-cameroon` is not what a payer recognises from the
+    # site they were just on. Set it for any merchant that uses hosted or
+    # embedded checkout.
+    #
+    # Not secret: it is rendered to every payer of this merchant by
+    # construction. At most 80 characters, non-blank if present — it is
+    # painted into a heading on a phone-sized page, and the bound is a
+    # layout rule rather than a storage one
+    # (ConfigError::MalformedDisplayName).
+    display_name: Acme Cameroun
     jwks:
       keys:
         - kty: RSA
@@ -157,6 +170,41 @@ merchant_clients:
     # list (the default) is the fail-closed shape for a merchant with no
     # browser checkout.
     publishable_keys: ["pk_test_acmecameroonsandbox01"]
+    # The sites allowed to **frame** vpay's embedded checkout page for this
+    # merchant (Step 9, D4) — the list
+    # `Content-Security-Policy: frame-ancestors` is built from, served to the
+    # checkout app by `GET /v1/browser/checkout/origins?key=…`.
+    #
+    # Each entry is an *origin*: scheme, host, optional port. No path, no
+    # query, no fragment, not even a trailing slash — that is what a CSP
+    # source expression is, and a browser handed anything else either ignores
+    # that source or discards the whole directive. Both failures are silent
+    # and both look, to the merchant, exactly like "vpay will not let me
+    # embed", so the shape is refused at boot instead
+    # (ConfigError::MalformedCheckoutOrigin).
+    #
+    # It must also be the *canonical* spelling a browser uses: lower-case
+    # host, IDNA-encoded, default port left off. `https://Shop.example`,
+    # `https://shop.example:443` and `https://shöp.example` are all origins a
+    # human would call correct and all three are dropped silently by the
+    # checkout app's own filter, so boot refuses them and names what to write
+    # instead (ConfigError::NonCanonicalCheckoutOrigin).
+    #
+    # Not secret — an origin is the merchant's own public website, which is
+    # why the lookup takes a publishable key and no `client_secret` at all.
+    #
+    # **An empty list (the default) is the fail-closed shape and is what most
+    # registrations should have**: it means no site may embed, the page
+    # answers `frame-ancestors 'none'`, and hosted checkout is unaffected —
+    # it is never framed. The value below exists so `just demo` and the
+    # Cypress embedded spec have a configured origin to serve a merchant
+    # fixture page from.
+    #
+    # `http://` because this deployment is not live; a livemode one must use
+    # `https` (ConfigError::InsecureCheckoutOrigin). Declaring origins with
+    # no `checkout.public_base_url` above is refused outright — there would be
+    # no page for them to frame.
+    checkout_origins: ["http://localhost:4300"]
     # Where this merchant's events are POSTed (docs/flows/webhooks.md), and
     # what each delivery is signed with. Endpoints are YAML, not a `/v1`
     # resource and not a table — see `vpay_config::oauth::WebhookEndpoint`.
@@ -180,6 +228,46 @@ merchant_clients:
         # is genuinely secret: whoever holds it can sign a
         # `payment_intent.succeeded` this merchant's handler will believe.
         secrets: ["${MERCHANT_WEBHOOK_SECRET}"]
+
+# Where vpay's own checkout page is served from (Step 9, D3/D6). A *second
+# deployable* — `frontends/apps/checkout`, its own image and its own Ingress —
+# so it is its own block rather than a field on `deployment`, whose
+# `public_base_url` above is the API's origin and is what every rail callback
+# URL is derived from.
+#
+# Every payer link vpay mints is built on this value:
+#
+#   hosted    {public_base_url}/c/{cs_id}#{client_secret}
+#   embedded  {public_base_url}/e/{cs_id}?key={pk}#{client_secret}
+#   return    {public_base_url}/c/{cs_id}/return?t={return_token}
+#
+# The credential is in the *fragment* on the first two, which never leaves the
+# browser. The return page's token is a separate, weaker credential in a query
+# string, because a fragment does not survive a rail's redirect (D6).
+#
+# **Optional, and absent is a complete answer**: a deployment that omits this
+# block serves no checkout page, and `POST /v1/checkout/sessions` answers
+# `checkout_not_configured` rather than minting a `url` that resolves to
+# nothing. Absent is also what every deployment of this repository had before
+# Step 9.
+#
+# `http://` here because `deployment.livemode` above is `false`; a livemode
+# deployment must overlay an `https://` value or refuse to boot
+# (ConfigError::InsecureCheckoutBaseUrl) — a plaintext base URL would send a
+# live payer credential in clear on every checkout.
+#
+# A path prefix is legal (`https://api.example/checkout`): whether production
+# puts the checkout app on its own host or under a path on the API host is a
+# maintainer decision the Step 9 plan leaves open, and the chart templates
+# both. A query string or a fragment is refused — vpay appends path segments
+# to this value.
+#
+# 3001, not 3000: 3000 is the dashboard's dev server (see
+# `dashboard_client.redirect_uris` in application-sandbox.yml), and two apps
+# on one port is the kind of collision that only shows up when both are
+# running.
+checkout:
+  public_base_url: http://localhost:3001
 
 # The dashboard's single OAuth2 client (docs/flows/dashboard-auth.md):
 # authorization-code + PKCE, a public client with no secret, requesting

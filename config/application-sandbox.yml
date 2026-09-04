@@ -29,3 +29,14 @@ webhooks:
 dashboard_client:
   redirect_uris:
     - http://localhost:3000/dash/v1/callback
+
+# The checkout app's own dev server, when it is run outside compose. The base
+# file already sets `http://localhost:3001`; this overlay exists so the value
+# is *visible* in the profile a developer actually loads — figment's dict
+# merge would otherwise leave it looking unset to anyone reading this file
+# alone. Same value, stated once more on purpose.
+#
+# `just demo` overrides it again, from a generated overlay, with the port the
+# compose stack published (lane 4).
+checkout:
+  public_base_url: http://localhost:3001

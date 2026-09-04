@@ -1,0 +1,27 @@
+# Fixture for `every_checkout_rule_refuses_its_own_fixture`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# `display_name` is what a payer is told they are paying, painted into a
+# heading on a phone-sized page. This one is 81 characters: one past the
+# bound, so the fixture fails on the length rule and on nothing else.
+#
+# Everything else about this registration is valid, including the `vpay:v1`
+# audience `validate_merchant_client` requires.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    display_name: "Acme Cameroun Societe Anonyme de Distribution Generale et de Services Divers SARL"
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]

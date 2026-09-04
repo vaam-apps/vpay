@@ -338,10 +338,29 @@ impl ProviderAdapter for Adapter {
     /// on it and answers a repeat with the same `pay_token`, so a duplicate
     /// submission comes back as [`Submitted`], never as an error.
     ///
+    /// Where the payer ends up is [`ChargeRef::return_url`]'s answer and
+    /// never this adapter's: `return_url` and `cancel_url` both carry it
+    /// verbatim (Step 9, D2). Until 2026-09-04 they were read from
+    /// *deployment* settings, falling back to the notification endpoint —
+    /// one answer per deployment to a question that is per charge, so a
+    /// merchant's `return_url` was stored on `charges`, echoed back to them
+    /// on `next_action`, and never sent to the rail that would act on it.
+    /// The two settings keys are gone with it; nothing shipped set them
+    /// (`config/application.yml` never had either).
+    ///
+    /// Both fields get the same value. Orange's page distinguishes them —
+    /// "paid" against "the payer gave up" — and vpay cannot yet tell those
+    /// apart on the way back: the outcome comes from the authenticated
+    /// status query, not from which link the payer clicked, and a charge the
+    /// payer abandoned is `Pending` until it expires. Sending two different
+    /// URLs would be a claim this system does not check.
+    ///
     /// # Errors
     ///
-    /// [`ProviderError::Config`] for a missing credential or an unusable base
-    /// URL; [`ProviderError::Rejected`] with
+    /// [`ProviderError::Config`] for a missing credential, an unusable base
+    /// URL, or a charge with no `return_url` — a redirect rail must be told
+    /// where the payer goes next, and this adapter will not invent it;
+    /// [`ProviderError::Rejected`] with
     /// [`FailureCode::ProviderAccountBlocked`] when the rail refuses our
     /// credentials even after a fresh token; [`ProviderError::Transport`] for
     /// a 5xx, a timeout or a connection failure; [`ProviderError::Malformed`]
@@ -353,11 +372,7 @@ impl ProviderAdapter for Adapter {
     ) -> Result<Submitted, ProviderError> {
         let merchant_key = credential(config, "merchant_key")?;
         let callback_url = config.callback_url.as_str();
-        // A merchant that has configured neither lands the payer back on the
-        // notification endpoint, which is harmless and visible, rather than
-        // on a blank page or a URL this adapter invented.
-        let return_url = setting(config, "return_url").unwrap_or(callback_url);
-        let cancel_url = setting(config, "cancel_url").unwrap_or(callback_url);
+        let return_url = return_url(charge)?;
 
         let body = WebPaymentRequest {
             merchant_key,
@@ -371,7 +386,7 @@ impl ProviderAdapter for Adapter {
             // A JSON number, per the flow doc. See `Money::to_provider_minor`.
             amount: charge.amount.to_provider_minor(),
             return_url,
-            cancel_url,
+            cancel_url: return_url,
             notif_url: callback_url,
             lang: setting(config, "lang").unwrap_or(DEFAULT_LANG),
         };
@@ -560,6 +575,38 @@ fn credential<'a>(config: &'a ProviderConfig, key: &str) -> Result<&'a str, Prov
         })
 }
 
+/// Where this charge's payer is sent when the hosted page is done with them.
+///
+/// Required, and the twin of `mtn_momo`'s "payer_ref required on a push rail":
+/// a redirect rail hands the payer to a page vpay does not control, and a
+/// charge that cannot say where they come back to is one whose payer is
+/// stranded on the rail's own thank-you screen. Refusing before the call is
+/// the only place that can still be fixed without a payer having moved money.
+///
+/// Empty is absent, for the same reason it is in [`credential`]: a blank
+/// column is a lost value, not a choice, and it must fail where a missing one
+/// does rather than reach the rail as `""`.
+///
+/// # Errors
+///
+/// [`ProviderError::Config`], naming the reference so an operator can find the
+/// charge. The URL itself is never quoted — it is the merchant's, and this
+/// error line goes to a log.
+fn return_url(charge: &ChargeRef) -> Result<&str, ProviderError> {
+    charge
+        .return_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| {
+            ProviderError::Config(format!(
+                "orange_money: charge {} has no return_url; a redirect rail must be told where \
+                 the payer goes when the hosted page is done with them",
+                charge.reference_id
+            ))
+        })
+}
+
 /// An optional non-empty setting.
 fn setting<'a>(config: &'a ProviderConfig, key: &str) -> Option<&'a str> {
     config
@@ -698,17 +745,44 @@ mod tests {
         Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0202)
     }
 
+    /// Where the core says this charge's payer goes next. A merchant's own
+    /// URL here; for a session-driven charge it would be vpay's return page,
+    /// and this adapter cannot tell the two apart — which is the point of
+    /// `ChargeRef::return_url` being a string the core decides.
+    const RETURN_URL: &str = "https://shop.example/order/1234/return";
+
+    /// A charge as the confirm path hands it over: the reference the mappings
+    /// key on, and a `return_url` because a redirect rail's charge always has
+    /// one.
+    fn charge(return_url: Option<&str>, amount: Money) -> ChargeRef {
+        ChargeRef {
+            reference_id: reference(),
+            amount,
+            // A redirect rail authenticates the payer itself and may never
+            // learn who they are.
+            payer_ref: None,
+            ref_extra: BTreeMap::new(),
+            return_url: return_url.map(ToOwned::to_owned),
+        }
+    }
+
     /// Rebuilds `submit`'s body the way `submit` does, so the assertions below
     /// are about the bytes that go on the wire.
-    fn request_body(config: &ProviderConfig, amount: Money) -> serde_json::Value {
+    ///
+    /// # Panics
+    ///
+    /// If the charge carries no usable `return_url` — the cases about that
+    /// call [`super::return_url`] directly.
+    fn request_body(config: &ProviderConfig, charge: &ChargeRef) -> serde_json::Value {
         let callback_url = config.callback_url.as_str();
+        let return_url = super::return_url(charge).expect("the charge carries a return_url");
         let body = WebPaymentRequest {
             merchant_key: credential(config, "merchant_key").expect("configured"),
-            currency: amount.currency().code(),
-            order_id: reference().to_string(),
-            amount: amount.to_provider_minor(),
-            return_url: setting(config, "return_url").unwrap_or(callback_url),
-            cancel_url: setting(config, "cancel_url").unwrap_or(callback_url),
+            currency: charge.amount.currency().code(),
+            order_id: charge.reference_id.to_string(),
+            amount: charge.amount.to_provider_minor(),
+            return_url,
+            cancel_url: return_url,
             notif_url: callback_url,
             lang: setting(config, "lang").unwrap_or(DEFAULT_LANG),
         };
@@ -742,7 +816,10 @@ mod tests {
     fn the_amount_is_a_json_number_in_minor_units() {
         let body = request_body(
             &config(),
-            Money::new(5_000, Currency::Xaf).expect("non-negative"),
+            &charge(
+                Some(RETURN_URL),
+                Money::new(5_000, Currency::Xaf).expect("non-negative"),
+            ),
         );
         assert_eq!(*field(&body, "amount"), json!(5_000));
         assert!(
@@ -756,7 +833,10 @@ mod tests {
     fn the_body_is_the_documented_shape() {
         let body = request_body(
             &config(),
-            Money::new(5_000, Currency::Xaf).expect("non-negative"),
+            &charge(
+                Some(RETURN_URL),
+                Money::new(5_000, Currency::Xaf).expect("non-negative"),
+            ),
         );
         assert_eq!(
             body,
@@ -765,38 +845,45 @@ mod tests {
                 "currency": "XAF",
                 "order_id": "00000000-0000-0000-0000-000000000202",
                 "amount": 5_000,
-                "return_url": "https://vpay.example/provider/orange_money/callback",
-                "cancel_url": "https://vpay.example/provider/orange_money/callback",
+                "return_url": RETURN_URL,
+                "cancel_url": RETURN_URL,
                 "notif_url": "https://vpay.example/provider/orange_money/callback",
                 "lang": "en",
             })
         );
     }
 
+    /// The charge decides where the payer goes, and both link fields carry
+    /// it — Step 9's D2, and the assertion that would fail if this adapter
+    /// went back to answering a per-charge question out of deployment
+    /// settings.
+    ///
+    /// The settings are set here *and must be ignored*: they are the keys
+    /// this adapter read until 2026-09-04, so a revert that restored the
+    /// `setting(config, "return_url")` lookup would make the body carry
+    /// `https://deployment.example/…` and fail on the exact value rather
+    /// than on a shape.
     #[test]
-    fn return_and_cancel_urls_come_from_settings_when_configured() {
+    fn both_link_fields_carry_the_charges_return_url_and_no_setting_overrides_it() {
         let mut config = config();
         config.settings.insert(
             "return_url".to_owned(),
-            "https://shop.example/ok".to_owned(),
+            "https://deployment.example/ok".to_owned(),
         );
         config.settings.insert(
             "cancel_url".to_owned(),
-            "https://shop.example/cancelled".to_owned(),
+            "https://deployment.example/cancelled".to_owned(),
         );
 
         let body = request_body(
             &config,
-            Money::new(5_000, Currency::Xaf).expect("non-negative"),
+            &charge(
+                Some(RETURN_URL),
+                Money::new(5_000, Currency::Xaf).expect("non-negative"),
+            ),
         );
-        assert_eq!(
-            *field(&body, "return_url"),
-            json!("https://shop.example/ok")
-        );
-        assert_eq!(
-            *field(&body, "cancel_url"),
-            json!("https://shop.example/cancelled")
-        );
+        assert_eq!(*field(&body, "return_url"), json!(RETURN_URL));
+        assert_eq!(*field(&body, "cancel_url"), json!(RETURN_URL));
         // The notification URL is never a merchant's to choose: it is where
         // the rail talks to *us*.
         assert_eq!(
@@ -805,13 +892,39 @@ mod tests {
         );
     }
 
+    /// A redirect charge with nowhere to send the payer is refused before the
+    /// rail is called, and the refusal names the reference rather than
+    /// quoting the URL.
+    ///
+    /// Absent and blank are the same answer: a blank column is a value that
+    /// was lost, and letting `""` reach the rail would strand the payer on
+    /// Orange's own page with vpay believing it had told them where to go.
+    #[test]
+    fn a_redirect_charge_with_no_return_url_is_a_configuration_error() {
+        let amount = Money::new(5_000, Currency::Xaf).expect("non-negative");
+        for absent in [None, Some(""), Some("   ")] {
+            let charge = charge(absent, amount);
+            let outcome = super::return_url(&charge);
+            let ProviderError::Config(message) = outcome.expect_err("must be refused") else {
+                panic!("a missing return_url must be a Config error, not a decline");
+            };
+            assert!(
+                message.contains("00000000-0000-0000-0000-000000000202"),
+                "the refusal must name the charge: {message}"
+            );
+        }
+    }
+
     #[test]
     fn a_missing_lang_falls_back_rather_than_refusing_a_payment() {
         let mut config = config();
         config.settings.remove("lang");
         let body = request_body(
             &config,
-            Money::new(5_000, Currency::Xaf).expect("non-negative"),
+            &charge(
+                Some(RETURN_URL),
+                Money::new(5_000, Currency::Xaf).expect("non-negative"),
+            ),
         );
         assert_eq!(*field(&body, "lang"), json!(DEFAULT_LANG));
     }
@@ -822,7 +935,10 @@ mod tests {
     fn the_currency_is_the_amounts_own() {
         let body = request_body(
             &config(),
-            Money::new(5_000, Currency::Eur).expect("non-negative"),
+            &charge(
+                Some(RETURN_URL),
+                Money::new(5_000, Currency::Eur).expect("non-negative"),
+            ),
         );
         assert_eq!(*field(&body, "currency"), json!("EUR"));
         assert_eq!(*field(&body, "amount"), json!(5_000), "still minor units");
