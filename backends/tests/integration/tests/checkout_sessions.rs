@@ -570,8 +570,10 @@ async fn a_hosted_session_answers_a_url_whose_secret_is_in_the_fragment() -> any
         session
             .secret
             .starts_with(&format!("{}_secret_", session.id)),
-        "the credential is the session id, the separator and the suffix: {}",
-        session.secret
+        "the credential is the session id, the separator and the suffix (secret never printed; \
+         it is {} chars for session {})",
+        session.secret.len(),
+        session.id
     );
     assert_eq!(
         session.url,

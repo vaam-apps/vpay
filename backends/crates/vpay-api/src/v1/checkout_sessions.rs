@@ -1260,17 +1260,21 @@ mod tests {
         // a server. The credential is after the `#` and nowhere else: in the
         // query string it would be in the checkout app's access log.
         let (before_fragment, fragment) = url.split_once('#').expect("a fragment");
+        // The messages below describe the shape and never print the URL:
+        // it carries the credential, and a panic message is a log line.
         assert!(
             !before_fragment.contains(&row.client_secret_suffix),
-            "the credential must not appear before the fragment: {url}"
+            "the credential must not appear before the fragment (query part is {} chars)",
+            before_fragment.len()
         );
         assert!(
             before_fragment.ends_with(&format!("?key={PK}")),
-            "the publishable key must be a query parameter: {url}"
+            "the publishable key must be the last query parameter before the fragment"
         );
         assert!(
             !fragment.contains('?') && !fragment.contains('&'),
-            "the fragment is the credential and nothing else: {url}"
+            "the fragment is the credential and nothing else (fragment is {} chars)",
+            fragment.len()
         );
 
         // A deployment with no checkout app renders no url rather than a

@@ -1028,8 +1028,9 @@ async fn a_session_driven_confirm_sends_vpays_return_page_to_the_rail() -> anyho
     assert_eq!(
         orange_requests_matching(&harness, &pattern(&expected)).await?,
         1,
-        "the rail was not told vpay's return page ({expected}) for reference {reference}; a \
-         payer it redirected would land on the merchant's site with the session still open"
+        "the rail was not told vpay's return page for reference {reference} (the expected URL \
+         carries the return token and is not printed); a payer it redirected would land on the \
+         merchant's site with the session still open"
     );
     assert_eq!(
         orange_requests_matching(&harness, &pattern(RETURN_URL)).await?,

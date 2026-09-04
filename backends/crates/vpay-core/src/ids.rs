@@ -679,7 +679,10 @@ mod tests {
         let id = checkout_session_id();
         let secret = client_secret(&id, &client_secret_suffix());
 
-        assert!(secret.starts_with("cs_"), "{secret}");
+        assert!(
+            secret.starts_with("cs_"),
+            "a session secret starts with the session id prefix (never printed: it is a credential)"
+        );
         let (recovered, _suffix) = secret
             .split_once(CLIENT_SECRET_INFIX)
             .expect("a client secret carries the separator");
