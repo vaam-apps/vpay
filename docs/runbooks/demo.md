@@ -3,7 +3,7 @@
 **What this page is.** The procedure that brings vpay up from nothing on one
 machine and drives six payments through it — both rails, every outcome each
 rail documents — with the output of a real run pasted below rather than
-narrated. It is [issue #11](https://github.com/vaam-store/vpay/issues/11)'s
+narrated. It is [issue #11](https://github.com/vaam-apps/vpay/issues/11)'s
 "someone can bring it up from nothing and walk through a payment end to end".
 
 **Status, stated before anything else.** Every command and every line of

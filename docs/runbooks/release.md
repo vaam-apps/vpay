@@ -1,7 +1,7 @@
 # Release: cut a tag, verify a signature, pin a digest
 
 **Nobody has done this.** No tag has been pushed, `.github/workflows/release.yml`
-has never run, no image exists at `ghcr.io/vaam-store/vpay-*`, and nothing has
+has never run, no image exists at `ghcr.io/vaam-apps/vpay-*`, and nothing has
 been signed. This runbook is written from the workflow file and the documented
 behaviour of the tools it calls. Read [../status.md](../status.md) before you
 trust a step here; the first real run is what turns it from a plan into a
@@ -23,7 +23,7 @@ and signs each manifest-list digest with cosign.
 
 There is deliberately no `latest`. A real deployment pins a digest (§4).
 
-The three images are `ghcr.io/vaam-store/vpay-server`, `-worker` and
+The three images are `ghcr.io/vaam-apps/vpay-server`, `-worker` and
 `-dashboard` (step-6 decision (1)). The chart deploys the first two;
 `vpay-dashboard` is published and **not** templated — see
 `deploy/helm/vpay/README.md` for why.
@@ -74,10 +74,10 @@ certificate binds the image to *this workflow file at this ref*, so
 verification names the workflow, not a key.
 
 ```bash
-IMAGE=ghcr.io/vaam-store/vpay-server:1.2.3
+IMAGE=ghcr.io/vaam-apps/vpay-server:1.2.3
 
 cosign verify \
-  --certificate-identity-regexp '^https://github\.com/vaam-store/vpay/\.github/workflows/release\.yml@refs/(tags/v.*|heads/master)$' \
+  --certificate-identity-regexp '^https://github\.com/vaam-apps/vpay/\.github/workflows/release\.yml@refs/(tags/v.*|heads/master)$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   "$IMAGE"
 ```
@@ -97,7 +97,13 @@ Two things this verification does **not** establish:
   child manifests. Verifying a tag or the index digest is covered; pinning a
   child manifest's own digest is not.
 * Renaming or moving `release.yml` changes the certificate identity and breaks
-  every command in this section. That is the cost decision (3) accepted.
+  every command in this section. That is the cost decision (3) accepted. **So
+  does renaming the GitHub organisation**, because the identity is a full URL
+  including the owner: `https://github.com/<owner>/vpay/...`. The regexp
+  above already reflects the 2026-09-04 rename (`vaam-store` -> `vaam-apps`);
+  any signature made before that date carries `vaam-store` in its `Subject`
+  and will not match it, and `cosign verify` against an old image needs the
+  old regexp — the identity is fixed at signing time, not re-derived later.
 
 Provenance and SBOM ride in the image index (`provenance: mode=max`,
 `sbom: true`), and are read separately:
@@ -113,7 +119,7 @@ Tags move; a `v1.2.3` tag can be force-pushed and `edge` moves on every merge.
 Anything real pins the digest.
 
 ```bash
-IMAGE=ghcr.io/vaam-store/vpay-server:1.2.3
+IMAGE=ghcr.io/vaam-apps/vpay-server:1.2.3
 docker buildx imagetools inspect "$IMAGE" --format '{{json .Manifest}}' | jq -r .digest
 # sha256:<64 hex>
 ```

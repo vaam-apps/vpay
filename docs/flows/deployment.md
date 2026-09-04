@@ -13,7 +13,7 @@ and what stops a bad configuration before it becomes an outage.
 ## 1. What ships
 
 **Four** images since 2026-09-04, published to
-`ghcr.io/vaam-store/vpay-{server,worker,dashboard,checkout}` (step-6
+`ghcr.io/vaam-apps/vpay-{server,worker,dashboard,checkout}` (step-6
 decision (1), extended by Step 9).
 
 | Image | Base | Contents |
@@ -23,7 +23,7 @@ decision (1), extended by Step 9).
 | `vpay-dashboard` | `node:22-alpine` | the Next standalone server |
 | `vpay-checkout` | `node:22-alpine` | vpay's own hosted/embedded payment page |
 
-**`ghcr.io/vaam-store/vpay-checkout`** — vpay's own hosted/embedded payment
+**`ghcr.io/vaam-apps/vpay-checkout`** — vpay's own hosted/embedded payment
 page (`frontends/apps/checkout`), built from `frontends/Dockerfile`'s
 `checkout` target. A second Next.js image beside the dashboard's, and the
 first one this repository deploys: the chart templates it under
@@ -118,15 +118,20 @@ or rotate, and verification names the workflow instead:
 
 ```
 cosign verify \
-  --certificate-identity-regexp '^https://github\.com/vaam-store/vpay/\.github/workflows/release\.yml@refs/(tags/v.*|heads/master)$' \
+  --certificate-identity-regexp '^https://github\.com/vaam-apps/vpay/\.github/workflows/release\.yml@refs/(tags/v.*|heads/master)$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/vaam-store/vpay-server:1.2.3
+  ghcr.io/vaam-apps/vpay-server:1.2.3
 ```
 
 Two limits worth knowing before you build a policy on it: only the **manifest
 list** digest is signed, not the per-architecture children, so pinning a child
-manifest's digest is outside the signature; and renaming `release.yml` changes
-the certificate identity and breaks every downstream `cosign verify`.
+manifest's digest is outside the signature; and renaming `release.yml` **or
+the GitHub organisation** changes the certificate identity and breaks every
+downstream `cosign verify` — the identity is the full workflow URL,
+`https://github.com/<owner>/vpay/...`, and it is fixed at signing time. The
+regexp above already reflects the organisation's 2026-09-04 rename
+(`vaam-store` -> `vaam-apps`); verifying a signature made before that date
+needs the old owner in the regexp instead.
 
 `just release-dry-run` rehearses what can be rehearsed locally — the three
 builds for the host architecture, then `just helm-check`. It rehearses neither
@@ -345,7 +350,7 @@ rather than at pull time.
 * **Deploy the dashboard.** The chart templates no dashboard workload; see the
   chart README for why.
 * **Be pulled from anywhere.** §2 describes a workflow that has never run.
-  There is no image at `ghcr.io/vaam-store/vpay-server`, none at `-worker`,
+  There is no image at `ghcr.io/vaam-apps/vpay-server`, none at `-worker`,
   none at `-dashboard`, and no signature to verify on any of them. Every
   `images.*.digest` a values file could pin today would be invented.
 * **Prove any of the above in a cluster.** No cluster has run any of it.
