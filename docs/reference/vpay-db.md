@@ -249,6 +249,9 @@ pub trait CheckoutSessions: Send + Sync {
     async fn find_open_by_intent(&self, payment_intent_id: &str)
         -> Result<Option<CheckoutSessionRow>, DbError>;
 
+    async fn find_latest_by_intent(&self, payment_intent_id: &str)
+        -> Result<Option<CheckoutSessionRow>, DbError>;
+
     async fn list_page(&self, merchant_id: &str, page: &SessionListPage)
         -> Result<(Vec<CheckoutSessionRow>, bool), DbError>;
 
@@ -275,6 +278,40 @@ because a confirm depends on it:
 - **The whole row**, not the `return_token` alone: building the return URL
   needs the `id` too, and a two-value tuple is a shape that grows a third
   value the next time something is needed.
+
+#### `find_latest_by_intent` — the same question with the `status` filter off
+
+Added 2026-09-05, for the refusal `vpay_api::v1::return_trip` now makes: a
+confirm on an intent whose checkout session is over is a `409`, and the
+interesting case is exactly the one where **no** session is open. A lookup
+whose `WHERE` says `status = 'open'` cannot tell "no session was ever created"
+from "the session that was created is finished", and those two need opposite
+answers.
+
+`ORDER BY seq DESC LIMIT 1`, and one row is enough because an *open* session
+is always the newest one. That is a property of the schema and not a hope:
+`checkout_sessions_one_open_per_intent` refuses a second insert while one is
+open, so nothing can be newer than an open session. The direction that matters
+in practice is the permissive one — an intent whose first session expired and
+whose merchant then created a second, open one reads back the open one, so
+"expire the abandoned checkout and offer a fresh link" is not refused.
+
+`seq` and not `created_at`, because `created_at` is the caller's
+(`NewCheckoutSession::created_at`) and two sessions could carry the same
+instant; `seq` is the table's own insertion order, and a tie here would decide
+whether a payer can pay.
+
+Served by `checkout_sessions_intent_seq_idx` (migration `0030`), which had to
+be added for it: 0028's only lookup by intent is *partial*
+(`WHERE status = 'open'`), and this query cannot use it, because dropping that
+predicate is the whole point. Without it the plan is a scan — of the table, or
+of `checkout_sessions_seq_key` with `payment_intent_id` demoted to a filter —
+on **every** confirm, including the majority that have no session at all,
+which is the case with no matching row to stop early on. Measured at 200,000
+sessions: 11.7 ms of parallel sequential scan against 0.047 ms through the
+index. Pinned by
+`postgres_smoke::the_confirm_paths_session_lookup_is_served_by_an_index`,
+which asserts the plan and not only the index's existence.
 
 `get_for_merchant` collides by name with `PaymentIntents::get_for_merchant`,
 so every call site names its trait — `PaymentIntents::get_for_merchant(repos,

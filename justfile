@@ -532,6 +532,18 @@ verify-docs:
 # 1's thirty-nine: `just verify-ignored` on the merged gate measures **1121
 # total, 42 test binaries, 0 ignored**; `expected_suites` is 42 (lane 1's
 # `checkout_sessions` binary) and the 1050 floor stands under it.
+#
+# Re-measured 2026-09-05 landing the session-driven confirm refusal (a confirm
+# on a Checkout Session that is no longer `open`): `just verify-ignored` lists
+# **1159 total, 42 test binaries, 0 ignored**. Neither counter below moves and
+# the 1080 floor stands. The twelve new cases all landed in files that already
+# existed — seven `checkout_sessions` integration cases, one `postgres_smoke`
+# case for migration `0030`'s index, three `vpay_api::v1::return_trip` units
+# and one `vpay_api::error` unit — so no binary was added or dropped. 1159 is
+# what `cargo nextest list --workspace` printed on this branch, not a figure
+# derived from the 1121 above: that number was measured on the Step 9 gate
+# branch and the lanes and follow-ups that landed on `master` after it were
+# never added to this comment.
 expected_ignored := "0"
 expected_suites := "42"
 # A floor, not a target — set a little under the measured 1059
@@ -615,6 +627,29 @@ expected_suites := "42"
 # and `just test-doc` **86 passed, 1 ignored** — both unchanged. The rebase
 # brought in `61bce45` (assertion messages, test-only) and this pass changed
 # four more of the same shape; neither adds or removes a case.
+# Re-measured 2026-09-05 for the session-driven confirm refusal (a confirm on
+# an intent whose Checkout Session is not `open` is a `409`): `just
+# verify-ignored` reports **1158 total, 42 test binaries, 0 ignored** — 1147
+# plus eleven cases, every one of them in a file that already existed. Seven
+# in `backends/tests/integration/tests/checkout_sessions.rs` (the sweep-expired
+# refusal, the merchant-expired one, the unswept horizon with the session row
+# proved untouched, the `complete` code, an intent with no session confirming
+# as before, the merchant `/v1` refusal with its `Idempotency-Key` replay, and
+# a second session after an expiry making the intent payable again) and four
+# `vpay-api` units (three in `v1::return_trip` for the verdict, the horizon's
+# boundary and an unknown `status`; one in `error` for the two codes).
+# `expected_suites` stays 42: no test binary was added.
+#
+# The floor **stays at 1080**, on the same terms as every bump above: eleven
+# tests is not a reason to move a floor. `just test-doc` measures **86 passed,
+# 1 ignored** — unchanged, because this change added no example; the ignored
+# one is still `sdks/rust`'s README block and still pre-existing.
+#
+# Re-measured 2026-09-05 during the review of the session-driven confirm
+# refusal: **1159 total, 42 test binaries, 0 ignored** — 1158 plus
+# `postgres_smoke::the_confirm_paths_session_lookup_is_served_by_an_index`,
+# the guard for migration `0030`'s `checkout_sessions_intent_seq_idx`. Still
+# no new binary, and the floor still stays at 1080.
 min_tests := "1080"
 
 verify-ignored:

@@ -92,6 +92,15 @@ Two values, both required:
   `client_secret_suffix_length CHECK` between 32 and 128 chars). This *is*
   the credential — it authorises exactly one payment intent, for its whole
   life, and there is no rotation endpoint: a retry is a new intent.
+  **One exception since 2026-09-05, and it is not a rotation:** if the intent
+  has a Checkout Session and its **newest** session is no longer `open`, the
+  confirm is refused with `409 checkout_session_expired` /
+  `409 checkout_session_complete` ([hosted-checkout.md](hosted-checkout.md)).
+  The secret is neither revoked nor changed — the session's `status` is simply
+  consulted before a charge is opened, which is the only thing that can stop a
+  credential nothing rotates. An intent that never had a session is
+  unaffected, and so is one whose expired session has been replaced by a new
+  open one.
 
 Neither is a bearer token and neither can be exchanged for one. A payer
 holding both can read one intent and confirm it once — nothing else on the
@@ -375,6 +384,14 @@ Step 9's page as of Step 5c's example — a browser has now walked an entire
 checkout, and every rail in that walk answered from a container.
 
 ## Status
+
+**Updated 2026-09-05: the confirm consults the intent's checkout session.**
+The bullet above about the `client_secret` lasting the intent's whole life now
+carries its one exception; the rule itself, its seven container-backed cases
+and what is *not* proven about it (nothing in a browser) are in
+[hosted-checkout.md](hosted-checkout.md) and `docs/status.md`, because the
+session is that document's subject and this one's payer routes only inherit
+it.
 
 See `docs/status.md`'s Backend/Frontend/Merchant SDK tables for the
 machine-checked picture (route count, migration count, test counts). This

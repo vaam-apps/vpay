@@ -91,6 +91,29 @@ Four things move a session, and only four:
    each, and runs one small transaction per session. See below.
 4. **Nothing else.** In particular, a payer's browser cannot move a session.
 
+**A session that is not `open` refuses the confirm** (2026-09-05). The list
+above is still exactly four — this reads a session, it never moves one — but
+it is what makes two of those four mean anything to a payer. Both
+`POST /v1/payment_intents/{id}/confirm` and
+`POST /v1/browser/payment_intents/{id}/confirm` ask for the intent's
+**newest** session before opening a charge and answer `409
+checkout_session_expired` — or `409 checkout_session_complete` — when it is
+not `open`, writing no charge, no `provider_requests` row and no job. Until
+this landed, nothing retracted the payer's credential: the intent's
+`client_secret` is minted once and lives as long as the intent
+([browser-checkout.md](browser-checkout.md)), so a payer whose page loaded
+before the checkout ended could still pay hours later, and
+`checkout.session.expired` was a notification the settlement could contradict
+rather than a promise. An `open` session past `expires_at` that the sweep has
+not reached is read as expired **without being written** — the same rule the
+browser reads carry, for the same reason: a deployment whose worker is down
+must not decide whether a payer can pay. The newest row is what decides, so
+expiring an abandoned checkout and creating a fresh one leaves the intent
+payable. `checkout_session_complete` is defence in depth and is not reachable
+through the shipping API today, because `complete` is written only by the
+settlement transaction, in the same commit as the intent reaching `succeeded`,
+which the confirm refuses one step earlier.
+
 **One open session per intent, enforced by a partial unique index** and not
 only by the handler's pre-check — two open sessions on one intent would be two
 live payer links to the same payment.
@@ -371,6 +394,17 @@ finished, the event listable and retrievable through `/v1/events` with the
 tenant boundary, and the transaction proof above. **No merchant endpoint
 outside this repository has received one** — the same limit every other event
 type carries.
+
+**Updated 2026-09-05: a session that is no longer `open` refuses the confirm**
+(the paragraph after the four transitions above). Seven container-backed cases
+in `backends/tests/integration/tests/checkout_sessions.rs` — swept, merchant-
+expired, past the horizon and unswept, `complete`, no session at all, the
+merchant `/v1` surface with its idempotent replay, and a second session after
+an expiry — plus one `postgres_smoke` case for migration `0030`'s index and
+four unit cases for the classification and the verdict. **Nothing proves it in
+a browser:** the checkout app already paints an expired screen from the
+session read's 404, so the refusal sits behind a page that should never reach
+it, and no Cypress spec drives a confirm on a dead session.
 
 See [../status.md](../status.md) for the per-feature ledger and the reasons
 several of those rows are 🟡 where this document says "built".

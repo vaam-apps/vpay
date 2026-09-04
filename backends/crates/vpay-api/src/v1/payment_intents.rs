@@ -784,12 +784,21 @@ pub(crate) async fn confirm_once(
     rendering: SecretRendering,
 ) -> Result<Response, ApiError> {
     let intent = load_confirmable_intent(repositories, scope, id).await?;
+    // Step 1b, and it is one read answering two things: whether a checkout
+    // session forbids this confirm at all, and — when one drives it — where a
+    // redirect rail must send the payer back to.
+    //
     // Before the rail is resolved and before anything is written, so that a
     // session-driven confirm commits *vpay's* return page as the charge's
-    // `return_url` and a deployment that can no longer serve one costs no
-    // charge row at all. See `return_trip::session_return_page`.
-    let session_return_page = return_trip::session_return_page(
-        &return_trip::SessionReturnPage::new(repositories, config.checkout_public_base_url()),
+    // `return_url`, and so that a refusal costs no charge row, no
+    // `provider_requests` row and no job. **After** `load_confirmable_intent`
+    // and never before it: this answer is not the uniform 404, so asking it
+    // first would let a caller learn that some other tenant's intent has a
+    // checkout session on it.
+    //
+    // See `return_trip::admit_confirm`.
+    let session_return_page = return_trip::admit_confirm(
+        &return_trip::SessionGate::new(repositories, config.checkout_public_base_url()),
         &intent.id,
     )
     .await?;
@@ -1096,7 +1105,7 @@ async fn open_attempt(
 /// (Step 9's D2). Taking it from the row rather than as an argument is what
 /// makes "what the rail was told" and "what a later read renders as
 /// `next_action.redirect_to_url.return_url`" the same value by construction —
-/// see [`return_trip::session_return_page`] for the version that did not.
+/// see [`return_trip::admit_confirm`] for the version that did not.
 ///
 /// # Errors
 ///

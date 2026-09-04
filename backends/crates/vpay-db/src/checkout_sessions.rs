@@ -525,6 +525,50 @@ pub trait CheckoutSessions: Send + Sync {
         payment_intent_id: &str,
     ) -> Result<Option<CheckoutSessionRow>, DbError>;
 
+    /// The **newest** session on this intent, whatever its `status`, if the
+    /// intent has ever had one.
+    ///
+    /// # Why the newest row is the one that decides a confirm
+    ///
+    /// [`CheckoutSessions::find_open_by_intent`] answers "is a session
+    /// driving this charge?" and is right for the return URL. It cannot
+    /// answer "may this intent be confirmed at all?", because the interesting
+    /// case is exactly the one where **no** session is open: a sweep or a
+    /// merchant expired it, and a payer still holding the intent's
+    /// `client_secret` would otherwise pay for a checkout the merchant has
+    /// already been told was abandoned.
+    ///
+    /// One row is enough, and the newest is the right one, because
+    /// `checkout_sessions_one_open_per_intent` makes **"an open session is
+    /// always the newest"** a property of the schema rather than a hope: a
+    /// second session cannot be inserted while one is open, so any row newer
+    /// than an open session would have had to be inserted through that index.
+    /// The consequence a caller depends on is the useful direction — an
+    /// intent whose first session expired and whose merchant then created a
+    /// second, open one reads back the *open* one, so the ordinary "expire
+    /// and offer a fresh link" flow is not refused.
+    ///
+    /// Ordered by `seq`, the table's own insertion order, and not by
+    /// `created_at`: `created_at` is supplied by the caller
+    /// ([`NewCheckoutSession::created_at`]), so two sessions could carry the
+    /// same instant, and the tie would decide whether a payer can pay.
+    ///
+    /// Unscoped, for [`CheckoutSessions::find_open_by_intent`]'s reason
+    /// unchanged: the confirm path has already resolved and authorised the
+    /// intent through a `MerchantScope`, so re-filtering by a tenant derived
+    /// from that same intent would be an authorisation check against itself.
+    ///
+    /// `None` is the **common** answer and not an error: most intents are
+    /// confirmed without a checkout session ever existing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if the read fails.
+    async fn find_latest_by_intent(
+        &self,
+        payment_intent_id: &str,
+    ) -> Result<Option<CheckoutSessionRow>, DbError>;
+
     /// One page of this merchant's sessions, newest first, plus whether more
     /// exist beyond it.
     ///
@@ -788,6 +832,28 @@ impl CheckoutSessions for crate::repository::PgRepositories {
         let sql = format!(
             "SELECT {COLUMNS} FROM checkout_sessions \
              WHERE payment_intent_id = $1 AND status = '{OPEN}'"
+        );
+
+        sqlx::query_as::<_, CheckoutSessionRow>(&sql)
+            .bind(payment_intent_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(DbError::Query)
+    }
+
+    async fn find_latest_by_intent(
+        &self,
+        payment_intent_id: &str,
+    ) -> Result<Option<CheckoutSessionRow>, DbError> {
+        // No `status` predicate at all — that is the whole difference from
+        // `find_open_by_intent`, and it is what lets the caller tell "no
+        // session was ever created" from "the session that was created is
+        // over".
+        let sql = format!(
+            "SELECT {COLUMNS} FROM checkout_sessions \
+             WHERE payment_intent_id = $1 \
+             ORDER BY seq DESC \
+             LIMIT 1"
         );
 
         sqlx::query_as::<_, CheckoutSessionRow>(&sql)

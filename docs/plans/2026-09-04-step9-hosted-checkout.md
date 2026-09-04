@@ -704,3 +704,19 @@ lane 1b sweep row carried: the sweep now writes an event inside the same
 transaction as the `open` → `expired` flip, and it fans out and delivers like
 every other event. The confirm-after-expiry desync lane 1b created is
 unchanged and is filed separately.
+
+**Follow-up, 2026-09-05: a confirm on a Checkout Session that is no longer
+`open` is refused** — the desync the paragraph above filed separately. Built
+by the opus tier in the second three-tier experiment and reviewed with eight
+mutations (7 of 8 caught after the review's five fixes; the eighth is a race
+no deterministic test can observe). The record is
+`docs/plans/step9-notes/expired-session-confirm.md` and
+`expired-session-confirm-review.md`. **It takes a decision this plan's own
+ledger reserved for the maintainer.** `docs/status.md`'s expiry-sweep row
+offered two fixes — refuse the confirm, or widen the settlement's guard so a
+swept session can still be completed — and recorded the choice between them as
+the maintainer's. The first was **chosen by the integrator on 2026-09-05** and
+implemented; the row and the pull request both say so, so the maintainer can
+veto it. Migration `0030` (`checkout_sessions_intent_seq_idx`) comes with it,
+for the total index the new lookup needs and `0028`'s partial one cannot
+serve.

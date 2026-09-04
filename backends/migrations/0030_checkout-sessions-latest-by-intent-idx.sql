@@ -1,0 +1,63 @@
+-- The index `CheckoutSessions::find_latest_by_intent` needs, and 0028 does
+-- not have.
+--
+-- WHY 0028'S INDEXES DO NOT COVER IT
+--
+-- 0028 gave this table exactly one lookup by intent, and made it *partial*:
+--
+--     CREATE INDEX checkout_sessions_open_by_intent_idx
+--         ON checkout_sessions (payment_intent_id)
+--         WHERE status = 'open';
+--
+-- which is right for `find_open_by_intent` — the settlement's "is there a
+-- session on this intent to flip?" carries `status = 'open'` in its own
+-- WHERE, so the planner may use it. `find_latest_by_intent`, added
+-- 2026-09-05 for the session-driven confirm refusal
+-- (`vpay_api::v1::return_trip`), deliberately drops that predicate: the whole
+-- point is to tell "no session was ever created" from "the session that was
+-- created is over". A query with no `status = 'open'` predicate cannot use a
+-- partial index that has one, and the only other candidate is
+-- `checkout_sessions_seq_key`, which orders by `seq` but has nothing to
+-- filter on — so the plan is a scan of the whole table, or of the whole
+-- index, for every confirm.
+--
+-- WHY THAT IS WORTH A MIGRATION AND NOT A COMMENT
+--
+-- The read is on the **confirm path**, and on all of it: `confirm_once`
+-- asks it once per confirm, including the majority of confirms that have no
+-- checkout session at all — a merchant's own page against an intent no
+-- session was ever created for. That is the case where the scan is
+-- *worst*, because there is no matching row to stop early on.
+--
+-- Measured on postgres:16-alpine with 200,000 sessions, looking up an intent
+-- that has none (EXPLAIN ANALYZE, the query `find_latest_by_intent` builds):
+--
+--     without this index   Parallel Seq Scan, 200,000 rows removed by
+--                          filter, 2 workers launched, 11.7 ms
+--     with it              Index Scan, 0.047 ms
+--
+-- and the first number grows with the table while the second does not. A
+-- deployment does not delete finished sessions, so `checkout_sessions` is
+-- append-only in practice and this is the number that moves.
+--
+-- WHY (payment_intent_id, seq DESC) AND NOT (payment_intent_id)
+--
+-- The second column is what makes `ORDER BY seq DESC LIMIT 1` a read of the
+-- index's first entry rather than a sort of every session on the intent. An
+-- intent normally has one or two, so the sort is cheap either way — but the
+-- shape that is cheap by construction is the one that stays cheap if that
+-- ever stops being true, and the column costs 8 bytes per row.
+--
+-- Total, not partial: a partial index is what created this gap.
+--
+-- `checkout_sessions_open_by_intent_idx` is deliberately **left in place**.
+-- This index can serve `find_open_by_intent` too, but the partial one is the
+-- size of the *live* set rather than of every session ever created, which is
+-- the argument 0028 makes for it and which this migration does not disturb.
+-- Dropping it is a separate judgement about index maintenance cost on a
+-- table nobody has yet run at scale.
+CREATE INDEX checkout_sessions_intent_seq_idx
+    ON checkout_sessions (payment_intent_id, seq DESC);
+
+COMMENT ON INDEX checkout_sessions_intent_seq_idx IS
+    'Serves vpay_db::CheckoutSessions::find_latest_by_intent — the newest session on an intent, whatever its status — which the confirm path asks once per confirm. Total rather than partial on purpose: the query carries no status predicate, so 0028''s partial checkout_sessions_open_by_intent_idx cannot serve it.';
