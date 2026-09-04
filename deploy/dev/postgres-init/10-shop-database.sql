@@ -1,0 +1,23 @@
+-- The demo shop's database (`examples/shop`), beside vpay's own.
+--
+-- Separate database, same server: the shop is a MERCHANT's system, and a
+-- merchant does not share a schema with its payment provider. Same server
+-- only because this is a demo stack on one machine — nothing about the two
+-- databases' contents is shared, and vpay never opens a connection to this
+-- one.
+--
+-- **It only runs on a FRESH volume.** Postgres's entrypoint executes
+-- everything in /docker-entrypoint-initdb.d exactly once, on an empty data
+-- directory. A developer carrying a `pgdata` volume from before this file
+-- existed gets no `shop` database and a `vpay-shop` container that dies in
+-- `prisma migrate deploy`. `just demo-down` removes volumes (`down -v`), so
+-- the answer is to tear the stack down rather than to make the entrypoint
+-- create the database defensively — a CREATE DATABASE IF NOT EXISTS run on
+-- every boot would hide a stale volume rather than report one.
+--
+-- The tables and the catalogue are NOT here: `prisma migrate deploy` creates
+-- them from `examples/shop/prisma/migrations/` when the shop container
+-- starts (`examples/shop/docker-entrypoint.sh`), and the catalogue is the
+-- second migration. Two owners of one schema is how a demo ends up with a
+-- table nobody can explain.
+CREATE DATABASE shop OWNER vpay;

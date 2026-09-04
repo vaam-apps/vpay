@@ -1,0 +1,34 @@
+# Fixture for `every_checkout_rule_refuses_its_own_fixture`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# `https://Shop.example:443` is an origin by every rule above the canonical
+# one: it parses, it names a host, it is https, and it carries no path, query,
+# fragment or credentials. It is still wrong, and wrong *silently*: the
+# checkout app filters its `frame-ancestors` list by comparing each entry
+# against the browser's `URL.origin` (lower-cased host, default port elided),
+# so this entry is dropped, the merchant's site gets `frame-ancestors 'none'`,
+# and nothing anywhere reports it.
+#
+# The deployment sets `checkout.public_base_url`, so this fixture does not
+# also trip `CheckoutOriginsWithoutBaseUrl`.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+checkout:
+  public_base_url: http://localhost:3001
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    checkout_origins: ["https://Shop.example:443"]

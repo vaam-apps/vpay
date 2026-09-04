@@ -58,6 +58,18 @@ path daily, so the decimal branch is never untested code.
 
 **Amounts against a EUR profile are notional.** No FX happens and none is implied.
 
+**The demo stack is the one place that diverges, deliberately, since
+2026-09-04 (Step 9).** `.e2e/application-demo.yml` — the overlay
+`just gen-demo-keys` writes — carries its own `providers:` block putting
+**both** rails on XAF, because the demo shop prices its catalogue in XAF,
+offers a payer both rails, and `currencies_agree` refuses a confirm whose rail
+settles in another currency than the intent. That stack talks to a WireMock
+host, not to MTN's sandbox, and **no MTN mapping matches on a currency at
+all** — `vpay_adapter_mtn_momo::wire::StatusResponse` never deserialises one.
+`config/application.yml` and `config/application-sandbox.yml` are unchanged and
+still put `mtn_momo` on EUR. **Do not read the demo as "MTN accepts XAF".** It
+does not; the sentence at the head of this section is why.
+
 ## Invariants
 
 1. A negative amount cannot be constructed — `Money::new` rejects it.

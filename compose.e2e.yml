@@ -8,6 +8,20 @@
 name: vpay
 
 services:
+  # The demo shop gets its OWN database in this same container, created once
+  # by an init script on a fresh volume (`deploy/dev/postgres-init/`). Postgres
+  # runs everything in /docker-entrypoint-initdb.d exactly once, on an empty
+  # data directory — so a `pgdata` volume from before this file existed has no
+  # `shop` database and `vpay-shop` dies in `prisma migrate deploy`.
+  # `docker compose ... down -v` (which is what `just demo-down` runs) is the
+  # answer; see the SQL file's own header.
+  #
+  # `volumes:` merges across compose files by TARGET path, so this adds to
+  # compose.yml's `pgdata` mount rather than replacing it.
+  postgres:
+    volumes:
+      - ./deploy/dev/postgres-init/10-shop-database.sql:/docker-entrypoint-initdb.d/10-shop-database.sql:ro
+
   # No `healthcheck:` here. `vpay-server`'s runtime image is `FROM scratch`
   # (docs/adr/0004-musl-mimalloc.md) — no shell, no curl/wget, no package
   # manager, and the only executable in the image is `/vpay-server` itself.
@@ -63,6 +77,21 @@ services:
       # overlay should fail on being a literal, which is the real defect, and
       # not on a length nobody would connect to it.
       MERCHANT_WEBHOOK_SECRET: wiremock-stub-webhook-secret-32-bytes
+      # Added 2026-09-04 (Step 9, D12). `just gen-demo-keys` registers a
+      # SECOND merchant, `shop-merchant`, whose webhook endpoint's `secrets:`
+      # is a `${SHOP_WEBHOOK_SECRET}` placeholder — and an unresolved `${VAR}`
+      # in the loaded config is exit 78 at boot for BOTH binaries, so it is
+      # set here and on the other service too.
+      #
+      # It must be the SAME BYTES as `vpay-shop`'s own `VPAY_WEBHOOK_SECRET`
+      # below, or every delivery the shop verifies is a 400 and no order ever
+      # reaches `paid`. Both read the same `${SHOP_WEBHOOK_SECRET:-…}` default,
+      # so overriding one in your environment overrides both.
+      #
+      # Thirty-four bytes, over the 32-byte livemode floor
+      # (ConfigError::WeakWebhookSecret) even though sandbox does not apply
+      # it, for the reason MERCHANT_WEBHOOK_SECRET above states.
+      SHOP_WEBHOOK_SECRET: ${SHOP_WEBHOOK_SECRET:-whsec-shop-demo-secret-32-bytes-xx}
       # The RS256 private key the merchant OP signs `/v1` access tokens with
       # (docs/flows/merchant-auth.md). `vpay-server` refuses to start without
       # it (exit 78). It is a *file*, never an env value, because that is how
@@ -106,6 +135,21 @@ services:
       ORANGE_CLIENT_ID: wiremock-stub-client-id
       ORANGE_CLIENT_SECRET: wiremock-stub-client-secret
       MERCHANT_WEBHOOK_SECRET: wiremock-stub-webhook-secret-32-bytes
+      # Added 2026-09-04 (Step 9, D12). `just gen-demo-keys` registers a
+      # SECOND merchant, `shop-merchant`, whose webhook endpoint's `secrets:`
+      # is a `${SHOP_WEBHOOK_SECRET}` placeholder — and an unresolved `${VAR}`
+      # in the loaded config is exit 78 at boot for BOTH binaries, so it is
+      # set here and on the other service too.
+      #
+      # It must be the SAME BYTES as `vpay-shop`'s own `VPAY_WEBHOOK_SECRET`
+      # below, or every delivery the shop verifies is a 400 and no order ever
+      # reaches `paid`. Both read the same `${SHOP_WEBHOOK_SECRET:-…}` default,
+      # so overriding one in your environment overrides both.
+      #
+      # Thirty-four bytes, over the 32-byte livemode floor
+      # (ConfigError::WeakWebhookSecret) even though sandbox does not apply
+      # it, for the reason MERCHANT_WEBHOOK_SECRET above states.
+      SHOP_WEBHOOK_SECRET: ${SHOP_WEBHOOK_SECRET:-whsec-shop-demo-secret-32-bytes-xx}
     depends_on:
       postgres: { condition: service_healthy }
       # The worker is the process that will POST to it once the job loop
@@ -151,10 +195,37 @@ services:
       timeout: 3s
       retries: 30
 
+  # The Orange stub's published port is LOAD-BEARING in this stack, and it is
+  # restated here rather than left implicit in compose.yml.
+  #
+  # Orange is a redirect rail: since Step 9 the stub serves the rail's own
+  # hosted page at `/stub-hosted-page/{pay_token}`
+  # (`backends/tests/conformance/wiremock/orange/mappings/stub-hosted-page.json`),
+  # and `webpayment.json` templates a `payment_url` pointing at
+  # `http://localhost:8082` — the port compose.yml publishes. A PAYER'S
+  # BROWSER follows that URL: Cypress does it with `cy.origin()`, and a human
+  # running `just demo` clicks it. So a future `ports: !reset []` here (the
+  # thing compose.demo.yml did until Step 9, for the perfectly good reason
+  # that nothing *inside* the stack needs the port) would not merely hide a
+  # request journal — it would break the redirect leg, in the browser, with
+  # nothing in any log saying why.
+  #
+  # `!override` rather than a plain list because compose APPENDS `ports:`
+  # across files and this would otherwise be a duplicate publication of the
+  # same host port. The value is compose.yml's own, deliberately: the mapping
+  # spells 8082 and a stub cannot learn what the host published it on.
+  wiremock-orange:
+    ports: !override ["8082:8080"]
+
   dashboard:
     build:
       context: .
       dockerfile: frontends/Dockerfile
+      # Explicit since Step 9, and it has to be: `frontends/Dockerfile` now
+      # builds two images, and "the last stage wins" stopped being a safe way
+      # to say which one. The stage kept its name so this is the only line
+      # that had to change.
+      target: runner
     environment:
       VPAY_DASH_API: http://vpay-server:8080
     depends_on:
@@ -167,4 +238,130 @@ services:
       # this once the dashboard actually calls `/dash/v1` on render.
       vpay-server: { condition: service_started }
     ports: ["3000:3000"]
+    restart: unless-stopped
+
+  # vpay's own hosted/embedded payment page (Step 9, D3) — `frontends/apps/checkout`.
+  #
+  # A SECOND Next.js image, not HTML from `vpay-server`, which is why it is a
+  # service here at all. It holds no merchant credential and never reads
+  # `@vpay/api-client`: everything it does is either the payer's own
+  # credential out of the URL fragment, or the one server-side lookup below.
+  #
+  # The two API URLs are not redundant — they are the same API seen from two
+  # places, and inside compose those differ:
+  #
+  #   VPAY_API_URL             this SERVER's view. `middleware.ts` calls
+  #                            GET /v1/browser/checkout/origins?key= with it,
+  #                            server-side, to build the embedded page's
+  #                            `Content-Security-Policy: frame-ancestors`.
+  #                            A compose service name, reachable only inside
+  #                            the network. Without it the embedded page's CSP
+  #                            is `frame-ancestors 'none'` — correct, and it
+  #                            means nobody can embed.
+  #   NEXT_PUBLIC_VPAY_API_URL the BROWSER's view: the `/v1/browser` base every
+  #                            confirm and poll goes to. It must be the
+  #                            published host origin. Read at RUNTIME (lane 3
+  #                            reads `process.env` with bracket notation
+  #                            precisely so `next build` cannot inline one
+  #                            deployment's value), and a missing one throws
+  #                            rather than defaulting.
+  #
+  # No `healthcheck:` block: the image carries its own (`frontends/Dockerfile`),
+  # which is what `docker compose up --wait` gates on. Restating it here would
+  # be a second copy to keep in sync.
+  vpay-checkout:
+    build:
+      context: .
+      dockerfile: frontends/Dockerfile
+      target: checkout
+    environment:
+      VPAY_API_URL: http://vpay-server:8080
+      NEXT_PUBLIC_VPAY_API_URL: http://localhost:8080
+    depends_on:
+      # `service_started`, not `service_healthy`: `vpay-server` is `FROM
+      # scratch` and can carry no healthcheck (see the note above it). The
+      # page copes with an API that is not up yet — it renders and reports —
+      # so this is boot ordering, not a readiness guarantee.
+      vpay-server: { condition: service_started }
+    ports: ["3080:3000"]
+    # The image writes nothing outside /tmp: non-root (`node`, uid 1000), and
+    # `HOME`/`XDG_CACHE_HOME` already point at /tmp in the Dockerfile.
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+
+  # The demo merchant's own storefront (Step 9, D11) — `examples/shop`.
+  #
+  # This is a MERCHANT's system, not part of vpay: it holds its own database,
+  # its own merchant credential (`shop-merchant`, D12), and it learns that an
+  # order is paid from vpay's WEBHOOK and from nothing else.
+  #
+  # The service block below is `docs/plans/step9-notes/lane-7.md` §2, with the
+  # two published ports the integrator settled in that note's addendum
+  # (shop 3001, checkout 3080).
+  vpay-shop:
+    build:
+      context: .
+      dockerfile: examples/shop/Dockerfile
+    environment:
+      # Its own database in the shared `postgres` container — see the
+      # `postgres` service above.
+      DATABASE_URL: postgres://vpay:vpay@postgres:5432/shop
+      # vpay as THIS SERVER reaches it: the compose service name.
+      VPAY_API_URL: http://vpay-server:8080
+      # vpay as a BROWSER reaches it: the published host port. The two differ
+      # inside compose, which is the whole reason there are two variables.
+      VPAY_BROWSER_API_URL: http://localhost:8080
+      # vpay as VPAY names itself — the `aud` of the shop's client assertion,
+      # and a THIRD value, not a copy of either URL above.
+      # `authenticate_client` compares that claim against
+      # `{deployment.public_base_url}/v1/oauth/token` and the `/v1/oauth`
+      # issuer built from the same setting, and against nothing else; the URL
+      # the shop POSTed to is never consulted. The generated overlay's
+      # `deployment.public_base_url` is `http://localhost:8080`, so this is
+      # that plus the token path. Unset, every token request from the shop is
+      # an `invalid_client` whose response says nothing about audiences.
+      VPAY_OAUTH_AUDIENCE: http://localhost:8080/v1/oauth/token
+      VPAY_CLIENT_ID: shop-merchant
+      VPAY_PRIVATE_KEY_FILE: /secrets/shop-merchant.pem
+      VPAY_PUBLISHABLE_KEY: pk_test_shopmerchantsandbox1
+      # The checkout app, as a browser reaches it (it is an iframe `src`).
+      VPAY_CHECKOUT_URL: http://localhost:3080
+      # Must be byte-identical to the secret in the generated overlay's
+      # `shop-merchant.webhooks[0].secrets`.
+      VPAY_WEBHOOK_SECRET: ${SHOP_WEBHOOK_SECRET:-whsec-shop-demo-secret-32-bytes-xx}
+      # Where vpay redirects a payer back to.
+      SHOP_PUBLIC_URL: http://localhost:3001
+      # `SHOP_PAYMENT_METHOD_TYPES` is deliberately NOT set: the shop offers
+      # both rails, and the demo overlay puts both of them on XAF so both can
+      # complete an XAF order. See `gen-demo-keys`'s `providers:` block.
+    volumes:
+      # The merchant's PRIVATE key. Unlike `demo-merchant`'s, this one is
+      # mounted into a container, because the shop is the merchant's own
+      # server. Read-only; `just gen-demo-keys` chmods it 0644 (the image runs
+      # as uid 1000, not root).
+      - ./.e2e/shop-merchant/oauth-signing-key.pem:/secrets/shop-merchant.pem:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      vpay-server: { condition: service_started }
+    ports: ["3001:3000"]
+    # The image writes nothing outside /tmp: non-root (`node`, uid 1000),
+    # read-only root filesystem, and `HOME`/`XDG_CACHE_HOME` already point at
+    # /tmp in the Dockerfile.
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      start_period: 25s
+      retries: 12
     restart: unless-stopped

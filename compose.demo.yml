@@ -45,6 +45,51 @@
 # this does not is the dashboard's redirect URI, which nothing in the demo
 # exercises.
 
+# # Every publication in THIS file is bound to 127.0.0.1, and that is a
+# # security property, not a tidiness one
+#
+# `ports: ["8080:8080"]` publishes on 0.0.0.0 — every interface the host has,
+# including its LAN address. Measured on the machine this was written on
+# (2026-09-04): a container published `-p 19099:6379` answered on both
+# `localhost` and `10.10.0.227`; the same container published
+# `-p 127.0.0.1:19099:6379` answered on `localhost` and was **connection
+# refused** on `10.10.0.227`.
+#
+# What the demo publishes is not a set of things a stranger on the coffee-shop
+# wifi should be able to reach:
+#
+#   * `vpay-shop` (3001) is a storefront with **no tenancy and no auth**. Its
+#     tRPC router creates orders and its pages read them; nothing in it asks
+#     who you are. Anyone who can reach the port can place orders in the demo
+#     merchant's name and read every order in the database.
+#   * `vpay-shop` is also the one container in the stack with a **merchant
+#     private key mounted into it** (`/secrets/shop-merchant.pem`). It is
+#     throwaway and regenerated per checkout, but a process that holds a
+#     signing key and answers unauthenticated HTTP is not a thing to expose
+#     to a network by default.
+#   * `vpay-checkout` (3080) and `vpay-server` (8080) serve the payer surface
+#     and `/v1` for a deployment whose merchant registry is two generated
+#     clients; `wiremock-orange` (8082) and `wiremock-webhook` (8083) are
+#     WireMock admin APIs, which will happily accept new stub mappings from
+#     anyone who can POST to `/__admin`.
+#
+# Everything that consumes these ports is on the host: `examples/merchant-demo`
+# runs as a host process, `just demo-status`, `just demo-shop` and
+# `just demo-checkout` print `http://localhost:<port>`, and the generated
+# overlay's `checkout.public_base_url` and `shop-merchant.checkout_origins`
+# are `http://localhost:…` too. So nothing loses a route. Everything INSIDE
+# the stack reaches everything else by compose service name over the compose
+# network, which a host-side bind address does not touch at all.
+#
+# **This is the demo overlay only.** `compose.e2e.yml` is deliberately NOT
+# changed: CI's `e2e` job runs Cypress against it, and a bind address is a
+# thing to get wrong in a runner. `just demo` is what a developer runs on a
+# laptop that is on somebody else's network.
+#
+# If you actually want the demo reachable from another machine, publish it
+# yourself with an explicit address rather than removing these — the point is
+# that the default is closed.
+
 # The COMPOSE PROJECT NAME, and the one thing in this file that decides
 # whether two demos can run on one machine at once.
 #
@@ -89,19 +134,19 @@ services:
     # on it. Use `just up` (compose.yml alone) if you want the port published.
     ports: !reset []
 
-  # The two rail stubs, unpublished for the same reason and by the same
-  # mechanism as `postgres` above — and this one is what actually makes two
-  # concurrent demos possible.
+  # The MTN stub, unpublished for the same reason and by the same mechanism as
+  # `postgres` above.
   #
   # `demo_project`, `demo_port` and `demo_receiver_port` between them move
-  # everything a second demo would otherwise fight over EXCEPT these: 8081 and
-  # 8082 are fixed literals in compose.yml, they are appended (not replaced)
-  # by a plain `ports:` here, and a second `up` on the same machine dies on
-  # "port is already allocated" before any of the three variables gets a
-  # chance to matter. Nothing in the demo reaches a rail stub from the host:
-  # `vpay-server` and `vpay-worker` talk to `wiremock-mtn:8080` /
-  # `wiremock-orange:8080` over the compose network, which is what
-  # `config/application.yml` names.
+  # everything a second demo would otherwise fight over EXCEPT this: 8081 is a
+  # fixed literal in compose.yml, it is appended (not replaced) by a plain
+  # `ports:` here, and a second `up` on the same machine dies on "port is
+  # already allocated" before any of the variables gets a chance to matter.
+  # Nothing in the demo reaches the MTN stub from the host: `vpay-server` and
+  # `vpay-worker` talk to `wiremock-mtn:8080` over the compose network, which
+  # is what `config/application.yml` names. MTN is a PUSH rail — it prompts a
+  # handset, there is no browser leg, and nothing outside the compose network
+  # ever has to reach it.
   #
   # Reading what vpay actually sent a rail is still one command, and it is the
   # one docs/runbooks/demo.md uses:
@@ -109,12 +154,54 @@ services:
   #     docker compose $DEMO_COMPOSE exec wiremock-mtn \
   #         curl -s localhost:8080/__admin/requests
   #
-  # `just up` (compose.yml alone) still publishes both if you want them.
+  # `just up` (compose.yml alone) still publishes it if you want it.
   wiremock-mtn:
     ports: !reset []
 
+  # The ORANGE stub is published, and since Step 9 it has to be.
+  #
+  # Orange is a REDIRECT rail: vpay hands the payer a `payment_url` on this
+  # container (`/stub-hosted-page/{pay_token}`, served by
+  # `backends/tests/conformance/wiremock/orange/mappings/stub-hosted-page.json`)
+  # and a browser has to be able to follow it. This file used to `!reset []`
+  # it, so the demo's own redirect leg pointed at a port nothing published —
+  # `just demo` printed a URL that could not be opened.
+  #
+  # `!override`, not a plain `ports:`, for the reason `vpay-server`'s is:
+  # compose APPENDS `ports:` across files, so a plain list would leave
+  # compose.yml's `8082:8080` in place as well and `just demo_orange_port=…`
+  # would fail the whole `up` on "port is already allocated".
+  #
+  # ANY PORT WORKS, since Step 9 lane 4, and that is what the mount below is
+  # for. The rail's `payment_url` is templated by a mapping that spells a
+  # literal `http://localhost:8082` — WireMock renders a response from the
+  # current request alone, and vpay's submit arrives over the compose network
+  # as `wiremock-orange:8080`, so the stub cannot learn what the host
+  # published it on. Until this change that made 8082 the only value that
+  # worked, `gen-demo-keys` refused any other pair, and two concurrent demos
+  # collided on 8082 with no way out but editing a committed file.
+  #
+  # `just gen-demo-keys` now writes a COPY of the committed mappings into
+  # `.e2e/<project>/wiremock-orange/mappings/` with that literal substituted
+  # for `demo_orange_port`, and the demo mounts the copy. The committed tree
+  # stays exactly as it is — it is shared with `compose.yml`, CI's e2e stack
+  # and both Rust suites, and none of those wants a per-run rewrite.
+  #
+  # `volumes:` merges across compose files by TARGET path, so naming
+  # `/home/wiremock` here REPLACES compose.yml's mount of the committed
+  # directory rather than adding a second one. Verify with `docker compose
+  # ... config` before trusting that sentence again after a Compose upgrade.
+  #
+  # `!override` on `ports:` rather than a plain list, for the reason
+  # `vpay-server`'s is: compose APPENDS `ports:` across files, so a plain list
+  # would leave compose.yml's `8082:8080` in place as well and
+  # `just demo_orange_port=…` would fail the whole `up` on "port is already
+  # allocated".
   wiremock-orange:
-    ports: !reset []
+    # 127.0.0.1 — the WireMock admin API. See the header of this file.
+    ports: !override ["127.0.0.1:${VPAY_DEMO_ORANGE_PORT:-8082}:8080"]
+    volumes:
+      - ./.e2e/${VPAY_DEMO_PROJECT:-vpay-demo}/wiremock-orange:/home/wiremock:ro
 
   vpay-server:
     # `!override`, not an addition. Compose merges `ports:` across files by
@@ -133,7 +220,9 @@ services:
     # reaches over the compose network as `http://vpay-server:8080`. Only the
     # host side moves, which is why nothing inside the stack has to know.
     # compose.e2e.yml itself is untouched: CI's e2e job still gets 8080.
-    ports: !override ["${VPAY_DEMO_PORT:-8080}:8080"]
+    # 127.0.0.1 — see the header of this file. compose.e2e.yml keeps its
+    # own 0.0.0.0 publication for CI.
+    ports: !override ["127.0.0.1:${VPAY_DEMO_PORT:-8080}:8080"]
     environment:
       VPAY_PROFILE: demo
     volumes:
@@ -167,20 +256,34 @@ services:
   # `.e2e/application-demo.yml`'s `webhooks[0].url` names over the compose
   # network, and nothing inside the stack has to know the host mapping.
   wiremock-webhook:
-    ports: !override ["${VPAY_DEMO_RECEIVER_PORT:-8083}:8080"]
+    # 127.0.0.1 — the WireMock admin API, and the demo binary that reads
+    # its request journal runs on the host. See the header of this file.
+    ports: !override ["127.0.0.1:${VPAY_DEMO_RECEIVER_PORT:-8083}:8080"]
 
   # NOTE ON `dashboard`. This file does not mention it, and `just demo-up`
-  # does not start it — the recipe names the six services the walkthrough
-  # needs (postgres, both rail stubs, the receiver, the server, the worker)
-  # exactly as `just stripe-compat` already did. Two reasons, one of them
-  # honest rather than practical: building `frontends/Dockerfile` costs
-  # minutes, and per docs/status.md the dashboard renders a static scaffold
-  # notice and makes no call to `vpay-server` — there is no data source to
-  # show, so a demo that booted it would be inviting a reader to look at a
-  # screen that cannot show the payments the walkthrough just made
-  # (docs/runbooks/demo.md says so out loud). Its `3000:3000` publication is
-  # therefore left exactly as compose.e2e.yml has it: unreached by the demo,
-  # and still there for `docker compose -f compose.yml -f compose.e2e.yml up`.
+  # does not start it — the recipe names the eight services the walkthrough
+  # needs (postgres, both rail stubs, the receiver, the server, the worker,
+  # the checkout page and the shop). Two reasons, one of them honest rather
+  # than practical: building the dashboard costs minutes, and per
+  # docs/status.md it renders a static scaffold notice and makes no call to
+  # `vpay-server` — there is no data source to show, so a demo that booted it
+  # would be inviting a reader to look at a screen that cannot show the
+  # payments the walkthrough just made (docs/runbooks/demo.md says so out
+  # loud). Its `3000:3000` publication is therefore left exactly as
+  # compose.e2e.yml has it: unreached by the demo, and still there for
+  # `docker compose -f compose.yml -f compose.e2e.yml up`.
+  #
+  # It is therefore also the ONE publication in this file set still on
+  # 0.0.0.0 — `docker compose … config` over the three files reports
+  # `host_ip: 127.0.0.1` for all five services this file publishes and
+  # `0.0.0.0` for `dashboard`. Stated rather than fixed: `just demo` never
+  # starts it (`demo_services`), and what it serves if you start it by hand
+  # is the static scaffold notice, which reads no database and calls no API.
+  # Bind it here the day it grows a data source.
+  #
+  # It does mean 3000 is spoken for in the file set, which is why
+  # `demo_shop_port` defaults to 3001 rather than to the 3000 the shop's
+  # container listens on.
   vpay-worker:
     environment:
       VPAY_PROFILE: demo
@@ -191,3 +294,47 @@ services:
       # for the other is a divergence nothing would report, because a missing
       # overlay is not an error (see the note above).
       - ./.e2e/application-demo.yml:/config/application-demo.yml:ro
+
+  # vpay's checkout page, republished on a port `just demo` controls.
+  #
+  # `!override` for the identical reason `vpay-server`'s `ports:` is: compose
+  # APPENDS `ports:` across files, so a plain list would leave
+  # compose.e2e.yml's `3080:3000` in place as well and
+  # `just demo_checkout_port=…` would fail the whole `up` on "port is already
+  # allocated".
+  #
+  # `NEXT_PUBLIC_VPAY_API_URL` and the generated overlay's
+  # `checkout.public_base_url` have to name the same two host ports this
+  # stack actually published, or a payer's browser is sent somewhere nothing
+  # listens: the first is where the page's own `/v1/browser` calls go, and
+  # the second is the origin every `url` vpay mints is built on.
+  # `gen-demo-keys` regenerates the overlay when `demo_checkout_port` changes.
+  vpay-checkout:
+    # 127.0.0.1 — see the header of this file.
+    ports: !override ["127.0.0.1:${VPAY_DEMO_CHECKOUT_PORT:-3080}:3000"]
+    environment:
+      NEXT_PUBLIC_VPAY_API_URL: http://localhost:${VPAY_DEMO_PORT:-8080}
+
+  # The demo shop, republished the same way and for the same reason.
+  #
+  # `SHOP_PUBLIC_URL` is where vpay sends a payer BACK to, so it must be the
+  # host port this stack published — and `shop-merchant`'s `checkout_origins`
+  # in the generated overlay must be the same origin, or the browser refuses
+  # to frame vpay's embedded page. `gen-demo-keys` regenerates the overlay
+  # when `demo_shop_port` changes, and checks that entry by port.
+  vpay-shop:
+    # 127.0.0.1, and of the five this is the one that matters most: no
+    # tenancy, no auth, and a merchant private key mounted into the
+    # container. See the header of this file.
+    ports: !override ["127.0.0.1:${VPAY_DEMO_SHOP_PORT:-3001}:3000"]
+    environment:
+      VPAY_BROWSER_API_URL: http://localhost:${VPAY_DEMO_PORT:-8080}
+      # Republished with the port, like the URL above and for a related
+      # reason: this is the `aud` the shop signs its client assertion with,
+      # and it must be `deployment.public_base_url` (which `gen-demo-keys`
+      # writes as `http://localhost:{{demo_port}}`) plus `/v1/oauth/token`.
+      # A stale port here is an `invalid_client` on the shop's first call,
+      # with nothing in the response naming an audience.
+      VPAY_OAUTH_AUDIENCE: http://localhost:${VPAY_DEMO_PORT:-8080}/v1/oauth/token
+      VPAY_CHECKOUT_URL: http://localhost:${VPAY_DEMO_CHECKOUT_PORT:-3080}
+      SHOP_PUBLIC_URL: http://localhost:${VPAY_DEMO_SHOP_PORT:-3001}

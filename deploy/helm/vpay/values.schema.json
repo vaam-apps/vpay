@@ -5,7 +5,7 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "images", "dashboard", "server", "worker", "config", "database",
+    "images", "dashboard", "checkout", "server", "worker", "config", "database",
     "signingKey", "rails", "observability", "metrics", "service", "ingress",
     "networkPolicy", "podDisruptionBudget", "serviceAccount"
   ],
@@ -33,7 +33,8 @@
           }
         },
         "server": { "$ref": "#/definitions/imageRef" },
-        "worker": { "$ref": "#/definitions/imageRef" }
+        "worker": { "$ref": "#/definitions/imageRef" },
+        "checkout": { "$ref": "#/definitions/imageRef" }
       }
     },
 
@@ -43,6 +44,70 @@
       "required": ["enabled"],
       "description": "Not templated by this chart. `enabled: true` is a named template failure, not a workload.",
       "properties": { "enabled": { "type": "boolean" } }
+    },
+
+    "checkout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "description": "vpay's own hosted/embedded payment page (Step 9, D3). Off by default. Shape only: the rules that cannot be expressed here — an enabled page with no publicApiUrl, and an Ingress that sets both host and path or neither — are the \"checkout-templated-when-enabled\" guard in templates/_validate.tpl, so the error can explain itself.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "replicaCount": { "type": "integer", "minimum": 0 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "resources": { "$ref": "#/definitions/resources" },
+        "podAnnotations": { "type": "object" },
+        "nodeSelector": { "type": "object" },
+        "tolerations": { "type": "array" },
+        "affinity": { "type": "object" },
+        "extraEnv": { "type": "array", "items": { "type": "object" } },
+
+        "apiUrl": {
+          "type": "string",
+          "description": "This pod's view of vpay's API, for the server-side origins lookup. Empty means this release's own server Service."
+        },
+        "publicApiUrl": {
+          "type": "string",
+          "description": "A payer's browser's view of vpay's API. Required when enabled — enforced by the guard rather than here, so the message can say why a default would be worse."
+        },
+
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "port"],
+          "properties": {
+            "type": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        },
+
+        "ingress": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "className": { "type": "string" },
+            "host": { "type": "string" },
+            "path": { "type": "string" },
+            "pathType": { "type": "string", "enum": ["Exact", "Prefix", "ImplementationSpecific"] },
+            "annotations": { "type": "object", "additionalProperties": { "type": "string" } },
+            "tls": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["enabled"],
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "clusterIssuer": { "type": "string" },
+                "secretName": { "type": "string" }
+              }
+            },
+            "limitRps": { "type": "integer" },
+            "limitBurstMultiplier": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
     },
 
     "server": {

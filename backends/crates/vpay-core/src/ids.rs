@@ -1,5 +1,7 @@
 //! The public ids vpay's objects are named by — `pi_…`, `ch_…`, `re_…`,
-//! `evt_…` — and the `client_secret` a payer's browser presents.
+//! `evt_…`, `cs_…` — and the two payer credentials that ride in URLs: the
+//! `client_secret` a browser presents, and the `return_token` a redirect
+//! rail's bounce carries back.
 //!
 //! An id is a *merchant-visible, permanent* name: it carries a prefix that
 //! says what it names, a body of `[a-z0-9]` only, no information about the
@@ -41,6 +43,15 @@ pub const REFUND_PREFIX: &str = "re_";
 /// The prefix on an Event id.
 pub const EVENT_PREFIX: &str = "evt_";
 
+/// The prefix on a Checkout Session id.
+///
+/// Stripe's own spelling for the same object, and that matters more here than
+/// it does for `pi_`/`ch_`: this prefix is the leading characters of a
+/// `client_secret` a merchant pastes into `initEmbeddedCheckout`, so a
+/// merchant who has integrated Stripe once recognises at a glance which of
+/// the two credentials on their page they are holding.
+pub const CHECKOUT_SESSION_PREFIX: &str = "cs_";
+
 /// Whether `id` is shaped like an id this module would have minted under
 /// `prefix`: the prefix, then exactly 24 characters, every one of them in the
 /// alphabet.
@@ -78,7 +89,7 @@ pub fn is_well_formed(prefix: &str, id: &str) -> bool {
 
 /// Builds one id: `prefix` followed by `BODY_CHARS` alphabet characters.
 ///
-/// Private because the prefix vocabulary is closed — the four functions below
+/// Private because the prefix vocabulary is closed — the five functions below
 /// are the whole of it, and the prefix is the part an operator reads.
 fn new_id(prefix: &str) -> String {
     // `new_v4` draws from the OS CSPRNG (`getrandom`). A v7 UUID would embed a
@@ -95,8 +106,8 @@ fn new_id(prefix: &str) -> String {
 /// Appends the low `chars * BITS_PER_CHAR` bits of `value` to `out` as base32
 /// digits, most significant first.
 ///
-/// Shared by [`new_id`] and [`client_secret_suffix`] so an id and a secret
-/// cannot disagree about which characters are legal.
+/// Shared by [`new_id`] and [`secret_body`] so an id, a client secret and a
+/// return token cannot disagree about which characters are legal.
 fn push_base32(out: &mut String, value: u128, chars: usize) {
     for position in (0..chars).rev() {
         let index = ((value >> (position * BITS_PER_CHAR)) & 0x1f) as usize;
@@ -171,6 +182,22 @@ pub fn event_id() -> String {
     new_id(EVENT_PREFIX)
 }
 
+/// A new Checkout Session id, `cs_…`.
+///
+/// ```
+/// use vpay_core::ids::{self, CHECKOUT_SESSION_PREFIX, PAYMENT_INTENT_PREFIX};
+///
+/// let id = ids::checkout_session_id();
+/// assert!(ids::is_well_formed(CHECKOUT_SESSION_PREFIX, &id));
+/// // A session id is not an intent id, and the prefix is what says so —
+/// // `POST /v1/checkout/sessions` takes both and must never confuse them.
+/// assert!(!ids::is_well_formed(PAYMENT_INTENT_PREFIX, &id));
+/// ```
+#[must_use]
+pub fn checkout_session_id() -> String {
+    new_id(CHECKOUT_SESSION_PREFIX)
+}
+
 /// What joins an object id to its secret suffix: `pi_…` + this + the suffix.
 ///
 /// Public because it is a **wire contract**: `@vpay/stripe-js` splits a
@@ -184,8 +211,32 @@ pub const CLIENT_SECRET_INFIX: &str = "_secret_";
 /// bits of which 148 are unpredictable.
 const CLIENT_SECRET_SUFFIX_CHARS: usize = 32;
 
+/// Thirty-two alphabet characters of OS-CSPRNG randomness — the body behind
+/// both [`client_secret_suffix`] and [`return_token`].
+///
+/// Private, and the two public functions are deliberately *not* aliases of
+/// each other: they are two different capabilities over two different
+/// columns, and a call site that spelled `client_secret_suffix()` while
+/// minting a return token would read as if the two were interchangeable —
+/// which is precisely what D6 says they must not be. Sharing the body is what
+/// keeps the *entropy* one decision; keeping the names apart is what keeps
+/// the *authority* two.
+fn secret_body() -> String {
+    // Halves rather than 32 characters from one draw plus 0 from the other:
+    // an even split is the shape that makes "two independent CSPRNG draws"
+    // true of the whole string rather than of a prefix of it.
+    const HALF: usize = CLIENT_SECRET_SUFFIX_CHARS / 2;
+    let mut body = String::with_capacity(CLIENT_SECRET_SUFFIX_CHARS);
+    for _ in 0..2 {
+        let bits = Uuid::new_v4().as_u128() >> (128 - HALF * BITS_PER_CHAR);
+        push_base32(&mut body, bits, HALF);
+    }
+    body
+}
+
 /// A fresh client-secret suffix — the half of a `client_secret` that is stored
-/// (`payment_intents.client_secret_suffix`, migration `0026`).
+/// (`payment_intents.client_secret_suffix`, migration `0026`;
+/// `checkout_sessions.client_secret_suffix`, migration `0028`).
 ///
 /// Why two UUID draws, and why 160 bits rather than an id's 120:
 /// [docs/reference/vpay-core.md § client secrets](../../../../docs/reference/vpay-core.md#client-secrets).
@@ -194,7 +245,8 @@ const CLIENT_SECRET_SUFFIX_CHARS: usize = 32;
 /// let suffix = vpay_core::ids::client_secret_suffix();
 ///
 /// // Migration 0026's `client_secret_suffix_length` CHECK is `BETWEEN 32 AND
-/// // 128`; this is at its lower bound.
+/// // 128`; this is at its lower bound. 0028's is the identical CHECK, so one
+/// // generator serves both tables.
 /// assert_eq!(suffix.len(), 32);
 /// // Same alphabet as an id, so a `client_secret` survives a query string.
 /// assert!(
@@ -205,16 +257,46 @@ const CLIENT_SECRET_SUFFIX_CHARS: usize = 32;
 /// ```
 #[must_use]
 pub fn client_secret_suffix() -> String {
-    // Halves rather than 32 characters from one draw plus 0 from the other:
-    // an even split is the shape that makes "two independent CSPRNG draws"
-    // true of the whole string rather than of a prefix of it.
-    const HALF: usize = CLIENT_SECRET_SUFFIX_CHARS / 2;
-    let mut suffix = String::with_capacity(CLIENT_SECRET_SUFFIX_CHARS);
-    for _ in 0..2 {
-        let bits = Uuid::new_v4().as_u128() >> (128 - HALF * BITS_PER_CHAR);
-        push_base32(&mut suffix, bits, HALF);
-    }
-    suffix
+    secret_body()
+}
+
+/// A fresh `checkout_sessions.return_token` (migration `0028`) — the
+/// credential a redirect rail's bounce carries back in a **query string**.
+///
+/// # Why this is not the session's `client_secret`
+///
+/// D6 of `docs/plans/2026-09-04-step9-hosted-checkout.md`. Every secret on a
+/// vpay-served page rides in a URL *fragment*, which never leaves the
+/// browser — but a fragment does not survive a rail's redirect, so the page a
+/// payer lands on after Orange's own checkout has no way to be handed one.
+/// Its credential therefore has to be a query parameter, and a query
+/// parameter is written to access logs, kept in browser history and sent as a
+/// `Referer` by some clients.
+///
+/// So the value that travels there authorises strictly less: reading the
+/// session and its intent *without* the intent's `client_secret`, which is
+/// enough to render an outcome and forward the payer and is not enough to
+/// confirm anything. Same 160 bits, same alphabet, same constant-time
+/// compare, same uniform 404 — a *smaller capability*, not a weaker secret.
+///
+/// ```
+/// use vpay_core::ids;
+///
+/// let token = ids::return_token();
+///
+/// // Migration 0028's `return_token_length` CHECK is `BETWEEN 32 AND 128`.
+/// assert_eq!(token.len(), 32);
+/// // URL-safe by construction: it is a query parameter on the return page.
+/// assert!(
+///     token
+///         .chars()
+///         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+/// );
+/// assert_ne!(token, ids::return_token());
+/// ```
+#[must_use]
+pub fn return_token() -> String {
+    secret_body()
 }
 
 /// Joins an object id and its stored suffix into the credential a payer's
@@ -257,11 +339,17 @@ mod tests {
     type Generator = (fn() -> String, &'static str);
 
     /// Every generator, with the prefix it owns.
-    const GENERATORS: [Generator; 4] = [
+    ///
+    /// A table rather than five separate tests, so a generator added without
+    /// being listed here is a generator none of the properties below hold of
+    /// — the length, the alphabet, the id-column CHECK and the
+    /// percent-encoding identity are claims about *every* id vpay mints.
+    const GENERATORS: [Generator; 5] = [
         (payment_intent_id as fn() -> String, PAYMENT_INTENT_PREFIX),
         (charge_id, CHARGE_PREFIX),
         (refund_id, REFUND_PREFIX),
         (event_id, EVENT_PREFIX),
+        (checkout_session_id, CHECKOUT_SESSION_PREFIX),
     ];
 
     /// `sdks/rust/src/form.rs`'s `is_safe_byte`, copied verbatim rather than
@@ -521,6 +609,85 @@ mod tests {
 
         // And the whole thing survives a URL, which it must: it travels as a
         // query parameter on every poll.
+        assert_eq!(percent_encode(&secret), secret);
+    }
+
+    /// A return token is 32 alphabet characters, distinct in every position,
+    /// and — the property D6 rests on — **never equal to the client-secret
+    /// suffix minted beside it**.
+    ///
+    /// The last assertion is what a shared body could quietly break: if
+    /// `return_token` were ever made to *derive* from the session's secret
+    /// (a hash, a truncation, a shared draw), then the value that travels in
+    /// a query string would be a function of the value that authorises
+    /// reading the intent's own `client_secret`, and the two capabilities
+    /// would stop being separate. `secret_body` draws afresh on every call,
+    /// which is what keeps them independent.
+    #[test]
+    fn a_return_token_is_thirty_two_characters_and_independent_of_the_secret_beside_it() {
+        const N: usize = 4_096;
+
+        for _ in 0..64 {
+            let token = return_token();
+            assert_eq!(
+                token.len(),
+                32,
+                "migration 0028's return_token_length CHECK is BETWEEN 32 AND 128"
+            );
+            assert!(token.is_ascii(), "return_token() must be ASCII");
+            for c in token.chars() {
+                assert!(
+                    c.is_ascii_lowercase() || c.is_ascii_digit(),
+                    "return_token() produced {c:?}, outside the [a-z0-9] alphabet"
+                );
+            }
+            // It is a *query parameter* on the return page, so it has to
+            // survive one unchanged.
+            assert_eq!(percent_encode(&token), token);
+        }
+
+        let tokens: Vec<String> = (0..N).map(|_| return_token()).collect();
+        let unique: HashSet<&String> = tokens.iter().collect();
+        assert_eq!(unique.len(), N, "a collision in {N} return tokens");
+        for position in 0..32 {
+            let seen: HashSet<Option<char>> =
+                tokens.iter().map(|t| t.chars().nth(position)).collect();
+            assert!(
+                seen.len() > 1,
+                "position {position} is constant across {N} return tokens"
+            );
+        }
+
+        // The two credentials a session carries are two independent draws.
+        // A thousand pairs is far more than enough to catch a derivation;
+        // a genuine 160-bit collision here has probability ~2^-140.
+        for _ in 0..1_000 {
+            assert_ne!(
+                return_token(),
+                client_secret_suffix(),
+                "a session's return_token must not be a function of its client_secret_suffix"
+            );
+        }
+    }
+
+    /// A session's `client_secret` is spelled with the *session's* id, and
+    /// splitting it recovers that id — the property `@vpay/stripe-js`'s
+    /// `retrieveCheckoutSession` relies on, exactly as it does for an
+    /// intent's.
+    #[test]
+    fn a_checkout_session_secret_is_the_session_id_and_never_an_intent_id() {
+        let id = checkout_session_id();
+        let secret = client_secret(&id, &client_secret_suffix());
+
+        assert!(
+            secret.starts_with("cs_"),
+            "a session secret starts with the session id prefix (never printed: it is a credential)"
+        );
+        let (recovered, _suffix) = secret
+            .split_once(CLIENT_SECRET_INFIX)
+            .expect("a client secret carries the separator");
+        assert_eq!(recovered, id);
+        // The whole credential survives a URL fragment and a query string.
         assert_eq!(percent_encode(&secret), secret);
     }
 

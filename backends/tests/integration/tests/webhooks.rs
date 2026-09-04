@@ -1339,6 +1339,7 @@ fn events_config(base_url: &str, jwks_a: Value, jwks_b: Value, scopes: &[&str]) 
             merchant_client_with(CLIENT_B, MERCHANT_B, jwks_b, scopes, Vec::new(), Vec::new()),
         ],
         webhooks: vpay_config::WebhookPolicy::default(),
+        checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
     }
 }

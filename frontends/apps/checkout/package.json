@@ -1,0 +1,35 @@
+{
+  "name": "@vpay/checkout",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deps": "pnpm --filter @vpay/stripe-js build",
+    "dev": "pnpm run deps && next dev -p 3001",
+    "build": "pnpm run deps && next build",
+    "start": "next start -p 3001",
+    "typecheck": "pnpm run deps && tsc --noEmit",
+    "test": "pnpm run deps && vitest run"
+  },
+  "dependencies": {
+    "@vpay/stripe-js": "workspace:*",
+    "@vpay/tokens": "workspace:*",
+    "next": "^15.5.25",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@storybook/react": "^8.4.0",
+    "@testing-library/jest-dom": "^6.6.0",
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.20",
+    "daisyui": "^4.12.23",
+    "jsdom": "^25.0.1",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.7"
+  }
+}

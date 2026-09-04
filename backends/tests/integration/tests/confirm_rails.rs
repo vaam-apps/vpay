@@ -90,6 +90,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use testcontainers::{ContainerAsync, GenericImage};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
+use vpay_api::op::keys::LoadedSigningKey;
 use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
 use vpay_db::Repositories;
 use vpay_sdk::{
@@ -100,7 +101,8 @@ use vpay_sdk::{
 mod support;
 
 use support::{
-    ensure_crypto_provider_installed, generate_key, merchant_client, migrated_postgres, serve,
+    ensure_crypto_provider_installed, generate_key, merchant_client_with_publishable_keys,
+    migrated_postgres, serve,
 };
 
 /// The merchant every test acts as, and the tenant it acts for.
@@ -133,6 +135,21 @@ const UNKNOWN_PAYER_MSISDN: &str = "237600000400";
 
 /// Where the merchant asks Orange to send the payer back.
 const RETURN_URL: &str = "https://shop.example/order/1234/return";
+
+/// The publishable key merchant A's registration carries, and therefore the
+/// one every checkout session of theirs pins into the URLs vpay mints
+/// (`?key=`). A session cannot be created for a tenant with none.
+const PK_A: &str = "pk_test_acmecameroonsandbox01";
+
+/// Where this deployment serves `frontends/apps/checkout`. Nothing here
+/// fetches it: what is under test is the exact string vpay hands the *rail*,
+/// which is built from this and never resolved by vpay itself.
+const CHECKOUT_BASE: &str = "https://checkout.vpay.test";
+
+/// A hosted session's two destinations, which the checkout page forwards a
+/// payer to **after** it has read the outcome — not what the rail is told.
+const SUCCESS_URL: &str = "https://shop.example/ok?sid={CHECKOUT_SESSION_ID}";
+const CANCEL_URL: &str = "https://shop.example/cancel";
 
 /// The subscription key `wiremock/mtn/mappings/token.json` answers `401` to.
 const REJECTED_SUBSCRIPTION_KEY: &str = "bad-key";
@@ -172,14 +189,50 @@ struct Harness {
     /// Where each rail's stub is listening, for the second servers below.
     mtn_url: String,
     orange_url: String,
+    /// The Orange stub's bare origin — `orange_url` minus the
+    /// `/orange-money-webpay/{env}` prefix that is part of the *configured*
+    /// base URL and not of the container. Two things need it and neither can
+    /// derive it: the admin request journal, and the stub's hosted page,
+    /// whose `payment_url` the rail templates with a fixed `localhost:8082`
+    /// (the port `compose.yml` publishes) that no container-per-test run can
+    /// honour.
+    orange_origin: String,
     pem_a: String,
     jwks_a: Value,
     server_pem: String,
+    /// The server's own signer, for the one resource `vpay-sdk` does not
+    /// model — see [`Harness::bearer`].
+    signing_key: LoadedSigningKey,
 }
 
 impl Harness {
     fn a(&self) -> vpay_sdk::Client {
         self.client_for(&self.base_url)
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.base_url)
+    }
+
+    /// A `/v1` bearer token for `CLIENT_A`, minted with the server's own
+    /// signer.
+    ///
+    /// Every other request in this file goes through `vpay-sdk`. Checkout
+    /// sessions cannot: the Rust SDK models no `checkout.sessions` resource
+    /// yet (Step 9, lane 5), so the two session-driven cases below drive raw
+    /// HTTP against the shipping route, exactly as
+    /// `tests/checkout_sessions.rs` does and for the same stated reason.
+    fn bearer(&self) -> String {
+        self.signing_key
+            .token_manager()
+            .issue_client_token_with_extra(
+                CLIENT_A,
+                900,
+                Some(vpay_api::SCOPE_PAYMENTS_WRITE.to_owned()),
+                Some(vpay_config::MERCHANT_AUDIENCE.to_owned()),
+                std::collections::HashMap::new(),
+            )
+            .expect("the server's own signer mints a merchant token")
     }
 
     fn client_for(&self, base_url: &str) -> vpay_sdk::Client {
@@ -284,9 +337,41 @@ fn config_with(base_url: &str, jwks_a: Value, mtn: &RailSetup, orange: &RailSetu
                 exponent: 2,
             },
         ],
-        merchant_clients: vec![merchant_client(CLIENT_A, MERCHANT_A, jwks_a)],
+        // With a publishable key and a checkout app, because a checkout
+        // session cannot exist without either: every URL vpay mints for one
+        // carries `?key=`, and the session's return page is built on
+        // `checkout.public_base_url`. Neither changes anything for the
+        // merchant-driven confirms in this file — they only make the
+        // session-driven ones possible.
+        merchant_clients: vec![merchant_client_with_publishable_keys(
+            CLIENT_A,
+            MERCHANT_A,
+            jwks_a,
+            &[PK_A],
+        )],
         webhooks: vpay_config::WebhookPolicy::default(),
+        checkout: vpay_config::CheckoutConfig {
+            public_base_url: Some(CHECKOUT_BASE.to_owned()),
+        },
         dashboard_client: None,
+    }
+}
+
+/// The same deployment with the `checkout:` block deleted — an operator who
+/// removed the key while sessions were still open.
+///
+/// A second builder rather than a parameter on [`config_with`], so every
+/// other test in this file keeps reading as one call and the one case that
+/// cares names what it removed.
+fn config_without_checkout(
+    base_url: &str,
+    jwks_a: Value,
+    mtn: &RailSetup,
+    orange: &RailSetup,
+) -> Config {
+    Config {
+        checkout: vpay_config::CheckoutConfig::default(),
+        ..config_with(base_url, jwks_a, mtn, orange)
     }
 }
 
@@ -312,13 +397,14 @@ async fn harness() -> anyhow::Result<Harness> {
     // The `/orange-money-webpay/{env}` prefix is part of the configured base
     // URL (`docs/flows/adapter-orange-money.md`), exactly as
     // `config/application.yml` writes it.
-    let orange_url = format!(
-        "http://127.0.0.1:{}/orange-money-webpay/dev",
+    let orange_origin = format!(
+        "http://127.0.0.1:{}",
         orange
             .get_host_port_ipv4(8080)
             .await
             .context("the Orange stub's mapped port")?
     );
+    let orange_url = format!("{orange_origin}/orange-money-webpay/dev");
 
     let (server_pem, _server_jwks) = generate_key();
     let (pem_a, jwks_a) = generate_key();
@@ -341,9 +427,11 @@ async fn harness() -> anyhow::Result<Harness> {
         base_url: served.base_url,
         mtn_url,
         orange_url,
+        orange_origin,
         pem_a,
         jwks_a,
         server_pem,
+        signing_key: served.signing_key,
     })
 }
 
@@ -689,6 +777,622 @@ async fn redirect_confirm_commits_the_rails_material_before_it_answers() -> anyh
         retrieved_without_secret, confirmed,
         "a merchant who lost the confirm's response must be able to read the same action back \
          (apart from client_secret)"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------------- test 2(bis)
+
+/// How many requests the Orange stub recorded matching a WireMock request
+/// pattern.
+///
+/// The rail's own journal, over its admin API. It is the only witness for
+/// what vpay *sent*: the confirm's response says where the payer should go
+/// next, and the charge row says what was committed, but neither can tell a
+/// `return_url` that reached Orange from one that was dropped on the way.
+///
+/// The count is dug out by hand for the same reason the conformance suite's
+/// twin does it — the body is `{"count": N, …}`, one integer after one key —
+/// and because a `serde_json` parse here would say "the shape changed" where
+/// this says "the rail was told the wrong thing".
+async fn orange_requests_matching(harness: &Harness, pattern: &str) -> anyhow::Result<usize> {
+    let text = reqwest::Client::new()
+        .post(format!("{}/__admin/requests/count", harness.orange_origin))
+        .body(pattern.to_owned())
+        .send()
+        .await
+        .context("the Orange stub's admin API answers")?
+        .text()
+        .await
+        .context("the count response is readable")?;
+    let (_, after) = text
+        .split_once("\"count\"")
+        .with_context(|| format!("no count in the admin response: {text}"))?;
+    let digits: String = after
+        .chars()
+        .skip_while(|character| !character.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits
+        .parse()
+        .with_context(|| format!("count is not a number in: {text}"))
+}
+
+/// A direct `/v1` confirm sends the **merchant's** `return_url` to the rail.
+///
+/// This is browser-checkout's D4 closed at the rail end, end to end and
+/// through the shipping code: the merchant's URL is validated by
+/// `checked_return_url`, committed to `charges.return_url`, resolved by
+/// `vpay_api::v1::return_trip` (no checkout session drives this charge, so
+/// the merchant's own value is the answer), carried on
+/// `vpay_provider::ChargeRef::return_url`, and sent by
+/// `vpay-adapter-orange-money` as both `return_url` and `cancel_url`.
+///
+/// The conformance case asserts the same property one layer down, with a
+/// `ChargeRef` it builds itself. This one is the layer that could not be
+/// asserted there: that the value the *merchant* sent is the value that
+/// reaches the rail, across the whole confirm path, with the reference and
+/// the row it was committed under. Before 2026-09-04 every assertion in the
+/// conformance suite and in this file passed while the rail was being told a
+/// deployment-wide URL out of `settings.return_url`.
+///
+/// `cancel_url` gets the same value on purpose — vpay cannot yet tell "paid"
+/// from "gave up" on the way back, and the outcome comes from the
+/// authenticated status query.
+#[tokio::test]
+async fn a_direct_confirm_sends_the_merchants_return_url_to_the_rail() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let client = harness.a();
+
+    let intent = client
+        .payment_intents()
+        .create(
+            create_params(PaymentMethodType::OrangeMoney),
+            RequestOptions::new(),
+        )
+        .await
+        .context("creating the intent to confirm")?;
+
+    client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            ConfirmPaymentIntentParams::orange_money(RETURN_URL),
+            RequestOptions::new(),
+        )
+        .await
+        .context("the Orange stub accepts the submit")?;
+
+    // Pinned to the reference the server minted, so this cannot be satisfied
+    // by some other request in the journal.
+    let charge = stored_charge(&harness.pool, &intent.id).await?;
+    let reference: String = sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT provider_reference_id FROM charges WHERE id = $1",
+    )
+    .bind(&charge.id)
+    .fetch_one(&harness.pool)
+    .await
+    .context("reading the reference the confirm submitted under")?
+    .to_string();
+
+    let pattern = format!(
+        r#"{{"method":"POST","urlPathPattern":"/orange-money-webpay/[^/]+/v1/webpayment",
+             "bodyPatterns":[
+               {{"matchesJsonPath":{{"expression":"$.order_id","equalTo":"{reference}"}}}},
+               {{"matchesJsonPath":{{"expression":"$.return_url","equalTo":"{RETURN_URL}"}}}},
+               {{"matchesJsonPath":{{"expression":"$.cancel_url","equalTo":"{RETURN_URL}"}}}}]}}"#
+    );
+    assert_eq!(
+        orange_requests_matching(&harness, &pattern).await?,
+        1,
+        "the rail was not told the merchant's return_url ({RETURN_URL}) for reference \
+         {reference}; a payer it redirected would come back somewhere this merchant did \
+         not choose"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// `POST /v1/checkout/sessions` for an intent, as the merchant's own server
+/// does it, answering the session id.
+///
+/// Raw HTTP for [`Harness::bearer`]'s reason: `vpay-sdk` models no
+/// `checkout.sessions` resource yet.
+async fn create_hosted_session(harness: &Harness, intent_id: &str) -> anyhow::Result<String> {
+    let response = reqwest::Client::new()
+        .post(harness.url("/v1/checkout/sessions"))
+        .bearer_auth(harness.bearer())
+        .header("idempotency-key", uuid::Uuid::new_v4().to_string())
+        .form(&[
+            ("payment_intent", intent_id),
+            ("success_url", SUCCESS_URL),
+            ("cancel_url", CANCEL_URL),
+        ])
+        .send()
+        .await
+        .context("creating a hosted checkout session")?;
+    let status = response.status().as_u16();
+    let body: Value = response.json().await.context("the body is JSON")?;
+    anyhow::ensure!(status == 201, "creating a hosted session: {body:#}");
+    body.get("id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .with_context(|| format!("the create must answer a session id: {body:#}"))
+}
+
+/// The session's `return_token`, read straight out of Postgres.
+///
+/// It is deliberately on no response: vpay builds the one URL that carries it
+/// and hands that to the **rail**, so a merchant never sees it and there is
+/// nothing on the wire to read it from. Going to the column is what lets this
+/// file assert the exact bytes Orange was told.
+async fn session_return_token(pool: &PgPool, session_id: &str) -> anyhow::Result<String> {
+    let (token,): (String,) =
+        sqlx::query_as("SELECT return_token FROM checkout_sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_one(pool)
+            .await
+            .context("reading the session's return token")?;
+    Ok(token)
+}
+
+/// The `provider_reference_id` a confirm submitted a charge under.
+async fn submitted_reference(pool: &PgPool, charge_id: &str) -> anyhow::Result<String> {
+    Ok(sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT provider_reference_id FROM charges WHERE id = $1",
+    )
+    .bind(charge_id)
+    .fetch_one(pool)
+    .await
+    .context("reading the reference the confirm submitted under")?
+    .to_string())
+}
+
+/// Every `webpayment` submit in the Orange stub's journal, whatever its body.
+const WEBPAYMENTS: &str =
+    r#"{"method":"POST","urlPathPattern":"/orange-money-webpay/[^/]+/v1/webpayment"}"#;
+
+/// A confirm on an intent an **open checkout session** drives sends vpay's
+/// own return page to the rail — not the merchant's `return_url`.
+///
+/// This is the seam lane 2 left open and lane 1 could not close: lane 2 built
+/// `vpay_api::v1::return_trip` with a session branch that answered `None`
+/// unconditionally (there was no `checkout_sessions` table), and lane 1
+/// landed the table, `find_open_by_intent` and
+/// `CheckoutSessionRow::return_page_url` without the file that joins them
+/// being on its branch. Between the two, a session-driven payer would have
+/// been redirected to the *merchant's* URL: the checkout page would never see
+/// them again, the session would stay `open` forever, and the merchant's own
+/// page would be asked "did they pay?" by a browser holding no credential
+/// that could answer. Nothing would have logged a thing.
+///
+/// The merchant sends its own `return_url` on the confirm anyway, and it must
+/// **lose** — which is the precedence `return_url_for_charge` encodes and the
+/// reason the negative assertion below is here as well as the positive one. A
+/// payer who came through vpay's checkout has to come back to vpay, which
+/// reads the intent's real status and only then forwards them (D5's
+/// `{CHECKOUT_SESSION_ID}` substitution happens there).
+///
+/// **Revert-proof.** Make `SessionReturnPage::session_return_url` answer
+/// `Ok(None)` and this case fails on the first assertion: the rail is told
+/// `https://shop.example/order/1234/return` instead of the session's page.
+#[tokio::test]
+async fn a_session_driven_confirm_sends_vpays_return_page_to_the_rail() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let client = harness.a();
+
+    let intent = client
+        .payment_intents()
+        .create(
+            create_params(PaymentMethodType::OrangeMoney),
+            RequestOptions::new(),
+        )
+        .await
+        .context("creating the intent to confirm")?;
+    let session_id = create_hosted_session(&harness, &intent.id).await?;
+    let token = session_return_token(&harness.pool, &session_id).await?;
+
+    client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            // The merchant's own URL, which the session's page beats.
+            ConfirmPaymentIntentParams::orange_money(RETURN_URL),
+            RequestOptions::new(),
+        )
+        .await
+        .context("the Orange stub accepts the submit")?;
+
+    let charge = stored_charge(&harness.pool, &intent.id).await?;
+    let reference = submitted_reference(&harness.pool, &charge.id).await?;
+
+    // Byte for byte what `CheckoutSessionRow::return_page_url` builds — the
+    // token that authorises the return read, then the publishable key the
+    // page needs before it can resolve a tenant. Written out here rather than
+    // called, so a change to that method has to be made twice on purpose.
+    let expected = format!("{CHECKOUT_BASE}/c/{session_id}/return?t={token}&key={PK_A}");
+
+    let pattern = |url: &str| {
+        format!(
+            r#"{{"method":"POST","urlPathPattern":"/orange-money-webpay/[^/]+/v1/webpayment",
+                 "bodyPatterns":[
+                   {{"matchesJsonPath":{{"expression":"$.order_id","equalTo":"{reference}"}}}},
+                   {{"matchesJsonPath":{{"expression":"$.return_url","equalTo":"{url}"}}}},
+                   {{"matchesJsonPath":{{"expression":"$.cancel_url","equalTo":"{url}"}}}}]}}"#
+        )
+    };
+
+    assert_eq!(
+        orange_requests_matching(&harness, &pattern(&expected)).await?,
+        1,
+        "the rail was not told vpay's return page for reference {reference} (the expected URL \
+         carries the return token and is not printed); a payer it redirected would land on the \
+         merchant's site with the session still open"
+    );
+    assert_eq!(
+        orange_requests_matching(&harness, &pattern(RETURN_URL)).await?,
+        0,
+        "the merchant's own return_url must not reach the rail when a session drives the \
+         charge: it would forward the payer one step too early"
+    );
+
+    // And it is what was **committed**, not something resolved on the way to
+    // the rail: `charges.return_url` is the one column that feeds the rail
+    // call, `next_action.redirect_to_url.return_url` on every later read, and
+    // any resubmit the worker would make. A row that disagreed with the
+    // journal above would mean a merchant polling their own intent is shown a
+    // URL no payer was ever sent to.
+    assert_eq!(
+        charge.return_url.as_deref(),
+        Some(expected.as_str()),
+        "the committed row must carry the URL the rail was told"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// The browser session read, as vpay's own checkout page makes it — the one
+/// call that hands the page the intent's `client_secret`.
+async fn browser_session_read(harness: &Harness, session_id: &str) -> anyhow::Result<Value> {
+    let secret = {
+        let (suffix,): (String,) =
+            sqlx::query_as("SELECT client_secret_suffix FROM checkout_sessions WHERE id = $1")
+                .bind(session_id)
+                .fetch_one(&harness.pool)
+                .await
+                .context("reading the session's own credential half")?;
+        format!("{session_id}_secret_{suffix}")
+    };
+
+    let response = reqwest::Client::new()
+        .get(harness.url(&format!("/v1/browser/checkout/sessions/{session_id}")))
+        .query(&[("key", PK_A), ("client_secret", secret.as_str())])
+        .send()
+        .await
+        .context("the browser session read")?;
+    anyhow::ensure!(
+        response.status().as_u16() == 200,
+        "the session read must succeed: {}",
+        response.text().await.unwrap_or_default()
+    );
+    response.json().await.context("the body is JSON")
+}
+
+/// The page's own Orange confirm: an instrument, a credential, and **no
+/// `return_url`**.
+async fn browser_confirm(
+    harness: &Harness,
+    intent_id: &str,
+    intent_secret: &str,
+    return_url: Option<&str>,
+) -> anyhow::Result<(u16, Value)> {
+    let mut body = format!(
+        "key={PK_A}&client_secret={intent_secret}&payment_method_data[type]={REDIRECT_RAIL}"
+    );
+    if let Some(url) = return_url {
+        body.push_str("&return_url=");
+        body.push_str(url);
+    }
+    let response = reqwest::Client::new()
+        .post(harness.url(&format!("/v1/browser/payment_intents/{intent_id}/confirm")))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .await
+        .context("the browser confirm")?;
+    let status = response.status().as_u16();
+    let value: Value = response.json().await.context("the body is JSON")?;
+    Ok((status, value))
+}
+
+/// vpay's own checkout page confirms an Orange payment **without** sending a
+/// `return_url`, and the rail is told the session's return page.
+///
+/// This is the case Step 9 exists for and the one that did not work: the page
+/// (`frontends/apps/checkout`) has no merchant URL to send — the URL it would
+/// send is the one it is already standing on — so it posts the instrument and
+/// the credential and nothing else. `payer_instrument` answered
+/// `400 invalid_param: return_url` to exactly that request, so the hosted
+/// Orange flow could not complete at all.
+///
+/// The rule is unchanged for every confirm with no session: this test asserts
+/// that too, on the same route and the same rail, so "we made `return_url`
+/// optional" cannot be what makes the first half pass.
+///
+/// **Revert-proof.** Remove the session branch from `payer_instrument` and
+/// the first half fails with `400`; make it a fallback rather than a
+/// precedence and `a_session_driven_confirm_sends_vpays_return_page_to_the_rail`
+/// fails instead.
+#[tokio::test]
+async fn a_browser_confirm_under_a_session_needs_no_return_url() -> anyhow::Result<()> {
+    let harness = harness().await?;
+
+    let intent = harness
+        .a()
+        .payment_intents()
+        .create(
+            create_params(PaymentMethodType::OrangeMoney),
+            RequestOptions::new(),
+        )
+        .await
+        .context("creating the intent the page will drive")?;
+    let session_id = create_hosted_session(&harness, &intent.id).await?;
+    let token = session_return_token(&harness.pool, &session_id).await?;
+
+    let view = browser_session_read(&harness, &session_id).await?;
+    let intent_secret = view
+        .pointer("/payment_intent/client_secret")
+        .and_then(Value::as_str)
+        .context("the session read hands the page the intent's credential")?
+        .to_owned();
+
+    let (status, body) = browser_confirm(&harness, &intent.id, &intent_secret, None).await?;
+    assert_eq!(
+        status, 200,
+        "vpay's own page sends no return_url; refusing it is refusing hosted checkout: {body:#}"
+    );
+
+    let expected = format!("{CHECKOUT_BASE}/c/{session_id}/return?t={token}&key={PK_A}");
+    assert_eq!(
+        body.pointer("/next_action/redirect_to_url/return_url")
+            .and_then(Value::as_str),
+        Some(expected.as_str()),
+        "the response must echo the URL the payer will actually come back to: {body:#}"
+    );
+
+    let charge = stored_charge(&harness.pool, &intent.id).await?;
+    let reference = submitted_reference(&harness.pool, &charge.id).await?;
+    let pattern = format!(
+        r#"{{"method":"POST","urlPathPattern":"/orange-money-webpay/[^/]+/v1/webpayment",
+             "bodyPatterns":[
+               {{"matchesJsonPath":{{"expression":"$.order_id","equalTo":"{reference}"}}}},
+               {{"matchesJsonPath":{{"expression":"$.return_url","equalTo":"{expected}"}}}}]}}"#
+    );
+    assert_eq!(
+        orange_requests_matching(&harness, &pattern).await?,
+        1,
+        "the rail must be told the session's return page for reference {reference}"
+    );
+
+    // The rule with no session is exactly what it was.
+    let bare = harness
+        .a()
+        .payment_intents()
+        .create(
+            create_params(PaymentMethodType::OrangeMoney),
+            RequestOptions::new(),
+        )
+        .await
+        .context("creating an intent with no session")?;
+    let bare_secret = bare
+        .client_secret
+        .clone()
+        .context("create renders the intent's credential")?;
+    let (status, body) = browser_confirm(&harness, &bare.id, &bare_secret, None).await?;
+    assert_eq!(
+        status, 400,
+        "a redirect confirm with no session still needs somewhere to send the payer: {body:#}"
+    );
+    assert_eq!(
+        body.pointer("/error/param").and_then(Value::as_str),
+        Some("return_url"),
+        "and it must name the parameter: {body:#}"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// A session-driven confirm on a deployment whose checkout app has been
+/// **removed** is refused, rather than falling back to the merchant's URL.
+///
+/// A session cannot be created without `checkout.public_base_url` — `create`
+/// answers `checkout_not_configured` first
+/// (`a_deployment_without_a_checkout_app_refuses_to_create_a_session`, in
+/// `tests/checkout_sessions.rs`) — so the only way to stand in this branch is
+/// the one this test stages: an operator deleting the key while sessions are
+/// open. The second server over the same database is what makes that a
+/// configuration change rather than a test seam, exactly as
+/// `credentials_the_rail_refuses_are_a_page_and_a_terminal_charge` does.
+///
+/// The alternative — quietly using `charges.return_url` — is the failure lane
+/// 2's note names: the payer is forwarded one step too early and nothing
+/// reports it. A `500` naming the missing key is loud, and no rail has been
+/// called when it fires, which the journal assertion below is what proves.
+///
+/// The charge row is left `submitting` with a poll job, which is where *any*
+/// failure between the durable write and the rail call leaves it
+/// (`docs/flows/crash-safety.md`) — the confirm path commits the charge
+/// first on purpose. Nothing new is claimed about that here; the recovery
+/// pass fails a redirect charge that was never submitted.
+#[tokio::test]
+async fn a_session_driven_confirm_is_refused_when_the_checkout_app_is_gone() -> anyhow::Result<()> {
+    let harness = harness().await?;
+
+    let intent = harness
+        .a()
+        .payment_intents()
+        .create(
+            create_params(PaymentMethodType::OrangeMoney),
+            RequestOptions::new(),
+        )
+        .await
+        .context("creating the intent to confirm")?;
+    let session_id = create_hosted_session(&harness, &intent.id).await?;
+
+    // Every submit this stub has seen, before the attempt — the assertion at
+    // the end is that this number does not move. Counted rather than pinned
+    // to a reference, because the whole claim is that no charge row (and so
+    // no reference) is ever created.
+    let submits_before = orange_requests_matching(&harness, WEBPAYMENTS).await?;
+
+    // The redeploy: same database, same merchant, no `checkout:` block.
+    let mtn = RailSetup::working(&harness.mtn_url);
+    let orange = RailSetup::working(&harness.orange_url);
+    let jwks_a = harness.jwks_a.clone();
+    let served = serve(&harness.repositories, &harness.server_pem, |base_url| {
+        config_without_checkout(base_url, jwks_a, &mtn, &orange)
+    })
+    .await?;
+
+    let error = harness
+        .client_for(&served.base_url)
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            ConfirmPaymentIntentParams::orange_money(RETURN_URL),
+            RequestOptions::new(),
+        )
+        .await
+        .expect_err("a session with no page to return to cannot be confirmed");
+    let (status, _kind, code, _param) = api_error(error);
+    assert_eq!(
+        status, 500,
+        "a deployment that cannot serve its own return page is misconfigured, not a merchant \
+         error and not a retryable one"
+    );
+    assert_eq!(
+        code.as_deref(),
+        Some("checkout_not_configured"),
+        "the same code `create` answers, so an SDK branches on one value"
+    );
+
+    // Nothing was written and nothing was called. The lookup runs *before*
+    // the charge is committed, so a deployment that can no longer serve its
+    // own return page costs no charge row — unlike a failure after
+    // `open_attempt`, which would leave one in `submitting` for the recovery
+    // pass to fail.
+    let (charges,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM charges WHERE payment_intent_id = $1")
+            .bind(&intent.id)
+            .fetch_one(&harness.pool)
+            .await
+            .context("counting the charges the refused confirm left behind")?;
+    assert_eq!(
+        charges, 0,
+        "a confirm refused before the rail is resolved must leave no charge"
+    );
+    assert_eq!(
+        orange_requests_matching(&harness, WEBPAYMENTS).await?,
+        submits_before,
+        "the refusal must happen before the rail is called: no payer may be sent to a page \
+         this deployment no longer serves"
+    );
+
+    let (status,): (String,) = sqlx::query_as("SELECT status FROM checkout_sessions WHERE id = $1")
+        .bind(&session_id)
+        .fetch_one(&harness.pool)
+        .await
+        .context("reading the session the refused confirm left behind")?;
+    assert_eq!(
+        status, "open",
+        "the refusal changes nothing about the session; restoring the configuration is what \
+         fixes it"
+    );
+
+    served.server.abort();
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// The stub's hosted page links to the URLs *that* submit carried.
+///
+/// The other half of the redirect leg: `submit` tells the rail where the
+/// payer goes, and this is a payer's browser being told the same thing by the
+/// rail's page. Nothing in this repository could follow a `payment_url`
+/// before Step 9 — the URL pointed at `/stub-hosted-page/…` and no mapping
+/// served it, so a payer got the stub's 404.
+///
+/// Two deliberate limits, both properties of the *stub* and not of vpay:
+///
+/// * the page renders the two URLs out of its own query string, because
+///   WireMock's templating cannot reach the journal of the submit that minted
+///   the token. `wiremock/orange/mappings/stub-hosted-page.json` says so at
+///   length, and says what the real Orange page does instead.
+/// * `payment_url`'s host is the fixed `localhost:8082` `compose.yml`
+///   publishes, which a container on a random mapped port cannot be. The path
+///   and query are what carry the meaning, so they are what is taken; the
+///   origin is this container's.
+#[tokio::test]
+async fn the_stub_hosted_page_links_to_the_return_url_the_submit_carried() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let client = harness.a();
+
+    let intent = client
+        .payment_intents()
+        .create(
+            create_params(PaymentMethodType::OrangeMoney),
+            RequestOptions::new(),
+        )
+        .await
+        .context("creating the intent to confirm")?;
+
+    let confirmed = client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            ConfirmPaymentIntentParams::orange_money(RETURN_URL),
+            RequestOptions::new(),
+        )
+        .await
+        .context("the Orange stub accepts the submit")?;
+
+    let Some(vpay_sdk::NextAction::RedirectToUrl { redirect_to_url }) = confirmed.next_action
+    else {
+        panic!("a redirect rail must answer with a next_action");
+    };
+
+    // The rail's own URL, on the container actually serving it.
+    let hosted = redirect_to_url.url;
+    let (_, path_and_query) = hosted
+        .split_once("/stub-hosted-page/")
+        .unwrap_or_else(|| panic!("the rail's payment_url must be the stub's page: {hosted}"));
+    let page = reqwest::Client::new()
+        .get(format!(
+            "{}/stub-hosted-page/{path_and_query}",
+            harness.orange_origin
+        ))
+        .send()
+        .await
+        .context("the stub's hosted page answers")?;
+    assert_eq!(
+        page.status().as_u16(),
+        200,
+        "a payer following the URL vpay handed them must reach a page"
+    );
+    let html = page.text().await.context("the page body is readable")?;
+
+    assert!(
+        html.contains(&format!(r#"<a id="pay" href="{RETURN_URL}">"#)),
+        "the Pay link must go where this charge's submit said: {html}"
+    );
+    assert!(
+        html.contains(&format!(r#"<a id="cancel" href="{RETURN_URL}">"#)),
+        "the Cancel link must go where this charge's submit said: {html}"
     );
 
     harness.shutdown().await;

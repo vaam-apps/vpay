@@ -33,6 +33,12 @@ The deadlines are on the *config*, not on the client, because one
 ever be one rail's. `vpay_config::ProviderHost::to_provider_config` is the
 only place a `ProviderConfig` is built from YAML.
 
+`ChargeRef` carries `reference_id`, `amount`, `payer_ref`, `ref_extra` and —
+since Step 9 — `return_url`: where a redirect rail must send the payer when
+its own page is done with them. It is **the core's** answer, never an
+adapter's (`docs/reference/rails.md`), and an adapter on a push rail must
+ignore it.
+
 ## Capabilities
 
 `flow`, `supports_refunds`, `supports_partial_refunds`, `delivers_callbacks`,
@@ -104,10 +110,14 @@ speak over it to a real HTTP host.**
   `a_request_timeout_actually_fires_against_a_silent_peer`.
 
 **The conformance suite is the proof that this is a port and not a folder.**
-26 tests — 4 capability cases plus 11 port cases parameterised over both
-rails — run live against a real `wiremock/wiremock` container started by
-`vpay_testkit::containers::start_wiremock`. **26 passed, 0 skipped,
-0 ignored**, measured on 2026-09-03. The 11 port cases are
+33 tests — 4 capability cases plus 13 port cases parameterised over both
+rails, and 3 MTN-only cases — run live against a real `wiremock/wiremock`
+container started by `vpay_testkit::containers::start_wiremock`. **33 passed,
+0 skipped, 0 ignored**, measured on 2026-09-04 (26 on 2026-09-03; Step 8 lane C
+added `the_submit_tells_the_rail_where_to_call_back`, Step 9 lane 2 added
+`the_submit_tells_the_rail_where_to_send_the_payer_back`, and Step 9 lane 2b
+added `a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin` with three
+cases on the push rail alone). The 11 port cases are
 `submit_returns_a_reference_and_a_flow_shaped_result`,
 `duplicate_submit_reports_submitted_not_an_error`,
 `not_found_is_never_on_its_own_a_failure`,

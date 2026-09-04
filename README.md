@@ -208,11 +208,20 @@ real endpoints have never been called by this code.** A `succeeded` here means
 `vpay-worker` asked a stub and the stub said `SUCCESSFUL`; it does not mean
 anyone paid.
 
-The MTN intents are in **EUR** and the Orange ones in **XAF**:
-`config/application.yml` puts `mtn_momo` on EUR because MTN's sandbox rejects
-XAF, and `/v1` refuses a confirm whose intent currency is not the rail's
-settlement currency. That is a property of the profile, expressed as
-configuration — never a code branch.
+**Every payment above is XAF, on both rails**, and that is a property of the
+*demo overlay* alone — `.e2e/application-demo.yml`, the file `just
+gen-demo-keys` writes. It settles `mtn_momo` in XAF because the demo shop
+prices its catalogue in XAF, offers a payer both rails, and `/v1` refuses a
+confirm whose intent currency is not the rail's settlement currency; one
+currency for both rails is what makes the shop's MTN button payable. What
+that stack talks to is a WireMock host whose mappings match on no currency at
+all.
+
+**Do not read that as "MTN accepts XAF".** It does not. **MTN's real sandbox
+rejects XAF**, which is why `config/application.yml` still puts `mtn_momo` on
+`currency: EUR` and why `application-sandbox.yml` inherits it. Configuration
+either way — never a code branch. Until Step 9 the MTN intents here were EUR
+and the Orange ones XAF; the reason they were is unchanged.
 
 **The dashboard is deliberately not started**, and that is a statement rather
 than an optimisation: per [`docs/status.md`](docs/status.md) it renders a static

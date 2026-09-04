@@ -267,6 +267,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value, jwks_b: Value) -> C
             merchant_client_with_publishable_keys(CLIENT_B, MERCHANT_B, jwks_b, &[PK_B]),
         ],
         webhooks: vpay_config::WebhookPolicy::default(),
+        checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
     }
 }
@@ -840,14 +841,29 @@ async fn a_browser_confirm_needs_no_idempotency_key_and_a_second_one_is_the_409(
     Ok(())
 }
 
-/// Claim 6: the browser route table is exactly two entries, and neither is
-/// behind the merchant token boundary.
+/// Claim 6: every entry in the browser route table is reachable **without a
+/// merchant token**, and the same relative path under `/v1` is not.
 ///
 /// The sibling of `payment_intents.rs`'s
 /// `every_registered_v1_path_answers_401_without_a_token`, which walks
 /// `V1_ROUTES` and asserts the opposite. Both are needed: without this one, a
 /// browser route accidentally added to `V1_ROUTES` would start answering 401
 /// to every payer and the other test would happily agree it should.
+///
+/// # This test was changed in Step 9, deliberately
+///
+/// It pinned the table at two entries from Step 5c until 2026-09-04. Step 9
+/// added three `GET`s about a **checkout session**
+/// (`vpay_api::browser::checkout_sessions`), so the count moves — and the
+/// property is re-stated rather than relaxed: exactly one entry answers a
+/// non-read method, and it is the confirm that has always been here. vpay's
+/// own checkout page confirms through *that* route, so Step 9 added no second
+/// way to move money.
+///
+/// The unit-level half of the same pin, with the exhaustive ordered list, is
+/// `the_browser_surface_offers_two_read_and_confirm_routes_and_nothing_else`
+/// in `vpay-api`'s own tests; that one's doc comment carries the full
+/// argument.
 #[tokio::test]
 async fn every_browser_route_is_reachable_without_a_merchant_token() -> anyhow::Result<()> {
     let h = harness().await?;
@@ -855,14 +871,35 @@ async fn every_browser_route_is_reachable_without_a_merchant_token() -> anyhow::
 
     assert_eq!(
         vpay_api::BROWSER_ROUTES.len(),
-        2,
-        "the payer-facing surface is a retrieve and a confirm — nothing else may be added here \
-         without deciding what a payer may do with it"
+        5,
+        "the payer-facing surface is two payment-intent routes and three checkout reads — \
+         nothing may be added here without deciding what a payer may do with it"
     );
+    let writes: Vec<&str> = vpay_api::BROWSER_ROUTES
+        .iter()
+        .filter(|route| route.methods.iter().any(|method| *method != "GET"))
+        .map(|route| route.path)
+        .collect();
+    assert_eq!(
+        writes,
+        vec!["/payment_intents/{id}/confirm"],
+        "a payer may confirm one intent and do nothing else on this surface"
+    );
+
+    /// Fills a route pattern's `{id}` with an id of the right *kind*, so a
+    /// `cs_` route is not probed with a `pi_` id — which would be refused for
+    /// the right answer and the wrong reason.
+    fn concrete(path: &str) -> String {
+        if path.starts_with("/checkout/sessions") {
+            path.replace("{id}", "cs_00000000000000000000000x")
+        } else {
+            path.replace("{id}", "pi_00000000000000000000000x")
+        }
+    }
 
     let mut checked = 0_usize;
     for route in vpay_api::BROWSER_ROUTES {
-        let path = route.path.replace("{id}", "pi_00000000000000000000000x");
+        let path = concrete(route.path);
         for method in route.methods {
             let url = h.url(&format!("/v1/browser{path}"));
             let request = match *method {
@@ -877,26 +914,48 @@ async fn every_browser_route_is_reachable_without_a_merchant_token() -> anyhow::
                 .send()
                 .await
                 .with_context(|| format!("{method} {url}"))?;
+            let status = response.status().as_u16();
             assert_ne!(
-                response.status().as_u16(),
-                401,
+                status, 401,
                 "{method} /v1/browser{path} must not demand a token a payer can never hold"
             );
-            // And specifically: the uniform 404, decided by this surface's own
-            // credential gate rather than by any authentication layer.
-            assert_eq!(response.status().as_u16(), 404);
+
+            if route.path == "/checkout/origins" {
+                // The one route with no object to be missing: it answers a
+                // *tenant's* origins, so an absent key gets the same empty
+                // list a registered tenant with none gets. That is the
+                // fail-closed answer and the non-enumerable one — a 404 here
+                // would tell a caller a key was unrecognised.
+                assert_eq!(status, 200, "{method} /v1/browser{path}");
+                assert_eq!(
+                    response.json::<Value>().await?,
+                    serde_json::json!({ "origins": [] }),
+                    "no key means no origins, not an error a prober could learn from"
+                );
+            } else {
+                // The uniform 404, decided by this surface's own credential
+                // gate rather than by any authentication layer.
+                assert_eq!(status, 404, "{method} /v1/browser{path}");
+            }
             checked += 1;
         }
     }
-    assert_eq!(checked, 2, "two routes, one method each");
+    assert_eq!(checked, 5, "five routes, one method each");
 
     // The contrast that makes the separation real rather than nominal: the
     // *same* relative path is behind the token boundary under `/v1` and
     // outside it under `/v1/browser`. If the browser routes were ever folded
     // into `V1_ROUTES`, the second answer here would become 401 — and
     // `payment_intents.rs`'s boundary walk would insist that was correct.
+    //
+    // Two of the five paths (`/checkout/sessions/{id}/return` and
+    // `/checkout/origins`) are mounted nowhere under `/v1`. They still answer
+    // 401 there, and that is the point: the `/v1` nest's authentication layer
+    // runs before axum matches a route, so *every* path under that prefix is
+    // behind the boundary — which is exactly why the browser nest has to be
+    // mounted outside it rather than as a path within it.
     for route in vpay_api::BROWSER_ROUTES {
-        let path = route.path.replace("{id}", "pi_00000000000000000000000x");
+        let path = concrete(route.path);
         for method in route.methods {
             // The route's *own* verb: a `GET` at the confirm path would be
             // axum's bare 405 on the browser nest and would prove nothing.
@@ -915,9 +974,9 @@ async fn every_browser_route_is_reachable_without_a_merchant_token() -> anyhow::
                 401,
                 "{method} /v1{path} is the merchant surface and must demand a token"
             );
-            assert_eq!(
+            assert_ne!(
                 payer.status().as_u16(),
-                404,
+                401,
                 "{method} /v1/browser{path} must be decided by this surface's own credential gate"
             );
         }

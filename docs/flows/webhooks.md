@@ -72,6 +72,20 @@ than the guard being absent. "No merchant endpoint has ever been POSTed to"
 stands, and so does its corollary: **no deployment has ever refused one
 either.**
 
+**Updated 2026-09-04 (Step 9): the receiver in the demo stack is now a real
+merchant handler, and the sentence above is narrowed rather than retired.**
+`examples/shop` exposes `POST /api/vpay/webhook`, which verifies the
+`Vpay-Signature` header with `@vpay/sdk`, dedupes by event id, marks an order
+`paid` on `payment_intent.succeeded` and `failed` on
+`payment_intent.payment_failed`, and answers `2xx` only after the write. It is
+the first thing in this repository's history to *act* on a delivery rather than
+record it in a journal, and lane 6's Cypress specs assert an order reaching
+`paid` **only** through it — the payer's return page reads the shop's database
+and takes no decision from the return trip. What has still never happened is a
+POST to a merchant endpoint **outside this repository**: `vpay-shop` is a
+container on the same compose network, permitted by the sandbox profile's
+`webhooks.allow_private_targets`, and it is code this repo wrote and tests.
+
 **TX 1 — the business transaction.** `vpay_db::Settlement::apply_succeeded` /
 `apply_failed` move the charge, move the intent and insert one `events` row in
 a single transaction, with `fanout_state = 'pending'`. Two types only, both

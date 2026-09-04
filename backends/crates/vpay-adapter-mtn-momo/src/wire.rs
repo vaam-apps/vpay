@@ -234,12 +234,19 @@ mod tests {
 
     use super::*;
 
+    /// Where a hypothetical payer would be sent back to. Set on every charge
+    /// this module tests, although MTN has no browser step, because the
+    /// interesting assertion is that it never reaches the wire — see
+    /// [`a_return_url_is_not_carried_on_a_push_rails_body`].
+    const RETURN_URL: &str = "https://shop.example/order/1234/return";
+
     fn charge(payer: Option<&str>) -> ChargeRef {
         ChargeRef {
             reference_id: Uuid::from_u128(0x0202),
             amount: Money::new(5_000, Currency::Eur).expect("non-negative"),
             payer_ref: payer.map(ToOwned::to_owned),
             ref_extra: BTreeMap::new(),
+            return_url: Some(RETURN_URL.to_owned()),
         }
     }
 
@@ -262,6 +269,35 @@ mod tests {
                 "externalId": "00000000-0000-0000-0000-000000000202",
                 "payer": { "partyIdType": "MSISDN", "partyId": "237600000000" },
             })
+        );
+    }
+
+    /// A push rail is told nothing about where a browser should end up,
+    /// even when the core knows.
+    ///
+    /// `ChargeRef::return_url` is filled for every charge whose merchant sent
+    /// one, not only for redirect rails, because the core decides the value
+    /// and the *adapter* decides whether the rail has any use for it (D2 of
+    /// `docs/plans/2026-09-04-step9-hosted-checkout.md`). MTN has none: there
+    /// is no browser in a `requesttopay`, and a field MTN does not document
+    /// would at best be ignored and at worst refuse the charge.
+    ///
+    /// The exact-equality assertion in
+    /// [`the_request_body_has_the_documented_shape`] already proves this by
+    /// construction. This case exists so the property has a name a reader can
+    /// find, and so it fails with a message about the return URL rather than
+    /// about a body shape.
+    #[test]
+    fn a_return_url_is_not_carried_on_a_push_rails_body() {
+        let body = RequestToPay::new(&charge(Some("237600000000"))).expect("a payer is present");
+        let json = serde_json::to_string(&body).expect("serialises");
+        assert!(
+            !json.contains(RETURN_URL),
+            "a push rail's body must not carry the payer's return URL: {json}"
+        );
+        assert!(
+            !json.contains("return") && !json.contains("cancel"),
+            "no field of a push rail's body is about a browser round trip: {json}"
         );
     }
 

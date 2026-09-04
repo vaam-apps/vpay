@@ -75,6 +75,17 @@
 //!   not an accidental test of our own missing-token branch — that branch has
 //!   its own unit test in the adapter crate.
 //!
+//! `return_url` is the one field [`Rail::charge`] deliberately does **not**
+//! select by capability: every conformance charge carries one, push rail
+//! included. The core fills it for any charge whose merchant sent one and
+//! leaves it to the *adapter* to decide whether its rail has a use for it (D2
+//! of `docs/plans/2026-09-04-step9-hosted-checkout.md`). A push rail's case
+//! would be vacuous if the field were `None` — "MTN sent no return URL"
+//! proves nothing when there was none to send — so
+//! [`the_submit_tells_the_rail_where_to_send_the_payer_back`] hands both
+//! rails the same URL and asserts that only the redirect rail's wire carries
+//! it.
+//!
 //! Only `pay_token`. Orange's `submit` also returns a `notif_token`, but no
 //! adapter call *reads* one from a `ChargeRef` — it arrives on the inbound
 //! notification and is checked there, and `parse_callback` takes a body, not a
@@ -229,6 +240,16 @@ const REF_REDIRECT: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_
 /// A reference whose status query the rail answers with an oversized body.
 const REF_HUGE: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0b16);
 
+/// Where the core says this charge's payer goes when a rail's page is done
+/// with them — the merchant's own site here, which is the case that closes
+/// browser-checkout's D4.
+///
+/// A URL on nobody's real domain, and deliberately *not* under the stub's own
+/// origin: it has to be visibly not-vpay's, so a rail (or an adapter) that
+/// substituted the callback URL or the base URL would fail on the value
+/// rather than pass on a coincidence.
+const RETURN_URL: &str = "https://shop.example/order/1234/return";
+
 /// Where [`REF_REDIRECT`]'s `Location` points, on the rail's own stub.
 ///
 /// Both rails' mappings stub this path with the answer that means *accepted*,
@@ -285,6 +306,9 @@ impl Rail {
                     BTreeMap::from([("pay_token".to_owned(), format!("pay-{reference_id}"))])
                 }
             },
+            // Not selected by flow, unlike the two fields above — see "What a
+            // conformance charge stands for" in the module doc.
+            return_url: Some(RETURN_URL.to_owned()),
         }
     }
 }
@@ -557,6 +581,142 @@ fn callback_url_pattern(rail: RailUnderTest, callback_url: &str) -> String {
                    {{"expression":"$.notif_url","equalTo":"{callback_url}"}}}}]}}"#
         ),
     }
+}
+
+/// Where each rail is documented to carry the **payer's** return URL on a
+/// `submit`, as a WireMock request pattern — or `None` for a rail that has no
+/// browser step and must carry it nowhere.
+///
+/// Rail-specific *data*, the same line [`callback_url_pattern`] holds, and the
+/// two are not the same question: that one is where the rail talks to *us*
+/// (`notif_url` / `X-Callback-Url`, one value per deployment), this one is
+/// where the rail sends the *payer* (one value per charge, D2 of
+/// `docs/plans/2026-09-04-step9-hosted-checkout.md`). A rail could get one
+/// right and the other wrong.
+///
+/// `None` is MTN's answer and it is not "unknown": a push rail prompts a
+/// handset and never opens a browser, so there is no field for a return URL
+/// to be right or wrong in. The absence is asserted by the shared body's
+/// journal check rather than by a pattern, because a pattern can only say
+/// what a request *does* contain.
+///
+/// Orange's pattern pins **both** `return_url` and `cancel_url` to the same
+/// value, which is what the adapter sends: vpay cannot yet tell "the payer
+/// paid" from "the payer gave up" on the way back — the outcome comes from
+/// the authenticated status query — so two different URLs would be a
+/// distinction nothing checks.
+fn return_url_pattern(rail: RailUnderTest, return_url: &str) -> Option<String> {
+    match rail {
+        RailUnderTest::MtnMomo => None,
+        RailUnderTest::OrangeMoney => Some(format!(
+            r#"{{"method":"POST","urlPathPattern":"/orange-money-webpay/[^/]+/v1/webpayment",
+                 "bodyPatterns":[
+                   {{"matchesJsonPath":{{"expression":"$.return_url","equalTo":"{return_url}"}}}},
+                   {{"matchesJsonPath":{{"expression":"$.cancel_url","equalTo":"{return_url}"}}}}]}}"#
+        )),
+    }
+}
+
+/// The stub's whole request journal, as text.
+///
+/// [`requests_matching`] can only ask what a request *contains*; this is what
+/// a case needs to assert a value reached the rail **nowhere at all** — not in
+/// a body, not in a header, not in a query string. The journal is the only
+/// witness for a negative, exactly as it is for the redirect that must never
+/// be followed.
+///
+/// Returned unparsed on purpose: the assertion is a substring search for one
+/// URL, and this package deliberately carries no JSON dependency (see
+/// [`requests_matching`]).
+async fn recorded_requests(rail: &Rail) -> String {
+    let http = vpay_provider::http::client().expect("the vendored-roots client builds");
+    http.get(format!("{}/__admin/requests", rail.stub_origin))
+        .send()
+        .await
+        .expect("the stub's admin API answers")
+        .text()
+        .await
+        .expect("the journal is readable")
+}
+
+/// Every `submit` tells the rail where to send the **payer** — and only a rail
+/// that has a browser to send them in.
+///
+/// # Why this is a conformance case
+///
+/// Because "the payer came back to the wrong place" is invisible from inside
+/// an adapter and invisible from the payment's own outcome. The charge
+/// settles either way: the status query is what moves money, and a payer
+/// stranded on Orange's thank-you screen has still paid. What breaks is the
+/// merchant's order flow, and it breaks in production, in a browser, for
+/// somebody who has already been charged.
+///
+/// Until 2026-09-04 `vpay-adapter-orange-money` read `return_url` and
+/// `cancel_url` from *deployment* settings, falling back to the notification
+/// endpoint — one answer per deployment to a per-charge question. The
+/// merchant's own `return_url` was validated, stored on `charges`, echoed
+/// back to them on `next_action`, and never sent to the rail that would act
+/// on it (`docs/flows/browser-checkout.md`'s D4). Every wire assertion in
+/// this suite passed throughout.
+///
+/// # The two halves, and why the second one is the sharp one
+///
+/// [`return_url_pattern`] pins the exact value on the rail that carries it.
+/// The journal check then says the value appears **nowhere** on a rail whose
+/// flow gives it no browser — a stronger statement than any request pattern
+/// can make, and the reason [`Rail::charge`] fills `return_url` on a push
+/// charge too. `flow` is a capability value, so the branch is the one
+/// ADR-0002 allows; the rail's name appears nowhere in this body.
+///
+/// The mappings hold the same contract from the other direction:
+/// `webpayment.json` **requires** an `http(s)` `return_url` and `cancel_url`
+/// on every accepted submit, so an adapter that stopped sending them gets a
+/// 404 rather than an accepted payment.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn the_submit_tells_the_rail_where_to_send_the_payer_back(
+    #[case] rail_under_test: RailUnderTest,
+) {
+    let rail = start(rail_under_test, Credentials::Valid, Duration::from_secs(10)).await;
+    let charge = rail.charge(REF_ACCEPTED);
+    assert_eq!(
+        charge.return_url.as_deref(),
+        Some(RETURN_URL),
+        "the case is vacuous unless the core actually filled the field"
+    );
+
+    rail.adapter
+        .submit(&charge, &rail.config)
+        .await
+        .expect("an accepted submit must be Ok");
+
+    if let Some(pattern) = return_url_pattern(rail_under_test, RETURN_URL) {
+        assert_eq!(
+            requests_matching(&rail, &pattern).await,
+            1,
+            "{}: the rail received no submit carrying {RETURN_URL} where its protocol \
+             documents one; a payer this rail redirects would come back somewhere this \
+             merchant did not choose",
+            rail.adapter.code(),
+        );
+    }
+
+    let carries_the_payer = matches!(rail.adapter.capabilities().flow, ProviderFlow::Redirect);
+    assert_eq!(
+        recorded_requests(&rail).await.contains(RETURN_URL),
+        carries_the_payer,
+        "{}: a rail with flow {:?} must {} the payer's return URL, and the journal says \
+         otherwise",
+        rail.adapter.code(),
+        rail.adapter.capabilities().flow,
+        if carries_the_payer {
+            "carry"
+        } else {
+            "never see"
+        },
+    );
 }
 
 /// Every `submit` tells the rail where to call back, with the URL this
@@ -1114,3 +1274,123 @@ async fn an_oversized_rail_body_is_refused_at_the_cap(#[case] rail: RailUnderTes
 // UPDATE fails answers 500 with no `next_action`. The adapter-level half of the
 // guarantee is `submit_returns_a_reference_and_a_flow_shaped_result` above:
 // the rail cannot hand back a URL without the token beside it.
+
+/// Every other wire-level case above steers by *reference*: `Rail::charge`
+/// hands `query_status` a manufactured `ChargeRef` with a fixed placeholder
+/// payer (`237600000000`) and lets the reference pick which stubbed answer
+/// comes back. MTN's three documentation-MSISDN scenarios
+/// (`requesttopay-scenario.json`'s `mtn-e2e-poll`, `demo-outcomes.json`'s
+/// `mtn-demo-decline` and `mtn-demo-expiry`) steer the opposite way — on the
+/// **submit**'s body, `$.payer.partyId` — because that is the one field of an
+/// end-to-end confirm a payer actually controls; MTN's status query is a `GET`
+/// carrying no body, so nothing about *it* can be steered. Every other case in
+/// this file is therefore silent about whether that steering still works,
+/// which is what this one exists to check, and for real: `submit` is called
+/// here, not skipped.
+///
+/// The three MSISDNs are `237600000ce0`, `237600000f01` and `237600000f02` —
+/// except this case sends their **digits-only twins**, `237600000100`,
+/// `237600000101` and `237600000102`. The hex originals carry a letter so a
+/// WireMock mapping can key on them, which is exactly why a real payer can
+/// never send one: `frontends/apps/checkout/src/lib/msisdn.ts` validates
+/// Cameroon E.164 (`237` + `6` + eight digits) and refuses a letter as it
+/// refuses any other non-digit (`docs/plans/step9-notes/lane-3.md` #4c). The
+/// three mappings above now match *either* PartyId, by regex, into the exact
+/// same scenario — so this case is the proof that the number a real phone
+/// form accepts reaches the identical walk the hex documentation number
+/// always has, not a second, differently-tested path. The full steering
+/// table for both families is `docs/plans/step9-notes/lane-2b.md`.
+///
+/// MTN only, deliberately not parameterised over `RailUnderTest`: Orange is a
+/// redirect rail whose submit body carries no MSISDN at all (`order_id`
+/// selects everything), so there is nothing on that rail for a payer's typed
+/// phone number to steer.
+#[rstest]
+#[case::settles("237600000100", None)]
+#[case::insufficient_funds("237600000101", Some(FailureCode::InsufficientFunds))]
+#[case::payer_timeout("237600000102", Some(FailureCode::PayerTimeout))]
+#[tokio::test]
+async fn a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin(
+    #[case] msisdn: &str,
+    #[case] expected_decline: Option<FailureCode>,
+) {
+    let rail = start(
+        RailUnderTest::MtnMomo,
+        Credentials::Valid,
+        Duration::from_secs(10),
+    )
+    .await;
+
+    // Not `rail.charge(reference)`: that helper hard-codes the placeholder
+    // payer this case exists to steer away from. The reference is a fresh
+    // random UUID, exactly as `vpay_api`'s confirm handler mints one before
+    // committing a charge (the reason the *reference* cannot be the steering
+    // field the three mappings above document).
+    let charge = ChargeRef {
+        reference_id: Uuid::new_v4(),
+        amount: Money::new(5_000, rail.config.currency).expect("non-negative"),
+        payer_ref: Some(msisdn.to_owned()),
+        ref_extra: BTreeMap::new(),
+        return_url: Some(RETURN_URL.to_owned()),
+    };
+
+    let submitted = rail
+        .adapter
+        .submit(&charge, &rail.config)
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "msisdn {msisdn}: MTN accepts every one of these submits \
+             — the steering happens after, on query_status — got {error:?}"
+            )
+        });
+    assert!(
+        submitted.redirect_url.is_none(),
+        "msisdn {msisdn}: a push rail's submit carries no redirect"
+    );
+
+    match expected_decline {
+        None => {
+            let first = rail
+                .adapter
+                .query_status(&charge, &rail.config)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("msisdn {msisdn}: the first status query answers, got {error:?}")
+                });
+            assert_eq!(first, ChargeStatus::Pending, "msisdn {msisdn}: first query");
+            let second = rail
+                .adapter
+                .query_status(&charge, &rail.config)
+                .await
+                .expect("the second status query answers");
+            assert!(
+                matches!(second, ChargeStatus::Succeeded { .. }),
+                "msisdn {msisdn}: expected to settle on the second query, got {second:?}"
+            );
+        }
+        Some(expected) => {
+            let status = rail
+                .adapter
+                .query_status(&charge, &rail.config)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "msisdn {msisdn}: a documented decline is an answer, not a transport \
+                         failure: {error:?}"
+                    )
+                });
+            match status {
+                ChargeStatus::Failed { code, raw } => {
+                    assert_eq!(code, expected, "msisdn {msisdn} mapped to {code}");
+                    assert!(
+                        !raw.is_empty(),
+                        "msisdn {msisdn}: the rail's own reason must be carried through for an \
+                         operator, even though the taxonomy is what the merchant sees"
+                    );
+                }
+                other => panic!("msisdn {msisdn}: expected a decline, got {other:?}"),
+            }
+        }
+    }
+}

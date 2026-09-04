@@ -175,5 +175,20 @@ by design, not by omission); any partial `amount_received`, because neither
 rail can collect part of an amount and `ChargeStatus::Succeeded` carries no
 amount at all; `prompt_expired_at` and the `payment_intent.processing`
 milestone ([reconciler.md](reconciler.md)); and any of this against a **real**
-rail — every settlement observed so far came from a WireMock host. See
-[../status.md](../status.md).
+rail — every settlement observed so far came from a WireMock host.
+
+Since Step 9 the settlement transaction also moves a **checkout session** when
+one drove the payment — `paid`/`complete` on success, `failed`/`expired` on a
+terminal decline, in the same commit as the intent's own status, so the two can
+never be observed disagreeing (`vpay_db::checkout_sessions::settle_for_intent`,
+called from `vpay_db::settlement`). Nothing else about the lifecycle changed: a
+session is a *view* of one checkout attempt and moves no money
+([hosted-checkout.md](hosted-checkout.md)).
+
+A checkout session also ends on its own: the worker's hourly housekeeping sweep
+moves an `open` session past its 24-hour horizon to `expired`, unless its intent
+has a charge the rail may still be acting on — the clock never overrules a live
+payment. `payment_status` is untouched by that, exactly as by a merchant's own
+`expire`.
+
+See [../status.md](../status.md).

@@ -49,6 +49,27 @@ The payer obtains a one-time code by USSD and enters it on Orange's page.
 environment sits in the **URL path**, not only the host. So the configured
 `base_url` must include the path prefix.
 
+### Where the payer comes back to
+
+`return_url` and `cancel_url` are **per charge**, filled by the core and
+carried on `vpay_provider::ChargeRef::return_url` (Step 9, D2). Both fields
+get the same value: Orange's page distinguishes "paid" from "cancelled" and
+vpay cannot — the outcome comes from the authenticated `transactionstatus`
+read, and a charge the payer abandoned is `Pending` until it expires — so two
+URLs would encode a distinction nothing checks. A charge with no `return_url`
+is `ProviderError::Config` before the call; this adapter will not invent one.
+
+Until 2026-09-04 both fields came from **deployment** settings
+(`settings.return_url` / `settings.cancel_url`, falling back to `notif_url`),
+which was one answer per deployment to a per-charge question. Those two
+settings keys are gone; nothing shipped set them.
+
+Where that value comes from is the core's business and not this adapter's: the
+merchant's own `return_url` for a direct confirm, and vpay's own return page
+when a Checkout Session drives the charge ([hosted-checkout.md](hosted-checkout.md)).
+
+`lang` is unchanged and is still the one defaulted field in the request body.
+
 ## Status mapping
 
 | Orange | Core |
@@ -102,9 +123,12 @@ over HTTP exactly as the rail is (ADR-0006); the mappings live in
 directory `compose.yml` bind-mounts, so a mapping fixed for one is fixed for
 both.
 
-**All 11 conformance port cases now pass for this rail** — 26 tests across
-both rails, 26 passed, 0 skipped, measured 2026-09-03 with `cargo nextest run
--p vpay-tests-conformance`. *(An earlier draft of this section said five of
+**All 13 conformance port cases now pass for this rail** — 33 tests in the
+suite, 33 passed, 0 skipped, measured 2026-09-04 with `cargo nextest run
+-p vpay-tests-conformance` (26 on 2026-09-03; `the_submit_tells_the_rail_where_to_call_back`
+was added by Step 8 lane C and `the_submit_tells_the_rail_where_to_send_the_payer_back`
+by Step 9 lane 2, and Step 9 lane 2b added three MTN-only cases that do not
+parameterise over this rail). *(An earlier draft of this section said five of
 nine passed and four failed on `query_status` for want of a `pay_token` in
 the suite's `ChargeRef`. That was fixed in the suite, where it belonged: a
 `ProviderFlow::Redirect` rail is now seeded with the `pay_token` its previous
@@ -163,6 +187,20 @@ measured from the *send*, not the answer
   `webpayment` or `transactionstatus` *after* a good token, so only the 401 on
   the token endpoint itself is covered
   (`bad_credentials_are_not_reported_as_a_payer_problem`).
+- **The stub's hosted page is not Orange's.**
+  `backends/tests/conformance/wiremock/orange/mappings/stub-hosted-page.json`
+  serves `/stub-hosted-page/{pay_token}` with a Pay link and a Cancel link so
+  a browser can finish the redirect leg — and since Step 9 a browser does
+  (`shop-hosted.cy.ts`). The real rail *stores* `return_url` and `cancel_url`
+  against the `pay_token` at submit and renders them from its own state;
+  WireMock can only template from the current request, so the submit's
+  `payment_url` carries the two URLs as query parameters and the page templates
+  them back. The pairing is real — those are the bytes that submit sent — but
+  nothing here shows Orange would accept a `return_url` it had not been told
+  about, and nothing claims it would. The stub also has no *cancel* semantics
+  of its own: its "Cancel" link is the same return URL, which is why Step 9's
+  Cypress proof of the cancel path is a **decline** forwarding to `cancel_url`
+  rather than a payer abandoning the page.
 - **Nothing here has ever called Orange.** Every wire assertion above is
   against WireMock; a mapping faithful to this document but not to Orange
   would pass. All seven "to confirm" items above still stand.

@@ -1,0 +1,40 @@
+# Fixture for `two_merchant_clients_sharing_a_checkout_origin_are_rejected`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# One origin claimed by two tenants. The checkout app looks the list up **by
+# publishable key**, so a shared origin means whichever merchant a payer's key
+# names decides whether the *other* merchant's site may frame the page — a
+# security answer with two values depending on iteration order. Fatal rather
+# than first-wins, the same rule `DuplicatePublishableKey` applies.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+checkout:
+  public_base_url: http://localhost:3001
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    checkout_origins: ["https://shop.example"]
+  - client_id: beta-douala
+    merchant_id: beta-douala-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k2
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    checkout_origins: ["https://shop.example"]

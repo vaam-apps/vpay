@@ -18,6 +18,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::charges::{ChargeRow, record_transition};
+use crate::checkout_sessions;
 use crate::error::{DbError, classify_write};
 use crate::events::{self, NewEvent};
 use crate::payment_intents::{self, LIVE_CHARGE_STATES, PaymentIntentRow};
@@ -164,6 +165,48 @@ async fn emit(
     )
     .await?;
 
+    Ok(())
+}
+
+/// Flips the checkout session driving this intent, if there is one, inside
+/// the settlement transaction.
+///
+/// # Why it is here and not in the worker
+///
+/// `docs/plans/2026-09-04-step9-hosted-checkout.md` calls this "the worker
+/// hook", and the worker is where the *decision* is made — `settle_succeeded`
+/// or `settle_failed` — but the *write* belongs in this transaction and
+/// nowhere else. `checkout_sessions.payment_status` is a denormalisation of
+/// what the intent says, kept so a payer's page can render an outcome from
+/// one read; a second write after the commit would leave a window in which
+/// the intent is `succeeded` and the session still `open`/`unpaid`, and a
+/// crash in that window would make it permanent. There is no job that would
+/// notice, and D10 adds none.
+///
+/// Logged rather than counted, and never fatal: see
+/// `checkout_sessions::settle_for_intent` for why `Ok(0)` is the normal
+/// answer.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the write fails, which aborts the whole settlement
+/// — deliberately. A session that could not be flipped is a session whose
+/// page would poll forever against an intent that has already moved, and
+/// rolling back means the poll job simply runs again.
+async fn flip_session(
+    tx: &mut Transaction<'_, Postgres>,
+    intent: &PaymentIntentRow,
+    paid: bool,
+) -> Result<(), DbError> {
+    let flipped = checkout_sessions::settle_for_intent(tx, &intent.id, paid).await?;
+    if flipped > 0 {
+        tracing::info!(
+            payment_intent_id = %intent.id,
+            sessions = flipped,
+            paid,
+            "a checkout session was settled beside the intent it drives"
+        );
+    }
     Ok(())
 }
 
@@ -361,6 +404,13 @@ impl Settlement for crate::repository::PgRepositories {
                 key: charge.payment_intent_id.clone(),
             })?;
 
+        // Before the emit rather than after, so the ordering inside the
+        // transaction reads the way the object graph does: charge, intent,
+        // the session that drove it, then the event that tells the merchant
+        // about all three. Nothing observable depends on the order — it is
+        // one commit — but a reader should not have to work that out.
+        flip_session(&mut tx, &intent, true).await?;
+
         emit(&mut tx, EVENT_SUCCEEDED, event_id, &intent, event_data).await?;
 
         tx.commit().await.map_err(DbError::Query)?;
@@ -419,6 +469,13 @@ impl Settlement for crate::repository::PgRepositories {
             table: "payment_intents",
             key: charge.payment_intent_id.clone(),
         })?;
+
+        // `paid: false` — the session becomes `expired`/`failed` (D10: there
+        // is no `failed` session status). The *intent* goes back to
+        // `requires_payment_method` and could in principle be confirmed
+        // again, but this session cannot drive that: one charge per intent,
+        // forever, so a retry is a new intent and therefore a new session.
+        flip_session(&mut tx, &intent, false).await?;
 
         emit(&mut tx, EVENT_PAYMENT_FAILED, event_id, &intent, event_data).await?;
 

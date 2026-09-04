@@ -1,0 +1,79 @@
+{{- include "vpay.validate" . -}}
+{{- if and .Values.checkout.enabled .Values.checkout.ingress.enabled }}
+{{- $fullName := include "vpay.fullname" . -}}
+{{- $ing := .Values.checkout.ingress -}}
+{{- $host := default .Values.ingress.host $ing.host -}}
+{{- $tlsSecret := default (printf "%s-checkout-tls" $fullName) $ing.tls.secretName -}}
+# The payment page's own Ingress — a THIRD object, separate from the API's two.
+#
+# Separate because a payer's browser reaches this directly and it carries no
+# `/v1` traffic at all: it is HTML and a few static chunks, and its rate limit
+# is deliberately looser than the API's for that reason. Sharing an object
+# with `/v1` would mean one limit for both, which is the same argument that
+# split `/v1` from `/v1/oauth/token` in the first place (step-6 decision (4)).
+#
+# Two shapes, and the "checkout-templated-when-enabled" guard insists on
+# exactly one:
+#
+#   checkout.ingress.host   its own hostname. Prefer this. The app's routes
+#                           are `/c/…`, `/e/…` and `/healthz` at the ROOT, so
+#                           a hostname needs no rewriting and
+#                           `checkout.public_base_url` is simply that origin.
+#   checkout.ingress.path   a prefix on `ingress.host`. The app is NOT
+#                           basePath-aware, so the controller must rewrite the
+#                           prefix away — `nginx.ingress.kubernetes.io/rewrite-target`
+#                           in `checkout.ingress.annotations`, left to the
+#                           operator because the correct value depends on the
+#                           controller and on whether the path is captured.
+#                           **NOBODY HAS RUN THIS SHAPE.** It is templated
+#                           because the Step 9 plan's D3 says the chart offers
+#                           both; it is not evidence that it works.
+#
+# Whichever shape, `checkout.public_base_url` in vpay's OWN config must be the
+# URL this object serves, or every `session.url` vpay mints points somewhere
+# else. This chart cannot check that: the value lives in the profile overlay,
+# which is opaque YAML to it.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-checkout
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "checkout") | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/limit-rps: {{ $ing.limitRps | quote }}
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: {{ $ing.limitBurstMultiplier | quote }}
+    # A GET for a page. Nothing a payer sends this host has a body worth
+    # having, and 16k is already generous.
+    nginx.ingress.kubernetes.io/proxy-body-size: 16k
+    nginx.ingress.kubernetes.io/ssl-redirect: {{ $ing.tls.enabled | quote }}
+    {{- if and $ing.tls.enabled $ing.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ $ing.tls.clusterIssuer | quote }}
+    {{- end }}
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with $ing.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ $ing.className }}
+  {{- if $ing.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ $host | quote }}
+      secretName: {{ $tlsSecret | quote }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          # A host-shaped deployment serves the whole origin; a path-shaped
+          # one serves its prefix and needs a rewrite annotation above.
+          - path: {{ default "/" $ing.path }}
+            pathType: {{ $ing.pathType }}
+            backend:
+              service:
+                name: {{ $fullName }}-checkout
+                port:
+                  name: http
+{{- end }}

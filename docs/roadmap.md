@@ -1,6 +1,6 @@
 # Roadmap
 
-**Snapshot date: 2026-08-11, last refreshed 2026-09-04 (the Step 8 addendum at the foot of this page).** A point-in-time read
+**Snapshot date: 2026-08-11, last refreshed 2026-09-04 (the Step 9 addendum at the foot of this page).** A point-in-time read
 of the repository, for someone opening it cold or coming back after a break,
 organized as the sequence of phases from scaffold to a deployable gateway. It
 goes stale the moment code moves and nobody is obliged to update it on the
@@ -35,14 +35,15 @@ true.
 
 | # | Phase | Status, with the evidence that backs it |
 |---|---|---|
-| 1 | Foundations | ✅ Complete — seven commits through `932d8a4`; the **26** migrations in `backends/migrations/` apply cleanly and their constraints are proven to fire (`postgres_smoke.rs`) |
+| 1 | Foundations | ✅ Complete — seven commits through `932d8a4`; the **28** migrations in `backends/migrations/` apply cleanly and their constraints are proven to fire (`postgres_smoke.rs`; 26 when this row was written, 27 with Step 8's callback index and 28 with Step 9's `checkout_sessions`) |
 | 2 | Authentication — merchant (`/v1`) | ✅ Delivered 2026-09-02 (Step 1, PR #15) — the OP is mounted at `/v1/oauth` and `AuthenticatedMerchant` gates the whole `/v1` nest; 7 `merchant_token_flow` tests. *`docs/status.md`'s own "Merchant auth" row is still 🟡 and names its own trigger — "when the CI `rust` job runs them green" — which has since happened on `master` (run `33792230584`) without that row being re-measured* |
 | 2b | Authentication — dashboard login (`/dash/v1`) | ⛔ Not started, unchanged — no `/login`, no `/authorize`, no `SessionStore`, no `/dash/v1` route of any kind; split out of Phase 2 on 2026-09-02 |
 | 3 | Payment API (`/v1`) | ✅ Delivered 2026-09-02→03 (Steps 2–3, PRs #16–#17) — create / retrieve / list / cancel / confirm, form-encoded, idempotent and merchant-scoped, with `confirm` moving the intent to `processing` or `requires_action`. **Against WireMock rails**, which is why the matching `docs/status.md` rows are 🟡 |
 | 4 | The rails | → **split 2026-09-03.** **4a** ✅ delivered (Step 3, PR #17) — both adapters pass the one shared conformance suite, 26 tests, 0 `#[ignore]`s, every one of them against a `wiremock/wiremock` container. **4b** (push-rail recovery) delivered inside Phase 5 (Step 4, PR #18). The two headings below are current; this row is the pre-split one |
 | 5 | The worker | 🟡 In progress — the job loop, the poll ladder, recovery and settlement landed 2026-09-03 (Step 4, PR #18) against WireMock rails, and a confirmed intent reaches `succeeded` unattended. **Updated 2026-09-04 (Step 8):** ~~the callback route (`POST /provider/{code}/callback`) … did not~~ — **it exists now** (lane C), and ~~the "crash tests" kill no process~~ — **`worker_kill9.rs` `SIGKILL`s the shipping worker and the shipping server** (lane D), so two of the three kill points are caused rather than written. Lane G additionally fixed a `500` on confirm that this step's demo found. **Still 🟡:** prompt expiry is unbuilt, kill point 1 is still written rather than caused, Orange is not in the kill test, no rail has ever called the callback route, and every rail here is a WireMock host |
 | 5b | Stripe SDK compatibility on `/v1` | ✅ Delivered 2026-09-03 (PR #20) — the real `stripe@22.6.1` package driven out of process against the compose stack: `sdks/stripe-compat`, **25 cases, 0 skipped**, run by CI's `e2e (compose)` job; [flows/stripe-sdk-compat.md](flows/stripe-sdk-compat.md). *`docs/status.md`'s row is 🟡 for the standing limit — the rail and the receiver are both WireMock hosts* |
-| 5c | Stripe.js-compatible browser checkout | ✅ Delivered 2026-09-03 (PR #22), **push rails only** — `/v1/browser` plus `@vpay/stripe-js`, no merchant credential in the browser, proven by `checkout.cy.ts` against the compose stack. **The redirect return trip is a named gap**: there is no bounce endpoint, so an Orange checkout must not be shipped on this package ([flows/browser-checkout.md](flows/browser-checkout.md), "The redirect gap") |
+| 5c | Stripe.js-compatible browser checkout | ✅ Delivered 2026-09-03 (PR #22), **push rails only** — `/v1/browser` plus `@vpay/stripe-js`, no merchant credential in the browser, proven by `checkout.cy.ts` against the compose stack. ~~**The redirect return trip is a named gap**: there is no bounce endpoint, so an Orange checkout must not be shipped on this package~~ — **retired 2026-09-04 by Phase 5d**: the rail is told a per-charge return URL and vpay serves the page that receives the payer ([flows/browser-checkout.md](flows/browser-checkout.md), [flows/hosted-checkout.md](flows/hosted-checkout.md)) |
+| 5d | Hosted and embedded checkout | ✅ Delivered 2026-09-04 (Step 9), **against WireMock rails** — a `checkout.session` object (`cs_…`, migration `0028`) with a hosted mode (vpay mints a `url`) and an embedded mode (the merchant frames vpay's page), `frontends/apps/checkout` in French and English, the redirect return trip that closes 5c's named gap, `initEmbeddedCheckout` in `@vpay/stripe-js` and `checkout.sessions` in both merchant SDKs, a fourth image and a Helm workload, and `examples/shop` — a merchant site a human can buy from. Proven in a real browser end to end by `shop-hosted.cy.ts` and `shop-embedded.cy.ts`. [flows/hosted-checkout.md](flows/hosted-checkout.md), [runbooks/checkout.md](runbooks/checkout.md). *`docs/status.md`'s rows are 🟡 where this is ✅, and for reasons this row must not hide: no browser has been observed enforcing vpay's `frame-ancestors` (Cypress strips it), no pod has ever run the page, and the rails are stubs* |
 | 6 | Webhooks | 🟡 In progress — the outbox drain, signing and delivery landed 2026-09-03 (Step 5, PR #19) against a WireMock receiver. **Updated 2026-09-04 (Step 8, lane B):** ~~there is no SSRF protection of any kind~~ — **a runtime egress guard exists**, `vpay_worker::ssrf`, which resolves each endpoint's host once, refuses every non-public address in both families and pins the connection to what it classified; boot-time `validate_host` is still only a stub-host guard and never was an address check. **Still 🟡:** no merchant endpoint has ever been POSTed to, the guard has never refused a real one, delivery is unordered, replaying an exhausted delivery is a hand-written transaction, and the pin cost the shared connection pool |
 | 7 | Operability — including Step 6's groundwork (PR #21) | 🟡 In progress — **the repo is here now**, on Step 7 (see below). No longer "blocked by environment": CI runs the compose stack, both Cypress specs and the stripe-node conformance suite; the Helm chart is linted, rendered and kubeconform-checked by CI's `deploy` job; `release.yml` has built and signed images on every push to `master` since Step 6; ~~`just demo` runs seven steps~~ — **as of 2026-09-04 (Step 8, lane A) `just demo` is four steps whose fourth is six payments across both rails**, with `demo-up`/`demo-walk`/`demo-status`/`demo-down` split out, two stacks able to coexist on one machine, and [runbooks/demo.md](runbooks/demo.md) as the procedure with real pasted output. **Not done: no cluster, no Prometheus scrape, no runbook walked against a real fault, no real rail behind any of it — and the demo has not yet been run on the merged Step 8 gate branch** |
 
@@ -880,6 +881,80 @@ to avoid.
 
 ---
 
+## Phase 5d — Hosted and embedded checkout *(delivered 2026-09-04, Step 9)*
+
+**Goal, in the maintainer's own words (2026-09-04):** *"We need a hosted page
+for driving payments on the web: one in-iframe version, one fully hosted page.
+We need that before prod."*
+
+**Where this phase started.** Phase 5c had shipped `/v1/browser` and
+`@vpay/stripe-js` — a merchant could build its own payer page — but vpay served
+no HTML at all, `tower-http` was built without `fs`, there was no
+`frame-ancestors` or `X-Frame-Options` anywhere, no `success_url`/`cancel_url`
+on any object, no per-charge return URL (so a redirect rail sent every payer to
+a `POST`-only callback path that answers an empty `405`), and no i18n.
+`@vpay/stripe-js`'s README listed "Checkout (hosted or embedded)" under "Not
+compatible, ever".
+
+**What landed** ([plans/2026-09-04-step9-hosted-checkout.md](plans/2026-09-04-step9-hosted-checkout.md),
+twelve lanes):
+
+- **A `checkout.session` object** (`cs_…`, migration `0028`) a merchant creates
+  from its server against an intent it already has. `ui_mode: hosted` answers a
+  `url` to redirect the payer to; `ui_mode: embedded` answers a `client_secret`
+  the merchant hands to `@vpay/stripe-js`. Two payer credentials, not one: the
+  session secret rides in the hosted URL's **fragment**, and a separate
+  `return_token` rides in the return page's query string, because a fragment
+  does not survive a rail's redirect.
+- **The page** — `frontends/apps/checkout`, a Next 15 App Router app vpay
+  serves, French and English, with the amount in integer minor units, a rail
+  selector, an MSISDN form for MTN, the redirect for Orange, the outcome
+  screen, and the forward to the merchant's URL with `{CHECKOUT_SESSION_ID}`
+  substituted.
+- **The return trip**, which closes Phase 5c's named gap
+  ([flows/browser-checkout.md](flows/browser-checkout.md)'s D4): the provider
+  port carries a per-charge `return_url`, Orange sends it, and vpay has a page
+  to receive the payer.
+- **`frame-ancestors` from configuration** — a per-merchant `checkout_origins`
+  list, empty by default, resolved server-side by the page's middleware before
+  any script runs, plus the page's own origin check against the same list.
+- **`initEmbeddedCheckout`** in `@vpay/stripe-js` and `checkout.sessions` in
+  both merchant SDKs, in one PR per [ADR-0015](adr/0015-sdk-parity.md).
+- **A fourth image** (`ghcr.io/vaam-store/vpay-checkout`), a Helm workload
+  behind `checkout.enabled`, and an eight-service demo stack.
+- **`examples/shop`** — a Next.js merchant site with a seeded XAF catalogue,
+  tRPC and ZenStack over Prisma, whose orders turn `paid` only from vpay's
+  signed webhook and never from the return trip.
+
+**What proves it.** `shop-hosted.cy.ts` and `shop-embedded.cy.ts` drive a real
+browser through the shop to vpay's page and back on both rails, hosted and
+embedded — and are proven not to pass with `vpay-worker` stopped. `just
+test-e2e` from nothing is green in the `vpay-ci` VM: 11 tests over four specs,
+0 failing, 0 skipped.
+
+**Risks carried by this phase.**
+- **No real rail, as everywhere else.** Every payment a browser has completed
+  through vpay's page settled against a `wiremock/wiremock` host.
+- **`frame-ancestors` is proven *sent*, never proven *enforced*.** Cypress
+  strips `Content-Security-Policy` from every document it proxies, so the
+  header is asserted with `cy.request` out of the runner's Node process. What a
+  browser *was* seen enforcing is the page's own origin check refusing an
+  unregistered framer.
+- **A second unauthenticated surface with the same ingress requirement.**
+  Phase 5c's D5 said rate limiting belongs at the ingress and nothing here
+  enforces or checks it; Step 9 added the checkout app and three more
+  `/v1/browser` reads under the same unmet requirement.
+- **No pod has ever run the page**, and its path-prefix Ingress shape has been
+  run by nobody.
+- **The demo shop's `PrismaShopStore` has no automated coverage of its own** —
+  verified by hand against a real Postgres, and exercised by the Cypress specs
+  without being asserted on.
+- **`checkout_not_configured` answers `500`, not `503`.** A truthful `503`
+  needs an ADR-level change to [ADR-0011](adr/0011-error-modelling.md)'s
+  category table, and that is left to the maintainer.
+
+---
+
 ## Phase 6 — Webhooks
 
 **~~Candidate, not decided (2026-09-02):~~ Decided 2026-09-03 — keep the
@@ -1252,3 +1327,56 @@ wider call than the review asked for and is left to the maintainer.
 its seven items are incomplete (the `.e2e/` half of the concurrency item, and
 the walkthrough's own history), and a closed issue that is not fixed is worse
 than an open one.
+
+**Fifth addendum, 2026-09-04 (Step 9, hosted checkout).** One branch,
+`claude/step9-hosted-checkout`, twelve lanes, and it delivered the thing the
+maintainer asked for in the sentence at the head of Phase 5d. What that phase
+is and what it carries are written out there; this addendum records the three
+things about the *step* that a phase description would flatten.
+
+- **A defect the demo shop found, which three lanes had walked past.** No
+  merchant server that reaches vpay by an internal URL could authenticate at
+  all. Both SDKs signed the client assertion's `aud` with the token endpoint
+  they were about to POST to and derived both from `baseUrl`, while vpay's OP
+  derives its issuer solely from `deployment.public_base_url` — so
+  `http://vpay-server:8080/v1/oauth/token` was compared against
+  `http://localhost:8080/v1/oauth/token` and refused with a bare
+  `invalid_client` / `InvalidAudience`, with the signature, the `client_id`,
+  the `kid` and the lifetime all correct. It survived because lane 7 never
+  spoke to a running vpay, lane 4 brought the shop up but never clicked through
+  it, and every other consumer runs *on the host*, where the public issuer
+  happens to be right. Lane 6 found it by putting a merchant's own server
+  inside the compose network; lane 5b fixed it with a third setting
+  (`assertionAudience` / `ClientBuilder::assertion_audience`), proven by the
+  real pinned `authkestra_op` verifier refusing and then accepting the same
+  client. **ADR-0010 does not change** — the SDKs had conflated two of its
+  three strings.
+- **`just test-e2e` could not have passed since Step 5c**, and nobody had
+  noticed because CI's `e2e` job was the only place `checkout.cy.ts` ever ran.
+  The recipe brought up a stack with no merchant anybody holds a key for. It is
+  fixed, and this is the first item on `docs/status.md`'s MVP list to move to
+  met since item 1.
+- **Two reviews and a second round.** Correctness/money-and-secrets and
+  conventions/blast-radius on the merged gate, then a second round after the
+  first remediation, and every remediation reviewed. Lanes 1b, 3b, 5b and r2
+  are what came out of them, and the reviews found things the lanes' own tests
+  could not: a return-URL lookup that answered `None` for every intent, a
+  browser read that never stopped issuing a credential, a page that refused to
+  paint when a merchant had no display name, a staleness check that was a
+  presence proxy, and five demo publications on `0.0.0.0`.
+
+**What Step 9 did not do, stated so it is a decision and not an omission.** No
+real rail was called and the "do not deploy" banner is untouched: a browser now
+walks an entire checkout, and every rail in that walk is a `wiremock/wiremock`
+container. **No browser has been observed enforcing vpay's `frame-ancestors`** —
+Cypress strips the header, so it is asserted as sent, and the refusal a browser
+was seen performing is the checkout app's own origin check. No pod has run the
+page. There is still no rate limiting in front of either unauthenticated
+surface. The demo shop's `PrismaShopStore` has no automated coverage of its
+own. `checkout_not_configured` still answers `500` where `503` would be
+truthful, and moving it is an ADR-level change **left to the maintainer** —
+along with whether `checkout.public_base_url` should be a separate host or a
+path under the API host in production, and whether a session may create its
+PaymentIntent inline in a later step. The dashboard is untouched and `/dash/v1`
+is still unbuilt.
+

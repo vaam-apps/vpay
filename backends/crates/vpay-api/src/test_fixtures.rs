@@ -116,6 +116,11 @@ pub(crate) fn merchant(client_id: &str, scopes: &[&str]) -> MerchantClient {
         // fixture that made them equal would let a handler that queried by
         // the wrong one pass every test in this crate.
         merchant_id: format!("{client_id}-tenant"),
+        // Absent, which is what most registrations carry and what makes the
+        // browser reads fall back to the tenant id — the case a fixture
+        // should exercise by default, since it is the one an operator who
+        // has not read `config/application.yml` will have.
+        display_name: None,
         jwks: Some(serde_json::json!({ "keys": [] })),
         grant_types: vec![GrantType::ClientCredentials],
         scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
@@ -133,6 +138,7 @@ pub(crate) fn merchant(client_id: &str, scopes: &[&str]) -> MerchantClient {
         // unused key here would be a key no test in this binary could
         // exercise.
         publishable_keys: Vec::new(),
+        checkout_origins: Vec::new(),
     }
 }
 
@@ -152,6 +158,7 @@ pub(crate) fn config_with(public_base_url: &str, merchants: Vec<MerchantClient>)
         currencies: Vec::new(),
         merchant_clients: merchants,
         webhooks: vpay_config::WebhookPolicy::default(),
+        checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
     }
 }

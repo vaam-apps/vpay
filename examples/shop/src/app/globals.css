@@ -1,0 +1,223 @@
+/* Hand-written CSS, and deliberately not `@vpay/ui`.
+ *
+ * `@vpay/ui` and `@vpay/tokens` are vpay's own design system. A merchant
+ * integrating vpay would not have them, so a demo shop built out of them
+ * would be demonstrating something no merchant can reproduce. The point of
+ * this example is the integration, not the styling. */
+
+:root {
+  --ink: #16181d;
+  --muted: #5c626e;
+  --line: #dfe2e8;
+  --paper: #fbfbfc;
+  --accent: #1f5f4b;
+  --accent-ink: #ffffff;
+  --warn: #8a5a00;
+  --bad: #9b2226;
+  --good: #1f5f4b;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font:
+    16px/1.55 ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+}
+
+a {
+  color: var(--accent);
+}
+
+.wrap {
+  max-width: 62rem;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 4rem;
+}
+
+header.site {
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+}
+
+header.site .wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 1.25rem;
+  padding-block: 1rem;
+}
+
+header.site strong {
+  font-size: 1.15rem;
+}
+
+header.site nav {
+  margin-left: auto;
+  display: flex;
+  gap: 1rem;
+}
+
+.banner {
+  background: #fff6e5;
+  border-bottom: 1px solid #f0d9a8;
+  color: var(--warn);
+  font-size: 0.85rem;
+}
+
+.banner .wrap {
+  padding-block: 0.6rem;
+}
+
+.grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  padding: 0;
+  list-style: none;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: #fff;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.card h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  flex: 1;
+}
+
+.price {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+button,
+.button {
+  font: inherit;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-radius: 0.4rem;
+  padding: 0.45rem 0.9rem;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+
+button.secondary,
+.button.secondary {
+  background: #fff;
+  color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  padding: 0.55rem 0.4rem;
+}
+
+td.num,
+th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-weight: 600;
+}
+
+input[type="email"],
+input[type="number"] {
+  font: inherit;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  width: 100%;
+  max-width: 26rem;
+}
+
+.status {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.15rem 0.7rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border: 1px solid currentColor;
+}
+
+.status-unpaid {
+  color: var(--warn);
+}
+
+.status-paid {
+  color: var(--good);
+}
+
+.status-failed,
+.status-cancelled {
+  color: var(--bad);
+}
+
+.error {
+  color: var(--bad);
+}
+
+dl.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1rem;
+  font-size: 0.9rem;
+}
+
+dl.facts dt {
+  color: var(--muted);
+}
+
+dl.facts dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all;
+}
+
+#vpay-embedded-checkout {
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: #fff;
+  min-height: 22rem;
+  padding: 0.5rem;
+}

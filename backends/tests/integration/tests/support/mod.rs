@@ -182,17 +182,40 @@ pub(crate) fn merchant_client_with_publishable_keys(
     jwks: Value,
     publishable_keys: &[&str],
 ) -> MerchantClient {
-    merchant_client_with(
-        client_id,
-        merchant_id,
-        jwks,
-        &[vpay_api::SCOPE_PAYMENTS_WRITE],
-        Vec::new(),
-        publishable_keys
+    merchant_client_with_checkout(client_id, merchant_id, jwks, publishable_keys, &[])
+}
+
+/// The same again, with this merchant's `checkout_origins` spelled out too
+/// (Step 9, D4).
+///
+/// Its own helper rather than a seventh argument everywhere, for the reason
+/// above: `tests/checkout_sessions.rs` is the only suite that registers an
+/// origin, and the empty list — no embedding at all — is the fail-closed
+/// shape every other registration should carry.
+pub(crate) fn merchant_client_with_checkout(
+    client_id: &str,
+    merchant_id: &str,
+    jwks: Value,
+    publishable_keys: &[&str],
+    checkout_origins: &[&str],
+) -> MerchantClient {
+    MerchantClient {
+        checkout_origins: checkout_origins
             .iter()
-            .map(|key| (*key).to_owned())
+            .map(|origin| (*origin).to_owned())
             .collect(),
-    )
+        ..merchant_client_with(
+            client_id,
+            merchant_id,
+            jwks,
+            &[vpay_api::SCOPE_PAYMENTS_WRITE],
+            Vec::new(),
+            publishable_keys
+                .iter()
+                .map(|key| (*key).to_owned())
+                .collect(),
+        )
+    }
 }
 
 /// The same, with this merchant's webhook endpoints spelled out.
@@ -219,6 +242,42 @@ pub(crate) fn merchant_client_with(
         client_secret: None,
         webhooks,
         publishable_keys,
+        // The fail-closed default: no site may frame vpay's embedded
+        // checkout for this merchant. `merchant_client_with_checkout` is how
+        // a suite opts in, for the reason the publishable-key helper gives.
+        checkout_origins: Vec::new(),
+        // Absent, which is what most registrations carry — and the case the
+        // browser reads fall back to the tenant id for.
+        // `merchant_client_with_display_name` is how the one suite that
+        // tests the configured half opts in.
+        display_name: None,
+    }
+}
+
+/// The same again, with a `display_name` — what a payer is told they are
+/// paying on vpay's own checkout page (Step 9).
+///
+/// Its own helper for [`merchant_client_with_checkout`]'s reason, and one
+/// more: absent is the shape that exercises the fallback, so a suite has to
+/// say the word to get the configured branch, and both branches end up
+/// covered rather than only whichever the default happens to be.
+pub(crate) fn merchant_client_with_display_name(
+    client_id: &str,
+    merchant_id: &str,
+    jwks: Value,
+    publishable_keys: &[&str],
+    checkout_origins: &[&str],
+    display_name: &str,
+) -> MerchantClient {
+    MerchantClient {
+        display_name: Some(display_name.to_owned()),
+        ..merchant_client_with_checkout(
+            client_id,
+            merchant_id,
+            jwks,
+            publishable_keys,
+            checkout_origins,
+        )
     }
 }
 

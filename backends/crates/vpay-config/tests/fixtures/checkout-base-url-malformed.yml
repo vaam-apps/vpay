@@ -1,0 +1,17 @@
+# Fixture for `a_malformed_checkout_base_url_is_rejected`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# `checkout.public_base_url` carries a query string. vpay *appends* path
+# segments to this value (`/c/{cs_id}`, `/e/{cs_id}`), and there is no correct
+# way to append a path to a URL that already has a query — the segments would
+# land after the `?` and every payer link would address nothing.
+#
+# Everything else here is valid, so this fixture fails on exactly one rule.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+checkout:
+  public_base_url: https://checkout.example?tenant=acme

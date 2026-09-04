@@ -70,8 +70,8 @@ else `403` `forbidden`
 
 ### Served today
 
-`vpay_api::v1::V1_ROUTES` is the router's source, not a copy of it. Seven
-methods across six paths:
+`vpay_api::v1::V1_ROUTES` is the router's source, not a copy of it. Eleven
+methods across nine paths since Step 9:
 
 | Method | Path | Request params | Answer |
 |---|---|---|---|
@@ -82,6 +82,10 @@ methods across six paths:
 | POST | `/v1/payment_intents/{id}/cancel` | | `200` + `payment_intent` in `canceled`, or `409 invalid_state` (`cancel_is_legal_only_from_requires_payment_method`, `a_confirmed_intent_cannot_be_canceled`) |
 | GET | `/v1/events` | `limit` (default 10, capped at 100), `starting_after`, `ending_before` (`evt_…` ids; not both) | `200` + `list` envelope of `event` objects, newest first, scoped to your merchant (`events_are_listed_newest_first_scoped_to_the_merchant`) |
 | GET | `/v1/events/{id}` | | `200` + `event`, or `404 resource_missing` — **including for another merchant's id**, byte for byte (same test) |
+| POST | `/v1/checkout/sessions` | `payment_intent` (**required**, a `pi_…` of yours in `requires_payment_method` with no charge and no other open session), `ui_mode` (`hosted` \| `embedded`, default `hosted`), `success_url` + `cancel_url` (**required** for `hosted`, refused for `embedded`), `return_url` (**required** for `embedded`, refused for `hosted`) — all http(s), ≤ 2048 chars, `https` only under livemode, and each may carry the literal `{CHECKOUT_SESSION_ID}` | `201` + `checkout.session` **with `client_secret`**, and `url` when hosted; `400` naming the field; `500 checkout_not_configured` when this deployment serves no checkout page (Step 9) |
+| GET | `/v1/checkout/sessions/{id}` | | `200` + `checkout.session` **with `client_secret`**, or the uniform `404` (Step 9) |
+| GET | `/v1/checkout/sessions` | `limit`, `starting_after`, `ending_before`, `payment_intent` | `200` + `list` envelope, **no secrets** (Step 9) |
+| POST | `/v1/checkout/sessions/{id}/expire` | | `200` + the session in `expired`, or `409` when its intent has a charge a rail may still act on (Step 9) |
 
 **`GET /v1/events` renders an event through the same code the webhook
 deliverer signs** (`vpay_api::model::EventObject`). That is deliberate: this
@@ -118,6 +122,49 @@ afterwards still shows what was true when the event was emitted. Neither the
 delivered body nor this endpoint re-validates it against a payment-intent shape,
 so an SDK version that predates a future object type can still receive the
 event rather than failing to decode it.
+
+### The `checkout.session` object (Step 9)
+
+A session references a PaymentIntent you already created; it never creates one.
+Amount, currency and the rails on offer stay on the intent.
+
+```json
+{
+  "id": "cs_…", "object": "checkout.session", "livemode": false,
+  "payment_intent": "pi_…", "ui_mode": "hosted",
+  "status": "open", "payment_status": "unpaid",
+  "success_url": "https://shop/ok?sid={CHECKOUT_SESSION_ID}",
+  "cancel_url": "https://shop/cancel", "return_url": null,
+  "url": "https://checkout.example/c/cs_…?key=pk_…#cs_…_secret_…",
+  "expires_at": 1757000000, "created": 1756913600,
+  "client_secret": "cs_…_secret_…"
+}
+```
+
+`status` is `open`, `complete` (the intent reached `succeeded`) or `expired`
+(24 hours from create, or the intent reached a terminal non-success state —
+reported as `expired` with `payment_status: failed`). `payment_status` is
+`unpaid` / `paid` / `failed`. There is no `line_items`, no `mode`, no
+`amount_total` and no refunds; field names mirror Stripe's **only** where the
+semantics match, and `sdks/stripe-compat` gets no row for any of it.
+
+**`url` carries a live payer credential in its `#fragment`** — do not log it,
+and do not move it into a query string. `client_secret` is rendered by
+`create` and `retrieve` and never by `list`; both merchant SDKs redact it, and
+the `url`'s fragment with it, from `Debug`/`util.inspect` while leaving
+`JSON.stringify` faithful.
+
+`{CHECKOUT_SESSION_ID}` in any of the three URLs is a **literal placeholder**
+vpay substitutes when it forwards the payer. It is the only thing vpay ever
+writes into a URL you supplied ([../flows/browser-checkout.md](../flows/browser-checkout.md)'s
+D3 and D5); a URL without it gets a return with no correlation.
+
+Creating a session requires `checkout.public_base_url` in the deployment's
+configuration. Without it there is no page for a `url` to point at, and the
+answer is `checkout_not_configured` — **status `500`, not `503`**, because
+[ADR-0011](../adr/0011-error-modelling.md) derives the status from the error's
+category and never from a call site. That is a known wart with an owner; see
+[../flows/hosted-checkout.md](../flows/hosted-checkout.md).
 
 **`?type=` is NOT implemented.** A `type` filter interacts with the cursor —
 `has_more` and the `seq` window both have to be computed over the filtered set,
@@ -375,17 +422,23 @@ vpay honestly, rather than pretending the route exists.
 
 ## `/v1/browser` — the payer's browser (Step 5c)
 
-Two routes, unauthenticated by a bearer token of any kind and **not** part of
-`/v1`'s route table (`vpay_api::V1_ROUTES`) or its 401 boundary — its own
-table is `BROWSER_ROUTES`, exactly two entries, its own `.nest`, its own
-`.fallback(not_found)`. This is the surface `@vpay/stripe-js`
+**Five** routes since Step 9, unauthenticated by a bearer token of any kind
+and **not** part of `/v1`'s route table (`vpay_api::V1_ROUTES`) or its 401
+boundary — its own table is `BROWSER_ROUTES`, its own `.nest`, its own
+`.fallback(not_found)`. The property the route table's test pins is not the
+count but that **exactly one entry answers a non-`GET` method**: the confirm
+that has been there since Step 5c. Step 9 added three reads and no second way
+to move money. This is the surface `@vpay/stripe-js`
 (`sdks/stripe-js/`) speaks, because `@stripe/stripe-js` cannot be pointed at
 vpay (verified directly — see that package's own README).
 
 | Method | Path | Auth | What it does |
 |---|---|---|---|
 | GET | `/v1/browser/payment_intents/{id}` | `key` + `client_secret` (query) | The polling endpoint — `waitForPaymentIntent` calls it. |
-| POST | `/v1/browser/payment_intents/{id}/confirm` | `key` + `client_secret` (form) | Reaches the same `confirm_once` `/v1` calls, scoped to the one intent the credential names. |
+| POST | `/v1/browser/payment_intents/{id}/confirm` | `key` + `client_secret` (form) | Reaches the same `confirm_once` `/v1` calls, scoped to the one intent the credential names. **Since Step 9 a confirm on an intent an open Checkout Session drives needs no `return_url`** — vpay substitutes the session's own return page, and a `return_url` sent anyway is ignored. With no session the rule is unchanged: a redirect rail requires one. |
+| GET | `/v1/browser/checkout/sessions/{id}` | `key` + the **session's** `client_secret` (query) | The `checkout.session` with `payment_intent` **expanded and carrying the intent's own `client_secret`** — what vpay's page reads before it can paint, and only while the session is `open`. Step 9. |
+| GET | `/v1/browser/checkout/sessions/{id}/return` | `key` + `t` (the session's `return_token`, query) | The same, with `payment_intent` expanded **without** the intent's secret. Where a redirect rail sends the payer back; it must be a query parameter, because a fragment does not survive a rail's redirect. Step 9. |
+| GET | `/v1/browser/checkout/origins` | `key` (query) | `{"origins": [...]}` for the key's tenant, **with no secret at all** — an origin is the merchant's own public website. The checkout app calls it server-side to build `frame-ancestors`. Step 9. |
 
 **The credential model is not `/v1`'s.** A **publishable key** (`pk_test_…`/
 `pk_live_…`, `merchant_clients[].publishable_keys` — explicit YAML, never
@@ -406,10 +459,28 @@ stolen bearer token cannot even be *attempted* cross-origin. Full detail,
 the decisions (D1–D5), the redirect gap, and a Node/Rust SDK typing gap this
 step found and did not fix: [../flows/browser-checkout.md](../flows/browser-checkout.md).
 
-**Status: served**, as of Step 5c — see `docs/status.md` for the
-machine-checked test counts. **Rate limiting is not in this process,
-deliberately (D5)** — an ingress in front of it is an operational
-requirement this repository does not enforce.
+**The checkout session reads have their own uniform 404** — unknown key,
+session not found, wrong tenant, wrong credential, missing credential, and
+**past the session's 24-hour `expires_at` whatever its `status`** — all one
+byte-identical `ApiError::NotFound { resource: "checkout session" }`. Neither
+read renders the session's `url`: it carries the stronger credential in its
+fragment, and echoing it to the holder of the weaker one would be an
+escalation. Both carry `merchant: { name }` when the deployment configured a
+`display_name` for that merchant, and **omit the member entirely** when it did
+not.
+
+**Status: served**, as of Step 5c and extended by Step 9 — see
+`docs/status.md` for the machine-checked test counts. **Rate limiting is not in
+this process, deliberately (D5)** — an ingress in front of it is an operational
+requirement this repository does not enforce, and Step 9 added a second
+unauthenticated surface (the checkout page itself) under the same unmet
+requirement.
+
+**The page these routes exist for is `frontends/apps/checkout`**, served on
+`checkout.public_base_url` and not by `vpay-server`:
+[../flows/hosted-checkout.md](../flows/hosted-checkout.md) is its design and
+[../runbooks/checkout.md](../runbooks/checkout.md) is how a merchant integrates
+it.
 
 ## `/dash/v1` — the dashboard API
 

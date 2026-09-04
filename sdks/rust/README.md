@@ -52,9 +52,10 @@ merchant is a statically registered OAuth2 client authenticating with
 (RFC 7523). Concretely:
 
 1. **Mint an assertion.** The SDK signs a short-lived RS256 JWT with your
-   private key: `iss`/`sub` are your `client_id`, `aud` is the token endpoint,
-   `jti` is a fresh UUIDv4 (spent exactly once server-side — reusing one is
-   indistinguishable from a replay), and `exp` is `now + assertion_lifetime`
+   private key: `iss`/`sub` are your `client_id`, `aud` is the OP's own token
+   endpoint (see `.assertion_audience(..)`), `jti` is a fresh UUIDv4 (spent
+   exactly once server-side — reusing one is indistinguishable from a
+   replay), and `exp` is `now + assertion_lifetime`
    (default 60 s, hard-capped at 300 s because the OP refuses anything further
    out). A `kid` is stamped on only if you configured one; the OP requires it
    when you have registered more than one key and refuses to guess otherwise.
@@ -83,6 +84,9 @@ merchant is a statically registered OAuth2 client authenticating with
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use vpay_sdk::checkout::{
+    CheckoutUiMode, CreateCheckoutSessionParams, ListCheckoutSessionsParams,
+};
 use vpay_sdk::payment_intents::{
     ConfirmPaymentIntentParams, CreatePaymentIntentParams, PaymentMethodType,
 };
@@ -186,6 +190,43 @@ client
     })
     .await?;
 client.balance().retrieve().await?;
+
+// Checkout Sessions (Step 9). A session references an intent you already
+// created; it never creates one, and it carries where the payer goes next.
+let hosted = client
+    .checkout()
+    .sessions()
+    .create(
+        CreateCheckoutSessionParams {
+            payment_intent: intent.id.clone(),
+            ui_mode: Some(CheckoutUiMode::Hosted),
+            // vpay substitutes {CHECKOUT_SESSION_ID} when it forwards the
+            // payer, and appends nothing else. Omit it and the return has
+            // no correlation.
+            success_url: Some("https://shop.example/ok?sid={CHECKOUT_SESSION_ID}".to_string()),
+            cancel_url: Some("https://shop.example/cancel".to_string()),
+            ..Default::default()
+        },
+        RequestOptions::new(),
+    )
+    .await?;
+// Redirect the payer to `hosted.url` — the session secret is in its
+// fragment, which is why `{:?}` on this object redacts it.
+
+client.checkout().sessions().retrieve(&hosted.id).await?;
+client
+    .checkout()
+    .sessions()
+    .list(ListCheckoutSessionsParams {
+        payment_intent: Some(intent.id.clone()),
+        ..Default::default()
+    })
+    .await?;
+client
+    .checkout()
+    .sessions()
+    .expire(&hosted.id, RequestOptions::new())
+    .await?;
 # Ok(())
 # }
 ```
@@ -206,7 +247,8 @@ returns `ConfigError` before anything touches the network.
 | ------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.credentials(..)`        | —                     | Required. `Credentials::rsa_pem(client_id, pem)` (PKCS#1 or PKCS#8), then `.with_kid(..)` if you registered more than one key.                                                                                                                                                                                                                                                                                                                                   |
 | `.issuer(..)`             | `{base_url}/v1/oauth` | This default is now what the server does: `vpay_api::op::issuer_for` builds the issuer as `{public_base_url}/v1/oauth` (from the deployment YAML), and `vpay_api::router` mounts the OP there. Override only if a deployment sits behind a path prefix.                                                                                                                                                                                                          |
-| `.token_endpoint(..)`     | `{issuer}/token`      | The server's token route, and also the assertion's `aud` claim; overriding this moves the `aud` with it.                                                                                                                                                                                                                                                                                                                                                         |
+| `.token_endpoint(..)`     | `{issuer}/token`      | The URL this client POSTs the token request to. A **reachability** setting: it must resolve from wherever this process runs. It is also the default `.assertion_audience(..)`, but the two are separate facts — see the row below.                                                                                                                                                                                                                               |
+| `.assertion_audience(..)` | the token endpoint    | The client assertion's `aud` claim: the OP's own token endpoint (or issuer) **as vpay is configured publicly** — `{deployment.public_base_url}/v1/oauth/token`. Set it when this server reaches vpay by a different URL than payers do; see "Reaching vpay by an internal URL" below.                                                                                                                                                                            |
 | `.audience(..)`           | `vpay:v1`             | The OAuth2 `audience` request parameter. Load-bearing: without it the OP mints a token whose `aud` is the `client_id`, which every `/v1` route then rejects. Server-side the same string is `vpay_config::MERCHANT_AUDIENCE`, which both `Surface::Merchant::audience()` and each merchant's configured `allowed_audiences` check are derived from; this crate keeps its own copy so a merchant needs no vpay server crate, so the two must be changed together. |
 | `.scope(..)`              | —                     | Omitted from the token request entirely unless set.                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `.assertion_lifetime(..)` | 60 s                  | Must be `1..=300` s; anything else is `ConfigError::InvalidAssertionLifetime` at `build()`, never silently clamped.                                                                                                                                                                                                                                                                                                                                              |
@@ -214,6 +256,45 @@ returns `ConfigError` before anything touches the network.
 
 The resource base is always `{base_url}/v1`; overriding the issuer does not
 move it.
+
+### Reaching vpay by an internal URL
+
+Two things look like one and are not:
+
+- **`.token_endpoint(..)`** — where this process sends the HTTP request. It
+  has to be reachable from _your_ server: a compose service name, a private
+  DNS name, a service-mesh address.
+- **`.assertion_audience(..)`** — what the OP calls _itself_.
+  `authkestra_op`'s `authenticate_client` compares the assertion's `aud`
+  claim against its own two names,
+  `{deployment.public_base_url}/v1/oauth/token` and
+  `{deployment.public_base_url}/v1/oauth` (`vpay_api::op::issuer_for`), and
+  against nothing else. The URL you happened to POST to is never consulted.
+
+They coincide for a merchant on the public internet, which is why the
+assertion audience defaults to the token endpoint. They stop coinciding the
+moment your server reaches vpay by an internal name, and then every token
+request answers `invalid_client` / `InvalidAudience` with nothing pointing at
+the cause — the signature, the `client_id`, the `kid` and the lifetime are all
+correct.
+
+```rust,no_run
+# use vpay_sdk::{Client, Credentials};
+# fn demo(credentials: Credentials) -> Result<(), vpay_sdk::ConfigError> {
+// The demo stack: this container reaches vpay at the compose service name,
+// but vpay's `deployment.public_base_url` is the published host port.
+let client = Client::builder("http://vpay-server:8080")
+    .credentials(credentials)
+    .assertion_audience("http://localhost:8080/v1/oauth/token")
+    .build()?;
+# let _ = client;
+# Ok(())
+# }
+```
+
+The issuer works too — `http://localhost:8080/v1/oauth` — because the OP
+accepts either. `tests/op_conformance.rs` proves both against the real pinned
+verifier.
 
 `Credentials` and `Client` both have hand-written `Debug` implementations that
 redact key material and the cached bearer token —
@@ -356,14 +437,19 @@ mounts the merchant OP — `POST /v1/oauth/token`, `GET /v1/oauth/jwks.json`,
 path behind a merchant bearer token. Past that boundary, `payment_intents`
 (`create`/`retrieve`/`list`/`confirm`/`cancel`) and `events`
 (`list`/`retrieve`) are routed and real; `refunds` and `balance` have no route
-yet and still answer a Stripe-shaped `404 unknown_route`. This SDK's
+yet and still answer a Stripe-shaped `404 unknown_route`. **`checkout()` is
+newer than this paragraph and less proven than the rest**: its four methods
+are implemented and tested against `wiremock` in the shape of Step 9's wire
+contract, but `/v1/checkout/sessions` is built by lane 1 of the same step, so
+until `backends/tests/integration/tests/checkout_sessions.rs` is green, "the
+stub answers the way this SDK expects" is the whole of the evidence. This SDK's
 authentication half and its routed resource calls have completed real
 requests against a real vpay (`backends/tests/integration/tests/merchant_token_flow.rs`
 drives this crate against the real router over a real Postgres); `refunds`
 and `balance` have not. See [`docs/status.md`](../../docs/status.md) and
 [`docs/flows/merchant-auth.md`](../../docs/flows/merchant-auth.md).
 
-What the tests **do** prove — 113 tests, 0 ignored, run by
+What the tests **do** prove — 124 tests, 0 ignored, run by
 `just test-sdk-rust`:
 
 - **The assertion this SDK mints is accepted by the real verifier.**
@@ -427,6 +513,17 @@ What the tests **do** prove — 113 tests, 0 ignored, run by
 - That neither `Credentials`' nor `Client`'s `Debug` output — nor an
   `InvalidPrivateKey` error — can contain the private key, and that a cached
   bearer token does not appear either.
+- All four `checkout().sessions()` operations: the exact path, method,
+  `Idempotency-Key` and encoded body of `create` (including that an unset
+  `ui_mode` or URL is omitted rather than sent empty), the `GET` of
+  `retrieve` and of `list` with its `payment_intent` filter, `expire`'s
+  empty-bodied `POST`, percent-encoding of a hostile id, and the `404`/`409`
+  envelopes. The `create` bodies are byte-for-byte the strings
+  `sdks/nodejs/src/client.test.ts` pins, asserted as literals on both sides.
+- That a `CheckoutSession`'s `Debug` redacts **two** credentials, not one:
+  `client_secret`, and the fragment of a hosted session's `url`, which
+  carries the same value (D6). A session with neither renders no redaction
+  marker at all.
 - That `PaymentIntent::client_secret` decodes when `create`/`retrieve`
   responses carry it, decodes to `None` when a `list()` item or an `Event`
   payload omits the key entirely, and never appears in `PaymentIntent`'s

@@ -22,7 +22,8 @@ code expresses it belongs in `../reference/`.
 | [merchant-auth.md](merchant-auth.md) | The `client_credentials` + `private_key_jwt` handshake and the `/v1` wire contract the Rust and Node SDKs implement |
 | [../sdks/parity.md](../sdks/parity.md) | The cross-SDK capability matrix — does `sdks/rust` agree with `sdks/nodejs`, capability by capability, each cell naming its proving test or a dated gap (ADR-0015), machine-checked in `just verify` |
 | [stripe-sdk-compat.md](stripe-sdk-compat.md) | Driving the official Stripe SDKs against vpay: the `config.authenticator` seam, what carries over, and every divergence |
-| [browser-checkout.md](browser-checkout.md) | `/v1/browser` and `@vpay/stripe-js`: publishable keys, per-intent `client_secret`, the uniform-404 confidentiality property, the redirect gap |
+| [browser-checkout.md](browser-checkout.md) | `/v1/browser` and `@vpay/stripe-js`: publishable keys, per-intent `client_secret`, the uniform-404 confidentiality property, the redirect gap and its closure |
+| [hosted-checkout.md](hosted-checkout.md) | The page vpay serves — `checkout.session`, hosted and embedded, the two payer credentials, the iframe protocol, `frame-ancestors`, and what is not proven |
 | [dashboard-auth.md](dashboard-auth.md) | Staff login: vpay as its own OpenID Provider for `/dash/v1` |
 | [webhooks.md](webhooks.md) | The two-step outbox and the signature scheme |
 | [ledger.md](ledger.md) | Double-entry postings and the four invariants |

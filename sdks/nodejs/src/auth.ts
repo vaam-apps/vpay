@@ -66,7 +66,12 @@ function base64url(input: Buffer): string {
 export interface MintClientAssertionOptions {
   clientId: string;
   privateKey: string | KeyObject;
-  /** The token endpoint URL — the assertion's `aud` (docs/flows/merchant-auth.md). */
+  /**
+   * The assertion's `aud` claim: the OP's own token endpoint URL, or its
+   * issuer identifier — both are accepted by `authenticate_client`
+   * (docs/flows/merchant-auth.md). Not necessarily the URL the caller POSTs
+   * to; see `MerchantAuthOptions.assertionAudience`.
+   */
   audience: string;
   kid?: string | undefined;
   /** Default 60. Must be an integer in `1..=300`. */
@@ -183,7 +188,16 @@ export interface TokenManagerOptions {
    */
   privateKey: KeyObject;
   kid: string | undefined;
+  /** Where the token request is POSTed — reachable from *this* process. */
   tokenEndpoint: string;
+  /**
+   * The client assertion's `aud` claim — what the OP calls itself. Resolved
+   * by {@link resolveMerchantAuth}; defaults to {@link tokenEndpoint}, which
+   * is right only when this process reaches vpay at the same URL vpay
+   * publishes as its own.
+   */
+  assertionAudience: string;
+  /** The OAuth2 `audience` **request parameter** (`vpay:v1`). Not the `aud` claim. */
   audience: string;
   scope: string | undefined;
   assertionLifetimeSeconds: number;
@@ -233,12 +247,14 @@ export class TokenManager {
     const assertion = mintClientAssertion({
       clientId: this.#options.clientId,
       privateKey: this.#options.privateKey,
-      // `aud` is the **token endpoint URL**, never the `audience` request
-      // parameter below (`vpay:v1`). RFC 7523 §3 and the OP's own
-      // `authenticate_client` both compare it against the endpoint that
-      // received the request; the two are different values with different
-      // jobs (docs/flows/merchant-auth.md, "The client assertion").
-      audience: this.#options.tokenEndpoint,
+      // `aud` is the **OP's own token endpoint (or issuer)**, never the
+      // `audience` request parameter below (`vpay:v1`). RFC 7523 §3 and the
+      // OP's own `authenticate_client` both compare it against the endpoint
+      // as the OP names itself — `{deployment.public_base_url}/v1/oauth/token`
+      // or that issuer — which is not necessarily the URL this process
+      // POSTed to. The two are different values with different jobs
+      // (docs/flows/merchant-auth.md, "The client assertion").
+      audience: this.#options.assertionAudience,
       kid: this.#options.kid,
       lifetimeSeconds: this.#options.assertionLifetimeSeconds,
     });
@@ -334,9 +350,38 @@ export interface MerchantAuthOptions {
   kid?: string | undefined;
   /** Default `${baseUrl}/v1/oauth`. */
   issuer?: string | undefined;
-  /** Default `${issuer}/token`. Also the client assertion's `aud`. */
+  /**
+   * The URL this package POSTs the token request to. Default
+   * `${issuer}/token`.
+   *
+   * This is a *reachability* setting: it must resolve from wherever your
+   * server runs — a compose service name, a private DNS name, a mesh
+   * address. It is **not** necessarily what the assertion is addressed to;
+   * see {@link assertionAudience}.
+   */
   tokenEndpoint?: string | undefined;
-  /** Default {@link DEFAULT_AUDIENCE}. */
+  /**
+   * The OP's own token endpoint (or issuer) as vpay is configured publicly —
+   * `{deployment.public_base_url}/v1/oauth/token`, or
+   * `{deployment.public_base_url}/v1/oauth`. This is what the client
+   * assertion's `aud` claim is signed as. **Set it when your server reaches
+   * vpay by a different URL than payers do.**
+   *
+   * Default: {@link tokenEndpoint}, which is correct only when the two are
+   * the same string. When they are not — a merchant server calling
+   * `http://vpay-server:8080` inside a compose network, or a private name in
+   * production — the OP's `authenticate_client` compares the `aud` claim
+   * against its own `{token endpoint, issuer}` pair, neither of which is the
+   * internal URL, and every token request answers `invalid_client` /
+   * `InvalidAudience`. Nothing else in the handshake is wrong, which is why
+   * the symptom carries no hint at the cause.
+   */
+  assertionAudience?: string | undefined;
+  /**
+   * The OAuth2 `audience` **request parameter** — a form field naming the
+   * resource server (`vpay:v1`), not the assertion's `aud` claim. Default
+   * {@link DEFAULT_AUDIENCE}.
+   */
   audience?: string | undefined;
   /** Omitted from the token request unless set. */
   scope?: string | undefined;
@@ -433,6 +478,10 @@ export function resolveMerchantAuth(
 
   const issuer = options.issuer ?? `${baseUrl}/v1/oauth`;
   const tokenEndpoint = options.tokenEndpoint ?? `${issuer}/token`;
+  // Defaults to the URL we POST to — unchanged behaviour for every merchant
+  // whose server reaches vpay at the same URL vpay publishes as its own.
+  // A merchant reaching vpay by an internal name sets it explicitly.
+  const assertionAudience = options.assertionAudience ?? tokenEndpoint;
   const audience = options.audience ?? DEFAULT_AUDIENCE;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fetchImpl = options.fetch ?? fetch;
@@ -449,6 +498,7 @@ export function resolveMerchantAuth(
       privateKey,
       kid: options.kid,
       tokenEndpoint,
+      assertionAudience,
       audience,
       scope: options.scope,
       assertionLifetimeSeconds,

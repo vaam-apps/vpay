@@ -442,6 +442,7 @@ mod tests {
             }],
             merchant_clients: Vec::new(),
             webhooks: vpay_config::WebhookPolicy::default(),
+            checkout: vpay_config::CheckoutConfig::default(),
             dashboard_client: None,
         }
     }
@@ -624,6 +625,7 @@ mod tests {
             amount: Money::new(5_000, vpay_core::Currency::Xaf).expect("5000 is non-negative"),
             payer_ref: None,
             ref_extra: std::collections::BTreeMap::new(),
+            return_url: None,
         }
     }
 

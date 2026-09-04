@@ -218,6 +218,10 @@ gateway that boots half-configured is worse than one that does not boot.
 | `livemode` ⇒ no host labelled `wiremock`/`stub`/`mock`/`localhost` | **The most valuable rule here.** It is what makes "the code cannot tell a stub from a real rail" safe to live with |
 | `livemode` ⇒ secrets come from `${}`, not literals | Stops a real key reaching git |
 | `partial-refunds` ⇒ `refunds` | Enforced both in Rust and by a database CHECK constraint — see below |
+| `checkout.public_base_url` is a well-formed origin, `https://` under `livemode` | Every payer link vpay mints is built on it; a malformed one is a `url` that resolves to nothing, with no log naming a port |
+| Every `checkout_origins` entry is an `https://` origin (`http://` only when `livemode: false`), with no path, no duplicate across merchants, and spelled **canonically** | It becomes `Content-Security-Policy: frame-ancestors`; anything a browser spells differently is dropped silently and the merchant cannot embed with nothing to read |
+| `checkout_origins` without a `checkout.public_base_url` | There is no page for those origins to frame |
+| `merchant_clients[].display_name` is non-blank and at most 80 characters | It is painted into a heading on a phone-sized page; refused at boot rather than truncated at render time |
 
 The three `livemode` rules — `https`-only, no stub-labelled host, and
 `${}`-only secrets — are implemented and tested in `vpay-config`
@@ -234,6 +238,25 @@ with `oauth-duplicate-merchant-id.yml` as the fixture. It is separate from
 `client_id` deliberately — a credential may be rotated, a tenant may not —
 and it is what every `/v1` query filters by, because there is no `merchants`
 table and therefore no foreign key to catch a query that forgot.
+
+**The `checkout:` block and `checkout_origins` are new on 2026-09-04 (Step
+9).** `checkout.public_base_url` is the origin — optionally with a path prefix
+— that every payer link vpay mints is built on, and **absent is a complete
+answer**: a deployment that omits it serves no checkout page, and
+`POST /v1/checkout/sessions` answers `checkout_not_configured` rather than
+minting a `url` that resolves to nothing. `merchant_clients[].checkout_origins`
+is the per-merchant list `frame-ancestors` is derived from; an empty list is the
+default and means no site may embed that merchant's page — fail-closed, and the
+only shape that is safe to default to. Six named `ConfigError` variants with one
+fixture each, plus a seventh, `NonCanonicalCheckoutOrigin`: an entry must be the
+canonical spelling a browser compares against (lower-cased host, IDNA to ASCII,
+default port elided), because `https://Shop.example` and
+`https://shop.example:443` pass every other rule and are then dropped **silently**
+by the page's own filter. It is refused rather than normalised, so the file and
+the running policy stay the same document, and the message names what to write
+instead. `merchant_clients[].display_name` is what a payer is told they are
+paying — optional, and when it is absent the page paints a neutral heading
+rather than a tenant id. See [hosted-checkout.md](hosted-checkout.md).
 
 **`ProviderHost.enabled` is also new**: absent means enabled
 (`a_provider_with_no_enabled_line_is_enabled`), and `enabled: false` keeps

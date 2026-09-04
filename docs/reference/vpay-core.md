@@ -127,6 +127,48 @@ to decide what to do with a value carrying two separators or none, and every
 such decision is a place where "which secret did we actually compare?" stops
 being obvious.
 
+Since Step 9 the same function serves `checkout_sessions.client_secret_suffix`
+(migration `0028`, an identical CHECK) as well, and `cs_…_secret_…` is spelled
+by the same `client_secret` join. One generator and one join for two tables is
+what makes "both credentials are 160 bits and both survive a URL" one fact
+rather than two that could drift.
+
+### `return_token` is a second *capability*, not a second secret
+
+`return_token` has the same 32 characters, the same generator body and the
+same CHECK. It is a separate function, a separate column and a separate
+constant-time comparison because it authorises something strictly smaller, and
+D6 of [the Step 9 plan](../plans/2026-09-04-step9-hosted-checkout.md) is the
+reason it has to exist at all.
+
+Every secret on a vpay-served page rides in a URL **fragment**, which the
+browser never sends to any server. A fragment does not survive a rail's
+redirect, though — a payer coming back from Orange's own checkout arrives at a
+URL the *rail* built — so the return page's credential has to be a query
+parameter. Query parameters are written to access logs, kept in browser
+history and sent as `Referer` by some clients.
+
+The answer is not to make that value weaker or stronger; it is to make it buy
+less. `return_token` reads the session and its intent **without** the intent's
+`client_secret`, which is enough to render an outcome and forward a payer and
+is not enough to confirm anything. The session's own `client_secret` — the one
+in the fragment — is what buys the intent's credential.
+
+`secret_body` is shared so the *entropy* is one decision;
+`client_secret_suffix` and `return_token` stay two names so the *authority* is
+two. A call site that spelled the first while minting a return token would
+read as if they were interchangeable, which is precisely what D6 says they are
+not — and `a_return_token_is_thirty_two_characters_and_independent_of_the_secret_beside_it`
+pins that they are drawn independently, so a future "optimisation" that
+derived one from the other fails rather than quietly collapsing the two
+capabilities into one.
+
+`CHECKOUT_SESSION_PREFIX` is `cs_`, Stripe's own spelling for the same object.
+That matters more here than for `pi_`/`ch_`: the prefix is the leading
+characters of a `client_secret` a merchant pastes into `initEmbeddedCheckout`,
+so a merchant who has integrated Stripe once recognises at a glance which of
+the two credentials on their page they are holding.
+
 ---
 
 ## money

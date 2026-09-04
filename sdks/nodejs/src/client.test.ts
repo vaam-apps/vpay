@@ -1,6 +1,8 @@
+import { verify } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MAX_ASSERTION_LIFETIME_SECONDS } from "./auth.js";
 import { VpayClient } from "./client.js";
 import {
   VpayApiError,
@@ -18,7 +20,7 @@ import {
 import type { PaymentIntent } from "./types.js";
 import { SDK_VERSION } from "./version.js";
 
-const { privateKey, privateKeyPem } = generateTestRsaKeyPair();
+const { privateKey, privateKeyPem, publicKey } = generateTestRsaKeyPair();
 const TOKEN_PATH = "/v1/oauth/token";
 
 function parseFormBody(body: string): Record<string, string> {
@@ -954,6 +956,64 @@ describe("the client assertion the client actually sends", () => {
     expect(sentAssertion(server).payload.aud).toBe(tokenEndpoint);
   });
 
+  it("leaves aud on the token endpoint when assertionAudience is not set", async () => {
+    // The default is unchanged by the option's existence: a merchant that
+    // reaches vpay at the URL vpay publishes as its own configures nothing.
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+    const client = makeClient(server);
+
+    await client.paymentIntents.retrieve("pi_123");
+
+    expect(sentAssertion(server).payload.aud).toBe(
+      `${server.url}${TOKEN_PATH}`,
+    );
+  });
+
+  it("signs aud as the configured assertionAudience while still POSTing to the token endpoint", async () => {
+    // The defect this option fixes: the URL reachable from the merchant's
+    // server and the string the OP calls itself are two different facts.
+    // `assertionAudience` moves the `aud` claim without moving the request.
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+    const publicTokenEndpoint = "https://api.vpay.example/v1/oauth/token";
+    const client = makeClient(server, {
+      assertionAudience: publicTokenEndpoint,
+    });
+
+    await client.paymentIntents.retrieve("pi_123");
+
+    const { payload } = sentAssertion(server);
+    expect(payload.aud).toBe(publicTokenEndpoint);
+    // The request still went to the reachable server, not to the audience.
+    expect(server.requests.map((r) => r.url)).toEqual([
+      TOKEN_PATH,
+      "/v1/payment_intents/pi_123",
+    ]);
+    // And it is still not the `audience` form field, which stays `vpay:v1`.
+    const fields = parseFormBody(
+      server.requests.find((r) => r.url === TOKEN_PATH)!.body,
+    );
+    expect(fields["audience"]).toBe("vpay:v1");
+  });
+
+  it("accepts the issuer as an assertionAudience, which the OP also allows", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+    const client = makeClient(server, {
+      assertionAudience: "https://api.vpay.example/v1/oauth",
+    });
+
+    await client.paymentIntents.retrieve("pi_123");
+
+    expect(sentAssertion(server).payload.aud).toBe(
+      "https://api.vpay.example/v1/oauth",
+    );
+  });
+
   it("sets iss and sub to the configured client_id", async () => {
     const server = await withServer({
       resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
@@ -1466,5 +1526,454 @@ describe("an unreadable private key is refused at construction", () => {
           privateKey: "not a pem",
         }),
     ).toThrow(/privateKey could not be read as a private key/);
+  });
+});
+
+/**
+ * `/v1/checkout/sessions` — Step 9's four merchant operations.
+ *
+ * These mirror `sdks/rust/tests/resources.rs`'s checkout-session cases one
+ * for one, down to the body strings, because ADR-0015's parity rule is
+ * about *wire semantics*: two SDKs that both "support checkout sessions"
+ * but encode `ui_mode` differently are not at parity, and only a
+ * byte-level assertion on both sides catches that.
+ */
+describe("checkout.sessions", () => {
+  const sampleSession = (
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> => ({
+    id: "cs_123",
+    object: "checkout.session",
+    livemode: false,
+    payment_intent: "pi_123",
+    ui_mode: "hosted",
+    status: "open",
+    payment_status: "unpaid",
+    success_url: "https://shop.example/ok?sid={CHECKOUT_SESSION_ID}",
+    cancel_url: "https://shop.example/cancel",
+    return_url: null,
+    url: "https://checkout.example/c/cs_123#cs_123_secret_abc123",
+    expires_at: 1_700_086_400,
+    created: 1_700_000_000,
+    ...overrides,
+  });
+
+  it("checkout.sessions.create: exact path, method, Idempotency-Key, and body", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: sampleSession({ client_secret: "cs_123_secret_abc123" }),
+      }),
+    });
+    const client = makeClient(server);
+
+    const session = await client.checkout.sessions.create(
+      {
+        payment_intent: "pi_123",
+        ui_mode: "hosted",
+        success_url: "https://shop.example/ok?sid={CHECKOUT_SESSION_ID}",
+        cancel_url: "https://shop.example/cancel",
+      },
+      { idempotencyKey: "order_1234_session_1" },
+    );
+
+    const req = server.requests.find((r) => r.url === "/v1/checkout/sessions")!;
+    expect(req.method).toBe("POST");
+    expect(req.headers["content-type"]).toBe(
+      "application/x-www-form-urlencoded",
+    );
+    expect(req.headers["idempotency-key"]).toBe("order_1234_session_1");
+    expect(req.body).toBe(
+      "payment_intent=pi_123&ui_mode=hosted&success_url=https%3A%2F%2Fshop.example%2Fok%3Fsid%3D%7BCHECKOUT_SESSION_ID%7D&cancel_url=https%3A%2F%2Fshop.example%2Fcancel",
+    );
+    expect(session.id).toBe("cs_123");
+    expect(session.object).toBe("checkout.session");
+    expect(session.url).toContain("/c/cs_123#");
+  });
+
+  it("checkout.sessions.create omits every field the caller left unset", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: sampleSession() }),
+    });
+    const client = makeClient(server);
+
+    await client.checkout.sessions.create({ payment_intent: "pi_123" });
+
+    const req = server.requests.find((r) => r.url === "/v1/checkout/sessions")!;
+    // `ui_mode=` and no `ui_mode` are different requests; only the second
+    // means "let the server default it to hosted".
+    expect(req.body).toBe("payment_intent=pi_123");
+  });
+
+  it("checkout.sessions.create sends an embedded session's return_url", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: sampleSession({
+          ui_mode: "embedded",
+          success_url: null,
+          cancel_url: null,
+          return_url: "https://shop.example/order/42",
+          url: null,
+          client_secret: "cs_123_secret_abc123",
+        }),
+      }),
+    });
+    const client = makeClient(server);
+
+    const session = await client.checkout.sessions.create({
+      payment_intent: "pi_123",
+      ui_mode: "embedded",
+      return_url: "https://shop.example/order/42",
+    });
+
+    const req = server.requests.find((r) => r.url === "/v1/checkout/sessions")!;
+    expect(req.body).toBe(
+      "payment_intent=pi_123&ui_mode=embedded&return_url=https%3A%2F%2Fshop.example%2Forder%2F42",
+    );
+    expect(session.url).toBeNull();
+    expect(session.client_secret).toBe("cs_123_secret_abc123");
+  });
+
+  it("checkout.sessions.create generates an Idempotency-Key when the caller supplies none", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: sampleSession() }),
+    });
+    const client = makeClient(server);
+
+    await client.checkout.sessions.create({ payment_intent: "pi_123" });
+
+    const req = server.requests.find((r) => r.url === "/v1/checkout/sessions")!;
+    expect(req.headers["idempotency-key"] as string).toMatch(
+      /^[0-9a-f-]{36}$/i,
+    );
+  });
+
+  it("checkout.sessions.retrieve: exact GET path, and the client_secret it carries", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: sampleSession({ client_secret: "cs_123_secret_abc123" }),
+      }),
+    });
+    const client = makeClient(server);
+
+    const session = await client.checkout.sessions.retrieve("cs_123");
+
+    const req = server.requests.find((r) =>
+      r.url.startsWith("/v1/checkout/sessions"),
+    )!;
+    expect(req.method).toBe("GET");
+    expect(req.url).toBe("/v1/checkout/sessions/cs_123");
+    // Typed access, no cast: `string | undefined`.
+    expect(session.client_secret).toBe("cs_123_secret_abc123");
+  });
+
+  it("checkout.sessions percent-encodes a hostile id so it cannot escape /v1", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: sampleSession() }),
+    });
+    const client = makeClient(server);
+
+    await client.checkout.sessions.retrieve("../../admin");
+    await client.checkout.sessions.expire("cs_1?injected=1#frag");
+
+    const urls = server.requests
+      .filter((r) => r.url !== TOKEN_PATH)
+      .map((r) => r.url);
+    expect(urls).toEqual([
+      "/v1/checkout/sessions/..%2F..%2Fadmin",
+      "/v1/checkout/sessions/cs_1%3Finjected%3D1%23frag/expire",
+    ]);
+  });
+
+  it("checkout.sessions.list: exact query string including the payment_intent filter", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: {
+          object: "list",
+          data: [sampleSession()],
+          has_more: false,
+          url: "/v1/checkout/sessions",
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    const page = await client.checkout.sessions.list({
+      limit: 10,
+      payment_intent: "pi_123",
+    });
+
+    const req = server.requests.find((r) =>
+      r.url.startsWith("/v1/checkout/sessions?"),
+    )!;
+    expect(req.method).toBe("GET");
+    expect(req.url).toBe(
+      "/v1/checkout/sessions?limit=10&payment_intent=pi_123",
+    );
+    expect(page.data).toHaveLength(1);
+    // A list item never carries the payer credential — the same rule the
+    // intent list obeys, for the same reason.
+    expect(page.data[0]?.client_secret).toBeUndefined();
+  });
+
+  it("checkout.sessions.expire: exact path, method and empty body", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: sampleSession({ status: "expired" }),
+      }),
+    });
+    const client = makeClient(server);
+
+    const session = await client.checkout.sessions.expire("cs_123");
+
+    const req = server.requests.find((r) => r.url.endsWith("/cs_123/expire"))!;
+    expect(req.method).toBe("POST");
+    expect(req.url).toBe("/v1/checkout/sessions/cs_123/expire");
+    expect(req.body).toBe("");
+    expect(req.headers["idempotency-key"]).toBeDefined();
+    expect(session.status).toBe("expired");
+  });
+
+  it("checkout.sessions maps the 404 envelope for an unknown session", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 404,
+        body: {
+          error: {
+            type: "invalid_request_error",
+            code: "resource_missing",
+            message: "No such checkout session: cs_nope",
+          },
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    const err = await client.checkout.sessions
+      .retrieve("cs_nope")
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(VpayApiError);
+    const apiError = err as VpayApiError;
+    expect(apiError.status).toBe(404);
+    expect(apiError.code).toBe("resource_missing");
+    expect(apiError.message).toContain("No such checkout session: cs_nope");
+  });
+
+  it("checkout.sessions maps a 409 on expiring a session with a live charge", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 409,
+        body: {
+          error: {
+            type: "invalid_request_error",
+            code: "invalid_state",
+            message: "This checkout session has a charge in flight.",
+          },
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    const err = await client.checkout.sessions
+      .expire("cs_123")
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(VpayApiError);
+    expect((err as VpayApiError).status).toBe(409);
+    expect((err as VpayApiError).code).toBe("invalid_state");
+  });
+
+  it("redacts a checkout session's client_secret from util.inspect, and leaves JSON faithful", async () => {
+    // The gap ADR-0015 records against `PaymentIntent` — a plain interface,
+    // so `console.log(intent)` prints a live credential — is not repeated
+    // for this object. `vpay_sdk::CheckoutSession`'s hand-written `Debug`
+    // prints the same `[N chars redacted]` marker.
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: sampleSession({ client_secret: "cs_123_secret_abc123" }),
+      }),
+    });
+    const client = makeClient(server);
+
+    const session = await client.checkout.sessions.retrieve("cs_123");
+
+    const rendered = inspect(session);
+    expect(rendered).not.toContain("cs_123_secret_abc123");
+    expect(rendered).toContain("chars redacted");
+    // …including through `url`, which for a hosted session carries the same
+    // secret in its fragment (D6). Redacting `client_secret` alone would
+    // have leaked the value the redaction exists to hide.
+    expect(rendered).toContain("https://checkout.example/c/cs_123#[");
+    // A redaction, not a blackout: every other field is still readable.
+    expect(rendered).toContain("cs_123");
+    expect(rendered).toContain("pi_123");
+    // …and `JSON.stringify` still carries it, because an embedded
+    // integration has to serialise the secret to reach the browser at all.
+    expect(JSON.stringify(session)).toContain("cs_123_secret_abc123");
+    // The inspect hook is invisible to everything else.
+    expect(Object.keys(session)).not.toContain("client_secret_redacted");
+    expect(JSON.parse(JSON.stringify(session)).client_secret).toBe(
+      "cs_123_secret_abc123",
+    );
+  });
+
+  it("redacts a list item's url fragment too, though it has no client_secret to redact", async () => {
+    // The list never carries `client_secret`, but a hosted session's `url`
+    // carries the same value in its fragment, so the redaction has to
+    // follow the secret rather than the field name.
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: {
+          object: "list",
+          data: [sampleSession()],
+          has_more: false,
+          url: "/v1/checkout/sessions",
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    const page = await client.checkout.sessions.list();
+
+    const rendered = inspect(page.data[0]);
+    expect(rendered).not.toContain("cs_123_secret_abc123");
+    expect(rendered).toContain("https://checkout.example/c/cs_123#[");
+    // No `client_secret` line at all — the key is absent from the body, not
+    // present and redacted.
+    expect(rendered).not.toContain("client_secret");
+  });
+
+  it("leaves a session whose url has no fragment untouched", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: sampleSession({ ui_mode: "embedded", url: null }),
+      }),
+    });
+    const client = makeClient(server);
+
+    const session = await client.checkout.sessions.retrieve("cs_123");
+
+    const rendered = inspect(session);
+    expect(rendered).not.toContain("chars redacted");
+    expect(rendered).toContain("url: null");
+  });
+});
+
+/**
+ * The audience check the OP actually performs, reproduced from the two places
+ * that perform it.
+ *
+ * `authkestra_op::client_assertion::verify_client_assertion` is handed an
+ * `expected_audiences` list by `authenticate_client`, and that list is the
+ * OP's **own** two names for itself:
+ * `{deployment.public_base_url}/v1/oauth/token` and
+ * `{deployment.public_base_url}/v1/oauth` (`vpay_api::op::issuer_for`). The
+ * URL the merchant's process happened to POST to is not consulted, and is not
+ * in the list unless it coincides with one of them.
+ *
+ * This is a *shaped* stand-in, not the real verifier: Node cannot link the
+ * Rust crate, and `docs/sdks/parity.md` records that gap for this package as
+ * a whole. `sdks/rust/tests/op_conformance.rs` runs the same case through the
+ * real pinned verifier.
+ */
+function verifyAsTheOpWould(
+  jwt: string,
+  expected: {
+    clientId: string;
+    publicKey: Parameters<typeof verify>[2];
+    /** `[token endpoint, issuer]`, as the OP names itself. */
+    audiences: string[];
+  },
+): { ok: true } | { ok: false; reason: string } {
+  const [headerPart, payloadPart, signaturePart] = jwt.split(".");
+  if (!headerPart || !payloadPart || !signaturePart) {
+    return { ok: false, reason: "MalformedAssertion" };
+  }
+  const signingInput = Buffer.from(`${headerPart}.${payloadPart}`, "utf8");
+  const signature = Buffer.from(signaturePart, "base64url");
+  if (!verify("sha256", signingInput, expected.publicKey, signature)) {
+    return { ok: false, reason: "InvalidSignature" };
+  }
+  const payload = decodeJwtPart<AssertionPayload>(payloadPart);
+  if (payload.iss !== expected.clientId || payload.sub !== expected.clientId) {
+    return { ok: false, reason: "InvalidIssuer" };
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (payload.exp <= now) {
+    return { ok: false, reason: "Expired" };
+  }
+  if (payload.exp - now > MAX_ASSERTION_LIFETIME_SECONDS) {
+    return { ok: false, reason: "LifetimeTooLong" };
+  }
+  if (!expected.audiences.includes(payload.aud)) {
+    return { ok: false, reason: "InvalidAudience" };
+  }
+  return { ok: true };
+}
+
+describe("a merchant server that reaches vpay by an internal URL", () => {
+  // vpay publishes itself at these two names — this is what the OP puts in
+  // `expected_audiences`. The merchant's own `baseUrl` is the test server's
+  // 127.0.0.1 address, standing in for `http://vpay-server:8080`.
+  const PUBLIC_TOKEN_ENDPOINT = "http://localhost:8080/v1/oauth/token";
+  const PUBLIC_ISSUER = "http://localhost:8080/v1/oauth";
+  const OP_AUDIENCES = [PUBLIC_TOKEN_ENDPOINT, PUBLIC_ISSUER];
+
+  it("is refused by the OP audience check when assertionAudience is left unset", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+    const client = makeClient(server);
+
+    await client.paymentIntents.retrieve("pi_123");
+
+    const jwt = parseFormBody(
+      server.requests.find((r) => r.url === TOKEN_PATH)!.body,
+    )["client_assertion"]!;
+    const verdict = verifyAsTheOpWould(jwt, {
+      clientId: "merchant_a",
+      publicKey,
+      audiences: OP_AUDIENCES,
+    });
+
+    // Everything else about the assertion is correct — the signature
+    // verifies, `iss`/`sub` are the client id, the lifetime is in range. The
+    // one wrong claim is `aud`, and the OP answers `invalid_client` for it.
+    expect(verdict).toEqual({ ok: false, reason: "InvalidAudience" });
+  });
+
+  it("authenticates once assertionAudience names the OP's own token endpoint", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+    const client = makeClient(server, {
+      assertionAudience: PUBLIC_TOKEN_ENDPOINT,
+    });
+
+    await client.paymentIntents.retrieve("pi_123");
+
+    const jwt = parseFormBody(
+      server.requests.find((r) => r.url === TOKEN_PATH)!.body,
+    )["client_assertion"]!;
+    expect(
+      verifyAsTheOpWould(jwt, {
+        clientId: "merchant_a",
+        publicKey,
+        audiences: OP_AUDIENCES,
+      }),
+    ).toEqual({ ok: true });
+
+    // The token request still went to the internal address, which is the
+    // point: reachability and audience are now separate settings.
+    expect(server.requests[0]!.url).toBe(TOKEN_PATH);
+    expect(server.url).not.toBe("http://localhost:8080");
   });
 });

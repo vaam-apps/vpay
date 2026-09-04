@@ -75,6 +75,13 @@ use crate::form::{VpayForm, VpayQuery};
 use crate::v1::payment_intents::{ConfirmParams, SecretRendering, confirm_once, rendered_intent};
 use crate::v1::{MerchantScope, ResourceConfig, V1Route};
 
+/// The three routes vpay's **own** checkout page calls (Step 9). Its own
+/// module rather than more handlers here, because it authenticates against a
+/// different object with two different credentials — but it reuses this
+/// module's [`ct_compare`]/[`secrets_match`], so there is one constant-time
+/// compare in the crate and not two.
+pub mod checkout_sessions;
+
 /// The object type this surface speaks about, in the words the 404 renders.
 ///
 /// **`"payment intent"`, with a space — deliberately different from `/v1`'s
@@ -86,21 +93,35 @@ use crate::v1::{MerchantScope, ResourceConfig, V1Route};
 /// verbatim, so the two spellings cannot quietly converge.
 const RESOURCE: &str = "payment intent";
 
-/// The two routes mounted under `/v1/browser`, and the only place they are
+/// The five routes mounted under `/v1/browser`, and the only place they are
 /// listed.
 ///
 /// A separate constant from [`crate::V1_ROUTES`], and that separation is
 /// load-bearing rather than tidy: the integration test
 /// `every_registered_v1_path_answers_401_without_a_token` walks `V1_ROUTES`
-/// and asserts every entry is behind the merchant token boundary. These two
-/// are outside it by design, so adding them there would either break that
-/// test or, worse, make someone weaken it. The sibling assertion — that
-/// exactly these two exist and that *neither* answers 401 — lives in
+/// and asserts every entry is behind the merchant token boundary. These are
+/// outside it by design, so adding them there would either break that test
+/// or, worse, make someone weaken it. The sibling assertion — that exactly
+/// these exist and that *none* answers 401 — lives in
 /// `backends/tests/integration/tests/browser_checkout.rs`.
 ///
 /// [`V1Route`] is reused rather than a second route type: the shape (a path,
 /// its methods, a `MethodRouter` builder) is identical, and one type is what
 /// lets a test walk both tables with the same code.
+///
+/// # Two, until Step 9; five since
+///
+/// The first two are the payment-intent surface `@vpay/stripe-js` speaks to,
+/// and they still are: **Step 9 added no way to confirm.** vpay's own
+/// checkout page drives exactly the same `POST
+/// /v1/browser/payment_intents/{id}/confirm` a merchant's page does, which is
+/// why the three routes it added are all `GET`.
+///
+/// What they add is *reads about a different object* — a checkout session —
+/// each authenticated by its own credential (see
+/// [`checkout_sessions`]'s module docs for the ladder). Nothing here weakens
+/// the two originals: `browser::authenticate` is untouched, and the new
+/// handlers reuse [`secrets_match`] rather than introducing a second compare.
 pub const BROWSER_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/payment_intents/{id}",
@@ -111,6 +132,29 @@ pub const BROWSER_ROUTES: &[V1Route] = &[
         path: "/payment_intents/{id}/confirm",
         methods: &["POST"],
         mount: || post(confirm),
+    },
+    V1Route {
+        path: "/checkout/sessions/{id}",
+        methods: &["GET"],
+        mount: || get(checkout_sessions::retrieve),
+    },
+    // A *sibling* path pattern of the read above, not a nest and not the same
+    // handler with a second optional parameter. That is what makes "a
+    // `return_token` cannot reach the intent's `client_secret`" a routing
+    // fact: the two credentials are read by two functions, each of which
+    // builds only the expected value it accepts.
+    V1Route {
+        path: "/checkout/sessions/{id}/return",
+        methods: &["GET"],
+        mount: || get(checkout_sessions::retrieve_for_return),
+    },
+    // No `{id}` and no secret: the answer is a property of the tenant the
+    // publishable key names, and the checkout app asks for it server-side
+    // before any script runs (D4).
+    V1Route {
+        path: "/checkout/origins",
+        methods: &["GET"],
+        mount: || get(checkout_sessions::origins),
     },
 ];
 
@@ -652,11 +696,30 @@ mod tests {
         assert_eq!(secret, "pi_x_secret_y");
     }
 
-    /// The table is exactly two routes, and neither is a write this surface
-    /// must not offer.
+    /// The table is exactly five routes, and exactly **one** of them writes.
+    ///
+    /// # This test was changed in Step 9, deliberately
+    ///
+    /// It pinned the table at two entries from Step 5c until 2026-09-04, and
+    /// its name said so. That pin was doing a real job — "no route may be
+    /// added to the payer-facing surface without someone deciding what a
+    /// payer may do with it" — so it is *re-stated*, not relaxed: the list
+    /// below is exhaustive and ordered, and the `confirm`-count assertion
+    /// underneath is the part that actually carries the property.
+    ///
+    /// What Step 9 added is three `GET`s about a **checkout session**
+    /// (`crate::browser::checkout_sessions`), each with its own credential.
+    /// It added **no second way to move money**: vpay's own checkout page
+    /// confirms through the same `POST
+    /// /v1/browser/payment_intents/{id}/confirm` a merchant's page does, and
+    /// that route is unchanged. So the invariant this test defends is not
+    /// "two entries" — it never really was — but "one write, and it is the
+    /// one that has always been here". The second assertion says exactly
+    /// that, and a fourth `GET` added tomorrow will still have to edit the
+    /// list on purpose.
     ///
     /// The end-to-end half — that `create`, `list` and `cancel` really are
-    /// 404 on this prefix, and that neither of these two answers `401` — is
+    /// 404 on this prefix, and that none of these answers `401` — is
     /// `backends/tests/integration/tests/browser_checkout.rs`, because it
     /// needs the mounted router.
     #[test]
@@ -670,7 +733,25 @@ mod tests {
             vec![
                 ("/payment_intents/{id}", ["GET"].as_slice()),
                 ("/payment_intents/{id}/confirm", ["POST"].as_slice()),
+                ("/checkout/sessions/{id}", ["GET"].as_slice()),
+                ("/checkout/sessions/{id}/return", ["GET"].as_slice()),
+                ("/checkout/origins", ["GET"].as_slice()),
             ]
+        );
+
+        // The load-bearing half, and the reason the count above is not the
+        // property: a payer-facing surface may grow reads, and must not grow
+        // writes. Exactly one entry answers a non-read method, and it is the
+        // confirm that has been here since Step 5c.
+        let writes: Vec<&str> = BROWSER_ROUTES
+            .iter()
+            .filter(|route| route.methods.iter().any(|method| *method != "GET"))
+            .map(|route| route.path)
+            .collect();
+        assert_eq!(
+            writes,
+            vec!["/payment_intents/{id}/confirm"],
+            "a payer may confirm one intent and do nothing else on this surface; a second              write here needs a decision, not a route"
         );
     }
 

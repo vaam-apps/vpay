@@ -250,6 +250,9 @@ mod tests {
             // equal to `client_id`, so a conversion that confused the two
             // would fail rather than pass by coincidence.
             merchant_id: format!("{CLIENT_ID}-tenant"),
+            // Absent, like most registrations: nothing the OP does renders a
+            // name to anyone.
+            display_name: None,
             jwks: Some(jwks),
             grant_types: vec![ConfigGrantType::ClientCredentials],
             scopes: vec!["payments:write".to_owned()],
@@ -265,6 +268,7 @@ mod tests {
             // started reading it would be putting a payer-facing label into
             // a `ClientRegistration`.
             publishable_keys: Vec::new(),
+            checkout_origins: Vec::new(),
         }
     }
 

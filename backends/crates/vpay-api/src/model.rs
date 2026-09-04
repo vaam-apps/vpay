@@ -74,6 +74,16 @@ object_tag!(
     EventTag,
     "event"
 );
+object_tag!(
+    /// The `"checkout.session"` discriminator.
+    ///
+    /// Stripe's own spelling, dot and all, so a merchant switching an
+    /// integration over does not have to special-case it. D10 is explicit
+    /// that field names mirror Stripe *only* where the semantics match —
+    /// this one does exactly.
+    CheckoutSessionTag,
+    "checkout.session"
+);
 
 /// Where to send a payer on a redirect rail.
 ///
@@ -297,7 +307,7 @@ impl PaymentIntentObject {
 /// is the one place in `vpay-api` a full, joined `client_secret` exists in
 /// memory (every other type here carries either no secret or, on
 /// [`PaymentIntentRow`](vpay_db::PaymentIntentRow), only the stored suffix).
-#[derive(Clone, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct PaymentIntentWithSecret {
     /// The twelve documented keys, unchanged and rendered by the same code
@@ -352,6 +362,373 @@ impl PaymentIntentWithSecret {
     pub fn new(intent: PaymentIntentObject, client_secret: String) -> Self {
         Self {
             intent,
+            client_secret,
+        }
+    }
+}
+
+/// A `payment_intent` reference that may be the id **or** the whole object —
+/// Stripe's `expand` shape, at the two places vpay uses it.
+///
+/// # Which surface renders which, and why
+///
+/// * `/v1/checkout/sessions` (create, retrieve, list) renders
+///   [`Self::Id`]. A merchant already holds the intent — they created it —
+///   so expanding would put a second, possibly stale copy of every amount on
+///   the wire, and on the list it would multiply that by the page size.
+/// * `GET /v1/browser/checkout/sessions/{id}` renders
+///   [`Self::ExpandedWithSecret`]. vpay's own checkout page has *only* the
+///   session id and the session secret: it needs the amount, the currency,
+///   the status, `payment_method_types` (which rails to offer),
+///   `next_action` and `last_payment_error` to render anything at all, and
+///   the intent's `client_secret` to drive
+///   `/v1/browser/payment_intents/{id}[/confirm]`. Two round trips for that
+///   would mean the page cannot paint until both land.
+/// * `GET /v1/browser/checkout/sessions/{id}/return` renders
+///   [`Self::Expanded`] — everything above **except** the credential, which
+///   the return page has no use for and must not be handed (D6; see
+///   `crate::browser::checkout_sessions`).
+///
+/// # Why an enum and not `Option<PaymentIntentObject>` beside a `String`
+///
+/// Because the *type* is then what stops the return page from being handed a
+/// credential. Two nullable fields would make it a runtime question — "did
+/// this handler remember to clear it?" — answerable only by reading every
+/// call site; three variants make each route name what it renders, and a
+/// route that wanted to render a secret would have to say the word.
+///
+/// `#[serde(untagged)]`: the wire shape is a string or an object, with no
+/// discriminator, exactly as Stripe's expansion is. Both merchant SDKs decode
+/// it as a union.
+///
+/// `Box`, because [`PaymentIntentObject`] is much larger than a `String` and
+/// an un-boxed variant would make every [`CheckoutSessionObject`] — including
+/// each of the up-to-100 on a list page — carry that footprint.
+///
+/// No `Deserialize`: nothing in this crate decodes it. `Debug` is derived and
+/// safe — [`Self::ExpandedWithSecret`] formats through
+/// [`PaymentIntentWithSecret`]'s own hand-written, redacting impl.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ExpandableIntent {
+    /// `"pi_…"` — the merchant surface's answer.
+    Id(String),
+    /// The twelve documented keys, and no credential.
+    Expanded(Box<PaymentIntentObject>),
+    /// The twelve keys plus `client_secret`.
+    ExpandedWithSecret(Box<PaymentIntentWithSecret>),
+}
+
+impl ExpandableIntent {
+    /// The id, whichever shape this is — so a caller that only wants to
+    /// correlate never has to match.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Id(id) => id,
+            Self::Expanded(intent) => &intent.id,
+            Self::ExpandedWithSecret(intent) => &intent.intent.id,
+        }
+    }
+}
+
+/// A `checkout.session`, exactly as the wire contract in
+/// `docs/plans/2026-09-04-step9-hosted-checkout.md` describes it.
+///
+/// # Why the three lifecycle fields are `String` and not enums
+///
+/// The same argument [`EventObject::kind`] and
+/// [`LastPaymentErrorObject::code`] make: the vocabularies are closed by the
+/// database (`ui_mode_is_known`, `status_is_known`,
+/// `payment_status_is_known`, migration `0028`) where they are *written*, and
+/// a value that failed to parse on the read path would turn a merchant's
+/// `GET` into a `500` instead of showing them their session. `status` on
+/// [`PaymentIntentObject`] is typed for the opposite reason — `IntentStatus`
+/// is `vpay-core`'s own state machine and a handler must not be able to
+/// render a status outside it — and no such machine exists for a session
+/// (D10: the lifecycle is minimal and has no transitions a type could guard).
+///
+/// # `url`, and why it is `Option`
+///
+/// `null` for an embedded session, which has no page to redirect a payer to:
+/// the merchant's own site mounts the iframe. Derived at render time from
+/// `checkout.public_base_url` and never stored, so a deployment that moves
+/// its checkout app does not have to rewrite every row — and so a session
+/// created before the app was configured cannot render a link to a host that
+/// no longer exists.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CheckoutSessionObject {
+    /// `cs_…` — `vpay_core::ids::checkout_session_id`.
+    pub id: String,
+    /// Always `"checkout.session"`.
+    pub object: CheckoutSessionTag,
+    /// `false` for a sandbox deployment's objects. Taken from the row, not
+    /// from configuration read at render time, for
+    /// [`PaymentIntentObject::livemode`]'s reason.
+    pub livemode: bool,
+    /// The intent this session drives — the `pi_…` id on the merchant
+    /// surface, and the whole object on the two browser reads. See
+    /// [`ExpandableIntent`] for which surface renders which, and why.
+    pub payment_intent: ExpandableIntent,
+    /// `hosted` or `embedded`.
+    pub ui_mode: String,
+    /// `open`, `complete` or `expired` (D10).
+    pub status: String,
+    /// `unpaid`, `paid` or `failed` (D10).
+    pub payment_status: String,
+    /// Hosted mode's forward destination; `null` for embedded.
+    ///
+    /// May contain the literal `{CHECKOUT_SESSION_ID}` (D5), which vpay
+    /// substitutes when it forwards the payer — and only then. It is echoed
+    /// back here **unsubstituted**, exactly as the merchant wrote it, because
+    /// this field is a record of their configuration rather than of one
+    /// payer's journey.
+    pub success_url: Option<String>,
+    /// Hosted mode's abandon destination; `null` for embedded. Same
+    /// `{CHECKOUT_SESSION_ID}` rule.
+    pub cancel_url: Option<String>,
+    /// Embedded mode's forward destination; `null` for hosted. Same
+    /// `{CHECKOUT_SESSION_ID}` rule.
+    pub return_url: Option<String>,
+    /// Where to send the payer, for a hosted session on a deployment that
+    /// serves a checkout page; `null` for an embedded one.
+    ///
+    /// **Carries the session's `client_secret` in its fragment** (D6), so
+    /// this field is as sensitive as the credential itself and is rendered
+    /// only where that credential is. It is `Option` on the object rather
+    /// than a field of [`CheckoutSessionWithSecret`] because the list has to
+    /// render *something* for it, and `null` beside a `hosted` session is the
+    /// honest answer there: the merchant is not being told the link, they are
+    /// being told they already have it.
+    pub url: Option<String>,
+    /// Unix **seconds** when this session stops being `open` on its own —
+    /// like every other timestamp on this API, and not RFC 3339.
+    pub expires_at: i64,
+    /// Unix **seconds**.
+    pub created: i64,
+}
+
+impl CheckoutSessionObject {
+    /// Renders a stored session as the object a merchant reads.
+    ///
+    /// # Why this is not a `TryFrom`, and not a `From` either
+    ///
+    /// Not `TryFrom`, because — unlike [`PaymentIntentObject`] — there is
+    /// nothing here that can fail: every column this reads is already a
+    /// `String`, a `bool` or a timestamp, and the three closed vocabularies
+    /// stay text on the wire (see the type's own doc). A `Result` nothing can
+    /// populate is a `?` at every call site that documents a risk that does
+    /// not exist.
+    ///
+    /// Not `From`, because `url` is not on the row and cannot be: it is built
+    /// from `checkout.public_base_url`, which is deployment configuration
+    /// this module deliberately cannot see. Taking it as a parameter is what
+    /// keeps `model` a rendering layer — the same split
+    /// [`PaymentIntentObject::with_next_action`] draws for `next_action`,
+    /// which lives on the *charge*.
+    ///
+    /// `url` is the caller's answer and is expected to be `None` for an
+    /// embedded session and for a deployment with no checkout app. Nothing
+    /// here re-derives or second-guesses it.
+    #[must_use]
+    pub fn from_row(row: &vpay_db::CheckoutSessionRow, url: Option<String>) -> Self {
+        Self {
+            id: row.id.clone(),
+            object: CheckoutSessionTag,
+            livemode: row.livemode,
+            // The id, always. A caller that means to expand says so with
+            // `with_expanded_intent`, so the merchant surface cannot grow an
+            // expansion by accident and the browser surface cannot forget to
+            // ask for one.
+            payment_intent: ExpandableIntent::Id(row.payment_intent_id.clone()),
+            ui_mode: row.ui_mode.clone(),
+            status: row.status.clone(),
+            payment_status: row.payment_status.clone(),
+            success_url: row.success_url.clone(),
+            cancel_url: row.cancel_url.clone(),
+            return_url: row.return_url.clone(),
+            url,
+            expires_at: row.expires_at.unix_timestamp(),
+            created: row.created_at.unix_timestamp(),
+        }
+    }
+
+    /// Replaces the `pi_…` id with the whole intent object.
+    ///
+    /// A builder rather than a parameter of [`Self::from_row`], mirroring
+    /// [`PaymentIntentObject::with_next_action`] and for the same reason: the
+    /// default is the answer three of the five routes want, and a parameter
+    /// would make every one of them pass `ExpandableIntent::Id(...)` — which
+    /// is one transposition away from a list page that expands.
+    ///
+    /// The caller chooses [`ExpandableIntent::Expanded`] or
+    /// [`ExpandableIntent::ExpandedWithSecret`], and *that* choice is the
+    /// whole of "does this response carry the intent's credential". See
+    /// `crate::browser::checkout_sessions`, which makes it once per route.
+    #[must_use]
+    pub fn with_expanded_intent(mut self, intent: ExpandableIntent) -> Self {
+        self.payment_intent = intent;
+        self
+    }
+}
+
+/// The merchant, as a **payer** is shown them: one name and nothing else.
+///
+/// An object rather than a bare `merchant_name` string on the session, so the
+/// two browser reads can grow a second payer-facing fact about the merchant —
+/// a logo, a support address — without every consumer having to distinguish
+/// `merchant_name` from `merchant.name`. That is the shape
+/// `frontends/apps/checkout` is written against
+/// (`src/lib/types.ts`'s `CheckoutMerchant`), and the field name is `name`
+/// because that is the member its `isSessionEnvelope` guard requires; a
+/// server rendering `display_name` here would make every session read
+/// `error.unexpected` on the page.
+///
+/// Deliberately *not* the tenant id, the `client_id`, or anything else vpay
+/// knows about the merchant. A payer is being asked to hand over money on the
+/// strength of recognising who they are paying, and every other identifier
+/// this system holds is an internal one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CheckoutMerchantObject {
+    /// `merchant_clients[].display_name`. There is no fallback: a merchant
+    /// with none configured renders no `merchant` member at all — see
+    /// `ResourceConfig::merchant_display_name`.
+    pub name: String,
+}
+
+/// A `checkout.session` as **vpay's own checkout page** reads it: the session,
+/// its expanded intent, and the merchant's name.
+///
+/// # Why a wrapper, and not a field on [`CheckoutSessionObject`]
+///
+/// [`CheckoutSessionWithSecret`]'s reason, pointing the other way. That type
+/// exists to keep a credential off the responses that must not carry it; this
+/// one exists to keep a *deployment-configured* value off the responses that
+/// have no business rendering it. `merchant` is meaningless on the merchant
+/// surface — a merchant reading `GET /v1/checkout/sessions` already knows who
+/// they are — and a field on the object would put it on all four `/v1`
+/// responses and on every row of the list, where it would be one more thing an
+/// SDK has to model and one more thing that has to stay in step with
+/// configuration.
+///
+/// `#[serde(flatten)]`, so the wire shape is the session's own keys plus
+/// `merchant` at the top level, which is what the page's envelope check reads.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CheckoutSessionForPayer {
+    /// The documented keys, rendered by the same code every other surface
+    /// uses.
+    #[serde(flatten)]
+    pub session: CheckoutSessionObject,
+    /// Who the payer is paying — absent when the merchant configured no
+    /// `display_name`, never an internal identifier in its place.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merchant: Option<CheckoutMerchantObject>,
+}
+
+impl CheckoutSessionForPayer {
+    /// Pairs a rendered session with the name a payer is shown.
+    ///
+    /// Takes the name rather than a `ResourceConfig`, for
+    /// [`CheckoutSessionWithSecret::new`]'s reason: this module renders, and a
+    /// model type that could read deployment configuration is a model type
+    /// that can grow a second answer to a question the boundary already
+    /// decided.
+    #[must_use]
+    pub fn new(session: CheckoutSessionObject, name: Option<String>) -> Self {
+        Self {
+            session,
+            merchant: name.map(|name| CheckoutMerchantObject { name }),
+        }
+    }
+}
+
+/// A `checkout.session` **plus the payer credential that addresses it** —
+/// what `POST /v1/checkout/sessions` and `GET /v1/checkout/sessions/{id}`
+/// answer with.
+///
+/// # Why a wrapper, and not a field on [`CheckoutSessionObject`]
+///
+/// [`PaymentIntentWithSecret`]'s reason, transplanted: the field must reach
+/// two responses and no others, and a field on the object would reach every
+/// response that type can render — which includes `GET
+/// /v1/checkout/sessions`, the list, whose every row would then carry a live
+/// credential for a page that can read a payment intent's own secret. A list
+/// response is the one most likely to be logged wholesale.
+///
+/// The **browser** routes render the bare object, never this: a payer
+/// presenting the session secret already holds it, and the session read hands
+/// back the *intent's* secret instead, which is what the page actually needs.
+///
+/// `return_token` is on neither type. It is not a merchant-facing value at
+/// all: vpay builds the one URL that carries it (`{base}/c/{id}/return?t=…`)
+/// and hands that to the *rail*, so rendering it on a `/v1` response would
+/// publish a credential nobody has a use for.
+///
+/// No `Deserialize`: nothing decodes this. `Debug` is hand-written below,
+/// because [`Self::client_secret`] is a live credential.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CheckoutSessionWithSecret {
+    /// The documented keys, unchanged and rendered by the same code every
+    /// other surface uses.
+    #[serde(flatten)]
+    pub session: CheckoutSessionObject,
+    /// `cs_…_secret_…` — `vpay_core::ids::client_secret` of the row's `id`
+    /// and its `client_secret_suffix`.
+    ///
+    /// Not `Option<String>` although Stripe's is nullable: every route that
+    /// renders this type has the row in hand, and the row's suffix is
+    /// `NOT NULL` (migration `0028`).
+    pub client_secret: String,
+}
+
+/// Redacts [`CheckoutSessionWithSecret::client_secret`], leaving the rendered
+/// session visible.
+///
+/// [`PaymentIntentWithSecret`]'s impl, and its reasoning, applied to the
+/// other credential: this is the whole bearer value
+/// `/v1/browser/checkout/sessions/{id}` accepts, and what that route hands
+/// back is the *intent's* `client_secret` — so a session secret in a log line
+/// is one hop from confirming a payment.
+///
+/// [`CheckoutSessionObject::url`] is redacted **too**, and only here, which
+/// is the one place this impl departs from its sibling: the URL carries the
+/// same credential in its fragment, so printing the session in full while
+/// hiding the `client_secret` field would redact nothing at all. Its length
+/// stays, for the same debugging reason the secret's does.
+impl std::fmt::Debug for CheckoutSessionWithSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Rebuilt rather than mutated: `session` is borrowed, and a `Debug`
+        // that had to clone to be safe would be a `Debug` someone eventually
+        // "optimises" back into a leak.
+        let mut redacted = self.session.clone();
+        redacted.url = redacted
+            .url
+            .map(|url| format!("[{} chars redacted: carries the session secret]", url.len()));
+        f.debug_struct("CheckoutSessionWithSecret")
+            .field("session", &redacted)
+            .field(
+                "client_secret",
+                &format_args!("[{} chars redacted]", self.client_secret.len()),
+            )
+            .finish()
+    }
+}
+
+impl CheckoutSessionWithSecret {
+    /// Pairs a rendered session with the secret derived from the row it came
+    /// from.
+    ///
+    /// Takes the already-rendered object rather than the row, mirroring
+    /// [`PaymentIntentWithSecret::new`]: the `url` has to be built from
+    /// deployment configuration this module does not hold, so re-deriving
+    /// here would either drop it or make this type depend on
+    /// `ResourceConfig`.
+    #[must_use]
+    pub fn new(session: CheckoutSessionObject, client_secret: String) -> Self {
+        Self {
+            session,
             client_secret,
         }
     }
@@ -1122,5 +1499,246 @@ mod tests {
                 "{bad} gave {error:?}"
             );
         }
+    }
+
+    // ------------------------------------------------- checkout sessions
+
+    fn session_row() -> vpay_db::CheckoutSessionRow {
+        vpay_db::CheckoutSessionRow {
+            id: "cs_0123456789abcdefghjkmnpq".to_owned(),
+            seq: 7,
+            merchant_id: "acme-cameroon-tenant".to_owned(),
+            payment_intent_id: "pi_3MtwBwLkdIwHu7ix28a3tqPa".to_owned(),
+            livemode: false,
+            ui_mode: "hosted".to_owned(),
+            status: "open".to_owned(),
+            payment_status: "unpaid".to_owned(),
+            success_url: Some("https://shop.example/ok?sid={CHECKOUT_SESSION_ID}".to_owned()),
+            cancel_url: Some("https://shop.example/cancel".to_owned()),
+            return_url: None,
+            publishable_key: "pk_test_acmecameroonsandbox01".to_owned(),
+            client_secret_suffix: "neverlogthissessioncredential000".to_owned(),
+            return_token: "neverlogthisreturntoken000000000".to_owned(),
+            expires_at: time::OffsetDateTime::from_unix_timestamp(1_757_000_000)
+                .expect("a valid instant"),
+            created_at: time::OffsetDateTime::from_unix_timestamp(1_756_913_600)
+                .expect("a valid instant"),
+            updated_at: time::OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    /// The JSON block in `docs/plans/2026-09-04-step9-hosted-checkout.md`'s
+    /// "The wire contract", pasted and compared key for key.
+    ///
+    /// The plan — not this module — is the specification every other lane
+    /// built against, so it is what the assertion is written from. Every key
+    /// is present including the null ones, for
+    /// `every_documented_key_is_present_including_the_null_ones`' reason: a
+    /// `Value` comparison alone would also pass for an object that omitted
+    /// `return_url`, and both merchant SDKs model these as required members.
+    #[test]
+    fn a_checkout_session_is_the_wire_contracts_own_json() {
+        let row = session_row();
+        // The shape `v1::checkout_sessions::hosted_url` mints: the
+        // publishable key as a query parameter (the page reads it
+        // server-side, where a fragment never arrives) and the credential in
+        // the fragment (which never leaves the browser).
+        let url = format!(
+            "https://checkout.example/c/{}?key={}#{}",
+            row.id,
+            row.publishable_key,
+            vpay_core::ids::client_secret(&row.id, &row.client_secret_suffix)
+        );
+        let object = CheckoutSessionObject::from_row(&row, Some(url.clone()));
+        let rendered = serde_json::to_value(CheckoutSessionWithSecret::new(
+            object,
+            vpay_core::ids::client_secret(&row.id, &row.client_secret_suffix),
+        ))
+        .expect("a wire DTO always serialises");
+
+        assert_eq!(
+            rendered,
+            json!({
+                "id": "cs_0123456789abcdefghjkmnpq",
+                "object": "checkout.session",
+                "livemode": false,
+                "payment_intent": "pi_3MtwBwLkdIwHu7ix28a3tqPa",
+                "ui_mode": "hosted",
+                "status": "open",
+                "payment_status": "unpaid",
+                "success_url": "https://shop.example/ok?sid={CHECKOUT_SESSION_ID}",
+                "cancel_url": "https://shop.example/cancel",
+                "return_url": null,
+                "url": url,
+                "expires_at": 1_757_000_000,
+                "created": 1_756_913_600,
+                "client_secret": vpay_core::ids::client_secret(&row.id, &row.client_secret_suffix),
+            })
+        );
+
+        let object = rendered.as_object().expect("an object");
+        for key in [
+            "id",
+            "object",
+            "livemode",
+            "payment_intent",
+            "ui_mode",
+            "status",
+            "payment_status",
+            "success_url",
+            "cancel_url",
+            "return_url",
+            "url",
+            "expires_at",
+            "created",
+            "client_secret",
+        ] {
+            assert!(object.contains_key(key), "{key} is missing");
+        }
+        assert_eq!(
+            object.len(),
+            14,
+            "an undocumented key appeared: {rendered:#}"
+        );
+
+        // D5: the placeholder is echoed back exactly as the merchant wrote
+        // it. Substituting here would make the object a record of one
+        // payer's journey rather than of the merchant's configuration.
+        assert_eq!(
+            object.get("success_url"),
+            Some(&json!("https://shop.example/ok?sid={CHECKOUT_SESSION_ID}"))
+        );
+    }
+
+    /// The **merchant** surface renders `payment_intent` as a bare id; the
+    /// two **browser** reads render it expanded, with the intent's own
+    /// `client_secret` on one of them and never on the other.
+    ///
+    /// Three shapes on one field, so the assertion that matters is that they
+    /// are distinguishable and that the third is a strict subset of the
+    /// second. Swap `Expanded` for `ExpandedWithSecret` in
+    /// `browser::checkout_sessions::retrieve_for_return` and the last block
+    /// here still passes — it tests the type, not the route; the route-level
+    /// proof is
+    /// `the_return_read_never_renders_the_intents_client_secret` in
+    /// `backends/tests/integration/tests/checkout_sessions.rs`, which drives
+    /// the real router.
+    #[test]
+    fn payment_intent_is_an_id_on_v1_and_the_whole_object_on_the_browser_reads() {
+        let row = session_row();
+        let intent = sample("pi_3MtwBwLkdIwHu7ix28a3tqPa");
+        let secret = "pi_3MtwBwLkdIwHu7ix28a3tqPa_secret_neverlogthisintentcredential00";
+
+        // /v1 — the id, and `ExpandableIntent::id()` agrees with it.
+        let merchant = CheckoutSessionObject::from_row(&row, None);
+        assert_eq!(merchant.payment_intent.id(), "pi_3MtwBwLkdIwHu7ix28a3tqPa");
+        let rendered = serde_json::to_value(&merchant).expect("serialises");
+        assert_eq!(
+            rendered.get("payment_intent"),
+            Some(&json!("pi_3MtwBwLkdIwHu7ix28a3tqPa"))
+        );
+
+        // /v1/browser session read — the whole object, plus the credential.
+        let with_secret =
+            merchant
+                .clone()
+                .with_expanded_intent(ExpandableIntent::ExpandedWithSecret(Box::new(
+                    PaymentIntentWithSecret::new(intent.clone(), secret.to_owned()),
+                )));
+        assert_eq!(
+            with_secret.payment_intent.id(),
+            "pi_3MtwBwLkdIwHu7ix28a3tqPa"
+        );
+        let rendered = serde_json::to_value(&with_secret).expect("serialises");
+        let expanded = rendered
+            .get("payment_intent")
+            .and_then(Value::as_object)
+            .expect("`untagged` renders the object with no discriminator");
+        assert_eq!(expanded.len(), 13, "the twelve keys plus client_secret");
+        assert_eq!(expanded.get("client_secret"), Some(&json!(secret)));
+        // The fields the page cannot paint without.
+        assert_eq!(expanded.get("amount"), Some(&json!(5000)));
+        assert_eq!(expanded.get("currency"), Some(&json!("xaf")));
+        assert_eq!(
+            expanded.get("payment_method_types"),
+            Some(&json!(["mtn_momo"]))
+        );
+        assert!(expanded.contains_key("status"));
+        assert!(expanded.contains_key("next_action"));
+        assert!(expanded.contains_key("last_payment_error"));
+
+        // /v1/browser return read — the same twelve keys, and no credential.
+        let without = merchant.with_expanded_intent(ExpandableIntent::Expanded(Box::new(intent)));
+        let rendered = serde_json::to_value(&without).expect("serialises");
+        let expanded = rendered
+            .get("payment_intent")
+            .and_then(Value::as_object)
+            .expect("an object");
+        assert_eq!(
+            expanded.len(),
+            12,
+            "the twelve documented keys, and no more"
+        );
+        assert!(
+            !expanded.contains_key("client_secret"),
+            "the return read must not render the intent's credential: {rendered:#}"
+        );
+        assert!(
+            !serde_json::to_string(&rendered)
+                .expect("serialises")
+                .contains(secret),
+            "the credential must not appear anywhere in the return read's body"
+        );
+    }
+
+    /// Both credentials a session carries are redacted in `Debug` — and so is
+    /// the `url`, because it carries one of them in its fragment.
+    ///
+    /// Decisive: delete the `url` line from
+    /// `CheckoutSessionWithSecret`'s `Debug` impl and the second assertion
+    /// fails. That is the one this test exists for — redacting
+    /// `client_secret` while printing a `url` that ends in `#cs_…_secret_…`
+    /// would redact nothing at all, and it is exactly what a derived `Debug`
+    /// plus a hand-written field would produce.
+    #[test]
+    fn a_checkout_sessions_debug_output_redacts_the_secret_and_the_url_that_carries_it() {
+        let row = session_row();
+        let secret = vpay_core::ids::client_secret(&row.id, &row.client_secret_suffix);
+        let url = format!(
+            "https://checkout.example/c/{}?key={}#{secret}",
+            row.id, row.publishable_key
+        );
+        let rendered = CheckoutSessionWithSecret::new(
+            CheckoutSessionObject::from_row(&row, Some(url)),
+            secret.clone(),
+        );
+
+        let formatted = format!("{rendered:?}");
+        assert!(
+            !formatted.contains(&secret),
+            "Debug output must not contain the client_secret: {formatted}"
+        );
+        assert!(
+            !formatted.contains(&row.client_secret_suffix),
+            "…nor the suffix half of it, which is what a leaked `url` would carry: {formatted}"
+        );
+        assert!(
+            !formatted.contains("neverlog"),
+            "not even a prefix: {formatted}"
+        );
+        assert!(
+            formatted.contains("redacted"),
+            "the redaction must be visible, not a silently dropped field: {formatted}"
+        );
+        // And the session is still useful to whoever is reading the log.
+        assert!(
+            formatted.contains("cs_0123456789abcdefghjkmnpq"),
+            "{formatted}"
+        );
+        assert!(
+            formatted.contains("pi_3MtwBwLkdIwHu7ix28a3tqPa"),
+            "{formatted}"
+        );
+        assert!(formatted.contains("shop.example/cancel"), "{formatted}");
     }
 }

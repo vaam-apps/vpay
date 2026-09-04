@@ -33,9 +33,12 @@ Taken by the orchestrator under standing delegation; recorded in
   `ConfigError::{DuplicatePublishableKey, MalformedPublishableKey,
   PublishableKeyLivemodeMismatch}`, each with its own fixture under
   `backends/tests/fixtures/publishable-key-*.yml`.
-- **D2 — `client_secret` is rendered only by `create`, `retrieve`, and the two
-  browser routes**, through a wrapper type that never touches the object
-  every other response renders:
+- **D2 — `client_secret` is rendered only by `create`, `retrieve`, the two
+  payment-intent browser routes, and — since Step 9 — the checkout **session**
+  read** (`GET /v1/browser/checkout/sessions/{id}`, which hands the page the
+  intent's credential once it has proved it holds the *session's*, and only
+  while that session is `open`). It is rendered through a wrapper type that
+  never touches the object every other response renders:
 
   ```rust
   pub struct PaymentIntentWithSecret {
@@ -59,8 +62,19 @@ Taken by the orchestrator under standing delegation; recorded in
   return trip must carry its own state (put `client_secret` in the
   `return_url` you supply, or key on your own order id) and then call
   `retrievePaymentIntent` to learn the outcome.
-- **D4 — Step 5c ships push-only. No bounce endpoint.** See "The redirect gap
-  (D4)" below.
+
+  **Step 9's D5 stands beside this rather than over it.** A Checkout Session's
+  `success_url`, `cancel_url` and `return_url` may contain the literal
+  `{CHECKOUT_SESSION_ID}`, which vpay substitutes when it forwards the payer —
+  Stripe's own convention, and the only thing vpay ever writes into a
+  merchant's URL. It is a **template placeholder the merchant asked for**, not
+  a parameter vpay appends: a merchant who omits it gets a return with no
+  correlation, exactly as D3 describes, and the field's own documentation says
+  so. Nothing on the direct `/v1/browser` path changed.
+- **D4 — Step 5c ships push-only. No bounce endpoint.** ~~See "The redirect gap
+  (D4)" below.~~ **Retired 2026-09-04 (Step 9): the rail is told a per-charge
+  return URL and vpay serves the page that receives the payer.** The section
+  below keeps the history and says what is still open.
 - **D5 — no in-process rate limiting.** See "Rate limiting (D5)" below.
 
 ## The credential model
@@ -121,23 +135,69 @@ secret" would separate "this intent exists" from "your secret is wrong",
 which is the first half of a guessing attack. Proven byte-for-byte by
 `every_credential_failure_is_the_identical_404`.
 
+Step 9 added a second uniform 404 on the same surface, for the checkout session
+(`browser::checkout_sessions`): five ways to refuse — unknown key, session not
+found, session belongs to a different merchant, wrong credential, missing
+credential — and one byte-identical
+`ApiError::NotFound { resource: "checkout session" }`. The noun differs from
+`/v1`'s `checkout.session` deliberately, for the reason the payment-intent one
+says `payment intent` with a space. Proven byte-for-byte by
+`every_credential_failure_on_the_checkout_surface_is_the_identical_404`, which
+also asserts that neither of the session's two credentials is accepted where
+the other belongs. A sixth refusal joined them in lane 1b and is not a
+credential failure at all: past `expires_at`, both reads answer the same 404
+whatever the session's `status`.
+
 ## The routes
 
 | Method | Path | Params | Answers |
 |---|---|---|---|
 | GET | `/v1/browser/payment_intents/{id}` | `key`, `client_secret` (query) | `PaymentIntentWithSecret` — the polling endpoint `waitForPaymentIntent` calls every couple of seconds. |
 | POST | `/v1/browser/payment_intents/{id}/confirm` | `key`, `client_secret`, `payment_method_data[…]`, `return_url` (form) | Reaches the same `confirm_once` `/v1` itself calls, through a `MerchantScope` minted from the resolved `PayerScope`. |
+| GET | `/v1/browser/checkout/sessions/{id}` | `key`, `client_secret` (query) | The `checkout.session`, with `payment_intent` **expanded and carrying the intent's own `client_secret`** — what vpay's own page reads before it can paint. Step 9. |
+| GET | `/v1/browser/checkout/sessions/{id}/return` | `key`, `t` (query) | The same, with `payment_intent` expanded **without** the intent's secret. Where a redirect rail sends the payer back. Step 9. |
+| GET | `/v1/browser/checkout/origins` | `key` (query) | `{"origins": [...]}` for the key's tenant, with no secret at all — an origin is the merchant's own public website. Step 9. |
+
+Both checkout session reads stop at the session's `expires_at` — 24 hours from
+create (D10 of Step 9) — **whatever its `status`**, and answer the uniform 404
+past it. The `return_token` is the reason: it travels in a query string because
+a fragment does not survive a rail's redirect, so a copy of it is in the rail's
+storage, in whatever the rail logs and in the checkout app's access logs, and
+the horizon is the bound on how long that copy is worth anything. It is
+deliberately not conditioned on `status`, because a `complete` session's return
+page is the screen the whole redirect leg exists to reach. The check is on the
+**read** and not on the hourly expiry sweep, which leaves a session with a live
+charge `open` on purpose and would keep answering for the length of a worker
+outage.
+
+The session read hands over the *intent's* `client_secret` only while
+`status = 'open'`. That credential exists so vpay's page can drive
+`POST /v1/browser/payment_intents/{id}/confirm`; once the session is finished
+there is nothing left to confirm, and the page has already read it.
+
+Both reads also carry `merchant: { name }` — the merchant's configured
+`display_name` — when the deployment configured one. When it did not, **the
+member is absent from the body entirely** rather than filled with a tenant id:
+the page paints a neutral heading instead of a sentence with an identifier
+where a name should be. It is the one fact about the merchant a payer is shown.
+
 
 Mounted `.nest("/v1/browser", …)` with its own `.fallback(not_found)` —
-deliberately **not** part of `V1_ROUTES` (its own table is `BROWSER_ROUTES`,
-exactly two entries): the OP nest already established the pattern
+deliberately **not** part of `V1_ROUTES` (its own table is `BROWSER_ROUTES`, five
+entries since Step 9 — and the property that pin defends is not the count but
+that **exactly one of them answers a non-`GET` method**, the confirm that has
+been there since Step 5c): the OP nest already established the pattern
 (`vpay-api/src/lib.rs`'s own note on `/v1/oauth/not_a_route` flattening), and
 `Router::nest("/v1", …)` registering `/v1` and `/v1/{*rest}` would otherwise
 swallow a browser path before it reached this nest and answer a `401` no
 payer can ever clear (`the_browser_nest_is_outside_the_merchant_boundary_and_answers_its_own_404`).
 There is no `create`, no `list`, and no `cancel` here — proved by
 `the_browser_surface_has_no_create_no_list_and_no_cancel` — and no route
-answers `401` (`every_browser_route_is_reachable_without_a_merchant_token`).
+answers `401` (`every_browser_route_is_reachable_without_a_merchant_token`,
+which also pins the table's contents and that only the confirm writes).
+Step 9's three additions are all reads, and vpay's own checkout page confirms
+through the *same* `POST /v1/browser/payment_intents/{id}/confirm` a merchant's
+page does.
 
 ### No `Idempotency-Key`
 
@@ -178,28 +238,87 @@ deployment must put rate limiting in front of `/v1/browser` at the ingress
 (reverse proxy, WAF, CDN) before serving real payers. Nothing in this repo
 enforces that today, and nothing in CI checks that an operator has done it.
 
-## The redirect gap (D4)
+## The redirect gap (D4) — closed 2026-09-04
 
-Step 5c ships **push-only**. `confirmPayment` still returns the rail's real
-`next_action.redirect_to_url` and `@vpay/stripe-js` will navigate to it when
-`redirect !== 'if_required'`, but the **return trip is not wired**: vpay has
-no `/provider/{code}/callback` route (`docs/api/README.md`'s own section for
-it says "Status: not implemented"). Concretely, for the Orange Money
-adapter, `return_url = setting(config, "return_url").unwrap_or(callback_url)`
-is a **deployment** setting, never the merchant's per-checkout one;
-`config/application.yml` sets no `return_url`, so Orange redirects the payer
-to `{public_base_url}/provider/orange_money/callback` — ~~a path the router
-does not mount~~ **which since 2026-09-04 (Step 8, lane C) *is* a mounted path,
-but a `POST`-only one for the rail's own backend, so a payer's browser arriving
-there gets an empty `405`** (measured, not assumed:
-`a_get_on_the_callback_path_is_a_405_and_not_the_404_envelope` in `vpay-api`).
-That is not a return trip either. The merchant's own `return_url` is stored on
-`charges` and echoed back in `next_action` as a label; nothing redirects to it.
-**The redirect gap itself is unchanged and only the failure's *name* changed: do
-not ship a redirect-rail (Orange) checkout on `@vpay/stripe-js` until a real
-return endpoint exists.** The callback route did not close this gap and was not
-meant to — the Step 8 plan names the return trip as explicitly out of scope.
+Step 5c shipped **push-only**, and the reason was that vpay never told a
+redirect rail where to send the payer. `confirmPayment` returned the rail's
+real `next_action.redirect_to_url` and `@vpay/stripe-js` navigated to it, but
+`vpay-adapter-orange-money` read `return_url` from a **deployment** setting
+(`setting(config, "return_url").unwrap_or(callback_url)`), so with
+`config/application.yml` setting none, Orange returned every payer to
+`{public_base_url}/provider/orange_money/callback` — a `POST`-only route for
+the rail's own backend, where a browser gets an empty `405` (measured:
+`a_get_on_the_callback_path_is_a_405_and_not_the_404_envelope`). The
+merchant's own `return_url` was stored on `charges` and echoed back in
+`next_action` as a label, and nothing redirected to it.
+
+**Step 9's D2 closed the rail half** (`docs/plans/2026-09-04-step9-hosted-checkout.md`,
+`docs/reference/rails.md`). `vpay_provider::ChargeRef` carries a per-charge
+`return_url`, `vpay_api::v1::return_trip` fills it from the committed charge
+row — the merchant's own URL for a direct `/v1` or `/v1/browser` confirm,
+vpay's session return page when a checkout session drives the charge — and
+Orange sends it as both `return_url` and `cancel_url`. A redirect charge with
+none is refused before the rail is called. Proven by
+`the_submit_tells_the_rail_where_to_send_the_payer_back` (conformance, once
+per rail) and by two cases in
+`backends/tests/integration/tests/confirm_rails.rs`.
+
+**Closed at the server end 2026-09-04 (lane 1b).** A charge driven by an open
+checkout session is submitted with vpay's own return page —
+`{checkout.public_base_url}/c/{cs_id}/return?t={return_token}&key={pk}` —
+written into `charges.return_url` before the charge is committed and read back
+from that row at submit, so what the rail is told and what a later read renders
+are one column. A confirm under an open session needs no `return_url` at all,
+which is what vpay's own page sends; a confirm with no session still requires
+one. That last rule is worth stating as a consequence a merchant will see:
+`next_action.redirect_to_url.return_url` on a session-driven confirm is now
+**vpay's** URL, not the merchant's, because it is where the payer actually
+goes.
+
+**Closed at the payer's end 2026-09-04 (lanes 3 and 6).** The page that
+receives the payer is `frontends/apps/checkout`'s `/c/{cs_id}/return?t=…`, and
+a real browser has driven the whole round trip — merchant site → vpay's page →
+Orange's own hosted page → the return page → back to the merchant's
+`success_url` — in `shop-hosted.cy.ts`. See
+[hosted-checkout.md](hosted-checkout.md).
+
+**What is still open, and it is not the return trip.** A merchant integrating
+`@vpay/stripe-js` **directly** against a redirect rail, with no Checkout
+Session, still lands the payer on its **own** `return_url` and must poll
+`GET /v1/browser/payment_intents/{id}` from there — the outcome comes from
+vpay's authenticated status query and never from the fact that a payer came
+back. vpay's page is what removes that work, and it is reached through a
+session. And the rail behind every redirect this repository has ever completed
+is a WireMock host serving a stub of Orange's hosted page (D7): nothing here
+shows that Orange would accept a `return_url` it had not been told about.
 Tracked in `docs/status.md`.
+
+## Hosted and embedded checkout (Step 9)
+
+Everything above is the surface a merchant builds its **own** page on. Since
+2026-09-04 there is a second way to take a browser payment, and it is the one
+most integrations should use: a **Checkout Session**, and a page vpay serves.
+
+- **Hosted.** The merchant's server creates a session against an intent it
+  already has, gets a `url`, and redirects the payer to it. vpay's page
+  collects what the rail needs, confirms, polls, shows the outcome and forwards
+  the payer to `success_url` or `cancel_url`.
+- **Embedded.** The merchant's server creates a session with
+  `ui_mode: embedded`, hands the `client_secret` to `@vpay/stripe-js`'s
+  `initEmbeddedCheckout`, and vpay's page renders in an iframe on the
+  merchant's own site. The frame's origin is checked twice — by
+  `Content-Security-Policy: frame-ancestors`, derived from the merchant's
+  configured `checkout_origins`, and by the page's own comparison of its
+  framer against that same list.
+
+The credential model is the one above with one more value in it: a session has
+its own `client_secret`, which buys the *intent's* `client_secret`, which is
+what drives the confirm. A weaker `return_token` exists for the return page,
+because a fragment does not survive a rail's redirect and a query string does.
+
+The whole design — the page's state machine, the `postMessage` protocol, the
+headers, the session lifecycle, and what is not built — is
+[hosted-checkout.md](hosted-checkout.md).
 
 ## The merchant SDKs and `client_secret` (gap found and closed in this step)
 
@@ -223,7 +342,7 @@ the value to `@vpay/stripe-js` in the browser and never logs it.
   shipping merchant SDK (to create the intent) and raw `reqwest` (to speak
   the browser wire contract the merchant SDK cannot express). Every claim
   above with a test name attached lives here.
-- **`sdks/stripe-js/src/*.test.ts`** (87 tests, vitest) — against a real
+- **`sdks/stripe-js/src/*.test.ts`** (119 tests since Step 9, vitest) — against a real
   `node:http` stub of `/v1/browser` (`src/testing/browser-stub.ts`), proving
   the package's own behaviour: form encoding, the redirect rule, the polling
   ladder, the error-envelope mapping, and the compile-time compatibility
@@ -234,6 +353,9 @@ the value to `@vpay/stripe-js` in the browser and never logs it.
 - **`examples/checkout-browser/`** — a plain HTML + JS payer page, no
   framework, importing the built `@vpay/stripe-js` ESM. See its own README
   for the 7-step walkthrough against `just demo`.
+- **`frontends/apps/checkout`** — since Step 9, vpay's *own* payer page over
+  the same routes, driven in a real browser by `shop-hosted.cy.ts` and
+  `shop-embedded.cy.ts`. See [hosted-checkout.md](hosted-checkout.md).
 - **`frontends/tests/e2e/cypress/e2e/checkout.cy.ts`** — drives that example
   against the real compose stack: mints an intent server-side (Node, the
   `demo-merchant` OAuth keypair, never in the browser) via
@@ -248,7 +370,9 @@ the value to `@vpay/stripe-js` in the browser and never logs it.
   attached to the current pass or still pending.
 
 Nothing above has ever taken real money: both rails are WireMock hosts on a
-compose network, same as everywhere else in this repository.
+compose network, same as everywhere else in this repository. That is as true of
+Step 9's page as of Step 5c's example — a browser has now walked an entire
+checkout, and every rail in that walk answered from a container.
 
 ## Status
 

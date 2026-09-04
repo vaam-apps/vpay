@@ -1211,8 +1211,7 @@ async fn a_transition_from_a_stale_expected_status_changes_nothing() -> anyhow::
         "a compare-and-swap whose expected status no longer holds must report that it did nothing"
     );
 
-    let after = repositories
-        .get_for_merchant("merchant_a", "pi_cas")
+    let after = PaymentIntents::get_for_merchant(repositories.as_ref(), "merchant_a", "pi_cas")
         .await?
         .context("the intent must still exist")?;
     assert_eq!(
@@ -1227,9 +1226,7 @@ async fn a_transition_from_a_stale_expected_status_changes_nothing() -> anyhow::
         .await?;
     assert_eq!(foreign, None);
     assert_eq!(
-        repositories
-            .get_for_merchant("merchant_b", "pi_cas")
-            .await?,
+        PaymentIntents::get_for_merchant(repositories.as_ref(), "merchant_b", "pi_cas").await?,
         None,
         "another merchant's intent must read as missing, not as forbidden"
     );
@@ -1269,10 +1266,10 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
     .await
     .context("the charge a confirm commits before submitting")?;
 
-    let before = repositories
-        .get_for_merchant("merchant_a", "pi_in_flight")
-        .await?
-        .context("the intent must exist")?;
+    let before =
+        PaymentIntents::get_for_merchant(repositories.as_ref(), "merchant_a", "pi_in_flight")
+            .await?
+            .context("the intent must exist")?;
     assert_eq!(
         before.status, "requires_payment_method",
         "the confirm left the status alone — which is exactly why the status is not enough"
@@ -1283,10 +1280,10 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
         None,
         "an intent whose charge may be live must not be cancellable"
     );
-    let after = repositories
-        .get_for_merchant("merchant_a", "pi_in_flight")
-        .await?
-        .context("the intent must still exist")?;
+    let after =
+        PaymentIntents::get_for_merchant(repositories.as_ref(), "merchant_a", "pi_in_flight")
+            .await?
+            .context("the intent must still exist")?;
     assert_eq!(after, before, "not one column may have moved");
 
     // Every live state blocks it, not just the one a confirm starts in.

@@ -328,6 +328,7 @@ fn config_with(base_url: &str, jwks_a: Value, mtn_url: &str, orange_url: &str) -
             exponent: 0,
         }],
         merchant_clients: vec![merchant_client(CLIENT_A, MERCHANT_A, jwks_a)],
+        checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
     }
 }

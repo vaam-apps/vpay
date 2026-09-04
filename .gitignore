@@ -10,8 +10,13 @@ dist/
 .env.*
 !.env.example
 .DS_Store
-cypress/screenshots/
-cypress/videos/
+# `**/`, not a bare `cypress/…`: a pattern containing a slash is anchored to
+# the directory holding the .gitignore, so `cypress/screenshots/` matched only
+# a top-level one and left `frontends/tests/e2e/cypress/screenshots/` — the
+# only place Cypress actually writes — untracked and offerable. Corrected in
+# Step 9 lane 6, on seeing a failed run leave nine PNGs in `git status`.
+**/cypress/screenshots/
+**/cypress/videos/
 
 # Throwaway secrets, and the generated config that names their public halves,
 # for the compose e2e and demo stacks:

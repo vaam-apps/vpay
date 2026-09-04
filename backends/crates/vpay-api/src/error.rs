@@ -191,6 +191,49 @@ const MESSAGE_MAX_CHARS: usize = 200;
 /// become reachable the moment a `/v1` handler exists (Phase 3). Adding them now
 /// costs one line each and means the first real handler cannot be tempted to
 /// hand-roll an envelope because the composite "does not cover" its error.
+/// [`ApiError::CheckoutNotConfigured`]'s message when the *deployment* serves
+/// no checkout page.
+///
+/// Names the configuration key, because that is the whole of what makes this
+/// answer actionable — a merchant cannot fix it, and whoever they forward it
+/// to can, in one edit. The key name is vpay's own configuration vocabulary
+/// and not a value the caller sent, so echoing it reflects nothing.
+pub const CHECKOUT_BASE_URL_MISSING: &str = "This vpay deployment does not serve a checkout page: `checkout.public_base_url` is not \
+     configured. Confirm the PaymentIntent directly instead.";
+
+/// [`ApiError::CheckoutNotConfigured`]'s message when the deployment *does*
+/// serve a checkout page but this **tenant** has no publishable key to put in
+/// the payer link.
+///
+/// A distinct sentence from [`CHECKOUT_BASE_URL_MISSING`] under the same
+/// `code`, because the fix is in a different place: one is a deployment-wide
+/// block, the other is one line in this merchant's own registration. Naming
+/// the merchant is deliberately *not* done — the caller is that merchant and
+/// already knows.
+pub const PUBLISHABLE_KEY_MISSING: &str = "This account has no publishable key registered, so vpay cannot build a checkout link for \
+     it: every URL the checkout page is reached by carries one. Add a `publishable_keys` entry \
+     to this merchant's registration.";
+
+/// [`ApiError::CheckoutNotConfigured`]'s message when a confirm discovers an
+/// **open checkout session** on a deployment that serves no checkout page.
+///
+/// The third sentence under the same `code`, and the only one a merchant
+/// cannot reach by asking for something this deployment does not do: `create`
+/// refuses with [`CHECKOUT_BASE_URL_MISSING`] before a session can exist, so
+/// the single way here is an operator deleting `checkout.public_base_url`
+/// while sessions are still open.
+///
+/// It is an error rather than a fallback to the merchant's own
+/// `charges.return_url`, and that is the whole point of the constant. A
+/// session-driven payer sent to the merchant's URL instead of vpay's return
+/// page is forwarded one step too early: the session never reaches
+/// `complete`, the merchant's page is asked "did they pay?" by a browser that
+/// has no answer, and nothing anywhere reports it
+/// (`docs/plans/step9-notes/lane-2.md` §3). Refusing the confirm is loud, and
+/// nothing has been submitted to a rail when it fires.
+pub const CHECKOUT_SESSION_WITHOUT_CHECKOUT_APP: &str = "A checkout session drives this payment, but `checkout.public_base_url` is not configured, so \
+     vpay cannot tell the rail where to send the payer back. Restore it, or expire the session.";
+
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
     /// Postgres failed under a request. `#[error(transparent)]` throughout
@@ -372,6 +415,64 @@ pub enum ApiError {
     /// scopes.
     #[error("the client is not permitted to perform that action")]
     Forbidden,
+
+    /// A merchant asked vpay to create a Checkout Session on a deployment
+    /// that serves no checkout page — `checkout.public_base_url` is absent
+    /// (Step 9).
+    ///
+    /// **Its own variant, not [`Self::Config`] and not [`Self::Conflict`].**
+    /// `Config` wraps `vpay_config::ConfigError`, and there is no config
+    /// error here: the file is *valid*, it simply describes a deployment
+    /// without the optional block. `Conflict` is about an object's state, and
+    /// no object is involved. What a merchant needs from this answer is a
+    /// code they can branch on — "this deployment cannot do hosted checkout"
+    /// is a permanent, actionable fact about the vpay they are talking to,
+    /// distinguishable from "your intent is wrong" and from "vpay is down".
+    ///
+    /// # On the status code, and where this deviates from the plan
+    ///
+    /// `docs/plans/2026-09-04-step9-hosted-checkout.md`'s lane 1 brief asks
+    /// for `503 checkout_not_configured`. The `code` is exactly that; the
+    /// **status is 500**, and that is a deliberate departure rather than an
+    /// oversight.
+    ///
+    /// ADR-0011 derives the status from the [`Category`], never from a call
+    /// site, and only [`Category::Storage`] answers `503`. Classifying this
+    /// as storage would be wrong twice over: it would tell an operator
+    /// Postgres was unreachable, and — the part that actually costs
+    /// something — `Category::Storage`'s `Retry::AfterBackoff` would tell a
+    /// merchant's SDK to retry a request that cannot succeed until someone
+    /// deploys a configuration change. [`Category::Configuration`] says
+    /// exactly what is true ("the deployment is misconfigured for this
+    /// operation … fixed by a deploy, never by retrying"), and its status is
+    /// `500`.
+    ///
+    /// Making this a `503` honestly would mean either a new `Category` or
+    /// moving `Category::Configuration` to `503`, and both are ADR-level
+    /// changes affecting every error in the workspace. That is a maintainer's
+    /// decision and is recorded in `docs/plans/step9-notes/lane-1.md` rather
+    /// than taken here.
+    ///
+    /// # Three gaps, one code
+    ///
+    /// A missing `checkout.public_base_url` and a tenant with no
+    /// `publishable_keys` are the same *fact* from a merchant's side — "this
+    /// vpay cannot do hosted checkout for me" — and the same fix shape, an
+    /// operator editing YAML and deploying. So they share the `code` an SDK
+    /// branches on and differ only in the sentence, which is what tells
+    /// whoever the merchant contacts *which* key to add. The message is a
+    /// `&'static str` chosen from the three constants beside this type, never
+    /// caller text: it is rendered to the caller, and a `String` here would
+    /// be one refactor away from echoing something they sent.
+    ///
+    /// The third, [`CHECKOUT_SESSION_WITHOUT_CHECKOUT_APP`], is the same fact
+    /// discovered on a **confirm** rather than on a create (Step 9, lane 1b):
+    /// an open session drives the charge and there is no base URL to build
+    /// its return page from. Same code, same fix, same deploy — and the same
+    /// argument for refusing rather than falling back, which that constant
+    /// makes in full.
+    #[error("checkout is not configured on this deployment: {0}")]
+    CheckoutNotConfigured(&'static str),
 
     /// An invariant this layer guarantees was violated — the "should be
     /// impossible" arm. `String` rather than a wrapped error because there
@@ -600,6 +701,11 @@ impl Classify for ApiError {
             Self::NotFound { .. } => Category::NotFound,
             Self::Conflict { .. } => Category::Conflict,
             Self::Forbidden => Category::Forbidden,
+            // An operator's problem, fixed by a deploy, never by retrying —
+            // which is `Category::Configuration`'s own definition. See the
+            // variant for why it is not `Storage` even though the plan asked
+            // for that category's status.
+            Self::CheckoutNotConfigured(_) => Category::Configuration,
             // The only variant that pages. If this is ever logged, something
             // this layer promised was true was not.
             Self::Internal(_) => Category::Internal,
@@ -643,6 +749,13 @@ impl Classify for ApiError {
             Self::NotFound { .. } => Category::NotFound.default_code(),
             Self::Conflict { .. } => Category::Conflict.default_code(),
             Self::Forbidden => Category::Forbidden.default_code(),
+            // The third deliberate override in this enum. The category
+            // default, `misconfigured`, is what *every* configuration failure
+            // says, and a merchant integrating hosted checkout has to be able
+            // to tell "this deployment has no checkout page" from "vpay's YAML
+            // is broken in some other way" — the first is a permanent
+            // capability answer they design around, the second is an outage.
+            Self::CheckoutNotConfigured(_) => "checkout_not_configured",
             Self::Internal(_) => Category::Internal.default_code(),
         }
     }
@@ -672,6 +785,7 @@ impl Classify for ApiError {
             | Self::NotFound { .. }
             | Self::Conflict { .. }
             | Self::Forbidden
+            | Self::CheckoutNotConfigured(_)
             | Self::Internal(_) => self.category().default_retry(),
         }
     }
@@ -695,6 +809,7 @@ impl Classify for ApiError {
             | Self::NotFound { .. }
             | Self::Conflict { .. }
             | Self::Forbidden
+            | Self::CheckoutNotConfigured(_)
             | Self::Internal(_) => self.category().default_severity(),
         }
     }
@@ -756,6 +871,15 @@ impl Classify for ApiError {
             // can act on, and enumerating the scope it lacks would describe
             // the authorisation model to something that failed it.
             Self::Forbidden => Category::Forbidden.generic_message().to_owned(),
+            // Its own sentence rather than `Category::Configuration`'s
+            // generic "vpay is misconfigured for this operation. Contact
+            // support." — which is true and useless here. This is not an
+            // outage a merchant should open a ticket about; it is a
+            // capability this deployment does not have, and naming the key
+            // is what lets whoever they *do* contact fix it in one edit. The
+            // key name is vpay's own configuration vocabulary, not a value
+            // the caller sent, so echoing it reflects nothing.
+            Self::CheckoutNotConfigured(reason) => (*reason).to_owned(),
             // Never the payload. `Internal(..)` is reached when an invariant
             // broke, and the text describing it is about our internals by
             // definition.

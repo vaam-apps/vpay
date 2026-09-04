@@ -716,6 +716,71 @@ async fn the_assertion_audience_follows_an_overridden_token_endpoint() {
     );
 }
 
+#[tokio::test]
+async fn an_explicit_assertion_audience_is_signed_without_moving_the_request() {
+    // The defect this option fixes: the URL reachable from the merchant's own
+    // server and the string the OP calls itself are two different facts. The
+    // request must still go to the reachable address; only `aud` moves.
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server, 300, 1).await;
+    mount_balance(&server).await;
+
+    let public_token_endpoint = "http://localhost:8080/v1/oauth/token";
+    let client = Client::builder(server.uri())
+        .credentials(Credentials::rsa_pem(CLIENT_ID, &KEY.pem).unwrap())
+        .assertion_audience(public_token_endpoint)
+        .build()
+        .unwrap();
+    client.balance().retrieve().await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let token_request = requests
+        .iter()
+        .find(|r| r.url.path() == "/v1/oauth/token")
+        .expect("the reachable token endpoint was called, not the audience");
+    // The request went to the mock server's own address — nothing was sent to
+    // `public_token_endpoint`, which nothing in this test serves.
+    assert!(server.uri().starts_with("http://127.0.0.1:"));
+
+    let pairs = support::form_pairs(&token_request.body);
+    let assertion = support::form_field(&pairs, "client_assertion").unwrap();
+    let payload = decode_jwt_payload(&percent_decode(assertion));
+    assert_eq!(
+        payload.get("aud").and_then(|v| v.as_str()),
+        Some(public_token_endpoint)
+    );
+    // Still not the `audience` form field, which stays `vpay:v1` (percent-
+    // encoded on the wire — `form_pairs` hands back raw bytes on purpose).
+    assert_eq!(
+        percent_decode(support::form_field(&pairs, "audience").unwrap()),
+        "vpay:v1"
+    );
+}
+
+#[tokio::test]
+async fn an_unset_assertion_audience_signs_the_url_the_request_went_to() {
+    // The default, pinned: unchanged for every merchant whose server reaches
+    // vpay at the URL vpay publishes as its own.
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server, 300, 1).await;
+    mount_balance(&server).await;
+
+    client_for(&server).balance().retrieve().await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let token_request = requests
+        .iter()
+        .find(|r| r.url.path() == "/v1/oauth/token")
+        .expect("the token endpoint was called");
+    let pairs = support::form_pairs(&token_request.body);
+    let assertion = support::form_field(&pairs, "client_assertion").unwrap();
+    let payload = decode_jwt_payload(&percent_decode(assertion));
+    assert_eq!(
+        payload.get("aud").and_then(|v| v.as_str()),
+        Some(format!("{}/v1/oauth/token", server.uri()).as_str())
+    );
+}
+
 fn decode_jwt_payload(jwt: &str) -> serde_json::Value {
     use base64::Engine as _;
     let payload = jwt.split('.').nth(1).expect("jwt has three segments");

@@ -144,6 +144,29 @@ dead process, and the charge behind it is on a ladder whose fastest rung is ten
 seconds. The floor exists so that a deployment (or a test) with a very short
 lease does not turn the reaper into a hot loop against Postgres.
 
+### The housekeeping sweep retires a fourth thing
+
+`sweep_expired` runs four independent statements, each its own transaction so
+one failing does not roll back the others: expired idempotency records, expired
+client-assertion `jti`s, dead job leases, and — since Step 9's lane 1b —
+checkout sessions past D10's 24-hour horizon
+(`vpay_db::CheckoutSessions::expire_due`). Its count joins the same log line,
+as `checkout_sessions`.
+
+The fourth is **not** a delete. It moves `open` to `expired` and leaves
+`payment_status` exactly as it stands, because a merchant asking a finished
+session what happened must still be told; only the label "is this still
+payable?" changes. A session whose intent has a live charge is skipped by a
+`NOT EXISTS` inside that `UPDATE` — see
+[vpay-db.md](vpay-db.md#expire_due-is-the-same-guard-on-a-clock) for why the
+guard has to be in the statement.
+
+It is here rather than in a job of its own because it is the same shape as the
+other three — one unconditional statement, hourly, whose healthy answer is zero
+— and a fifth `jobs.kind` would have needed a migration to say nothing this one
+does not. Before it existed, `expires_at` was a column written by `create` and
+read by nothing.
+
 ### Where a job failure is logged, and how often
 
 Twice, deliberately, and the two lines say different things.

@@ -23,6 +23,7 @@ use async_trait::async_trait;
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
 use crate::charges::Charges;
+use crate::checkout_sessions::CheckoutSessions;
 use crate::client_assertion::ClientAssertions;
 use crate::config_reconcile::ConfigReconcile;
 use crate::disabled_clients::DisabledClients;
@@ -490,6 +491,7 @@ impl<S: TransactionSource + ?Sized> UnitOfWork for S {
 /// value, and the *method* it calls says which table it touched.
 pub trait Repositories:
     Charges
+    + CheckoutSessions
     + ClientAssertions
     + ConfigReconcile
     + DisabledClients

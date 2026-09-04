@@ -852,14 +852,26 @@ async fn commit_resubmission(
     Ok(())
 }
 
-/// Deletes what has expired: idempotency records, client-assertion `jti`s, and
-/// job leases whose worker died.
+/// Retires what has expired: idempotency records, client-assertion `jti`s,
+/// job leases whose worker died, and checkout sessions past their horizon.
 ///
-/// All three were previously run once at `vpay-server` boot, which meant a
-/// process that stayed up for a month never swept anything
-/// (`docs/status.md`). Three independent statements, each its own transaction:
-/// they share nothing, and one failing should not roll back the other two's
-/// work. Always reschedules — a sweep that found nothing is the healthy case.
+/// The first three were previously run once at `vpay-server` boot, which meant
+/// a process that stayed up for a month never swept anything
+/// (`docs/status.md`). Four independent statements, each its own transaction:
+/// they share nothing, and one failing should not roll back the others' work.
+/// Always reschedules — a sweep that found nothing is the healthy case.
+///
+/// The fourth is **not** a delete. `checkout_sessions.expire_due` moves rows
+/// from `open` to `expired` (D10's 24 hours) and touches `payment_status`
+/// never: a merchant asking a session what happened must still be told, and
+/// only the label "is this still payable?" changes. Until Step 9's lane 1b
+/// `expires_at` was written and read by nothing, so a session past its horizon
+/// reported `open` until a merchant expired it by hand or the intent settled.
+///
+/// It lives here rather than in a job of its own because it is the same shape
+/// as the other three — one unconditional statement, hourly, whose healthy
+/// answer is zero — and a fifth `jobs.kind` would have needed a migration to
+/// say nothing this one does not.
 async fn sweep_expired(
     repositories: &dyn Repositories,
     policy: &RecoveryPolicy,
@@ -874,11 +886,16 @@ async fn sweep_expired(
     // therefore the reaping — unclaimable forever. Reaping here as well costs
     // one statement an hour and keeps the sweep's own description honest.
     let leases = repositories.reap_expired_leases(policy.lease).await?;
+    // The instant is this process's, not Postgres's, because the horizon it
+    // is compared against was computed in Rust at create — see
+    // `vpay_db::CheckoutSessions::expire_due`.
+    let sessions = repositories.expire_due(OffsetDateTime::now_utc()).await?;
 
     tracing::info!(
         idempotency_keys = idempotency,
         client_assertion_jtis = assertions,
         expired_leases = leases,
+        checkout_sessions = sessions,
         "housekeeping sweep"
     );
     Ok(Outcome::RescheduleAfter(SWEEP_INTERVAL))
@@ -1427,6 +1444,18 @@ async fn record_failure(
 /// `ref_extra` is read back out of the row rather than rebuilt, because on a
 /// redirect rail it carries the `pay_token` without which the rail will not
 /// answer at all.
+///
+/// `return_url` is `charges.return_url`, the merchant's own — the durable
+/// value written before the first submit — and it is deliberately *not* the
+/// checkout session's return page that `vpay_api`'s confirm path may have
+/// sent instead (Step 9, D2). The two cannot disagree on anything this
+/// function feeds: only a **push** rail is ever resubmitted, and
+/// [`crate::recovery::recovery_step`] answers `FailDeadOrder` for a redirect
+/// rail before it looks at anything else, so no redirect charge reaches
+/// `submit` from here. A push rail has no browser and ignores the field
+/// entirely. The day a redirect rail becomes resubmittable, the session's URL
+/// has to become readable from this row or this line is a silent divergence
+/// — `docs/plans/step9-notes/lane-2.md` records that as the condition.
 fn charge_ref(job: &vpay_db::JobRow, charge: &ChargeRow) -> Result<ChargeRef, JobError> {
     let currency = vpay_core::Currency::from_code(&charge.currency_code).map_err(|error| {
         poisoned(
@@ -1439,6 +1468,7 @@ fn charge_ref(job: &vpay_db::JobRow, charge: &ChargeRow) -> Result<ChargeRef, Jo
         amount: Money::new(charge.amount, currency)?,
         payer_ref: charge.payer_ref.clone(),
         ref_extra: ref_extra_of(charge),
+        return_url: charge.return_url.clone(),
     })
 }
 

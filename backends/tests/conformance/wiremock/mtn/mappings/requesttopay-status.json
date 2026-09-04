@@ -17,7 +17,33 @@
         }
       },
       "metadata": {
-        "why": "The default answer for any reference with no more specific mapping. EUR because MTN's sandbox rejects XAF (docs/flows/money.md) and this stub mirrors the sandbox."
+        "why": [
+          "The default answer for any reference with no more specific mapping.",
+          "",
+          "NO MAPPING IN THIS DIRECTORY MATCHES ON A CURRENCY, in a request body or",
+          "anywhere else -- grep for it. So this stub accepts an EUR charge and an XAF",
+          "charge identically, and which one arrives is decided entirely by the",
+          "`providers[].currency` of the config the caller loaded:",
+          "",
+          "  config/application.yml            mtn_momo -> EUR",
+          "  config/application-sandbox.yml    (inherits) EUR",
+          "  the conformance suite             EUR, configured in Rust",
+          "  .e2e/application-demo.yml         XAF, since 2026-09-04 (Step 9, lane 4)",
+          "",
+          "EUR IS THE SANDBOX'S TRUTH AND IT HAS NOT CHANGED: MTN's real sandbox",
+          "rejects XAF (docs/flows/money.md), which is why the first three above say",
+          "EUR and why the demo overlay is the only one that does not. The demo",
+          "overlay differs because the demo shop (examples/shop) prices its catalogue",
+          "in XAF and offers a payer both rails, and vpay refuses a confirm whose rail",
+          "settles in another currency than the intent.",
+          "",
+          "The `currency` and `amount` in the response body below are therefore NOT a",
+          "claim about what MTN accepts, and they are not read by vpay at all:",
+          "`vpay_adapter_mtn_momo::wire::StatusResponse` deserialises `status`,",
+          "`reason` and `financialTransactionId` and nothing else. They are here",
+          "because MTN's documented status body carries them, and they are spelled the",
+          "way the SANDBOX would spell them."
+        ]
       }
     },
     {

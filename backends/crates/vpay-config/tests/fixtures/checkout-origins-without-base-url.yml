@@ -1,0 +1,30 @@
+# Fixture for `checkout_origins_without_a_base_url_are_rejected`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# A merchant declares the sites allowed to frame vpay's embedded checkout
+# page, and the deployment sets no `checkout.public_base_url` — so there is no
+# page for those origins to frame. `POST /v1/checkout/sessions` would answer
+# `checkout_not_configured` for this merchant while their config says
+# embedding is set up.
+#
+# The opposite pairing — a base URL with no origins anywhere — is legal and
+# normal: a deployment that serves hosted checkout only needs no
+# `frame-ancestors` beyond `'none'`.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    checkout_origins: ["https://shop.example"]

@@ -53,7 +53,32 @@
           "the field) and this mapping stops matching -- WireMock answers 404 and the",
           "adapter raises ProviderError::Config, failing",
           "submit_returns_a_reference_and_a_flow_shaped_result and every Orange confirm",
-          "in backends/tests/integration."
+          "in backends/tests/integration.",
+          "",
+          "The return_url/cancel_url bodyPatterns are a CONTRACT, added in Step 9 lane 2",
+          "alongside vpay_provider::ChargeRef::return_url (plan D2). A redirect rail that",
+          "was not told where the payer goes next strands them on the rail's own page, and",
+          "before D2 this adapter answered that per-charge question out of DEPLOYMENT",
+          "settings -- so every payer on a deployment came back to the same place whatever",
+          "the merchant had asked for, and nothing anywhere said so.",
+          "",
+          "The matcher is `^https?://.+` and NOT an equality, nor a prefix under the",
+          "deployment's public_base_url, deliberately: the value is by design sometimes",
+          "vpay's own return page (a session-driven charge) and sometimes the MERCHANT's URL",
+          "on their own site (a direct /v1 or /v1/browser confirm, which is what closes",
+          "browser-checkout's D4). A mapping demanding vpay's own origin would refuse exactly",
+          "the second case. The EXACT value is asserted instead by the conformance case",
+          "the_submit_tells_the_rail_where_to_send_the_payer_back, over the request journal,",
+          "and end to end by confirm_rails.rs.",
+          "",
+          "Decisive: drop `return_url` from vpay_adapter_orange_money's WebPaymentRequest and",
+          "this mapping stops matching -- WireMock answers 404, the adapter raises",
+          "ProviderError::Config, and both that conformance case and every Orange confirm in",
+          "backends/tests/integration fail. Measured, 2026-09-04.",
+          "",
+          "payment_url now carries the two URLs it was given as query parameters, which is",
+          "what lets stub-hosted-page.json render links to them. See that file for why a stub",
+          "may do this and the real Orange page does not."
         ]
       },
       "priority": 5,
@@ -66,6 +91,18 @@
               "expression": "$.notif_url",
               "matches": ".+/provider/orange_money/callback"
             }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.return_url",
+              "matches": "^https?://.+"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.cancel_url",
+              "matches": "^https?://.+"
+            }
           }
         ]
       },
@@ -74,7 +111,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"pay_token\":\"pay-{{jsonPath request.body '$.order_id'}}\",\"payment_url\":\"http://localhost:8082/stub-hosted-page/pay-{{jsonPath request.body '$.order_id'}}\",\"notif_token\":\"notif-{{jsonPath request.body '$.order_id'}}\",\"status\":201}"
+        "body": "{\"pay_token\":\"pay-{{jsonPath request.body '$.order_id'}}\",\"payment_url\":\"http://localhost:8082/stub-hosted-page/pay-{{jsonPath request.body '$.order_id'}}?return={{{urlEncode (jsonPath request.body '$.return_url')}}}&cancel={{{urlEncode (jsonPath request.body '$.cancel_url')}}}\",\"notif_token\":\"notif-{{jsonPath request.body '$.order_id'}}\",\"status\":201}"
       }
     },
     {
@@ -92,6 +129,18 @@
               "expression": "$.order_id",
               "equalTo": "00000000-0000-0000-0000-0000000000dd"
             }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.return_url",
+              "matches": "^https?://.+"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.cancel_url",
+              "matches": "^https?://.+"
+            }
           }
         ]
       },
@@ -102,7 +151,7 @@
         },
         "jsonBody": {
           "pay_token": "pay-dup-1",
-          "payment_url": "http://localhost:8082/stub-hosted-page/pay-dup-1",
+          "payment_url": "http://localhost:8082/stub-hosted-page/pay-dup-1?return={{{urlEncode (jsonPath request.body '$.return_url')}}}&cancel={{{urlEncode (jsonPath request.body '$.cancel_url')}}}",
           "notif_token": "notif-dup-1",
           "status": 201
         }
@@ -124,7 +173,11 @@
           "",
           "Decisiveness was checked by hand: change the `resubmitted` mapping's pay_token",
           "to pay-dup-2 and the conformance case fails on the pay_token equality",
-          "assertion. Restore it afterwards."
+          "assertion. Restore it afterwards.",
+          "",
+          "The return_url/cancel_url matchers are the same contract the catch-all carries,",
+          "repeated here so a duplicate submit cannot be the one call that quietly stops",
+          "telling the rail where the payer goes."
         ]
       }
     },
@@ -142,6 +195,18 @@
               "expression": "$.order_id",
               "equalTo": "00000000-0000-0000-0000-0000000000dd"
             }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.return_url",
+              "matches": "^https?://.+"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.cancel_url",
+              "matches": "^https?://.+"
+            }
           }
         ]
       },
@@ -152,7 +217,7 @@
         },
         "jsonBody": {
           "pay_token": "pay-dup-1",
-          "payment_url": "http://localhost:8082/stub-hosted-page/pay-dup-1",
+          "payment_url": "http://localhost:8082/stub-hosted-page/pay-dup-1?return={{{urlEncode (jsonPath request.body '$.return_url')}}}&cancel={{{urlEncode (jsonPath request.body '$.cancel_url')}}}",
           "notif_token": "notif-dup-1",
           "status": 201
         }
@@ -161,7 +226,11 @@
         "comment": [
           "The second and every later submit of the same order_id. Each conformance case",
           "starts its own container, so the scenario always begins in `Started` -- the",
-          "same property requesttopay-scenario.json relies on."
+          "same property requesttopay-scenario.json relies on.",
+          "",
+          "The return_url/cancel_url matchers are the same contract the catch-all carries,",
+          "repeated here so a duplicate submit cannot be the one call that quietly stops",
+          "telling the rail where the payer goes."
         ]
       }
     },

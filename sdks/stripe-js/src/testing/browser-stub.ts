@@ -152,3 +152,58 @@ export function samplePaymentIntent(
     ...overrides,
   };
 }
+
+/**
+ * The uniform 404 the browser surface renders for a checkout session —
+ * the session's counterpart to {@link notFoundEnvelope}, and equally
+ * byte-identical across every credential failure (unknown key, wrong
+ * secret, another merchant's session, unknown id).
+ */
+export function sessionNotFoundEnvelope(id: string): {
+  error: Record<string, string>;
+} {
+  return errorEnvelope(
+    "invalid_request_error",
+    "resource_missing",
+    `No such checkout session: ${id}`,
+  );
+}
+
+/**
+ * A `checkout.session` body as `GET /v1/browser/checkout/sessions/{id}`
+ * renders it — the object pinned in §"The wire contract" of
+ * `docs/plans/2026-09-04-step9-hosted-checkout.md`, `client_secret`
+ * included and **`payment_intent` expanded**.
+ *
+ * The expansion is the integrator's ruling of 2026-09-04 on a contract the
+ * plan left readable two ways: on the browser routes `payment_intent` is
+ * the whole intent (with its `client_secret` on the session read, without
+ * it on the return read), and on `/v1` it stays the `pi_…` string. The
+ * fixture therefore carries a live *confirm* credential, which is a fact
+ * about the route rather than a convenience of the stub.
+ *
+ * The route also carries the merchant's display name, which this package
+ * does not model and this stub does not send: a fixture is not the place to
+ * pin a field nothing reads.
+ */
+export function sampleCheckoutSession(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: "cs_123",
+    object: "checkout.session",
+    livemode: false,
+    payment_intent: samplePaymentIntent(),
+    ui_mode: "embedded",
+    status: "open",
+    payment_status: "unpaid",
+    success_url: null,
+    cancel_url: null,
+    return_url: "https://shop.example/thanks",
+    url: null,
+    expires_at: 1_700_086_400,
+    created: 1_700_000_000,
+    client_secret: `cs_123_secret_${SAMPLE_SECRET_SUFFIX}`,
+    ...overrides,
+  };
+}

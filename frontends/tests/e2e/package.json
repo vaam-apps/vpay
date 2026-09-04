@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "e2e": "cypress run",
+    "e2e": "pnpm run e2e:default && pnpm run e2e:framed",
+    "e2e:default": "cypress run",
+    "e2e:framed": "VPAY_E2E_FRAMED=1 cypress run",
     "open": "cypress open",
     "typecheck": "tsc --noEmit"
   },

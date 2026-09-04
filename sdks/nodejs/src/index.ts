@@ -28,6 +28,12 @@ export {
 } from "./errors.js";
 
 export type {
+  CheckoutSession,
+  CheckoutSessionStatus,
+  CheckoutSessionUiMode,
+  CheckoutPaymentStatus,
+  CreateCheckoutSessionParams,
+  ListCheckoutSessionsParams,
   PaymentIntent,
   PaymentIntentStatus,
   PaymentMethodType,

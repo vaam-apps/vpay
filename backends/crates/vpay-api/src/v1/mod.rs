@@ -49,6 +49,10 @@ use crate::error::ApiError;
 /// rather than in either `main.rs` because both binaries need the identical
 /// answer; see the module's own doc comment.
 pub mod boot;
+/// The Checkout Session resource (Step 9). Its own module for
+/// [`payment_intents`]'s reason: one resource, one file, and the routes
+/// below name it.
+pub mod checkout_sessions;
 pub mod events;
 /// Cursor paging, shared by [`events`] and [`payment_intents`].
 ///
@@ -62,6 +66,12 @@ pub mod events;
 // cannot be called from one. Nothing here reaches a database or a rail.
 pub mod paging;
 pub mod payment_intents;
+/// Which URL a redirect rail is told to send the payer back to.
+///
+/// `pub(crate)` for the same reason [`paging`] is not: nothing outside this
+/// crate can usefully ask the question, and the trait in it exists so the
+/// confirm path never learns what a checkout session is.
+pub(crate) mod return_trip;
 
 /// The scope a token must carry to *change* anything under `/v1`.
 ///
@@ -175,6 +185,28 @@ pub const V1_ROUTES: &[V1Route] = &[
         path: "/events/{id}",
         methods: &["GET"],
         mount: || get(events::retrieve),
+    },
+    // `/checkout/sessions`, not `/checkout_sessions`: Stripe's own path for
+    // this object, and the one both merchant SDKs and every existing
+    // integration guide spell. The object's `object` field is
+    // `checkout.session` for the same reason.
+    V1Route {
+        path: "/checkout/sessions",
+        methods: &["POST", "GET"],
+        mount: || post(checkout_sessions::create).get(checkout_sessions::list),
+    },
+    V1Route {
+        path: "/checkout/sessions/{id}",
+        methods: &["GET"],
+        mount: || get(checkout_sessions::retrieve),
+    },
+    // A POST, not a DELETE: expiring a session is a *transition* that
+    // returns the object, exactly as `cancel` is for a payment intent, and
+    // nothing is removed. Stripe spells it the same way.
+    V1Route {
+        path: "/checkout/sessions/{id}/expire",
+        methods: &["POST"],
+        mount: || post(checkout_sessions::expire),
     },
 ];
 
@@ -445,6 +477,54 @@ pub struct ResourceConfig {
     /// exactly that reason, and the day the rule is relaxed the collision
     /// would have to be decided here rather than discovered.
     merchant_id_by_publishable_key: BTreeMap<String, String>,
+    /// The same registrations read the other way: which keys a **tenant**
+    /// has, in configuration order.
+    ///
+    /// A second map rather than a scan of the first, because the question is
+    /// asked on the create path of every checkout session and the answer's
+    /// *order* is load-bearing — "the tenant's first configured key" is the
+    /// default a session pins, and a `BTreeMap` iteration would make that
+    /// alphabetical rather than what the operator wrote.
+    ///
+    /// Merged rather than `collect`ed, for `endpoints_by_merchant_id`'s
+    /// reason: two clients naming one tenant is refused at boot today, and
+    /// the day that relaxes, silently keeping one registration's keys would
+    /// make a session pin a key its merchant's page never renders.
+    publishable_keys_by_merchant_id: BTreeMap<String, Vec<String>>,
+    /// `checkout.public_base_url`, with any trailing slash already removed —
+    /// see [`ResourceConfig::checkout_public_base_url`].
+    ///
+    /// `None` is a complete answer and the common one: a deployment that
+    /// serves no checkout page. `POST /v1/checkout/sessions` refuses rather
+    /// than minting a `url` pointing at nothing.
+    checkout_public_base_url: Option<String>,
+    /// Which origins may frame this tenant's embedded checkout page (D4).
+    ///
+    /// Keyed on the **tenant**, like [`Self::endpoints_by_merchant_id`] and
+    /// [`Self::merchant_id_by_publishable_key`]'s *value*, because the
+    /// question `GET /v1/browser/checkout/origins?key=…` asks is "which
+    /// origins belong to the tenant this key names". Built with a merge
+    /// rather than a `collect` for `endpoints_by_merchant_id`'s reason: two
+    /// clients naming one tenant is refused at boot today, and the day that
+    /// relaxes, silently keeping one registration's origins and dropping the
+    /// other's would be a security answer decided by iteration order.
+    checkout_origins_by_merchant_id: BTreeMap<String, Vec<String>>,
+    /// What a payer is told they are paying, keyed on the **tenant** for
+    /// [`Self::checkout_origins_by_merchant_id`]'s reason: the question is
+    /// asked by the two browser session reads, which have resolved a tenant
+    /// from a publishable key and hold no credential at all.
+    ///
+    /// Only merchants that configured one appear. The reads fall back to the
+    /// `merchant_id` itself, so this is `Option`-shaped by absence rather
+    /// than by a `None` value — a registration with `display_name: ""` does
+    /// not boot (`ConfigError::MalformedDisplayName`).
+    ///
+    /// First-wins on the merge, unlike the two maps above it, because there
+    /// is nothing to combine: two registrations naming one tenant with two
+    /// different names is a contradiction rather than a union, and the day
+    /// `DuplicateMerchantId` relaxes it has to be decided in configuration
+    /// rather than by iteration order. It cannot happen today.
+    display_name_by_merchant_id: BTreeMap<String, String>,
 }
 
 impl ResourceConfig {
@@ -521,6 +601,25 @@ impl ResourceConfig {
             })
             .collect();
 
+        let mut checkout_origins_by_merchant_id: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut publishable_keys_by_merchant_id: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut display_name_by_merchant_id: BTreeMap<String, String> = BTreeMap::new();
+        for client in &config.merchant_clients {
+            if let Some(display_name) = client.display_name.as_deref() {
+                display_name_by_merchant_id
+                    .entry(client.merchant_id.clone())
+                    .or_insert_with(|| display_name.to_owned());
+            }
+            checkout_origins_by_merchant_id
+                .entry(client.merchant_id.clone())
+                .or_default()
+                .extend(client.checkout_origins.iter().cloned());
+            publishable_keys_by_merchant_id
+                .entry(client.merchant_id.clone())
+                .or_default()
+                .extend(client.publishable_keys.iter().cloned());
+        }
+
         Ok(Self {
             livemode: config.deployment.livemode,
             merchant_id_by_client_id,
@@ -528,6 +627,24 @@ impl ResourceConfig {
             rails,
             endpoints_by_merchant_id,
             merchant_id_by_publishable_key,
+            publishable_keys_by_merchant_id,
+            // Normalised **once**, at boot, rather than at every link vpay
+            // mints: `https://checkout.example/` and
+            // `https://checkout.example` are the same origin and an operator
+            // may write either, but `format!("{base}/c/{id}")` over the first
+            // produces `//c/…`, which is a protocol-relative URL — a
+            // different host entirely. Doing it here means there is one
+            // answer rather than one per call site.
+            //
+            // Only the trailing slash: a path prefix is legal (see
+            // `CheckoutConfig::public_base_url`) and must survive.
+            checkout_public_base_url: config
+                .checkout
+                .public_base_url
+                .as_deref()
+                .map(|base| base.trim_end_matches('/').to_owned()),
+            checkout_origins_by_merchant_id,
+            display_name_by_merchant_id,
         })
     }
 
@@ -610,6 +727,88 @@ impl ResourceConfig {
             .map_or(&[], Vec::as_slice)
     }
 
+    /// This tenant's publishable keys, in configuration order, or an empty
+    /// slice.
+    ///
+    /// The **inverse** of [`Self::merchant_id_for_publishable_key`], and both
+    /// exist because the two surfaces ask opposite questions. A payer's
+    /// browser presents a key and vpay resolves the tenant; a merchant
+    /// creating a checkout session already *is* the tenant and vpay has to
+    /// choose — or check — the key every payer link will carry.
+    ///
+    /// Order is the operator's, not `BTreeMap`'s: `first()` is the default a
+    /// session pins when a merchant names none, and "the first key in the
+    /// registration" is a rule an operator can read off their own YAML.
+    ///
+    /// An empty slice means this tenant has no browser surface at all, which
+    /// is the fail-closed default. `POST /v1/checkout/sessions` refuses for
+    /// them rather than minting a link whose `?key=` names nothing — see
+    /// `crate::v1::checkout_sessions`.
+    #[must_use]
+    pub fn publishable_keys_for(&self, merchant_id: &str) -> &[String] {
+        self.publishable_keys_by_merchant_id
+            .get(merchant_id)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Where this deployment's checkout app is served from, with no trailing
+    /// slash, or `None` if it serves none.
+    ///
+    /// **`None` is not an error and not a stub.** Most deployments of this
+    /// repository serve no checkout page; `POST /v1/checkout/sessions`
+    /// answers `checkout_not_configured` for them rather than minting a `url`
+    /// that resolves to nothing, which is the honest behaviour AGENTS.md's
+    /// second rule asks for.
+    ///
+    /// The trailing slash is stripped in [`ResourceConfig::from_config`], so
+    /// a caller may always append `/c/{id}` — see that function.
+    #[must_use]
+    pub fn checkout_public_base_url(&self) -> Option<&str> {
+        self.checkout_public_base_url.as_deref()
+    }
+
+    /// The origins allowed to frame this tenant's embedded checkout page, or
+    /// an empty slice.
+    ///
+    /// An empty slice is a *complete* answer and the fail-closed one: it
+    /// means no site may embed, and the checkout app turns it into
+    /// `frame-ancestors 'none'`. It is deliberately indistinguishable from
+    /// "no such tenant", because
+    /// `GET /v1/browser/checkout/origins?key=…` is unauthenticated and an
+    /// answer that told an unknown key apart from a configured-but-empty one
+    /// would let anyone enumerate which merchants a deployment serves — the
+    /// same property `browser::authenticate`'s uniform 404 exists for.
+    #[must_use]
+    pub fn checkout_origins_for(&self, merchant_id: &str) -> &[String] {
+        self.checkout_origins_by_merchant_id
+            .get(merchant_id)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// What a payer is told they are paying: this tenant's configured
+    /// `merchant_clients[].display_name`, or `None` when it has none.
+    ///
+    /// # Why `None` and not a fallback
+    ///
+    /// A payer is being asked to hand over money on the strength of
+    /// recognising who they are paying, and every other identifier this
+    /// system holds for a merchant — the tenant id, the `client_id` — is an
+    /// internal one. Rendering one of those as a name would be the
+    /// fabrication AGENTS.md's second rule forbids; rendering nothing is
+    /// honest, and the checkout page paints a neutral heading for it
+    /// (`frontends/apps/checkout/src/lib/machine.rs`'s `merchantOf`, Step 9
+    /// lane 3b). The fix for a nameless merchant is configuration, and
+    /// `config/application.yml` says so beside the field.
+    ///
+    /// Borrowed, so the two reads that call it copy once into the response
+    /// they are building and never for the lookup.
+    #[must_use]
+    pub fn merchant_display_name(&self, merchant_id: &str) -> Option<&str> {
+        self.display_name_by_merchant_id
+            .get(merchant_id)
+            .map(String::as_str)
+    }
+
     /// Every merchant's endpoints, as `(merchant_id, endpoints)` pairs —
     /// what the **worker binary** feeds `EndpointRegistry::from_pairs`.
     ///
@@ -632,7 +831,11 @@ mod tests {
 
     use super::*;
 
-    fn config() -> Config {
+    /// The projection fixture, shared with `checkout_sessions`' own tests so
+    /// they exercise a `ResourceConfig` built the same way this module's do —
+    /// a second hand-built fixture would be a second chance for the two to
+    /// disagree about what a registration looks like.
+    pub(crate) fn config() -> Config {
         Config {
             deployment: Deployment {
                 name: "test".to_owned(),
@@ -674,6 +877,7 @@ mod tests {
                 &["payments:write"],
             )],
             webhooks: vpay_config::WebhookPolicy::default(),
+            checkout: vpay_config::CheckoutConfig::default(),
             dashboard_client: None,
         }
     }

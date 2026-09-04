@@ -1,9 +1,9 @@
 name: release
 
-# Publishes the three container images the Helm chart and the compose files
-# name: `ghcr.io/vaam-store/vpay-{server,worker,dashboard}` (step-6 decision
-# (1)). Nothing else in this repository pushes an image; `ci.yml` builds them
-# and throws them away.
+# Publishes the four container images the Helm chart and the compose files
+# name: `ghcr.io/vaam-store/vpay-{server,worker,dashboard,checkout}` (step-6
+# decision (1), plus `vpay-checkout` from Step 9's D3). Nothing else in this
+# repository pushes an image; `ci.yml` builds them and throws them away.
 #
 # NOTHING IN THIS FILE HAS EVER RUN. It was written 2026-09-03 against
 # `backends/Dockerfile`, `frontends/Dockerfile` and the documented behaviour of
@@ -11,7 +11,7 @@ name: release
 # nothing has been signed. `actionlint` says it parses; that is the whole of
 # the evidence. See docs/status.md and docs/runbooks/release.md.
 #
-# Two build contexts, one shape: both Dockerfiles are built from the
+# Two Dockerfiles, three targets, one shape: both are built from the
 # repository root (`context: .`), exactly as `compose.e2e.yml` builds them.
 # `backends/Dockerfile` needs the root context because it COPYs `sdks/rust`
 # and `examples/merchant-demo` — cargo refuses to load a workspace whose
@@ -86,12 +86,21 @@ jobs:
           - name: vpay-worker
             file: backends/Dockerfile
             target: worker
-          # `frontends/Dockerfile`'s final stage. Named explicitly rather than
-          # left to "the last stage wins", so adding a stage below it cannot
-          # silently change what ships.
+          # `frontends/Dockerfile` builds both of these. Every target is named
+          # explicitly rather than left to "the last stage wins" — that
+          # property stopped holding the moment the file grew a second image,
+          # and the `runner` name is kept exactly so this entry did not have
+          # to change when it did.
           - name: vpay-dashboard
             file: frontends/Dockerfile
             target: runner
+          # The hosted/embedded payment page (Step 9, D3). A second Next.js
+          # image rather than HTML from `vpay-server`, so it is a second
+          # deployable with its own Deployment, Service and Ingress in the
+          # chart (`checkout.enabled`, default false).
+          - name: vpay-checkout
+            file: frontends/Dockerfile
+            target: checkout
         platform:
           - arch: amd64
             runner: ubuntu-latest
@@ -186,6 +195,7 @@ jobs:
           - name: vpay-server
           - name: vpay-worker
           - name: vpay-dashboard
+          - name: vpay-checkout
     steps:
       - uses: actions/download-artifact@v4
         with:

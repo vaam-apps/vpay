@@ -15,6 +15,7 @@ do, and how do I know it is fixed.
 | [rotate-rail-credentials.md](rotate-rail-credentials.md) | Rotating an MTN or Orange credential; revoking a merchant client (ADR-0010's dual-authority check) | — |
 | [restore-from-backup.md](restore-from-backup.md) | Restoring a database, and the quarterly drill [ADR-0013](../adr/0013-database-backups-and-retention.md) proposes | — |
 | [demo.md](demo.md) | Bringing vpay up from nothing and walking six payments through both rails — the one page here whose output is a real run | — |
+| [checkout.md](checkout.md) | Integrating vpay's own payment page, hosted and embedded — and seeing an unregistered origin refused | — |
 
 The `Alert` column names the rule in
 `deploy/helm/vpay/templates/prometheusrule.yaml` whose `runbook_url` points at
@@ -50,6 +51,23 @@ threshold to tune.
 No runbook here has been followed against a deployment, because no deployment
 exists. See [../status.md](../status.md).
 
+**[demo.md](demo.md) and [checkout.md](checkout.md) are the exceptions, and are
+a different kind of page.** Neither describes an alert or an incident:
+`demo.md` is the procedure for bringing the whole stack up on one machine, and
+`checkout.md` is how a merchant integrates the checkout page, written from
+`examples/shop`'s own source with the demo stack as its worked example. Both
+have been executed: `demo.md`'s §4 is a paste of a real run, and
+`checkout.md`'s §4 buying flow is driven end to end in a real browser by
+Cypress (its `docker compose` and `psql` verifications are not). **Neither has
+been followed against a deployment**, because there is none, and neither is
+evidence about MTN or Orange — the rails are WireMock hosts. One thing
+`checkout.md` says about itself is worth repeating here: its `frame-ancestors`
+header has been read off the wire (`cy.request`) but by nobody's browser, and
+what a browser has been observed refusing is the checkout page's own origin
+check.
+
+The paragraph that follows is `demo.md`'s own history and is unchanged.
+
 **[demo.md](demo.md) is the exception, and is a different kind of page.** It
 describes no alert and no incident: it is the procedure for bringing the whole
 stack up on one machine and driving six payments through it, and every command
@@ -61,9 +79,11 @@ race was fixed the same day (`docs/status.md`'s confirm/worker race row).** What
 exists is this: **one green run from nothing (lane A's rebased branch,
 2026-09-04, *without* lane G; the race is timing-dependent and did not fire),
 lane A's own earlier count was two greens in six attempts and zero for three
-from nothing, lane G did not re-run the demo. Run on the merged branch, 2026-09-04, in the `vpay-ci` VM (code as of `4b5a9d7`, lanes G and H in): `just demo` from nothing six times, **four green** (six outcomes for six each, exit 0); the two failures were the VM's Postgres answering single statements in 14–36 s under host I/O pressure, with the settlement and the webhook both landing in the worker's log after the demo's budgets; `write_matched_no_row` appeared in no run. Three from nothing is met in count, not consecutively.** The
-rails it drives are WireMock hosts, so nothing on that page is evidence about
-MTN or Orange.
+from nothing, lane G did not re-run the demo. Run on the merged branch, 2026-09-04, in the `vpay-ci` VM (code as of `4b5a9d7`, lanes G and H in): `just demo` from nothing six times, **four green** (six outcomes for six each, exit 0); the two failures were the VM's Postgres answering single statements in 14–36 s under host I/O pressure, with the settlement and the webhook both landing in the worker's log after the demo's budgets; `write_matched_no_row` appeared in no run. Three from nothing is met in count, not consecutively.** **Updated 2026-09-04
+(Step 9): `just demo` from nothing ran green three times in a row in the
+`vpay-ci` VM on the merged Step 9 branch, so that bar is now met consecutively
+as well as in count.** The rails it drives are WireMock hosts, so nothing on
+that page is evidence about MTN or Orange.
 
 - [worker-queue.md](worker-queue.md) and
   [webhook-delivery-failures.md](webhook-delivery-failures.md) are the two

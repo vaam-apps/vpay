@@ -140,12 +140,90 @@ sdk-conformance-node: build-sdk-node
     set -o pipefail; \
       tmp=$(mktemp -d);       node -e 'const {generateKeyPairSync}=require("node:crypto"); const {privateKey}=generateKeyPairSync("rsa",{modulusLength:2048}); process.stdout.write(privateKey.export({type:"pkcs8",format:"pem"}))' > "$tmp/key.pem";       VPAY_CLIENT_ID=merchant_a VPAY_PRIVATE_KEY_FILE="$tmp/key.pem" VPAY_KID=k1         VPAY_AUDIENCE=https://api.vpay.example/v1/oauth/token         node sdks/nodejs/scripts/mint-assertion.mjs       | cargo run -q -p vpay-sdk --example verify_assertion -- - merchant_a           https://api.vpay.example/v1/oauth/token https://api.vpay.example/v1/oauth;       status=$?; rm -rf "$tmp"; exit $status
 
-test-e2e:
-    docker compose -f compose.yml -f compose.e2e.yml up -d --build
-    pnpm --filter @vpay/e2e e2e; \
-      e2e_status=$?; \
-      docker compose -f compose.yml -f compose.e2e.yml down -v; \
-      exit $e2e_status
+# Cypress against the real stack, from nothing.
+#
+# CHANGED IN STEP 9 (lane 6), and the change is a correction rather than an
+# extension: this recipe used to bring up `compose.yml -f compose.e2e.yml`
+# only, which has no registered merchant anybody holds a private key for
+# (`config/application.yml`'s `acme-cameroon` carries a placeholder modulus).
+# Every spec that mints anything — `checkout.cy.ts` since Step 5c, both shop
+# specs now — failed there with `invalid_client`. CI's `e2e` job has always
+# added `-f compose.demo.yml` and run `gen-demo-keys` first; this recipe now
+# does what that job does, so "green in CI" and "green locally" mean the same
+# run.
+#
+# The three build steps are prerequisites rather than lines in the body so
+# that a failure in one names itself. `gen-demo-keys` writes the throwaway key
+# pairs and the profile overlay; `build-sdk-node` makes `@vpay/sdk`'s gitignored
+# `dist/` exist for `cy.task('mintCheckoutPaymentIntent')`; `build-checkout-browser`
+# vendors `@vpay/stripe-js`'s into `examples/checkout-browser/`.
+#
+# Every service, not `demo_services`: the dashboard is in the file set and
+# `dashboard.cy.ts` visits it.
+test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export VPAY_DEMO_PROJECT={{demo_project}}
+    export VPAY_DEMO_PORT={{demo_port}}
+    export VPAY_DEMO_RECEIVER_PORT={{demo_receiver_port}}
+    export VPAY_DEMO_ORANGE_PORT={{demo_orange_port}}
+    export VPAY_DEMO_CHECKOUT_PORT={{demo_checkout_port}}
+    export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
+
+    set -e
+    docker compose {{demo_compose}} up -d --build --wait
+    set +e
+
+    # `vpay-server` is `FROM scratch` and can carry no healthcheck (see
+    # compose.e2e.yml), so `--wait` above reports it merely *started*.
+    # Readiness is observed from outside, exactly as CI's e2e job does it.
+    echo "test-e2e: waiting for http://localhost:{{demo_port}}/healthz"
+    deadline=$((SECONDS + 120))
+    until curl -fsS -o /dev/null http://localhost:{{demo_port}}/healthz; do
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            echo "test-e2e: FAIL — /healthz did not answer within 120s" >&2
+            docker compose {{demo_compose}} ps >&2
+            docker compose {{demo_compose}} logs --tail 80 vpay-server >&2
+            docker compose {{demo_compose}} down -v
+            exit 1
+        fi
+        sleep 2
+    done
+
+    # The three browser surfaces the specs visit. Polled rather than assumed:
+    # a Cypress failure on "cannot verify this server is running" says nothing
+    # about which of them is missing.
+    for probe in "dashboard http://localhost:3000/" \
+                 "shop http://localhost:{{demo_shop_port}}/healthz" \
+                 "checkout http://localhost:{{demo_checkout_port}}/healthz"; do
+        name=${probe%% *}; url=${probe##* }
+        echo "test-e2e: waiting for $name on $url"
+        deadline=$((SECONDS + 120))
+        until curl -fsS -o /dev/null "$url"; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "test-e2e: FAIL — $name never answered $url" >&2
+                docker compose {{demo_compose}} logs --tail 60 >&2
+                docker compose {{demo_compose}} down -v
+                exit 1
+            fi
+            sleep 2
+        done
+    done
+
+    # What the specs need, all of it a published host port or a public key.
+    # No merchant credential is exported here: `checkoutTasks.ts` reads the
+    # PEM from `.e2e/` in Node, and nothing hands one to a browser.
+    VPAY_BASE_URL=http://localhost:{{demo_port}} \
+      VPAY_SHOP_URL=http://localhost:{{demo_shop_port}} \
+      VPAY_CHECKOUT_URL=http://localhost:{{demo_checkout_port}} \
+      VPAY_ORANGE_STUB_URL=http://localhost:{{demo_orange_port}} \
+      VPAY_MERCHANT_CLIENT_ID=demo-merchant \
+      VPAY_MERCHANT_PRIVATE_KEY_PATH="$PWD/.e2e/demo-merchant/oauth-signing-key.pem" \
+      pnpm --filter @vpay/e2e e2e
+    e2e_status=$?
+
+    docker compose {{demo_compose}} down -v
+    exit $e2e_status
 
 # ------------------------------------------------------------------ lint ---
 
@@ -418,8 +496,44 @@ verify-docs:
 # floor is the ladder's first rung, and a poll already about to run is not
 # accelerated) — so `expected_suites` stays 41, and `min_tests` is a floor
 # that 1059 clears with the same margin 1054 did.
+#
+# Re-measured 2026-09-04 on Step 9's lane 2 (the payer's return trip through
+# the port): **1068 total, still 41 test binaries, 0 ignored**. Neither
+# counter below moves. The nine new cases all landed in files that already
+# existed — one `vpay-adapter-mtn-momo` wire unit (a push rail's body carries
+# no return URL), two `vpay-adapter-orange-money` units of which one replaced
+# the deployment-settings-fallback case it retired, three
+# `vpay_api::v1::return_trip` units, two conformance cases
+# (`the_submit_tells_the_rail_where_to_send_the_payer_back`, once per rail)
+# and two `confirm_rails` integration cases — so `expected_suites` stays 41,
+# and `min_tests` is a floor that 1068 clears with the same margin 1059 did.
+#
+# 41 -> 42 (Step 9, lane 1, the Checkout Session object) for
+# `backends/tests/integration/tests/checkout_sessions.rs`. A new binary rather
+# than cases added to `browser_checkout.rs`, and deliberately: that suite's
+# subject is the two payer routes for a *payment intent*, and its harness
+# registers no checkout app and no embedding origins. Folding a second object,
+# a second pair of credentials and a `checkout.public_base_url`-less
+# deployment into it would have made every one of its existing cases run
+# against a configuration none of them is about.
+#
+# Measured 2026-09-04 on the lane-1 branch: `cargo nextest list --workspace`
+# lists **1098 total, 42 test binaries, 0 ignored** — the 1059 above plus
+# lane 1's 39 (13 in the new binary, 10 `vpay-api` units across
+# `v1::checkout_sessions`/`browser::checkout_sessions`, 4 in `model`, 8
+# `vpay-config` units, 2 `vpay-core` `ids` units and 2 `vpay-db` units). The
+# four new doctests (`CheckoutConfig` twice, `ids::return_token`,
+# `CheckoutSessionRow::return_page_url`) are **not** in that number and cannot
+# be — `cargo nextest list` does not see doctests, which is why
+# `just test-doc` is a separate recipe. `just test-doc` measures **82**.
+#
+# Merged 2026-09-04 on the Step 9 gate branch (lanes 5, 2, 3, 2b and 1 in):
+# lane 2b's three digits-only MTN steering cases joined lane 2's nine and lane
+# 1's thirty-nine: `just verify-ignored` on the merged gate measures **1121
+# total, 42 test binaries, 0 ignored**; `expected_suites` is 42 (lane 1's
+# `checkout_sessions` binary) and the 1050 floor stands under it.
 expected_ignored := "0"
-expected_suites := "41"
+expected_suites := "42"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.
@@ -438,7 +552,37 @@ expected_suites := "41"
 # Left at 1000 on 2026-09-04 (lane H, measured 1059): five tests is not a
 # reason to move a floor, and moving it every time one is added is how a
 # floor becomes a number nobody reads.
-min_tests := "1000"
+#
+# 1000 -> 1050 on 2026-09-04 (Step 9, lane 1), against the measured 1098 and
+# on the same terms: still a floor set under the count, not at it. 1000 was
+# set against Step 8's 1059 and the suite has grown by 39 since, so the floor
+# is moved with it rather than being left to drift far enough below the count
+# that a whole crate's unit tests could vanish under it.
+#
+# 1050 -> 1080 on 2026-09-04 (Step 9, lane 1b — the integration seams and the
+# correctness-review findings F2-F5), against the measured **1129** on the
+# gate branch with this lane's eight net cases in it: eleven added (two
+# `vpay-config` units for the canonical-origin and display-name rules, one
+# `vpay_api::v1::return_trip` unit, one `payer_instrument` unit, three
+# `confirm_rails` integration cases and four `checkout_sessions` ones) and
+# three retired — `return_url_for_charge`'s precedence units, whose subject
+# moved into `payer_instrument` and is tested there against the shipping
+# function rather than a stand-in. `expected_suites` does **not** move: every
+# case landed in a binary that already existed. Same terms as every bump
+# above: a floor set under the count, never at it. Lane E should re-measure
+# after the merge.
+#
+# Re-measured by lane E on the merged gate (`e57e7ff`, every lane in):
+# `just verify-ignored` reports **1137 total, 42 test binaries, 0 ignored** —
+# 1129 plus lane 5b's eight `sdks/rust` cases for the client-assertion
+# audience (three builder units, two wire tests and three `op_conformance`
+# ones against the real pinned verifier). The floor **stays at 1080**: eight
+# tests is not a reason to move a floor, on the same terms as lane H's
+# "left at 1000" above. `expected_suites` stays 42 — lanes 3b, 4, 1b, 5b, r2
+# and 6 added no test binary — and `just test-doc` measures **84 passed, 1
+# ignored** (the ignored one is `sdks/rust`'s README block and is
+# pre-existing).
+min_tests := "1080"
 
 verify-ignored:
     #!/usr/bin/env bash
@@ -486,9 +630,10 @@ chart := "deploy/helm/vpay"
 # adding this to it would turn "offline" into "failing". Run it by hand before
 # opening a PR that touches the chart; CI runs it on every PR regardless.
 #
-# What it proves: the chart lints, both value sets render, the fifteen named
-# guards are exactly the fifteen on disk and each fires on its own values file
-# with a non-zero exit, and every rendered object validates against the
+# What it proves: the chart lints, both value sets render, the seventeen named
+# guards are exactly the seventeen on disk and each fires on its own values
+# file with a non-zero exit, the default render templates no checkout page and
+# `ci/values-full.yaml`'s does, and every rendered object validates against the
 # upstream schemas. What it does not prove: anything at all about a cluster.
 # Nothing here has ever been applied to one.
 helm-check:
@@ -515,12 +660,14 @@ helm-check:
     # message stops naming itself — fails here, which is the only thing that
     # keeps these from rotting into decoration.
     #
-    # The expected set is written out rather than counted, because "13 files
-    # were found and 13 fired" is also what deleting a guard *and* its values
+    # The expected set is written out rather than counted, because "17 files
+    # were found and 17 fired" is also what deleting a guard *and* its values
     # file looks like. Adding a guard means adding its name here, its values
     # file under ci/guards/, and the `fail` in templates/_validate.tpl — in
     # one commit.
     expected_guards=(
+        checkout-not-templated-by-default
+        checkout-templated-when-enabled
         dashboard-not-templated
         database-secret
         extra-env-collision
@@ -565,6 +712,29 @@ helm-check:
     done
     echo "    $guards guards, all fired by name (${#expected_guards[@]} expected)"
 
+    # The checkout page, in BOTH directions, over the RENDERED yaml rather
+    # than over the values — because "checkout.enabled: false renders nothing"
+    # is an absence, and a `fail` guard cannot assert an absence. The
+    # "checkout-not-templated-by-default" guard covers the one well-typed way
+    # to get half of it; this covers the other half.
+    #
+    # A payment page templated by default would be a Deployment nobody asked
+    # for pulling an image they may not have; a page that stayed absent when
+    # enabled would be an Ingress routing to nothing, found by a payer.
+    echo "==> checkout page: absent by default, present when enabled"
+    if grep -q -- '-checkout' "$out/default.yaml"; then
+        echo "helm-check: FAIL — the default render names a checkout object, but checkout.enabled defaults to false:" >&2
+        grep -n -- '-checkout' "$out/default.yaml" >&2
+        exit 1
+    fi
+    for kind in Deployment Service Ingress; do
+        if ! grep -B20 "^  name: vpay-checkout$" "$out/full.yaml" | grep -q "^kind: $kind$"; then
+            echo "helm-check: FAIL — ci/values-full.yaml enables the checkout page but rendered no $kind for it" >&2
+            exit 1
+        fi
+    done
+    echo "    default: no checkout object; ci/values-full.yaml: Deployment + Service + Ingress"
+
     # ADR-0009 assumes a rate limit exists in front of the token endpoint.
     # This is the only thing in the repository that checks one is configured,
     # and it checks the RENDERED yaml, not the values — a template that stops
@@ -598,7 +768,7 @@ helm-check:
 # What `.github/workflows/release.yml` does, minus everything that needs a
 # registry — and minus one thing that needs a runner it cannot have here.
 #
-# Builds all three images for the HOST platform ONLY. The published images are
+# Builds all four images for the HOST platform ONLY. The published images are
 # multi-arch (amd64 + arm64, step-6 decision (8)), but the workflow builds each
 # architecture on a NATIVE runner — `ubuntu-latest` and `ubuntu-24.04-arm` —
 # because `backends/Dockerfile` compiles the builder's own host triple and the
@@ -617,7 +787,7 @@ helm-check:
 # GHCR authentication, and `cosign sign`. Nothing local can stand in for those.
 # The first evidence for any of them is a real run — see docs/runbooks/release.md.
 #
-# Build the three release images for the host platform, then check the chart.
+# Build the four release images for the host platform, then check the chart.
 release-dry-run:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -637,11 +807,12 @@ release-dry-run:
     esac
     echo "==> building for $platform only (see this recipe's comment for why not both)"
 
-    # name:dockerfile:target — the same three the release matrix builds, from
+    # name:dockerfile:target — the same four the release matrix builds, from
     # the repository root, which is the context BOTH Dockerfiles require:
     # `backends/Dockerfile` COPYs `sdks/rust` and `examples/merchant-demo`
     # because cargo refuses to load a workspace whose `members` list names a
-    # missing directory.
+    # missing directory, and `frontends/Dockerfile`'s `checkout` target COPYs
+    # `sdks/` so `@vpay/stripe-js` resolves.
     #
     # No `--build-arg VPAY_GIT_SHA` here, deliberately, and that is a
     # difference from the workflow rather than an omission: a dry run is not
@@ -650,7 +821,8 @@ release-dry-run:
     # can pull. The default (`unknown`) is the true answer for these.
     for spec in vpay-server:backends/Dockerfile:server \
                 vpay-worker:backends/Dockerfile:worker \
-                vpay-dashboard:frontends/Dockerfile:runner; do
+                vpay-dashboard:frontends/Dockerfile:runner \
+                vpay-checkout:frontends/Dockerfile:checkout; do
         IFS=: read -r name file target <<<"$spec"
         echo "==> $name ($file, target $target)"
         docker buildx build \
@@ -713,16 +885,28 @@ down:
 # `down -v` against a different file set leaves volumes behind.
 demo_compose := "-f compose.yml -f compose.e2e.yml -f compose.demo.yml"
 
-# The six services `just demo-up` starts, named rather than left to compose's
-# "everything in the file set". The seventh is `dashboard`, and leaving it out
-# is a statement, not an optimisation: per docs/status.md it renders a static
-# scaffold notice and makes no call to `vpay-server`, so there is no data
-# source that could show the payments this walkthrough makes — see
-# docs/runbooks/demo.md's "what this does not prove". Building
-# `frontends/Dockerfile` also costs minutes the demo does not buy anything
-# with. `just stripe-compat` already brought up exactly these six, for the
-# second of those reasons; `just demo` now agrees with it.
-demo_services := "postgres wiremock-mtn wiremock-orange wiremock-webhook vpay-server vpay-worker"
+# The eight services `just demo-up` starts, named rather than left to
+# compose's "everything in the file set". The ninth is `dashboard`, and
+# leaving it out is a statement, not an optimisation: per docs/status.md it
+# renders a static scaffold notice and makes no call to `vpay-server`, so
+# there is no data source that could show the payments this walkthrough makes
+# — see docs/runbooks/demo.md's "what this does not prove".
+#
+# `vpay-checkout` and `vpay-shop` joined the list in Step 9 and had to: a
+# service that is in the file set but not in this list does not start, and the
+# hosted session `demo-walk` now prints a URL for is served by the first of
+# them.
+#
+# `just stripe-compat` still brings up its own SIX — it drives `/v1` and needs
+# no browser surface, and building two Next.js images for it would cost
+# minutes it does not buy anything with.
+demo_services := "postgres wiremock-mtn wiremock-orange wiremock-webhook vpay-server vpay-worker vpay-checkout vpay-shop"
+
+# The six `just stripe-compat` brings up. Spelled separately from
+# `demo_services` above rather than derived from it, because the difference is
+# a decision (no browser surface in a `/v1` conformance run) and not an
+# accident of ordering.
+compat_services := "postgres wiremock-mtn wiremock-orange wiremock-webhook vpay-server vpay-worker"
 
 # The COMPOSE PROJECT NAME the demo stack lives under, and the variable that
 # makes two demos on one machine possible:
@@ -784,6 +968,96 @@ demo_port := "8080"
 # baked into any generated file and changing it needs no regeneration.
 demo_receiver_port := "8083"
 
+# The host port `just demo` publishes the ORANGE rail stub (`wiremock-orange`)
+# on, so a payer's browser can reach the rail's hosted page.
+#
+#     just demo_orange_port=18082 demo
+#
+# Orange is a redirect rail. `vpay-server` answers a confirm with
+# `next_action.redirect_to_url.url`, that URL is on this container
+# (`/stub-hosted-page/{pay_token}`, served by
+# `backends/tests/conformance/wiremock/orange/mappings/stub-hosted-page.json`
+# since Step 9), and following it is the demo's redirect leg. Until Step 9
+# `compose.demo.yml` reset this publication, so the URL the demo printed could
+# not be opened at all.
+#
+# **Any value works, and until Step 9 lane 4 only 8082 did.** The rail's
+# `payment_url` comes from a WireMock mapping that spells a literal
+# `http://localhost:8082`: WireMock renders a response from the current
+# request alone, and vpay's submit reaches the stub over the compose network
+# as `wiremock-orange:8080`, so the stub cannot learn what the host published
+# it on. Two things therefore have to agree about this number:
+#
+#   1. the published port (`compose.demo.yml` reads `$VPAY_DEMO_ORANGE_PORT`,
+#      which the recipes below export);
+#   2. the `payment_url` literal in the mappings that stub is serving.
+#
+# Lane 2 made (2) a *check*: `gen-demo-keys` read the port out of the
+# committed mapping and refused the pair when they disagreed, because that
+# file is shared with `compose.yml`, CI's e2e stack and both Rust suites and
+# is not a per-run artefact. The honest consequence, which lane 2 wrote down:
+# two concurrent demos then collided on 8082 unless one of them edited a
+# committed file.
+#
+# `gen-demo-keys` now COPIES the committed mappings into
+# `.e2e/<demo_project>/wiremock-orange/mappings/` with that literal
+# substituted, and `compose.demo.yml` mounts the copy. The committed tree is
+# untouched and stays the CI/e2e default; the check is gone because the
+# substitution makes it unnecessary. `.e2e/` is git-ignored throwaway state,
+# and the copy is keyed on `demo_project`, so two demos on two ports have two
+# stubs and neither rewrites the other's.
+demo_orange_port := "8082"
+
+# The host port `just demo` publishes vpay's own CHECKOUT PAGE
+# (`vpay-checkout`, `frontends/apps/checkout`) on — the page a payer is sent
+# to by a hosted Checkout Session, and the page a merchant frames for an
+# embedded one.
+#
+#     just demo_checkout_port=13080 demo
+#
+# Three things have to agree about it, and unlike the Orange stub's port all
+# three are things this recipe set can write:
+#
+#   1. the published port (`compose.demo.yml` reads `$VPAY_DEMO_CHECKOUT_PORT`);
+#   2. `checkout.public_base_url` in the generated `.e2e/application-demo.yml`
+#      — the origin EVERY payer link vpay mints is built on
+#      (`{base}/c/{cs_id}#…`, `{base}/e/{cs_id}?key=…`, and the return page a
+#      redirect rail sends the payer back to). A stale value here is a
+#      `session.url` that resolves to nothing, and no message names a port;
+#   3. `VPAY_CHECKOUT_URL` on `vpay-shop`, which is the iframe `src` of the
+#      shop's embedded page.
+#
+# `gen-demo-keys` regenerates the overlay when this changes.
+#
+# 3080 and not 3000 or 3001: `compose.e2e.yml` publishes the dashboard on
+# 3000 and this stack publishes the shop on 3001.
+demo_checkout_port := "3080"
+
+# The host port `just demo` publishes the demo SHOP (`vpay-shop`,
+# `examples/shop`) on — the merchant site the end-to-end demo is.
+#
+#     just demo_shop_port=13001 demo
+#
+# Three things have to agree about it:
+#
+#   1. the published port (`compose.demo.yml` reads `$VPAY_DEMO_SHOP_PORT`);
+#   2. `SHOP_PUBLIC_URL` on the service, which is what the shop puts in the
+#      `success_url`/`cancel_url` it sends vpay — i.e. where a payer lands
+#      after paying;
+#   3. `shop-merchant`'s `checkout_origins` in the generated overlay, which is
+#      what becomes `Content-Security-Policy: frame-ancestors` on vpay's
+#      embedded page. Wrong, and the browser refuses to render the iframe with
+#      nothing in any server log saying why.
+#
+# `gen-demo-keys` regenerates the overlay when this changes, and its shape
+# check is keyed on this port for exactly reason (3).
+#
+# 3001, not 3000: the shop's CONTAINER listens on 3000 and so does the
+# dashboard's, which `compose.e2e.yml` already publishes on 3000. (It is also
+# the port `pnpm --filter @vpay/checkout dev` uses for its own dev server, so
+# do not run both at once without moving one.)
+demo_shop_port := "3001"
+
 # Everything `just demo` needs on disk before a container starts: the server's
 # own OP signing key (the `gen-e2e-signing-key` dependency above) and the demo
 # merchant's key pair plus the profile overlay that registers its PUBLIC half.
@@ -810,7 +1084,73 @@ gen-demo-keys: gen-e2e-signing-key
     for tool in cargo jq; do
         command -v "$tool" >/dev/null 2>&1 || { echo "gen-demo-keys: needs '$tool' on PATH" >&2; exit 1; }
     done
+
+    # The Orange stub's mappings, COPIED into `.e2e/<demo_project>/` with the
+    # payer-facing port substituted — BEFORE the overlay's early exit below,
+    # because this is not about `.e2e/application-demo.yml` and a stack whose
+    # keys are fine can still print a redirect URL nothing serves.
+    #
+    # Why a copy rather than an edit: `webpayment.json` templates
+    # `payment_url` on a literal `http://localhost:8082`, because WireMock
+    # renders a response from the current request alone and vpay's submit
+    # arrives over the compose network as `wiremock-orange:8080` — the stub
+    # cannot learn what the host published it on. That file is committed and
+    # shared with `compose.yml`, CI's e2e stack and both Rust suites, so it is
+    # not this recipe's to rewrite. `compose.demo.yml` mounts the copy over
+    # `/home/wiremock` instead (compose merges `volumes:` by target path), and
+    # the copy is keyed on `demo_project` so two concurrent demos have two
+    # stubs on two ports. See the `demo_orange_port` variable.
+    #
+    # Regenerated unconditionally: it is derived, it is cheap (five JSON
+    # files), and a staleness check on a directory is more code than the copy
+    # it would be guarding.
+    orange_src=backends/tests/conformance/wiremock/orange
+    orange_gen=.e2e/{{demo_project}}/wiremock-orange
+    if ! grep -q 'localhost:[0-9]\{1,\}/stub-hosted-page' "$orange_src/mappings/webpayment.json"; then
+        echo "gen-demo-keys: FAIL — no /stub-hosted-page payment_url found in" >&2
+        echo "gen-demo-keys:   $orange_src/mappings/webpayment.json" >&2
+        echo "gen-demo-keys: the demo's redirect leg would have nothing to point a browser at," >&2
+        echo "gen-demo-keys: and this recipe would have nothing to substitute a port into." >&2
+        exit 1
+    fi
+    rm -rf "$orange_gen"
+    mkdir -p "$orange_gen"
+    cp -R "$orange_src/." "$orange_gen/"
+    # Only `localhost:<port>/stub-hosted-page` is rewritten, and nothing else:
+    # the rail's own host inside the mappings is `wiremock-orange:8080` and
+    # must stay that, and `8080`/`8082` appear in prose in the `metadata`
+    # blocks. Anchoring on the path segment is what keeps this from being a
+    # blind port substitution over a JSON document.
+    find "$orange_gen" -name '*.json' -print0 \
+        | xargs -0 sed -i 's|localhost:[0-9]\{1,\}/stub-hosted-page|localhost:{{demo_orange_port}}/stub-hosted-page|g'
+    # The post-condition, checked rather than assumed: no OTHER port survives
+    # in a payer-facing URL. A `sed` that silently matched nothing would
+    # otherwise leave the demo pointing at 8082 with this recipe reporting
+    # success.
+    if grep -rn 'localhost:[0-9]\{1,\}/stub-hosted-page' "$orange_gen" \
+        | grep -v 'localhost:{{demo_orange_port}}/stub-hosted-page' >&2; then
+        echo "gen-demo-keys: FAIL — the lines above still name a port other than" >&2
+        echo "gen-demo-keys: {{demo_orange_port}} in a payer-facing URL under $orange_gen." >&2
+        exit 1
+    fi
+    substituted=$(grep -rc 'localhost:{{demo_orange_port}}/stub-hosted-page' "$orange_gen" \
+        | awk -F: '{n += $2} END {print n + 0}')
+    if [ "$substituted" -eq 0 ]; then
+        echo "gen-demo-keys: FAIL — wrote $orange_gen with no payer-facing URL in it." >&2
+        exit 1
+    fi
+    # WireMock's container reads this tree; the demo's is throwaway and holds
+    # nothing secret.
+    chmod -R a+rX "$orange_gen"
+    echo "gen-demo-keys: wrote $orange_gen — $substituted payer-facing URLs on localhost:{{demo_orange_port}}"
+
     key=.e2e/demo-merchant/oauth-signing-key.pem
+    # The SHOP's own key pair (D12: `examples/shop` is its own merchant, not
+    # `demo-merchant`). Treated as part of the same one artefact as the demo
+    # merchant's key and the overlay — all three are written by one heredoc's
+    # worth of state, and two of three present is a stack that authenticates
+    # one merchant and answers `invalid_client` to the other.
+    shop_key=.e2e/shop-merchant/oauth-signing-key.pem
     overlay=.e2e/application-demo.yml
 
     # The MERCHANT's endpoint list, which is a different thing from the
@@ -837,7 +1177,63 @@ gen-demo-keys: gen-e2e-signing-key
             && grep -qE '^[[:space:]]+url: http://wiremock-webhook' "$overlay"
     }
 
-    if [ -e "$key" ] && [ -e "$overlay" ]; then
+    # Step 9. `checkout.public_base_url` is a TOP-LEVEL block whose one key is
+    # spelled exactly like `deployment.public_base_url`, so a bare
+    # `grep -q '^\s*public_base_url: …'` cannot tell the two apart — the same
+    # trap `merchant_webhooks_present` above documents for `webhooks:`. This
+    # one is anchored on the block header and the two lines after it.
+    checkout_base_present() {
+        grep -A2 '^checkout:$' "$overlay" \
+            | grep -qE '^  public_base_url: http://localhost:{{demo_checkout_port}}$'
+    }
+
+    # The origin that becomes `Content-Security-Policy: frame-ancestors` on
+    # vpay's embedded page for the shop. It has to name the port the shop was
+    # actually published on, and it is checked separately from
+    # `client_id: shop-merchant` because the two go stale for different
+    # reasons: the entry is missing on an overlay generated before Step 9, and
+    # the port is wrong the moment somebody passes `demo_shop_port=`.
+    # `merchant_clients` is a list, so this entry's key is the FIRST line of a
+    # YAML sequence item: `  - client_id: shop-merchant`, not
+    # `    client_id: …`. A `^\s*client_id:` pattern misses it entirely — it
+    # did, on the first run of this recipe, which reported "regenerating"
+    # forever on an overlay that was perfectly fresh.
+    shop_client_present() {
+        grep -qE '^[[:space:]]*-[[:space:]]+client_id: shop-merchant$' "$overlay"
+    }
+
+    shop_origin_present() {
+        grep -qF 'checkout_origins: ["http://localhost:{{demo_shop_port}}"]' "$overlay"
+    }
+
+    # Step 9, and NARROWED 2026-09-04 (r2 review, finding 6). This used to be
+    # a bare `grep -q '^\s*- code: mtn_momo$'` — a PRESENCE proxy, not a
+    # currency check. Every overlay that has a `providers:` block at all
+    # carries that line, INCLUDING one whose `mtn_momo` entry has been edited
+    # back to `currency: EUR`, which is the one state the check exists to
+    # catch. Measured before the change: flip the generated overlay's line to
+    # EUR and `just gen-demo-keys` answered "already exist, keeping them",
+    # after which every confirm of the shop's XAF orders on MTN is refused
+    # with `rail 'mtn_momo' settles in EUR; this PaymentIntent is XAF` — true,
+    # and naming no file anyone could fix. Keyed on the currency INSIDE the
+    # `mtn_momo` sequence item now, the way `merchant_webhooks_present` and
+    # `checkout_base_present` above are keyed on shape rather than on a name.
+    #
+    # The awk range runs from the `- code: mtn_momo` line to the next sequence
+    # item or the next top-level key, whichever comes first, so a
+    # `currency: XAF` belonging to `orange_money` (which has one) cannot
+    # satisfy it.
+    mtn_settles_xaf() {
+        awk '
+            /^[[:space:]]*-[[:space:]]+code:[[:space:]]*mtn_momo[[:space:]]*$/ { in_mtn = 1; next }
+            in_mtn && /^[^[:space:]]/ { in_mtn = 0 }
+            in_mtn && /^[[:space:]]*-[[:space:]]+code:/ { in_mtn = 0 }
+            in_mtn && /^[[:space:]]*currency:[[:space:]]*XAF[[:space:]]*$/ { found = 1 }
+            END { exit found ? 0 : 1 }
+        ' "$overlay"
+    }
+
+    if [ -e "$key" ] && [ -e "$shop_key" ] && [ -e "$overlay" ]; then
         # ...unless the overlay predates a required field. `merchant_id`
         # became required on `merchant_clients` in Step 2, and an overlay
         # generated before that makes the server exit 78 on every restart
@@ -859,8 +1255,12 @@ gen-demo-keys: gen-e2e-signing-key
             && merchant_webhooks_present \
             && grep -q '^\s*publishable_keys:' "$overlay" \
             && grep -q '^\s*allow_private_targets:' "$overlay" \
-            && grep -q "^\s*public_base_url: http://localhost:{{demo_port}}$" "$overlay"; then
-            echo "gen-demo-keys: $key and $overlay already exist, keeping them"
+            && grep -q "^\s*public_base_url: http://localhost:{{demo_port}}$" "$overlay" \
+            && shop_client_present \
+            && shop_origin_present \
+            && checkout_base_present \
+            && mtn_settles_xaf; then
+            echo "gen-demo-keys: $key, $shop_key and $overlay already exist, keeping them"
             exit 0
         fi
         if ! grep -q '^\s*merchant_id:' "$overlay"; then
@@ -889,13 +1289,50 @@ gen-demo-keys: gen-e2e-signing-key
             # surface's uniform 404 — a refusal that deliberately names
             # neither the key nor the reason.
             echo "gen-demo-keys: $overlay predates the \`publishable_keys\` block — regenerating the pair"
-        else
+        elif ! grep -q "^\s*public_base_url: http://localhost:{{demo_port}}$" "$overlay"; then
             echo "gen-demo-keys: $overlay was generated for a different demo_port than {{demo_port}} — regenerating the pair"
+        elif ! shop_client_present; then
+            # Added 2026-09-04 (Step 9, D12). An overlay generated before this
+            # step registers `demo-merchant` and nobody else, so the shop's
+            # very first token request answers `invalid_client` — with nothing
+            # in it pointing at a stale file, which is the whole class of
+            # failure the `merchant_id` and `publishable_keys` checks above
+            # exist for.
+            echo "gen-demo-keys: $overlay has no \`shop-merchant\` registration — regenerating the pair"
+        elif ! shop_origin_present; then
+            # Added 2026-09-04 (Step 9, D4/D12). Not fatal at boot: the
+            # overlay loads and hosted checkout is unaffected. What breaks is
+            # the EMBEDDED page — vpay serves
+            # `Content-Security-Policy: frame-ancestors <the old origin>` and
+            # the browser refuses to render the iframe, silently, with a
+            # console message on the payer's machine and nothing at all in any
+            # server log.
+            echo "gen-demo-keys: $overlay does not allow http://localhost:{{demo_shop_port}} to frame the checkout page — regenerating the pair"
+        elif ! checkout_base_present; then
+            # Added 2026-09-04 (Step 9, D3/D6). `checkout.public_base_url` is
+            # the origin every payer link vpay mints is built on. Stale, and
+            # `POST /v1/checkout/sessions` answers a `url` on a port this
+            # stack does not publish — the payer's browser gets a connection
+            # refused and no log anywhere names a port.
+            echo "gen-demo-keys: $overlay was generated for a different demo_checkout_port than {{demo_checkout_port}} — regenerating the pair"
+        else
+            # Added 2026-09-04 (Step 9, lane 7 addendum A); keyed on the
+            # currency rather than on the block's presence 2026-09-04 (r2
+            # review, finding 6 — see `mtn_settles_xaf`). Two overlays land
+            # here: one generated before that step, which carries no
+            # `providers:` block at all so the base file's stands and
+            # `mtn_momo` settles EUR, and one whose `mtn_momo` entry has been
+            # edited to EUR by hand. Either way `vpay_api`'s
+            # `currencies_agree` refuses every confirm of the shop's XAF
+            # orders on MTN with `rail 'mtn_momo' settles in EUR; this
+            # PaymentIntent is XAF`. Which is true, and names no file anyone
+            # could fix.
+            echo "gen-demo-keys: $overlay does not settle \`mtn_momo\` in XAF — regenerating the pair"
         fi
-    elif [ -e "$key" ] || [ -e "$overlay" ]; then
-        echo "gen-demo-keys: $key and $overlay are out of sync — regenerating the pair"
+    elif [ -e "$key" ] || [ -e "$shop_key" ] || [ -e "$overlay" ]; then
+        echo "gen-demo-keys: $key, $shop_key and $overlay are out of sync — regenerating all three"
     fi
-    rm -f "$key" "$overlay"
+    rm -f "$key" "$shop_key" "$overlay"
 
     generated=$(cargo xtask gen-signing-key --out .e2e/demo-merchant)
     jwk=$(printf '%s\n' "$generated" | grep -m1 '^{"kty"' || true)
@@ -907,6 +1344,29 @@ gen-demo-keys: gen-e2e-signing-key
     n=$(printf '%s' "$jwk" | jq -er .n)
     e=$(printf '%s' "$jwk" | jq -er .e)
     kid=$(printf '%s' "$jwk" | jq -er .kid)
+
+    # The shop's pair (D12). A second `merchant_clients` entry, not a second
+    # overlay: `merchant_clients` is a LIST, and a list in a profile overlay
+    # replaces the base list wholesale, so both entries have to be in the one
+    # generated document.
+    shop_generated=$(cargo xtask gen-signing-key --out .e2e/shop-merchant)
+    shop_jwk=$(printf '%s\n' "$shop_generated" | grep -m1 '^{"kty"' || true)
+    if [ -z "$shop_jwk" ]; then
+        echo "gen-demo-keys: FAIL — could not find the shop's public JWK in xtask's output:" >&2
+        printf '%s\n' "$shop_generated" >&2
+        exit 1
+    fi
+    shop_n=$(printf '%s' "$shop_jwk" | jq -er .n)
+    shop_e=$(printf '%s' "$shop_jwk" | jq -er .e)
+    shop_kid=$(printf '%s' "$shop_jwk" | jq -er .kid)
+
+    # 0644, NOT the 0600 `demo-merchant`'s key gets, and the difference is the
+    # whole point: unlike the demo binary — which runs on the HOST, as a
+    # merchant's own process would — the shop runs INSIDE compose, so its
+    # private key is bind-mounted into a container that runs as uid 1000.
+    # Throwaway, git-ignored, regenerated per checkout; never point this
+    # recipe at a directory holding a key you cannot lose.
+    chmod 0644 "$shop_key"
 
     # `merchant_clients` is a LIST, and a list in a profile overlay replaces
     # the base list outright (figment merges maps, not sequences). So this one
@@ -931,6 +1391,81 @@ gen-demo-keys: gen-e2e-signing-key
       # VPAY_BASE_URL. See the \`demo_port\` variable in the justfile for what
       # goes wrong when the two disagree.
       public_base_url: http://localhost:{{demo_port}}
+
+    # BOTH RAILS SETTLE XAF IN THIS STACK, AND ONLY IN THIS STACK.
+    #
+    # \`config/application.yml\` puts \`mtn_momo\` on EUR because **MTN's real
+    # sandbox rejects XAF** (docs/flows/money.md) — that is the sandbox truth
+    # and it is unchanged; the base file still says EUR and so does
+    # \`application-sandbox.yml\`. What this stack talks to is not the sandbox:
+    # it is a WireMock host that accepts whatever currency the body carries,
+    # because none of its mappings matches on one.
+    #
+    # Why change it at all: the demo shop (\`examples/shop\`) prices its
+    # catalogue in XAF, which is Cameroon's currency and docs/flows/money.md's
+    # worked example, and offers a payer both rails.
+    # \`vpay_api::v1::payment_intents::currencies_agree\` refuses a confirm
+    # whose rail settles in a different currency from the intent — so with
+    # \`mtn_momo\` on EUR the shop's MTN button is a 400 the payer cannot get
+    # past. Configuration, never a code branch (ADR-0003).
+    #
+    # \`providers\` is a LIST, so this block replaces the base file's outright
+    # and both rails have to be written out even though only one line differs
+    # from it. The \`\$\` escapes keep the credential placeholders literal in
+    # the generated file: they are resolved from compose.e2e.yml's
+    # environment at boot, and a literal here would be a secret in a file.
+    #
+    # **Do not read this block as "MTN takes XAF".** It does not. See
+    # docs/flows/money.md and this stack's own README of a mapping,
+    # backends/tests/conformance/wiremock/mtn/mappings/requesttopay-status.json.
+    providers:
+      - code: mtn_momo
+        host:
+          url: http://wiremock-mtn:8080
+          label: mtn-sandbox-wiremock
+        # XAF here, EUR in config/application.yml. Read the block comment
+        # above before copying this line anywhere.
+        currency: XAF
+        settings:
+          subscription_key_header: Ocp-Apim-Subscription-Key
+          target_environment: sandbox
+          api_user: \${MTN_API_USER}
+        credentials:
+          subscription_key: \${MTN_SUBSCRIPTION_KEY}
+          api_key: \${MTN_API_KEY}
+      - code: orange_money
+        host:
+          # The \`/orange-money-webpay/{env}\` path prefix is part of the base
+          # URL by design (docs/flows/adapter-orange-money.md); the stub's
+          # mappings match only under it.
+          url: http://wiremock-orange:8080/orange-money-webpay/dev
+          label: orange-sandbox-wiremock
+        currency: XAF
+        settings:
+          env: dev
+          lang: en
+        credentials:
+          merchant_key: \${ORANGE_MERCHANT_KEY}
+          client_id: \${ORANGE_CLIENT_ID}
+          client_secret: \${ORANGE_CLIENT_SECRET}
+
+    # Where vpay's own checkout page is served from (Step 9, D3/D6) — the
+    # origin every payer link vpay mints is built on:
+    #
+    #   hosted    {base}/c/{cs_id}?key={pk}#{client_secret}
+    #   embedded  {base}/e/{cs_id}?key={pk}#{client_secret}
+    #   return    {base}/c/{cs_id}/return?t={return_token}&key={pk}
+    #
+    # The port \`just demo\` published \`vpay-checkout\` on
+    # ({{demo_checkout_port}}). A value that disagrees with the publication is
+    # a \`session.url\` a browser cannot open, and nothing in any log names a
+    # port — which is why this recipe's shape check covers it.
+    #
+    # \`http://\` is legal only because this overlay does not set
+    # \`livemode\`, so the base file's \`false\` stands
+    # (ConfigError::InsecureCheckoutBaseUrl otherwise).
+    checkout:
+      public_base_url: http://localhost:{{demo_checkout_port}}
 
     # The demo's receiver is \`wiremock-webhook\`, a service on the compose
     # network, so every delivery resolves to a private address — and
@@ -1014,13 +1549,65 @@ gen-demo-keys: gen-e2e-signing-key
           - id: demo
             url: http://wiremock-webhook:8080/webhooks
             secrets: ["\${MERCHANT_WEBHOOK_SECRET}"]
+
+      # The SHOP is its own merchant (D12), with its own key pair, its own
+      # publishable key and its own webhook endpoint. \`demo-merchant\` above
+      # and its WireMock receiver are untouched: \`examples/merchant-demo\`'s
+      # walkthrough is a different thing from the shop's, and neither should
+      # be able to break the other by sharing a credential.
+      - client_id: shop-merchant
+        merchant_id: shop-merchant-tenant
+        jwks:
+          keys:
+            - kty: RSA
+              use: sig
+              alg: RS256
+              kid: "$shop_kid"
+              n: "$shop_n"
+              e: "$shop_e"
+        grant_types: [client_credentials]
+        # \`payments:write\` covers both POST /v1/payment_intents and
+        # POST /v1/checkout/sessions, which is the pair the shop makes per
+        # order.
+        scopes: ["payments:write"]
+        allowed_audiences: ["vpay:v1"]
+        # Fixed, like demo-merchant's, and for the same reason: the shop's
+        # compose environment names it literally (VPAY_PUBLISHABLE_KEY).
+        publishable_keys: ["pk_test_shopmerchantsandbox1"]
+        # D4 / D12. The shop's own origin, as a BROWSER sees it — this is what
+        # becomes \`Content-Security-Policy: frame-ancestors\` on vpay's
+        # embedded page. It must name the port \`just demo\` published the shop
+        # on ({{demo_shop_port}}); wrong, and the iframe is refused by the
+        # browser with nothing in any server log about it.
+        #
+        # \`http://\` is permitted only because this overlay does not set
+        # \`livemode\`, so the base file's \`false\` stands.
+        checkout_origins: ["http://localhost:{{demo_shop_port}}"]
+        # The shop's own handler, on the compose network. \`vpay-shop\` is a
+        # compose service, so this resolves to a private address and rides on
+        # the same \`webhooks.allow_private_targets\` flag above that
+        # \`wiremock-webhook\` does.
+        #
+        # The secret must be the SAME BYTES as the shop's own
+        # \`VPAY_WEBHOOK_SECRET\` (compose.e2e.yml), or every delivery it
+        # verifies is a 400 and no order ever reaches \`paid\`. Left as a
+        # placeholder in the file for the reason MERCHANT_WEBHOOK_SECRET is:
+        # a literal here would be refused outright by a livemode overlay
+        # copied from this one (ConfigError::LiteralSecret).
+        webhooks:
+          - id: shop
+            url: http://vpay-shop:3000/api/vpay/webhook
+            secrets: ["\${SHOP_WEBHOOK_SECRET}"]
     YAML
     # The scratch image runs as UID 65532 and must read the bind mount. This
     # file is a public key and a client id; there is nothing secret in it.
     chmod 0644 "$overlay"
 
     echo "gen-demo-keys: wrote $key (3072-bit RSA, mode 0600, host-only)"
+    echo "gen-demo-keys: wrote $shop_key (3072-bit RSA, mode 0644, mounted into vpay-shop)"
     echo "gen-demo-keys: wrote $overlay — client_id=demo-merchant kid=$kid"
+    echo "gen-demo-keys: wrote $overlay — client_id=shop-merchant kid=$shop_kid"
+    echo "gen-demo-keys: both rails settle XAF in this overlay (config/application.yml keeps mtn_momo on EUR — the sandbox's own currency)"
 
 # Keys, stack, walkthrough — the one command issue #11 asks for.
 #
@@ -1033,8 +1620,13 @@ gen-demo-keys: gen-e2e-signing-key
 # Boot the demo stack and run the merchant walkthrough against it.
 demo: demo-up demo-walk
 
-# Generate the keys, build the images, bring the six services up, and return
-# only once the server answers.
+# Generate the keys, build the images, bring the EIGHT services of
+# `demo_services` up, and return only once the server answers: postgres, both
+# WireMock rails, the merchant webhook receiver, `vpay-server`, `vpay-worker`,
+# vpay's own checkout page and the demo shop. (It said six until 2026-09-04;
+# lane 3 added `vpay-checkout` and lane 7 `vpay-shop` to `demo_services`
+# without the sentence following. The dashboard is the one service of the
+# file set this recipe deliberately leaves down — see compose.demo.yml.)
 #
 # Split out of `demo` so the walkthrough is re-runnable against a stack that
 # is already up (`just demo-walk`), which is what you want while reading its
@@ -1050,14 +1642,19 @@ demo-up: gen-demo-keys
     for tool in docker curl; do
         command -v "$tool" >/dev/null 2>&1 || { echo "demo-up: needs '$tool' on PATH" >&2; exit 1; }
     done
-    # Read by compose.demo.yml: `${VPAY_DEMO_PROJECT}` is its `name:`, the two
-    # ports are `vpay-server`'s and `wiremock-webhook`'s `ports:`. Exported
-    # rather than passed per command, because `docker compose` interpolates
-    # each file from its own environment.
+    # Read by compose.demo.yml: `${VPAY_DEMO_PROJECT}` is its `name:`, and the
+    # five ports are `vpay-server`'s, `wiremock-webhook`'s,
+    # `wiremock-orange`'s, `vpay-checkout`'s and `vpay-shop`'s `ports:`.
+    # Exported rather than passed per command, because `docker compose`
+    # interpolates each file from its own environment.
     export VPAY_DEMO_PROJECT={{demo_project}}
     export VPAY_DEMO_PORT={{demo_port}}
     export VPAY_DEMO_RECEIVER_PORT={{demo_receiver_port}}
-    echo "demo-up: project {{demo_project}}, server :{{demo_port}}, receiver :{{demo_receiver_port}}"
+    export VPAY_DEMO_ORANGE_PORT={{demo_orange_port}}
+    export VPAY_DEMO_CHECKOUT_PORT={{demo_checkout_port}}
+    export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
+    echo "demo-up: project {{demo_project}}, server :{{demo_port}}, receiver :{{demo_receiver_port}}, orange stub :{{demo_orange_port}}"
+    echo "demo-up: checkout page :{{demo_checkout_port}}, shop :{{demo_shop_port}}"
 
     # `--wait`, not a sleep. Postgres and all three WireMock containers carry
     # healthchecks (compose.yml, compose.e2e.yml), so this returns when the
@@ -1121,6 +1718,11 @@ demo-walk:
     echo "  server      http://localhost:{{demo_port}}"
     echo "  discovery   http://localhost:{{demo_port}}/v1/oauth/.well-known/openid-configuration"
     echo "  receiver    http://localhost:{{demo_receiver_port}}/__admin/requests"
+    echo "  checkout    http://localhost:{{demo_checkout_port}}/healthz  (vpay's own payment page)"
+    echo "  shop        http://localhost:{{demo_shop_port}}                (the demo merchant's storefront)"
+    echo "  orange stub http://localhost:{{demo_orange_port}}/__admin/requests"
+    echo "  (an orange_money confirm answers next_action.redirect_to_url.url on that host:"
+    echo "   open it for the RAIL's stub hosted page, with a Pay link and a Cancel link)"
     echo "  rail journal  docker compose {{demo_compose}} exec wiremock-mtn curl -s localhost:8080/__admin/requests"
     echo "  (no dashboard: it has no data source to show — docs/runbooks/demo.md)"
     echo
@@ -1142,7 +1744,11 @@ demo-status:
     export VPAY_DEMO_PROJECT={{demo_project}}
     export VPAY_DEMO_PORT={{demo_port}}
     export VPAY_DEMO_RECEIVER_PORT={{demo_receiver_port}}
-    echo "demo-status: project {{demo_project}}, server :{{demo_port}}, receiver :{{demo_receiver_port}}"
+    export VPAY_DEMO_ORANGE_PORT={{demo_orange_port}}
+    export VPAY_DEMO_CHECKOUT_PORT={{demo_checkout_port}}
+    export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
+    echo "demo-status: project {{demo_project}}, server :{{demo_port}}, receiver :{{demo_receiver_port}}, orange stub :{{demo_orange_port}}"
+    echo "demo-status: checkout page :{{demo_checkout_port}}, shop :{{demo_shop_port}}"
     docker compose {{demo_compose}} ps
     echo
     echo "demo-status: every vpay-ish container on this machine —"
@@ -1171,8 +1777,36 @@ demo-down:
     export VPAY_DEMO_PROJECT={{demo_project}}
     export VPAY_DEMO_PORT={{demo_port}}
     export VPAY_DEMO_RECEIVER_PORT={{demo_receiver_port}}
+    export VPAY_DEMO_ORANGE_PORT={{demo_orange_port}}
+    export VPAY_DEMO_CHECKOUT_PORT={{demo_checkout_port}}
+    export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
     docker compose {{demo_compose}} down -v
     echo "demo-down: project {{demo_project}} is gone (containers and volumes)"
+
+# Print the demo shop's URL — the end-to-end demo a human clicks through.
+#
+# A recipe rather than a line in the runbook because the port is a variable:
+# `just demo_shop_port=13001 demo-shop` prints the URL that run actually
+# published, and a copy in prose would be right only for the default.
+#
+# It does NOT check that anything is listening. `just demo-status` is the
+# question "is it up"; this one is "where is it".
+#
+# Print the demo shop's URL for the current demo_shop_port.
+demo-shop:
+    @echo "http://localhost:{{demo_shop_port}}"
+
+# Print vpay's own checkout page's origin — the value the generated overlay's
+# `checkout.public_base_url` carries, and the origin every payer link vpay
+# mints for this stack is built on.
+#
+# You do not open this URL directly: `/` is not a route this app serves. A
+# payer arrives at `/c/{cs_id}?key=…#{client_secret}`, which is the `url` a
+# hosted Checkout Session answers with — `just demo-walk`'s step 5 prints one.
+#
+# Print vpay's checkout page origin for the current demo_checkout_port.
+demo-checkout:
+    @echo "http://localhost:{{demo_checkout_port}}"
 
 # ------------------------------------------------------- stripe compat ----
 
@@ -1188,9 +1822,9 @@ demo-down:
 #
 # It brings up SIX services rather than the whole stack: postgres, both
 # WireMock rails, the merchant webhook receiver, the server and the worker.
-# The dashboard plays no part in a `/v1` conformance run and building
-# `frontends/Dockerfile` for it costs minutes. CI's `e2e` job builds it
-# because Cypress needs it.
+# Neither the dashboard nor vpay's own checkout page nor the demo shop plays
+# any part in a `/v1` conformance run, and building three Next.js images for
+# it costs minutes. CI's `e2e` job builds them because Cypress needs them.
 #
 # `vpay-worker` and `wiremock-webhook` are not optional and were added for two
 # specific cases: the worker is what drives a confirmed intent to `succeeded`
@@ -1212,16 +1846,21 @@ stripe-compat: gen-demo-keys build-sdk-node
     for tool in docker curl pnpm cargo jq; do
         command -v "$tool" >/dev/null 2>&1 || { echo "stripe-compat: needs '$tool' on PATH" >&2; exit 1; }
     done
-    # Same three variables as `just demo-up`, so this recipe addresses the
+    # Same six variables as `just demo-up`, so this recipe addresses the
     # same project and `just demo-down` tears down either. Without the project
     # export it would run under compose.demo.yml's `${VPAY_DEMO_PROJECT:-…}`
     # default while a `just demo_project=… demo-down` addressed another one.
     export VPAY_DEMO_PROJECT={{demo_project}}
     export VPAY_DEMO_PORT={{demo_port}}
     export VPAY_DEMO_RECEIVER_PORT={{demo_receiver_port}}
-    # The same six services `demo_services` names, and `--wait` for the same
-    # reason `just demo-up` uses it.
-    docker compose {{demo_compose}} up -d --build --wait {{demo_services}}
+    export VPAY_DEMO_ORANGE_PORT={{demo_orange_port}}
+    export VPAY_DEMO_CHECKOUT_PORT={{demo_checkout_port}}
+    export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
+    # Six services, not the eight `demo_services` names: this suite drives
+    # `/v1` and never opens a browser, so building two Next.js images for it
+    # would cost minutes it does not buy anything with. `compat_services` is
+    # spelled out beside `demo_services` for exactly that reason.
+    docker compose {{demo_compose}} up -d --build --wait {{compat_services}}
 
     # `vpay-server`'s image is FROM scratch and carries no healthcheck, so
     # readiness is observed from outside — the same way `just demo` and CI do

@@ -262,6 +262,7 @@ mod tests {
             amount: Money::new(5_000, Currency::Xaf).expect("5000 is non-negative"),
             payer_ref: None,
             ref_extra: BTreeMap::new(),
+            return_url: None,
         }
     }
 

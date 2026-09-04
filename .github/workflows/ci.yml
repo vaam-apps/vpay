@@ -354,6 +354,35 @@ jobs:
           echo "::error::dashboard never answered 200 on / (last status: '$code')"
           docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml logs --no-color dashboard
           exit 1
+      # The two browser surfaces Step 9 added, waited on for the same reason
+      # the dashboard is: Cypress's own failure when a server is missing is
+      # "could not verify this server is running", which names the baseUrl and
+      # not the service that never came up. Both images DO carry a
+      # HEALTHCHECK, so `docker compose up --wait` would cover them — this job
+      # does not use `--wait`, and adding it here would also start waiting on
+      # containers whose readiness this job has never depended on.
+      - name: wait for vpay-checkout and vpay-shop
+        run: |
+          set -u
+          for probe in "vpay-checkout http://localhost:3080/healthz" \
+                       "vpay-shop http://localhost:3001/healthz"; do
+            name=${probe%% *}; url=${probe##* }
+            ok=""
+            for i in $(seq 1 90); do
+              if curl -fsS -o /dev/null "$url"; then
+                echo "$name: answered $url after ${i}s"
+                ok=yes
+                break
+              fi
+              sleep 1
+            done
+            if [ -z "$ok" ]; then
+              echo "::error::$name never answered $url"
+              docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml ps
+              docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml logs --no-color "$name"
+              exit 1
+            fi
+          done
       # VPAY_BASE_URL/VPAY_MERCHANT_CLIENT_ID/VPAY_MERCHANT_PRIVATE_KEY_PATH
       # are read by `checkout.cy.ts`'s `cy.task('mintCheckoutPaymentIntent')`
       # (`frontends/tests/e2e/cypress/tasks/checkoutTasks.ts`) to mint a real
@@ -362,9 +391,24 @@ jobs:
       # sets for the same demo-merchant keypair. 8080, not 18080: this job
       # never sets VPAY_DEMO_PORT, so compose.demo.yml's default stands (see
       # that file's own comment on why 8080 here is not a coincidence).
+      # TWO Cypress runs, not one (Step 9, lane 6). `pnpm run e2e` chains
+      # `e2e:default` and `e2e:framed`; the second sets `VPAY_E2E_FRAMED=1`,
+      # which is what `cypress.config.ts` reads to select `shop-embedded.cy.ts`
+      # and turn off `chromeWebSecurity` and the frame-busting rewrites — none
+      # of which can be set per test, and each of which the other specs need
+      # left alone. That file's comments carry the measurements.
+      #
+      # The four URL variables are the compose stack's published ports as a
+      # BROWSER reaches them, with `VPAY_DEMO_*` unset so `compose.demo.yml`'s
+      # defaults stand. They are the config file's own defaults too; they are
+      # spelled here so a port change in one place fails loudly rather than
+      # in a spec's 60-second timeout.
       - run: pnpm --filter @vpay/e2e e2e
         env:
           VPAY_BASE_URL: http://localhost:8080
+          VPAY_SHOP_URL: http://localhost:3001
+          VPAY_CHECKOUT_URL: http://localhost:3080
+          VPAY_ORANGE_STUB_URL: http://localhost:8082
           VPAY_MERCHANT_CLIENT_ID: demo-merchant
           VPAY_MERCHANT_PRIVATE_KEY_PATH: ${{ github.workspace }}/.e2e/demo-merchant/oauth-signing-key.pem
       # The official `stripe` package, driven against this same running stack

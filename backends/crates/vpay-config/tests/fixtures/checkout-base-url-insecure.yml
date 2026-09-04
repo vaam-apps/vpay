@@ -1,0 +1,19 @@
+# Fixture for `a_plaintext_checkout_base_url_is_refused_in_livemode`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# `livemode: true` with an `http://` checkout base URL. Every payer link vpay
+# mints is `{public_base_url}/c/{cs_id}#{client_secret}`, so a plaintext base
+# URL sends a live payer credential in clear on every checkout — the one
+# thing a URL fragment's own protection cannot help with.
+#
+# The rail host and the API's own `public_base_url` are https and carry no
+# stub marker, and the credential is a `${VAR}`, so this fixture fails on
+# exactly one rule.
+
+deployment:
+  name: vpay
+  livemode: true
+  public_base_url: https://api.vpay.example
+
+checkout:
+  public_base_url: http://checkout.example

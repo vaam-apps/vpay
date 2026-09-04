@@ -14,7 +14,9 @@ use serde::de::DeserializeOwned;
 
 use crate::client::Client;
 use crate::form::FormValue;
-use crate::model::{Balance, Event, List, PaymentIntent, PaymentMethodType, Refund};
+use crate::model::{
+    Balance, CheckoutSession, CheckoutUiMode, Event, List, PaymentIntent, PaymentMethodType, Refund,
+};
 use crate::validate::check_amount;
 
 /// Per-call options every write (`POST`) method accepts.
@@ -258,6 +260,96 @@ impl ListPaymentIntentsParams {
     }
 }
 
+/// `POST /v1/checkout/sessions` request fields (Step 9's D1).
+///
+/// The URL rules are the server's and are deliberately not duplicated here:
+/// `success_url`/`cancel_url` are required for `hosted` and refused for
+/// `embedded`, `return_url` the other way round, all http(s) and at most
+/// 2048 characters, `https` only under livemode. This SDK sends what it is
+/// given and lets the server say no. A second copy of those rules here
+/// would be a second thing to keep in step with them, and would refuse a
+/// combination a later server version allows — the Node SDK
+/// (`sdks/nodejs/src/resources/checkout-sessions.ts`) takes the same line,
+/// which is what keeps the two at parity on the refusals as well as the
+/// acceptances.
+#[derive(Debug, Clone, Default)]
+pub struct CreateCheckoutSessionParams {
+    /// The `pi_…` to drive. Required; a session never creates its intent.
+    pub payment_intent: String,
+    /// Omitted from the body entirely when `None`, which is how the server
+    /// gets to apply its own default (`hosted`) rather than this SDK
+    /// guessing it.
+    pub ui_mode: Option<CheckoutUiMode>,
+    /// Where a paying payer is forwarded. Hosted mode. May contain the
+    /// literal `{CHECKOUT_SESSION_ID}` (D5).
+    pub success_url: Option<String>,
+    /// Where a payer who gave up is forwarded. Hosted mode.
+    pub cancel_url: Option<String>,
+    /// Where vpay's framed page forwards the payer at the end. Embedded mode.
+    pub return_url: Option<String>,
+}
+
+impl CreateCheckoutSessionParams {
+    pub(crate) fn to_form(&self) -> FormValue {
+        FormValue::Object(vec![
+            (
+                "payment_intent".to_string(),
+                FormValue::from(self.payment_intent.as_str()),
+            ),
+            (
+                "ui_mode".to_string(),
+                FormValue::from(self.ui_mode.map(CheckoutUiMode::as_wire_str)),
+            ),
+            (
+                "success_url".to_string(),
+                FormValue::from(self.success_url.clone()),
+            ),
+            (
+                "cancel_url".to_string(),
+                FormValue::from(self.cancel_url.clone()),
+            ),
+            (
+                "return_url".to_string(),
+                FormValue::from(self.return_url.clone()),
+            ),
+        ])
+    }
+}
+
+/// `GET /v1/checkout/sessions` query parameters. All optional; an unset
+/// field is omitted from the query string entirely.
+#[derive(Debug, Clone, Default)]
+pub struct ListCheckoutSessionsParams {
+    /// Page size. The server's own default and ceiling apply when unset.
+    pub limit: Option<u32>,
+    /// Cursor: return sessions *after* this id (the next page).
+    pub starting_after: Option<String>,
+    /// Cursor: return sessions *before* this id (the previous page).
+    pub ending_before: Option<String>,
+    /// Only sessions for this `pi_…`.
+    pub payment_intent: Option<String>,
+}
+
+impl ListCheckoutSessionsParams {
+    pub(crate) fn to_form(&self) -> FormValue {
+        FormValue::Object(vec![
+            ("limit".to_string(), FormValue::from(self.limit)),
+            (
+                "starting_after".to_string(),
+                FormValue::from(self.starting_after.clone()),
+            ),
+            (
+                "ending_before".to_string(),
+                FormValue::from(self.ending_before.clone()),
+            ),
+            (
+                "payment_intent".to_string(),
+                FormValue::from(self.payment_intent.clone()),
+            ),
+        ])
+    }
+}
+
 /// `POST /v1/refunds` request fields.
 #[derive(Debug, Clone, Default)]
 pub struct CreateRefundParams {
@@ -442,6 +534,102 @@ impl PaymentIntentsResource<'_> {
             self.client,
             "/payment_intents",
             query_string(&params.to_form()),
+        )
+        .await
+    }
+}
+
+/// `client.checkout().sessions()` — see [`crate::Client::checkout`].
+///
+/// A namespace with no operations of its own, so that the call reads
+/// `client.checkout().sessions().create(…)` — the path the wire contract
+/// uses (`/v1/checkout/sessions`), and the shape the Node SDK's
+/// `client.checkout.sessions` mirrors. A flat `client.checkout_sessions()`
+/// would have been shorter and would have made the two SDKs read
+/// differently for the same route.
+#[derive(Debug, Clone, Copy)]
+pub struct CheckoutResource<'a> {
+    pub(crate) client: &'a Client,
+}
+
+impl<'a> CheckoutResource<'a> {
+    /// `/v1/checkout/sessions`.
+    #[must_use]
+    pub fn sessions(&self) -> CheckoutSessionsResource<'a> {
+        CheckoutSessionsResource {
+            client: self.client,
+        }
+    }
+}
+
+/// `client.checkout().sessions()` — the four merchant operations on
+/// `/v1/checkout/sessions`.
+#[derive(Debug, Clone, Copy)]
+pub struct CheckoutSessionsResource<'a> {
+    pub(crate) client: &'a Client,
+}
+
+impl CheckoutSessionsResource<'_> {
+    /// `POST /v1/checkout/sessions`. Answers the session **with**
+    /// `client_secret`, and with `url` when `ui_mode` is `hosted`.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`].
+    pub async fn create(
+        &self,
+        params: CreateCheckoutSessionParams,
+        opts: RequestOptions,
+    ) -> Result<CheckoutSession, crate::Error> {
+        post(self.client, "/checkout/sessions", params.to_form(), opts).await
+    }
+
+    /// `GET /v1/checkout/sessions/{id}`. Answers the session with
+    /// `client_secret`.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`].
+    pub async fn retrieve(&self, id: &str) -> Result<CheckoutSession, crate::Error> {
+        get(
+            self.client,
+            &format!("/checkout/sessions/{}", path_segment(id)),
+            None,
+        )
+        .await
+    }
+
+    /// `GET /v1/checkout/sessions`. List items never carry `client_secret`.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`].
+    pub async fn list(
+        &self,
+        params: ListCheckoutSessionsParams,
+    ) -> Result<List<CheckoutSession>, crate::Error> {
+        get(
+            self.client,
+            "/checkout/sessions",
+            query_string(&params.to_form()),
+        )
+        .await
+    }
+
+    /// `POST /v1/checkout/sessions/{id}/expire`. No request fields.
+    ///
+    /// `open` → `expired`; a session whose intent already has a live charge
+    /// is refused `409` by the server rather than raced here.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`].
+    pub async fn expire(
+        &self,
+        id: &str,
+        opts: RequestOptions,
+    ) -> Result<CheckoutSession, crate::Error> {
+        post(
+            self.client,
+            &format!("/checkout/sessions/{}/expire", path_segment(id)),
+            FormValue::Object(Vec::new()),
+            opts,
         )
         .await
     }

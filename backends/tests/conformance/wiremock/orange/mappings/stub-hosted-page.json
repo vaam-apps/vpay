@@ -1,0 +1,87 @@
+{
+  "mappings": [
+    {
+      "name": "the stub's hosted payment page: a Pay link and a Cancel link",
+      "metadata": {
+        "file": [
+          "GET /stub-hosted-page/{pay_token} -- what a payer's BROWSER sees after",
+          "vpay redirects them, standing in for Orange Money's own hosted page.",
+          "",
+          "webpayment.json has answered every accepted submit with a payment_url",
+          "under this path since Step 3, and until Step 9 nothing served it: a",
+          "payer following the URL vpay handed them got WireMock's 404. Step 9's",
+          "D7 makes it a page with two links, so a browser -- Cypress in",
+          "frontends/tests/e2e, or a human running `just demo` -- can finish the",
+          "redirect leg instead of stopping at the redirect.",
+          "",
+          "ADR-0006 allows this: a stub rail is a WireMock HOST in configuration,",
+          "reached over HTTP exactly as the rail is. It is a stub of the RAIL's",
+          "page. It is not, and must never become, a stub of a vpay page --",
+          "vpay's own return page is frontends/apps/checkout's, served by vpay.",
+          "",
+          "Commentary lives in `metadata` because WireMock fails to start on a",
+          "mapping document containing any field it does not recognise."
+        ],
+        "comment": [
+          "WHY THE LINKS COME OUT OF THE QUERY STRING, AND WHY THE REAL RAIL DOES",
+          "NOT WORK THIS WAY.",
+          "",
+          "Orange's real page is stateful: the submit hands the rail return_url and",
+          "cancel_url, the rail STORES them against the pay_token, and the page it",
+          "later serves at that token renders them from its own database. The payer",
+          "never sees those URLs in the address bar of the page they are sent to.",
+          "",
+          "WireMock cannot do that. Response templating renders from the CURRENT",
+          "request only: {{request.*}} is this GET, and there is no handlebars",
+          "helper that reaches into the request journal for the POST that minted",
+          "the token. A stateful stub would need a scenario per token (there is one",
+          "per charge, generated at runtime) or a postServeAction that wrote a new",
+          "mapping (a plugin this image does not carry, and a stub that rewrites",
+          "itself while a suite is running).",
+          "",
+          "So the token is carried WITH its two URLs: webpayment.json's response",
+          "templates payment_url as",
+          "  /stub-hosted-page/{pay_token}?return=<urlEncoded>&cancel=<urlEncoded>",
+          "and this mapping templates them straight back out. The pairing is",
+          "preserved -- these are the exact bytes THAT submit carried, not a",
+          "deployment-wide constant -- which is the property a test of the return",
+          "trip needs. What is lost is the rail-side storage, and with it any claim",
+          "that Orange would accept a return_url it had not been told about at",
+          "submit. Nothing in this repository makes that claim.",
+          "",
+          "This is a difference between the stub and the rail. It is the same class",
+          "of difference as the stub keying its pay_token on the order_id, and it is",
+          "written down here rather than discovered later.",
+          "",
+          "TRIPLE STACHE, {{{...}}}, not double. Handlebars' double stache",
+          "HTML-escapes, so a return_url carrying `&` would reach the href as",
+          "`&amp;` and a test asserting on the exact URL the submit sent would fail",
+          "on an escape it did not choose. This is a stub whose only reader is a",
+          "test and a demo browser; byte-for-byte is what it is for.",
+          "",
+          "The urlPathPattern is loose on the token because it is generated per",
+          "charge: pay-<uuid> from the catch-all, pay-dup-1 from the duplicate",
+          "scenario. Nothing here reads it -- it is in the path so a captured",
+          "request says which charge a payer was looking at.",
+          "",
+          "Proven by the_stub_hosted_page_links_to_the_return_url_the_submit_carried",
+          "in backends/tests/integration/tests/confirm_rails.rs, which confirms a",
+          "real intent, follows the payment_url the rail answered with, and asserts",
+          "both hrefs are the merchant's own return URL."
+        ]
+      },
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/stub-hosted-page/[^/]+"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store"
+        },
+        "body": "<!doctype html>\n<html lang=\"fr\">\n<head>\n<meta charset=\"utf-8\">\n<title>Orange Money (stub) &mdash; paiement</title>\n</head>\n<body>\n<h1>Orange Money &mdash; page de paiement (stub)</h1>\n<p>This page is a WireMock stub of the rail's hosted page. It is not Orange, it moves no money, and it decides nothing: the outcome of this charge comes from vpay's authenticated status query.</p>\n<p>Reference: <code>{{request.pathSegments.[1]}}</code></p>\n<p>\n<a id=\"pay\" href=\"{{{request.query.return}}}\">Pay</a>\n<a id=\"cancel\" href=\"{{{request.query.cancel}}}\">Cancel</a>\n</p>\n</body>\n</html>\n"
+      }
+    }
+  ]
+}

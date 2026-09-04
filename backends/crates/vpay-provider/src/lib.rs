@@ -84,6 +84,32 @@ pub struct ChargeRef {
     pub payer_ref: Option<String>,
     /// Rail key material captured from a previous `submit`, if any.
     pub ref_extra: RefExtra,
+    /// Where a redirect rail must send the payer's browser when its own page
+    /// is done with them. `None` on a push rail, which has no browser.
+    ///
+    /// **The core fills this, never an adapter** (D2 of
+    /// `docs/plans/2026-09-04-step9-hosted-checkout.md`). It is one of two
+    /// values, decided per charge by `vpay_api`'s confirm path:
+    ///
+    /// * the vpay page that receives the payer for the **checkout session**
+    ///   driving this charge, when one does — `{checkout.public_base_url}/c/{cs_id}/return?t=…`;
+    /// * otherwise the **merchant's own** `charges.return_url`, the URL they
+    ///   sent on `confirm` and which is echoed back to them as
+    ///   `next_action.redirect_to_url.return_url`.
+    ///
+    /// Before this field existed, `vpay-adapter-orange-money` answered a
+    /// per-charge question out of *deployment* configuration
+    /// (`settings.return_url`, falling back to the callback URL), so every
+    /// payer on a deployment was returned to the same place whatever the
+    /// merchant had asked for. Interpolating the charge into `ProviderConfig`
+    /// instead was rejected: it would make deployment configuration
+    /// charge-dependent.
+    ///
+    /// An adapter on a push rail must ignore it — see
+    /// `the_submit_tells_the_rail_where_to_send_the_payer_back` in
+    /// `backends/tests/conformance`, which asserts MTN's body carries no
+    /// return URL at all.
+    pub return_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]

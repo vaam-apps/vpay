@@ -8,6 +8,11 @@ export default defineConfig({
     // package touches — `fetch` and `window` — are supplied per test:
     // `fetch` through the `VpayStripeOptions.fetch` option, `window` by
     // assigning to `globalThis` in the redirect tests only.
+    //
+    // The one exception is `src/embedded.test.ts`, whose contract is a real
+    // `<iframe>` and a real `message` event rather than bytes: it opts into
+    // jsdom with a `// @vitest-environment jsdom` docblock of its own, so
+    // the DOM is present exactly where it is the subject and nowhere else.
     environment: "node",
     include: ["src/**/*.test.ts"],
   },

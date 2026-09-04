@@ -29,14 +29,23 @@ import { readCompatEnv } from "./env.js";
 export const RAIL = "mtn_momo";
 
 /**
- * EUR, not XAF, and it is a property of the rail rather than a preference:
- * `config/application.yml` settles `mtn_momo` in EUR because MTN's sandbox
- * rejects XAF, and `/v1` refuses a confirm whose intent currency is not the
- * rail's. An XAF intent here would be a `400` at confirm, not a payment.
+ * XAF, and it is a property of the STACK rather than a preference: `/v1`
+ * refuses a confirm whose intent currency is not the rail's
+ * (`vpay_api`'s `currencies_agree`), and this suite runs against the DEMO
+ * stack — `just stripe-compat` and CI's `e2e` job both load the overlay
+ * `just gen-demo-keys` writes, which since Step 9 settles both rails in XAF.
+ *
+ * It was `"eur"` until 2026-09-04, and that was equally a property of the
+ * stack: the demo overlay had no `providers:` block, so `mtn_momo` inherited
+ * `config/application.yml`'s EUR. That file still says EUR, because **MTN's
+ * real sandbox rejects XAF** (`docs/flows/money.md`); what changed is that
+ * the demo shop prices its catalogue in XAF and offers both rails, so the
+ * demo overlay had to settle both in one currency. See the `providers:`
+ * block `gen-demo-keys` generates.
  */
-export const CURRENCY = "eur";
+export const CURRENCY = "xaf";
 
-/** €50.00 — EUR has two decimals, and the wire is integer minor units. */
+/** 5 000 FCFA — XAF is zero-decimal, and the wire is integer minor units. */
 export const AMOUNT = 5000;
 
 /**
