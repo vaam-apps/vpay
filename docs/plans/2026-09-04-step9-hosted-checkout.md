@@ -720,3 +720,20 @@ implemented; the row and the pull request both say so, so the maintainer can
 veto it. Migration `0030` (`checkout_sessions_intent_seq_idx`) comes with it,
 for the total index the new lookup needs and `0028`'s partial one cannot
 serve.
+
+**Follow-up, 2026-09-05: `verify-status` lexes comments and literals** —
+experiment sample 3, opus arm, reviewed with ten mutations (6 of 10 caught as
+delivered; all ten after the review's four fixes). Unrelated to hosted
+checkout — it fixes `cargo xtask verify-status`, the AGENTS.md-rule-2 gate —
+but landed the same day through the same process, so it is recorded here
+rather than left to a commit message. The task brief's premise turned out
+half wrong: on this base `searchable` already stripped every comment that
+*began* a line (`//`, `///`, `//!`, `/* */`); only a **trailing** `//`
+comment and a **string literal** (typically a raw string) spelling the token
+out still got through. A hand-written lexer replaces the old block-comment
+stripper and leading-line filter, is shared by `verify-status`,
+`verify-errors` and the `connect_lazy` half of `verify-no-mocks` (all three
+call `searchable`), and every gate's output on the real tree is
+byte-identical to `origin/master`'s. The record is
+`docs/plans/step9-notes/verify-status-lexer.md` and
+`verify-status-lexer-review.md`.

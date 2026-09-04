@@ -8,20 +8,28 @@ directions**. `cargo xtask verify-status` scans the workspace for every
 `ProviderError::NotImplemented("…")` token and fails the build if one is
 missing from this file — *and* fails if this file declares a token that no
 shipping code carries any more, so a section that outlives the code it
-described cannot sit here unnoticed. The scanner is now comment-aware: a
-`NotImplemented("…")` written inside a doc comment while explaining
-something is no longer counted as a token (that blind spot is described in
-the Step 2 note below, where it was found). `cargo xtask verify-no-mocks`
-no longer greps the two app manifests: it walks `cargo metadata`'s
-dependency graph from each shipping binary along non-dev edges only, so a
-test double reachable through *any* intermediate crate is caught, and it
-additionally refuses a test-only crate listed under any workspace member's
-`[dependencies]` — with one narrow, documented allowlist
-(`vpay-testkit` → `testcontainers`/`testcontainers-modules`, because
-starting a real container is what that crate exists to do and ADR-0006 says
-a stub rail **is** a WireMock host reached over HTTP). The Rust `wiremock`
-crate — an *in-process* double — is allowlisted for nobody, which is how
-`vpay-testkit`'s unused runtime dependency on it was found and dropped.
+described cannot sit here unnoticed. The scanner reads *code*, not text:
+since 2026-09-05 it lexes, so a `NotImplemented("…")` written in a comment
+of any kind (`//`, `///`, `//!`, `/* */` nested or not — leading **or**
+trailing), in a `#[doc = "…"]` attribute, or inside any string, raw-string
+or character literal is prose, and prose declares nothing. It was
+comment-aware from 2026-09-03 (that blind spot is described in the Step 2
+note below, where it was found), but only for comments that *began* a line,
+and not at all for string literals; a trailing `// … NotImplemented("x")` or
+an `r#"…"#` carrying the token still forced a phantom bullet into this file
+— and because the check runs in both directions, the bullet then had to
+stay, so the docs→code half could be satisfied by prose alone.
+`cargo xtask verify-no-mocks` no longer greps the two app manifests: it
+walks `cargo metadata`'s dependency graph from each shipping binary along
+non-dev edges only, so a test double reachable through *any* intermediate
+crate is caught, and it additionally refuses a test-only crate listed under
+any workspace member's `[dependencies]` — with one narrow, documented
+allowlist (`vpay-testkit` → `testcontainers`/`testcontainers-modules`,
+because starting a real container is what that crate exists to do and
+ADR-0006 says a stub rail **is** a WireMock host reached over HTTP). The
+Rust `wiremock` crate — an *in-process* double — is allowlisted for nobody,
+which is how `vpay-testkit`'s unused runtime dependency on it was found and
+dropped.
 **Extended 2026-09-03 (Step 7):** its `backends/apps` name scan also refuses
 `vpay_db::connect_lazy` in non-test code. That function is *not* a test
 double — the pool is the real `sqlx` one — which is exactly why no
@@ -1425,10 +1433,17 @@ Nothing in this repo is ✅ unless a test would fail if it broke.
 
 Every token below appears verbatim in shipping source. Removing an item here
 without removing it from the code fails CI, and — since 2026-09-03 — so does
-leaving an item here that no shipping code carries any more. The scanner is
-comment-aware, so a token quoted in a doc comment neither declares anything
-nor counts as one (`a_token_quoted_in_a_comment_is_not_a_shipping_claim` in
-`xtask`).
+leaving an item here that no shipping code carries any more; both halves of
+that are read off the gate's own output by
+`verify_status_reports_both_directions_from_the_gate_itself`. The scanner
+counts only occurrences in code, so a token quoted in a comment of any kind,
+in a `#[doc = "…"]` attribute or in a string literal neither declares
+anything nor counts as one — you never have to strip an honest sentence from
+a doc comment to keep this gate green
+(`a_token_quoted_in_a_comment_is_not_a_shipping_claim`,
+`a_token_outside_code_is_never_a_shipping_claim`,
+`a_token_in_a_doc_attribute_is_not_a_shipping_claim` and
+`the_lexer_tells_the_four_states_apart` in `xtask`).
 
 **There is exactly one, down from eight on 2026-09-03 (Step 3), and the two
 that left did so for opposite reasons — which is the distinction this list

@@ -618,25 +618,81 @@ fn declared_tokens(status: &str) -> Result<BTreeSet<String>, String> {
     Ok(out)
 }
 
-/// Extract every `NotImplemented("token")` argument from a source file.
+/// The call this gate counts. Written once so the scanner and its tests
+/// cannot drift apart on the spelling.
+const NOT_IMPLEMENTED_CALL: &str = "NotImplemented(";
+
+/// Extract every `NotImplemented("token")` argument that shipping *code*
+/// makes — never one a comment, a doc attribute or a string literal merely
+/// spells out.
 ///
 /// Whitespace-tolerant, because rustfmt may put the string literal on its own
 /// line. Ignores the enum declaration itself, which has no string literal.
+///
+/// # Why this lexes instead of matching text
+///
+/// This used to be `text.match_indices("NotImplemented(")` over a caller that
+/// had stripped comments line-first. Two shapes got through, both of them
+/// prose: a *trailing* `// … NotImplemented("x") …` comment (the stripper
+/// only dropped lines that *began* with `//`) and any raw string literal
+/// carrying the token. Either one forced a phantom bullet into
+/// `docs/status.md` — and because the check runs in both directions, that
+/// bullet then had to stay, so the docs→code half could be satisfied by
+/// nothing but prose. The louder cost is the one AGENTS.md cares about: the
+/// cheapest way to make a false positive go away is to delete the honest
+/// sentence from the adapter's doc comment that explained the gap.
+///
+/// The lexer skips over whole literals rather than blanking them, because the
+/// token this extracts *is* a string literal — the one immediately after the
+/// call's open paren. A raw-string argument is accepted too; nothing in the
+/// tree writes one, but reading it costs a line and refusing it would be a
+/// silent miss of exactly the kind this function exists to prevent.
 fn scan_not_implemented(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let needle: Vec<char> = NOT_IMPLEMENTED_CALL.chars().collect();
     let mut out = Vec::new();
-    for (_, after) in text
-        .match_indices("NotImplemented(")
-        .map(|(i, m)| (i, &text[i + m.len()..]))
-    {
-        let trimmed = after.trim_start();
-        let Some(rest) = trimmed.strip_prefix('"') else {
-            continue; // e.g. `NotImplemented(_)` in a match arm, or the enum decl
-        };
-        if let Some((token, _)) = rest.split_once('"') {
-            out.push(token.to_owned());
+    let mut i = 0usize;
+    while i < chars.len() {
+        if let Some(end) = end_of_literal(&chars, i) {
+            i = end;
+            continue;
         }
+        if chars
+            .get(i..)
+            .is_none_or(|rest| !rest.starts_with(needle.as_slice()))
+        {
+            i += 1;
+            continue;
+        }
+        let mut pos = i + needle.len();
+        while chars.get(pos).is_some_and(|c| c.is_whitespace()) {
+            pos += 1;
+        }
+        // `NotImplemented(_)` in a match arm and the enum declaration itself
+        // reach this point with no literal to read, and name nothing.
+        if let Some(token) = literal_content(&chars, pos) {
+            out.push(token);
+        }
+        i += needle.len();
     }
     out
+}
+
+/// The text between the delimiters of the literal at `i`, if one starts
+/// there. Escapes are returned as written: a token is an identifier path, so
+/// one containing an escape is a bug worth seeing rather than decoding.
+fn literal_content(chars: &[char], i: usize) -> Option<String> {
+    let end = end_of_literal(chars, i)?;
+    let open = chars.get(i..end)?;
+    let quote = open.iter().position(|c| *c == '"')?;
+    let hashes = open
+        .get(..quote)
+        .unwrap_or_default()
+        .iter()
+        .filter(|c| **c == '#')
+        .count();
+    let inner = open.get(quote + 1..end.checked_sub(i + 1 + hashes)?)?;
+    Some(inner.iter().collect())
 }
 
 /// Where every library crate lives. Binaries (`backends/apps`) are exempt from
@@ -809,94 +865,242 @@ fn relative(root: &Path, path: &Path) -> String {
 ///   boundary. Both are removed here rather than tolerated, so the check
 ///   cannot be satisfied *or* tripped by test code.
 ///
-/// Only *leading* `//` is stripped — a trailing comment is left alone so that
-/// a string literal containing `//` (a URL) cannot swallow the rest of its
-/// line and hide a declaration.
+/// Until 2026-09-05 only a *leading* `//` was stripped: comments were removed
+/// by dropping whole lines, so a trailing one survived. That was a deliberate
+/// trade — a line-based stripper cannot tell `// a comment` from the `//` in
+/// `"https://…"`, and swallowing the rest of that line would have deleted
+/// live code and made the check pass by finding nothing. [`strip_comments`]
+/// removes the trade rather than the compromise: it lexes, so a `//` inside a
+/// string literal is not a comment and every comment goes, wherever it sits.
 fn searchable(text: &str) -> String {
-    let without_blocks = strip_block_comments(text);
-    let without_tests = strip_cfg_test_items(&without_blocks);
+    let without_comments = strip_comments(text);
+    let without_tests = strip_cfg_test_items(&without_comments);
     let mut out = String::with_capacity(without_tests.len());
     let mut in_whitespace = false;
-    for line in without_tests
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-    {
-        for ch in line.chars().chain(std::iter::once(' ')) {
-            if ch.is_whitespace() {
-                if !in_whitespace {
-                    out.push(' ');
-                    in_whitespace = true;
-                }
-            } else {
-                out.push(ch);
-                in_whitespace = false;
+    for ch in without_tests.chars() {
+        if ch.is_whitespace() {
+            if !in_whitespace {
+                out.push(' ');
+                in_whitespace = true;
             }
+        } else {
+            out.push(ch);
+            in_whitespace = false;
         }
     }
     out
 }
 
-/// Replace `/* ... */` comments with a space, leaving line breaks intact so
-/// the line-based half of [`searchable`] still sees the same lines.
+/// Replace every comment — `//`, `///`, `//!`, `/* */`, `/** */`, nested or
+/// not — with a space, leaving line breaks and every literal intact.
 ///
-/// Nesting is honoured (Rust's block comments nest), and `"/*"` inside a
-/// string literal is not a comment — a scan that ignored either would delete
-/// live code and make this check pass by finding nothing.
+/// This is the lexer the three text-matching gates share, and the reason it
+/// is a lexer rather than a pair of `contains` calls is that all four of the
+/// non-code places a token can be written are indistinguishable from code by
+/// text alone. A `//` inside a string literal opens no comment; a `"` inside
+/// a comment opens no string; `*/` inside `r#"…"#` closes nothing; `'"'` is a
+/// character, not a quote. Getting any one of those wrong fails in one of two
+/// directions, and only one of them is loud: a stripper that deletes too much
+/// makes a gate pass by finding nothing.
+///
+/// Literals are left *verbatim* rather than blanked, because the token
+/// `verify-status` extracts lives inside one: emptying string literals would
+/// turn `NotImplemented("mtn_momo::refund")` into `NotImplemented("")`. It is
+/// [`scan_not_implemented`] that refuses to look *inside* a literal, by
+/// lexing over the same [`end_of_literal`] this does.
+fn strip_comments(text: &str) -> String {
+    strip_comment_kinds(text, CommentKinds::All)
+}
+
+/// Replace only `/* … */` comments with a space, leaving `//` lines — and so
+/// `///` and `//!` — exactly where they were.
+///
+/// `verify-docs` is the one caller that wants this: it *counts* doc lines, so
+/// a stripper that removed them would report every file as having none.
 fn strip_block_comments(text: &str) -> String {
+    strip_comment_kinds(text, CommentKinds::BlocksOnly)
+}
+
+/// Which comments [`strip_comment_kinds`] removes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommentKinds {
+    /// Every comment. What the three gates want: prose satisfies nothing.
+    All,
+    /// Block comments only, `//` lines left verbatim. What `verify-docs`
+    /// wants, because a `///` line is the thing it is counting.
+    BlocksOnly,
+}
+
+/// The shared lexer. See [`strip_comments`] for why this is a lexer.
+fn strip_comment_kinds(text: &str, kinds: CommentKinds) -> String {
+    let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    while let Some(c) = chars.next() {
-        if depth > 0 {
-            if c == '\n' {
-                out.push('\n');
-            } else if c == '/' && chars.peek() == Some(&'*') {
-                chars.next();
-                depth += 1;
-            } else if c == '*' && chars.peek() == Some(&'/') {
-                chars.next();
-                depth -= 1;
-                out.push(' ');
-            }
-            continue;
-        }
-        if in_string {
-            out.push(c);
-            if escaped {
-                escaped = false;
-            } else if c == '\\' {
-                escaped = true;
-            } else if c == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match c {
-            '"' => {
-                in_string = true;
-                out.push(c);
-            }
-            '/' if chars.peek() == Some(&'*') => {
-                chars.next();
-                depth = 1;
-            }
-            // A line comment is left for `searchable`'s line filter, but its
-            // contents must not open a block comment.
-            '/' if chars.peek() == Some(&'/') => {
-                out.push(c);
-                for rest in chars.by_ref() {
-                    out.push(rest);
-                    if rest == '\n' {
-                        break;
+    let mut i = 0usize;
+    while let Some(&c) = chars.get(i) {
+        if c == '/' && chars.get(i + 1) == Some(&'*') {
+            let mut depth = 1usize;
+            i += 2;
+            while depth > 0 {
+                let Some(&c) = chars.get(i) else { break };
+                if c == '/' && chars.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    i += 2;
+                } else if c == '*' && chars.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    // Line breaks survive so the caller still sees the same
+                    // lines; `strip_cfg_test_items` counts braces per item,
+                    // not per line, but a human reading a failure does.
+                    if c == '\n' {
+                        out.push('\n');
                     }
+                    i += 1;
                 }
             }
-            _ => out.push(c),
+            out.push(' ');
+            continue;
         }
+        if c == '/' && chars.get(i + 1) == Some(&'/') {
+            let start = i;
+            while chars.get(i).is_some_and(|c| *c != '\n') {
+                i += 1;
+            }
+            match kinds {
+                // A line comment kept verbatim must still not be re-lexed:
+                // `// /*` opens nothing.
+                CommentKinds::BlocksOnly => out.extend(chars.get(start..i).unwrap_or_default()),
+                CommentKinds::All => out.push(' '),
+            }
+            continue; // the newline itself is pushed by the next iteration
+        }
+        if let Some(end) = end_of_literal(&chars, i) {
+            out.extend(chars.get(i..end).unwrap_or_default());
+            i = end;
+            continue;
+        }
+        out.push(c);
+        i += 1;
     }
     out
+}
+
+/// If a string, raw-string, byte-string, C-string or character literal starts
+/// at `i`, the index just past its closing delimiter.
+///
+/// Returns `None` for anything else, including a *lifetime* — `&'a str` and
+/// `'static` open no literal, and treating them as one would swallow every
+/// character up to the next `'` in the file. That is the same
+/// delete-too-much failure the module docs warn about, which is why the
+/// character-literal arm demands a closing quote two or three positions on
+/// rather than assuming one.
+///
+/// Prefixes (`b`, `c`, `r`, `br`, `cr`) only count when the character before
+/// them is not an identifier character, so the `r` at the end of `four` opens
+/// nothing.
+fn end_of_literal(chars: &[char], i: usize) -> Option<usize> {
+    let c = *chars.get(i)?;
+    if c == '"' {
+        return Some(end_of_quoted(chars, i + 1));
+    }
+    if c == '\'' {
+        return end_of_char_literal(chars, i);
+    }
+    if !matches!(c, 'b' | 'c' | 'r') {
+        return None;
+    }
+    if i.checked_sub(1)
+        .and_then(|before| chars.get(before))
+        .is_some_and(|c| c.is_alphanumeric() || *c == '_')
+    {
+        return None;
+    }
+    let mut pos = i;
+    let mut raw = false;
+    if matches!(chars.get(pos), Some('b' | 'c')) {
+        pos += 1;
+    }
+    if chars.get(pos) == Some(&'r') {
+        raw = true;
+        pos += 1;
+    }
+    if raw {
+        let hashes_start = pos;
+        while chars.get(pos) == Some(&'#') {
+            pos += 1;
+        }
+        let hashes = pos - hashes_start;
+        if chars.get(pos) != Some(&'"') {
+            return None;
+        }
+        return Some(end_of_raw(chars, pos + 1, hashes));
+    }
+    // `b'x'` and `c'x'` are not real Rust, but `b'x'` is; either way the
+    // character-literal arm below is the one that answers for them.
+    if chars.get(pos) == Some(&'\'') {
+        return end_of_char_literal(chars, pos);
+    }
+    if chars.get(pos) != Some(&'"') {
+        return None;
+    }
+    Some(end_of_quoted(chars, pos + 1))
+}
+
+/// The index just past the `"` that closes a non-raw string opened at `from`,
+/// honouring backslash escapes. An unterminated literal ends at end of input
+/// rather than panicking: a file that does not compile must not crash a gate.
+fn end_of_quoted(chars: &[char], from: usize) -> usize {
+    let mut pos = from;
+    while let Some(&c) = chars.get(pos) {
+        pos += 1;
+        if c == '\\' {
+            pos += 1;
+        } else if c == '"' {
+            return pos;
+        }
+    }
+    chars.len()
+}
+
+/// The index just past the `"#…#` that closes a raw string opened at `from`
+/// with `hashes` hashes. No escapes exist inside one, which is precisely why
+/// `r#"…*/…"#` is not a comment and `r"…\"` ends at the quote.
+fn end_of_raw(chars: &[char], from: usize, hashes: usize) -> usize {
+    let mut pos = from;
+    while let Some(&c) = chars.get(pos) {
+        if c == '"' && (1..=hashes).all(|n| chars.get(pos + n) == Some(&'#')) {
+            return pos + 1 + hashes;
+        }
+        pos += 1;
+    }
+    chars.len()
+}
+
+/// The index just past a character literal opening at `i`, or `None` if `i`
+/// opens a lifetime instead.
+///
+/// The two are told apart the way rustc's lexer does it: `'\` is always an
+/// escape and therefore a literal, and otherwise a literal is exactly the
+/// case where the quote closes two positions on (`'a'`). Everything else —
+/// `'a`, `'static` — is a lifetime and stays code.
+fn end_of_char_literal(chars: &[char], i: usize) -> Option<usize> {
+    if chars.get(i + 1) == Some(&'\\') {
+        let mut pos = i + 2;
+        // One escaped character, then anything up to the closing quote:
+        // `'\''`, `'\\'` and `'\u{27}'` all end at the next `'` after it.
+        pos += 1;
+        while let Some(&c) = chars.get(pos) {
+            pos += 1;
+            if c == '\'' {
+                return Some(pos);
+            }
+        }
+        return Some(chars.len());
+    }
+    if chars.get(i + 1).is_some() && chars.get(i + 2) == Some(&'\'') {
+        return Some(i + 3);
+    }
+    None
 }
 
 /// Delete every item annotated `#[cfg(test)]`, body and all.
@@ -3298,6 +3502,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::signing_key_tests::TempDir;
 
     #[test]
     fn dev_dependencies_are_excluded_from_the_runtime_section() {
@@ -3508,12 +3713,15 @@ vpay-testkit = { path = \"x\" }
         assert!(undelegated_from_variants(&text, "RailFailure").is_empty());
     }
 
-    /// Both directions of the check, over synthetic sources — the code→docs
-    /// half that always worked, and the docs→code half that did not.
+    /// The two *inputs* `verify_status` compares, over synthetic sources —
+    /// that `scan_not_implemented` sees an undeclared token and that
+    /// `declared_tokens` sees a bullet no code carries.
     ///
-    /// Driven through the same two functions `verify_status` composes,
-    /// because a test that reimplemented the comparison would pass whatever
-    /// the check does.
+    /// It stops there: the comparison itself is re-implemented in the body
+    /// below, so this test passes whatever `verify_status` does with the two
+    /// sets — deleting the docs→code half of it outright leaves this green.
+    /// [`verify_status_reports_both_directions_from_the_gate_itself`] is the
+    /// one that reads what the gate prints.
     #[test]
     fn the_status_check_fails_in_both_directions() {
         let status = format!("{STATUS_TOKEN_HEADING}\n\n- `built::already`\n");
@@ -3535,6 +3743,52 @@ vpay-testkit = { path = \"x\" }
             declared.iter().any(|token| !found.contains(token)),
             "a declared token that no shipping code carries must be visible to the check"
         );
+    }
+
+    /// Both directions again, this time through `verify_status` itself over
+    /// a two-file tree on disk.
+    ///
+    /// [`the_status_check_fails_in_both_directions`] compares the two sets a
+    /// second time in its own body, which is exactly the shape that cannot
+    /// notice the comparison going missing. This one asserts on the message
+    /// the gate prints, so removing either half of it fails here.
+    #[test]
+    fn verify_status_reports_both_directions_from_the_gate_itself() {
+        let dir = TempDir::new("verify-status");
+        let root = dir.path();
+        let src = root.join("backends/crates/probe/src");
+        fs::create_dir_all(&src).expect("the temp tree is creatable");
+        fs::create_dir_all(root.join("docs")).expect("the temp tree is creatable");
+        fs::write(
+            src.join("lib.rs"),
+            "fn f() { Err(ProviderError::NotImplemented(\"new::gap\")) }\n",
+        )
+        .expect("the source file is writable");
+
+        // One token in code the page does not declare, one bullet on the
+        // page no code carries. A gate missing either half reports one.
+        fs::write(
+            root.join("docs/status.md"),
+            format!("{STATUS_TOKEN_HEADING}\n\n- `built::already`\n"),
+        )
+        .expect("the status page is writable");
+        let error = verify_status(root).expect_err("both halves are wrong");
+        assert!(
+            error.contains("missing from docs/status.md") && error.contains("new::gap"),
+            "the code→docs half must name the undeclared token: {error}"
+        );
+        assert!(
+            error.contains("no shipping code carries them") && error.contains("built::already"),
+            "the docs→code half must name the stale bullet: {error}"
+        );
+
+        // And the corrected page passes, so neither half fires on nothing.
+        fs::write(
+            root.join("docs/status.md"),
+            format!("{STATUS_TOKEN_HEADING}\n\n- `new::gap`\n"),
+        )
+        .expect("the status page is writable");
+        verify_status(root).expect("a page that matches the code passes");
     }
 
     /// A token inside a `#[cfg(test)]` module is a fixture and declares
@@ -3566,6 +3820,150 @@ vpay-testkit = { path = \"x\" }
         let text = "/// Returns `ProviderError::NotImplemented(\"doc::only\")` one day.\n\
                     /* NotImplemented(\"block::comment\") */\nfn f() {}\n";
         assert!(scan_not_implemented(&searchable(text)).is_empty());
+    }
+
+    /// The characterising test for the four *non-code* places a token can be
+    /// written. `searchable` handled two of them (a leading `///`/`//` line
+    /// and a `/* */` block); the other two counted as shipping code, so an
+    /// adapter that explained its gap in a trailing comment, or a fixture
+    /// that carried the token in a string literal, forced a phantom bullet
+    /// into `docs/status.md` — or, worse, got the honest prose deleted to
+    /// keep the gate green.
+    #[test]
+    fn a_token_outside_code_is_never_a_shipping_claim() {
+        let text = concat!(
+            "//! ProviderError::NotImplemented(\"module::doc\")\n",
+            "/// ProviderError::NotImplemented(\"item::doc\")\n",
+            "// ProviderError::NotImplemented(\"line::comment\")\n",
+            "/* ProviderError::NotImplemented(\"block::comment\") */\n",
+            "fn f() {\n",
+            "    let _ = 1; // ProviderError::NotImplemented(\"trailing::comment\")\n",
+            "    let _ = \"ProviderError::NotImplemented(\\\"string::literal\\\")\";\n",
+            "    let _ = r#\"ProviderError::NotImplemented(\"raw::string\")\"#;\n",
+            "}\n",
+        );
+        assert_eq!(
+            scan_not_implemented(&searchable(text)),
+            Vec::<String>::new(),
+            "a token that is only ever mentioned in prose or data is not code"
+        );
+    }
+
+    /// The six shapes that tell a lexer from a pair of `contains` calls.
+    /// Each one is a place where the naive reading of the *other* three
+    /// states is wrong, and four of them fail in the dangerous direction —
+    /// they delete live code, so the gate passes by finding nothing.
+    #[test]
+    fn the_lexer_tells_the_four_states_apart() {
+        // 1. A comment containing a quote opens no string: the code after it
+        //    must still be visible. An *odd* number of `"` is the shape that
+        //    matters — a lexer that let a comment end at a quote would read
+        //    from there to the next `"` in the file as one literal and
+        //    swallow the call underneath. The apostrophe rides along, because
+        //    a char-literal reader makes the same mistake with `isn't`.
+        let text = "// the rope is 6\" long, and it isn't a string\n\
+                    Err(ProviderError::NotImplemented(\"after::comment\"))";
+        assert_eq!(
+            scan_not_implemented(&searchable(text)),
+            vec!["after::comment"],
+            "a `\"` or a `'` in a comment must not swallow the code after it"
+        );
+
+        // 2. A string containing `//` opens no comment: the rest of the line
+        //    is code. This is the case the old line-based stripper refused
+        //    to risk, and the reason it left trailing comments alone.
+        let text = "let u = \"https://example.test\"; \
+                    Err(ProviderError::NotImplemented(\"after::url\"))";
+        assert_eq!(
+            scan_not_implemented(&searchable(text)),
+            vec!["after::url"],
+            "a URL's `//` is not a comment"
+        );
+
+        // 3. `*/` inside a raw string closes no block comment.
+        let text = "let r = r#\"a */ b\"#; Err(ProviderError::NotImplemented(\"after::raw\"))";
+        assert_eq!(
+            scan_not_implemented(&searchable(text)),
+            vec!["after::raw"],
+            "`*/` inside a raw string closes nothing"
+        );
+
+        // 4. A character literal that *is* a quote opens no string.
+        let text = "let q = '\"'; Err(ProviderError::NotImplemented(\"after::char\"))";
+        assert_eq!(
+            scan_not_implemented(&searchable(text)),
+            vec!["after::char"],
+            "`'\"'` is a character, not a quote"
+        );
+
+        // 5. A doc comment ends at its newline; the code under it counts.
+        let text = "/// ProviderError::NotImplemented(\"doc::only\")\n\
+                    fn f() { Err(ProviderError::NotImplemented(\"real::gap\")) }";
+        assert_eq!(
+            scan_not_implemented(&searchable(text)),
+            vec!["real::gap"],
+            "the doc line is prose; the line under it is the claim"
+        );
+
+        // 6. Block comments nest, as Rust's do. The token sits in the
+        //    *tail* of the outer comment, after the inner one has closed:
+        //    a lexer that stopped at the first `*/` would hand that tail to
+        //    the scanner as code and report a gap nothing has.
+        let text = "/* outer /* inner */ ProviderError::NotImplemented(\"prose::tail\") */ \
+                    Err(ProviderError::NotImplemented(\"after::nested\"))";
+        assert_eq!(
+            scan_not_implemented(&searchable(text)),
+            vec!["after::nested"],
+            "an inner `*/` closes the inner comment only"
+        );
+    }
+
+    /// A lifetime is not a character literal. Reading `'static` as one would
+    /// swallow everything up to the next `'` in the file — the
+    /// delete-too-much failure, which passes the gate silently.
+    #[test]
+    fn a_lifetime_is_not_a_character_literal() {
+        let text = "fn f<'a>(_: &'a str) -> Never { \
+                    Err(ProviderError::NotImplemented(\"after::lifetime\")) }";
+        assert_eq!(
+            scan_not_implemented(&searchable(text)),
+            vec!["after::lifetime"]
+        );
+        assert_eq!(end_of_literal(&"'a>".chars().collect::<Vec<_>>(), 0), None);
+        assert_eq!(
+            end_of_char_literal(&"'\\''".chars().collect::<Vec<_>>(), 0),
+            Some(4)
+        );
+    }
+
+    /// `#[doc = "…"]` is the attribute spelling of a doc comment, and a token
+    /// inside one is the same prose by another syntax.
+    #[test]
+    fn a_token_in_a_doc_attribute_is_not_a_shipping_claim() {
+        let text = "#[doc = r#\"Returns ProviderError::NotImplemented(\"attr::only\") one day.\"#]\n\
+                    fn f() {}\n";
+        assert!(scan_not_implemented(&searchable(text)).is_empty());
+    }
+
+    /// The scanner reads the token out of the literal the call actually
+    /// carries, raw or not — and a prefixed literal elsewhere in the line is
+    /// still skipped over rather than read.
+    #[test]
+    fn the_token_is_read_from_the_calls_own_literal() {
+        let text = "let b = b\"NotImplemented(\\\"byte::string\\\")\"; \
+                    Err(ProviderError::NotImplemented(r\"raw::arg\"))";
+        assert_eq!(scan_not_implemented(&searchable(text)), vec!["raw::arg"]);
+    }
+
+    /// `verify-docs` counts `///` lines, so its stripper must leave them
+    /// alone while the gates' stripper removes them. One lexer, two modes;
+    /// this is the test that keeps the modes from collapsing into each other.
+    #[test]
+    fn only_the_gates_stripper_removes_doc_lines() {
+        let text = "/// doc\n/* block */\nfn f() {}\n";
+        assert!(strip_block_comments(text).contains("/// doc"));
+        assert!(!strip_block_comments(text).contains("block"));
+        assert!(!strip_comments(text).contains("doc"));
     }
 
     /// A synthetic `cargo metadata` document: two shipping binaries, a
@@ -3788,7 +4186,8 @@ async fn run() -> anyhow::Result<()> {
         let tested_and_documented = "\
 /// The pool is opened eagerly, never with `connect_lazy`.
 async fn run() -> anyhow::Result<()> {
-    let repositories = vpay_db::connect(&args.database_url).await?;
+    // eagerly, not vpay_db::connect_lazy — see ADR-0006
+    let repositories = vpay_db::connect(&args.database_url).await?; // not connect_lazy
     Ok(())
 }
 
@@ -3802,8 +4201,9 @@ mod tests {
 ";
         assert!(
             app_source_violations(tested_and_documented).is_empty(),
-            "a comment naming the function, and a call under `#[cfg(test)]`, are not calls \
-             from a shipping path"
+            "a comment naming the function — leading or trailing, which the line-based \
+             stripper this replaced could not tell apart — and a call under `#[cfg(test)]`, \
+             are not calls from a shipping path"
         );
     }
 
