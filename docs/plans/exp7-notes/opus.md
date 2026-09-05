@@ -4,6 +4,13 @@ Sample 7 of the tier experiment, `opus` arm. Base `a81b6b6`, branch
 `claude/exp7-npm-scope-opus`, Node `22.23.2` (`.nvmrc`), pnpm 9.15.0,
 `engine-strict`. No Docker.
 
+> **This file is the implementer's own report and is left as written, because
+> what it claimed is part of the experiment's record.** Four of its claims did
+> not survive verification and one decision in it was reversed by the
+> maintainer. Read it beside
+> [`opus-review.md`](opus-review.md), which lists each correction with the
+> command that measured it.
+
 ## What changed
 
 | Was | Is | Directory |
