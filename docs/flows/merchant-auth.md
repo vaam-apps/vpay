@@ -486,9 +486,15 @@ no requested audience carries the `client_id` as `aud` and is refused on
   it is also load-bearing for the *implementation*: `/v1`'s OP fills the
   three `OpStore` slots those grants would use with fail-closed stores
   (`vpay_api::op::refusing_stores`) whose every method returns an error, and
-  a store error renders as `server_error`/500 — so a 400 here is the proof
-  that nothing reaches them. Measured on the tree before that change too,
-  with the previous Postgres-backed stores: the same
+  every authkestra grant handler renders a store error as `server_error` — so
+  **`unauthorized_client` rather than `server_error`** is the proof that
+  nothing reaches them. **Corrected 2026-09-05 by review:** an earlier version
+  of this bullet said a store error would be a *500*. It would not. This
+  endpoint answers everything but `invalid_client` with a 400
+  (`only_invalid_client_answers_401`, in `op/token.rs`, asserts that for
+  `server_error` by name), so the status is the same either way and the error
+  code is the only thing that tells the two apart. Measured on the tree before
+  the change too, with the previous Postgres-backed stores: the same
   `unauthorized_client`/400. See "The three OP stores that pinned sqlx 0.8"
   in [`docs/status.md`](../status.md).
 

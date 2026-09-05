@@ -2360,9 +2360,18 @@ on a newly mounted grant fails loudly with a message naming the grant.
 `urn:ietf:params:oauth:grant-type:device_code` to a real token endpoint on a
 real socket with a real freshly minted `private_key_jwt` assertion and every
 field the grant's own handler would need, and asserts all three come back
-**`unauthorized_client` / HTTP 400** — never `server_error`, never 500.
-A store error would be a 500, so "the stores are unreachable" and "a merchant
-never sees a 500 here" are the same assertion. **The refusal shape was
+**`unauthorized_client` / HTTP 400**, and specifically not `server_error`.
+Every authkestra grant handler renders a store error as `server_error`, so
+"the stores are unreachable" and "a merchant is never told `server_error`
+here" are the same assertion. **Corrected 2026-09-05 by the review of this
+branch:** this paragraph used to read "never 500 — a store error would be a
+500". That is wrong, and wrong in the direction that matters, because it made
+the *status* look like the proof. `op::token::token_error_status` maps
+everything except `invalid_client` to **400**, `server_error` included, and
+`only_invalid_client_answers_401` asserts exactly that — so this endpoint has
+no 500 to emit and a store error would have arrived as a 400 as well. The
+`error` code is the whole distinction; the test always asserted it, and the
+prose around it was describing a different system. **The refusal shape was
 measured on the unmodified tree first** (with `SqlxOpStore` still wired) and
 is byte-for-byte the same afterwards; it is `unauthorized_client`, not the
 `unsupported_grant_type` one might expect, because each handler's *first*

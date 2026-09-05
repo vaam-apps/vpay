@@ -55,7 +55,17 @@
 //! dispatch arm), so no change to a registration or a config file can route
 //! it here. `backends/tests/integration/tests/merchant_token_flow.rs` case
 //! (i) proves the first half against a real server on a real socket: all
-//! three grants come back `unauthorized_client`/400, never a 500.
+//! three grants come back **`unauthorized_client`**/400.
+//!
+//! **What that case can and cannot key on** (corrected 2026-09-05 by review):
+//! it is the `error` *code* that carries the proof, not the status. A store
+//! error becomes `TokenErrorResponse { error: "server_error", .. }`, and
+//! [`crate::op::token`]'s `token_error_status` answers everything except
+//! `invalid_client` with a **400** — `only_invalid_client_answers_401` asserts
+//! exactly that, `server_error` included. So a refusal that *had* reached one
+//! of these stores would be a 400 too, and "not a 500" is not a thing this
+//! endpoint could ever have said. `unauthorized_client` versus `server_error`
+//! is the whole distinction.
 //!
 //! # What was given up
 //!

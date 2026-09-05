@@ -1141,16 +1141,25 @@ async fn a_named_scope_narrows_and_an_unregistered_one_is_refused() -> anyhow::R
 // --------------------------------------------------------------- case (i)
 
 /// The three grants `/v1` does not serve are refused **before any store is
-/// consulted** — `unauthorized_client`/400 for each, never a
-/// `server_error`/500.
+/// consulted** — `unauthorized_client` for each, never `server_error`.
 ///
 /// This is the case that lets the three `OpStore` slots be fail-closed
 /// stores (`vpay_api::op::refusing_stores`) rather than real Postgres ones.
 /// Those stores return `Err` from all twelve of their methods; every one of
 /// `authkestra_op`'s grant handlers turns *any* store error into
-/// `server_error`. So "the stores are unreachable" and "a merchant sees a
-/// 500 on these grants" are the same question asked twice, and this test is
-/// the answer that stops being true if the reasoning is wrong.
+/// `server_error`. So "the stores are unreachable" and "a merchant is told
+/// `server_error` on these grants" are the same question asked twice, and
+/// this test is the answer that stops being true if the reasoning is wrong.
+///
+/// **The `error` code carries the proof, not the status** (corrected
+/// 2026-09-05 by review; this comment used to say a store error would be a
+/// 500). `vpay_api::op::token::token_error_status` answers *everything*
+/// except `invalid_client` with a 400 — `server_error` included, which
+/// `only_invalid_client_answers_401` asserts by name. This endpoint has no
+/// 500 to emit, so the `assert_ne!(status, 500)` below is a cheap guard
+/// against that mapping changing under this test, not the assertion that
+/// makes the case decisive. The decisive pair is
+/// `error == "unauthorized_client"` and `error != "server_error"`.
 ///
 /// It is not asserting a property of vpay's own code: the refusal comes from
 /// `default_handle_authorization_code`, `default_handle_refresh_token` and
@@ -1166,15 +1175,19 @@ async fn a_named_scope_narrows_and_an_unregistered_one_is_refused() -> anyhow::R
 /// `redirect_uri`, `refresh_token`, `device_code`), so a refusal cannot be
 /// "you left out a parameter": `default_handle_refresh_token` and
 /// `handle_device_code` both answer `invalid_request` for a missing one,
-/// which would pass an `is not 500` assertion while proving nothing about
-/// the grant check. The credential is a real, freshly minted assertion for a
-/// registered client — an unauthenticated request is refused at
-/// `authenticate_client`, upstream of the dispatch this case is about.
+/// which would pass a "the error is not `server_error`" assertion while
+/// proving nothing about the grant check. The credential is a real, freshly
+/// minted assertion for a registered client — an unauthenticated request is
+/// refused at `authenticate_client`, upstream of the dispatch this case is
+/// about.
 ///
-/// Decisive: point one slot at a store that answers `Ok(None)` instead of
-/// refusing and this test still passes — because nothing reaches it. Delete
-/// the `allows_grant_type` check inside `authkestra-op` and it fails with a
-/// 500, which is the failure it exists to catch.
+/// Decisive, and measured on 2026-09-05 rather than argued: point one slot
+/// at a store that answers `Ok(None)` instead of refusing and this test
+/// still passes (it did — nothing reaches it), while
+/// `vpay_api::op::refusing_stores`' own
+/// `every_method_of_every_slot_refuses` fails. Delete the
+/// `allows_grant_type` check inside `authkestra-op` and this one fails with
+/// `server_error`, which is the failure it exists to catch.
 #[tokio::test]
 async fn the_three_grants_vpay_does_not_serve_are_refused_before_any_store() -> anyhow::Result<()> {
     let harness = harness().await?;
@@ -1213,12 +1226,15 @@ async fn the_three_grants_vpay_does_not_serve_are_refused_before_any_store() -> 
 
         assert_ne!(
             status, 500,
-            "grant_type={grant_type} reached a store: {body:#}"
+            "grant_type={grant_type}: this endpoint maps every error but \
+             `invalid_client` to 400, so a 500 means the status mapping \
+             changed under this test: {body:#}"
         );
         assert_ne!(
             body.get("error").and_then(Value::as_str),
             Some("server_error"),
-            "grant_type={grant_type} reached a store: {body:#}"
+            "grant_type={grant_type} reached a store — every authkestra grant \
+             handler renders any store error as `server_error`: {body:#}"
         );
         assert_eq!(
             status, 400,
