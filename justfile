@@ -577,9 +577,15 @@ cratestack_min_declarations := "12"
 # from one in which everything passed. This is why `check-schema` is NOT in
 # the offline-safe promise `just ci` makes about the other gates in the same
 # way they are — it needs no network to RUN, but it does need a binary that
-# is not part of this workspace, and `just install-rust` does not install it
-# (installing it needs a newer compiler than `rust-toolchain.toml` pins; see
-# the message below).
+# is not part of this workspace, and `just install-rust` does not install it.
+# That parenthesis used to give a reason — "installing it needs a newer
+# compiler than `rust-toolchain.toml` pins" — and the toolchain bump of
+# 2026-09-05 (1.95.0 -> 1.98.0) retired it: `cargo install cratestack-cli
+# --locked --version 0.11.1` now succeeds from inside this checkout, which is
+# what the message below says. `install-rust` still leaves it out, but that
+# is now a choice about what a bootstrap recipe should compile rather than
+# something the compiler refuses; whether it should install it is a
+# maintainer's call, not this comment's.
 #
 # THE VERSION IS REPORTED, NOT ENFORCED, LOCALLY. The recipe prints the
 # version it actually used on every run, and says so loudly when that is not
