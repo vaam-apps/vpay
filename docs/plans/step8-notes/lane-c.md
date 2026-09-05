@@ -107,6 +107,18 @@ own, with a test that the constraint fires.**
 
 Each is quoted verbatim as it stands today, with the replacement.
 
+**Correction 2026-09-05 — three link destinations below are no longer
+verbatim.** `cargo xtask verify-links` reads these blockquotes as links
+belonging to *this* file, so `[reconciler.md](reconciler.md)` — correct in
+`docs/flows/`, where the quoted text lives — resolved to
+`docs/plans/step8-notes/reconciler.md` and failed the new gate. The three
+(`adapter-orange-money.md` once, `reconciler.md` twice) were rewritten to
+`../../flows/…` so the links work from here. **The text as applied still reads
+`(reconciler.md)` and `(adapter-orange-money.md)`** — see
+`docs/flows/crash-safety.md:320` and `docs/flows/reconciler.md:173`. Paste the
+destinations from those files, not from this one; the display text and every
+other character are unchanged.
+
 ### `docs/flows/adapter-mtn-momo.md`, "Not proven" list
 
 **Retire:**
@@ -172,13 +184,13 @@ Each is quoted verbatim as it stands today, with the replacement.
 > - **Nothing compares Orange's `notif_token` against the stored one.** The
 >   route discards `CallbackRef::ref_extra` rather than trusting it, so a
 >   callback still cannot repair a charge whose key material was lost. See
->   [adapter-orange-money.md](adapter-orange-money.md).
+>   [adapter-orange-money.md](../../flows/adapter-orange-money.md).
 
 ### `docs/flows/crash-safety.md`, "What is still not built" (line 215)
 
 **Retire:**
 > - **No callback route**, so a rail that tries to tell us about a charge is
->   ignored and only the ladder finds out — see [reconciler.md](reconciler.md).
+>   ignored and only the ladder finds out — see [reconciler.md](../../flows/reconciler.md).
 
 **Replace with:**
 > - **A rail that tells us about a charge is now heard** (Step 8): the
@@ -186,7 +198,7 @@ Each is quoted verbatim as it stands today, with the replacement.
 >   the ladder's next rung. It changes nothing about recovery — the
 >   authenticated status query is still the only thing that settles anything,
 >   and every kill point above resolves identically whether a callback arrives
->   or not. See [reconciler.md](reconciler.md).
+>   or not. See [reconciler.md](../../flows/reconciler.md).
 
 ### `docs/flows/provider-port.md`, "What the suite does not prove" (line 127)
 

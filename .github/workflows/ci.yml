@@ -74,6 +74,18 @@ jobs:
       # status check, and renaming it would silently stop gating.
       - name: verify-sdk-parity (ADR-0015)
         run: cargo xtask verify-sdk-parity
+      # New 2026-09-05, and it is here in the same commit as the justfile
+      # change for the reason the paragraph above records: a comment in the
+      # justfile saying "CI's self-checks runs exactly this list" is only
+      # kept honest by someone reading this file beside it.
+      #
+      # `actions/checkout` leaves a real index, which is what
+      # `verify-links` reads: it asks `git ls-files` rather than walking
+      # directories, so a link cannot be satisfied by a file that is not in
+      # the repository. It needs no network — `verify-citations`, which does,
+      # is deliberately not run here.
+      - name: verify-links
+        run: cargo xtask verify-links
       # A report, not a gate — it exits 0 whatever it finds (Step 7,
       # decision (4)). It is here so `justfile`'s claim that this job runs
       # exactly what `just verify` runs stays true, and so the doc-volume,

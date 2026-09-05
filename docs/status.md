@@ -63,7 +63,8 @@ so the second number is unchanged. `15` / `14` is what `cargo xtask
 verify-errors` printed on the merged gate branch on 2026-09-04.)*
 
 **New 2026-09-03 (Step 7, lane 4): `just verify` is three gates and one
-report** — four gates since `verify-sdk-parity`, below. `cargo xtask
+report** — four gates since `verify-sdk-parity` and **five since
+`verify-links` (2026-09-05)**, both below. `cargo xtask
 verify-docs` prints, per crate, doc-comment lines
 against code lines, every production function of 80 lines or more, every
 ```` ```ignore ```` doctest fence and every `#[allow]`/`#[expect]` in
@@ -128,6 +129,79 @@ had then spoken to a real checkout session, and lane 5b added the
 client-assertion audience row. See the "Merchant SDKs" section below and the
 matrix's own "Gap ledger" for the list.
 
+**New 2026-09-05: `cargo xtask verify-links` is the fifth gate, and
+`cargo xtask verify-citations` is a sixth that is opt-in.** Until this
+landed, `just docs-check` ran `verify-status` and printed `note: link
+checking is not implemented yet`; the one class of claim this repository
+makes about itself most often — *the document you are reading points at the
+file it names* — was the one class no gate protected. The Step 9
+release-claims review had recorded both holes by mutation and left them as a
+maintainer decision (`docs/plans/step9-notes/release-claims-review.md`,
+findings F3 and F4, mutations M2 and M3); both rows now carry a dated
+correction.
+
+- **`verify-links` — a gate, in `just verify`, `just docs-check`, `just ci`
+  and CI's `self-checks` job.** Over every `*.md` that `git ls-files`
+  reports: inline links, image links and reference definitions, with fenced
+  code blocks, inline code spans and HTML comments masked out first. It skips
+  `http(s)://`, `mailto:` and bare `#anchor` targets; for everything else it
+  strips a `#fragment` and a trailing `:line` (or `:line:column`), decodes
+  percent escapes, resolves against the linking file's own directory, and
+  requires the result to be a **tracked** file or directory — a link
+  satisfied by an untracked scratch file resolves on one machine and nowhere
+  else. **Measured 2026-09-05: 115 files scanned (113 on `master`, plus this
+  change's notes and its review's), 673 repository links checked, 5 broken,
+  5 fixed** — the 5 are the count on `master`, and an independent oracle built
+  on markdown-it-py 3.0.0 agrees with both numbers exactly (this branch's
+  review, `docs/plans/exp6-notes/opus-review.md`). All five were in `docs/plans/step8-notes/`
+  (`lane-c.md` ×3, `lane-h.md` ×2), and ~~four were links copied verbatim out
+  of a `docs/flows/` document into a blockquote, keeping the quoted file's own
+  relative path, and one was a `../` one level short~~ **all five are the same
+  thing (corrected 2026-09-05, in this branch's review):** each is inside a
+  blockquote quoting text that belongs in another directory, and each
+  destination was *correct where that text lives* — `docs/flows/`
+  (`crash-safety.md:320`, `reconciler.md:95`, `reconciler.md:173`) or
+  `docs/status.md:1449`. Nothing was deleted — every one named a file that
+  exists, and each was repointed so it resolves from the notes file. **The
+  cost, stated rather than hidden: those five blockquotes are no longer
+  verbatim quotations.** `lane-c.md` and `lane-h.md` each carry a dated note
+  at the quote saying so and naming the applied text, because a planning note
+  whose quoted patch would introduce a broken link if pasted is a worse defect
+  than the one the gate found.
+  **Deliberately not checked, and the gate's own doc comment says so:**
+  `#anchor` fragments (agreeing with GitHub's heading-slug algorithm is a
+  guess, and a wrong guess fails correct documents), `http(s)` URLs, and
+  reference *usages* with no definition (which render as literal text, so a
+  reader sees them).
+- **`verify-citations` — a gate that needs the network, so it is opt-in
+  (`just docs-check-citations`) and is in no CI job.** It resolves every
+  workflow-run id, pull request and issue a tracked `*.md` cites as evidence
+  against this repository with `gh api -i`, deduped so one id costs one call
+  however often it is written. **Measured 2026-09-05: 39 unique ids across those 115
+  files — 24 workflow runs, 14 pull requests, 1 issue — all resolve against
+  `vaam-apps/vpay`; 0 false citations found.** It **fails** when `gh` is
+  missing or unauthenticated and never prints "skipped", because a check that
+  downgrades itself reports success for a run in which nothing was checked;
+  a 403 or 429 stops the whole run rather than reporting the remaining ids as
+  missing, so a rate limit can never send somebody to delete true claims.
+  Three `(file, id)` pairs are exempt in `CITATIONS_THAT_ARE_NOT_CLAIMS`, all
+  of them the same invented eleven-digit id in a mutation record, because a
+  document reporting that substituting a nonexistent run id left every gate
+  green has to be able to print that id. The exemption is scoped per file, so
+  those digits anywhere else are still checked. **What it is not:** the `#n` rule needs a `PR`/`pull
+  request`/`issue` cue, so an id cited *only* without one is not checked —
+  today that set is empty, because every bold `**#17**` in `docs/roadmap.md`
+  is also written `PR #17` in the same file. Cross-repository references
+  (`authkestra#287`) are out of scope, and so is anything under a
+  `github.com/<someone else>/` URL. **And an eleven-digit number that is not a
+  run id is a false failure, not a false pass:** a zero-padded webhook
+  timestamp is refused since this branch's review (a run id is never
+  zero-padded), but an eleven-digit phone number written in a document would
+  still be looked up and reported missing. That is the price of matching every
+  id in a list rather than only the one after the word `run`, and it is paid
+  in the direction that fails a correct document.
+
+
 Last verified: 2026-09-04, on branch `claude/step9-hosted-checkout` at
 `e57e7ff` — **Step 9, hosted checkout**: twelve lanes merged (5 the SDKs, 2 the
 return trip through the port, 3 the page, 2b the digits-only steering MSISDNs,
@@ -171,8 +245,10 @@ the integrator's `vpay-ci` VM as the measurer.
   is `sdks/rust`'s README block and is pre-existing. Four new ones landed with
   lane 1 (`CheckoutConfig` twice, `ids::return_token`,
   `CheckoutSessionRow::return_page_url`).
-- `just docs-check`: `verify-status` ok; **link checking is still not
-  implemented** and that recipe still says so.
+- `just docs-check`: ~~`verify-status` ok; **link checking is still not
+  implemented** and that recipe still says so.~~ **Corrected 2026-09-05:** it
+  runs `verify-status` **and `verify-links`**, and the echo is gone — see the
+  `verify-links` bullet above for the counts.
 - `cargo nextest list` per binary, on this branch: **33** conformance cases (was
   28 — lane 2's return-URL case once per rail, lane 2b's digits-only twin ×3),
   **17** `checkout_sessions` (new), **12** `confirm_rails` (was 7), **11**
@@ -275,8 +351,9 @@ who measured them instead.
   all 1059 pass.
 - `just test-doc`: **77 passed, 0 failed, 1 ignored** — the one ignored doctest
   is `sdks/rust`'s and is pre-existing, unchanged by this step.
-- `just docs-check`: `verify-status` ok; **link checking is still not
-  implemented** and that recipe still says so.
+- `just docs-check`: ~~`verify-status` ok; **link checking is still not
+  implemented** and that recipe still says so.~~ (True of the Step 8 tree this
+  block measures; **link checking landed 2026-09-05**, above.)
 - `cargo nextest list` (re-measured on `1c742a4`): **28** conformance cases
   (was 26 — lane C's `the_submit_tells_the_rail_where_to_call_back`, once per
   rail), **11** `provider_callback` cases (was 9 — lane H's floor join and the
