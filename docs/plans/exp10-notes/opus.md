@@ -252,22 +252,32 @@ badly-written gate is to delete an honest sentence:
 $ just verify
 verify-no-mocks: ok — no test double reachable from a shipping binary
 verify-status: ok — 1 unimplemented item(s), all declared in docs/status.md and all still in shipping code
-verify-errors: ok — 15 error type(s), all classified; 14 `#[from]` variant(s) delegate every Classify method they match on; anyhow confined to binaries
+verify-errors: ok — 15 error type(s), all classified; 14 `#[from]` variant(s) delegate every `Classify` method they match on; anyhow confined to binaries
 verify-sdk-parity: ok — 342 proving test(s) named in docs/sdks/parity.md all exist, 26 dated gap(s)
-verify-links: ok — 697 repository link(s) in 121 tracked markdown file(s) resolve to a tracked path
-verify-npm-scope: ok — 2 publishable package(s) under sdks/, 1 private one(s) declaring no publishConfig, and no retired package name outside docs/plans, docs/adr and docs/status.md
-check-schema: schema OK
+verify-links: ok — 698 repository link(s) in 121 tracked markdown file(s) resolve to a tracked path (anchors and http(s) URLs are not checked)
+verify-npm-scope: ok — 2 publishable package(s) under sdks/ (@vaam-apps/vpay-sdk (sdks/nodejs/package.json), @vaam-apps/vpay-stripe-js (sdks/stripe-js/package.json)), 1 private one(s) declaring no publishConfig, and no retired package name outside docs/plans, docs/adr and docs/status.md
+check-schema: cratestack 0.11.1, schema schemas/vpay.cstack (12 model/enum declarations, datasource present)
+check-schema: ok — schemas/vpay.cstack type-checks under cratestack 0.11.1
 verify-serde: ok — 49 serialisable type(s) spell the workspace's wire convention, 15 exempted with a reason in docs/adr/0016-engineering-standards.md
 verify-repositories: ok — 3 concrete implementation(s) in backends/crates/vpay-db (PendingTransaction, PgRepositories, SqlClientAssertionStore), named by none of the 65 source file(s) outside it
 verify: ok — the nine gates above passed; the verify-docs report is advisory
 ```
+
+*(The `verify-docs` report prints between `verify-repositories` and the final
+line and is elided here; it is reproduced under "Standard 6" above. The block
+above is the command's real output — an earlier revision of this file
+abbreviated four of these lines and rendered `check-schema` as a string the
+recipe does not print. Corrected on review, 2026-09-05; `verify-links` reads
+698 rather than 697 because this branch's own documents added a link after
+that transcript was taken.)*
 
 - `just docs-check` (`verify-status`, `verify-links`): ok.
 - `just fmt-check`: ok.
 - `just clippy` (`--workspace --all-targets -- -D warnings`): ok. One lint was
   hit and fixed rather than allowed (`clippy::manual_contains` on the blanket
   impl parameter check).
-- `cargo test -p xtask`: **144 before, 181 after, 0 ignored.**
+- `cargo test -p xtask`: **144 before, 184 after, 0 ignored** (181 as first
+  delivered; the review added 3 for the alias evasion — see the mutation table).
 - `actionlint .github/workflows/ci.yml`: ok.
 - `just test-rust`: run, because non-test Rust outside `.xtask` changed —
   see below.
@@ -286,16 +296,43 @@ verify: ok — the nine gates above passed; the verify-docs report is advisory
   a known gap in ADR-0016 standard 2 rather than left implied.
 - **`verify-serde` does not judge a reason.** A row saying "too many to fix"
   passes. Only a blank reason fails.
-- **`verify-serde` does not read `#[serde(skip)]`.** A field that is skipped
-  is still counted as a member that has to be renamed under the
-  "rename every field" alternative, so a struct mixing skipped and renamed
-  fields would need the blanket attribute or a row. No type in the workspace
-  is in that position today.
-- **Neither gate scans `sdks/rust`, `backends/tests` or a crate's own
-  `tests/`.** The serde rule is about `backends/crates/*/src` because that is
-  where vpay's wire is defined; a test fixture names nothing a merchant can
+- **`verify-serde` does not read `#[serde(skip)]`, `#[serde(flatten)]` or
+  `#[serde(rename(serialize = …, deserialize = …))]`.** Each of the three is a
+  member that serialises no name of its own — or names it in a spelling the
+  gate does not parse — and each is still counted as a member that has to be
+  renamed under the "rename every field" alternative. So a struct mixing one
+  of them with explicit renames needs the blanket attribute or a row. Every
+  such miss is in the direction that *fails* a compliant type rather than
+  passing a non-compliant one, which is the safe direction. Six types in
+  `backends/crates/*/src` carry a `#[serde(flatten)]` field
+  (`PaymentIntentWithSecret`, `CheckoutSessionForPayer`,
+  `CheckoutSessionWithSecret`, `BrowserConfirmParams`, and
+  `v1::payment_intents`' `CreateParams` and `ConfirmParams`); all six take the
+  blanket attribute, so none is affected. No type uses the two-sided
+  `rename`, and none mixes `skip` with explicit renames.
+  *(`flatten` and the two-sided `rename` were added to this list on review,
+  2026-09-05; the original named only `skip`. A first draft of this bullet
+  said "one type" — it is six, counted with
+  `grep -rn 'serde(flatten)' backends/crates --include='*.rs' | grep /src/`.)*
+- **`verify-serde` sees `derive`d implementations only.** A hand-written
+  `impl Serialize for X` is invisible to it. That is the rule as ADR-0016
+  states it ("every type **deriving** `Serialize`/`Deserialize`"), and the
+  four such impls in the workspace are `model.rs`'s `object_tag!` unit structs,
+  which serialise one fixed string and have no field names to rename. A
+  hand-written impl over a struct with named fields would not be caught.
+  *(Recorded on review, 2026-09-05.)*
+- **Neither gate scans `sdks/rust`, `examples/`, `backends/tests` or a crate's
+  own `tests/`.** The serde rule is about `backends/crates/*/src` because that
+  is where vpay's wire is defined; a test fixture names nothing a merchant can
   reach. The SDKs model the wire the API emits and are covered by
   `verify-sdk-parity` and the conformance suite instead.
+  `verify-repositories`' consumer set is `backends/crates` plus
+  `backends/apps`; nothing under `examples/` or `sdks/` depends on `vpay-db`
+  today (checked, not assumed — `grep -rn 'vpay-db' --include=Cargo.toml`
+  lists only `vpay-api`, `vpay-worker`, both binaries and
+  `backends/tests/integration`), so the scope has no live hole, but a new
+  crate outside those two directories that took the dependency would not be
+  scanned. *(`examples/` added to this list on review, 2026-09-05.)*
 - **`docs/plans/*` and `docs/roadmap.md`'s "Original text, for the record"
   block still spell `vpay_db::SqlClientAssertionStore`, and were left
   alone.** They are dated records of what was built on the day they were
