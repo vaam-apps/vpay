@@ -264,6 +264,12 @@ edit destroys silently — the build stays *correct*, it just stops caching:
    header and [ADR-0014](../adr/0014-builder-host-musl-triple.md)), same
    `-p` selection, and `.cargo/` copied in first so `+crt-static` applies. A
    cook under different rustflags writes fingerprints the real build rejects.
+   The two halves fail differently, and only one of them is visible: dropping
+   `--target` kills the cook in under a second (`cannot produce proc-macro
+   for async-trait ... x86_64-unknown-linux-musl does not support these crate
+   types`), while dropping `--profile dist` **succeeds**, cooks the `dev`
+   profile, and leaves the next `cargo build` to recompile everything — 305 s
+   for a rebuild that costs 105 s when the flags match.
 2. **`ARG VPAY_GIT_SHA` must stay below the cook.** `release.yml` passes a
    different `github.sha` on every push; an `ARG`/`ENV` pair above the cook
    invalidates the dependency layer on every release build.

@@ -72,9 +72,18 @@
 #  1. **The cook must run with the same flags as the build.** Same
 #     `--profile dist`, same `--target <host triple>`, same
 #     `-p vpay-server -p vpay-worker-bin`, and with `.cargo/` already copied
-#     in so `+crt-static` applies. A cook under different rustflags or a
-#     different profile writes fingerprints the real build rejects, and
-#     caches nothing — it would be pure added cost, and a *silent* one.
+#     in so `+crt-static` applies. A cook under different flags writes
+#     fingerprints the real build rejects and caches nothing. The two halves
+#     fail differently — measured by mutation in the 2026-09-05 review pass,
+#     not asserted. Dropping `--target` is **loud**: the cook dies in under a
+#     second with `cannot produce proc-macro for async-trait v0.1.92 as the
+#     target x86_64-unknown-linux-musl does not support these crate types` —
+#     the same failure this header describes for the build itself, and for
+#     the same reason (`.cargo/config.toml` is in scope by then). Dropping
+#     `--profile dist` alone is **silent**: the cook succeeds in the `dev`
+#     profile, exit 0, and the next `cargo build` recompiles everything —
+#     48 s of wasted cook and a 255 s `dist` build, 305 s in total for what
+#     costs 105 s when the flags match.
 #  2. **`ARG VPAY_GIT_SHA` is declared AFTER the cook.** It changes on every
 #     commit (`release.yml` passes `github.sha`), and an `ARG`/`ENV` pair
 #     ahead of the cook would invalidate the dependency layer on every single
@@ -82,12 +91,19 @@
 #     `vpay-core/build.rs`'s `cargo::rerun-if-env-changed=VPAY_GIT_SHA` is
 #     unchanged and still does its job: `vpay-core` is a workspace member, so
 #     it is rebuilt by the final `cargo build` regardless.
-#  3. **The planner copies exactly what the builder copies.** Not `COPY . .`:
-#     the recipe must describe the same workspace the next stage compiles,
-#     and a planner that saw a different member set would produce a recipe
-#     that cooks the wrong dependency graph. It is the same list, for the
-#     same reason — cargo refuses to load a workspace whose `members` list
-#     names a missing directory (see the per-COPY comments below).
+#  3. **The planner copies the same workspace directories as the builder.**
+#     Not `COPY . .`: the recipe must describe the same workspace the next
+#     stage compiles, and a planner that saw a different member set would
+#     produce a recipe that cooks the wrong dependency graph. It is the same
+#     list, for the same reason — cargo refuses to load a workspace whose
+#     `members` list names a missing directory (see the per-COPY comments
+#     below). Measured 2026-09-05: dropping `.xtask`/`sdks/rust` from the
+#     planner fails `cargo chef prepare` outright (`failed to read
+#     /build/sdks/rust/Cargo.toml`); it does not quietly shrink the recipe.
+#     The one deliberate difference is `.cargo`, which only `builder` copies.
+#     The recipe's `config_file` is `null` in consequence, so
+#     `.cargo/config.toml` reaches the cook through that stage's own `COPY` —
+#     which is also what makes a change to it invalidate the cook.
 #
 # `cargo chef prepare --bin` exists and is deliberately NOT used: it prunes
 # the workspace to the members one binary needs, which would make the
@@ -106,9 +122,13 @@
 # `vpay-server` 15.9 MB both times, two layers both times, and the `config/`
 # layer is the same digest
 # (`sha256:571fbc262e375dd7c77adf3d212534a9c2db16ccb93822b965eb6ba2b19c091b`)
-# in both. `docker export` of the final image lists exactly `config/` and
-# `/vpay-server`; a grep of that listing for `cargo`, `chef` or `rust`
-# matches nothing.
+# in both. `docker export` of the final image lists `config/` and
+# `/vpay-server` and nothing else this build put there — the tar also carries
+# the `/dev`, `/etc`, `/proc`, `/sys` and `.dockerenv` stubs the runtime
+# creates for any container, which are not layers — and a grep of that
+# listing for `cargo`, `chef` or `rust` matches nothing. Every number and
+# digest in this paragraph was reproduced independently in review the same
+# day, including on an image built from the pre-cargo-chef Dockerfile.
 #
 # What it costs: the `chef` stage compiles cargo-chef from source, 32-58 s
 # across six runs on this host, once per change to the base image or the pin.
