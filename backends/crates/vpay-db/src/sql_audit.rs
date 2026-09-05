@@ -2,8 +2,8 @@
 //!
 //! sqlx 0.9 (sqlx#3723) accepts a statement only as a `&'static str` or
 //! wrapped in [`sqlx::AssertSqlSafe`], whose contract is that the caller has
-//! checked the string for injection. This crate has 36 statements built by
-//! `format!`, so it wraps 36 times — and a wrapper whose contract is
+//! checked the string for injection. This crate has 37 statements built by
+//! `format!`, so it wraps 37 times — and a wrapper whose contract is
 //! discharged by a comment is discharged by whoever last read the comment.
 //!
 //! The invariant, stated once for the whole crate: **every `format!` whose
@@ -244,8 +244,10 @@ mod tests {
     /// An exact figure, not a floor: this is the number of places the
     /// compiler's own check has been switched off, and it should not be
     /// possible to add one without saying so here. Measured 2026-09-05 on the
-    /// sqlx 0.8 → 0.9 bump.
-    const EXPECTED_ASSERT_SITES: usize = 36;
+    /// sqlx 0.8 → 0.9 bump; 36 → 37 on 2026-09-05 with
+    /// `refunds::Refunds::get_for_merchant`, the merchant read behind
+    /// `GET /v1/refunds/{id}` (issue #45).
+    const EXPECTED_ASSERT_SITES: usize = 37;
 
     /// **The gate.** No `format!` that becomes a statement interpolates
     /// anything but a crate constant.

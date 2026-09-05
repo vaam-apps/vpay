@@ -34,6 +34,7 @@ application's side of them.
   - [Which intent statuses a settlement may land on](#which-intent-statuses-a-settlement-may-land-on)
   - [The `from` label degrades rather than failing a settlement](#the-from-label-degrades-rather-than-failing-a-settlement)
 - [`events`](#events)
+- [`refunds`](#refunds)
 - [`webhook_deliveries`](#webhook_deliveries)
   - [`record_attempt`: what each column is allowed to say](#record_attempt-what-each-column-is-allowed-to-say)
   - [`pending_due` is a backstop, never a scheduler](#pending_due-is-a-backstop-never-a-scheduler)
@@ -827,6 +828,46 @@ webhook a merchant missed. Those two are merchant-scoped in SQL and page exactly
 as `payment_intents::list_page` does; the handlers and the `EventObject`
 renderer they and the deliverer must share live in `vpay-api`.
 
+## `refunds`
+
+**One read, no write, and the write's absence is the point.** `GET
+/v1/refunds/{id}` was made part of the `/v1` contract on 2026-09-05 (issue
+#45) because a refund is the one money movement on this surface with no
+authoritative read: it is asynchronous and non-terminal (`pending`), the two
+documented refund event types are emitted by nothing, and webhook delivery is
+at-least-once and unordered. **Creating** one is a different question and is
+still unanswered — `ProviderAdapter::refund` is `NotImplemented` on MTN
+(refunds are the Disbursements product) and `Unsupported` on Orange — so
+`Refunds` exposes `get_for_merchant` and nothing else. A `create` here would
+be a write path no shipping code calls, which is a feature this repository
+would be claiming it has.
+
+**The tenant is reached by a join, and migration `0017` was deliberately not
+altered.** `refunds` has no `merchant_id`; it has a `NOT NULL` foreign key
+onto `payment_intents (id)`, and the intent is where the tenant lives. So the
+one statement is
+
+```sql
+SELECT … FROM refunds r
+  JOIN payment_intents p ON p.id = r.payment_intent_id
+ WHERE p.merchant_id = $1 AND r.id = $2
+```
+
+A denormalised `merchant_id` column was the alternative and was rejected: it
+would be a *second* answer to "whose refund is this?", and two answers to a
+tenancy question is how one of them ends up stale — for the cost of one
+primary-key lookup per read. It would also have collided with the migration
+numbering of two other branches in flight the same day, which is a reason to
+notice the choice rather than a reason to make it.
+
+`RefundRow` is a **projection**, not the whole table: `charge_id`,
+`failure_code`, `failure_raw`, `provider_reference_id` and `updated_at` are on
+the row in Postgres and on no wire object, and the writer that would fill them
+does not exist. That is `events::EventRow`'s rule for `fanout_attempts`, not
+`checkout_sessions::CheckoutSessionRow`'s one-to-one rule, and it is the right
+one here precisely because guessing at the shape of code nobody has written is
+what this repository calls claiming a feature.
+
 ## `webhook_deliveries`
 
 **One row per (event, endpoint), created by the fan-out transaction.** The drain
@@ -1052,7 +1093,8 @@ sqlx 0.9 (sqlx#3723) changed `query`, `query_as` and `query_scalar` to take
 `AssertSqlSafe` wrapper — and for nothing else. A `String` built by `format!`
 therefore no longer compiles as a statement. Under 0.8 this crate passed
 `&sql` at 36 call sites; under 0.9 it passes `AssertSqlSafe(sql)` at the same
-36. Taking the `String` **by value** rather than `AssertSqlSafe(&sql)` is
+36 — **37 since 2026-09-05**, when `refunds::get_for_merchant` landed with
+issue #45. Taking the `String` **by value** rather than `AssertSqlSafe(&sql)` is
 deliberate: the borrowed form goes through `AssertSqlSafe<&str>`, which sqlx's
 own docs describe as copying the string.
 
@@ -1067,11 +1109,12 @@ is the entire reason a statement here is not a literal.
 `AssertSqlSafe`'s contract is that the caller audited the string. Here is the
 audit, re-done on 2026-09-05 from the source rather than inherited:
 
-All 36 statements interpolate exactly two kinds of value.
+All 37 statements interpolate exactly two kinds of value.
 
-* **A `const … : &str` declared in this crate.** Ten of them:
+* **A `const … : &str` declared in this crate.** Eleven of them:
   `charges::COLUMNS`, `checkout_sessions::COLUMNS`, `events::COLUMNS`,
-  `payment_intents::COLUMNS`, `webhook_deliveries::COLUMNS`,
+  `payment_intents::COLUMNS`, `refunds::COLUMNS`,
+  `webhook_deliveries::COLUMNS`,
   `checkout_sessions::OPEN`, `payment_intents::LIVE_CHARGE_STATES`,
   `payment_intents::SETTLEABLE_STATUSES`, `jobs::CLAIM_RETURNING` and
   `settlement::PREVIOUS_STATE`. A `const` cannot carry a caller's value.
@@ -1126,7 +1169,7 @@ is what makes a blanket refusal the correct rule rather than a heuristic.
 ### Why not `QueryBuilder`
 
 sqlx's own suggested alternative. It was considered and rejected: it would
-rewrite 36 working, reviewed statements to remove a risk the audit above shows
+rewrite 37 working, reviewed statements to remove a risk the audit above shows
 is not present, and it would replace SQL that reads as SQL with SQL assembled
 by method calls — in a crate where the statement text *is* the design
 (`FOR UPDATE SKIP LOCKED`, `UPDATE … WHERE state = $2 RETURNING`, the
