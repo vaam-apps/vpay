@@ -291,6 +291,18 @@ while this ran, and the default builder uses the `docker` driver rather than
 observation. It does not affect Builds A/B/C, which ran on an isolated
 builder with nothing else on it.
 
+> **Explained in review, 2026-09-05, and it is not a defect.** `DONE 0.0s` is
+> simply what BuildKit prints for a `COPY` that *missed* the cache and then
+> took no measurable time; `CACHED` requires a hit. Build B above shows the
+> same output for `COPY backends` at the moment its content was known to have
+> changed — and once that `COPY` misses, every later `COPY` in the stage
+> misses with it, which is the rest of the log. So the observation says the
+> default builder's cached entry for `COPY backends` had been written from a
+> *different* `backends/` tree, which is what one would expect given the
+> cache-probe line that was being added and reverted around those runs.
+> `just release-dry-run` re-run on the committed tree, on that same default
+> builder, logs `COPY backends ./backends  CACHED` and finishes in 5 s.
+
 ## What this does not buy, and why the number is only ~2x
 
 `[profile.dist]` inherits `release`, which is `lto = "fat"` with
