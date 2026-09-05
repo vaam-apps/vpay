@@ -254,7 +254,7 @@ verify-no-mocks: ok — no test double reachable from a shipping binary
 verify-status: ok — 1 unimplemented item(s), all declared in docs/status.md and all still in shipping code
 verify-errors: ok — 15 error type(s), all classified; 14 `#[from]` variant(s) delegate every `Classify` method they match on; anyhow confined to binaries
 verify-sdk-parity: ok — 342 proving test(s) named in docs/sdks/parity.md all exist, 26 dated gap(s)
-verify-links: ok — 698 repository link(s) in 121 tracked markdown file(s) resolve to a tracked path (anchors and http(s) URLs are not checked)
+verify-links: ok — 698 repository link(s) in 122 tracked markdown file(s) resolve to a tracked path (anchors and http(s) URLs are not checked)
 verify-npm-scope: ok — 2 publishable package(s) under sdks/ (@vaam-apps/vpay-sdk (sdks/nodejs/package.json), @vaam-apps/vpay-stripe-js (sdks/stripe-js/package.json)), 1 private one(s) declaring no publishConfig, and no retired package name outside docs/plans, docs/adr and docs/status.md
 check-schema: cratestack 0.11.1, schema schemas/vpay.cstack (12 model/enum declarations, datasource present)
 check-schema: ok — schemas/vpay.cstack type-checks under cratestack 0.11.1
@@ -264,12 +264,14 @@ verify: ok — the nine gates above passed; the verify-docs report is advisory
 ```
 
 *(The `verify-docs` report prints between `verify-repositories` and the final
-line and is elided here; it is reproduced under "Standard 6" above. The block
-above is the command's real output — an earlier revision of this file
-abbreviated four of these lines and rendered `check-schema` as a string the
-recipe does not print. Corrected on review, 2026-09-05; `verify-links` reads
-698 rather than 697 because this branch's own documents added a link after
-that transcript was taken.)*
+line and is elided here; it is reproduced under "Standard 6" above. This is
+the command's real output, re-captured 2026-09-05 after the review's commits.
+An earlier revision of this file abbreviated four of these lines and rendered
+`check-schema` as a string the recipe does not print. **`verify-links`' two
+numbers count this branch's own documents**, so they move whenever a file or a
+link is added here — that first revision read `697 ... 121`, and adding the
+ADR's links and `opus-review.md` is the whole difference. A transcript pasted
+into a tracked document is a claim about the tree that contains it.)*
 
 - `just docs-check` (`verify-status`, `verify-links`): ok.
 - `just fmt-check`: ok.
@@ -277,10 +279,13 @@ that transcript was taken.)*
   hit and fixed rather than allowed (`clippy::manual_contains` on the blanket
   impl parameter check).
 - `cargo test -p xtask`: **144 before, 184 after, 0 ignored** (181 as first
-  delivered; the review added 3 for the alias evasion — see the mutation table).
+  delivered; the review added 3 for the alias evasion — see
+  `docs/plans/exp10-notes/opus-review.md`, finding 1).
 - `actionlint .github/workflows/ci.yml`: ok.
-- `just test-rust`: run, because non-test Rust outside `.xtask` changed —
-  see below.
+- `just test-rust`: **1257 run, 1257 passed, 0 skipped** as first delivered,
+  and **1260 total** after the review's three xtask guards
+  (`just verify-ignored`: 0 ignored, 42 test binaries, 1260 total).
+  Run because non-test Rust outside `.xtask` changed — see below.
 
 ## What I did not do
 
