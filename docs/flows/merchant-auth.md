@@ -589,9 +589,16 @@ work does not close them.
   redirect confirm validates `return_url` and discards it; `charges` has no
   column for it, and the `next_action` it would feed can only come from a
   successful `submit`.
-- **No `/v1/refunds`, `/v1/events` or `/v1/balance`.** Migrations `0017` and
-  `0018` add the `refunds` and `events` schemas and nothing reads or writes
-  either table.
+- ~~**No `/v1/refunds`, `/v1/events` or `/v1/balance`.** Migrations `0017`
+  and `0018` add the `refunds` and `events` schemas and nothing reads or
+  writes either table.~~ **— corrected 2026-09-05, in both halves.**
+  `/v1/events` and `/v1/events/{id}` have been served since Step 5
+  (2026-09-03) and `events` is read by `vpay_db::Events`; `GET
+  /v1/refunds/{id}` is served as of issue #45 and `refunds` is read by
+  `vpay_db::Refunds`. **Nothing writes either table from `/v1`**, and that is
+  the part that is still true: `POST /v1/refunds` is unrouted, `GET
+  /v1/balance` is unrouted, and events are written only by the settlement
+  and expiry transactions inside `vpay-db`.
 - **No scheduled idempotency sweep.** See the Idempotency section above.
 - **No rate limit on `/token`.** [ADR-0009](../adr/0009-dashboard-oidc-provider.md)
   leaves it to Kubernetes ingress. The endpoint is public and
