@@ -903,11 +903,21 @@ fn parse_drift_header(stdout: &str) -> anyhow::Result<(u32, u32)> {
 
 /// Every table the report names as present in the live database and absent
 /// from `schemas/vpay.cstack`, in the report's own words.
+///
+/// Keyed on the sentence, not on the `[lossy]` severity label that precedes
+/// it. `Op::DropTable` is unconditionally `Destructiveness::Lossy` in
+/// `cratestack-migrate` 0.11.1 (`src/ir.rs`), so pinning the label was
+/// correct — but it is a second fact about the tool riding on an assertion
+/// about vpay's schema, and if the label ever changed this would quietly
+/// return an empty set. The test would still fail, and would fail saying the
+/// schema now declares every table in the database: the wrong diagnosis, from
+/// a helper that had stopped reading the report rather than a schema that had
+/// grown.
 fn tables_missing_from_the_schema(stdout: &str) -> Vec<String> {
     stdout
         .lines()
         .filter_map(|line| {
-            let rest = line.trim().strip_prefix("[lossy] table `")?;
+            let (_severity, rest) = line.trim().strip_prefix('[')?.split_once("] table `")?;
             let (name, tail) = rest.split_once('`')?;
             tail.starts_with(" exists in the live database but is not declared in the schema")
                 .then(|| name.to_owned())
