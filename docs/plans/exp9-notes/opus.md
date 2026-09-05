@@ -6,6 +6,12 @@ The repository toolchain is the pinned one (`rust-toolchain.toml`, 1.95.0);
 the CrateStack CLI is a separate binary built with `rustc 1.98.0` — see
 "Installing the CLI" below for why the two cannot be the same.
 
+**Read the last section first if you are reading this on the merged tree.**
+Everything below "sixth gate" was written on base `a81b6b6`. This branch was
+rebased onto `744f016` on 2026-09-05 and `check-schema` is the **seventh**
+gate there; "Rebased onto `744f016`" at the bottom has the renumbering and
+the re-run.
+
 ## What changed
 
 | file | change |
@@ -313,3 +319,49 @@ names 0.11.1 as well.
   opt-out.
 - **No `cargo nextest` run.** Nothing in this branch changes Rust, so the suite
   was not re-run and no test count in `docs/status.md` was touched.
+
+## Rebased onto `744f016` (2026-09-05)
+
+`origin/master` moved while this branch was open: PR #39 merged the npm scope
+rename and, with it, **`cargo xtask verify-npm-scope` as a gate of its own**,
+inserted between `verify-links` and the advisory `verify-docs` — exactly the
+slot this branch had taken. The two branches never saw each other, so neither
+renumbered past the other.
+
+`git rebase origin/master` conflicted in three files, and the resolution kept
+**both** gates everywhere rather than choosing one:
+
+| file | conflict | resolution |
+|---|---|---|
+| `justfile` | both branches rewrote the `verify` recipe line and its preamble | `verify: … verify-links verify-npm-scope check-schema verify-docs`; both rationale paragraphs kept, `check-schema` renumbered to seventh; the header's invariant list gained the npm-scope bullet it never had, so "Seven invariants" counts seven bullets |
+| `.github/workflows/ci.yml` | both branches added steps after `verify-links` in `self-checks` | `verify-npm-scope` (master's, sixth) then this branch's four steps (`just`, the version pin, the install action, `just check-schema`), seventh. One `just` install step in the job, not two |
+| `docs/status.md` | both branches rewrote the "which gate is which number" paragraph | master's whole npm-scope block kept verbatim; the running count now reads fifth `verify-links`, sixth `verify-npm-scope`, seventh `check-schema`, eighth (opt-in) `verify-citations` |
+| `.xtask/src/main.rs` | both branches rewrote the module doc's gate count | "`just verify` runs seven gates… Six of them are commands here; the seventh, `check-schema`, is a justfile recipe" |
+
+`AGENTS.md` conflicted with neither side and was **wrong on both**: PR #39
+merged still saying "`just verify` is **five** gates" and naming
+`verify-citations` as the sixth check. It is corrected in its own commit on
+this branch — seven gates named individually, `verify-citations` eighth.
+
+### Gate results on the rebased tree
+
+Re-run in this worktree, `CARGO_BUILD_JOBS=4`, `cratestack 0.11.1` on `PATH`,
+`just 1.45.0`:
+
+| command | result |
+|---|---|
+| `just verify` | **ok, exit 0 — seven gates**: `verify-no-mocks`, `verify-status` (1 unimplemented item), `verify-errors` (15 types / 14 `#[from]`), `verify-sdk-parity` (342 proving tests, 26 dated gaps), `verify-links` (684 links in 119 files), `verify-npm-scope` (2 publishable, 1 private), `check-schema` (12 model/enum declarations, datasource present, `schema OK`), then the advisory `verify-docs` |
+| `just docs-check` | **ok**, exit 0 |
+| `just fmt-check` | **ok**, exit 0 |
+| `cargo test -p xtask` | **144 passed, 0 failed, 0 ignored** |
+| `actionlint .github/workflows/ci.yml` | **clean**, exit 0 |
+
+### The two decisive mutations, re-run after the rebase
+
+| mutation | `just verify` |
+|---|---|
+| `tags String[]` added to `model PaymentIntent` | **exit 1** at `check-schema`, with 0.11.1's list-arity refusal naming `PaymentIntent.tags`; `verify-docs` never ran (`grep -c "verify-docs: a report"` = 0) |
+| `schemas/vpay.cstack` truncated to **0 bytes** | **exit 1** at `check-schema`'s datasource assertion. The control that makes this measurement mean something: `cratestack check --schema schemas/vpay.cstack` on the *same* empty file printed `schema OK` and exited **0** |
+
+Both were reverted; `schemas/vpay.cstack` is byte-identical to its committed
+state (`sha256 3849277…fe616`) and `git status --porcelain` is empty.

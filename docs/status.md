@@ -240,8 +240,11 @@ correction.
   satisfied by an untracked scratch file resolves on one machine and nowhere
   else. **Measured 2026-09-05: 115 files scanned (113 on `master`, plus this
   change's notes and its review's), 673 repository links checked, 5 broken,
-  5 fixed** — the 5 are the count on `master`, and an independent oracle built
-  on markdown-it-py 3.0.0 agrees with both numbers exactly (this branch's
+  5 fixed** — **re-measured 2026-09-05 on the tree that carries both this
+  gate and `check-schema`: 119 files, 684 links, 0 broken**, the file count
+  larger only because two branches' notes landed on top of the first
+  measurement. The 5 broken are the count on `master`, and an independent
+  oracle built on markdown-it-py 3.0.0 agrees with both numbers exactly (this branch's
   review, `docs/plans/exp6-notes/opus-review.md`). All five were in `docs/plans/step8-notes/`
   (`lane-c.md` ×3, `lane-h.md` ×2), and ~~four were links copied verbatim out
   of a `docs/flows/` document into a blockquote, keeping the quoted file's own
