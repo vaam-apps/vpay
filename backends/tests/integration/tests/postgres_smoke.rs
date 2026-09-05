@@ -1180,7 +1180,8 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
     );
 
     // `--strict` documents "no snapshot was written and no baseline row was
-    // recorded". Both halves are checked: the out-dir, and the repository.
+    // recorded". Both halves are checked below — the snapshot against the
+    // out-dir and the repository, the baseline row against the database.
     assert_eq!(
         stderr.trim(),
         format!(
@@ -1210,6 +1211,26 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         std::fs::read(&schema).context("re-reading schemas/vpay.cstack")?,
         schema_before,
         "measuring the schema must not edit it"
+    );
+
+    // The other half of the promise, and the half nothing else here could
+    // notice. A recorded baseline row means a `cratestack_migrations` table
+    // (`cratestack-cli` 0.11.1, `src/migrate/baseline_cmd.rs`), and
+    // introspection excludes that table from its own table list
+    // (`cratestack-migrate` 0.11.1, `src/introspect/postgres/tables.rs`) — so
+    // if `--strict` did write one, the 86 above would not move and the set of
+    // undeclared tables would not grow. docs/status.md asserted this from a
+    // run someone did by hand; it is read from the database now.
+    let baseline_row_table: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('public.cratestack_migrations')::text")
+            .fetch_one(&pool)
+            .await
+            .context("checking whether migrate baseline recorded a baseline row")?;
+    assert_eq!(
+        baseline_row_table, None,
+        "`--strict` promises no baseline row was recorded, and a `cratestack_migrations` table \
+         exists. Nothing else in this test could see that: the drift report never lists that \
+         table"
     );
 
     Ok(())
