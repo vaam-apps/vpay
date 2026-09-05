@@ -1856,7 +1856,7 @@ asserted:
 - the wire field `vpay_api::model::RefundObject::fee` and the ten-key
   tripwire on that object — `the_refund_object_is_the_documented_ten_keys`,
   `an_unreported_refund_fee_renders_null_and_a_reported_zero_renders_zero`,
-  `a_refund_delivered_as_charge_refunded_carries_fee_present_and_null`;
+  `a_refund_delivered_as_either_refund_event_carries_fee_present_and_null`;
 - the port's own `vpay_provider::Refunded::fee` (`Option<Money>`), the only
   thing that could ever fill it — note that a bullet in this section may not
   *begin* with a backticked path, because `verify-status` reads exactly those

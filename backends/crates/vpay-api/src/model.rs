@@ -2072,58 +2072,77 @@ mod tests {
         assert_eq!(decoded.data.object.get("id"), Some(&json!("pi_1")));
     }
 
-    /// A refund reaching a merchant through `charge.refunded`, which is the
-    /// surface that matters most for issue #46: `data.object` is the wire
-    /// object, so a webhook body and an API response cannot disagree about a
-    /// field, and the webhook is the one a merchant's settlement job reads.
+    /// A refund reaching a merchant through **both** refund event types,
+    /// which is the surface that matters most for issue #46: `data.object`
+    /// is the wire object, so a webhook body and an API response cannot
+    /// disagree about a field, and the webhook is the one a merchant's
+    /// settlement job reads.
     ///
-    /// The key must be **present and `null`**, not absent: `sdks/rust`'s
-    /// `Refund.fee` is `#[serde(default)]` and `sdks/nodejs`'s is optional,
-    /// so an omitted key decodes without complaint and the merchant simply
-    /// never learns the field exists.
+    /// The key must be **present and `null`**, not absent: both merchant
+    /// SDKs model `fee` as optional so an older vpay still decodes, so an
+    /// omitted key would decode without complaint and the merchant would
+    /// simply never learn the field exists.
     ///
-    /// Nothing emits `charge.refunded` today — the type is in the
-    /// `type_is_a_documented_event` vocabulary (migrations `0018`/`0029`) and
-    /// no writer produces it. This asserts what the payload *will* be, and
-    /// fails if the renderer stops producing it.
+    /// # The event row here is hand-built, because nothing writes one
+    ///
+    /// Neither `charge.refunded` nor `charge.refund.updated` has ever been
+    /// emitted: both are in the `type_is_a_documented_event` vocabulary
+    /// (migrations `0018`/`0029`) and no code path writes either. So this
+    /// case seeds `events.data` itself with what the renderer produced,
+    /// rather than driving a transition that would produce it. What it
+    /// proves is the *contract* — that `data.object` is this object, key for
+    /// key — and not that a refund event works.
+    ///
+    /// Both types are covered because `docs/flows/merchant-auth.md`,
+    /// `docs/flows/webhooks.md` and `docs/status.md` all claim the same value
+    /// on both, and until this loop existed only `charge.refunded` was ever
+    /// rendered.
     #[test]
-    fn a_refund_delivered_as_charge_refunded_carries_fee_present_and_null() {
-        let refund = RefundObject::try_from(&refund_row(None)).expect("renders");
-        let mut row = event_row(serde_json::to_value(&refund).expect("serialises"));
-        row.event_type = "charge.refunded".to_owned();
-        row.object_id = "re_1".to_owned();
+    fn a_refund_delivered_as_either_refund_event_carries_fee_present_and_null() {
+        for (wire_type, known) in [
+            ("charge.refunded", vpay_sdk::KnownEventType::ChargeRefunded),
+            (
+                "charge.refund.updated",
+                vpay_sdk::KnownEventType::ChargeRefundUpdated,
+            ),
+        ] {
+            let refund = RefundObject::try_from(&refund_row(None)).expect("renders");
+            let mut row = event_row(serde_json::to_value(&refund).expect("serialises"));
+            row.event_type = wire_type.to_owned();
+            row.object_id = "re_1".to_owned();
 
-        let rendered = serde_json::to_value(EventObject::try_from(&row).expect("renders"))
-            .expect("serialises");
+            let rendered = serde_json::to_value(EventObject::try_from(&row).expect("renders"))
+                .expect("serialises");
 
-        let object = rendered
-            .pointer("/data/object")
-            .and_then(Value::as_object)
-            .expect("data.object is the refund");
-        assert_eq!(
-            object.get("fee"),
-            Some(&Value::Null),
-            "`fee` must be present and null in the delivered body, not absent"
-        );
-        assert_eq!(
-            object.len(),
-            10,
-            "the delivered payload is the same ten keys the object has: {object:?}"
-        );
+            let object = rendered
+                .pointer("/data/object")
+                .and_then(Value::as_object)
+                .expect("data.object is the refund");
+            assert_eq!(
+                object.get("fee"),
+                Some(&Value::Null),
+                "`fee` must be present and null in a delivered {wire_type} body, not absent"
+            );
+            assert_eq!(
+                object.len(),
+                10,
+                "the delivered payload is the same ten keys the object has: {object:?}"
+            );
 
-        // And it still decodes as a refund in the SDK a merchant installs —
-        // through the event accessor they would actually call.
-        let bytes =
-            serde_json::to_vec(&EventObject::try_from(&row).expect("renders")).expect("serialises");
-        let event: vpay_sdk::Event =
-            serde_json::from_slice(&bytes).expect("the shipping SDK decodes the envelope");
-        assert_eq!(
-            vpay_sdk::KnownEventType::from_wire(&event.kind),
-            Some(vpay_sdk::KnownEventType::ChargeRefunded)
-        );
-        let decoded = event.refund().expect("data.object decodes as a refund");
-        assert_eq!(decoded.id, "re_1");
-        assert_eq!(decoded.fee, None);
+            // And it still decodes as a refund in the SDK a merchant installs
+            // — through the event accessor they would actually call.
+            let bytes = serde_json::to_vec(&EventObject::try_from(&row).expect("renders"))
+                .expect("serialises");
+            let event: vpay_sdk::Event =
+                serde_json::from_slice(&bytes).expect("the shipping SDK decodes the envelope");
+            assert_eq!(
+                vpay_sdk::KnownEventType::from_wire(&event.kind),
+                Some(known)
+            );
+            let decoded = event.refund().expect("data.object decodes as a refund");
+            assert_eq!(decoded.id, "re_1");
+            assert_eq!(decoded.fee, None);
+        }
     }
 
     /// The signature covers *bytes*, and `payload_sha256` asserts attempt two

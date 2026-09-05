@@ -32,7 +32,7 @@ the money back. `data.object` is the wire object — the same
 body and an API response cannot disagree about it. The key is always present
 and, on every refund this deployment could produce, always `null`; **`null` is
 not `0`** and a receiver must not treat it as one
-(`a_refund_delivered_as_charge_refunded_carries_fee_present_and_null`;
+(`a_refund_delivered_as_either_refund_event_carries_fee_present_and_null`;
 [merchant-auth.md](merchant-auth.md) has the table). Neither type has ever been
 emitted, as the paragraph above says.
 
