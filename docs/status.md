@@ -152,15 +152,33 @@ anybody else either. The outputs are in
 Three things this rename did **not** change, stated because each could be
 read into it:
 
-- **The packages are still `"private": true`, so none of them is publishable
-  today** — that flag is what the word "publishable" above is about being
-  *intended* for, not a description of the current manifests, and the
-  repository has no `npm publish` step in any workflow. Each of the three now
-  carries `publishConfig.access: "public"` (a scoped package defaults to
-  `restricted`) alongside `repository`, `homepage` and `bugs` pointing at
-  `github.com/vaam-apps/vpay`, so the manifests are *ready*; removing
-  `"private": true` is a separate, deliberate decision and is left to a
-  maintainer.
+- **Two of the three stopped being `"private": true` on 2026-09-05, at the
+  maintainer's direction** ("change packages to be published from `@vpay/*`
+  to `@vaam-apps/*`"): `@vaam-apps/vpay-sdk` and `@vaam-apps/vpay-stripe-js`.
+  Each carries `publishConfig.access: "public"` (a scoped package defaults to
+  `restricted`), `repository`/`homepage`/`bugs` on `github.com/vaam-apps/vpay`,
+  a `license`, a `description`, and a `prepack` that builds. **Nothing is
+  published, and nothing can be until a release workflow exists** — no
+  workflow in `.github/workflows/` runs `npm publish` or reads an `NPM_TOKEN`,
+  and `npm view` answered `E404` for both names on 2026-09-05. Removing the
+  flag makes a release possible without editing a manifest; it does not
+  perform one.
+- **`@vaam-apps/vpay-stripe-compat` stays `"private": true`, and its
+  `publishConfig` was removed rather than kept.** It is a conformance suite,
+  not a library — its own README says so — with no build, no `main`, no
+  `exports` and no `files`, so `pnpm pack` on it produces a tarball of five
+  `*.compat.test.ts` files, a `vitest.config.ts` and an `eslint.config.js`
+  and no JavaScript. A package that cannot be packed honestly does not get to
+  look one word away from shipping.
+- **The tarballs were empty before `prepack`, and that was the real
+  publish-break.** `dist/` is gitignored, so on a clean clone `pnpm pack`
+  produced a 14 934-byte `@vaam-apps/vpay-sdk` containing `LICENSE`,
+  `package.json`, `README.md` and `scripts/mint-assertion.mjs` — no
+  JavaScript at all, with `main`, `types` and `exports` all pointing at files
+  that were not in it. `"prepack": "pnpm run build"` on both packages closes
+  it; re-measured with `dist/` deleted, the tarballs carry 32 and 12 built
+  files. `cargo xtask verify-npm-scope` fails the build if either package
+  loses that script.
 - **The Node SDK's `User-Agent` is unchanged**, and deliberately: it is
   `vpay-sdk-node/<version>`, which never carried the npm scope. It is a wire
   contract `sdks/rust` holds itself to byte-for-byte, so moving it would have

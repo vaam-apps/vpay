@@ -5,8 +5,12 @@ The Node.js merchant SDK for vpay's `/v1` API. Implements the wire contract in
 `private_key_jwt` client assertions, `client_credentials` token exchange and
 caching, the form-encoded resource calls, and outbound-webhook verification.
 
-**This package is `private: true` and is not published.** See "Status" below
-for what the server it talks to actually serves.
+**Not yet on the registry.** `npm view @vaam-apps/vpay-sdk` answered `E404` on
+2026-09-05 and no workflow in this repository publishes anything. What changed
+on that date is only that the manifest stopped saying `"private": true`, so a
+release can happen without editing it; the release workflow that would do the
+publishing does not exist yet. See "Status" below for what the server it talks
+to actually serves.
 
 ## Install
 
@@ -16,9 +20,13 @@ Inside this workspace:
 pnpm --filter @vaam-apps/vpay-sdk build
 ```
 
-There is nothing to install from a registry yet. Once a server exists and this
-package is published, installation will be `npm install @vaam-apps/vpay-sdk` (or the
-pnpm/yarn equivalent) like any other package. Requires Node.js `>=22.11.0`.
+From a registry, once a release workflow exists and has run:
+
+```bash
+pnpm add @vaam-apps/vpay-sdk   # not yet published — see above
+```
+
+Requires Node.js `>=22.11.0`.
 
 ## The handshake, in prose
 

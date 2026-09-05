@@ -3,6 +3,18 @@
 A Stripe.js-shaped browser client for vpay's payer surface. Zero runtime
 dependencies, ESM, TypeScript strict.
 
+**Not yet on the registry.** `npm view @vaam-apps/vpay-stripe-js` answered
+`E404` on 2026-09-05 and no workflow in this repository publishes anything;
+the manifest stopped saying `"private": true` on that date so that a release
+can happen without editing it. Once published:
+
+```bash
+pnpm add @vaam-apps/vpay-stripe-js   # not yet published — see above
+```
+
+Inside this workspace it is a `workspace:*` dependency, built with
+`pnpm --filter @vaam-apps/vpay-stripe-js build`.
+
 ## Why this exists rather than `@stripe/stripe-js`
 
 `@stripe/stripe-js` cannot be pointed at another API. Its

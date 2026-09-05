@@ -1,7 +1,8 @@
 {
   "name": "@vaam-apps/vpay-stripe-js",
   "version": "0.1.0",
-  "private": true,
+  "description": "A Stripe.js-shaped browser client for vpay's payer surface: payment intents, embedded and hosted Checkout, zero runtime dependencies.",
+  "license": "Apache-2.0",
   "publishConfig": {
     "access": "public"
   },
@@ -33,6 +34,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "prepack": "pnpm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "lint": "eslint . --max-warnings 0"
