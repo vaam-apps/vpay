@@ -2363,6 +2363,37 @@ no_over_refund` from migration 0003 leaves the count at 86, measured; the test
 catches it by reading `pg_constraint` directly, and
 `over_refund_is_rejected_by_the_database` catches it behaviourally.
 
+**It is CrateStack's own documented gap, not an inference from ten samples**
+(added 2026-09-05 by review, from the pinned crate's sources rather than from
+the measurement alone). `cratestack-migrate-0.11.1/src/introspect/postgres/
+mod.rs` lists it under "Known gaps": *"Multi-column and zero-column CHECK
+constraints are skipped. `crate::ir::AddCheck` ties to exactly one column —
+there's no IR shape for `CHECK (a < b)` — so `constraints::introspect_checks`
+only considers `contype = 'c'` rows with `array_length(conkey, 1) = 1`;
+anything else is silently absent from the result rather than mis-attributed to
+one of its columns."* The query in `constraints.rs` carries that filter
+verbatim. Three things follow that the black-box measurement could not have
+told us:
+
+- **The ask is bigger than `@@check(expr)`.** Grammar alone would not fix
+  this: the IR has no shape a cross-column CHECK could occupy, so an
+  `@@check(expr)` that parsed would still be invisible to `migrate baseline`
+  and `migrate diff`. The ask to CrateStack is `@@check(expr)` **and** an IR
+  op that is not tied to a single column **and** introspection that reads
+  `array_length(conkey, 1) > 1`.
+- **The skip is deliberate and defensible**, which is worth saying plainly:
+  mis-attributing `CHECK (a < b)` to column `a` would be worse. The defect is
+  that a `--strict` run reports success without saying what it could not
+  look at — the report's trailing "N column(s) … review manually" block has
+  no CHECK equivalent.
+- **Zero-column CHECKs are skipped too**, and the test's `pg_constraint`
+  query (`cardinality(conkey) > 1`) does not enumerate them. Measured on this
+  database: there are none on a `public` table — the only two,
+  `cardinal_number_domain_check` and `yes_or_no_check`, are
+  `information_schema` domain constraints — so nothing is missed today, and a
+  future `CHECK (current_setting(…) = 'x')`-shaped constraint would be
+  invisible to both the tool and that assertion.
+
 Two further blind spots, both pinned by the same test so they cannot move
 unnoticed: **18 columns are excluded from the comparison entirely** (`jsonb`,
 `int2`/`int4`, `bytea` — the report says so itself and asks for a manual

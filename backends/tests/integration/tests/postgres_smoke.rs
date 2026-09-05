@@ -1070,6 +1070,24 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
     // absence below is asserted only about constraints that demonstrably
     // exist. Measured 2026-09-05: ten multi-column CHECKs, zero of them
     // reported.
+    //
+    // `cardinality(conkey) > 1` is the complement of the tool's own filter,
+    // and the tool documents it: `cratestack-migrate` 0.11.1's
+    // `src/introspect/postgres/mod.rs` lists "Multi-column and zero-column
+    // CHECK constraints are skipped … `AddCheck` ties to exactly one column"
+    // under Known gaps, and `constraints.rs::introspect_checks` selects
+    // `contype = 'c' AND array_length(c.conkey, 1) = 1`. Two consequences for
+    // this query. It is scoped to `public` because that is the only schema
+    // baseline introspects, so an `authkestra.*` constraint could not be
+    // "reported" either way (there are none that are multi-column; measured).
+    // And it does NOT cover the *zero*-column case the same upstream rule
+    // skips: `cardinality(NULL) > 1` is NULL, so a `CHECK` referencing no
+    // column at all would be missing from both sides of this comparison.
+    // There are none on a `public` table here — the only two in the database,
+    // `cardinal_number_domain_check` and `yes_or_no_check`, are
+    // `information_schema` domain constraints — which is why the list stays
+    // "multi-column" rather than growing a second branch for a case vpay does
+    // not have.
     let multi_column_checks: Vec<(String, String)> = sqlx::query(
         "SELECT conrelid::regclass::text AS tbl, conname AS name \
          FROM pg_constraint \

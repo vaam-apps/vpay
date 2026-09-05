@@ -52,8 +52,15 @@
 // │ added to the GAP notes below: the two cross-column CHECKs are not just   │
 // │ inexpressible here, they are INVISIBLE to `migrate baseline` — all ten   │
 // │ multi-column CHECKs in the database are — so a clean --strict run would  │
-// │ say nothing about either of them. See docs/status.md, "The measured      │
-// │ drift", and docs/plans/exp13-notes/opus.md.                              │
+// │ say nothing about either of them. That is CrateStack's own documented    │
+// │ gap, not just a measurement: cratestack-migrate 0.11.1's                 │
+// │ src/introspect/postgres/mod.rs lists "Multi-column and zero-column       │
+// │ CHECK constraints are skipped" because AddCheck ties to exactly one      │
+// │ column. So the ask below is not only @@check(expr) in the grammar — it   │
+// │ needs an IR op that is not single-column and introspection that reads    │
+// │ array_length(conkey, 1) > 1, or a parsed @@check would still be          │
+// │ invisible to migrate baseline and migrate diff. See docs/status.md,      │
+// │ "The measured drift", and docs/plans/exp13-notes/opus.md.                │
 // │                                                                          │
 // │ One more thing this rewrite had to learn the hard way: `cratestack       │
 // │ check` rejects column-aligned field declarations (multiple spaces        │
