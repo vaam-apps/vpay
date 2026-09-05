@@ -1,18 +1,22 @@
 # vpay task runner. `just` with no argument lists everything.
 #
-# Five invariants this repo enforces on itself, all wired into `just verify`:
+# Seven invariants this repo enforces on itself, all wired into `just verify`:
 #   * no test double is reachable from a shipping binary
 #   * every unimplemented item is declared in docs/status.md
 #   * every error type is classified (ADR-0011) and anyhow stays in the binaries
 #   * the merchant SDKs stay at parity (ADR-0015): every claimed capability
 #     names a test that exists, every gap is dated and owned
 #   * every relative link in a tracked *.md resolves to a tracked path
+#   * every publishable npm package under sdks/ is named @vaam-apps/vpay-*
+#     and is publishable for real (`verify-npm-scope`, 2026-09-05)
+#   * schemas/vpay.cstack parses and type-checks against the real CrateStack
+#     grammar, at the pinned CLI version (`check-schema`, 2026-09-05)
 #
-# `just verify` prints a sixth thing that is NOT an invariant and never fails
-# the build: `verify-docs`, a report on doc-comment volume, long functions,
-# ```ignore fences and #[allow]s (Step 7, decision 4).
+# `just verify` prints an eighth thing that is NOT an invariant and never
+# fails the build: `verify-docs`, a report on doc-comment volume, long
+# functions, ```ignore fences and #[allow]s (Step 7, decision 4).
 #
-# A seventh check is a gate that is NOT in `just ci`, because it needs the
+# A ninth check is a gate that is NOT in `just ci`, because it needs the
 # network: `just docs-check-citations` resolves every run id, PR and issue a
 # document cites against GitHub. See its recipe at the bottom of this file.
 
@@ -403,7 +407,7 @@ audit-web:
 # The checks that keep this repository honest, plus one report. CI's
 # `self-checks` job runs exactly this list, in this order:
 # verify-no-mocks, verify-status, verify-errors, verify-sdk-parity,
-# verify-links, verify-npm-scope, and then verify-docs last.
+# verify-links, verify-npm-scope, check-schema, and then verify-docs last.
 #
 # That sentence was false until 2026-09-04: `verify-sdk-parity` ran here but
 # had no step in `.github/workflows/ci.yml`, so ADR-0015's decision 3 ("CI
@@ -413,7 +417,7 @@ audit-web:
 # this comment honest is someone reading the workflow beside it.
 #
 # `verify-docs` is NOT a check: it exits 0 whatever it finds, so the
-# "verify: ok" below means the six gates passed and says nothing about the
+# "verify: ok" below means the seven gates passed and says nothing about the
 # numbers `verify-docs` printed. It is last so that the report a human reads
 # is the final thing on the terminal, after every gate has had its say.
 #
@@ -429,9 +433,17 @@ audit-web:
 # lockfile, not `pnpm -r typecheck`, not `lint-web`, not `test-web`, not any
 # of the five gates above.
 #
-# The six self-checks, then the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope verify-docs
-    @echo "verify: ok — the six gates above passed; the verify-docs report is advisory"
+# `check-schema` joined on 2026-09-05 as the seventh, and it is the first
+# gate here that shells out to a tool this repository does not build. Until
+# then `schemas/vpay.cstack` was verified by someone running `cratestack
+# check` by hand and pasting the output into docs/status.md — a claim with a
+# date on it and nothing re-running it, which is the shape of every claim
+# this file exists to replace. See the recipe below for what happens when the
+# binary is absent (it fails; it does not skip).
+#
+# The seven self-checks, then the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-docs
+    @echo "verify: ok — the seven gates above passed; the verify-docs report is advisory"
 
 verify-no-mocks:
     cargo xtask verify-no-mocks
@@ -497,6 +509,147 @@ verify-links:
 # network, which is `verify-citations`' exception and not this one's).
 verify-npm-scope:
     cargo xtask verify-npm-scope
+
+# The CrateStack CLI release this repository verifies its schema against, and
+# the ONE place that number lives. `.github/workflows/ci.yml` does not repeat
+# it: the `self-checks` job reads it back with `just --evaluate
+# cratestack_version` and feeds that to the install action, the same trick the
+# jobs there already use to read the compiler channel out of
+# `rust-toolchain.toml`. Bump it here and CI follows; there is no second copy
+# to forget.
+cratestack_version := "0.11.1"
+
+# The floor for `check-schema`'s "is there anything here?" assertion: the
+# number of top-level `model`/`enum` declarations schemas/vpay.cstack must
+# still carry for a `schema OK` to mean anything. Six models and six enums
+# today. A FLOOR, deliberately, not an exact count — adding a model is not a
+# reason to fail a gate, and this exists to catch a file that was emptied or
+# truncated, not one that grew.
+cratestack_min_declarations := "12"
+
+# `schemas/vpay.cstack` parses and type-checks against the real CrateStack
+# grammar. Seventh gate in `just verify`, new 2026-09-05.
+#
+# WHY IT IS A GATE AND NOT A NOTE. Before this recipe existed, the evidence
+# that this file is valid was a transcript pasted into docs/status.md by
+# whoever last ran the tool by hand ("Verified against CrateStack 0.10.1 …
+# schema OK"). That is a claim with a date on it and nothing re-running it:
+# the grammar moves fast (crates.io published 29 cratestack-cli releases
+# between 0.7.8 on 2026-08-08 and the pinned 0.11.1 on 2026-09-03), and the
+# first anyone would have learned that the file had stopped parsing is
+# whenever somebody next felt like checking. The schema is still EXCLUDED
+# FROM THE BUILD GRAPH — no crate depends on it, nothing generates from it —
+# so this gate is the only thing in the repository that reads it at all.
+#
+# WHAT A GREEN RUN PROVES, AND WHAT IT DOES NOT. It proves the file parses
+# and type-checks under the pinned CLI. It proves nothing about a migration,
+# a generated server or a running database: `cratestack migrate diff` has
+# never been run against a vpay Postgres, and `backends/migrations/*.sql` —
+# not this file — is the authoritative schema. See docs/status.md, section
+# "CrateStack".
+#
+# A MISSING BINARY IS A RED GATE. It exits non-zero and prints how to install
+# the tool; it never prints "skipped" and exits 0. Same rule as
+# `docs-check-citations` without `gh`: a check that downgrades itself reports
+# success for a run in which nothing was checked, in a log indistinguishable
+# from one in which everything passed. This is why `check-schema` is NOT in
+# the offline-safe promise `just ci` makes about the other gates in the same
+# way they are — it needs no network to RUN, but it does need a binary that
+# is not part of this workspace, and `just install-rust` does not install it
+# (installing it needs a newer compiler than `rust-toolchain.toml` pins; see
+# the message below).
+#
+# THE VERSION IS REPORTED, NOT ENFORCED, LOCALLY. The recipe prints the
+# version it actually used on every run, and says so loudly when that is not
+# `cratestack_version`, so a log never leaves which grammar answered in
+# doubt. It does not refuse to run on a mismatch: CI installs the pin exactly
+# and CI is the gate of record, and blocking every contributor whose PATH
+# carries a newer release is how a gate acquires a local opt-out. That is the
+# same division `helm-check` already draws — presence checked locally,
+# version pinned in the workflow.
+#
+# `schema OK` IS NOT ENOUGH ON ITS OWN, WHICH IS WHY THIS RECIPE ALSO CHECKS
+# THE SHAPE OF WHAT IT CHECKED (added 2026-09-05 by review, with the two
+# measurements that prompted it):
+#
+#   $ : > empty.cstack && cratestack check --schema empty.cstack
+#   schema OK: empty.cstack                                     # exit 0
+#
+#   $ # schemas/vpay.cstack with the `datasource` block deleted and
+#   $ # `tags String[]` added to PaymentIntent:
+#   schema OK: ...                                              # exit 0
+#
+# Both are the failure this gate exists to prevent, wearing the gate's own
+# green: an emptied or truncated schema type-checks vacuously, and deleting
+# the `datasource` block turns off every database-backed-model rule —
+# including the list-arity refusal that is the mutation this gate is proven
+# with, and which the CLI's own error message offers "drop the `datasource`
+# block" as a way to silence. `cratestack check` is right to accept both (a
+# client-only schema is a real thing) and there is no CLI flag that says
+# "and it must be a database-backed schema with content in it", so the
+# assertion belongs here, next to the claim it protects. The floor is a
+# floor, not an exact count, so adding a model does not fail the gate; it is
+# `verify-ignored`'s `min_tests` in miniature.
+#
+# Fail if schemas/vpay.cstack does not parse against the pinned CrateStack.
+check-schema:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    schema="schemas/vpay.cstack"
+    pinned="{{ cratestack_version }}"
+
+    if ! command -v cratestack >/dev/null 2>&1; then
+        echo "check-schema: FAIL — needs the 'cratestack' CLI on PATH, and it is not there." >&2
+        echo "check-schema: this is a failure, not a skip: nothing checked $schema in this run." >&2
+        echo >&2
+        echo "  Install the pinned release, from a directory OUTSIDE this checkout:" >&2
+        echo >&2
+        echo "      (cd ~ && cargo +stable install cratestack-cli --locked --version $pinned)" >&2
+        echo >&2
+        echo "  Outside the checkout on purpose: cratestack-cli $pinned declares" >&2
+        echo "  rust-version = 1.98.0 and rust-toolchain.toml here pins 1.95.0, so cargo" >&2
+        echo "  run from inside the worktree refuses with an msrv error. There is also a" >&2
+        echo "  prebuilt binary for five target triples (x86_64/aarch64 linux-gnu and" >&2
+        echo "  apple-darwin, x86_64-pc-windows-msvc) at" >&2
+        echo "  https://github.com/cratestack/cratestack/releases/tag/v$pinned —" >&2
+        echo "  linux MUSL has none, per https://cratestack.dev/tooling/cli-install" >&2
+        exit 1
+    fi
+
+    # `cratestack --version` prints "cratestack <semver>".
+    found="$(cratestack --version | awk '{print $2}')"
+    if [ "$found" != "$pinned" ]; then
+        echo "check-schema: WARNING — cratestack $found on PATH, this repository pins $pinned." >&2
+        echo "check-schema: the check below still ran in full, but against the $found grammar." >&2
+    fi
+
+    # A schema with nothing in it, or with no `datasource` block, passes
+    # `cratestack check` — see the comment above for both transcripts. Assert
+    # what was actually checked before reporting a green.
+    if ! grep -qE '^datasource [A-Za-z_][A-Za-z0-9_]* \{' "$schema"; then
+        echo "check-schema: FAIL — $schema declares no 'datasource' block." >&2
+        echo "check-schema: without one, cratestack treats it as a client-only schema and" >&2
+        echo "check-schema: stops applying every database-backed-model rule — including the" >&2
+        echo "check-schema: list-arity refusal this gate is proven with. It would still say" >&2
+        echo "check-schema: 'schema OK'. If dropping the datasource is deliberate, change this" >&2
+        echo "check-schema: recipe and docs/status.md in the same commit and say what the gate" >&2
+        echo "check-schema: still covers." >&2
+        exit 1
+    fi
+
+    declarations="$(grep -cE '^(model|enum) [A-Za-z]' "$schema" || true)"
+    if [ "$declarations" -lt "{{ cratestack_min_declarations }}" ]; then
+        echo "check-schema: FAIL — $schema declares $declarations model/enum(s), fewer than the floor of {{ cratestack_min_declarations }}." >&2
+        echo "check-schema: an emptied or truncated .cstack file type-checks vacuously and" >&2
+        echo "check-schema: cratestack prints 'schema OK' for it, so a green here would mean" >&2
+        echo "check-schema: nothing. If declarations were removed on purpose, lower the floor" >&2
+        echo "check-schema: (cratestack_min_declarations in this justfile) in the same commit." >&2
+        exit 1
+    fi
+
+    echo "check-schema: cratestack $found, schema $schema ($declarations model/enum declarations, datasource present)"
+    cratestack check --schema "$schema"
+    echo "check-schema: ok — $schema type-checks under cratestack $found"
 
 # A REPORT, not a gate: doc-comment lines against code lines per crate, the
 # production functions of 80 lines or more, every ```ignore doctest fence and

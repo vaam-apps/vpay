@@ -92,6 +92,69 @@ jobs:
       # every web lint and test, and all five gates above it.
       - name: verify-npm-scope
         run: cargo xtask verify-npm-scope
+      # New 2026-09-05, and the seventh gate `just verify` runs. Four steps
+      # rather than one because each is a different failure to report: `just`
+      # missing, the version pin unreadable, the CrateStack CLI missing, the
+      # schema not parsing.
+      #
+      # `just` is pinned to a full commit SHA rather than the `@v2` the `rust`
+      # and `e2e` jobs use, matching what `web` and `deploy` do — this is the
+      # step that decides whether a tool that gates a merge can be swapped by
+      # whoever can move a tag.
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: just
+      # ONE source of truth for the CrateStack version, the same trick the
+      # `toolchain` step above uses for the compiler channel: the number lives
+      # in `justfile` as `cratestack_version` and this step reads it back
+      # rather than repeating it. A pin written in two files is a pin that
+      # drifts, and the drift is silent — CI would keep passing against a
+      # release the local gate no longer uses.
+      #
+      # The assignment and the emptiness check are not ceremony. Written as
+      # `echo "version=$(just --evaluate cratestack_version)"`, a failing
+      # `just` does not fail the step: the substitution's exit status never
+      # reaches `bash -e`, `echo` succeeds, and `version=` lands in
+      # $GITHUB_OUTPUT empty — whereupon the install action below treats an
+      # empty `version` exactly like `latest` and installs whatever the newest
+      # release happens to be. That is the SHA-pinned, version-pinned step
+      # quietly becoming a floating one, on a green run. Measured by renaming
+      # the justfile variable: `just` errored, the step exited 0, and the
+      # output was `version=`.
+      - name: resolve the pinned CrateStack version from the justfile
+        id: cratestack
+        run: |
+          version="$(just --evaluate cratestack_version)"
+          if [ -z "$version" ]; then
+            echo "::error::could not read 'cratestack_version' out of the justfile; refusing to fall back to the latest release" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      # The upstream install action, pinned to the commit `v0.11.1` was
+      # tagged at (`6b3053f`) rather than the `@main` its documentation shows
+      # — https://cratestack.dev/tooling/cli-install. It downloads the
+      # prebuilt `x86_64-unknown-linux-gnu` binary from that repository's
+      # releases and verifies it against the published `.sha256` sidecar
+      # before putting it on PATH, which is why this job does not do the
+      # `curl | sha256sum -c` dance the `deploy` job does for kubeconform.
+      # No Rust toolchain is involved: `cratestack-cli` declares
+      # `rust-version = "1.98.0"` and this job's toolchain is whatever
+      # `rust-toolchain.toml` pins (1.95.0), so `cargo install` here would
+      # fail with "requires rustc 1.98.0 or newer" — verified by running it.
+      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@6b3053fa77924f5162915d594d457d3eda51afaa # v0.11.1
+        with:
+          version: ${{ steps.cratestack.outputs.version }}
+      # `just check-schema`, not a copy of the command it runs: the recipe is
+      # what a contributor runs locally and it carries the reasoning, so the
+      # gate and the local check cannot drift — the same rule `web` follows
+      # for `just audit-web` and `deploy` for `just helm-check`.
+      #
+      # Before this step, `schemas/vpay.cstack` was verified by a human
+      # running the CLI by hand and pasting the transcript into
+      # docs/status.md. Nothing re-ran it, and the file is excluded from the
+      # build graph, so no compiler would have noticed it going stale.
+      - name: check-schema (schemas/vpay.cstack)
+        run: just check-schema
       # A report, not a gate — it exits 0 whatever it finds (Step 7,
       # decision (4)). It is here so `justfile`'s claim that this job runs
       # exactly what `just verify` runs stays true, and so the doc-volume,

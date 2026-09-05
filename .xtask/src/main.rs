@@ -1,7 +1,10 @@
 //! Repository automation. Run via `cargo xtask <cmd>` or `just`.
 //!
-//! Six of these commands are the gates `just verify` runs, because a promise
-//! nothing checks is a promise that decays:
+//! `just verify` runs seven gates, because a promise nothing checks is a
+//! promise that decays. Six of them are commands here; the seventh,
+//! `check-schema` (2026-09-05), is a justfile recipe rather than an xtask
+//! command because it shells out to the CrateStack CLI, a binary this
+//! workspace does not build — see the `justfile` for it. The six here:
 //!
 //! * `verify-no-mocks`  — no test double is reachable from a shipping binary.
 //! * `verify-status`    — every `NotImplemented` is declared in `docs/status.md`.
@@ -20,7 +23,7 @@
 //!   2026-09-05: before it, deleting the one line that makes a scoped
 //!   `npm publish` possible was caught by nothing in the repository.
 //!
-//! A sixth is a gate that needs the network, so it is opt-in
+//! An eighth gate needs the network, so it is opt-in
 //! (`just docs-check-citations`) and is **not** part of `just ci`:
 //!
 //! * `verify-citations` — every workflow-run id, pull request and issue a
