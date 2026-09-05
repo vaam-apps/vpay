@@ -780,6 +780,29 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 17;
 /// to do with the schema improving.
 const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 18;
 
+/// The `--out-dir` handed to `migrate baseline`, removed when it goes out of
+/// scope.
+///
+/// A `remove_dir_all` as the test's last statement is skipped by every `?`
+/// and every failed assertion above it — which is precisely the set of runs
+/// that leave something worth not leaving behind. Measured on 2026-09-05
+/// while reviewing this test: seven orphaned `vpay-cstack-baseline-*`
+/// directories had accumulated in `$TMPDIR` over one afternoon's mutation
+/// runs, and the one from a run with `--strict` removed still held the
+/// snapshot the tool had written — the failure case where the leaked
+/// directory is not empty is exactly the one the old cleanup could not
+/// reach.
+///
+/// Same shape and same reason as `worker_kill9.rs`'s `Workspace`; this file
+/// is a separate test binary, so the type is repeated rather than shared.
+struct OutDir(std::path::PathBuf);
+
+impl Drop for OutDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Absolute path to the repository root, derived from this test crate's own
 /// manifest directory (`backends/tests/integration`) rather than from the
 /// process's working directory, which `cargo nextest` does not promise.
@@ -901,8 +924,9 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
     // the repository. It is created empty first, so "nothing was written" is
     // an assertion about a directory that exists rather than about one that
     // may simply never have been reached.
-    let out_dir = std::env::temp_dir().join(format!("vpay-cstack-baseline-{}", Uuid::new_v4()));
-    std::fs::create_dir_all(&out_dir).context("creating the out-dir for migrate baseline")?;
+    let out_dir =
+        OutDir(std::env::temp_dir().join(format!("vpay-cstack-baseline-{}", Uuid::new_v4())));
+    std::fs::create_dir_all(&out_dir.0).context("creating the out-dir for migrate baseline")?;
 
     let output = std::process::Command::new("cratestack")
         .current_dir(&root)
@@ -912,7 +936,7 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         .arg("--database-url")
         .arg(&url)
         .arg("--out-dir")
-        .arg(&out_dir)
+        .arg(&out_dir.0)
         .arg("--strict")
         .output()
         .context("running `cratestack migrate baseline --strict`")?;
@@ -1106,7 +1130,7 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         ),
         "the strict refusal should name the same count the report did"
     );
-    let written: Vec<_> = std::fs::read_dir(&out_dir)
+    let written: Vec<_> = std::fs::read_dir(&out_dir.0)
         .context("listing the out-dir after the run")?
         .collect::<Result<Vec<_>, _>>()
         .context("listing the out-dir after the run")?
@@ -1128,6 +1152,5 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         "measuring the schema must not edit it"
     );
 
-    std::fs::remove_dir_all(&out_dir).context("removing the out-dir")?;
     Ok(())
 }
