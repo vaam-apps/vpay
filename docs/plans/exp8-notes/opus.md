@@ -253,6 +253,35 @@ vpay-worker-bin 0.1.0
 | `--target worker` after a `server` build | full rebuild | 1 s |
 | `vpay-server` image | 15.9 MB, 2 layers | 15.9 MB, 2 layers |
 
+### One result from `release-dry-run` that disagrees with the isolated runs
+
+`release-dry-run` builds `--target server` then `--target worker` from the
+same Dockerfile, back to back. On the dedicated builder that second build
+took 1 s (everything cached). Inside `release-dry-run`, on the shared default
+builder, the `chef` stage and the **cook were `CACHED`** — which is the
+cross-image reuse this change is for, and it saved the 76 s cook — but the
+`COPY backends ./backends` layers logged `DONE 0.0s` rather than `CACHED`,
+so the final `cargo build` re-ran for 126 s.
+
+```
+#11 [chef 3/3] RUN ... cargo install cargo-chef --locked --version 0.1.78
+#11 CACHED
+#17 [builder  4/10] RUN ... cargo chef cook ...
+#17 CACHED
+#22 [builder  7/10] COPY backends ./backends
+#22 DONE 0.0s
+#25 [builder 10/10] RUN ... cargo build ...
+#25 DONE 126.2s
+```
+
+**I did not work out why, and I am not going to guess in a status row.** The
+obvious confound is uncontrolled: another agent was building the same
+repository against the same rootless daemon and the same default builder
+while this ran, and the default builder uses the `docker` driver rather than
+`docker-container`. It is recorded here and in `docs/status.md` as an
+observation. It does not affect Builds A/B/C, which ran on an isolated
+builder with nothing else on it.
+
 ## What this does not buy, and why the number is only ~2x
 
 `[profile.dist]` inherits `release`, which is `lto = "fat"` with
@@ -270,7 +299,7 @@ LTO — that is ADR-0004's performance decision and not this task's to reopen.
 | `just verify` | ok — five gates passed, `verify-docs` report advisory |
 | `just fmt-check` | `cargo fmt --all -- --check`, exit 0 (no Rust source was changed) |
 | `just docs-check` | see the commit; `verify-status` + `verify-links` |
-| `just release-dry-run` | four images for `linux/amd64` + `helm-check` |
+| `just release-dry-run` | **exit 0.** Four images for `linux/amd64` (`vpay-server` 15.9 MB, `vpay-worker` 12.7 MB, `vpay-dashboard` 344 MB, `vpay-checkout` 344 MB), then `helm-check`: 17 guards all fired by name, `/v1` `limit-rps=20` / token `limit-rps=5`, kubeconform `23 resources … Valid: 23, Invalid: 0, Errors: 0, Skipped: 0`. Ran on the *shared default* builder (the recipe drives `docker buildx build` directly), so it is not one of the controlled measurements above |
 | `actionlint` (v at `/home/selast/go/bin/actionlint`) on `.github/workflows/release.yml` | exit 0, clean |
 
 No Rust source file was changed by this task. The only source edit was the
