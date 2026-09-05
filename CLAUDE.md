@@ -58,8 +58,9 @@ This repo prefers evidence over confidence:
 
 ## Things that will waste your time
 
-- `rust-toolchain.toml` pins `1.95.0` (the same version `backends/Dockerfile`
-  builds with; CI reads the pin from the file). The musl target needs
+- `rust-toolchain.toml` pins `1.98.0` — it was `1.95.0` until 2026-09-05 — and
+  that is the same version `backends/Dockerfile` builds with; CI reads the pin
+  from the file. The musl target needs
   `rustup target add x86_64-unknown-linux-musl`.
 - Cypress needs `pnpm exec cypress install` on a network that can reach its CDN;
   `CYPRESS_INSTALL_BINARY=0` skips it.
