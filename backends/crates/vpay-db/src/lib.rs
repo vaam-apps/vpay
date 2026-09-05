@@ -60,6 +60,10 @@ mod health;
 mod migrations;
 mod pool;
 mod signing_keys;
+// The audit `sqlx::AssertSqlSafe` demands, as a test rather than a comment.
+// Test-only: it reads this crate's own sources through `CARGO_MANIFEST_DIR`.
+#[cfg(test)]
+mod sql_audit;
 
 pub use charges::{ChargeAsOf, ChargeRow, Charges, NewCharge};
 pub use checkout_sessions::{

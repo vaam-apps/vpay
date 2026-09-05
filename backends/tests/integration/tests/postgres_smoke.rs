@@ -206,6 +206,16 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         "authkestra.oauth_codes",
         "authkestra.oauth_refresh_tokens",
         "authkestra.oauth_device_codes",
+        // Migration 0013's own table. **Added 2026-09-05 by the review of the
+        // branch that deleted `authkestra_op_smoke.rs`**: that file's
+        // `sqlx_op_store_records_a_dpop_jti_once_against_migration_0013s_table`
+        // was the only test in the repository that named this table, and it
+        // went with the `SqlxOpStore` it drove. What it proved beyond
+        // existence — that the store's `INSERT … ON CONFLICT` matches this
+        // DDL — is genuinely gone with the store, and `docs/status.md` says
+        // so; that the table 0013 creates is *there* is a claim worth keeping
+        // checked, and is all that survives being checkable.
+        "authkestra.oauth_dpop_jti",
         "oauth_signing_keys",
         "oauth_client_assertion_jtis",
         "disabled_clients",
@@ -224,10 +234,45 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         // the migration creates.
         "checkout_sessions",
     ] {
-        sqlx::query(&format!("SELECT COUNT(*) FROM {table}"))
+        // sqlx 0.9 (sqlx#3723) wants the injection audit written down. The
+        // only interpolation is `table`, bound by the `for` above to one of
+        // the string literals in that list — an identifier cannot be a bind
+        // parameter, which is why this is a `format!` at all.
+        sqlx::query(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
             .fetch_one(&pool)
             .await
             .with_context(|| format!("table {table} should exist and be queryable"))?;
+    }
+
+    // Migration 0013's three *columns*, for the same reason as its table
+    // above: `authkestra_op_smoke.rs` proved each of them by reading it back
+    // through `SqlxOpStore`'s own SQL, and nothing has named them since that
+    // file was deleted on 2026-09-05. `ALTER TABLE … ADD COLUMN` failing would
+    // fail the migration run, so this is not about the DDL executing — it is
+    // about a later migration dropping or renaming one of them without a test
+    // anywhere going red, which is exactly the state 0013's header comment
+    // says must not happen ("DO NOT EDIT THIS DDL INDEPENDENTLY OF THE PINNED
+    // `authkestra-op` VERSION").
+    for (table, column) in [
+        ("oauth_refresh_tokens", "jkt"),
+        ("oauth_clients", "token_endpoint_auth_method"),
+        ("oauth_clients", "jwks"),
+    ] {
+        let present: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+             WHERE table_schema = 'authkestra' AND table_name = $1 AND column_name = $2)",
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_one(&pool)
+        .await
+        .with_context(|| format!("looking up authkestra.{table}.{column}"))?;
+        assert!(
+            present,
+            "authkestra.{table}.{column} is one of the three columns migration 0013 adds; \
+             it is unread by any code path today, but dropping or renaming it is a schema \
+             change nobody has decided to make"
+        );
     }
 
     Ok(())
@@ -444,10 +489,15 @@ async fn insert_signing_key(
     active: bool,
     expires_at_clause: &str,
 ) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
-    sqlx::query(&format!(
+    // sqlx 0.9 (sqlx#3723) wants the injection audit written down.
+    // `expires_at_clause` is a *SQL expression*, not a value — `NULL` or
+    // `now() + interval '…'` — which is exactly why it cannot be a bind
+    // parameter. Every one of the four call sites below passes a literal
+    // written in this file; nothing here reads a value from outside the test.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "INSERT INTO oauth_signing_keys (kid, public_jwk, active, expires_at) \
          VALUES ($1, $2::jsonb, $3, {expires_at_clause})"
-    ))
+    )))
     .bind(kid)
     .bind(FIXTURE_PUBLIC_JWK)
     .bind(active)

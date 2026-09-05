@@ -52,18 +52,26 @@ testcontainers-modules.workspace = true
 uuid.workspace = true
 time.workspace = true
 anyhow.workspace = true
-# Dev-only, for the acceptance test that proves `backends/migrations/0006_*`
-# (transcribed from this crate's own hardcoded SqlxOpStore DDL) is genuinely
-# compatible with SqlxOpStore<Postgres> — see
-# tests/authkestra_op_smoke.rs. `sqlx-postgres` is not part of the workspace's
-# own feature set for this crate (root Cargo.toml keeps it a dependency spike
-# with no sqlx feature enabled) because no *shipping* binary uses it yet; this
-# is exactly the kind of extra feature a dev-dependency is allowed to add on
-# top of the shared workspace declaration.
-authkestra-op = { workspace = true, features = ["sqlx-postgres"] }
-# For authkestra_engine::auth::state::Identity, the type AuthorizationCode /
-# RefreshToken embed — needed to construct one in the acceptance test.
-authkestra-engine.workspace = true
+# **No `sqlx-postgres` since 2026-09-05, and `tests/authkestra_op_smoke.rs`
+# went with it.** That feature gates `authkestra_op::sqlx_store::SqlxOpStore`,
+# whose `sqlx ^0.8` pin was the last thing in the workspace holding sqlx at
+# that major (see `vpay-api`'s manifest). The smoke test drove that store's
+# own hand-built SQL against migrations 0006/0013 to prove the transcription
+# was faithful; with `vpay-api` no longer constructing the store, it proved a
+# property of a type this system does not use. What survives: `postgres_
+# smoke.rs` still asserts the four `authkestra.*` tables exist and that
+# `oauth_codes.client_id`'s foreign key fires, and `merchant_token_flow.rs`
+# case (i) proves the three grants those tables were for are refused before
+# any store is reached.
+authkestra-op.workspace = true
+# `authkestra-engine` was here for `authkestra_engine::auth::state::Identity`,
+# which only `authkestra_op_smoke.rs` constructed; it went with that file on
+# 2026-09-05. Nothing under `tests/` names the crate now — `postgres_smoke.rs`
+# mentions `token::jwk::Jwk` in a doc comment only, and reads the JSON column
+# through `serde_json`.
+#
+# `chrono` stays: `client_store.rs` builds the `DateTime<Utc>` expiry
+# `authkestra_op::ClientAssertionStore::record_jti` takes.
 chrono.workspace = true
 # `tests/client_store.rs` builds a `MerchantClient`'s public JWK Set, which is
 # a raw `serde_json::Value` on both sides of that type (see its own doc

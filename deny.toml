@@ -101,6 +101,27 @@ deny = [
   # configured above.
   { name = "aws-lc-rs" },
   { name = "aws-lc-sys" },
+  # Exactly one sqlx major in the graph (2026-09-05). This is the property
+  # the 0.8 -> 0.9 bump exists for and, until this entry, the only thing
+  # holding it was a sentence in `docs/status.md`: `multiple-versions` is
+  # `warn` above, so restoring `authkestra-op`'s `sqlx-postgres` feature —
+  # one word in one manifest — resolved sqlx 0.8.6 *and* 0.9.0 side by side
+  # with `cargo deny check` still printing "bans ok" and `just ci` still
+  # green. Measured, by doing exactly that and reverting it.
+  #
+  # Why it matters more than tidiness: `sqlx::PgPool`, `Transaction` and
+  # `Error` are different types at each major, so two majors means a
+  # `vpay-db` transaction cannot be shared with any other sqlx-based crate
+  # (`cratestack-sqlx` is the concrete case — see `docs/status.md`
+  # § sqlx 0.8 -> 0.9), and the mismatch surfaces as an inscrutable trait
+  # error in whichever crate tries it, not here.
+  #
+  # `sqlx-core` as well as the `sqlx` facade: it is what every `sqlx-*`
+  # component funnels through, so a dependency reaching a backend crate
+  # directly is caught too. Raise both bounds together when the workspace
+  # moves to 0.10, in the same commit as the pin.
+  { name = "sqlx", version = "<0.9" },
+  { name = "sqlx-core", version = "<0.9" },
 ]
 skip = []
 

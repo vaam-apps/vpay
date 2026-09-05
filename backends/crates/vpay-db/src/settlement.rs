@@ -13,7 +13,12 @@
 //! charge's, where the `from` transition label comes from, and why `None` never
 //! means "the intent guard refused".
 
-use sqlx::{Postgres, Row as _, Transaction};
+// `AssertSqlSafe`: sqlx 0.9 accepts a statement only as `&'static str` or
+// through this wrapper (sqlx#3723). Every `format!` below interpolates crate
+// constants and nothing else — never a caller's value — which is the audit the
+// wrapper's name demands, written down in `docs/reference/vpay-db.md` § dynamic
+// SQL strings and sqlx 0.9 and enforced by `crate::sql_audit`.
+use sqlx::{AssertSqlSafe, Postgres, Row as _, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -382,7 +387,7 @@ impl Settlement for crate::repository::PgRepositories {
          RETURNING {PREVIOUS_STATE}, {columns}",
             columns = crate::charges::COLUMNS,
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(AssertSqlSafe(sql))
             .bind(charge_id)
             .bind(provider_txn_id)
             .fetch_optional(&mut *tx)
@@ -446,7 +451,7 @@ impl Settlement for crate::repository::PgRepositories {
          RETURNING {PREVIOUS_STATE}, {columns}",
             columns = crate::charges::COLUMNS,
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(AssertSqlSafe(sql))
             .bind(charge_id)
             .bind(code)
             .bind(&bounded_raw)
@@ -547,7 +552,7 @@ impl Settlement for crate::repository::PgRepositories {
          LIMIT $2"
         );
 
-        sqlx::query_scalar::<_, String>(&sql)
+        sqlx::query_scalar::<_, String>(AssertSqlSafe(sql))
             .bind(cutoff)
             .bind(limit)
             .fetch_all(&self.pool)

@@ -1,12 +1,13 @@
 //! The merchant-facing OAuth2 provider behind `/v1/oauth` (ADR-0010,
 //! [docs/flows/merchant-auth.md](../../../../../docs/flows/merchant-auth.md)).
 //!
-//! Four pieces, each its own module so it can be tested on its own: [`clients`]
-//! (the `ClientStore`, YAML minus the kill switch), [`keys`] (the RS256 signing
-//! key, loaded from a file at boot and never persisted), [`jwks`] (the
-//! database-backed `/jwks.json`, which publishes every key still in its rotation
-//! window rather than the one this process holds), and [`token`] (the two
-//! handlers vpay writes itself).
+//! Five pieces, each its own module so it can be tested on its own:
+//! [`clients`] (the `ClientStore`, YAML minus the kill switch), [`keys`] (the
+//! RS256 signing key, loaded from a file at boot and never persisted),
+//! [`jwks`] (the database-backed `/jwks.json`, which publishes every key still
+//! in its rotation window rather than the one this process holds), [`token`]
+//! (the two handlers vpay writes itself), and [`refusing_stores`] (the three
+//! `OpStore` slots `/v1` must fill and no `/v1` grant can reach).
 //!
 //! [`MerchantOp`] is the assembly. Nothing here serves the dashboard surface.
 //!
@@ -20,17 +21,20 @@ use std::sync::Arc;
 use authkestra_engine::token::TokenManager;
 use authkestra_op::OpStore;
 use authkestra_op::config::OpConfig;
-use authkestra_op::sqlx_store::SqlxOpStore;
 use authkestra_op::store::CompositeOpStore;
 use vpay_config::Config;
 use vpay_db::Repositories;
 
 use crate::op::clients::YamlClientStore;
 use crate::op::keys::LoadedSigningKey;
+use crate::op::refusing_stores::{
+    RefusingAuthorizationCodeStore, RefusingDeviceCodeStore, RefusingRefreshTokenStore,
+};
 
 pub mod clients;
 pub mod jwks;
 pub mod keys;
+pub mod refusing_stores;
 pub mod token;
 
 /// The access-token lifetime `/v1` mints, in seconds.
@@ -176,24 +180,29 @@ impl MerchantOp {
     /// single-use one — `authkestra_op`'s `OpStore` refuses every assertion
     /// unless one is wired (`NoClientAssertionStore` fails closed).
     ///
-    /// **The three `SqlxOpStore` slots serve no `/v1` grant.** They exist
-    /// because `OpStore` is a supertrait of `AuthorizationCodeStore`,
+    /// **The other three slots serve no `/v1` grant, and now say so.**
+    /// `OpStore` is a supertrait of `AuthorizationCodeStore`,
     /// `RefreshTokenStore` and `DeviceCodeStore`, so a value implementing it
     /// must supply all three whether or not any grant reaches them — and
     /// none does here: every grant handler other than `client_credentials`
     /// refuses the request at its own `client.allows_grant_type(..)` check,
     /// before it touches a store, because a merchant registration can only
     /// ever declare `client_credentials`
-    /// (`vpay_config::ConfigError::DisallowedMerchantGrant`). They are the
-    /// real Postgres-backed stores rather than a no-op stub for two
-    /// reasons: AGENTS.md rule 1 forbids a test double reachable from a
-    /// shipping binary, and a hand-written "always empty" store would be a
-    /// silent lie the moment a future step *does* mount another grant.
-    /// `SqlxOpStore::new` opens no connection and runs no migration (read
-    /// `authkestra-op-0.7.1/src/sqlx_store.rs`: it stores the pool and
-    /// nothing else — `migrate()` is a separate method vpay never calls,
-    /// because `backends/migrations/0006` + `0013` own that schema), so
-    /// three unused slots cost three cloned `Arc` handles.
+    /// (`vpay_config::ConfigError::DisallowedMerchantGrant`); and
+    /// `handle_client_credentials`, the one handler that does run, is not
+    /// even passed the store. They are filled by
+    /// [`refusing_stores`]' three fail-closed types.
+    ///
+    /// **Changed 2026-09-05.** Until then all three held
+    /// `authkestra_op::sqlx_store::SqlxOpStore<sqlx::Postgres>` over the pool
+    /// below. That type is behind `authkestra-op`'s `sqlx-postgres` feature,
+    /// which pins `sqlx ^0.8`, and it was the only reverse dependency holding
+    /// the whole workspace on that major — three warm slots nothing calls, in
+    /// exchange for a compiler-visible constraint on every other crate. The
+    /// replacement is not a stub or a double (AGENTS.md rule 1): a double
+    /// pretends to succeed, and every method of these three returns `Err`
+    /// naming the grant. See [`refusing_stores`] for the full argument, and
+    /// `docs/status.md` for what was given up with it.
     #[must_use]
     pub fn new(
         config: &Config,
@@ -201,16 +210,18 @@ impl MerchantOp {
         repositories: Arc<dyn Repositories>,
     ) -> Self {
         // The one place `vpay_db` still hands out a raw pool, and the reason
-        // it does: `SqlxOpStore` and vpay-db's client-assertion store are *foreign*
-        // trait implementations over a pool (ADR-0010), whose queries vpay
-        // does not own and cannot express as repository methods. Step 7's
-        // decision (9) — see `docs/status.md`.
+        // it does: vpay-db's client-assertion store is a *foreign* trait
+        // implementation over a pool (ADR-0010), whose queries vpay does not
+        // own and cannot express as repository methods. Step 7's decision (9)
+        // — see `docs/status.md`. It used to serve `SqlxOpStore` as well;
+        // that consumer is gone, and this one is what keeps the exemption
+        // alive.
         let pool = repositories.op_store_pool();
         let store = CompositeOpStore::new(
             YamlClientStore::new(&config.merchant_clients, repositories),
-            SqlxOpStore::<sqlx::Postgres>::new(pool.clone()),
-            SqlxOpStore::<sqlx::Postgres>::new(pool.clone()),
-            SqlxOpStore::<sqlx::Postgres>::new(pool.clone()),
+            RefusingAuthorizationCodeStore,
+            RefusingRefreshTokenStore,
+            RefusingDeviceCodeStore,
         )
         .with_client_assertion_store(vpay_db::client_assertion_store(pool));
 

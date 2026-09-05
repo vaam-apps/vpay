@@ -109,7 +109,7 @@ and/or a deny-list; **which one vpay implements is not yet decided.**
 |---|---|
 | OP handlers (`/authorize`, `/token`, `/userinfo`, discovery, jwks) | `authkestra-op`, mounted into `/dash/v1` |
 | Client registration (dashboard's own `client_id`, redirect URIs, PKCE requirement, single read-only scope) | vpay configuration (ADR-0003 — YAML, not the dashboard) |
-| Authorization codes, device codes | `authkestra_op::sqlx_store::SqlxOpStore` against vpay's Postgres. Schema exists (`backends/migrations/0006_create-authkestra-op-tables.sql`) and is proven compatible with the store (see Status below), but no shipping code constructs a `SqlxOpStore` yet |
+| Authorization codes, device codes | **Nothing, as of 2026-09-05.** The schema exists (`backends/migrations/0006_create-authkestra-op-tables.sql`) and its four tables are unread and unwritten by any code path. This row said `authkestra_op::sqlx_store::SqlxOpStore` against vpay's Postgres, and that was true of the type `/v1`'s OP put in three unreachable slots; those slots hold `vpay_api::op::refusing_stores`' fail-closed types now, and the `sqlx-postgres` feature that gated `SqlxOpStore` is off in every manifest. A `/dash/v1` that ever serves the authorization-code grant has to choose a store, and `SqlxOpStore` is no longer a free choice: it pins `sqlx ^0.8`, and this workspace has moved to 0.9. See "The three OP stores that pinned sqlx 0.8" in [status.md](../status.md) |
 | `oauth_refresh_tokens`, `oauth_device_codes` | Created by the same migration (`authkestra-op`'s fixed DDL is transcribed wholesale, not column-by-column selected) but structurally unused by this flow: refresh tokens are not issued (Token lifetimes, above) and the device grant is not offered on any client this deployment registers |
 | Signing keys and rotation | vpay operational tooling. Storage schema exists (`backends/migrations/0007_create-oauth-signing-keys.sql`: `oauth_signing_keys`, at most one active key enforced by a partial unique index); key generation and rotation logic itself is not yet designed or written |
 | Session → per-record authorization (which staff member may view which merchant's records) | vpay's own layer on top of the validated token; not Authkestra's concern. Scoped to *view* today — see Scope, above, for why there is nothing to authorize a write against yet |
@@ -134,20 +134,33 @@ exist and serve a different surface.
   `vpay-server` refuses to start without a key (exit 78). This is the
   signing-key half of what this flow needs — but the endpoint is on the
   merchant surface, and nothing here consumes it.
-- **A shipping binary now constructs `SqlxOpStore<Postgres>`** — as three
-  slots the `OpStore` supertrait demands and **no grant reaches**, not as
-  anything serving `/dash/v1`. Do not read it as the OP this flow describes
-  being wired up.
-- The schema is unchanged and still tested against real Postgres:
+- ~~**A shipping binary now constructs `SqlxOpStore<Postgres>`** — as three
+  slots the `OpStore` supertrait demands and **no grant reaches**.~~
+  **No longer true as of 2026-09-05, and it is the change this section most
+  needs a reader to notice.** Nothing in this workspace constructs a
+  `SqlxOpStore` any more: `/v1`'s three slots hold
+  `vpay_api::op::refusing_stores`' fail-closed types, which touch no
+  database, and `authkestra-op`'s `sqlx-postgres` feature is off everywhere.
+  The reason was the sqlx 0.8 pin that feature carried; see "The three OP
+  stores that pinned sqlx 0.8" in [status.md](../status.md).
+- The schema is unchanged and still exists:
   `authkestra.oauth_clients`/`oauth_codes`/`oauth_refresh_tokens`/`oauth_device_codes`
   (`0006`, a byte-faithful transcription of `authkestra-op` `=0.3.4`'s own
   DDL), the `=0.7.1` additive delta (`0013`: `oauth_dpop_jti`, and the `jkt`,
   `token_endpoint_auth_method` and `jwks` columns), and `oauth_signing_keys`
-  (`0007`, reshaped by `0010`). `authkestra_op_smoke.rs`'s three tests prove
-  the real `SqlxOpStore<Postgres>` reads and writes it: `find_client`,
-  single-use `store_code`/`consume_code`, `store_token`/`get_token` with
-  `jkt`, and `check_and_record_dpop_jti`. **A reader must not infer from any
-  of that that a shipping binary can issue a dashboard token.**
+  (`0007`, reshaped by `0010`). **What it is no longer tested *against* is
+  the store**: `authkestra_op_smoke.rs`, whose three tests drove the real
+  `SqlxOpStore<Postgres>` over `find_client`, single-use
+  `store_code`/`consume_code`, `store_token`/`get_token` with `jkt` and
+  `check_and_record_dpop_jti`, was deleted with the feature on 2026-09-05.
+  `postgres_smoke.rs` still proves all four tables exist and that
+  `oauth_codes.client_id`'s foreign key fires — which is a schema check, not
+  a compatibility check. **Extended 2026-09-05 by review** to `oauth_dpop_jti`
+  and 0013's three added columns as well: the deleted file was the only place
+  in the repository that named any of them, so their existence had stopped
+  being checked anywhere. **A reader must not infer from any of this that a
+  shipping binary can issue a dashboard token**, and must now also not infer
+  that the DDL is still known to match any store's hand-built SQL.
 
 **What blocks this flow, specifically:**
 

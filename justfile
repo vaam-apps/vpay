@@ -935,8 +935,58 @@ verify-docs:
 # `cratestack` CLI and fails, rather than skipping, when that binary is
 # absent; `just test-rust` therefore needs it on PATH, the same way
 # `check-schema` does.
+#
+# **42 -> 41 on 2026-09-05**, and this is the one entry below that records a
+# test binary being *deleted* rather than added, so it is worth spelling out.
+# `backends/tests/integration/tests/authkestra_op_smoke.rs` drove
+# `authkestra_op::sqlx_store::SqlxOpStore` against migrations 0006/0013 to
+# prove that transcription faithful. That store was the last thing in the
+# workspace pinning `sqlx ^0.8`; `vpay_api::op::refusing_stores` replaced the
+# three slots that used it, the `sqlx-postgres` feature came off both
+# manifests, and the file could no longer compile — nor describe anything this
+# system does. `just verify-ignored` lists **1272 total, 41 test binaries, 0
+# ignored**: 1270 minus that file's 3 cases, plus `merchant_token_flow`'s new
+# case (i) (the three unserved grants are refused before any store) and
+# `vpay_api::op::refusing_stores`' 4 units. The floor stays 1080 — a deleted
+# binary is what the floor exists to catch, and 1272 clears it by the same
+# margin 1270 did, which is precisely why the *suite count* and not the floor
+# is what makes this a deliberate edit. `just test-doc` measures **90 passed,
+# 1 ignored** (86 + the four examples on `refusing_stores`).
+#
+# Re-measured the same day after the sqlx 0.8 -> 0.9 bump that change unblocked:
+# **1277 total, 41 test binaries, 0 ignored** — 1272 plus `vpay_db::sql_audit`'s
+# five, the test-only module that enforces the `AssertSqlSafe` injection audit
+# sqlx 0.9 demands. No new binary (it is a `#[cfg(test)] mod` inside the
+# `vpay-db` lib target), so `expected_suites` stays 41 and the floor stays
+# 1080. `just test-doc` is unchanged at **90 passed, 1 ignored**: the audit
+# module is `#[cfg(test)]` and rustdoc does not reach it.
+#
+# **1277 -> 1278 on 2026-09-05**, from the sabotage review of that same branch:
+# `vpay_db::sql_audit` gained
+# `a_positional_capture_is_reported_and_is_neither_a_constant_nor_allowed`,
+# the regression test for a hole the module had on the day it was written —
+# `format!("… = '{{}}'", payment_intent_id)` interpolated a caller's value into
+# a statement and passed all five of the tests whose whole purpose is to catch
+# exactly that, because the scanner discarded a capture with no name. Same
+# binary again, so `expected_suites` stays 41; `just test-doc` unchanged at
+# **90 passed, 1 ignored**.
+#
+# **Rebased onto `8d907f9` on 2026-09-05, and re-measured on that tree rather
+# than recomputed from the three entries above.** Each of those names the base
+# it was measured on and each is left as written; none of them had seen PR
+# #44, which added the `schemas/vpay.cstack` drift case to `postgres_smoke`.
+# On the rebased tree `cargo nextest list --workspace` lists **1279 total, 41
+# test binaries, 0 ignored** — 1271/42 on `8d907f9`, minus
+# `authkestra_op_smoke.rs`'s 3 cases and its binary, plus
+# `merchant_token_flow` case (i), `vpay_api::op::refusing_stores`' 4 units and
+# `vpay_db::sql_audit`'s 6. **1279/41 is the pair this file now asserts**; the
+# 1272/1277/1278 above are history, not arithmetic to continue.
+# `expected_suites` stays 41 across the rebase, and that is the point worth
+# checking rather than assuming: #44's case joined a binary that already
+# existed, so it added a test and not a suite, while this branch deleted a
+# whole binary. `just test-doc` is unchanged again at **90 passed, 1 ignored**.
 expected_ignored := "0"
-expected_suites := "42"
+expected_suites := "41"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

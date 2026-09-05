@@ -17,7 +17,12 @@
 
 use std::time::Duration;
 
-use sqlx::PgConnection;
+// `AssertSqlSafe`: sqlx 0.9 accepts a statement only as `&'static str` or
+// through this wrapper (sqlx#3723). Every `format!` below interpolates crate
+// constants and nothing else — never a caller's value — which is the audit the
+// wrapper's name demands, written down in `docs/reference/vpay-db.md` § dynamic
+// SQL strings and sqlx 0.9 and enforced by `crate::sql_audit`.
+use sqlx::{AssertSqlSafe, PgConnection};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -310,7 +315,7 @@ impl WebhookDeliveries for crate::repository::PgRepositories {
     async fn get(&self, id: Uuid) -> Result<Option<DeliveryRow>, DbError> {
         let sql = format!("SELECT {COLUMNS} FROM webhook_deliveries WHERE id = $1");
 
-        sqlx::query_as::<_, DeliveryRow>(&sql)
+        sqlx::query_as::<_, DeliveryRow>(AssertSqlSafe(sql))
             .bind(id)
             .fetch_optional(&self.pool)
             .await
@@ -402,7 +407,7 @@ impl WebhookDeliveries for crate::repository::PgRepositories {
          LIMIT $2"
         );
 
-        sqlx::query_as::<_, DeliveryRow>(&sql)
+        sqlx::query_as::<_, DeliveryRow>(AssertSqlSafe(sql))
             .bind(lease_seconds)
             .bind(limit)
             .fetch_all(&self.pool)
@@ -415,7 +420,7 @@ impl WebhookDeliveries for crate::repository::PgRepositories {
             "SELECT {COLUMNS} FROM webhook_deliveries WHERE event_id = $1 ORDER BY endpoint_id"
         );
 
-        sqlx::query_as::<_, DeliveryRow>(&sql)
+        sqlx::query_as::<_, DeliveryRow>(AssertSqlSafe(sql))
             .bind(event_id)
             .fetch_all(&self.pool)
             .await

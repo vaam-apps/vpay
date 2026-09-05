@@ -513,12 +513,21 @@ pub trait Repositories:
 {
     /// The one place a raw `sqlx` pool still leaves this crate.
     ///
-    /// `authkestra_op::sqlx_store::SqlxOpStore<sqlx::Postgres>` (ADR-0010)
-    /// is a *foreign* trait implementation over a pool: vpay does not own
-    /// its queries and cannot express them as repository methods. Step 7's
-    /// decision (9) exempts it from the repository split rather than
-    /// abstracting a subsystem this step was never asked to touch — see
-    /// `docs/status.md`.
+    /// [`crate::client_assertion_store`] is a *foreign* trait implementation
+    /// over a pool (`authkestra_op::ClientAssertionStore`, ADR-0010): the
+    /// trait is not vpay's, so its two operations cannot be expressed as
+    /// repository methods without inventing a repository whose shape a
+    /// dependency dictates. Step 7's decision (9) exempts it from the
+    /// repository split rather than abstracting a subsystem that step was
+    /// never asked to touch — see `docs/status.md`.
+    ///
+    /// **Narrowed 2026-09-05: one caller, not two.** This used to serve
+    /// `authkestra_op::sqlx_store::SqlxOpStore<sqlx::Postgres>` as well, for
+    /// the three OP grant stores `vpay-api` had to fill. Those slots now hold
+    /// `vpay_api::op::refusing_stores`' fail-closed types, which touch no
+    /// database — so if the client-assertion store ever moves behind a
+    /// repository method, this whole exemption goes with it rather than
+    /// merely shrinking.
     ///
     /// Not a general escape hatch: a new `sqlx::query!` behind this call is
     /// a repository method that was not written.

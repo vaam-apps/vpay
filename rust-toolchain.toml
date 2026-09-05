@@ -40,20 +40,23 @@
 # here, not what makes the workspace compile.
 #
 # NOTE: this repo is authored and verified against 1.98.0. The MSRV declared
-# in Cargo.toml (`rust-version = "1.88"`) is derived *only* from `cargo
+# in Cargo.toml (`rust-version = "1.94"`) is derived *only* from `cargo
 # metadata`'s `rust_version` field across the whole resolved dependency graph
-# (the max over every package, including dev-dependencies). Re-derived on
-# 2026-09-05 during this bump and it did NOT move: the max is still 1.88,
-# now declared by `darling` 0.23.0, `jsonwebtoken` 11.0.0, `serde_with`
-# 3.21.0, `time` 0.3.47 (+ `time-core`/`time-macros`) and
-# `testcontainers`/`testcontainers-modules` 0.27.3/0.15.0. It has NOT been
-# verified by actually compiling this workspace with a 1.88 toolchain — only
+# (the max over every package, including dev-dependencies). It was 1.88 until
+# 2026-09-05 and **moved to 1.94 the same day**, when sqlx went 0.8.6 -> 0.9.0:
+# 0.9.0 declares `rust-version = "1.94.0"` where 0.8.6 declared none, and the
+# seven `sqlx-*` packages are now the sole maximum. `darling` 0.23.0,
+# `jsonwebtoken` 11.0.0, `serde_with` 3.21.0, `time` 0.3.47
+# (+ `time-core`/`time-macros`) and
+# `testcontainers`/`testcontainers-modules` 0.27.3/0.15.0 are still there at
+# 1.88, six minors below the new floor. It has NOT been
+# verified by actually compiling this workspace with a 1.94 toolchain — only
 # the pinned channel has ever compiled it. A meaningful fraction of the graph
-# (135 of 477 packages, measured 2026-09-05; the figure here used to read
-# "63 of 317", which was the graph as it stood on 2026-09-02) declares no
-# `rust_version` at all, so the true floor could in principle be higher
-# still. Verify with an actual 1.88 toolchain before relying on this number,
-# e.g. for a container base image.
+# (112 of 469 packages, measured 2026-09-05 after the sqlx bump; the figures
+# here used to read "135 of 477" before it and "63 of 317" on 2026-09-02)
+# declares no `rust_version` at all, so the true floor could in principle be
+# higher still. Verify with an actual 1.94 toolchain before relying on this
+# number, e.g. for a container base image.
 #
 # The musl target is required by `just build-dist`; add it with
 #   rustup target add x86_64-unknown-linux-musl

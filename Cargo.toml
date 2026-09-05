@@ -29,20 +29,25 @@ edition = "2024"
 #
 # Re-derived on 2026-09-05 when `rust-toolchain.toml` moved 1.95.0 -> 1.98.0,
 # because a toolchain bump is exactly the moment this number stops being
-# re-checked. It did NOT move: the max over the graph is still 1.88. The
-# *drivers* did — this comment used to name `time` 0.3.47 and
-# `testcontainers`/`testcontainers-modules` 0.27/0.15 alone, and the set is
-# now `darling` 0.23.0, `jsonwebtoken` 11.0.0, `serde_with` 3.21.0, `time`
-# 0.3.47 with `time-core` 0.1.8 / `time-macros` 0.2.27, and
-# `testcontainers` 0.27.3 / `testcontainers-modules` 0.15.0. Nothing in the
-# graph declares anything above 1.88.
+# re-checked. It did NOT move then: the max over the graph was still 1.88,
+# declared by `darling` 0.23.0, `jsonwebtoken` 11.0.0, `serde_with` 3.21.0,
+# `time` 0.3.47 with `time-core` 0.1.8 / `time-macros` 0.2.27, and
+# `testcontainers` 0.27.3 / `testcontainers-modules` 0.15.0.
+#
+# **1.88 -> 1.94 later the same day, and this one is a real move**, not a
+# re-derivation that landed on the same number: sqlx 0.9.0 declares
+# `rust-version = "1.94.0"` (0.8.6 declared none), and the seven `sqlx-*`
+# packages are now the sole maximum over the graph. Everything named in the
+# paragraph above is still there, still at 1.88, and now six minors below the
+# floor. Re-derived by measurement, not by reading a release note:
+# `cargo metadata | jq` over all 469 packages.
 #
 # The toolchain pin is deliberately NOT this number and never was: this is a
 # metadata floor, that is the compiler this workspace is actually built and
-# tested with. This one has not been verified by compiling with a 1.88
-# toolchain, and 135 of 477 packages declare no `rust_version` at all, so it
+# tested with. This one has not been verified by compiling with a 1.94
+# toolchain, and 112 of 469 packages declare no `rust_version` at all, so it
 # is a lower bound on a lower bound; see the note in rust-toolchain.toml.
-rust-version = "1.88"
+rust-version = "1.94"
 license = "Apache-2.0"
 # `vaam-apps`, not `vymalo`: the organisation was renamed `vaam-store` ->
 # `vaam-apps` on 2026-09-04 and `github.com/vymalo/vpay` now answers a 301 to
@@ -164,22 +169,52 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 # `deny.toml` with its own justification. Note this surfaces only now that a
 # non-dev crate depends on `sqlx` (`backends/crates/vpay-db`) — it was
 # latent in the workspace's own pins beforehand.
-sqlx = { version = "0.8", default-features = false, features = [
+#
+# **0.8 -> 0.9 on 2026-09-05.** The feature list below is copied across
+# unchanged, and that was checked against both releases' own `Cargo.toml`
+# rather than assumed: every one of the eight exists in 0.9.0 with the same
+# meaning, `tls-rustls-ring` is still `= ["tls-rustls-ring-webpki"]` (still
+# vendored roots, which is what the paragraph above is about), and the four
+# features 0.9 *deleted* (`runtime-tokio-native-tls`, `runtime-tokio-rustls`,
+# and the two async-std twins, sqlx#3821) were none of vpay's.
+# `webpki-roots` moves 0.26 -> 1.0 with it and is still
+# `CDLA-Permissive-2.0`, so `deny.toml` needs no edit. 0.9.0 is the only
+# 0.9.x published, and it is what `cratestack-sqlx 0.11.1` pins exactly —
+# which is the whole reason for the bump: CrateStack could not share a
+# transaction with `vpay-db` across two sqlx majors.
+#
+# One API change reaches this workspace: sqlx#3723 made `query`/`query_as`/
+# `query_scalar` take `impl SqlSafeStr` instead of `&str`, so a `String` built
+# by `format!` needs `sqlx::AssertSqlSafe`. All 36 sites are in `vpay-db` and
+# the audit that discharges the assertion is
+# `docs/reference/vpay-db.md § dynamic SQL strings and sqlx 0.9` — with a test
+# (`vpay_db::sql_audit`) that fails if a `format!`-built statement ever
+# interpolates something that is not a crate constant.
+sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio", "tls-rustls-ring", "postgres", "uuid", "time", "json", "macros", "migrate",
 ] }
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 time = { version = "0.3", features = ["serde", "macros"] }
 rust_decimal = "1"
 # Not part of vpay's own `time`-crate convention (docs above/ADR none yet) —
-# pulled in solely because `authkestra-op`'s `sqlx` dependency hardcodes the
-# `chrono` feature (its own Cargo.toml: `sqlx = { version = "0.8", features =
-# ["runtime-tokio", "json", "chrono"] }`, not optional), so every
-# `DateTime<Utc>` column SqlxOpStore reads/writes (oauth_codes.expires_at,
-# oauth_refresh_tokens.expires_at/revoked_at, oauth_device_codes.expires_at/
-# last_polled_at) is chrono-typed, not time-typed, and the acceptance test in
-# backends/tests/integration/tests/authkestra_op_smoke.rs has to speak the
-# same type to construct an `AuthorizationCode`. Confined to a dev-dependency
-# of that one test crate — no shipping crate depends on chrono today.
+# pulled in because `authkestra-op`'s own API is chrono-typed: every
+# `DateTime<Utc>` in `code.rs`, `refresh.rs`, `device.rs` and, the one that
+# matters to a shipping crate, `ClientAssertionStore::record_jti`'s
+# `expires_at`.
+#
+# **Corrected 2026-09-05.** This comment used to say chrono was "confined to a
+# dev-dependency of that one test crate — no shipping crate depends on chrono
+# today", naming `backends/tests/integration/tests/authkestra_op_smoke.rs`.
+# Both halves had gone stale: `vpay-db` has carried `chrono` in
+# `[dependencies]` since Step 7 (`client_assertion.rs`, which converts to
+# `time::OffsetDateTime` at its one boundary and binds nothing chrono-typed to
+# sqlx), and that test file was deleted on 2026-09-05 with the `SqlxOpStore`
+# it drove. It is also no longer true that sqlx pulls chrono in: that came
+# from `authkestra-op`'s `sqlx-postgres` feature hardcoding sqlx's `chrono`
+# flag, and no manifest enables that feature any more. Today: one shipping
+# crate (`vpay-db`) and two test-only consumers (`vpay-api`,
+# `vpay-tests-integration`) depend on chrono, all three to speak
+# `authkestra-op`'s own types.
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 
 # --- serde & config ---

@@ -15,7 +15,12 @@
 
 use std::time::Duration;
 
-use sqlx::PgConnection;
+// `AssertSqlSafe`: sqlx 0.9 accepts a statement only as `&'static str` or
+// through this wrapper (sqlx#3723). Every `format!` below interpolates crate
+// constants and nothing else — never a caller's value — which is the audit the
+// wrapper's name demands, written down in `docs/reference/vpay-db.md` § dynamic
+// SQL strings and sqlx 0.9 and enforced by `crate::sql_audit`.
+use sqlx::{AssertSqlSafe, PgConnection};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -434,7 +439,7 @@ impl Jobs for crate::repository::PgRepositories {
          RETURNING {CLAIM_RETURNING}"
         );
 
-        sqlx::query_as::<_, JobRow>(&sql)
+        sqlx::query_as::<_, JobRow>(AssertSqlSafe(sql))
             .bind(worker_id)
             .fetch_optional(&self.pool)
             .await
