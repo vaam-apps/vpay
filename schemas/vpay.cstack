@@ -41,6 +41,27 @@
 // │ real vpay Postgres, and `docs/status.md` still lists the database        │
 // │ schema itself as not started. Wiring it in is separate future work.      │
 // │                                                                          │
+// │ SINCE 2026-09-05 THE GAP IS MEASURED. `cratestack migrate baseline       │
+// │ --strict` has been run against a real, fully migrated vpay Postgres —    │
+// │ 86 pending drift changes across 17 tables/views — and that number is     │
+// │ asserted by an integration test                                          │
+// │ (postgres_smoke.rs::the_cstack_schema_drifts_from_the_migrations_by_a_   │
+// │ measured_amount). That is a comparison, not a wiring-in: nothing         │
+// │ generates from this file and it drives no migration, so the paragraph    │
+// │ above stands. IT MUST MOVE WHEN THIS FILE GROWS. What the measurement    │
+// │ added to the GAP notes below: the two cross-column CHECKs are not just   │
+// │ inexpressible here, they are INVISIBLE to `migrate baseline` — all ten   │
+// │ multi-column CHECKs in the database are — so a clean --strict run would  │
+// │ say nothing about either of them. That is CrateStack's own documented    │
+// │ gap, not just a measurement: cratestack-migrate 0.11.1's                 │
+// │ src/introspect/postgres/mod.rs lists "Multi-column and zero-column       │
+// │ CHECK constraints are skipped" because AddCheck ties to exactly one      │
+// │ column. So the ask below is not only @@check(expr) in the grammar — it   │
+// │ needs an IR op that is not single-column and introspection that reads    │
+// │ array_length(conkey, 1) > 1, or a parsed @@check would still be          │
+// │ invisible to migrate baseline and migrate diff. See docs/status.md,      │
+// │ "The measured drift", and docs/plans/exp13-notes/opus.md.                │
+// │                                                                          │
 // │ One more thing this rewrite had to learn the hard way: `cratestack       │
 // │ check` rejects column-aligned field declarations (multiple spaces        │
 // │ between a field name and its type) with a confusing "invalid type        │

@@ -587,6 +587,15 @@ cratestack_min_declarations := "12"
 # not this file — is the authoritative schema. See docs/status.md, section
 # "CrateStack".
 #
+# HOW FAR APART THOSE TWO ARE IS MEASURED ELSEWHERE, and deliberately not
+# here: `cratestack migrate baseline --strict` needs a live, fully migrated
+# Postgres, which this recipe has no business starting. That measurement is
+# an integration test (`postgres_smoke.rs::the_cstack_schema_drifts_from_the_
+# migrations_by_a_measured_amount`, 86 changes across 17 relations as of
+# 2026-09-05) and runs under `just test-rust`, not under `just verify`. The
+# split matters when reading a green `just verify`: it says this file parses,
+# and says nothing at all about whether it still describes the database.
+#
 # A MISSING BINARY IS A RED GATE. It exits non-zero and prints how to install
 # the tool; it never prints "skipped" and exits 0. Same rule as
 # `docs-check-citations` without `gh`: a check that downgrades itself reports
@@ -915,6 +924,17 @@ verify-docs:
 # derived from the 1121 above: that number was measured on the Step 9 gate
 # branch and the lanes and follow-ups that landed on `master` after it were
 # never added to this comment.
+#
+# Re-measured 2026-09-05 adding the `schemas/vpay.cstack` drift measurement
+# (`postgres_smoke.rs::the_cstack_schema_drifts_from_the_migrations_by_a_
+# measured_amount`): `just verify-ignored` lists **1271 total, 42 test
+# binaries, 0 ignored**. Neither counter below moves and the 1080 floor
+# stands. One case, in a file that already existed — deliberately, since a new
+# binary would have cost a bump here for a test whose subject (what the
+# database looks like) is exactly this suite's. It shells out to the
+# `cratestack` CLI and fails, rather than skipping, when that binary is
+# absent; `just test-rust` therefore needs it on PATH, the same way
+# `check-schema` does.
 expected_ignored := "0"
 expected_suites := "42"
 # A floor, not a target — set a little under the measured 1059
