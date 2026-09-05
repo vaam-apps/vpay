@@ -467,11 +467,13 @@ Merchant-scoped by a join onto the owning intent — `refunds` has no
 give it one — rendering `vpay_api::model::RefundObject`, the same renderer an
 eventual `charge.refund.updated` will have to put in `data.object`. A foreign
 merchant's refund and an id that never existed are the byte-identical
-`resource_missing` 404. Proven by four container-backed cases in
+`resource_missing` 404, and so is an id that is not `re_…` even when a row
+exists behind it. Proven by five container-backed cases in
 `backends/tests/integration/tests/refunds.rs`
 (`a_stored_refund_reads_back_through_the_sdk`,
 `merchant_b_cannot_read_merchant_as_refund`,
 `the_api_response_and_an_events_payload_for_one_refund_are_byte_identical`,
+`a_refund_id_without_the_re_prefix_is_never_looked_up`,
 `creating_a_refund_is_still_the_honest_404`). **Nothing creates a refund**:
 the rows those cases read are `INSERT`ed by the suite, because
 `vpay_db::Refunds` exposes one read and no write.

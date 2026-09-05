@@ -9,7 +9,7 @@
 //! (`docs/status.md`). Without this route a merchant holding a `re_…` in
 //! `pending` has no call and no event that answers what happened to it.
 //!
-//! The four claims only this file can make:
+//! The five claims only this file can make:
 //!
 //! 1. a stored refund reads back through the shipping SDK as the nine keys
 //!    `docs/flows/merchant-auth.md` documents;
@@ -19,7 +19,11 @@
 //!    the difference a status-code-only assertion would miss;
 //! 3. the API response and an event's `data.object` for the same row are
 //!    byte-identical, because one renderer produces both;
-//! 4. `POST /v1/refunds` is **still** the honest `404`.
+//! 4. an id that is not `re_…` is never looked up **even when a row exists
+//!    behind it** — the short-circuit is reached, and it answers the same
+//!    `404` (added by review 2026-09-05: this claim was the one nothing
+//!    checked, and deleting the short-circuit passed everything else);
+//! 5. `POST /v1/refunds` is **still** the honest `404`.
 //!
 //! # Why the rows are written here and not created through `/v1`
 //!
@@ -247,13 +251,38 @@ async fn seed_refund(
     status: &str,
     reason: Option<&str>,
 ) -> anyhow::Result<String> {
-    let id = vpay_core::ids::refund_id();
+    seed_refund_with_id(
+        pool,
+        &vpay_core::ids::refund_id(),
+        payment_intent_id,
+        status,
+        reason,
+    )
+    .await
+}
+
+/// [`seed_refund`], with the id chosen by the caller.
+///
+/// `refunds.id` is a bare `TEXT PRIMARY KEY` bounded only by migration
+/// `0017`'s `id_length` CHECK, so the database will store an id that
+/// `vpay_core::ids::refund_id` would never mint. Nothing in this repository
+/// writes such a row — this suite is the only writer there is — and that is
+/// exactly why the case below has to write one: it is the only way to reach
+/// the `re_` short-circuit in `vpay_api::v1::refunds` with a row that really
+/// exists behind it.
+async fn seed_refund_with_id(
+    pool: &PgPool,
+    id: &str,
+    payment_intent_id: &str,
+    status: &str,
+    reason: Option<&str>,
+) -> anyhow::Result<String> {
     sqlx::query(
         "INSERT INTO refunds \
              (id, payment_intent_id, amount, currency_code, status, reason, metadata) \
          VALUES ($1, $2, $3, 'XAF', $4::refund_status, $5, $6)",
     )
-    .bind(&id)
+    .bind(id)
     .bind(payment_intent_id)
     .bind(REFUND_AMOUNT)
     .bind(status)
@@ -262,7 +291,7 @@ async fn seed_refund(
     .execute(pool)
     .await
     .context("seeding a refunds row")?;
-    Ok(id)
+    Ok(id.to_owned())
 }
 
 /// The intent a refund hangs off, created through the shipping SDK so the
@@ -444,6 +473,123 @@ async fn merchant_b_cannot_read_merchant_as_refund() -> anyhow::Result<()> {
         .await
         .context("merchant A can still read its own refund")?;
     assert_eq!(still_there.id, refund_id);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------------- test 2 (b)
+
+/// The `re_` short-circuit in `vpay_api::v1::refunds` is **reached**, and its
+/// answer is the same `404` as everything else.
+///
+/// Added by review on 2026-09-05. Without it the short-circuit is decoration:
+/// deleting the three lines
+///
+/// ```text
+/// if !id.starts_with(vpay_core::ids::REFUND_PREFIX) {
+///     return Ok(None);
+/// }
+/// ```
+///
+/// left every other case in this file, and all seven `vpay-api` refund unit
+/// tests, green — because no test had a row behind a mis-prefixed id, so the
+/// query the short-circuit skips returned `None` anyway and the two paths were
+/// indistinguishable. This case puts a real row there. It is `MERCHANT_A`'s
+/// own refund, asked for by `MERCHANT_A`, so tenancy cannot be what refuses
+/// it: with the short-circuit the answer is the `resource_missing` `404`, and
+/// without it the answer is a `200` carrying the row.
+///
+/// The row is one no shipping code could write (`vpay_core::ids::refund_id`
+/// is the only minter of a `refunds` id, and it always mints `re_…`), which is
+/// the point — pinning what the route does with an id it will refuse to look
+/// up is the only way to pin that it refuses to look it up at all.
+#[tokio::test]
+async fn a_refund_id_without_the_re_prefix_is_never_looked_up() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let client = harness.a();
+
+    let intent_id = seed_intent(&client).await?;
+    // The same suffix a real id would have, behind a prefix `refund_id` never
+    // mints — so the *only* thing that can distinguish it is the prefix.
+    let minted = vpay_core::ids::refund_id();
+    let mis_prefixed = format!(
+        "xx_{}",
+        minted
+            .strip_prefix(vpay_core::ids::REFUND_PREFIX)
+            .expect("vpay_core mints refund ids behind its own prefix")
+    );
+    seed_refund_with_id(
+        &harness.pool,
+        &mis_prefixed,
+        &intent_id,
+        "pending",
+        Some("requested_by_customer"),
+    )
+    .await?;
+
+    // Guard against a vacuous pass: the row this case is about is really in
+    // the database, and really hangs off MERCHANT_A's intent.
+    let stored: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM refunds r \
+         JOIN payment_intents p ON p.id = r.payment_intent_id \
+         WHERE r.id = $1 AND p.merchant_id = $2",
+    )
+    .bind(&mis_prefixed)
+    .bind(MERCHANT_A)
+    .fetch_one(&harness.pool)
+    .await
+    .context("the mis-prefixed row is stored and belongs to merchant A")?;
+    assert_eq!(stored, 1, "the row this case is about must exist");
+
+    let http = raw_client();
+    let bearer = harness.bearer(CLIENT_A);
+
+    let refused = http
+        .get(harness.url(&format!("/v1/refunds/{mis_prefixed}")))
+        .bearer_auth(&bearer)
+        .send()
+        .await
+        .context("merchant A asks for its own mis-prefixed refund")?;
+    assert_eq!(
+        refused.status().as_u16(),
+        404,
+        "an id that is not `re_…` is never looked up, even when a row exists behind it"
+    );
+    let refused_body = refused.bytes().await.context("the body is readable")?;
+
+    let missing = http
+        .get(harness.url(&format!("/v1/refunds/{MISSING_REFUND_ID}")))
+        .bearer_auth(&bearer)
+        .send()
+        .await
+        .context("merchant A asks for an id that never existed")?;
+    assert_eq!(missing.status().as_u16(), 404);
+    let missing_body = missing.bytes().await.context("the body is readable")?;
+
+    // Same envelope, same wording, differing only where the caller's own id is
+    // echoed back — so the short-circuit is not a distinguisher either.
+    assert_eq!(
+        String::from_utf8_lossy(&refused_body).replace(&mis_prefixed, "<id>"),
+        String::from_utf8_lossy(&missing_body).replace(MISSING_REFUND_ID, "<id>"),
+        "the short-circuit must answer the same 404 as a missing id"
+    );
+    let envelope: Value = serde_json::from_slice(&refused_body).context("a JSON body")?;
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("resource_missing"),
+        "got {envelope:#}"
+    );
+
+    // And a properly prefixed refund on the same intent still reads, so what
+    // refused the one above was the prefix and nothing else about this fixture.
+    let sibling = seed_refund(&harness.pool, &intent_id, "pending", None).await?;
+    let readable = client
+        .refunds()
+        .retrieve(&sibling)
+        .await
+        .context("a `re_…` refund on the same intent still reads")?;
+    assert_eq!(readable.id, sibling);
 
     harness.shutdown().await;
     Ok(())
