@@ -32,4 +32,20 @@ export class RefundsResource {
     }
     return this.#http.request<Refund>("POST", "/refunds", body, options);
   }
+
+  /**
+   * `GET /v1/refunds/{id}`.
+   *
+   * A refund is asynchronous on this rail — `RefundStatus` has a
+   * non-terminal `"pending"` — and webhook delivery is at-least-once and
+   * unordered, so this is the authoritative read a reconciliation job falls
+   * back to when a `charge.refund.updated` was missed or arrived out of
+   * order.
+   */
+  async retrieve(id: string): Promise<Refund> {
+    return this.#http.request<Refund>(
+      "GET",
+      `/refunds/${encodeURIComponent(id)}`,
+    );
+  }
 }

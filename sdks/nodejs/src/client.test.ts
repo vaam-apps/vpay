@@ -686,6 +686,70 @@ describe("resource methods", () => {
     expect(result.object).toBe("refund");
   });
 
+  it("refunds.retrieve: exact GET path, no body, no Idempotency-Key", async () => {
+    // `GET /v1/refunds/{id}` — served since 2026-09-05 (issue #45), and the
+    // only observation of a refund there is: `charge.refund.updated` is
+    // documented and emitted by nothing, and webhook delivery is
+    // at-least-once and unordered in any case.
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: {
+          id: "re_1",
+          object: "refund",
+          amount: 2500,
+          currency: "xaf",
+          payment_intent: "pi_1",
+          status: "pending",
+          reason: "requested_by_customer",
+          metadata: { case: "77" },
+          created: 1_700_000_000,
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    const result = await client.refunds.retrieve("re_1");
+
+    const req = server.requests.find((r) => r.url === "/v1/refunds/re_1")!;
+    expect(req.method).toBe("GET");
+    expect(req.body).toBe("");
+    // A GET spends no idempotency key: the header belongs to writes, and
+    // sending one here would claim this call changes something.
+    expect(req.headers["idempotency-key"]).toBeUndefined();
+    expect(result.object).toBe("refund");
+    expect(result.payment_intent).toBe("pi_1");
+    expect(result.status).toBe("pending");
+    expect(result.reason).toBe("requested_by_customer");
+  });
+
+  it("refunds percent-encodes a hostile id so it cannot escape /v1", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: {
+          id: "re_1",
+          object: "refund",
+          amount: 2500,
+          currency: "xaf",
+          payment_intent: "pi_1",
+          status: "pending",
+          reason: null,
+          metadata: {},
+          created: 1_700_000_000,
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    await client.refunds.retrieve("../../admin");
+
+    const urls = server.requests
+      .filter((r) => r.url !== TOKEN_PATH)
+      .map((r) => r.url);
+    expect(urls).toEqual(["/v1/refunds/..%2F..%2Fadmin"]);
+  });
+
   it("events.list: exact query string including type", async () => {
     const server = await withServer({
       resource: () => ({

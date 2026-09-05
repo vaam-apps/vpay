@@ -17,8 +17,10 @@ verify` fails naming the cell.
 **Measured by reading both SDKs, 2026-09-03**, again for the Checkout Session
 rows on **2026-09-04** (Step 9), again on **2026-09-04** for the
 assertion-audience row (Step 9, lane 5b), and again on **2026-09-04** for the
-two `checkout.session.expired` rows. Nothing here is inferred from a file name
-or a doc comment.
+two `checkout.session.expired` rows, and again on **2026-09-05** for the
+`refunds.retrieve` row (issue #45, the change that made
+`GET /v1/refunds/{id}` a served route). Nothing here is inferred from a file
+name or a doc comment.
 
 Again on **2026-09-05** for the five `account_holders` rows (issue #47). Two
 things about those are worth stating rather than leaving to be discovered:
@@ -113,6 +115,7 @@ method name).
 | `payment_intents.cancel` | ✅ `cancel_posts_an_empty_body_and_still_carries_an_idempotency_key` | ✅ `payment_intents.cancel: exact path and method` |
 | `payment_intents.list`, with `limit` and both cursors | ✅ `list_payment_intents_encodes_its_pagination_into_the_query_string`, `a_list_call_with_no_parameters_sends_no_query_string_at_all` | ✅ `payment_intents.list: exact query string` |
 | `refunds.create`, and a full refund omitting `amount` | ✅ `create_refund_sends_the_documented_body_and_decodes_the_object`, `a_full_refund_omits_the_amount_entirely` | ✅ `refunds.create: exact path and body, amount omitted for a full refund` |
+| `refunds.retrieve` — `GET /v1/refunds/{id}`, no body, no `Idempotency-Key` | ✅ `retrieve_refund_is_a_get_with_no_body_and_decodes_the_object`, `a_refund_id_with_url_metacharacters_is_percent_encoded_into_the_path` | ✅ `refunds.retrieve: exact GET path, no body, no Idempotency-Key`, `refunds percent-encodes a hostile id so it cannot escape /v1` |
 | The `checkout.session.expired` event type is in this SDK's vocabulary, and its payload decodes as a session | ✅ `a_checkout_session_expired_event_is_a_known_type_and_decodes_as_a_session`, `an_unknown_event_type_is_none_rather_than_a_failure_and_the_wrong_accessor_errs` | ✅ `is a member of KnownEventType and narrows with isCheckoutSessionEvent`, `is not narrowed by the payment-intent or refund guards`, `leaves an unknown checkout.session.* type deliverable rather than a failure` |
 | A delivered `checkout.session.expired` carries no `client_secret` and a null `url`, and a null `url` is still distinguishable from an embedded session | ✅ `a_checkout_session_expired_event_is_a_known_type_and_decodes_as_a_session` | ✅ `carries no client_secret and a null url, so a webhook body holds no payer credential` |
 | `events.list`, with cursors and the `type` filter | ✅ `list_events_filters_by_type_and_keeps_data_object_as_raw_json` | ✅ `events.list: exact query string including type` |
