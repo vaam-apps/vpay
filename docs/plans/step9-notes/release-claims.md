@@ -324,13 +324,15 @@ Every command below was run in this worktree after the last edit.
 | Gate | Command | Result |
 |---|---|---|
 | verify | `just verify` | **exit 0** — `verify-no-mocks: ok`; `verify-status: ok — 1 unimplemented item(s), all declared in docs/status.md and all still in shipping code` (two-directional); `verify-errors: ok — 15 error type(s)`; `verify-sdk-parity: ok — 342 proving test(s) … 26 dated gap(s)`; `verify-docs` advisory |
-| docs | `just docs-check` | **exit 0** — but it is `cargo xtask verify-status` plus `note: link checking is not implemented yet`. **It does not check links.** |
+| docs | `just docs-check` | **exit 0** — but it is `cargo xtask verify-status` plus `note: link checking is not implemented yet`. ~~**It does not check links.**~~ **Corrected 2026-09-05:** true of the tree this table measures; since that date `docs-check` runs `cargo xtask verify-links` and the echo is gone. |
 | links | own checker (below) | **159 relative links across the 8 edited markdown files, 0 missing**; `checked=159 ok=159 miss=0`, exit 0 |
 | actions | `actionlint .github/workflows/release.yml` | **exit 0**; `actionlint` over all of `.github/workflows/` also exit 0 |
 | grep | the §2 grep, re-run | only (b)/(c)/(n/a) hits remain; every (a) line that still matches is inside a `~~…~~` strike-through, checked by eye |
 
-Because `just docs-check` does not check links, the link result comes from a
-throwaway script: it extracts every markdown inline-link target and
+Because `just docs-check` did not check links **when this was measured**
+(`cargo xtask verify-links` landed 2026-09-05 and does; the throwaway script's
+job is now a gate, over all 115 tracked files rather than the 8 edited ones),
+the link result comes from a throwaway script: it extracts every markdown inline-link target and
 resolves it against each file's own directory, skipping `http`/`mailto`/bare-anchor targets **and fenced code
 blocks**. It was given a **control** before being trusted — a probe file with
 a good link, a `../` link, an anchor link, a dangling link and a link inside a
