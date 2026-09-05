@@ -519,6 +519,14 @@ verify-npm-scope:
 # to forget.
 cratestack_version := "0.11.1"
 
+# The floor for `check-schema`'s "is there anything here?" assertion: the
+# number of top-level `model`/`enum` declarations schemas/vpay.cstack must
+# still carry for a `schema OK` to mean anything. Six models and six enums
+# today. A FLOOR, deliberately, not an exact count — adding a model is not a
+# reason to fail a gate, and this exists to catch a file that was emptied or
+# truncated, not one that grew.
+cratestack_min_declarations := "12"
+
 # `schemas/vpay.cstack` parses and type-checks against the real CrateStack
 # grammar. Seventh gate in `just verify`, new 2026-09-05.
 #
@@ -559,6 +567,29 @@ cratestack_version := "0.11.1"
 # same division `helm-check` already draws — presence checked locally,
 # version pinned in the workflow.
 #
+# `schema OK` IS NOT ENOUGH ON ITS OWN, WHICH IS WHY THIS RECIPE ALSO CHECKS
+# THE SHAPE OF WHAT IT CHECKED (added 2026-09-05 by review, with the two
+# measurements that prompted it):
+#
+#   $ : > empty.cstack && cratestack check --schema empty.cstack
+#   schema OK: empty.cstack                                     # exit 0
+#
+#   $ # schemas/vpay.cstack with the `datasource` block deleted and
+#   $ # `tags String[]` added to PaymentIntent:
+#   schema OK: ...                                              # exit 0
+#
+# Both are the failure this gate exists to prevent, wearing the gate's own
+# green: an emptied or truncated schema type-checks vacuously, and deleting
+# the `datasource` block turns off every database-backed-model rule —
+# including the list-arity refusal that is the mutation this gate is proven
+# with, and which the CLI's own error message offers "drop the `datasource`
+# block" as a way to silence. `cratestack check` is right to accept both (a
+# client-only schema is a real thing) and there is no CLI flag that says
+# "and it must be a database-backed schema with content in it", so the
+# assertion belongs here, next to the claim it protects. The floor is a
+# floor, not an exact count, so adding a model does not fail the gate; it is
+# `verify-ignored`'s `min_tests` in miniature.
+#
 # Fail if schemas/vpay.cstack does not parse against the pinned CrateStack.
 check-schema:
     #!/usr/bin/env bash
@@ -591,7 +622,31 @@ check-schema:
         echo "check-schema: the check below still ran in full, but against the $found grammar." >&2
     fi
 
-    echo "check-schema: cratestack $found, schema $schema"
+    # A schema with nothing in it, or with no `datasource` block, passes
+    # `cratestack check` — see the comment above for both transcripts. Assert
+    # what was actually checked before reporting a green.
+    if ! grep -qE '^datasource [A-Za-z_][A-Za-z0-9_]* \{' "$schema"; then
+        echo "check-schema: FAIL — $schema declares no 'datasource' block." >&2
+        echo "check-schema: without one, cratestack treats it as a client-only schema and" >&2
+        echo "check-schema: stops applying every database-backed-model rule — including the" >&2
+        echo "check-schema: list-arity refusal this gate is proven with. It would still say" >&2
+        echo "check-schema: 'schema OK'. If dropping the datasource is deliberate, change this" >&2
+        echo "check-schema: recipe and docs/status.md in the same commit and say what the gate" >&2
+        echo "check-schema: still covers." >&2
+        exit 1
+    fi
+
+    declarations="$(grep -cE '^(model|enum) [A-Za-z]' "$schema" || true)"
+    if [ "$declarations" -lt "{{ cratestack_min_declarations }}" ]; then
+        echo "check-schema: FAIL — $schema declares $declarations model/enum(s), fewer than the floor of {{ cratestack_min_declarations }}." >&2
+        echo "check-schema: an emptied or truncated .cstack file type-checks vacuously and" >&2
+        echo "check-schema: cratestack prints 'schema OK' for it, so a green here would mean" >&2
+        echo "check-schema: nothing. If declarations were removed on purpose, lower the floor" >&2
+        echo "check-schema: (cratestack_min_declarations in this justfile) in the same commit." >&2
+        exit 1
+    fi
+
+    echo "check-schema: cratestack $found, schema $schema ($declarations model/enum declarations, datasource present)"
     cratestack check --schema "$schema"
     echo "check-schema: ok — $schema type-checks under cratestack $found"
 

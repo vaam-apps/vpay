@@ -273,9 +273,12 @@ correction.
   moved four times in five weeks (0.7.8 → 0.7.10 → 0.10.1 → 0.11.1) and
   nothing would have noticed the file going stale. **A missing binary is a
   red gate**, printing the install command rather than "skipped" — same rule
-  as `verify-citations` without `gh`. See "CrateStack" below for the version,
-  the mutations that prove the gate fires, and what a green run does *not*
-  prove.
+  as `verify-citations` without `gh`. **A vacuous green is a red gate too**: an
+  emptied schema, or one with no `datasource` block, gets `schema OK` and
+  exit 0 out of the CLI, so the recipe asserts a `datasource` block and a
+  floor of 12 `model`/`enum` declarations before it believes the result. See
+  "CrateStack" below for the version, the six mutations that prove the gate
+  fires, and what a green run does *not* prove.
 - **`verify-citations` — a gate that needs the network, so it is opt-in
   (`just docs-check-citations`) and is in no CI job.** It resolves every
   workflow-run id, pull request and issue a tracked `*.md` cites as evidence
@@ -2017,13 +2020,32 @@ what 0.11 *added* over 0.10. The block attributes the schema's own header
 lists as unused are still unused, and no attempt was made to find new grammar
 this file could benefit from.
 
-**Three mutations prove the gate fires** (2026-09-05,
-`docs/plans/exp9-notes/opus.md` has the transcripts): adding `tags String[]`
-to `PaymentIntent` fails `just verify` with the list-arity rejection the
-file's own header quotes, and `verify-docs` never runs; pointing the recipe
-at a schema path that does not exist fails with `failed to read schema file`
-rather than passing on nothing to check; and running with the binary off
-`PATH` fails and prints the install command. Each was reverted.
+**Six mutations prove the gate fires** (2026-09-05,
+`docs/plans/exp9-notes/opus.md` and `docs/plans/exp9-notes/opus-review.md`
+have the transcripts): adding `tags String[]` to `PaymentIntent` fails `just
+verify` with the list-arity rejection the file's own header quotes, and
+`verify-docs` never runs; pointing the recipe at a schema path that does not
+exist fails with `failed to read schema file` rather than passing on nothing
+to check; running with the binary off `PATH` fails and prints the install
+command; `|| true` on the `cratestack check` line makes the first two
+mutations pass, which is what says the check is load-bearing rather than
+decorative; **truncating the schema to an empty file** fails; and **deleting
+its `datasource` block** fails. Each was reverted.
+
+**The last two are the reason the recipe does not trust `schema OK` on its
+own** (added 2026-09-05 by review). `cratestack check` prints `schema OK` and
+exits **0** for an empty `.cstack` file, and prints `schema OK` and exits
+**0** for this schema with its `datasource` block deleted *and* `tags
+String[]` added — the CLI's own list-arity error names "drop the `datasource`
+block" as one way to make it go away, so the mutation this gate is proven
+with is exactly the one that block's absence disarms. Both are correct
+behaviour for the CLI (a client-only schema is a real thing) and there is no
+flag that asks for more, so `check-schema` asserts the shape of what it
+checked before reporting green: a `datasource` block must be present, and the
+file must still declare at least `cratestack_min_declarations` (12 today: six
+models, six enums) top-level `model`/`enum`s. A floor rather than an exact
+count, so adding a model does not fail the gate — `verify-ignored`'s
+`min_tests` in miniature.
 
 What this does and does not prove:
 
