@@ -89,6 +89,11 @@ $ grep -n '^FROM' backends/Dockerfile
 The Dockerfile header and the implementer's notes are right; `rust-toolchain.toml`'s
 header contradicted both (F4).
 
+Line numbers in this file are the ones printed when each command ran. The
+`FROM rust:` line moved 187 -> 197 when this review added a paragraph to the
+Dockerfile header, so the same mutation re-run on the delivered tree reports
+`backends/Dockerfile:197` — re-run there, and it does.
+
 ### 3.4 The Docker Hub tags
 
 ```
