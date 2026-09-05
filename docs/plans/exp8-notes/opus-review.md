@@ -130,6 +130,22 @@ was never left dirty), rebuilt, recorded, discarded.
 | `actionlint` v1.7.12 on `release.yml` | exit 0 |
 | Builds A/B/C/D | above |
 
+## Re-run on the final tree (after the six fix commits)
+
+The fixes are comments, prose, one `justfile` echo and one `docs/status.md`
+row: no Dockerfile *instruction* changed, so the build graph is identical.
+Confirmed by repeating A/B/C on the finished tree, builder pruned first:
+
+| Build | Wall | cook |
+|---|---|---|
+| A (cold) | 215 s (install 32 s + cook 63 s + build 108 s) | ran |
+| B (source touch) | 114 s | `CACHED` |
+| C (sha-only) | 112 s | `CACHED` |
+
+15.9 MB, `docker run --rm … --version` → `vpay-server 0.1.0`, exit 0. The
+warm numbers here and the earlier 105 s / 101 s are two samples of the same
+thing on a host whose load moved under both; the docs quote both.
+
 ## What this review did NOT do
 
 * **No arm64 anything.** Read-only reasoning only: the `chef` stage's

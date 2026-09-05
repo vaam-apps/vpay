@@ -155,8 +155,9 @@
 # the graph is already compiled. The measured incremental build went from
 # 260 s to 125 s — a little over half, not the near-instant rebuild
 # cargo-chef gives a project that does not use fat LTO. Reproduced in review
-# on the same host under heavier load: 105 s for a source-touch rebuild and
-# 101 s for a sha-only one, against 193-212 s for a cold one-stage build.
+# on the same host under heavier load, twice each: 105 s and 114 s for a
+# source-touch rebuild, 101 s and 112 s for a sha-only one, against 193-212 s
+# for a cold one-stage build.
 # Whether `[profile.dist]` should override `release`'s `lto = "fat"` with
 # `"thin"` is a real question this change deliberately does not answer: no
 # ADR records the fat-LTO choice and no comment in `Cargo.toml` explains it,
