@@ -155,7 +155,10 @@ exist and serve a different surface.
   `check_and_record_dpop_jti`, was deleted with the feature on 2026-09-05.
   `postgres_smoke.rs` still proves all four tables exist and that
   `oauth_codes.client_id`'s foreign key fires — which is a schema check, not
-  a compatibility check. **A reader must not infer from any of this that a
+  a compatibility check. **Extended 2026-09-05 by review** to `oauth_dpop_jti`
+  and 0013's three added columns as well: the deleted file was the only place
+  in the repository that named any of them, so their existence had stopped
+  being checked anywhere. **A reader must not infer from any of this that a
   shipping binary can issue a dashboard token**, and must now also not infer
   that the DDL is still known to match any store's hand-built SQL.
 
