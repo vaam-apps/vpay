@@ -107,6 +107,18 @@ own, with a test that the constraint fires.**
 
 Each is quoted verbatim as it stands today, with the replacement.
 
+**Correction 2026-09-05 — three link destinations below are no longer
+verbatim.** `cargo xtask verify-links` reads these blockquotes as links
+belonging to *this* file, so `[reconciler.md](reconciler.md)` — correct in
+`docs/flows/`, where the quoted text lives — resolved to
+`docs/plans/step8-notes/reconciler.md` and failed the new gate. The three
+(`adapter-orange-money.md` once, `reconciler.md` twice) were rewritten to
+`../../flows/…` so the links work from here. **The text as applied still reads
+`(reconciler.md)` and `(adapter-orange-money.md)`** — see
+`docs/flows/crash-safety.md:320` and `docs/flows/reconciler.md:173`. Paste the
+destinations from those files, not from this one; the display text and every
+other character are unchanged.
+
 ### `docs/flows/adapter-mtn-momo.md`, "Not proven" list
 
 **Retire:**

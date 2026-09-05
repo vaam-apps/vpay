@@ -152,10 +152,20 @@ correction.
   else. **Measured 2026-09-05: 114 files scanned (113 on `master`
   plus the notes for this change), 672 repository links checked, 5 broken,
   5 fixed.** All five were in `docs/plans/step8-notes/`
-  (`lane-c.md` ×3, `lane-h.md` ×2): four were links copied verbatim out of a
-  `docs/flows/` document into a blockquote, keeping the quoted file's own
-  relative path, and one was a `../` one level short. Nothing was deleted —
-  every one named a file that exists, and each was repointed at it.
+  (`lane-c.md` ×3, `lane-h.md` ×2), and ~~four were links copied verbatim out
+  of a `docs/flows/` document into a blockquote, keeping the quoted file's own
+  relative path, and one was a `../` one level short~~ **all five are the same
+  thing (corrected 2026-09-05, in this branch's review):** each is inside a
+  blockquote quoting text that belongs in another directory, and each
+  destination was *correct where that text lives* — `docs/flows/`
+  (`crash-safety.md:320`, `reconciler.md:95`, `reconciler.md:173`) or
+  `docs/status.md:1449`. Nothing was deleted — every one named a file that
+  exists, and each was repointed so it resolves from the notes file. **The
+  cost, stated rather than hidden: those five blockquotes are no longer
+  verbatim quotations.** `lane-c.md` and `lane-h.md` each carry a dated note
+  at the quote saying so and naming the applied text, because a planning note
+  whose quoted patch would introduce a broken link if pasted is a worse defect
+  than the one the gate found.
   **Deliberately not checked, and the gate's own doc comment says so:**
   `#anchor` fragments (agreeing with GitHub's heading-slug algorithm is a
   guess, and a wrong guess fails correct documents), `http(s)` URLs, and

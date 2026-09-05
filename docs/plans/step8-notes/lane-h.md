@@ -288,6 +288,14 @@ said until 2026-09-04 (Step 8 review, finding 4)**" — up to the end of the row
 
 > **What it also does, and nothing said until 2026-09-04 (Step 8 review, finding 4): it is the first unauthenticated route this repo publishes to a network** — `compose.demo.yml` maps the whole `vpay-server` port to the host (`${VPAY_DEMO_PORT:-8080}:8080`, bound on `0.0.0.0`), so anyone on the same LAN as a demo or e2e stack can post a rail notification at it without a credential. **What that buys them was overstated and is now measured.** The module used to claim it was "bounded by what the ladder was going to do anyway"; it was not, and since 2026-09-04 (lane H) the pull-forward refuses a job due within the ladder's own fastest rung, so a POST about a charge the queue was about to ask about anyway changes no row and causes no rail request at all. Past that rung it is **not** bounded: the ladder's rungs grow (20 s, 30 s, 45 s …) while the floor stays at ten, so a caller repeating against one live charge can hold it at roughly one authenticated `query_status` per worker claim. **There is no rate limit, per charge or per source.** What is left standing is that the caller must know a v4 `provider_reference_id` for a live charge *on this deployment*, that each accepted POST buys exactly one authenticated status query — which settles the charge the rail actually names or nothing at all — that the body is bounded at 16 KiB, and that no charge or intent state is ever written ([flows/provider-port.md](../../flows/provider-port.md): the route is a hint that never moves state). It remains unauthenticated write access to a job's `run_at`, and **a real deployment must front this path** (rate limit, IP allowlist, or a reverse proxy) rather than publish it as the demo does. The floor also has a cost, stated: a rail calling back while the charge sits on the ladder's first rung no longer settles it early — it settles at that rung, up to ten seconds later than before
 
+**Correction 2026-09-05 — the link destination in the block above is no
+longer verbatim.** `cargo xtask verify-links` reads a blockquote as this
+file's own links, so `[flows/provider-port.md](flows/provider-port.md)` —
+correct in `docs/status.md`, where this passage was applied — resolved to
+`docs/plans/step8-notes/flows/provider-port.md` and failed. It was rewritten
+to `../../flows/provider-port.md`. **The applied text still reads
+`(flows/provider-port.md)`**: see `docs/status.md:1449`.
+
 ### 6c. The egress-guard row (`docs/status.md:1229`)
 
 **Replace** the two occurrences of the phrase
@@ -330,6 +338,15 @@ Lane C's §5 asked for a "What is built" bullet reading
 The accurate form is
 
 > - **The callback endpoint exists.** `POST /provider/{code}/callback` (`vpay_api::provider_callback`) is the route the section above describes, built 2026-09-04. It never changes state: it enqueues the charge's `poll:<charge id>` job if it is missing and brings it forward to `now()` if it is parked **further out than the ladder's first rung**, refusing a leased or dead-lettered one, and refusing one already due within that rung so that an unauthenticated caller cannot spend a rail request on a poll the queue was about to make anyway. The `dedupe_key` really is what stops duplicate callbacks becoming a job storm, and it is now that on a live path rather than in a design. What it does **not** do is bound a caller who repeats against a charge parked further out; there is no rate limit, and [reference/vpay-api.md](../../reference/vpay-api.md) states the true bound.
+
+**Correction 2026-09-05 — same as above.**
+`[reference/vpay-api.md](../reference/vpay-api.md)` is correct in
+`docs/flows/reconciler.md`, where this bullet was applied
+(`docs/flows/reconciler.md:95`), and resolved to `docs/plans/reference/` from
+here; it was rewritten to `../../reference/vpay-api.md` for `verify-links`.
+This one was described in `docs/status.md` as "a `../` one level short" when
+the gate landed; it is not — it is the same quotation mismatch as the other
+four, and that sentence has been corrected.
 
 ### `docs/flows/webhooks.md` (line 248)
 
