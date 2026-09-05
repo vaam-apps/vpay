@@ -246,6 +246,24 @@ jobs:
         with: { node-version-file: .nvmrc, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @vaam-apps/vpay-sdk build
+      # The CrateStack CLI, for `postgres_smoke`'s drift test, which shells
+      # out to `cratestack migrate baseline --strict` and is a red failure
+      # without the binary, not a skip (added 2026-09-05; the first CI run of
+      # that test failed here for exactly that reason — run 33980091252).
+      # Same two steps as `self-checks`: the version comes from the justfile,
+      # the action is pinned to the v0.11.1 commit and verifies the checksum.
+      - name: resolve the pinned CrateStack version from the justfile
+        id: cratestack
+        run: |
+          version="$(just --evaluate cratestack_version)"
+          if [ -z "$version" ]; then
+            echo "::error::could not read 'cratestack_version' out of the justfile; refusing to fall back to the latest release" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@6b3053fa77924f5162915d594d457d3eda51afaa # v0.11.1
+        with:
+          version: ${{ steps.cratestack.outputs.version }}
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # Runs the container-backed suites too (vpay-db, vpay-tests-integration,
