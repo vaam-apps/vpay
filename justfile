@@ -1027,8 +1027,25 @@ verify-docs:
 # integration case was added because deleting the `re_` short-circuit left
 # the other four, and every unit test, green.) `just test-doc` is unchanged at **90 passed, 1 ignored**:
 # nothing added carries a doctest.
+#
+# **42 -> 43, and 1319/1294 -> 1334, on 2026-09-06 — the rebase of issue #45
+# onto issue #47, and the number neither branch could have known.** The two
+# entries directly above were each measured on a tree without the other, and
+# **both moved `expected_suites` 41 -> 42**: #47 for the new binary
+# `backends/tests/integration/tests/account_holders.rs`, #45 for the new
+# binary `backends/tests/integration/tests/refunds.rs`. Two different new
+# binaries, the same edited line — so git took one "42" and reported no
+# conflict, and the merged tree would have failed `verify-ignored` with 43
+# listed against 42 expected. Re-measured on the rebased tree the way
+# `verify-ignored` measures it (`cargo nextest list --workspace
+# --message-format json`, `."rust-suites" | length`): **1334 total, 43 test
+# binaries, 0 ignored**. 1334 is #47's 1319 plus #45's own 15 (the 1293 ->
+# 1294 review case included); 43 is 41 plus one binary each. The 1080 floor
+# stands untouched. The lesson worth keeping: when two branches each bump a
+# count by one, the merged count is not either branch's number, and only
+# re-running the measurement finds that.
 expected_ignored := "0"
-expected_suites := "42"
+expected_suites := "43"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

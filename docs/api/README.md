@@ -486,17 +486,21 @@ against a real router and a real Postgres in
 `backends/tests/integration/tests/refunds.rs`.
 
 ~~Two of its eight resource methods still have no route to call~~
-**— corrected 2026-09-05 by counting them.** `vpay_sdk` exposes **thirteen**
-resource methods, not eight: the figure predated `checkout.sessions.{create,
-retrieve,list,expire}` (Step 9, 2026-09-04) and `refunds.retrieve` (issue
-#45), and had been wrong by four for a day. **Two of the thirteen have no
-route to call**, and they are the same two the old sentence named:
-`refunds().create()` and `balance().retrieve()`. The count is
+**— corrected 2026-09-05 by counting them, and re-counted 2026-09-06 on the
+rebased tree.** `vpay_sdk` exposes **fourteen** resource methods, not eight:
+the figure predated `checkout.sessions.{create,retrieve,list,expire}` (Step
+9, 2026-09-04), `refunds.retrieve` (issue #45) and
+`account_holders.retrieve` (issue #47). **Two of the fourteen have no route
+to call**, and they are the same two the old sentence named:
+`refunds().create()` and `balance().retrieve()` — so **twelve of the fourteen
+are routed**. The count is
 `payment_intents.{create,retrieve,confirm,cancel,list}` (5) +
 `checkout.sessions.{create,retrieve,list,expire}` (4) +
-`refunds.{create,retrieve}` (2) + `events.list` (1) + `balance.retrieve` (1);
-`@vaam-apps/vpay-sdk` is at parity on all thirteen
-([../sdks/parity.md](../sdks/parity.md)).
+`refunds.{create,retrieve}` (2) + `events.list` (1) +
+`account_holders.retrieve` (1) + `balance.retrieve` (1);
+`@vaam-apps/vpay-sdk` is at parity on all fourteen
+([../sdks/parity.md](../sdks/parity.md)). The "thirteen" this paragraph read
+until the rebase was measured on a tree without issue #47's resource.
 
 **The Node SDK has now spoken to a vpay, in exactly one respect.** Its
 `verifyWebhook` verifies a `Vpay-Signature` this server emitted, in a
