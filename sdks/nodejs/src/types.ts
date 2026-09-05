@@ -260,6 +260,66 @@ export interface Balance {
   pending: BalanceAmount[];
 }
 
+/**
+ * Who a mobile-money number is registered to, or the fact that the rail has
+ * no record of it — `GET /v1/account_holders` (issue #47).
+ *
+ * `name: null` means **the rail answered and does not know this number**. It
+ * does not mean "we could not ask": that throws. A caller matching a
+ * nominated refund destination against a buyer's verified name must refuse
+ * on both — but only one of them is the buyer's problem.
+ *
+ * A name and nothing else, by construction: the rail's body carries more (a
+ * birthdate, a locale, a gender) and vpay projects it away before it can be
+ * logged or stored. There is no `id`, because nothing is stored to address
+ * later.
+ */
+export interface AccountHolder {
+  object: "account_holder";
+  /**
+   * The rail the question was put to, echoed back.
+   *
+   * `string` and not {@link PaymentMethodType}, for the reason
+   * `PaymentIntent.payment_method_types` is `string[]`: the request side is
+   * closed and the response side must stay readable for a rail this SDK
+   * version predates.
+   */
+  payment_method_type: string;
+  /** The registered holder's name, or `null` when the rail has no record. */
+  name: string | null;
+  /**
+   * `true` exactly when `name` is present.
+   *
+   * Not a claim that anything was cryptographically verified — it says the
+   * rail named a holder.
+   */
+  verified: boolean;
+}
+
+/**
+ * `GET /v1/account_holders` request fields.
+ *
+ * A `type` alias for {@link ListParams}' index-signature reason. Both fields
+ * are required and neither is optional: a lookup with no number or no rail
+ * is not a narrower query, it is not a query.
+ *
+ * **`payment_method_type`, snake_case, like every other params type in this
+ * package** — the wire spelling, which is what the encoder walks and what
+ * `sdks/rust/tests/resources.rs` pins byte for byte. A camelCase
+ * `paymentMethodType` would be the only camelCase request field in the SDK
+ * and would need a translation step the others do not have.
+ */
+export type RetrieveAccountHolderParams = {
+  /**
+   * The mobile-money number, in any of the three shapes vpay accepts:
+   * `+2376XXXXXXXX`, `2376XXXXXXXX` or the national `6XXXXXXXX`. Validated
+   * by the server, not here — see `AccountHoldersResource.retrieve`.
+   */
+  msisdn: string;
+  /** Which rail to ask. Closed on the request side, as a create's list is. */
+  payment_method_type: PaymentMethodType;
+};
+
 export interface List<T> {
   object: "list";
   data: T[];

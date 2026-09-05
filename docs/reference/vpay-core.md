@@ -23,7 +23,7 @@ page points at it rather than restating it.
 | `failure` | the closed taxonomy | why the policy lives on the code |
 | `settlement` | `settle` and `contradiction` | why this is a sibling of `state` and not part of it |
 | `error` | `Classify`, `Category`, `source_chain` | the three tiers and the five questions ([ADR-0011](../adr/0011-error-modelling.md)) |
-| `metrics` | the twelve names and their labels | why a library describes but does not install, and the caveats on four of the series |
+| `metrics` | the thirteen names and their labels | why a library describes but does not install, and the caveats on four of the series |
 
 ---
 
@@ -454,6 +454,31 @@ immediately *after* installing one.
 `describing_without_a_recorder_is_harmless` pins that: it is exactly what
 happens in every test binary in this workspace that links `vpay-core` and
 installs nothing.
+
+### The account-holder series is the one name the plan document does not have
+
+`vpay_account_holder_lookups_total{outcome}` landed on 2026-09-05 with issue
+#47, after `docs/plans/2026-09-03-step6-deployment.md` §3 was written — which
+is why the module doc's `text` block carries a paragraph explaining the
+thirteenth line rather than only twelve lines. The specification test reads
+the block itself, not the plan, so the two stay in step.
+
+It is a separate series rather than a slice of `vpay_http_requests_total`
+because its four outcomes are **not four status codes**: `found` and
+`not_found` are both `200`, and telling them apart is the whole question an
+operator asks of `GET /v1/account_holders`. It is not a slice of
+`vpay_provider_requests_total` either, for the mirror-image reason — that one
+answers a question about the *rail*, and cannot see the difference between an
+`Ok(Some)` and an `Ok(None)` without the port leaking a route's concern into
+a decorator every rail shares.
+
+**Its label set is bounded to four constants and carries nothing else** — no
+MSISDN, no name, no merchant, not even the rail's code. A Prometheus label is
+retained, queryable and shipped wherever the scrape goes, so a number in one
+would be the durable record that
+[../flows/account-holder-lookup.md](../flows/account-holder-lookup.md)'s rule
+2 exists not to keep. `every_outcome_is_counted_and_no_label_carries_the_number_or_the_name`
+asserts it against a rendered scrape from the shipping exporter.
 
 ### Why the names are `const`s and not string literals at call sites
 

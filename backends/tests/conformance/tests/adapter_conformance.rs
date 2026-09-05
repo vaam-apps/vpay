@@ -50,6 +50,26 @@
 //! | [`REF_HUGE`] | answer the status query `200` with a valid body padded past [`vpay_provider::http::MAX_RAIL_BODY_BYTES`] |
 //! | each rail's decline table | answer the status query with that rail's documented failure reason |
 //!
+//! The account-holder cases (issue #47) are the one family that steers on a
+//! **payer reference** rather than on a charge reference, because
+//! `ProviderAdapter::account_holder_name` takes no charge at all — it is a
+//! stateless read of a number. A rail that declares
+//! [`Capabilities::supports_account_holder_lookup`] must stub, on whatever
+//! endpoint its own protocol documents:
+//!
+//! | constant | what the rail's mappings must do |
+//! |---|---|
+//! | [`MSISDN_REGISTERED`] | name a holder |
+//! | [`MSISDN_UNREGISTERED`] | report that it has no record — the rail's own "not found" |
+//! | [`MSISDN_SLOW`] | answer after a `fixedDelayMilliseconds` well above [`SHORT_REQUEST_TIMEOUT`] |
+//! | [`MSISDN_HUGE`] | answer with a valid body padded past [`vpay_provider::http::MAX_RAIL_BODY_BYTES`] |
+//! | [`MSISDN_FULL_OF_PII`] | answer with a **named** holder buried in as much other personal data as the rail could plausibly carry |
+//!
+//! A rail that declares the capability `false` stubs none of them: every one
+//! of those cases asserts [`ProviderError::Unsupported`] for it instead, out
+//! of the same shared body, so "Orange has no such API" is checked rather
+//! than skipped.
+//!
 //! and each rail supplies one `ProviderConfig` whose credentials are wrong, to
 //! prove a credential failure is not reported as a payer's problem.
 //!
@@ -239,6 +259,63 @@ const REF_SCENARIO: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_
 const REF_REDIRECT: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0302);
 /// A reference whose status query the rail answers with an oversized body.
 const REF_HUGE: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0b16);
+
+// The account-holder family (issue #47). Digits only, all of them, and that
+// is not cosmetic: `GET /v1/account_holders` validates Cameroon E.164
+// server-side, so a hex-lettered steering number of the kind
+// `requesttopay.json` uses could never reach this port method from the API.
+// A conformance suite that steered on one would be exercising a path no
+// caller has.
+
+/// A number the rail knows and will name a holder for.
+const MSISDN_REGISTERED: &str = "237600000200";
+/// A number the rail has no record of.
+const MSISDN_UNREGISTERED: &str = "237600000404";
+/// A number whose lookup the rail answers *slowly* — past
+/// [`SHORT_REQUEST_TIMEOUT`].
+const MSISDN_SLOW: &str = "237600000560";
+/// A number whose lookup the rail answers with an oversized body.
+const MSISDN_HUGE: &str = "237600000616";
+/// A number whose holder the rail describes in far more detail than a name.
+const MSISDN_FULL_OF_PII: &str = "237600000700";
+
+/// The name [`MSISDN_REGISTERED`]'s holder is registered under, as the
+/// mapping spells it.
+const REGISTERED_HOLDER_NAME: &str = "David Mbarga";
+
+/// Everything [`MSISDN_FULL_OF_PII`]'s body carries **besides** the name,
+/// each of which must be absent from the returned value and from every log
+/// line the call produced.
+///
+/// A list rather than one string, because the failure this guards against is
+/// partial: an adapter that projected `given_name`, `family_name` *and*
+/// `birthdate` would pass a test that only looked for an address.
+const PERSONAL_DATA_THE_RAIL_SENDS: [&str; 8] = [
+    "1988-04-17",
+    "en_CM",
+    "FEMALE",
+    "ACTIVE",
+    "mtn-customer-9f2c41",
+    "amina.nkeng@example.test",
+    "12 Avenue Kennedy, Yaounde",
+    "CM-ID-0099887766",
+];
+
+/// The name that body *does* carry, kept apart from the list above because
+/// the two assertions differ: this one must reach the caller and must not
+/// reach a log.
+const PII_HOLDER_NAME: &str = "Amina Nkeng";
+
+/// The same name as the **two halves the rail sends it in**, which is the
+/// only form in which it can actually leak.
+///
+/// Asserting on [`PII_HOLDER_NAME`] alone was a hole, found by mutation on
+/// 2026-09-06: a `tracing::debug!(?parsed)` of the adapter's wire type
+/// printed `given_name: Some("Amina"), family_name: Some("Nkeng")` — the
+/// name, in an operator's log — and the joined string it greps for never
+/// appeared, so the case passed. The adapter joins the halves; MTN never
+/// sends them joined, so a leak is a leak of the halves.
+const PII_HOLDER_NAME_HALVES: [&str; 2] = ["Amina", "Nkeng"];
 
 /// Where the core says this charge's payer goes when a rail's page is done
 /// with them — the merchant's own site here, which is the case that closes
@@ -1259,6 +1336,383 @@ async fn an_oversized_rail_body_is_refused_at_the_cap(#[case] rail: RailUnderTes
              other parse failure: {message}"
         ),
         other => panic!("expected Malformed naming the body cap, got {other:?}"),
+    }
+}
+
+// --------------------------------------------------------------------------
+// Account-holder lookups (issue #47).
+//
+// Five cases, each parameterised over both rails out of ONE body. Nothing
+// below branches on `RailUnderTest`: the branch is
+// `capabilities().supports_account_holder_lookup`, a capability *value*, so
+// "Orange has no such API" is asserted rather than skipped, and a third rail
+// added tomorrow is covered by declaring the flag and adding one mappings
+// file. The pattern is exactly the one
+// `a_rail_without_the_refund_capability_answers_unsupported` already sets.
+// --------------------------------------------------------------------------
+
+/// Asserts the shared refusal a rail without the capability must produce,
+/// and answers whether the caller should go on.
+///
+/// A helper rather than a copied four-line `if` in each case below, because
+/// the refusal is the *same* contract every time and a copy is what
+/// eventually says `NotImplemented` in one case and `Unsupported` in
+/// another. Returns `true` when this rail does claim the capability and the
+/// case's real assertions should run.
+///
+/// `Unsupported` and never `NotImplemented`: there is nothing for Orange to
+/// build. Its Web Payment product documents no account-holder API, so the
+/// capability is a permanent answer the core branches on (ADR-0002), and a
+/// `NotImplemented` token would claim work someone owes.
+async fn claims_account_holder_lookup(rail: &Rail) -> bool {
+    if rail.adapter.capabilities().supports_account_holder_lookup {
+        return true;
+    }
+    let outcome = rail
+        .adapter
+        .account_holder_name(MSISDN_REGISTERED, &rail.config)
+        .await;
+    assert!(
+        matches!(outcome, Err(ProviderError::Unsupported)),
+        "{}: a rail with no account-holder API must answer Unsupported, not NotImplemented \
+         and certainly not Ok(None): {outcome:?}",
+        rail.adapter.code(),
+    );
+    false
+}
+
+/// A number the rail knows comes back as a **name**, projected out of
+/// whatever else the rail's body carried.
+///
+/// The `Ok(Some(..))` half of the three-way answer. The stub sends MTN's
+/// documented six-field body (`wiremock/mtn/mappings/basicuserinfo.json`),
+/// four fields of which have no home in the adapter's wire type — so a rail
+/// that grew a seventh field would be dropped by the same rule, without an
+/// edit here.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn an_account_holder_lookup_returns_a_name_and_nothing_else(#[case] rail: RailUnderTest) {
+    let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
+    if !claims_account_holder_lookup(&rail).await {
+        return;
+    }
+
+    let holder = rail
+        .adapter
+        .account_holder_name(MSISDN_REGISTERED, &rail.config)
+        .await
+        .expect("a number the rail knows is an answer, not a failure")
+        .expect("and the rail named its holder");
+
+    assert_eq!(holder.name(), REGISTERED_HOLDER_NAME);
+
+    // The struct has one field and its `Debug` redacts it, so there is no
+    // rendering in which a birthdate, a locale or a gender could appear.
+    // Asserted rather than assumed: this is the whole privacy claim.
+    let rendered = format!("{holder:?}");
+    for dropped in ["1970-01-01", "fr_CM", "MALE", "ACTIVE"] {
+        assert!(
+            !rendered.contains(dropped),
+            "{}: {dropped} survived the projection into {rendered}",
+            rail.adapter.code(),
+        );
+    }
+    assert!(
+        !rendered.contains(REGISTERED_HOLDER_NAME),
+        "{}: AccountHolder's Debug must redact the name, so a `{{:?}}` cannot leak it: \
+         {rendered}",
+        rail.adapter.code(),
+    );
+}
+
+/// A number the rail has no record of is `Ok(None)` — **an answer**, not an
+/// error, and not a fabricated name.
+///
+/// The distinction the whole method exists for: `Ok(None)` is a fact about
+/// the *number*, which a caller may act on (issue #47's nominated-refund
+/// name match refuses on it). Every other non-answer is an `Err`, and
+/// [`a_lookup_that_cannot_reach_the_rail_is_never_reported_as_a_missing_holder`]
+/// is the case that pins the other side of it.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn a_number_the_rail_has_no_record_of_is_not_an_error(#[case] rail: RailUnderTest) {
+    let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
+    if !claims_account_holder_lookup(&rail).await {
+        return;
+    }
+
+    let outcome = rail
+        .adapter
+        .account_holder_name(MSISDN_UNREGISTERED, &rail.config)
+        .await;
+
+    match outcome {
+        Ok(None) => {}
+        Ok(Some(holder)) => panic!(
+            "{}: the rail has no record of {MSISDN_UNREGISTERED} and the adapter named \
+             somebody anyway: {holder:?}",
+            rail.adapter.code(),
+        ),
+        Err(error) => panic!(
+            "{}: 'no such holder' is an answer, not a failure — a caller cannot tell this \
+             apart from an outage if it arrives as an error: {error:?}",
+            rail.adapter.code(),
+        ),
+    }
+}
+
+/// A rail that cannot be *asked* is an error carrying a readable source
+/// chain — never `Ok(None)`.
+///
+/// # Why this is the sharp one
+///
+/// `Ok(None)` reaches issue #47's caller as "this number is not registered",
+/// which refuses a buyer's nominated refund destination on the strength of a
+/// lookup that never happened. Reported honestly as a transport failure the
+/// same caller refuses too — but a support ticket about it says "vpay could
+/// not reach MTN" instead of "your account does not exist", and only one of
+/// those two is fixable.
+///
+/// Steered by a **timeout** rather than a 503 on purpose: a rail that
+/// answered badly produces a `Transport` with no `source`, while a deadline
+/// that fires produces one carrying the `reqwest` error, and the assertion
+/// below walks it with [`vpay_core::error::source_chain`]. `reqwest`'s own
+/// `Display` for a timeout stops at "error sending request for url (…)" —
+/// the word *timeout* is one link further down, which is exactly the
+/// diagnosis an operator needs and exactly what flattening the error into a
+/// string throws away.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn a_lookup_that_cannot_reach_the_rail_is_never_reported_as_a_missing_holder(
+    #[case] rail: RailUnderTest,
+) {
+    use vpay_core::{Category, Classify as _};
+
+    let rail = start(rail, Credentials::Valid, SHORT_REQUEST_TIMEOUT).await;
+    if !claims_account_holder_lookup(&rail).await {
+        return;
+    }
+
+    let error = rail
+        .adapter
+        .account_holder_name(MSISDN_SLOW, &rail.config)
+        .await
+        .expect_err("a deadline that fires is a failure, and must not be Ok(None)");
+
+    assert!(
+        matches!(error, ProviderError::Transport { .. }),
+        "{}: a rail we could not finish talking to is a Transport error: {error:?}",
+        rail.adapter.code(),
+    );
+    // `Category::Rail` is what makes the `/v1` boundary answer 502 rather
+    // than a 200 with nulls — the derivation ADR-0011 puts in one place.
+    assert_eq!(error.category(), Category::Rail);
+
+    let chain = vpay_core::error::source_chain(&error);
+    assert!(
+        !chain.is_empty(),
+        "{}: the reqwest error must stay reachable through source(), not be flattened into \
+         the message: {error} / chain {chain:?}",
+        rail.adapter.code(),
+    );
+}
+
+/// A lookup body past the cap is refused at the cap, naming it.
+///
+/// The same bound `an_oversized_rail_body_is_refused_at_the_cap` proves for
+/// a status query, on the one endpoint a **merchant** can provoke directly:
+/// `GET /v1/account_holders` turns one inbound request into one rail call,
+/// so without the bound the rail would choose how much memory an
+/// unauthenticated-to-it peer allocates, once per request rather than once
+/// per charge.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn an_oversized_account_holder_body_is_refused_at_the_cap(#[case] rail: RailUnderTest) {
+    let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
+    if !claims_account_holder_lookup(&rail).await {
+        return;
+    }
+
+    let error = rail
+        .adapter
+        .account_holder_name(MSISDN_HUGE, &rail.config)
+        .await
+        .expect_err("a body past the cap must not be buffered and parsed");
+
+    let message = error.to_string();
+    match &error {
+        ProviderError::Malformed { .. } => assert!(
+            message.contains(&vpay_provider::http::MAX_RAIL_BODY_BYTES.to_string()),
+            "the refusal must name the cap it hit: {message}"
+        ),
+        other => panic!("expected Malformed naming the body cap, got {other:?}"),
+    }
+}
+
+/// **The privacy case.** A rail body full of a real person's details yields
+/// a name, and puts none of it — the name included — in a log line.
+///
+/// # Why the assertion is on captured output and not on the call site
+///
+/// "We did not log it" is only checkable by looking at what was logged.
+/// A test that asserted the adapter calls no `tracing` macro would pass the
+/// day someone logged the body from a different macro, from a helper, or
+/// from `reqwest` itself; a scoped subscriber over the call is the only
+/// witness that cannot be talked around. `with_max_level(TRACE)` so a
+/// *negative* assertion cannot pass because an event was filtered out, and
+/// `with_ansi(false)` so a colour escape cannot sit between a field name and
+/// its value and defeat a `contains`.
+///
+/// # The two halves
+///
+/// The name must reach the caller — the route needs it — and must not reach
+/// the log. Everything else in the body must reach neither. The stub sends
+/// five fields MTN does not even document (`sub`, `email`, `address`,
+/// `national_id`, `phone_number`) precisely so the projection is proven
+/// against a rail that changed, not only against the one that was written
+/// down.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing(
+    #[case] rail: RailUnderTest,
+) {
+    let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
+    if !claims_account_holder_lookup(&rail).await {
+        return;
+    }
+
+    let sink = CapturedLog::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(sink.clone())
+        .with_ansi(false)
+        .with_max_level(tracing::Level::TRACE)
+        .finish();
+
+    // `set_default` and not `with_default`: the call is `async`, and a
+    // closure returning a future would install the subscriber only while the
+    // future is *built*. The guard has to be held across the `.await`.
+    let guard = tracing::subscriber::set_default(subscriber);
+    let outcome = rail
+        .adapter
+        .account_holder_name(MSISDN_FULL_OF_PII, &rail.config)
+        .await;
+    drop(guard);
+
+    let holder = outcome
+        .expect("a number the rail knows is an answer")
+        .expect("and the rail named its holder");
+    assert_eq!(
+        holder.name(),
+        PII_HOLDER_NAME,
+        "{}: the name is the one thing this call is for",
+        rail.adapter.code(),
+    );
+
+    for leaked in PERSONAL_DATA_THE_RAIL_SENDS {
+        assert!(
+            !format!("{holder:?}").contains(leaked),
+            "{}: {leaked} reached the returned value",
+            rail.adapter.code(),
+        );
+    }
+
+    let logged = sink.contents();
+    assert!(
+        !logged.is_empty(),
+        "{}: nothing was captured at all, so every assertion below would pass vacuously — \
+         the adapter logs at least one debug line per rail call",
+        rail.adapter.code(),
+    );
+    for leaked in PERSONAL_DATA_THE_RAIL_SENDS {
+        assert!(
+            !logged.contains(leaked),
+            "{}: {leaked} reached a log line:\n{logged}",
+            rail.adapter.code(),
+        );
+    }
+    assert!(
+        !logged.contains(PII_HOLDER_NAME),
+        "{}: the holder's NAME reached a log line — the one thing \
+         docs/flows/account-holder-lookup.md forbids outright:\n{logged}",
+        rail.adapter.code(),
+    );
+    // **Each half on its own**, because the joined form is one the rail
+    // never sends and a leak therefore never takes. See
+    // `PII_HOLDER_NAME_HALVES` for the mutation that got past the assertion
+    // above.
+    for half in PII_HOLDER_NAME_HALVES {
+        assert!(
+            !logged.contains(half),
+            "{}: `{half}` — half of the holder's name, which is the form the rail sends \
+             it in — reached a log line:\n{logged}",
+            rail.adapter.code(),
+        );
+    }
+    assert!(
+        !logged.contains(MSISDN_FULL_OF_PII),
+        "{}: the payer's number reached a log line unmasked; only `/v1`'s masked form may \
+         be logged:\n{logged}",
+        rail.adapter.code(),
+    );
+}
+
+/// An in-memory `tracing` sink, for the case above.
+///
+/// The same shape `vpay_api`'s `test_log` module uses, and it is duplicated
+/// rather than shared for a structural reason: that one is `#[cfg(test)]`
+/// inside `vpay-api`, which is a *library*, so nothing outside that crate's
+/// own test build can name it. Lifting it into `vpay-testkit` was the
+/// alternative and is worse — the testkit is a dependency of shipping
+/// crates' dev-builds and this is nine lines of `io::Write`.
+///
+/// The `Arc<Mutex<..>>` is not incidental: `MakeWriter` hands out a fresh
+/// writer per event, so the buffer has to be shared by handle for the caller
+/// to read back what every event wrote.
+#[derive(Clone, Default)]
+struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl CapturedLog {
+    /// Everything written so far, lossily decoded. A poisoned mutex is read
+    /// through rather than treated as a failure: a panic on another thread
+    /// is a test failure whose own assertion reports it far better than
+    /// "poisoned mutex" would, and losing the captured output at that moment
+    /// would hide the log line that explains it.
+    fn contents(&self) -> String {
+        self.0.lock().map_or_else(
+            |poisoned| String::from_utf8_lossy(&poisoned.into_inner()).into_owned(),
+            |bytes| String::from_utf8_lossy(&bytes).into_owned(),
+        )
+    }
+}
+
+impl std::io::Write for CapturedLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self.0.lock() {
+            Ok(mut sink) => sink.write(buf),
+            Err(poisoned) => poisoned.into_inner().write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
     }
 }
 

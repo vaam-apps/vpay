@@ -1,0 +1,266 @@
+{
+  "mappings": [
+    {
+      "name": "basicuserinfo: the documented body, for a number the rail knows",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/accountholder/msisdn/237600000200/basicuserinfo"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "given_name": "David",
+          "family_name": "Mbarga",
+          "birthdate": "1970-01-01",
+          "locale": "fr_CM",
+          "gender": "MALE",
+          "status": "ACTIVE"
+        }
+      },
+      "metadata": {
+        "why": [
+          "MTN's DOCUMENTED 200 for GetBasicUserinfo, transcribed field for field from the",
+          "operation's own OpenAPI components on the MoMo developer portal, retrieved",
+          "2026-09-05 (the citation, with the exact URL, is in",
+          "docs/plans/issue-47-notes/impl.md and docs/flows/account-holder-lookup.md).",
+          "Six fields: given_name, family_name, birthdate, locale, gender, status.",
+          "",
+          "FOUR OF THE SIX ARE HERE PRECISELY SO THEY CAN BE PROVEN TO DIE.",
+          "vpay_adapter_mtn_momo::wire::BasicUserInfo deserialises the two name fields and",
+          "has no home for the rest, so serde drops them at the first point the bytes",
+          "become a Rust value. A stub that sent only the two names would make",
+          "`an_account_holder_lookup_returns_a_name_and_nothing_else` pass whether or not",
+          "the projection existed -- which is the shape of a test that proves nothing.",
+          "",
+          "THE PATH IS LOWER-CASE `msisdn`, and MTN's own portal declares the",
+          "accountHolderIdType enum UPPER-case (MSISDN | Email | Alias | ID) while every",
+          "published example spells the segment lower-case. This mapping pins EXACTLY what",
+          "the adapter sends (vpay_adapter_mtn_momo::ACCOUNT_HOLDER_ID_TYPE), so a change",
+          "of case is a 404 here rather than a silent difference against the real sandbox --",
+          "which vpay has never called. See docs/flows/account-holder-lookup.md, 'unverified",
+          "against the real rail'.",
+          "",
+          "237600000200 is in the same 2376000000xx documentation block every other MSISDN",
+          "in this directory comes from, and is DIGITS ONLY: `/v1/account_holders` validates",
+          "Cameroon E.164 server-side, so a hex-lettered steering number of the kind",
+          "requesttopay.json uses could not reach this endpoint from the API at all."
+        ]
+      }
+    },
+    {
+      "name": "basicuserinfo: a number the rail has no record of",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/accountholder/msisdn/237600000404/basicuserinfo"
+      },
+      "response": {
+        "status": 404,
+        "jsonBody": {
+          "code": "NOT_FOUND",
+          "message": "Requested resource was not found"
+        }
+      },
+      "metadata": {
+        "why": [
+          "The row the whole port method exists for: 404 -> Ok(None), 'the rail has no",
+          "record', which a caller may act on as a fact about the NUMBER. Everything else",
+          "that is not a 200 is an Err, because reporting a lookup that did not happen as",
+          "Ok(None) would tell the caller a real account is unregistered.",
+          "",
+          "AN ASSUMPTION, STATED. MTN documents NO 404 for GetBasicUserinfo -- the portal",
+          "lists 200, 401 and 500 for it, where RequesttoPayTransactionStatus documents",
+          "'404 Resource not found' explicitly. This mapping and the adapter's arm are",
+          "therefore a deliberate assumption rather than a transcription: a 404 is the only",
+          "status a REST resource has for 'no such thing', and the assumption is safe in the",
+          "direction that matters -- if MTN never sends one the arm is dead code, and if it",
+          "sends one for another reason the caller's fail-closed rule still refuses. The",
+          "body is spelled the way MTN's other not-found bodies are; nothing reads it.",
+          "",
+          "`a_number_the_rail_has_no_record_of_is_not_an_error` is what this serves."
+        ]
+      }
+    },
+    {
+      "name": "basicuserinfo: answered, but far too slowly",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/accountholder/msisdn/237600000560/basicuserinfo"
+      },
+      "response": {
+        "status": 200,
+        "fixedDelayMilliseconds": 2000,
+        "jsonBody": {
+          "given_name": "David",
+          "family_name": "Mbarga"
+        }
+      },
+      "metadata": {
+        "why": [
+          "Two orders of magnitude above the suite's SHORT_REQUEST_TIMEOUT (100 ms), so the",
+          "assertion is about ProviderConfig::request_timeout firing and not about a slow CI",
+          "machine -- the same shape requesttopay-status.json's ...0560 mapping has, and the",
+          "same suffix, so the two read together.",
+          "",
+          "A TIMEOUT AND NOT A 503, deliberately: a 503 produces a ProviderError::Transport",
+          "with no `source` (the rail answered, badly), whereas a deadline that fires",
+          "produces one carrying the reqwest error, which is what",
+          "`a_lookup_that_cannot_reach_the_rail_is_never_reported_as_a_missing_holder`",
+          "walks with vpay_core::error::source_chain. Reporting an unreachable rail as",
+          "Ok(None) is the single worst thing this method could do, and a source chain an",
+          "operator can read is how the real failure survives to a log.",
+          "",
+          "The body is a VALID, NAMED holder on purpose: if the deadline were not applied",
+          "the adapter would parse it and answer Ok(Some(..)), so the case cannot pass for",
+          "the wrong reason."
+        ]
+      }
+    },
+    {
+      "name": "basicuserinfo: a body far larger than any answer this rail documents",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/accountholder/msisdn/237600000616/basicuserinfo"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"given_name\":\"David\",\"family_name\":\"Mbarga\",\"padding\":\"{{randomValue length=300000 type='ALPHANUMERIC'}}\"}"
+      },
+      "metadata": {
+        "why": [
+          "300 KB, comfortably past vpay_provider::http::MAX_RAIL_BODY_BYTES (256 KiB) --",
+          "the same shape requesttopay-status.json's ...0b16 mapping has, for the same",
+          "reason: Response::text()/bytes() read to end of stream, so without the bound the",
+          "peer chooses how much memory a request handler allocates. This endpoint is",
+          "reachable from a MERCHANT-facing GET, so the peer would be choosing it once per",
+          "inbound request rather than once per charge.",
+          "",
+          "The body is a valid, NAMED holder on purpose: if the bound were removed the",
+          "adapter would parse it and answer Ok(Some(..)), so the case cannot pass for the",
+          "wrong reason. Padded via --global-response-templating rather than a 300 KB",
+          "fixture file, which is not a thing to check into a repository."
+        ]
+      }
+    },
+    {
+      "name": "basicuserinfo: a body carrying far more personal data than a name",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/accountholder/msisdn/237600000700/basicuserinfo"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "given_name": "Amina",
+          "family_name": "Nkeng",
+          "birthdate": "1988-04-17",
+          "locale": "en_CM",
+          "gender": "FEMALE",
+          "status": "ACTIVE",
+          "sub": "mtn-customer-9f2c41",
+          "email": "amina.nkeng@example.test",
+          "address": "12 Avenue Kennedy, Yaounde",
+          "national_id": "CM-ID-0099887766",
+          "phone_number": "+237600000700"
+        }
+      },
+      "metadata": {
+        "why": [
+          "THE PRIVACY CASE. Issue #47 section 3: this route returns a real person's name,",
+          "and MTN's body carries more than a name. The five fields below the documented six",
+          "-- sub, email, address, national_id, phone_number -- are NOT in MTN's published",
+          "schema; they are here on purpose, because the projection must survive a rail that",
+          "starts sending a field nobody planned for. serde drops an unknown field by",
+          "default, so a struct that models two fields drops eleven-minus-two whether or not",
+          "anyone remembered them.",
+          "",
+          "`an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing` asserts",
+          "both halves: that the returned value carries the NAME and none of the rest, and",
+          "that none of the rest -- nor the name, nor the number -- appears in the tracing",
+          "output captured around the call. The second half is the one a code change can",
+          "silently break: a `tracing::debug!(?body)` added to the adapter for debugging",
+          "would put every one of these strings in an operator's log, and nothing else in",
+          "this repository would notice.",
+          "",
+          "A DIFFERENT NAME from the 237600000200 mapping's David Mbarga, so a test that",
+          "searched for the wrong holder's name cannot pass by accident."
+        ]
+      }
+    },
+    {
+      "name": "basicuserinfo: demo — a number registered to a named holder",
+      "priority": 4,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/accountholder/msisdn/237600000100/basicuserinfo"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "given_name": "David",
+          "family_name": "Mbarga",
+          "birthdate": "1970-01-01",
+          "locale": "fr_CM",
+          "gender": "MALE",
+          "status": "ACTIVE"
+        }
+      },
+      "metadata": {
+        "why": [
+          "THE DEMO PAIR, keyed by MSISDN so `just demo` can show both answers of",
+          "GET /v1/account_holders against a stack it has already brought up.",
+          "",
+          "237600000100 is the digits-only settling number the demo and",
+          "`a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin` already use for a",
+          "payment that succeeds (see demo-outcomes.json), so the walkthrough can show one",
+          "number that both pays and has a name -- which is what a merchant's",
+          "nominated-destination check actually looks at. It steers nothing here: this is a",
+          "different URL space from /collection/v1_0/requesttopay, matched by exact path, so",
+          "it cannot interact with any scenario in this directory.",
+          "",
+          "Priority 4 rather than 1 only to sit alongside the other demo mappings; nothing",
+          "competes for this path.",
+          "",
+          "Its not-found twin is the next mapping. The two together are what let the demo",
+          "print 'verified: true, name: ...' and 'verified: false, name: null' from the same",
+          "route -- the distinction issue #47 exists to preserve."
+        ]
+      }
+    },
+    {
+      "name": "basicuserinfo: demo — a number the rail has never seen",
+      "priority": 4,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/accountholder/msisdn/237600000199/basicuserinfo"
+      },
+      "response": {
+        "status": 404,
+        "jsonBody": {
+          "code": "NOT_FOUND",
+          "message": "Requested resource was not found"
+        }
+      },
+      "metadata": {
+        "why": [
+          "The demo's not-found half. 237600000199 steers nothing else in this directory --",
+          "it is not one of the 100/101/102 outcome numbers and not one of the hex family --",
+          "so it exists only to be a number with no holder.",
+          "",
+          "It answers 404, which the adapter maps to Ok(None) and the route renders as",
+          "`{ name: null, verified: false }` with HTTP 200. A demo that showed the same",
+          "output for 'no such holder' and 'we could not ask' would be demonstrating the",
+          "opposite of what this route is for; see this file's not-found mapping above for",
+          "why the 404 itself is an assumption rather than a transcription."
+        ]
+      }
+    }
+  ]
+}

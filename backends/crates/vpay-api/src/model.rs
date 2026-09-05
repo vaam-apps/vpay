@@ -75,6 +75,16 @@ object_tag!(
     "event"
 );
 object_tag!(
+    /// The `"account_holder"` discriminator.
+    ///
+    /// A resource of its own rather than an overloaded Stripe `customer`,
+    /// per issue #47's own reasoning: a `customer` is a stored,
+    /// merchant-owned object with a lifecycle, and this is a stateless rail
+    /// query that creates nothing.
+    AccountHolderTag,
+    "account_holder"
+);
+object_tag!(
     /// The `"checkout.session"` discriminator.
     ///
     /// Stripe's own spelling, dot and all, so a merchant switching an
@@ -199,6 +209,79 @@ pub struct LastPaymentErrorObject {
     pub code: String,
     /// The rail's failure, in words, as `docs/flows/failures.md` maps it.
     pub message: String,
+}
+
+/// An `account_holder`: whose mobile-money account a number is, or the fact
+/// that the rail has no record of it (issue #47).
+///
+/// Four keys, always all four — this module's own rule, and here it is
+/// load-bearing twice over: both SDKs model `name` as a *required, nullable*
+/// field, and `name: null` is a **meaningful answer** rather than an absence
+/// ("the rail does not know this number"), which an omitted key could not
+/// express.
+///
+/// # There is no row behind this object
+///
+/// Every other type in this module is rendered from a `vpay_db` row. This
+/// one is rendered from a rail's answer and is never stored — see
+/// `crate::v1::account_holders`' module header for what that buys and what
+/// it costs. It is why there is no `TryFrom<..Row>` impl beside it and no
+/// `id`: there is nothing to address later.
+///
+/// # `livemode` is deliberately absent
+///
+/// [`PaymentIntentObject::livemode`] is read off the row, so an object
+/// created under one setting cannot start describing itself differently.
+/// With no row, the only available value would be the deployment's current
+/// configuration read at render time — the same field name carrying a
+/// weaker guarantee. Issue #47's proposal names four keys and this renders
+/// those four; `docs/flows/account-holder-lookup.md` records it as a
+/// decision rather than settling it here.
+///
+/// ```
+/// use serde_json::json;
+/// use vpay_api::model::{AccountHolderObject, AccountHolderTag};
+///
+/// let unknown = AccountHolderObject {
+///     object: AccountHolderTag,
+///     payment_method_type: "mtn_momo".to_owned(),
+///     name: None,
+///     verified: false,
+/// };
+/// assert_eq!(
+///     serde_json::to_value(&unknown).expect("a wire DTO always serialises"),
+///     json!({
+///         "object": "account_holder",
+///         "payment_method_type": "mtn_momo",
+///         "name": null,
+///         "verified": false,
+///     }),
+/// );
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AccountHolderObject {
+    /// Always `"account_holder"`.
+    pub object: AccountHolderTag,
+    /// The rail the question was put to, echoed back — the same
+    /// `providers.code` vocabulary `payment_method_types` uses.
+    pub payment_method_type: String,
+    /// The registered holder's name, or `null` when the rail has no record.
+    ///
+    /// **Never a fabricated value, and never a rail that could not be
+    /// asked.** `null` means one specific thing: the rail answered and does
+    /// not know this number. An unreachable rail is a classified error
+    /// (ADR-0011), because a `200` with nulls would tell a caller a real
+    /// account is unregistered — which is the anti-fraud control issue #47
+    /// is about, inverted.
+    pub name: Option<String>,
+    /// `true` exactly when [`Self::name`] is present.
+    ///
+    /// Redundant with `name != null`, deliberately: it is what an SDK
+    /// branches on, and it survives a client that models `name` loosely. It
+    /// is **not** a claim that anything was cryptographically verified — it
+    /// says the rail named a holder.
+    pub verified: bool,
 }
 
 /// A `payment_intent`, exactly as `docs/api/README.md`'s object table and

@@ -4471,6 +4471,8 @@ dependencies = [
  "rstest",
  "testcontainers",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
  "vpay-adapter-mtn-momo",
  "vpay-adapter-orange-money",

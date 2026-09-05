@@ -15,7 +15,8 @@ use serde::de::DeserializeOwned;
 use crate::client::Client;
 use crate::form::FormValue;
 use crate::model::{
-    Balance, CheckoutSession, CheckoutUiMode, Event, List, PaymentIntent, PaymentMethodType, Refund,
+    AccountHolder, Balance, CheckoutSession, CheckoutUiMode, Event, List, PaymentIntent,
+    PaymentMethodType, Refund,
 };
 use crate::validate::check_amount;
 
@@ -420,6 +421,59 @@ impl ListEventsParams {
     }
 }
 
+/// `GET /v1/account_holders` request fields (issue #47).
+///
+/// Both are required by the server, and both are plain owned values here
+/// rather than `Option`s — unlike every list-params type in this file —
+/// because there is no page to fetch without them: a lookup with no number
+/// or no rail is not a narrower query, it is not a query. A caller who has
+/// neither has nothing to ask.
+#[derive(Debug, Clone)]
+pub struct RetrieveAccountHolderParams {
+    /// The mobile-money number, in any of the three shapes vpay accepts:
+    /// `+2376XXXXXXXX`, `2376XXXXXXXX` or the national `6XXXXXXXX`.
+    ///
+    /// Not validated here, deliberately, and this is the one place this SDK
+    /// departs from the shape its neighbours take with `amount`
+    /// ([`crate::validate::check_amount`], which refuses locally). An
+    /// `amount` rule is arithmetic and cannot change; a phone-number rule is
+    /// a *market* rule that vpay owns and may widen — an SDK copy of it
+    /// would refuse a number a later server version accepts, offline, with
+    /// no way for the merchant to override it. The server answers `400`
+    /// naming `msisdn`, which is the same information one round trip later.
+    pub msisdn: String,
+    /// Which rail to ask. Closed on the request side, exactly as
+    /// `payment_method_types` is on a create: a rail this SDK version does
+    /// not know is a rail it cannot spell.
+    ///
+    /// A rail with no account-holder API answers `400` naming
+    /// `payment_method_type`; that is a property of the *deployment*, not of
+    /// this enum, so it is not modelled here.
+    pub payment_method_type: PaymentMethodType,
+}
+
+impl RetrieveAccountHolderParams {
+    /// The two fields, for a caller who would otherwise write a struct
+    /// literal with a `.to_owned()` in it.
+    #[must_use]
+    pub fn new(msisdn: impl Into<String>, payment_method_type: PaymentMethodType) -> Self {
+        Self {
+            msisdn: msisdn.into(),
+            payment_method_type,
+        }
+    }
+
+    pub(crate) fn to_form(&self) -> FormValue {
+        FormValue::Object(vec![
+            ("msisdn".to_string(), FormValue::from(self.msisdn.as_str())),
+            (
+                "payment_method_type".to_string(),
+                FormValue::from(self.payment_method_type.as_wire_str()),
+            ),
+        ])
+    }
+}
+
 fn query_string(form: &FormValue) -> Option<String> {
     let encoded = crate::form::encode_form(form);
     if encoded.is_empty() {
@@ -673,6 +727,43 @@ impl EventsResource<'_> {
     /// See [`enum@crate::Error`].
     pub async fn list(&self, params: ListEventsParams) -> Result<List<Event>, crate::Error> {
         get(self.client, "/events", query_string(&params.to_form())).await
+    }
+}
+
+/// `client.account_holders()` — see [`crate::Client::account_holders`].
+#[derive(Debug, Clone, Copy)]
+pub struct AccountHoldersResource<'a> {
+    pub(crate) client: &'a Client,
+}
+
+impl AccountHoldersResource<'_> {
+    /// `GET /v1/account_holders` — whose mobile-money account a number is.
+    ///
+    /// # Reading the answer
+    ///
+    /// [`AccountHolder::name`] is `None` when **the rail has no record** of
+    /// the number. It is never `None` because vpay could not ask: that case
+    /// is an [`enum@crate::Error`] — a `502` for a rail that could not be
+    /// reached, a `400` for a rail with no such API — so a caller matching a
+    /// name can tell "not registered" from "not checked". Both are refusals,
+    /// and only one of them is the payer's to fix.
+    ///
+    /// The value is a third party's name. It is returned to the caller and
+    /// deliberately never logged, stored or cached by vpay; an integrator
+    /// holding it inherits the same obligation.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`].
+    pub async fn retrieve(
+        &self,
+        params: RetrieveAccountHolderParams,
+    ) -> Result<AccountHolder, crate::Error> {
+        get(
+            self.client,
+            "/account_holders",
+            query_string(&params.to_form()),
+        )
+        .await
     }
 }
 

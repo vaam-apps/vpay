@@ -53,6 +53,26 @@ pub struct Capabilities {
     pub supports_partial_refunds: bool,
     pub delivers_callbacks: bool,
     pub requires_ip_allowlist: bool,
+    /// Whether this rail exposes a registered-account-holder name for a
+    /// payer reference at all.
+    ///
+    /// The flag the core branches on so that refusing a lookup never needs
+    /// `if provider == "…"` (ADR-0002), exactly as `supports_refunds` does.
+    /// It is a statement about the *rail*, not about vpay: a rail that has
+    /// the API but whose adapter has not written it declares `true` and
+    /// overrides [`ProviderAdapter::account_holder_name`] with its own
+    /// [`ProviderError::NotImplemented`] token, so `verify-status` sees the
+    /// gap rather than `Unsupported` hiding it as a fact about MTN.
+    ///
+    /// Deliberately **not** persisted: unlike the four flags above it has no
+    /// column in `providers` (migration `0002`) and no field on
+    /// `vpay_db::ProviderSeed`. Nothing reads a capability out of that table
+    /// — `vpay_api` resolves an adapter in-process and asks it — so a column
+    /// would be a second copy of an answer the linked code already owns, and
+    /// a migration on the strength of it would claim a durability this
+    /// capability does not need. `docs/flows/account-holder-lookup.md`
+    /// records the decision.
+    pub supports_account_holder_lookup: bool,
 }
 
 impl Capabilities {
@@ -135,6 +155,85 @@ pub enum ChargeStatus {
     /// The rail has no record. Never on its own grounds to fail a charge —
     /// see `docs/flows/crash-safety.md`.
     NotFound,
+}
+
+/// The registered holder of a payer reference on a rail — **a name, and
+/// nothing else**.
+///
+/// # Why a struct with one field, and why that field is all there is
+///
+/// MTN's `basicuserinfo` answers an OIDC-shaped body: `given_name`,
+/// `family_name`, `birthdate`, `locale`, `gender`, `status`
+/// (`docs/flows/adapter-mtn-momo.md`). Every field but the two names is
+/// personal data vpay has no use for, so the *port* is where the projection
+/// happens: an adapter that deserialised the whole body into a type this
+/// crate exposed would put a third party's date of birth one `{:?}` away
+/// from a log line, and no amount of care at the call sites would take it
+/// back out. Returning `String` would have said the same thing, but a named
+/// type is what makes "we return a name" a fact a reader of the trait can
+/// see, and gives the redacting [`Debug`] below somewhere to live.
+///
+/// The one field is private, so the only way to read it is
+/// [`AccountHolder::name`] — a call site that wants the name has to ask for
+/// it by name, which is the point.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AccountHolder {
+    name: String,
+}
+
+/// Redacts the name, for [`ProviderConfig`]'s reason: a value that lives
+/// inside a `Result` a handler may log is one `{:?}` from a log line, and a
+/// third party's name in a log is exactly what
+/// `docs/flows/account-holder-lookup.md` forbids.
+///
+/// This is belt, not braces: the route logs no name at all, and
+/// `an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing`
+/// in the conformance suite is
+/// what proves it. This impl is what stops a *future* `tracing::debug!(?holder)`
+/// from silently undoing that.
+impl std::fmt::Debug for AccountHolder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AccountHolder")
+            .field("name", &"[redacted]")
+            .finish()
+    }
+}
+
+impl AccountHolder {
+    /// The registered name, as the rail spells it.
+    ///
+    /// # Errors
+    ///
+    /// None — but the caller inherits an obligation the type cannot enforce:
+    /// this value is a third party's name and must not be logged, stored or
+    /// counted as a metric label.
+    ///
+    /// ```
+    /// use vpay_provider::AccountHolder;
+    ///
+    /// let holder = AccountHolder::new("David Mbarga");
+    /// assert_eq!(holder.name(), "David Mbarga");
+    /// // Debug redacts: a `{:?}` of a holder — or of anything holding one,
+    /// // such as an `Ok(Some(..))` — can never print the name.
+    /// assert_eq!(format!("{holder:?}"), r#"AccountHolder { name: "[redacted]" }"#);
+    /// assert!(!format!("{:?}", Some(holder)).contains("David"));
+    /// ```
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Builds one from a name an adapter has already projected out of its
+    /// rail's body.
+    ///
+    /// Public because an adapter is a separate crate; there is deliberately
+    /// no constructor taking a whole rail response, so the projection
+    /// happens in the adapter that knows the rail's shape and the discarded
+    /// fields never cross this boundary at all.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
 }
 
 /// Identifiers extracted from a callback. Deliberately *not* a status: the core
@@ -558,14 +657,14 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// credential to read may never raise [`ProviderError::Config`], but no
 /// adapter may raise a variant this table does not give it.
 ///
-/// | Variant | `submit` | `query_status` | `parse_callback` | `refund` | what it means |
-/// |---|:-:|:-:|:-:|:-:|---|
-/// | [`Config`](ProviderError::Config) | ✓ | ✓ | | ✓ | a credential, setting or URL this deployment did not supply, or supplied unusably. Stops the poll ladder: no retry against the rail can fix it |
-/// | [`Rejected`](ProviderError::Rejected) | ✓ | ✓ | | ✓ | the rail *decided*. On `submit`/`refund` that includes a payer decline; on `query_status` only the rail refusing **our** partner credentials, because a declined charge is `Ok(`[`ChargeStatus::Failed`]`)`, never an error |
-/// | [`Transport`](ProviderError::Transport) | ✓ | ✓ | | ✓ | the rail could not be reached or could not be finished with — DNS, TLS, a deadline, a 5xx, a body that failed mid-stream. The charge's fate is **unknown**, which is why the worker resolves it by asking again and a merchant must not re-submit |
-/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. Also an unknown fate, never a decline |
-/// | [`Unsupported`](ProviderError::Unsupported) | | | | ✓ | this rail has no such API, permanently. The core is supposed to have branched on [`Capabilities`] first |
-/// | [`NotImplemented`](ProviderError::NotImplemented) | ✓ | ✓ | ✓ | ✓ | unbuilt work, and it says so rather than fabricating a success. Every token appears in `docs/status.md`, which `cargo xtask verify-status` enforces |
+/// | Variant | `submit` | `query_status` | `parse_callback` | `refund` | `account_holder_name` | what it means |
+/// |---|:-:|:-:|:-:|:-:|:-:|---|
+/// | [`Config`](ProviderError::Config) | ✓ | ✓ | | ✓ | ✓ | a credential, setting or URL this deployment did not supply, or supplied unusably. Stops the poll ladder: no retry against the rail can fix it |
+/// | [`Rejected`](ProviderError::Rejected) | ✓ | ✓ | | ✓ | ✓ | the rail *decided*. On `submit`/`refund` that includes a payer decline; on `query_status` and `account_holder_name` only the rail refusing **our** partner credentials, because neither call carries a payment to decline |
+/// | [`Transport`](ProviderError::Transport) | ✓ | ✓ | | ✓ | ✓ | the rail could not be reached or could not be finished with — DNS, TLS, a deadline, a 5xx, a body that failed mid-stream. The charge's fate is **unknown**, which is why the worker resolves it by asking again and a merchant must not re-submit |
+/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. Also an unknown fate, never a decline |
+/// | [`Unsupported`](ProviderError::Unsupported) | | | | ✓ | ✓ | this rail has no such API, permanently. The core is supposed to have branched on [`Capabilities`] first |
+/// | [`NotImplemented`](ProviderError::NotImplemented) | ✓ | ✓ | ✓ | ✓ | ✓ | unbuilt work, and it says so rather than fabricating a success. Every token appears in `docs/status.md`, which `cargo xtask verify-status` enforces |
 ///
 /// There is deliberately **no** `ProviderError::retryable()`: retry policy is
 /// [`Classify::retry`](vpay_core::Classify::retry) and a second oracle beside
@@ -674,6 +773,57 @@ pub trait ProviderAdapter: Debug + Send + Sync {
         _amount: Money,
         _config: &ProviderConfig,
     ) -> Result<Submitted, ProviderError> {
+        Err(ProviderError::Unsupported)
+    }
+
+    /// The registered account holder's name for `msisdn`, when the rail
+    /// exposes one.
+    ///
+    /// Only called when [`Capabilities::supports_account_holder_lookup`] is
+    /// true. Touches no charge and writes nothing: it is a *stateless* read
+    /// of the rail, and `docs/flows/account-holder-lookup.md` is the policy
+    /// around it — name only, never persisted, never logged.
+    ///
+    /// # The three answers, and why the middle one is the sharp one
+    ///
+    /// * `Ok(Some(holder))` — the rail knows this number and named its
+    ///   holder.
+    /// * `Ok(None)` — **the rail has no record**, and nothing else. It is
+    ///   not "we could not ask", not "the rail was down" and not "we have no
+    ///   credential": every one of those is an `Err`, classified through
+    ///   ADR-0011 so the boundary answers 502/500 rather than a 200 a caller
+    ///   would read as "no such holder".
+    /// * `Err(..)` — see the table below.
+    ///
+    /// The distinction is the whole point of the method. The caller this
+    /// exists for (issue #47) refuses a nominated refund destination whose
+    /// name it cannot match, and it must be able to tell a number that is
+    /// not registered from a lookup that never happened — the first is the
+    /// payer's problem and the second is ours.
+    ///
+    /// # Errors
+    ///
+    /// The default is [`ProviderError::Unsupported`], on exactly
+    /// [`refund`](ProviderAdapter::refund)'s terms: a rail with no
+    /// account-holder API is a *permanent* answer the core branches on via
+    /// the capability, not unbuilt work. An adapter whose rail *does* expose
+    /// one but which has not written it must override this with its own
+    /// [`ProviderError::NotImplemented`] token, so `verify-status` can see
+    /// it and `docs/status.md` must list it.
+    ///
+    /// An implemented lookup raises [`ProviderError::Config`] for a
+    /// credential this deployment did not supply,
+    /// [`ProviderError::Rejected`] when the rail refuses **our** partner
+    /// credentials, [`ProviderError::Transport`] when the rail could not be
+    /// reached or finished with, and [`ProviderError::Malformed`] for an
+    /// answer it cannot act on — including a body past
+    /// [`http::MAX_RAIL_BODY_BYTES`]. Never a decline: there is no payment
+    /// here to decline.
+    async fn account_holder_name(
+        &self,
+        _msisdn: &str,
+        _config: &ProviderConfig,
+    ) -> Result<Option<AccountHolder>, ProviderError> {
         Err(ProviderError::Unsupported)
     }
 }
@@ -811,6 +961,7 @@ mod tests {
             supports_partial_refunds: true,
             delivers_callbacks: true,
             requires_ip_allowlist: false,
+            supports_account_holder_lookup: false,
         };
         assert!(!bad.is_coherent());
     }

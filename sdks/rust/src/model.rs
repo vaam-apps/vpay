@@ -674,6 +674,44 @@ pub struct BalanceEntry {
     pub currency: String,
 }
 
+/// Who a mobile-money number is registered to, or the fact that the rail has
+/// no record of it — `GET /v1/account_holders` (issue #47).
+///
+/// # Reading the two `null`-ish answers apart, and why it matters
+///
+/// A `200` with `name: None` means **the rail answered and does not know
+/// this number**. It does *not* mean "we could not ask": that is an
+/// [`crate::Error`], because vpay refuses to render an object for a rail it
+/// could not reach. A caller matching a nominated refund destination against
+/// a buyer's verified name must refuse on both — but only one of them is the
+/// buyer's problem, and only one of them is worth a support ticket.
+///
+/// A name, and nothing else, by construction: the rail's body carries more
+/// (a birthdate, a locale, a gender) and vpay projects it away before it can
+/// be logged or stored. There is no `id` because nothing is stored to
+/// address later.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountHolder {
+    /// Always `"account_holder"`.
+    pub object: String,
+    /// The rail the question was put to, echoed back.
+    ///
+    /// A `String` and not [`PaymentMethodType`], for
+    /// [`PaymentIntent::payment_method_types`]' reason: the request side is
+    /// closed and the *response* side must stay readable for a rail this SDK
+    /// version predates.
+    pub payment_method_type: String,
+    /// The registered holder's name, or `None` when the rail has no record.
+    pub name: Option<String>,
+    /// `true` exactly when [`Self::name`] is present.
+    ///
+    /// Not a claim that anything was cryptographically verified — it says
+    /// the rail named a holder. Redundant with `name.is_some()` and modelled
+    /// anyway, because it is what the wire carries and what the Node SDK
+    /// exposes.
+    pub verified: bool,
+}
+
 /// A paginated collection, per Stripe's own `list` object shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct List<T> {

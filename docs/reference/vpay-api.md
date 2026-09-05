@@ -1012,6 +1012,85 @@ or a `client_id` is an internal identifier, not a name. The fix for a nameless
 merchant is configuration, and `config/application.yml` says so beside the
 field. The page paints a neutral heading for the absent case.
 
+## The account-holder route (`v1/account_holders.rs`)
+
+`GET /v1/account_holders`, mounted 2026-09-05 for
+[issue #47](https://github.com/vaam-apps/vpay/issues/47).
+[../flows/account-holder-lookup.md](../flows/account-holder-lookup.md) is the
+process and the policy; this section is why the *code* is shaped the way it
+is.
+
+### The handler matches the port's result rather than `?`-ing it
+
+Every other `/v1` handler that reaches a rail writes
+`adapter.submit(..).await?` and lets `ApiError`'s `#[from]` and `Classify`
+do the rest. This one matches, and the reason is the counter: `error` and
+`not_found` are two *different* outcomes on
+`vpay_account_holder_lookups_total`, and a `?` would leave the failure arm
+invisible — "a merchant is asking a rail that is not answering" is exactly the
+rate an operator wants, and it is the one thing a route with no persistence
+leaves no other trace of.
+
+The classification is still not re-decided: the `Err` arm counts, logs a
+masked line, and hands the error to `ApiError` unchanged, which is what
+derives the status (ADR-0011).
+
+### `MerchantScope` is bound and unused
+
+There is nothing to scope: no query runs, no row is read, and the answer is a
+property of the rail. The extractor is bound anyway, because it is what makes
+the *authentication* boundary structural rather than remembered —
+`MerchantScope::from_request_parts` fails closed with a paging 500 when the
+middleware is not mounted, so a refactor that dropped the layer would fail
+here instead of serving an unauthenticated identity lookup on a route that
+returns a stranger's name. It is also the value an audit log would be keyed on
+the day that reserved decision is taken.
+
+### Three refusals, one envelope
+
+An unknown rail, a rail an operator has **disabled**, and a rail whose
+`supports_account_holder_lookup` is false all produce the byte-identical `400`
+naming `payment_method_type` (`unsupported_rail`, one function, asserted by
+`a_disabled_or_unknown_rail_is_the_same_refusal_as_an_incapable_one`).
+Telling them apart would let a merchant enumerate which rails a deployment has
+configured but switched off, and the fix is the same for all three.
+
+It is a `400` and not the `409` `ProviderError::Unsupported` classifies to,
+because the rail is never *called*: ADR-0002 asks the core to branch on the
+capability first, and at that point the wrong thing is the merchant's
+parameter, which is what `param` should name.
+
+### The MSISDN validator is the first server-side copy of that rule
+
+`frontends/apps/checkout/src/lib/msisdn.ts` had been the only implementation
+of "Cameroon E.164, three input spellings, this separator set". The two are
+deliberately **not** shared: the browser's is a form affordance that also
+formats for display, and this one is a trust boundary — the page can be
+bypassed entirely by a merchant calling `/v1` directly, which is the ordinary
+way this route is used. Sharing would mean the server trusting a client-side
+rule. What is shared is the specification, and both files say so.
+
+Validating at all, rather than letting MTN refuse a malformed number, buys
+three things: a rail call on our own credentials is not spent on an input we
+could see was not a phone number; the hex WireMock steering numbers
+(`237600000f01`) are unreachable through a production-shaped route; and an
+arbitrary path segment cannot be interpolated into MTN's API. The adapter
+percent-encodes it as well (`vpay_provider::http::path_segment`), belt and
+braces, because the port is reachable by any caller in the process.
+
+### The mask, and the column it does not write
+
+`masked` produces `+2376••••200` — the shape
+`charges.payer_ref_masked` is documented to hold, with a **fixed** four
+bullets rather than one per hidden digit, because a mask whose length revealed
+the input's length would be a small oracle for free.
+
+**Nothing writes that column.** The confirm path stores `NULL`
+(`open_attempt`), so this is the first producer of the shape in the workspace
+and the two are not wired together. That is a gap rather than an oversight:
+writing the column is a change to the charge path, not to this route, and
+`docs/status.md` says so rather than this function pretending otherwise.
+
 ## The rail callback route (`provider_callback.rs`)
 
 `POST /provider/{code}/callback`, mounted since Step 8 lane C. Before it, both

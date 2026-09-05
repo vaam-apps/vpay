@@ -70,8 +70,8 @@ else `403` `forbidden`
 
 ### Served today
 
-`vpay_api::v1::V1_ROUTES` is the router's source, not a copy of it. Eleven
-methods across nine paths since Step 9:
+`vpay_api::v1::V1_ROUTES` is the router's source, not a copy of it. Twelve
+methods across ten paths since issue #47 (eleven across nine after Step 9):
 
 | Method | Path | Request params | Answer |
 |---|---|---|---|
@@ -86,6 +86,7 @@ methods across nine paths since Step 9:
 | GET | `/v1/checkout/sessions/{id}` | | `200` + `checkout.session` **with `client_secret`**, or the uniform `404` (Step 9) |
 | GET | `/v1/checkout/sessions` | `limit`, `starting_after`, `ending_before`, `payment_intent` | `200` + `list` envelope, **no secrets** (Step 9) |
 | POST | `/v1/checkout/sessions/{id}/expire` | | `200` + the session in `expired`, or `409` when its intent has a charge a rail may still act on (Step 9) |
+| GET | `/v1/account_holders` | `msisdn` (**required**, a Cameroon mobile number as `+2376XXXXXXXX`, `2376XXXXXXXX` or the national `6XXXXXXXX`), `payment_method_type` (**required**, a rail code this deployment offers *and* whose rail exposes an account-holder API) | `200` + `account_holder`; `400` naming `msisdn` or `payment_method_type`; `502 provider_unavailable` when the rail could not be asked — **never a `200` with a null name** (issue #47) |
 
 **`GET /v1/events` renders an event through the same code the webhook
 deliverer signs** (`vpay_api::model::EventObject`). That is deliberate: this
@@ -136,6 +137,47 @@ sweep expires a session past its horizon, and **only** then: a session the
 settlement finished already produced a `payment_intent.*` event for the same
 thing, and `POST /v1/checkout/sessions/{id}/expire` emits nothing because you
 asked for it.
+
+### The `account_holder` object (issue #47)
+
+Whose mobile-money account a number is. **A stateless read of the rail** —
+vpay creates nothing, stores nothing and has no `id` for it.
+
+```json
+{ "object": "account_holder", "payment_method_type": "mtn_momo",
+  "name": "David Mbarga", "verified": true }
+```
+
+Four keys, always all four.
+
+| Field | Type | Notes |
+|---|---|---|
+| `object` | `"account_holder"` | a resource of its own, not an overloaded `customer` — a Stripe `customer` is a stored, merchant-owned object with a lifecycle, and this is a query |
+| `payment_method_type` | string | the rail the question was put to, echoed back |
+| `name` | string or **null** | the registered holder's name. `null` means **the rail answered and has no record of this number** |
+| `verified` | boolean | `true` exactly when `name` is present. Not a claim that anything was cryptographically verified |
+
+**`name: null` and an error are two different answers, and a caller must not
+collapse them.** `null` is a fact about the *number*: the rail was asked and
+does not know it. A rail that could not be *asked* — down, refusing our
+credentials, misconfigured — is a `502`/`500`, never a `200` with a null
+name, because reporting a lookup that never happened as "not registered"
+would tell a caller a real person's account does not exist. A rail with no
+account-holder API at all is a `400` naming `payment_method_type`.
+
+**A name, and nothing else.** MTN's underlying response carries a birthdate,
+a locale and a gender; vpay projects them away before anything can log or
+store them. Nothing about the query is persisted — not the number, not the
+name, not the fact that it was asked. There is **no rate limit** on this
+route today, which means a merchant credential can turn a list of numbers
+into a list of names; that, and the audit-log and dedicated-scope questions,
+are reserved decisions written down in
+[../flows/account-holder-lookup.md](../flows/account-holder-lookup.md).
+
+**No `livemode` key**, unlike every other object here — there is no row for
+it to be read off, and reading it from configuration at render time would be
+a weaker guarantee wearing the same field name. Also recorded in the flow
+doc.
 
 ### The `checkout.session` object (Step 9)
 

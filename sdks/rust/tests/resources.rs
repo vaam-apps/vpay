@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use serde_json::{Value, json};
+use vpay_sdk::account_holders::RetrieveAccountHolderParams;
 use vpay_sdk::checkout::{
     CheckoutPaymentStatus, CheckoutSessionStatus, CheckoutUiMode, CreateCheckoutSessionParams,
     ListCheckoutSessionsParams,
@@ -986,6 +987,176 @@ async fn retrieve_balance_is_a_bare_get_and_decodes_both_buckets() {
     assert_eq!(request.method.as_str(), "GET");
     assert_eq!(request.url.query(), None);
     assert!(request.body.is_empty());
+}
+
+// --------------------------------------------------------------------------
+// /v1/account_holders — issue #47.
+//
+// These mirror `sdks/nodejs/src/client.test.ts`'s `accountHolders` block one
+// for one, down to the encoded query string, for the reason the checkout
+// block below states: ADR-0015's parity rule is about *wire semantics*, and
+// only a byte-level assertion on both sides catches two SDKs that both
+// "support account-holder lookup" while sending different query strings.
+// --------------------------------------------------------------------------
+
+#[tokio::test]
+async fn retrieve_account_holder_sends_the_documented_query_and_decodes_the_name() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/account_holders"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "account_holder",
+            "payment_method_type": "mtn_momo",
+            "name": "David Mbarga",
+            "verified": true,
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let holder = client
+        .account_holders()
+        .retrieve(RetrieveAccountHolderParams::new(
+            "237600000200",
+            PaymentMethodType::MtnMomo,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(holder.object, "account_holder");
+    assert_eq!(holder.payment_method_type, "mtn_momo");
+    assert_eq!(holder.name.as_deref(), Some("David Mbarga"));
+    assert!(holder.verified);
+
+    let request = only_request(&server, "/v1/account_holders").await;
+    assert_eq!(request.method.as_str(), "GET");
+    // Byte-for-byte, and in this order: the Node SDK pins the identical
+    // string. A GET carries no body and no `Idempotency-Key` — that header
+    // is a write-path property (`docs/flows/merchant-auth.md`, "Headers"),
+    // and sending one here would be a second thing for the two SDKs to
+    // disagree about.
+    assert_eq!(
+        request.url.query(),
+        Some("msisdn=237600000200&payment_method_type=mtn_momo")
+    );
+    assert!(request.body.is_empty());
+    assert_eq!(header_value(&request, "idempotency-key"), None);
+}
+
+/// **The answer a caller must not confuse with an error.** A rail that has no
+/// record answers `200` with `name: null`, and it decodes as `None` — not as
+/// a decode failure, and not as a missing key.
+#[tokio::test]
+async fn a_holder_the_rail_does_not_know_decodes_as_a_present_null_name() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/account_holders"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "account_holder",
+            "payment_method_type": "mtn_momo",
+            "name": null,
+            "verified": false,
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let holder = client
+        .account_holders()
+        .retrieve(RetrieveAccountHolderParams::new(
+            "237600000404",
+            PaymentMethodType::MtnMomo,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(holder.name, None);
+    assert!(!holder.verified);
+}
+
+/// A rail that could not be asked is an `Error`, never an `Ok` whose `name`
+/// happens to be `None` — the distinction the whole resource exists for.
+/// A caller matching a nominated refund destination refuses on both, but
+/// only one of them is the payer's to fix.
+#[tokio::test]
+async fn a_rail_that_could_not_be_asked_is_an_error_and_not_a_null_name() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/account_holders"))
+        .respond_with(ResponseTemplate::new(502).set_body_json(json!({
+            "error": {
+                "type": "api_error",
+                "code": "provider_unavailable",
+                "message": "The payment provider is unavailable. We are retrying.",
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = client
+        .account_holders()
+        .retrieve(RetrieveAccountHolderParams::new(
+            "237600000200",
+            PaymentMethodType::MtnMomo,
+        ))
+        .await
+        .expect_err("a 502 must not decode into an account_holder");
+
+    match error {
+        Error::Api { status, code, .. } => {
+            assert_eq!(status, 502);
+            assert_eq!(code.as_deref(), Some("provider_unavailable"));
+        }
+        other => panic!("expected an API error, got {other:?}"),
+    }
+}
+
+/// A rail with no account-holder API is a `400` naming the parameter, which
+/// this SDK surfaces rather than pre-empting: whether a rail can answer is a
+/// property of the *deployment*, and an SDK-side table of it would refuse a
+/// rail a later deployment enables.
+#[tokio::test]
+async fn a_rail_with_no_account_holder_api_surfaces_the_servers_named_parameter() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/account_holders"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": {
+                "type": "invalid_request_error",
+                "code": "invalid_request",
+                "param": "payment_method_type",
+                "message": "This payment method cannot look up an account holder on this deployment.",
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = client
+        .account_holders()
+        .retrieve(RetrieveAccountHolderParams::new(
+            "237600000200",
+            PaymentMethodType::OrangeMoney,
+        ))
+        .await
+        .expect_err("a 400 must not decode into an account_holder");
+
+    match error {
+        Error::Api { status, param, .. } => {
+            assert_eq!(status, 400);
+            assert_eq!(param.as_deref(), Some("payment_method_type"));
+        }
+        other => panic!("expected an API error, got {other:?}"),
+    }
+
+    // The SDK sent the request rather than refusing locally: the query is in
+    // the journal, spelling the rail the caller named.
+    let request = only_request(&server, "/v1/account_holders").await;
+    assert_eq!(
+        request.url.query(),
+        Some("msisdn=237600000200&payment_method_type=orange_money")
+    );
 }
 
 // --------------------------------------------------------------------------

@@ -215,7 +215,7 @@ cleanly on the image's baked *sandbox* configuration — placeholder merchant
 keys, WireMock rail hosts — and reports itself healthy. There is no diagnostic
 because, from the process's point of view, nothing went wrong.
 
-## 6a. Observability: two ports, twelve names, and no scraper
+## 6a. Observability: two ports, thirteen names, and no scraper
 
 **The second listener.** `--observability-bind` / `VPAY_OBSERVABILITY_BIND`,
 default `0.0.0.0:9090`, on **both** binaries — the worker had no HTTP
@@ -238,9 +238,11 @@ namespace only — a policy it can only express because the two are different
 ports, where a path-based exclusion would depend on an ingress controller's
 rule ordering staying correct forever.
 
-**What is emitted.** Twelve names, owned by `vpay_core::metrics`, which
-describes them and installs no recorder — each binary installs exactly one,
-beside its rustls provider. All twelve have a live seam:
+**What is emitted.** Thirteen names (twelve until 2026-09-05, when issue
+#47's `vpay_account_holder_lookups_total` landed), owned by
+`vpay_core::metrics`, which describes them and installs no recorder — each
+binary installs exactly one, beside its rustls provider. All thirteen have a
+live seam:
 `vpay_build_info`; `vpay_http_requests_total` and
 `vpay_http_request_duration_seconds` (labelled by matched route *pattern*,
 never a concrete path, and by one of nine methods or `other` — both label
@@ -253,8 +255,14 @@ same statements that write `alert = true` to the log so the two cannot
 diverge. `vpay_webhook_deliveries_total` is emitted at the two points a
 delivery attempt's outcome becomes durable in
 `vpay_worker::webhooks::handle_deliver` / `record_failure`, once Step 5's
-webhooks landed on this branch (this rebase pass). `docs/status.md` names the
-seam for each.
+webhooks landed on this branch (this rebase pass).
+`vpay_account_holder_lookups_total` is emitted once per
+`GET /v1/account_holders`, by `vpay_api::v1::account_holders::retrieve`, on
+every path including the refusals — its `outcome` label is the only thing
+that tells `found` from `not_found`, which are both `200`, and **no label on
+it carries the number looked up or the name returned**
+([account-holder-lookup.md](account-holder-lookup.md)). `docs/status.md`
+names the seam for each.
 
 **What an operator should know before trusting a dashboard.**
 
@@ -466,7 +474,10 @@ What does not exist, stated plainly:
   backup obligations and is **proposed** — no backup has ever been taken.
 
 **Added 2026-09-03 (Step 6, block C): the instrumentation §6a describes.**
-All twelve metric names are now emitted, each at exactly one seam (the
+All twelve metric names are now emitted, each at exactly one seam — thirteen
+since 2026-09-05, when issue #47 added
+`vpay_account_holder_lookups_total` with its seam in
+`vpay_api::v1::account_holders::retrieve` (the
 twelfth, `vpay_webhook_deliveries_total`, was described-but-unrecorded on the
 pre-rebase branch, because Step 5's webhooks were not yet on it; wiring its
 seam in `vpay_worker::webhooks::handle_deliver` is what this rebase pass

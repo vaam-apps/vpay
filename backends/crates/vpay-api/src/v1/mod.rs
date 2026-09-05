@@ -44,6 +44,15 @@ use vpay_provider::ProviderConfig;
 
 use crate::error::ApiError;
 
+/// The `account_holder` resource (issue #47): `GET /v1/account_holders`.
+///
+/// Its own module for [`payment_intents`]'s reason — one resource, one file
+/// — and, more than the others, because the privacy rules that apply to a
+/// lookup of a third party by phone number apply *only* here and belong
+/// beside the code they constrain rather than in a shared file. Its header
+/// is the short version; `docs/flows/account-holder-lookup.md` is the long
+/// one.
+pub mod account_holders;
 /// Boot step 4's derivation — the seeds both binaries hand
 /// `vpay_db::config_reconcile::reconcile`. Not a request path, and here
 /// rather than in either `main.rs` because both binaries need the identical
@@ -180,6 +189,17 @@ pub const V1_ROUTES: &[V1Route] = &[
         path: "/events",
         methods: &["GET"],
         mount: || get(events::list),
+    },
+    // Plural, like every other collection here, although it addresses one
+    // holder: the resource is `account_holder` and the *collection* is what
+    // is being searched — there is no `/{id}`, because a mobile-money number
+    // is not an id vpay mints and nothing is stored to address later. A
+    // `GET` on the collection with the search terms in the query string is
+    // the shape Stripe uses for its own lookup-style reads.
+    V1Route {
+        path: "/account_holders",
+        methods: &["GET"],
+        mount: || get(account_holders::retrieve),
     },
     V1Route {
         path: "/events/{id}",

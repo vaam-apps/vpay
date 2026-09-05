@@ -54,8 +54,8 @@ use vpay_core::metrics::{
 };
 
 use crate::{
-    CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig,
-    ProviderError, Submitted,
+    AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter,
+    ProviderConfig, ProviderError, Submitted,
 };
 
 /// A [`ProviderAdapter`] that counts and times every call it forwards.
@@ -180,6 +180,28 @@ impl ProviderAdapter for Measured {
         )
         .await
     }
+
+    /// Measured like every other call that reaches a rail — and the `Ok`
+    /// value is forwarded untouched, so `Some` and `None` are indistinguishable
+    /// in the series.
+    ///
+    /// That is deliberate and not an omission: `error_kind` is the only
+    /// dimension here, and splitting `found` from `not_found` on a *rail*
+    /// series would be answering a question about the `/v1` route from the
+    /// wrong seam. `vpay_account_holder_lookups_total` is where those two
+    /// are told apart, and it is emitted by the handler, which is also the
+    /// only layer that knows a merchant asked.
+    async fn account_holder_name(
+        &self,
+        msisdn: &str,
+        config: &ProviderConfig,
+    ) -> Result<Option<AccountHolder>, ProviderError> {
+        self.measure(
+            provider_operation::ACCOUNT_HOLDER_NAME,
+            self.inner.account_holder_name(msisdn, config),
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -223,6 +245,7 @@ mod tests {
                 supports_partial_refunds: false,
                 delivers_callbacks: false,
                 requires_ip_allowlist: false,
+                supports_account_holder_lookup: false,
             }
         }
 
@@ -394,5 +417,38 @@ mod tests {
         assert_eq!(provider_operation::SUBMIT, "submit");
         assert_eq!(provider_operation::QUERY_STATUS, "query_status");
         assert_eq!(provider_operation::REFUND, "refund");
+        assert_eq!(
+            provider_operation::ACCOUNT_HOLDER_NAME,
+            "account_holder_name"
+        );
+    }
+
+    /// The identity read is a call to the rail, so it is on the same series
+    /// as every other one — and the wrapper must not be able to tell `Some`
+    /// from `None` there. `Answering` inherits the port's default, which is
+    /// `Unsupported`, so this also pins that a *default* method is measured:
+    /// the decorator forwards to the trait, not to an override that may not
+    /// exist.
+    #[test]
+    fn an_account_holder_lookup_is_counted_as_a_rail_call() {
+        let adapter = Measured::wrap(Box::new(Answering {
+            code: "mtn_momo",
+            error: None,
+        }));
+
+        let scrape = scrape_of(|| {
+            let looked_up = block_on(adapter.account_holder_name("237600000000", &config()));
+            assert!(
+                matches!(looked_up, Err(ProviderError::Unsupported)),
+                "the inner adapter's answer is forwarded"
+            );
+        });
+
+        assert!(
+            scrape.contains(
+                r#"vpay_provider_requests_total{provider="mtn_momo",operation="account_holder_name",error_kind="operation_unsupported_by_rail"} 1"#
+            ),
+            "{scrape}"
+        );
     }
 }
