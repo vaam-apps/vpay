@@ -24,10 +24,10 @@ did the same thing to this review twice.
 are easiest to fake (the MSRV refusal under 1.95.0, and `0 skipped` on a
 container-backed suite). Nothing was reverted.
 
-Five findings were fixed on top of it. Four are stale or imprecise claims; one
-is the gap the brief pointed at — **nothing in the repository enforced the one
-coupling this whole task is about**, and the mismatch was measured to pass the
-entire `just ci`.
+Six findings were fixed on top of it. Five are stale, self-contradicting or
+imprecise claims; the sixth is the gap the brief pointed at — **nothing in the
+repository enforced the one coupling this whole task is about**, and the
+mismatch was measured to pass the entire `just ci`.
 
 ## 2. Findings
 
@@ -159,11 +159,22 @@ while the currently active rustc version is 1.95.0
 EXIT_1950=101
 ```
 
-Sufficient: `cratestack --version` on PATH is `cratestack 0.11.1`, installed by
-the implementer from inside this worktree under the new pin, and `just
-check-schema` runs it green in every `just ci` below. (This review did not
-re-compile the CLI a second time; the refusal above is the direction that can
-only be produced by the old pin.)
+Sufficient, re-run by this review from inside the worktree, under the pin,
+into a private `--root` (see §7 for why a private one):
+
+```
+$ rustup show active-toolchain
+1.98.0-x86_64-unknown-linux-gnu (overridden by '.../exp11-opus/rust-toolchain.toml')
+$ cargo install cratestack-cli --version 0.11.1 --locked --root <scratch>
+   Installed package `cratestack-cli v0.11.1` (executable `cratestack`)
+INSTALL_EXIT=0
+$ <scratch>/bin/cratestack --version
+cratestack 0.11.1
+```
+
+Both directions of the bump's decisive test therefore reproduce
+independently: it fails under 1.95.0 and succeeds under 1.98.0, from inside
+this checkout.
 
 ### 3.9 Did the suite shrink?
 
@@ -235,17 +246,81 @@ suites ran, with `vpay-tests-conformance::adapter_conformance` and
 `vpay-tests-integration::*` in the count against real WireMock and Postgres
 containers.
 
-The second run, on the final tree, is in §7.
+The second run, on the final tree of this review (`HEAD` after all six
+commits), also exited **0** — 17 min 30 s wall clock, again read from a file
+the runner wrote:
 
-## 6. What this review did not do
+| Recipe | Result on the final tree |
+|---|---|
+| `fmt-check` | clean |
+| `clippy` | clean, `--workspace --all-targets -- -D warnings` |
+| `verify` | `verify: ok — the eight gates above passed` |
+| ↳ `verify-links` | `ok — 695 repository link(s) in 123 tracked markdown file(s)` |
+| ↳ `verify-toolchain` | `ok — rust-toolchain.toml pins 1.98.0 and all 1 FROM rust: instruction(s) in backends/Dockerfile name it (rust:1.98.0-alpine3.22)` |
+| ↳ `check-schema` | **ran against the wrong CLI — see §7**; re-run against the pin: `ok — schemas/vpay.cstack type-checks under cratestack 0.11.1` |
+| `test-rust` | `Summary [961.863s] 1230 tests run: 1230 passed, 0 skipped` (1220 + the ten this review adds) |
+| `test-doc` | 86 passed, 1 ignored, 0 failed |
+| `verify-ignored` | `0 ignored (expected 0), 42 test binaries (expected 42), 1230 total (minimum 1080)` |
+| `lint-web`, `test-web` | exit 0; every vitest suite passed |
+| `deny` | `advisories ok, bans ok, licenses ok, sources ok` |
+| **exit** | **0** |
+
+The ten new tests add no test *binary* (they are in `.xtask`, which already
+had one), so `expected_suites` stays 42; `min_tests` is a floor and 1230
+clears it, so neither pin in `justfile` moved.
+
+## 7. Docker, and one piece of shared-host interference
+
+Built from the final tree on a dedicated `docker-container` builder
+(`vpay-exp11-opus-review`, removed afterwards; the shared default builder was
+never touched or pruned):
+
+```
+BUILD_server_EXIT=0 elapsed=375s
+BUILD_worker_EXIT=0 elapsed=5s      # builder stage cached by the run above
+vpay-exp11-opus-review:server 15.7MB
+vpay-exp11-opus-review:worker 12.6MB
+$ docker run --rm vpay-exp11-opus-review:server --version
+vpay-server 0.1.0                   # exit 0
+$ docker run --rm vpay-exp11-opus-review:worker --version
+vpay-worker-bin 0.1.0               # exit 0
+$ docker run --rm rust:1.98.0-alpine3.22 rustc --version
+rustc 1.98.0 (88d9e12ae 2026-08-18)
+```
+
+Both sizes reproduce the implementer's numbers exactly (15.7 MB / 12.6 MB).
+The elapsed times are **not** comparable to anything: another agent was
+building on this host at the same time, and the second build reused the
+first's stages.
+
+**The interference worth recording.** Between the two `just ci` runs, the
+shared `~/.cargo/bin/cratestack` was replaced by another process on this host
+(file mtime 14:17; this review's first run at 13:36 saw 0.11.1, the second at
+14:18 saw **0.7.15**). The `check-schema` recipe behaved exactly as its
+comments promise — it printed
+
+```
+check-schema: WARNING — cratestack 0.7.15 on PATH, this repository pins 0.11.1.
+check-schema: the check below still ran in full, but against the 0.7.15 grammar.
+```
+
+and still exited 0, because that recipe reports the version rather than
+enforcing it locally, by design. So `just ci` was legitimately green while one
+gate's evidence was against the wrong grammar — which is why this review
+installed the pinned CLI into a private `--root`, put only that on `PATH`, and
+re-ran the recipe (green at 0.11.1, above). **The shared binary was left as it
+was found**, because another agent may be relying on it and swapping it back
+would be doing to them what was done to this run. Two observations follow:
+a local gate whose version is "reported, not enforced" is one shared-host
+interference away from evidence about a different grammar, and the recipe's
+loud warning is the only reason anybody would notice.
+
+## 8. What this review did not do
 
 * **No `arm64` build**, exactly as the brief allows. The arm64 half of the
   manifest is evidenced only by the tag's platform list, not by a build.
 * **No CI run of any of this exists.** `actionlint` is not GitHub Actions.
 * **The 1.88 MSRV is still uncompiled** — re-derived, never built.
-* **`cratestack-cli` was not compiled again under 1.98.0.** The binary on PATH
-  is the one the implementer installed that way; only the *refusal* under
-  1.95.0 was re-run here.
 * **`docs/plans/*-notes/` were not rewritten** — they are dated records.
 * **`docs/status.md`'s historical measurement sentences still say "with the
   toolchain pinned to `1.95.0`"** and must: those runs happened on that
