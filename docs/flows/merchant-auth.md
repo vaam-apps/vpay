@@ -452,11 +452,17 @@ pin all twelve keys including the three that must be present-and-null.
 its parity rests on the SDK-to-SDK form-body tests described below.
 
 **Read the evidence before the claim.** `backends/tests/integration/tests/merchant_token_flow.rs`
-boots a real router against a real Postgres and covers seven things (the
-seventh, `a_token_minted_with_no_audience_is_addressed_to_the_client_and_refused_on_v1`,
-was added after this list was first written: a token this server signed with
-no requested audience carries the `client_id` as `aud` and is refused on
-`/v1` for that alone):
+boots a real router against a real Postgres. **It holds ten cases; this list
+names seven of them** — a count corrected on 2026-09-05, having drifted twice:
+`a_token_minted_with_no_audience_is_addressed_to_the_client_and_refused_on_v1`
+was added after the list was first written (a token this server signed with no
+requested audience carries the `client_id` as `aud` and is refused on `/v1`
+for that alone) and is described here; the two default-scope cases
+(`a_token_request_with_no_client_id_still_gets_its_registered_default_scope`,
+`a_named_scope_narrows_and_an_unregistered_one_is_refused`) are described
+under "Scope" above and are deliberately not repeated here. `cargo nextest
+run -p vpay-tests-integration --test merchant_token_flow` is the count that
+settles it, not this paragraph:
 
 - `an_sdk_client_authenticates_and_reaches_the_honest_404` — the Rust SDK
   mints an assertion, exchanges it for a token, and reaches `/v1` past the
@@ -477,7 +483,7 @@ no requested audience carries the `client_id` as `aud` and is refused on
   twice by hand; the second is `invalid_client`/401 while still inside its
   own lifetime.
 - `the_three_grants_vpay_does_not_serve_are_refused_before_any_store`
-  (**added 2026-09-05**, so the list above is ten cases now, not seven) —
+  (**added 2026-09-05**) —
   `authorization_code`, `refresh_token` and
   `urn:ietf:params:oauth:grant-type:device_code`, each posted with a real
   freshly minted assertion and with every parameter its own handler would
