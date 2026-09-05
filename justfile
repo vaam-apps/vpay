@@ -1,6 +1,6 @@
 # vpay task runner. `just` with no argument lists everything.
 #
-# Nine invariants this repo enforces on itself, all wired into `just verify`:
+# Ten invariants this repo enforces on itself, all wired into `just verify`:
 #   * no test double is reachable from a shipping binary
 #   * every unimplemented item is declared in docs/status.md
 #   * every error type is classified (ADR-0011) and anyhow stays in the binaries
@@ -16,13 +16,15 @@
 #     exempted with a reason in ADR-0016's table (`verify-serde`, 2026-09-05)
 #   * nothing outside vpay-db names a concrete repository implementation
 #     (`verify-repositories`, 2026-09-05)
+#   * backends/Dockerfile's `FROM rust:<version>` names the compiler
+#     rust-toolchain.toml pins (`verify-toolchain`, 2026-09-05)
 #
-# `just verify` prints a tenth thing that is NOT an invariant and never
+# `just verify` prints an eleventh thing that is NOT an invariant and never
 # fails the build: `verify-docs`, a report on doc-comment volume, in-file
 # comment volume, externalised module docs, long functions, ```ignore fences
 # and #[allow]s (Step 7 decision 4; ADR-0016 standard 6 keeps it a report).
 #
-# An eleventh check is a gate that is NOT in `just ci`, because it needs the
+# A twelfth check is a gate that is NOT in `just ci`, because it needs the
 # network: `just docs-check-citations` resolves every run id, PR and issue a
 # document cites against GitHub. See its recipe at the bottom of this file.
 
@@ -414,7 +416,7 @@ audit-web:
 # `self-checks` job runs exactly this list, in this order:
 # verify-no-mocks, verify-status, verify-errors, verify-sdk-parity,
 # verify-links, verify-npm-scope, check-schema, verify-serde,
-# verify-repositories, and then verify-docs last.
+# verify-repositories, verify-toolchain, and then verify-docs last.
 #
 # That sentence was false until 2026-09-04: `verify-sdk-parity` ran here but
 # had no step in `.github/workflows/ci.yml`, so ADR-0015's decision 3 ("CI
@@ -424,7 +426,7 @@ audit-web:
 # this comment honest is someone reading the workflow beside it.
 #
 # `verify-docs` is NOT a check: it exits 0 whatever it finds, so the
-# "verify: ok" below means the nine gates passed and says nothing about the
+# "verify: ok" below means the ten gates passed and says nothing about the
 # numbers `verify-docs` printed. It is last so that the report a human reads
 # is the final thing on the terminal, after every gate has had its say.
 #
@@ -463,9 +465,24 @@ audit-web:
 # `vpay_db::SqlClientAssertionStore`, a concrete implementation that had been
 # `pub` since Step 6 and that no gate, lint or compiler error objected to.
 #
-# The nine self-checks, then the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-docs
-    @echo "verify: ok — the nine gates above passed; the verify-docs report is advisory"
+# `verify-toolchain` joined on the same day as the tenth, during the review
+# of the 1.95.0 -> 1.98.0 toolchain bump, and for a reason measured on that
+# branch rather than assumed: with `rust-toolchain.toml` moved to 1.98.0 and
+# `backends/Dockerfile` left on `FROM rust:1.95.0-alpine3.22`, `just verify`
+# and `just fmt-check` both exited 0 — and no other recipe in `just ci` reads
+# either file, because nothing here compiles the Dockerfile. The toolchain
+# file's own header has said "bump both together" since 2026-09-02; that
+# sentence was the whole mechanism until this gate, and the first symptom of
+# ignoring it would have been a release binary built by a compiler no local
+# run and no CI job had ever used. It is appended after `verify-repositories`
+# rather than slotted in beside `check-schema` for the same reason those two
+# are where they are: the list is chronological, so every ordinal already
+# written down elsewhere — "check-schema is the seventh gate", which four
+# other files say — stays true when a gate is added.
+#
+# The ten self-checks, then the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-docs
+    @echo "verify: ok — the ten gates above passed; the verify-docs report is advisory"
 
 verify-no-mocks:
     cargo xtask verify-no-mocks
@@ -577,9 +594,15 @@ cratestack_min_declarations := "12"
 # from one in which everything passed. This is why `check-schema` is NOT in
 # the offline-safe promise `just ci` makes about the other gates in the same
 # way they are — it needs no network to RUN, but it does need a binary that
-# is not part of this workspace, and `just install-rust` does not install it
-# (installing it needs a newer compiler than `rust-toolchain.toml` pins; see
-# the message below).
+# is not part of this workspace, and `just install-rust` does not install it.
+# That parenthesis used to give a reason — "installing it needs a newer
+# compiler than `rust-toolchain.toml` pins" — and the toolchain bump of
+# 2026-09-05 (1.95.0 -> 1.98.0) retired it: `cargo install cratestack-cli
+# --locked --version 0.11.1` now succeeds from inside this checkout, which is
+# what the message below says. `install-rust` still leaves it out, but that
+# is now a choice about what a bootstrap recipe should compile rather than
+# something the compiler refuses; whether it should install it is a
+# maintainer's call, not this comment's.
 #
 # THE VERSION IS REPORTED, NOT ENFORCED, LOCALLY. The recipe prints the
 # version it actually used on every run, and says so loudly when that is not
@@ -624,15 +647,17 @@ check-schema:
         echo "check-schema: FAIL — needs the 'cratestack' CLI on PATH, and it is not there." >&2
         echo "check-schema: this is a failure, not a skip: nothing checked $schema in this run." >&2
         echo >&2
-        echo "  Install the pinned release, from a directory OUTSIDE this checkout:" >&2
+        echo "  Install the pinned release:" >&2
         echo >&2
-        echo "      (cd ~ && cargo +stable install cratestack-cli --locked --version $pinned)" >&2
+        echo "      cargo install cratestack-cli --locked --version $pinned" >&2
         echo >&2
-        echo "  Outside the checkout on purpose: cratestack-cli $pinned declares" >&2
-        echo "  rust-version = 1.98.0 and rust-toolchain.toml here pins 1.95.0, so cargo" >&2
-        echo "  run from inside the worktree refuses with an msrv error. There is also a" >&2
-        echo "  prebuilt binary for five target triples (x86_64/aarch64 linux-gnu and" >&2
-        echo "  apple-darwin, x86_64-pc-windows-msvc) at" >&2
+        echo "  This works from inside the checkout as of 2026-09-05, and did not" >&2
+        echo "  before: cratestack-cli $pinned declares rust-version = 1.98.0, and" >&2
+        echo "  rust-toolchain.toml pinned 1.95.0 until that date, so cargo run from" >&2
+        echo "  inside the worktree refused with an msrv error and the instruction" >&2
+        echo "  here was to cd out of the tree first. The pin is 1.98.0 now — that" >&2
+        echo "  bump is why. There is also a prebuilt binary for five target triples" >&2
+        echo "  (x86_64/aarch64 linux-gnu and apple-darwin, x86_64-pc-windows-msvc) at" >&2
         echo "  https://github.com/cratestack/cratestack/releases/tag/v$pinned —" >&2
         echo "  linux MUSL has none, per https://cratestack.dev/tooling/cli-install" >&2
         exit 1
@@ -714,6 +739,17 @@ verify-serde:
 # escape hatch nobody needs is the one that gets used.
 verify-repositories:
     cargo xtask verify-repositories
+
+# `backends/Dockerfile`'s `FROM rust:<version>-alpine…` is the compiler
+# `rust-toolchain.toml` pins. That `FROM` line is the one place in this
+# repository that names a compiler version and cannot read the toolchain file
+# — CI's five Rust jobs all `sed` the channel out of it — so it is the one
+# place the pin can drift, and until this gate the only thing stopping it was
+# a sentence in a comment. The Alpine base is deliberately NOT checked: it
+# moves on its own evidence. See `verify_toolchain` in `.xtask/src/main.rs`
+# for the mutation that motivated it and for what this does not cover.
+verify-toolchain:
+    cargo xtask verify-toolchain
 
 verify-docs:
     cargo xtask verify-docs
@@ -1035,6 +1071,19 @@ expected_suites := "42"
 # is not a reason to move a floor. `just test-doc` measures **86 passed, 1
 # ignored** — unchanged; this change added no example, and the 13
 # `#[serde(rename_all)]` attributes it did add appear in no doctest.
+#
+# Re-measured 2026-09-05 rebasing the toolchain bump (`verify-toolchain`, the
+# tenth gate) onto that: `just verify-ignored` reports **1270 total, 42 test
+# binaries, 0 ignored** — 1260 plus ten, all in `xtask` (184 → 194), all
+# driving `verify_toolchain`: the two files' agreement, a `FROM` line left
+# behind, an unreadable `channel`, a `channel` line CI's anchored `sed` could
+# not parse, the Alpine suffix being deliberately outside the subject, and the
+# repository's own two files. Four of the ten came from mutations of the gate
+# itself. The two branches did not see each other — ADR-0016's two gates and
+# this one both landed on 2026-09-05 — so the 1260 above and the 1270 here are
+# two measurements, not a contradiction. No new test binary, so
+# `expected_suites` stays 42 and the floor stays 1080. `just test-doc` measures
+# **86 passed, 1 ignored** — unchanged; a toolchain pin appears in no doctest.
 min_tests := "1080"
 
 verify-ignored:

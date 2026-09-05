@@ -393,7 +393,13 @@ mod tests {
         }
         // The four Crockford excludes. `i`/`l` are `1`, `o` is `0`, and `u`
         // is dropped so no id can spell an unfortunate word by accident.
-        for excluded in [b'i', b'l', b'o', b'u'] {
+        //
+        // Spelled `*b"ilou"` rather than `[b'i', b'l', b'o', b'u']`: clippy's
+        // `byte_char_slices` (which this workspace's `-D warnings` turns into
+        // an error) started firing on the array form when the toolchain moved
+        // to 1.98.0 on 2026-09-05. Same type, `[u8; 4]`, and the same four
+        // bytes — the loop body is untouched.
+        for excluded in *b"ilou" {
             assert!(
                 !ALPHABET.contains(&excluded),
                 "{} must not be in the alphabet",

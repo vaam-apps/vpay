@@ -21,8 +21,8 @@
 //!   `git_sha()` returns.
 //!
 //! `cargo::` (double colon) rather than the older `cargo:` spelling: the
-//! workspace pins Rust 1.95 (`rust-toolchain.toml`), well past the 1.77 that
-//! introduced it.
+//! workspace pins Rust 1.98.0 (`rust-toolchain.toml`), well past the 1.77
+//! that introduced it.
 
 fn main() {
     println!("cargo::rerun-if-env-changed=VPAY_GIT_SHA");

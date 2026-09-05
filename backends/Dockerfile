@@ -25,21 +25,48 @@
 # rustflags, which is the same reason `just build-dist` passes one. Output
 # then lands under `target/<triple>/dist/`, hence the copy to `/out`.
 #
-# Version pin: authored and verified against rustc 1.95.0. Since 2026-09-02
-# rust-toolchain.toml pins `channel = "1.95.0"` too (it used to say `stable`,
-# which merely *resolved* to 1.95.0 at the time) and CI reads that pin; this
-# `FROM` line is the one place that cannot read the file, so bump both
-# together.
+# Version pin: authored and verified against rustc 1.98.0. Since 2026-09-02
+# rust-toolchain.toml pins `channel` to the same number (it used to say
+# `stable`, which merely *resolved* to a version at the time) and CI reads
+# that pin; the `FROM` line below is the one place that cannot read the file,
+# so bump both together. Only ONE `FROM` names the image — `chef` — and
+# `planner` and `builder` are both `FROM chef`, so the three stages cannot
+# drift apart by construction. Do not turn that into three literals.
+#
+# "Bump both together" is enforced since 2026-09-05 rather than merely asked
+# for: `cargo xtask verify-toolchain` (the tenth gate in `just verify`, and a
+# step in CI's `self-checks` job) fails if the version in the `FROM` line below
+# disagrees with `rust-toolchain.toml`'s `channel`. It checks the compiler
+# version only — the Alpine suffix is deliberately outside its subject, for
+# the reason the next paragraph gives.
+#
+# Moved 1.95.0 -> 1.98.0 on 2026-09-05, together with rust-toolchain.toml,
+# for the reason recorded there: CrateStack 0.11.1 — whose CLI is the seventh
+# gate in `just verify` — declares `rust-version = "1.98.0"` throughout, and
+# the maintainer chose to move the pin rather than pin CrateStack back to
+# 0.8.15. The Alpine base deliberately did NOT move with it:
+# `rust:1.98.0-alpine3.22` exists on Docker Hub (`docker manifest inspect`,
+# checked 2026-09-05: six manifest entries, of which THREE are architectures —
+# linux/amd64, linux/arm64/v8, linux/ppc64le — and three are `unknown/unknown`
+# attestation manifests; the 1.95.0 tag carries exactly the same six. The
+# arm64 entry is the one `release.yml` needs), so
+# this bump changes the compiler and nothing else about the build
+# environment. `rust:1.98.0-alpine3.23` also exists and was NOT taken: an
+# Alpine major bump changes musl and gcc under a static build and is its own
+# decision with its own evidence, not a rider on a compiler bump.
+#
 # Cargo.toml's `rust-version = "1.88"` is NOT that: it is `cargo metadata`'s
-# max `rust_version` across the resolved dependency graph (currently driven
-# by `time` 0.3.47 and `testcontainers`/`testcontainers-modules` 0.27/0.15) —
-# a theoretical floor nobody has actually compiled this workspace with, and
-# rust-toolchain.toml says so explicitly (63 of 317 packages declare no
+# max `rust_version` across the resolved dependency graph (re-derived
+# 2026-09-05 and unchanged; now driven by `darling` 0.23.0, `jsonwebtoken`
+# 11.0.0, `serde_with` 3.21.0, `time` 0.3.47 and
+# `testcontainers`/`testcontainers-modules` 0.27.3/0.15.0) — a theoretical
+# floor nobody has actually compiled this workspace with, and
+# rust-toolchain.toml says so explicitly (135 of 477 packages declare no
 # `rust_version` at all, so the true floor could be higher yet). Pinning the
 # builder to that unverified number would be trading a known-good compiler
 # for a guess. This pins the one version this workspace has actually been
 # built and tested against, at the exact patch + Alpine base
-# (`1.95.0-alpine3.22`) rather than the floating `1.95-alpine` tag, so a
+# (`1.98.0-alpine3.22`) rather than the floating `1.98-alpine` tag, so a
 # same-tag Alpine security respin can't silently change the musl/gcc under
 # this build without a deliberate version bump here.
 #
@@ -167,7 +194,7 @@
 # The tool stage. `musl-dev`/`pkgconfig` are installed here rather than in
 # `builder` so `planner` and `builder` share one apk layer; the builder needs
 # them for the same reason it always did.
-FROM rust:1.95.0-alpine3.22 AS chef
+FROM rust:1.98.0-alpine3.22 AS chef
 RUN apk add --no-cache musl-dev pkgconfig
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \

@@ -10,15 +10,15 @@ writing code.
 These are not style preferences. Both are machine-enforced by `just verify`, and
 CI runs it.
 
-`just verify` is **nine** gates and one report. The gates
+`just verify` is **ten** gates and one report. The gates
 (`verify-no-mocks`, `verify-status`, `verify-errors`, `verify-sdk-parity`,
 `verify-links`, `verify-npm-scope`, `check-schema`, `verify-serde`,
-`verify-repositories`) fail the build. The report (`verify-docs`) never
-does — it prints doc-comment volume per crate, in-file comment volume per
-crate, the number of `#[doc = include_str!]` modules, the production
-functions of 80 lines or more, every ```` ```ignore ```` doctest fence and
-every `#[allow]`/`#[expect]`, and nothing more. Read it; it is not a gate you
-can pass or fail.
+`verify-repositories`, `verify-toolchain`) fail the build. The report
+(`verify-docs`) never does — it prints doc-comment volume per crate, in-file
+comment volume per crate, the number of `#[doc = include_str!]` modules, the
+production functions of 80 lines or more, every ```` ```ignore ```` doctest
+fence and every `#[allow]`/`#[expect]`, and nothing more. Read it; it is not
+a gate you can pass or fail.
 
 This paragraph said "three gates" until 2026-09-05, and had been wrong since
 `verify-sdk-parity` landed on 2026-09-03; `verify-links` made it wrong by two.
@@ -26,10 +26,14 @@ It then said "five" for the rest of that day, because `verify-npm-scope` and
 `check-schema` both landed on 2026-09-05 on branches that did not see each
 other — the count was corrected to seven where the two met, and `verify-serde`
 and `verify-repositories` ([ADR-0016](docs/adr/0016-engineering-standards.md),
-2026-09-05) make it nine. Eight of the nine are `cargo xtask` commands;
-`check-schema` is a justfile recipe, because it shells out to the CrateStack
-CLI, a binary this workspace does not build.
-There is a tenth check, `cargo xtask verify-citations` (`just
+2026-09-05) made it nine. `verify-toolchain` makes it ten, later the same
+day, out of the review of the 1.95.0 -> 1.98.0 toolchain bump: it fails when
+`backends/Dockerfile`'s `FROM rust:` version and `rust-toolchain.toml`'s
+`channel` disagree, a mismatch that was measured to pass every other gate.
+Nine of the ten are `cargo xtask` commands; `check-schema` is a justfile
+recipe, because it shells out to the CrateStack CLI, a binary this workspace
+does not build.
+There is an eleventh check, `cargo xtask verify-citations` (`just
 docs-check-citations`), which is a gate but **not** part of `just verify` or
 `just ci`: it needs the network and a GitHub token. Run it when you add or
 edit a document that cites a CI run id, a pull request or an issue.

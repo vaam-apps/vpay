@@ -254,7 +254,7 @@ The Rust image is built in four stages:
 
 | Stage | What it does | When it re-runs |
 |---|---|---|
-| `chef` | `rust:1.95.0-alpine3.22`, `apk add musl-dev pkgconfig`, `cargo install cargo-chef --locked --version 0.1.78` | the base image tag or the cargo-chef pin changes |
+| `chef` | `rust:1.98.0-alpine3.22` (was `1.95.0-alpine3.22` until 2026-09-05; the Alpine base deliberately did not move with the compiler), `apk add musl-dev pkgconfig`, `cargo install cargo-chef --locked --version 0.1.78` | the base image tag or the cargo-chef pin changes |
 | `planner` | copies the workspace, runs `cargo chef prepare` → `recipe.json` (manifests + `Cargo.lock`, **no source**) | every build; it compiles nothing and takes ~0.1 s |
 | `builder` (cook) | `cargo chef cook --profile dist --target <host triple> -p vpay-server -p vpay-worker-bin` — compiles the ~317-package dependency graph into `target/` | `recipe.json` changes (a manifest or the lockfile moved), or `.cargo/config.toml` changes |
 | `builder` (build) | `ARG VPAY_GIT_SHA`, copy the real source, `cargo build`, `cp` to `/out` | any source edit, or a different `VPAY_GIT_SHA` |

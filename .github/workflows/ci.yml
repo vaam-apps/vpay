@@ -137,10 +137,16 @@ jobs:
       # releases and verifies it against the published `.sha256` sidecar
       # before putting it on PATH, which is why this job does not do the
       # `curl | sha256sum -c` dance the `deploy` job does for kubeconform.
-      # No Rust toolchain is involved: `cratestack-cli` declares
-      # `rust-version = "1.98.0"` and this job's toolchain is whatever
-      # `rust-toolchain.toml` pins (1.95.0), so `cargo install` here would
-      # fail with "requires rustc 1.98.0 or newer" — verified by running it.
+      # No Rust toolchain is involved, and since 2026-09-05 that is a choice
+      # rather than a necessity. `cratestack-cli` declares
+      # `rust-version = "1.98.0"`; this job's toolchain is whatever
+      # `rust-toolchain.toml` pins, which was 1.95.0 until that date, so
+      # `cargo install` here USED to fail outright with "requires rustc
+      # 1.98.0 or newer" (verified by running it). The pin is 1.98.0 now, so
+      # it would succeed — the action stays because downloading a
+      # checksum-verified prebuilt binary is seconds against compiling the
+      # CLI and its graph on every `self-checks` run, not because the
+      # compiler cannot do it.
       - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@6b3053fa77924f5162915d594d457d3eda51afaa # v0.11.1
         with:
           version: ${{ steps.cratestack.outputs.version }}
@@ -169,6 +175,23 @@ jobs:
         run: just verify-serde
       - name: verify-repositories (ADR-0016 standard 5)
         run: just verify-repositories
+      # The tenth gate, new 2026-09-05, and the one this job is the ONLY
+      # place to catch: `backends/Dockerfile` is compiled by nothing in the
+      # `rust` job, so a `FROM rust:<version>` left behind when
+      # `rust-toolchain.toml` moves is invisible to every other job here.
+      # Measured on the branch that moved the pin 1.95.0 -> 1.98.0: the
+      # mismatch passed `just verify`, `just fmt-check` and the whole of
+      # `just ci`.
+      #
+      # Through the justfile, like the two ADR-0016 steps above and
+      # `check-schema` before them, rather than `cargo xtask` like the six
+      # older steps: the recipe carries the reasoning a contributor reads
+      # locally — in this case which of the two files is authoritative and
+      # why the Alpine base is deliberately not checked — and running it here
+      # is what stops the recipe and the workflow from drifting. The gate
+      # itself is `verify_toolchain` in `.xtask/src/main.rs` either way.
+      - name: verify-toolchain (the image pin matches rust-toolchain.toml)
+        run: just verify-toolchain
       # A report, not a gate — it exits 0 whatever it finds (Step 7,
       # decision (4)). It is here so `justfile`'s claim that this job runs
       # exactly what `just verify` runs stays true, and so the doc-volume,

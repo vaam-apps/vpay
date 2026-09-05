@@ -66,9 +66,10 @@ verify-errors` printed on the merged gate branch on 2026-09-04.)*
 report** — four gates since `verify-sdk-parity`, **five since
 `verify-links` (2026-09-05)**, **six since `verify-npm-scope` (2026-09-05)**,
 **seven since `check-schema` (2026-09-05, the CrateStack schema gate —
-see "CrateStack" below)** and **nine since `verify-serde` and
-`verify-repositories` (2026-09-05, [ADR-0016](adr/0016-engineering-standards.md))**,
-all six below. `cargo xtask
+see "CrateStack" below)**, **nine since `verify-serde` and
+`verify-repositories` (2026-09-05, [ADR-0016](adr/0016-engineering-standards.md))**
+and **ten since `verify-toolchain` (2026-09-05, the pin-drift gate — see
+"Toolchain pin" below)**, all seven below. `cargo xtask
 verify-docs` prints, per crate, doc-comment lines
 against code lines, **in-file comment lines against code lines, the number of
 `#[doc = include_str!]` modules**, every production function of 80 lines or
@@ -223,7 +224,11 @@ that `dist/` exists (gitignored) and the registry (needs the network).
 
 **New 2026-09-05: `cargo xtask verify-links` is the fifth gate,
 `cargo xtask verify-npm-scope` the sixth, `just check-schema` the seventh,
-and `cargo xtask verify-citations` an eighth that is opt-in.** Until this
+`cargo xtask verify-serde` the eighth and `cargo xtask verify-repositories`
+the ninth (both [ADR-0016](adr/0016-engineering-standards.md)),
+`cargo xtask verify-toolchain` the tenth (added later the same day, in the
+review of the toolchain bump), and `cargo xtask verify-citations` an eleventh
+that is opt-in and in no CI job.** Until this
 landed, `just docs-check` ran `verify-status` and printed `note: link
 checking is not implemented yet`; the one class of claim this repository
 makes about itself most often — *the document you are reading points at the
@@ -288,6 +293,24 @@ correction.
   floor of 12 `model`/`enum` declarations before it believes the result. See
   "CrateStack" below for the version, the six mutations that prove the gate
   fires, and what a green run does *not* prove.
+- **`verify-toolchain` — a gate, in `just verify`, `just ci` and CI's
+  `self-checks` job. New 2026-09-05, in the review of the toolchain bump.**
+  `backends/Dockerfile`'s `FROM rust:<version>-alpine…` must name the version
+  `rust-toolchain.toml`'s `channel` pins. That `FROM` line is the only place
+  in the repository that names a compiler and cannot read the toolchain file
+  (CI's five Rust jobs `sed` the channel out of it), so it is the only place
+  the pin can drift — and drift was measured to be free: with `channel` on
+  1.98.0 and the `FROM` line left on 1.95.0, `just verify` and `just fmt-check`
+  both exited **0**, and no other `just ci` recipe reads either file, because
+  nothing here compiles the Dockerfile. Ten `xtask` tests drive it, four of
+  them written from mutations of the gate itself — including one that caught a
+  test of this review's own passing on the wrong error. It checks the compiler
+  version only: the Alpine suffix moves on its own evidence, and a test pins
+  that it may. What it does **not** check: that the tag exists upstream (needs
+  the network; the image build proves it), Dockerfile comments (the header
+  deliberately names a tag it did not take), or `Cargo.toml`'s `rust-version`,
+  which is a graph-derived floor rather than a copy of this number. See
+  "Toolchain pin" below.
 - **`verify-citations` — a gate that needs the network, so it is opt-in
   (`just docs-check-citations`) and is in no CI job.** It resolves every
   workflow-run id, pull request and issue a tracked `*.md` cites as evidence
@@ -1862,7 +1885,7 @@ makes the core refuse a refund on that rail.
 |---|---|---|
 | `compose.yml` (Postgres + 2 WireMock rails) | ✅ | Written; **never started as a stack on any authoring machine** (Docker Hub unreachable from one; the rootless daemon on another cannot start containers at all). **Started for the first time by the CI `e2e (compose)` job on run `33647189156` (2026-09-02)**, with both WireMock rails and Postgres up and `vpay-server` answering `/healthz` 200 against them — see "GitHub Actions" below. `config/application.yml` used to point both rails at a host named `wiremock`, which no compose file defines; fixed 2026-09-02 to `wiremock-mtn` / `wiremock-orange` (with Orange's `/orange-money-webpay/dev` path prefix, per its flow doc), proven by `vpay-config`'s own test that loads the real file. **Changed 2026-09-03 (Step 3): the mappings these two services bind-mount are now the ones the conformance suite drives.** `backends/tests/conformance/wiremock/{mtn,orange}/mappings/` gained the full failure vocabulary per rail, a WireMock *scenario* (pending → successful), a redirect mapping (`REF_REDIRECT`) and an oversize-body mapping (`REF_HUGE`); a mapping fixed for the suite is fixed for `just up` and for `just demo` in the same edit, because it is one directory. The suite does **not** use this compose stack — it starts its own `wiremock/wiremock` containers via testcontainers, so CI's `rust` job needs no compose services |
 | `compose.e2e.yml` (full stack) | ✅ | **Could not have booted before 2026-09-02**: both binaries exit 78 without `--config`/`VPAY_CONFIG` (mandatory since 2026-08-11), and this file never set it. Now sets `VPAY_CONFIG` and the rail `${VAR}` placeholders (stub values for stub rails) on both services — **six of them as of 2026-09-03 (Step 3)**, up from three: `MTN_SUBSCRIPTION_KEY`, `MTN_API_KEY`, `MTN_API_USER`, `ORANGE_MERCHANT_KEY`, `ORANGE_CLIENT_ID`, `ORANGE_CLIENT_SECRET`, all present on **both** `vpay-server` and `vpay-worker` (miss one on either and the process exits `78` at boot — an unresolved placeholder is fatal by design, never an empty string). All six are listed in `.env.example`. **Run for the first time by CI's `e2e (compose)` job on run `33647189156` (2026-09-02)**: `vpay-server` answered `/healthz` 200 one second after the stack came up, the dashboard answered 200 on `/` a second later, and Cypress passed — see below. **Changed after that run, and therefore not covered by it (Step 1, same day):** `vpay-server` now exits `78` without an RS256 signing key, so this file sets `VPAY_OAUTH_SIGNING_KEY_FILE=/secrets/oauth-signing-key.pem` and read-only bind-mounts `.e2e/oauth-signing-key.pem` (git-ignored, `0644` because the scratch image runs as UID 65532, generated per stack by `just gen-e2e-signing-key` and thrown away with it; CI runs that recipe before `docker compose up`). **No CI run has yet booted the stack with that mount** — the ✅ above is evidence for the previous shape of this file, and the next `e2e (compose)` run is what proves the new one. **Step 3 added the three new rail variables to this file and to nothing else that runs it**, so the same caveat now covers them: they are correct by inspection and by `docker compose config`, and no run has booted the stack since |
-| `backends/Dockerfile` (musl → scratch) | ✅ | Last rewritten 2026-08-09 (musl host target, UID 65532). **Could not have produced a bootable image before 2026-09-02**: it never copied `config/` in, so there was no file for `VPAY_CONFIG` to name. Now bakes `config/` at `/config` and sets `ENV VPAY_CONFIG=/config/application.yml` in both runtime stages (secrets stay `${VAR}`, so the layer holds none). **A second reason it could never have built, found in review the same day:** the builder stage copied every workspace member except `sdks/rust`, and cargo refuses to load a workspace whose `members` list names a missing directory — proven by reconstructing the build context outside Docker and running the Dockerfile's own `cargo build`, which failed at manifest load; `COPY sdks/rust` added. **A third, found by the first CI build that reached the Docker step (run `33646048616`, the fix's own PR):** on the alpine builder the host triple *is* `x86_64-unknown-linux-musl`, and with no `--target` cargo applied `.cargo/config.toml`'s `+crt-static` rustflags to proc-macros too, which cannot be static (`cannot produce proc-macro for async-trait`). The build now passes `--target` set to the builder's own host triple (still never a cross-compile) and copies from `target/<triple>/dist/`; the Dockerfile's header comment explains it. It was the last reason: the next run, `33647189156`, built both images and booted the stack. **Built for the first time by CI's `e2e (compose)` job on run `33647189156` (2026-09-02), and the resulting `scratch` image booted, found its baked config, connected to Postgres, ran the migrations and answered `/healthz` 200.** **Built on an authoring machine for the first time 2026-09-03 (Step 6, block A) by `just release-dry-run`** — both targets, `linux/amd64`, exit 0; the `dist` build took 1 m 55 s and the two `scratch` images are 14.8 MB and 10.7 MB. Built, not booted: no local run has started a container from either. **Changed 2026-09-05: dependency compilation is now a cached layer (cargo-chef `0.1.78`, pinned exactly, `--locked`).** Four stages — `chef` (the same `rust:1.95.0-alpine3.22`, `cargo install cargo-chef`, 33 s), `planner` (`cargo chef prepare` → `recipe.json`; manifests and the lockfile, no source, 0.1 s), `builder` cook (`cargo chef cook --profile dist --target <host triple> -p vpay-server -p vpay-worker-bin` — **the same flags as the real build**, with `.cargo/` copied in first so `+crt-static` applies), then the unchanged `cargo build`. `ARG`/`ENV VPAY_GIT_SHA` moved from the first instruction of the builder stage to **after the cook**, because `release.yml` passes a different `github.sha` on every push and an `ARG` above the cook throws the dependency layer away on every release build. `vpay-core/build.rs`'s `cargo::rerun-if-env-changed=VPAY_GIT_SHA` is untouched and still fires. **Measured on the authoring host 2026-09-05, `linux/amd64`, on a dedicated `docker-container` builder** (not the shared default one, which another build was using): cold 254 s → 238 s (**retracted by the 2026-09-05 review pass: that pair was two unpaired samples. Two matched cold pairs — the same isolated builder pruned between the two runs of each pair, runs back to back, the second pair in reverse order — give one-stage 193 s / cargo-chef 256 s and cargo-chef 248 s / one-stage 212 s, i.e. the cold path is 36-63 s SLOWER, which is the `cargo install cargo-chef` plus the cook's own pass. The warm numbers reproduced: source touch 105 s and 114 s, sha-only 101 s and 112 s, `ARG` moved above the cook 215 s, a `docs/` edit 1 s**); **one comment line added to `vpay-server/src/main.rs` 260 s → 125 s**, with the cook step logging `CACHED`; a `--build-arg VPAY_GIT_SHA` change alone **116 s**, cook `CACHED`, and the sha verifiably in the binary (`strings … | grep -c` → 1, versus 0 without the arg). **The `ARG` placement was proven load-bearing by mutation, not asserted:** moving it back above the cook makes the same sha-only build recompile the graph — cook not `CACHED`, 251 s. Runtime images unchanged: `vpay-server` 15.9 MB and two layers before and after, the `config/` layer the same digest in both, `docker export | grep -i 'cargo\|chef\|rust'` empty, and both `scratch` images now **run** (`--version` → `vpay-server 0.1.0` / `vpay-worker-bin 0.1.0`, exit 0) — the first time a container has been started from either on an authoring host. **The saving is ~2x, not the ~10x cargo-chef is usually sold on, and the reason is in the profile:** `[profile.dist]` inherits `release`'s `lto = "fat"` / `codegen-units = 1`, and a fat-LTO link re-consumes every dependency's LLVM IR whatever the cache holds. Single sample per number, one host, amd64 only — see [plans/exp8-notes/opus.md](plans/exp8-notes/opus.md) and, for the sabotage review that re-measured all of it and the six mutations it ran, [plans/exp8-notes/opus-review.md](plans/exp8-notes/opus-review.md). **The review also found the `--profile`/`--target` failure modes differ** — a cook missing `--target` dies in a second on the proc-macro/`+crt-static` conflict, a cook missing `--profile dist` succeeds silently and caches nothing (305 s against 105 s) — and that `[profile.dist]`'s inherited `lto = "fat"`, the thing that bounds the saving, is recorded in no ADR and no comment, so overriding it with `"thin"` is an open maintainer decision |
+| `backends/Dockerfile` (musl → scratch) | ✅ | Last rewritten 2026-08-09 (musl host target, UID 65532). **Could not have produced a bootable image before 2026-09-02**: it never copied `config/` in, so there was no file for `VPAY_CONFIG` to name. Now bakes `config/` at `/config` and sets `ENV VPAY_CONFIG=/config/application.yml` in both runtime stages (secrets stay `${VAR}`, so the layer holds none). **A second reason it could never have built, found in review the same day:** the builder stage copied every workspace member except `sdks/rust`, and cargo refuses to load a workspace whose `members` list names a missing directory — proven by reconstructing the build context outside Docker and running the Dockerfile's own `cargo build`, which failed at manifest load; `COPY sdks/rust` added. **A third, found by the first CI build that reached the Docker step (run `33646048616`, the fix's own PR):** on the alpine builder the host triple *is* `x86_64-unknown-linux-musl`, and with no `--target` cargo applied `.cargo/config.toml`'s `+crt-static` rustflags to proc-macros too, which cannot be static (`cannot produce proc-macro for async-trait`). The build now passes `--target` set to the builder's own host triple (still never a cross-compile) and copies from `target/<triple>/dist/`; the Dockerfile's header comment explains it. It was the last reason: the next run, `33647189156`, built both images and booted the stack. **Built for the first time by CI's `e2e (compose)` job on run `33647189156` (2026-09-02), and the resulting `scratch` image booted, found its baked config, connected to Postgres, ran the migrations and answered `/healthz` 200.** **Built on an authoring machine for the first time 2026-09-03 (Step 6, block A) by `just release-dry-run`** — both targets, `linux/amd64`, exit 0; the `dist` build took 1 m 55 s and the two `scratch` images are 14.8 MB and 10.7 MB. Built, not booted: no local run has started a container from either. **Changed 2026-09-05: dependency compilation is now a cached layer (cargo-chef `0.1.78`, pinned exactly, `--locked`).** Four stages — `chef` (then `rust:1.95.0-alpine3.22`, **`rust:1.98.0-alpine3.22` since the toolchain bump of 2026-09-05 — every timing in this row was measured on the 1.95.0 base and none has been re-measured on 1.98.0**; `cargo install cargo-chef`, 33 s), `planner` (`cargo chef prepare` → `recipe.json`; manifests and the lockfile, no source, 0.1 s), `builder` cook (`cargo chef cook --profile dist --target <host triple> -p vpay-server -p vpay-worker-bin` — **the same flags as the real build**, with `.cargo/` copied in first so `+crt-static` applies), then the unchanged `cargo build`. `ARG`/`ENV VPAY_GIT_SHA` moved from the first instruction of the builder stage to **after the cook**, because `release.yml` passes a different `github.sha` on every push and an `ARG` above the cook throws the dependency layer away on every release build. `vpay-core/build.rs`'s `cargo::rerun-if-env-changed=VPAY_GIT_SHA` is untouched and still fires. **Measured on the authoring host 2026-09-05, `linux/amd64`, on a dedicated `docker-container` builder** (not the shared default one, which another build was using): cold 254 s → 238 s (**retracted by the 2026-09-05 review pass: that pair was two unpaired samples. Two matched cold pairs — the same isolated builder pruned between the two runs of each pair, runs back to back, the second pair in reverse order — give one-stage 193 s / cargo-chef 256 s and cargo-chef 248 s / one-stage 212 s, i.e. the cold path is 36-63 s SLOWER, which is the `cargo install cargo-chef` plus the cook's own pass. The warm numbers reproduced: source touch 105 s and 114 s, sha-only 101 s and 112 s, `ARG` moved above the cook 215 s, a `docs/` edit 1 s**); **one comment line added to `vpay-server/src/main.rs` 260 s → 125 s**, with the cook step logging `CACHED`; a `--build-arg VPAY_GIT_SHA` change alone **116 s**, cook `CACHED`, and the sha verifiably in the binary (`strings … | grep -c` → 1, versus 0 without the arg). **The `ARG` placement was proven load-bearing by mutation, not asserted:** moving it back above the cook makes the same sha-only build recompile the graph — cook not `CACHED`, 251 s. Runtime images unchanged: `vpay-server` 15.9 MB and two layers before and after, the `config/` layer the same digest in both, `docker export | grep -i 'cargo\|chef\|rust'` empty, and both `scratch` images now **run** (`--version` → `vpay-server 0.1.0` / `vpay-worker-bin 0.1.0`, exit 0) — the first time a container has been started from either on an authoring host. **The saving is ~2x, not the ~10x cargo-chef is usually sold on, and the reason is in the profile:** `[profile.dist]` inherits `release`'s `lto = "fat"` / `codegen-units = 1`, and a fat-LTO link re-consumes every dependency's LLVM IR whatever the cache holds. Single sample per number, one host, amd64 only — see [plans/exp8-notes/opus.md](plans/exp8-notes/opus.md) and, for the sabotage review that re-measured all of it and the six mutations it ran, [plans/exp8-notes/opus-review.md](plans/exp8-notes/opus-review.md). **The review also found the `--profile`/`--target` failure modes differ** — a cook missing `--target` dies in a second on the proc-macro/`+crt-static` conflict, a cook missing `--profile dist` succeeds silently and caches nothing (305 s against 105 s) — and that `[profile.dist]`'s inherited `lto = "fat"`, the thing that bounds the saving, is recorded in no ADR and no comment, so overriding it with `"thin"` is an open maintainer decision |
 | `frontends/Dockerfile` | ✅ | Last rewritten 2026-08-09. **Never built anywhere yet**: not on an authoring machine, and CI's `e2e (compose)` job, which will build it, has never reached its Docker step. **Built for the first time by CI's `e2e (compose)` job on run `33647189156` (2026-09-02); the standalone Next server answered 200 on `/`.** Its build context had been checked beforehand the same way as the backend one — `pnpm install --frozen-lockfile --filter @vpay/dashboard...` against a reconstruction of exactly what it copies passes the lockfile consistency check with `examples/` and `sdks/nodejs` absent — see below. **Built on an authoring machine for the first time 2026-09-03 (Step 6, block A)** by `just release-dry-run`, `linux/amd64`, exit 0, 339 MB; built, not booted. **Changed 2026-09-04 (Step 9, lane 4): it now builds TWO images.** A shared `base` stage, then `dashboard-builder` → `runner` (unchanged output, name kept so `release.yml`'s matrix entry did not move) and `checkout-builder` → `checkout`. The checkout builder copies `sdks/` as well as `frontends/`, which is load-bearing: `@vpay/checkout` depends on `@vaam-apps/vpay-stripe-js`, whose `exports` resolve to a gitignored `dist/`, so without the SDK's source in the context `next build` fails with `TS2307`. **Every consumer now names its target** (`release.yml`, and `compose.e2e.yml`'s `dashboard` and `vpay-checkout`) — "the last stage wins" stopped being a safe way to say which image you meant. **Both targets built on the authoring host on 2026-09-04 from a clean `git archive` context**, and the `checkout` one was then RUN: `--read-only --tmpfs /tmp`, `uid=1000(node)`, healthcheck healthy, `GET /healthz` 200 carrying `no-store` / `frame-ancestors 'none'` / `no-referrer` / `nosniff`, and `touch /app/nope` refused with "Read-only file system". That is the first time anything in this repository has observed a Next.js image under the constraints the chart asks of it |
 | `deny.toml` | ✅ | `cargo deny check` passes clean: `advisories ok, bans ok, licenses ok, sources ok`. The three advisories that failed before were fixed by **upgrading dependencies, not by suppressing them** — see below. One advisory is explicitly ignored: **RUSTSEC-2023-0071** (Marvin Attack in `rsa`, no patched release, an unconditional dependency of `authkestra-engine` per [ADR-0009](adr/0009-dashboard-oidc-provider.md)), accepted deliberately with the reasoning recorded inline in `deny.toml`. **This entry was preemptive when added and now genuinely fires — and this pass found that the previous pass's own note on *how* it fires was already stale, before this note could even be written once.** The last pass said `authkestra-op`/`authkestra-engine` reached `rsa` only via `vpay-tests-integration`'s dev-dependencies, so "the exposure itself is still narrower than 'in production' ... no shipping binary pulls it in." **That is no longer true, independently re-run and confirmed for this update:** `vpay-db` added `authkestra-op` as a genuine, non-dev dependency this pass (for `SqlClientAssertionStore`, OP-2), and both `vpay-server` and `vpay-worker-bin` depend on `vpay-db`. `cargo tree -i rsa` now shows `rsa v0.9.10 ← authkestra-engine ← authkestra-op ← vpay-db ← vpay-api/vpay-server/vpay-worker-bin`, with no `(dev)` marker anywhere on that specific path (the pre-existing `vpay-tests-integration` dev-only path still exists too, unchanged, in parallel). `cargo deny -L info check advisories` still reports the same `note[advisory-ignored]`/`note[vulnerability]` pair it did before — nothing about the ignore mechanism changed, and `cargo deny check` still exits 0 with 0 errors, so this is **not a CI regression**. What changed is the honesty of this row's own claim about scope: `rsa`'s Marvin-Attack timing side-channel is now reachable from both shipping binaries' production dependency graph, not merely from a test-only crate, even though nothing in either binary calls into `rsa` yet (no shipping code path constructs anything from `authkestra-engine`/`authkestra-op` — see "Merchant auth"/"Dashboard auth" above). The original `deny.toml` comment's own reasoning for accepting the advisory (no patched release exists; RS256 has no alternative in this stack; `/dash/v1` is staff-only, not the merchant payment path) does not depend on which dependency edge is dev-only, so the acceptance itself still stands — only the "no shipping binary pulls it in" line needs correcting, which this row now does. Also bans `aws-lc-rs`/`aws-lc-sys` so a second rustls crypto provider cannot reappear. **New this pass:** `CDLA-Permissive-2.0` was added to the allow list, with its justification recorded inline — it covers `webpki-roots` (Mozilla's CA bundle, data not code), pulled in through `sqlx`'s `tls-rustls-ring` feature now that `vpay-db` is a non-dev dependency using it (root `Cargo.toml`'s own comment: previously latent in the workspace's pins, now actually reachable). `tls-rustls-ring` (vendored roots) was chosen deliberately over `tls-rustls-ring-native-roots`: the runtime image is `FROM scratch` ([ADR-0004](adr/0004-musl-mimalloc.md)) with no OS trust store for `rustls-native-certs` to read, so native roots would fail TLS to Postgres in the shipped image only, while passing locally and in CI where a trust store exists — exactly the kind of gap that would not be caught until a real deployment. `rustls-native-certs` does still appear in the dependency graph (via `bollard → testcontainers → vpay-testkit`), but only as a `[dev-dependencies]` chain — `cargo tree -i rustls-native-certs` shows every path terminating in a dev-dependency of `vpay-testkit`/`vpay-db`/`vpay-tests-integration`, never a shipping binary, independently confirmed for this update **Updated 2026-09-05:** Dependabot alert 19 (`serde_with` < 3.21.0, KeyValueMap panics on empty entries, medium) was closed by a lockfile bump 3.17.0 → 3.21.0. `serde_with` reaches this workspace only through `testcontainers` via `vpay-testkit`, so no shipping binary compiled it; `cargo deny` was already green because the RustSec database had not yet carried the advisory. Verified: `cargo check --workspace --all-targets`, `postgres_smoke` 15/15 on a real container. |
 | GitHub Actions | ✅ | **Correcting this row, which said "never executed": by 2026-09-02 the `ci` workflow had run 13 times (2026-08-09 → 2026-09-02, every one on a pull request) and failed all 13** (`gh run list --workflow ci`; per-job conclusions from `gh run view`). Job by job: `self-checks` passed 13/13; `rust` passed 10/13 (failed on `31317876404`, `31319267218`, `33618568372`) — on the latest run, `33626567174`, it ran `cargo nextest run --workspace` on `ubuntu-latest` with a working Docker daemon, container suites included, and reported `320 passed, 3 skipped`, which is the evidence for every container-backed row on this page; `supply chain` passed 11/13; `web` passed only the last 2 (the `pnpm -r test` Cypress-script bug fixed in the SDK pass); **`e2e (compose)` failed 13/13** — the first eleven at `pnpm/action-setup@v4` (the `packageManager` conflict `bf9811d` fixed), the last two at `pnpm exec cypress install`, because the workflow set `CYPRESS_INSTALL_BINARY: 0` for *all* jobs and then asked Cypress to install. The Docker steps after that never ran once. Two more defects: `on.push.branches` said `main` (the default branch is `master`, so nothing ever ran on a merge), and the `rust` job's flow-style `{ components: rustfmt, clippy }` parsed `clippy` as a stray key. **All fixed 2026-09-02**: the e2e job downloads Cypress normally and verifies it, builds both images, polls `/healthz` for a 200 and the dashboard for a 200 before running the spec; the compiler version is read from `rust-toolchain.toml` (now pinned to `1.95.0`, matching `backends/Dockerfile`) in every Rust job of `ci.yml` and `docs.yml`; and a new `just verify-ignored` step fails the `rust` job if the ignored-test count is not exactly 3, the number of test binaries is not exactly 30 (the check that actually catches a binary dropping out — 18 of the 30 hold eight tests or fewer), or the suite shrinks below 320 tests. **`expected_suites` moved 30 → 32 on 2026-09-02 (Step 1)**, for the two new `vpay-tests-integration` binaries `client_store` and `merchant_token_flow`; the raised value has not yet been exercised by a CI run. **Run 14 of the workflow — `33647189156`, on this fix's own pull request (#14) — is the first green `ci` run in this repository's history**: all five jobs passed; the `rust` job reported `329 tests run: 329 passed, 3 skipped` and `verify-ignored: 3 ignored (expected 3), 30 test binaries (expected 30), 332 total`; the `e2e (compose)` job built both images (5 min 21 s), got `/healthz answered 200 after 1s` and `dashboard: / answered 200 after 2s`, and Cypress ran the one spec (`dashboard.cy.ts`, 3 passing). The run before it, `33646048616`, was the first ever to reach the Docker step and failed there — see "Docker / compose" below for the proc-macro finding it produced. **✅ as of run `33650294682` (2026-09-02), the first push-triggered run on `master` in the repository's history, triggered by the merge of #14 and green on all five jobs.** The claim this row makes — the workflow runs on the default branch and on pull requests, builds the images, boots the stack and runs every suite — would fail visibly if it broke, which is the bar for ✅ here . **Nothing changed here in Step 3 (2026-09-03): no workflow file was touched, and no CI run exists for the `claude/step3-rails` branch.** **Changed 2026-09-03 (Step 5b), and one of the changes costs coverage.** The `web` job now runs `pnpm --filter @vaam-apps/vpay-sdk build` *before* `pnpm -r typecheck` (`sdks/stripe-compat` imports `@vaam-apps/vpay-sdk/stripe`, whose types resolve to the gitignored `dist/`; in the old order a clean checkout failed with `TS2307` — reproduced locally by `rm -rf sdks/nodejs/dist && pnpm -r typecheck`), and the `e2e (compose)` job gains a Rust toolchain, `just gen-demo-keys`, `-f compose.demo.yml` and a `pnpm --filter @vaam-apps/vpay-stripe-compat compat` step (with `VPAY_RECEIVER_URL` pointing at the `wiremock-webhook` container the base overlay already publishes on 8083, which the `constructEvent` case reads the delivery out of). Master's own `e2e` job did **not** already do any of this — checked on the rebase, and there are no duplicated steps. **`config/application-sandbox.yml` is now exercised by nothing.** compose.e2e.yml sets `VPAY_PROFILE: sandbox`; compose.demo.yml overrides it to `demo`, and `vpay-config` loads one overlay — the one the profile names — so the e2e stack loads `application-demo.yml` *instead of* the sandbox overlay, even though `sandbox` is the CLI's default profile. That is inert **today** and only today: the sandbox overlay sets exactly two things the demo overlay does not, `deployment.name` (cosmetic) and `dashboard_client.redirect_uris` (the OIDC callback at `http://localhost:3000/dash/v1/callback`), and the one Cypress spec asserts the dashboard's scaffold notice without ever starting a login, so no redirect URI is read under either profile. The day a spec signs in, this job stops covering the profile it appears to cover. Deliberately *not* fixed by editing compose: the alternative is a third overlay used only by CI, which is one more file to keep in sync, and the choice belongs to a maintainer rather than to this pass. **No CI run exists for the `claude/step5b-stripe-sdk` branch either**, so every count in this row's Step 5b sentences was measured on the authoring machine — including the post-rebase ones: `886 tests run: 886 passed, 0 skipped` with `0 ignored (expected 0), 38 test binaries (expected 38)`, and 25 stripe-compat cases against a real stack. `min_tests` moved 840 → 870 on that measurement; `expected_suites` stayed 38, because Step 5b added no Rust test *binary* — its Rust tests land in files that already existed and its new suite is TypeScript, which cargo does not run. The conformance suite starts its WireMock containers with testcontainers precisely so the `rust` job needs no new services; whether that works on GitHub's runners is unproven, and the counts in this pass's header were all measured on the authoring machine **Changed 2026-09-03 (frontend dependency audit): the `web` job gained a `just audit-web` step, placed immediately after `pnpm install --frozen-lockfile` and before every build step, plus a SHA-pinned `taiki-e/install-action@e67fa11c` (v2.87.4) to provide `just` — the same pin `deploy` uses, chosen over the `@v2` tag the `rust` and `e2e` jobs carry because this is the step that decides whether a known-vulnerable dependency can land. CI runs the recipe rather than a copy of its two commands, so the gate and the local check cannot drift. The `e2e` job deliberately does *not* audit: it installs from the same lockfile. `actionlint` over the edited file: clean.** **No CI run of this change exists yet** — the gate was exercised on the authoring machine instead, in both directions: green on this tree, and exit 1 with `3 high` on `master`'s own lockfile (restored with `git stash`, since `pnpm audit` resolves from `pnpm-lock.yaml` and not from `node_modules`). That second run is the evidence the step can actually fail; a gate only proved green is not a gate. **Updated 2026-09-03 (Step 7): `master` now has a recent green run, `33792230584`** (commit `ca94eac`, the merge of PR #24) — **six** jobs, not the five this row describes above, since `deploy (helm chart)` joined in Step 6: `rust`, `web`, `e2e (compose)`, `supply chain`, `self-checks (no-mocks, status)` and `deploy (helm chart)`, all successful. That run is the CI evidence the "Merchant auth", "Payment intents" and "Charge submission" rows above now cite. **It is a run of `master`, not of Step 7:** nothing on `claude/step7-cleanup` — including the `test-doc` step and the `verify-docs` report this step adds to this workflow — has been executed by CI even once. |
@@ -2005,10 +2028,115 @@ via `hyper-rustls`) is unchanged and predates all of this.
 `rust_version` declared anywhere in the resolved dependency graph (`cargo
 metadata`, including dev-dependencies). **Read the comment block at the top of
 `rust-toolchain.toml` before trusting that number**: it states plainly that
-1.88 has **not** been verified by actually compiling with a 1.88 toolchain —
-only stable 1.95.0 was available here — and that 63 of 317 packages in the
-graph declare no `rust_version` at all, so the true floor could in principle
-be higher.
+1.88 has **not** been verified by actually compiling with a 1.88 toolchain,
+and that a large minority of the graph declares no `rust_version` at all, so
+the true floor could in principle be higher. **Re-derived 2026-09-05** during
+the toolchain bump below and it did **not** move — still 1.88. Two figures in
+this paragraph did: it used to say "only stable 1.95.0 was available here"
+(the pin is 1.98.0 now) and "63 of 317 packages", which was the graph as it
+stood on 2026-09-02; today's `cargo metadata` reports **135 of 477** packages
+with no `rust_version`. The crates that set the 1.88 ceiling are now
+`darling` 0.23.0, `jsonwebtoken` 11.0.0, `serde_with` 3.21.0, `time` 0.3.47
+(with `time-core` 0.1.8 and `time-macros` 0.2.27) and `testcontainers` 0.27.3
+/ `testcontainers-modules` 0.15.0 — the old comment named only `time` and the
+two `testcontainers` crates.
+
+### Toolchain pin — `1.95.0` → `1.98.0` (2026-09-05)
+
+**Why it moved.** CrateStack 0.11.1 is what this repository has adopted, and
+`cratestack check` is the seventh gate in `just verify`. Every crate in that
+release declares `rust-version = "1.98.0"`. Under the old pin, obtaining the
+tool a gate depends on required stepping outside the checkout or taking a
+prebuilt binary — for which **Linux musl has none**. The maintainer's
+decision was to move the pin rather than pin CrateStack back to 0.8.15, the
+last release that supports 1.95.0.
+
+**Proven in both directions, on the authoring host, 2026-09-05** — this is
+the evidence that the bump is both necessary and sufficient, not an
+assumption:
+
+```
+$ cargo +1.95.0 install cratestack-cli --version 0.11.1 --locked   # exit 101
+error: cannot install package `cratestack-cli 0.11.1`, it requires rustc 1.98.0 or newer,
+while the currently active rustc version is 1.95.0
+`cratestack-cli 0.8.15` supports rustc 1.95.0
+
+$ cargo install cratestack-cli --version 0.11.1 --locked   # inside the worktree, exit 0
+Installed package `cratestack-cli v0.11.1` (executable `cratestack`)
+```
+
+**What moved, and what deliberately did not.** `rust-toolchain.toml`'s
+`channel`; `backends/Dockerfile`'s single `FROM rust:1.98.0-alpine3.22`
+(`planner` and `builder` are both `FROM chef`, so one literal covers all
+three stages and they cannot drift). **No workflow file names a compiler
+version** — every Rust job in `ci.yml` and `docs.yml` already `sed`s
+`channel` out of `rust-toolchain.toml`, so nothing there had to change and
+the extraction was re-run by hand to confirm it yields `1.98.0`. The **Alpine
+base did not move**: `rust:1.98.0-alpine3.22` exists on Docker Hub
+(`docker manifest inspect`: six manifest entries, of which **three are
+architectures** — `linux/amd64`, `linux/arm64/v8`, `linux/ppc64le` — and three
+are `unknown/unknown` attestation manifests; the 1.95.0 tag carries exactly
+the same six, and the arm64 one is what `release.yml` needs. This page and
+the Dockerfile read "six architecture entries" until the review pass of the
+same day counted them), so this changes the compiler and nothing else about the build
+environment. `rust:1.98.0-alpine3.23` also exists and was **not** taken — an
+Alpine major bump changes musl and gcc under a static build and deserves its
+own evidence rather than riding along on a compiler bump. `Cargo.toml`'s
+`rust-version` did not move either (see the paragraph above).
+
+**One new clippy lint fired**, workspace-wide, over `--all-targets`:
+`clippy::byte_char_slices` at `backends/crates/vpay-core/src/ids.rs:396`, on
+the test that asserts the four Crockford excludes are absent from the
+alphabet. Fixed by taking the lint's own suggestion — `[b'i', b'l', b'o',
+b'u']` → `*b"ilou"`, the same `[u8; 4]`, loop body untouched — **not** by an
+`#[allow]`, and `clippy.toml` was not touched. That was the only new
+diagnostic in the whole workspace; `cargo fmt --all -- --check` was clean
+under 1.98.0's rustfmt with no reformatting.
+
+**Two stale claims were left behind by the bump itself; both are fixed** (its
+sabotage review, the same day). `CLAUDE.md`'s "Things that will waste your
+time" section said *"`rust-toolchain.toml` pins `1.95.0`"*; the bump had no
+authorisation to edit that file and recorded it here instead, and the review —
+which did — corrected the number. The bump also claimed CLAUDE.md was **"the
+one place in the tree that still names the old pin as current"**, and it was
+not: `justfile`'s `check-schema` rationale still said `just install-rust`
+leaves the CrateStack CLI out because *"installing it needs a newer compiler
+than `rust-toolchain.toml` pins"* — false since the bump, and contradicted by
+the same recipe's failure message fifty lines below it, which that very commit
+had rewritten. Both are corrected. Nothing in the tree now names 1.95.0 as
+current; the remaining `1.95.0` strings are dated `docs/plans/*-notes/` records
+and explicitly historical sentences, where they are correct.
+
+**"Bump both together" became a gate, because the mismatch was measured to be
+invisible.** `just verify-toolchain` (`cargo xtask verify-toolchain`) is the
+**tenth** check in `just verify` and a step in CI's `self-checks` job since
+2026-09-05: it fails when the version in `backends/Dockerfile`'s
+`FROM rust:<version>-alpine…` and `rust-toolchain.toml`'s `channel` disagree.
+It exists because the review pass ran that exact mutation on this branch —
+`channel = "1.98.0"` with the `FROM` line left at `rust:1.95.0-alpine3.22` —
+and `just verify` and `just fmt-check` both exited **0**, with no other `just
+ci` recipe reading either file. The first symptom would have been a release
+image built by a compiler no local run and no CI job had ever used. With the
+gate, that same mutation fails `just verify` naming the file, the line and
+both versions. See the "self-verification" section above for what it does and
+does not cover.
+
+**What was NOT verified by this bump:** nothing has compiled this workspace
+on `aarch64`, no CI run of this change exists, and the 1.88 MSRV remains
+metadata-derived and uncompiled, exactly as before. See
+[plans/exp11-notes/opus.md](plans/exp11-notes/opus.md) for every command and
+its output, and
+[plans/exp11-notes/opus-review.md](plans/exp11-notes/opus-review.md) for the
+sabotage review that re-ran all of it, its mutation table, and the two test
+counts that settle whether the suite shrank (it did not: on the base this work
+was written against, `046892a`, that base and this branch both listed **1220
+tests in 42 binaries**, each measured under its own pin). Those two are a
+matched pair on `046892a` and are left as measured. **Rebased onto `02ae5cc`
+on 2026-09-05**, which brought [ADR-0016](adr/0016-engineering-standards.md)'s
+`verify-serde` and `verify-repositories` and their 40 tests, the branch lists
+**1270 tests in 42 binaries, 0 ignored** — 1260 on `02ae5cc` plus this
+branch's ten, all in `xtask` (184 → 194). `verify-toolchain` is the **tenth**
+gate after that rebase, not the eighth it was written as.
 
 ### CrateStack
 
@@ -2035,23 +2163,27 @@ documentation shows; that action downloads the prebuilt
 `x86_64-unknown-linux-gnu` binary and verifies it against the published
 `.sha256` sidecar before putting it on `PATH`.
 
-**Installing it locally needs a compiler this repository does not pin.**
-`cratestack-cli 0.11.1` declares `rust-version = "1.98.0"` and
-`rust-toolchain.toml` here pins `1.95.0`, so `cargo install` run *inside* the
-worktree refuses — measured, not assumed:
+~~**Installing it locally needs a compiler this repository does not pin.**~~
+**Retired 2026-09-05: the repository pins that compiler now.** This paragraph
+used to record that `cratestack-cli 0.11.1` declares
+`rust-version = "1.98.0"` while `rust-toolchain.toml` pinned `1.95.0`, so
+`cargo install` run *inside* the worktree refused with
 
 ```
-$ cargo install cratestack-cli --locked --version 0.11.1   # inside the worktree
 error: cannot install package `cratestack-cli 0.11.1`, it requires rustc 1.98.0 or newer,
 while the currently active rustc version is 1.95.0
 `cratestack-cli 0.8.15` supports rustc 1.95.0
 ```
 
-Install it from a directory outside the checkout instead
-(`cd ~ && cargo +stable install cratestack-cli --locked --version 0.11.1`,
-built here with `rustc 1.98.0`), or take the prebuilt binary. `just check-schema`'s
-failure message says exactly this. `just install-rust` deliberately does not
-install it.
+and that the workaround was to install from a directory outside the checkout.
+That refusal is exactly what the toolchain bump above was for: `cargo install
+cratestack-cli --locked --version 0.11.1` now succeeds from inside the
+worktree, measured on 2026-09-05, and `just check-schema`'s failure message
+was rewritten to say so instead of teaching the `cd ~` workaround. The
+prebuilt binary is still there for five target triples (Linux musl still has
+none), and CI still takes it rather than compiling the CLI on every
+`self-checks` run — that is now a speed choice, not a constraint.
+`just install-rust` deliberately does not install it.
 
 ~~`cratestack.dev/docs` 404s publicly and no authoritative reference was
 found.~~ **Corrected 2026-09-05: the docs exist, and this claim only ever

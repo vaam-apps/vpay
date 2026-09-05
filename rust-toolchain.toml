@@ -3,24 +3,60 @@
 #   - `channel` below (rustup, developers, `just`),
 #   - `.github/workflows/ci.yml`, which reads `channel` from this file,
 #   - `backends/Dockerfile`'s `FROM rust:<version>-alpine...` builder image,
-#     which cannot read this file and is pinned by hand.
+#     which cannot read this file and is pinned by hand. It is named there
+#     exactly ONCE, by the `chef` stage: `planner` and `builder` are both
+#     `FROM chef`, so one literal covers all three stages and they cannot
+#     drift apart. (This comment said "named TWICE... and the two must stay
+#     identical" between the cargo-chef change and 2026-09-05; that was wrong
+#     — `FROM chef` names no version.)
 # Until 2026-09-02 this said `channel = "stable"`, so a developer, CI and the
 # image could all be on different compilers with nothing noticing.
 #
-# NOTE: this repo was authored and verified against stable 1.95.0. The MSRV
-# declared in Cargo.toml (`rust-version = "1.88"`) is derived *only* from
-# `cargo metadata`'s `rust_version` field across the whole resolved dependency
-# graph (the max over every package, including dev-dependencies — currently
-# `time` 0.3.47 and `testcontainers`/`testcontainers-modules` 0.27/0.15, all
-# of which declare 1.88). It has NOT been verified by actually compiling this
-# workspace with a 1.88 toolchain — only stable (1.95.0) was available in the
-# authoring environment. A meaningful fraction of the graph (63 of 317
-# packages, at last check) declares no `rust_version` at all, so the true
-# floor could in principle be higher still. Verify with an actual 1.88
-# toolchain before relying on this number, e.g. for a container base image.
+# "Must move together" is a GATE since 2026-09-05, not only a sentence here:
+# `just verify-toolchain` (`cargo xtask verify-toolchain`, the tenth check in
+# `just verify` and a step in CI's `self-checks` job) fails if the Dockerfile's
+# `FROM rust:` version and `channel` below disagree. It was added because the
+# mismatch was measured to pass everything else: with `channel` moved to
+# 1.98.0 and the `FROM` line left at 1.95.0, the whole of `just ci` was green.
+#
+# WHY 1.98.0 (moved 1.95.0 -> 1.98.0 on 2026-09-05). CrateStack 0.11.1 is
+# what this repository has adopted: `cratestack check` is the seventh gate in
+# `just verify` (`just check-schema`), and every crate of that release —
+# library crates and `cratestack-cli` alike — declares
+# `rust-version = "1.98.0"`. Under the old 1.95.0 pin, `cargo install
+# cratestack-cli --locked --version 0.11.1` run anywhere inside this worktree
+# refused outright ("requires rustc 1.98.0 or newer, while the currently
+# active rustc version is 1.95.0"), so the only way to obtain the tool a gate
+# depends on was to step outside the checkout or take a prebuilt binary — for
+# which Linux musl has none. The maintainer's decision was to move the pin
+# rather than pin CrateStack back to 0.8.15, the last release that supports
+# 1.95.0. Verified in both directions on 2026-09-05: that `cargo install`
+# fails under `+1.95.0` and succeeds under `+1.98.0` (see
+# docs/plans/exp11-notes/opus.md).
+#
+# No CrateStack *library* crate is in this workspace's dependency graph today
+# — `schemas/vpay.cstack` is checked by an external binary, and this pass
+# deliberately added none — so the bump is what makes the tooling installable
+# here, not what makes the workspace compile.
+#
+# NOTE: this repo is authored and verified against 1.98.0. The MSRV declared
+# in Cargo.toml (`rust-version = "1.88"`) is derived *only* from `cargo
+# metadata`'s `rust_version` field across the whole resolved dependency graph
+# (the max over every package, including dev-dependencies). Re-derived on
+# 2026-09-05 during this bump and it did NOT move: the max is still 1.88,
+# now declared by `darling` 0.23.0, `jsonwebtoken` 11.0.0, `serde_with`
+# 3.21.0, `time` 0.3.47 (+ `time-core`/`time-macros`) and
+# `testcontainers`/`testcontainers-modules` 0.27.3/0.15.0. It has NOT been
+# verified by actually compiling this workspace with a 1.88 toolchain — only
+# the pinned channel has ever compiled it. A meaningful fraction of the graph
+# (135 of 477 packages, measured 2026-09-05; the figure here used to read
+# "63 of 317", which was the graph as it stood on 2026-09-02) declares no
+# `rust_version` at all, so the true floor could in principle be higher
+# still. Verify with an actual 1.88 toolchain before relying on this number,
+# e.g. for a container base image.
 #
 # The musl target is required by `just build-dist`; add it with
 #   rustup target add x86_64-unknown-linux-musl
 [toolchain]
-channel = "1.95.0"
+channel = "1.98.0"
 components = ["rustfmt", "clippy"]
