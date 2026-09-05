@@ -172,13 +172,13 @@ Each is quoted verbatim as it stands today, with the replacement.
 > - **Nothing compares Orange's `notif_token` against the stored one.** The
 >   route discards `CallbackRef::ref_extra` rather than trusting it, so a
 >   callback still cannot repair a charge whose key material was lost. See
->   [adapter-orange-money.md](adapter-orange-money.md).
+>   [adapter-orange-money.md](../../flows/adapter-orange-money.md).
 
 ### `docs/flows/crash-safety.md`, "What is still not built" (line 215)
 
 **Retire:**
 > - **No callback route**, so a rail that tries to tell us about a charge is
->   ignored and only the ladder finds out — see [reconciler.md](reconciler.md).
+>   ignored and only the ladder finds out — see [reconciler.md](../../flows/reconciler.md).
 
 **Replace with:**
 > - **A rail that tells us about a charge is now heard** (Step 8): the
@@ -186,7 +186,7 @@ Each is quoted verbatim as it stands today, with the replacement.
 >   the ladder's next rung. It changes nothing about recovery — the
 >   authenticated status query is still the only thing that settles anything,
 >   and every kill point above resolves identically whether a callback arrives
->   or not. See [reconciler.md](reconciler.md).
+>   or not. See [reconciler.md](../../flows/reconciler.md).
 
 ### `docs/flows/provider-port.md`, "What the suite does not prove" (line 127)
 

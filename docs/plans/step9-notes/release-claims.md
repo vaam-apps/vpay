@@ -373,5 +373,13 @@ recorded here rather than silently edited. The full review is
 The review also confirmed §2's warning about the grep by mutation: reverting
 `release.yml`'s header to "NOTHING IN THIS FILE HAS EVER RUN" is caught by
 neither `actionlint`, nor `just verify`, nor the brief's grep — which does not
-match that file at all. And nothing in the repository catches an invented run
-id: substituting `39999999999` for `33929374661` leaves every gate green.
+match that file at all. ~~And nothing in the repository catches an invented run
+id: substituting `39999999999` for `33929374661` leaves every gate green.~~
+**Corrected 2026-09-05:** an invented run id is caught now. `cargo xtask
+verify-citations` (`just docs-check-citations`) resolves every workflow-run,
+pull-request and issue id cited in tracked Markdown against GitHub and fails on
+one that does not exist. It is opt-in rather than part of `just ci` because it
+needs the network; it never skips, and the two `39999999999` above are the only
+ids in the tree exempted from it, by a named pair in
+`CITATIONS_THAT_ARE_NOT_CLAIMS` in `.xtask/src/main.rs`, because a mutation
+record has to be able to print an id that does not exist in order to say so.

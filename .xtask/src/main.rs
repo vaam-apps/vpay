@@ -1,7 +1,7 @@
 //! Repository automation. Run via `cargo xtask <cmd>` or `just`.
 //!
-//! Four of these commands exist to enforce promises this repository makes
-//! about itself, because a promise nothing checks is a promise that decays:
+//! Five of these commands are the gates `just verify` runs, because a promise
+//! nothing checks is a promise that decays:
 //!
 //! * `verify-no-mocks`  — no test double is reachable from a shipping binary.
 //! * `verify-status`    — every `NotImplemented` is declared in `docs/status.md`.
@@ -9,6 +9,17 @@
 //!   stays at the process edge (`docs/adr/0011-error-modelling.md`).
 //! * `verify-sdk-parity` — every ✅ in `docs/sdks/parity.md` names a test that
 //!   exists, and every ⛔ carries a date (`docs/adr/0015-sdk-parity.md`).
+//! * `verify-links`     — every relative link in a tracked `*.md` resolves to
+//!   a tracked path. New 2026-09-05; before it, `just docs-check` printed
+//!   "link checking is not implemented yet" and exited 0.
+//!
+//! A sixth is a gate that needs the network, so it is opt-in
+//! (`just docs-check-citations`) and is **not** part of `just ci`:
+//!
+//! * `verify-citations` — every workflow-run id, pull request and issue a
+//!   document cites as evidence exists. It fails rather than skips when `gh`
+//!   is missing or unauthenticated: a check that downgrades itself reports
+//!   success for a run in which nothing was checked.
 //!
 //! One reports rather than enforcing:
 //!
@@ -24,9 +35,13 @@
 //!
 //! # Dependencies
 //!
-//! The `verify-*` commands other than `verify-no-mocks` take no dependencies
-//! at all and match on text rather than on types — see [`has_classify_impl`]
-//! for what that costs.
+//! The `verify-*` commands other than `verify-no-mocks` take no crate
+//! dependencies at all and match on text rather than on types — see
+//! [`has_classify_impl`] for what that costs. Two of them shell out instead:
+//! `verify-links` asks `git ls-files` what the repository actually tracks (a
+//! directory walk would let an untracked scratch file satisfy a link), and
+//! `verify-citations` asks `gh` — the one command here allowed to need the
+//! network, and the reason it is not in `just ci`.
 //! That is still true of them. `gen-signing-key` is what put four crates
 //! (`rsa`, `rand`, `sha2`, `base64`) in this crate's manifest: generating an
 //! RSA key and computing an RFC 7638 thumbprint cannot be done by string
@@ -56,10 +71,16 @@ fn main() -> ExitCode {
         "verify-status" => verify_status(&root),
         "verify-errors" => verify_errors(&root),
         "verify-sdk-parity" => verify_sdk_parity(&root),
+        "verify-links" => verify_links(&root),
+        "verify-citations" => verify_citations(&root),
+        // `verify-citations` is deliberately absent from `verify-all`: it
+        // needs the network, and `verify-all` is what an offline gate list
+        // runs.
         "verify-all" => verify_no_mocks(&root)
             .and_then(|()| verify_status(&root))
             .and_then(|()| verify_errors(&root))
-            .and_then(|()| verify_sdk_parity(&root)),
+            .and_then(|()| verify_sdk_parity(&root))
+            .and_then(|()| verify_links(&root)),
         // Not `Result`-shaped like the three gates above, and that is the
         // point: there is nothing here for a caller to fail on. See
         // `verify_docs`.
@@ -71,7 +92,9 @@ fn main() -> ExitCode {
         "help" | "--help" | "-h" => {
             println!(
                 "usage: cargo xtask \
-                 <verify-no-mocks|verify-status|verify-errors|verify-sdk-parity|verify-all>\n\
+                 <verify-no-mocks|verify-status|verify-errors|verify-sdk-parity|verify-links\
+                 |verify-all>\n\
+                 \x20      cargo xtask verify-citations   (a gate; needs `gh` and the network)\n\
                  \x20      cargo xtask verify-docs        (a report; never fails)\n\
                  \x20      cargo xtask gen-signing-key --out <dir>"
             );
@@ -2195,6 +2218,1143 @@ fn ts_test_keyword_at(chars: &[char], i: usize) -> Option<usize> {
         return Some(end + 1);
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// verify-links
+// ---------------------------------------------------------------------------
+
+/// Fail if a tracked Markdown file links to a path this repository does not
+/// track.
+///
+/// # Why this is a gate and not a report
+///
+/// Until 2026-09-05 `just docs-check` ran `verify-status` and then printed
+/// `note: link checking is not implemented yet`. Every claim this repository
+/// makes about itself is machine-checked *except* the one it makes most
+/// often: that the document you are reading points at the file it names.
+/// `docs/plans/step9-notes/release-claims-review.md`'s own mutation table
+/// (row M3) records breaking a link and watching `just docs-check` exit 0.
+/// This is the check that row asked for.
+///
+/// # What is checked, and what is deliberately not
+///
+/// Checked: every inline link and image destination, and every reference
+/// definition, in every file `git ls-files` reports with a `.md` extension,
+/// whose destination is a repository path. "Resolves" means the path — after
+/// a `#fragment` and a `:line` suffix are stripped and `.`/`..` are folded —
+/// is either a tracked file or a directory that contains one. Tracked, not
+/// merely present on disk: a link to a build artefact or to a scratch file
+/// that is only in the working tree resolves on the author's machine and
+/// nowhere else.
+///
+/// Deliberately **not** checked, so that nobody mistakes a green run for more
+/// than it is:
+///
+/// * **`#anchor` fragments.** Resolving one means agreeing with GitHub's
+///   heading-slug algorithm — including its emoji handling, its duplicate
+///   suffixes and its `<a name>` support — and disagreeing with it silently
+///   turns a correct link into a build failure. A fragment is stripped before
+///   the path is resolved, so `docs/flows/money.md#rounding` proves the file
+///   exists and says nothing about the heading.
+/// * **`http(s)://` URLs.** They need the network, they go stale for reasons
+///   outside this repository, and a gate that fails because someone else's
+///   site is down gets disabled. `verify-citations` is the deliberate
+///   exception: it resolves the *ids this repository cites as evidence*,
+///   which are claims about our own history rather than about the internet.
+/// * **`mailto:` targets.**
+/// * **Reference *usages*** (`[text][label]` with no definition). Only the
+///   definitions are resolved; a dangling label renders as literal text
+///   rather than as a wrong link, which is visible to a reader in a way a
+///   silently-wrong path is not.
+fn verify_links(root: &Path) -> Result<(), String> {
+    let tracked = tracked_paths(root)?;
+    let files: BTreeSet<&str> = tracked.iter().map(String::as_str).collect();
+    let dirs = ancestor_directories(&tracked);
+
+    let markdown: Vec<&String> = tracked.iter().filter(|p| p.ends_with(".md")).collect();
+    let mut problems = Vec::new();
+    let mut checked = 0usize;
+
+    for path in &markdown {
+        let text = fs::read_to_string(root.join(path)).map_err(|e| format!("{path}: {e}"))?;
+        for link in doc_links(&text) {
+            let Some(target_path) = resolvable_path(&link.target) else {
+                continue;
+            };
+            checked += 1;
+            match resolve_against(path, &target_path) {
+                Some(resolved) => {
+                    if !files.contains(resolved.as_str()) && !dirs.contains(resolved.as_str()) {
+                        problems.push(format!(
+                            "{path}:{}: {} -> {resolved}",
+                            link.line, link.target
+                        ));
+                    }
+                }
+                None => problems.push(format!(
+                    "{path}:{}: {} -> escapes the repository root",
+                    link.line, link.target
+                )),
+            }
+        }
+    }
+
+    if !problems.is_empty() {
+        return Err(format!(
+            "{} broken link(s) — each is `file:line: target -> resolved path`:\n  - {}",
+            problems.len(),
+            problems.join("\n  - ")
+        ));
+    }
+
+    println!(
+        "verify-links: ok — {checked} repository link(s) in {} tracked markdown file(s) resolve to a tracked path (anchors and http(s) URLs are not checked)",
+        markdown.len()
+    );
+    Ok(())
+}
+
+/// Every path `git ls-files` reports, repo-relative, in git's own order.
+///
+/// `git ls-files` rather than a directory walk, and `-z` rather than the
+/// default: the default quotes and escapes any path that is not plain ASCII,
+/// which would make a link to such a file look broken. Asking git also means
+/// an untracked scratch file — a rendered diagram, a downloaded log, an
+/// agent's notes — can never satisfy a link, which is the property that makes
+/// a green `verify-links` mean anything on a fresh clone.
+fn tracked_paths(root: &Path) -> Result<Vec<String>, String> {
+    let output = std::process::Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("running `git ls-files`: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "`git ls-files` failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Every directory that contains a tracked file, at every depth.
+///
+/// Git tracks files, never directories, so a link to `docs/runbooks/` has
+/// nothing to match against unless the directories are derived. Derived from
+/// the tracked list rather than read from the filesystem, for the same reason
+/// the file set is: an empty directory left behind by a build is not part of
+/// the repository, and a link into one is broken for everybody else.
+fn ancestor_directories(tracked: &[String]) -> BTreeSet<String> {
+    let mut dirs = BTreeSet::new();
+    for path in tracked {
+        let mut current = path.as_str();
+        while let Some((parent, _)) = current.rsplit_once('/') {
+            if !dirs.insert(parent.to_owned()) {
+                break;
+            }
+            current = parent;
+        }
+    }
+    dirs
+}
+
+/// One link destination as written, and the line it was written on.
+#[derive(Debug, PartialEq, Eq)]
+struct DocLink {
+    /// 1-based, so a failure can be pasted into an editor.
+    line: usize,
+    /// Exactly as written, before any fragment or `:line` suffix is stripped
+    /// — a failure message must show the reader what is in their file, not
+    /// what the checker made of it.
+    target: String,
+}
+
+/// Every link destination in a Markdown document.
+///
+/// Inline links (`[text](target)`), images (`![alt](target)`) and reference
+/// definitions (`[label]: target`), with fenced code blocks, HTML comments
+/// and inline code spans masked out first — see [`mask_non_links`].
+fn doc_links(text: &str) -> Vec<DocLink> {
+    let masked = mask_non_links(text);
+    let chars: Vec<char> = masked.chars().collect();
+    let line_starts = line_start_indices(&chars);
+
+    let mut links = inline_links(&chars, &line_starts);
+    links.extend(reference_definitions(&masked));
+    links
+}
+
+/// The index of the first character of each line, for [`line_of`].
+fn line_start_indices(chars: &[char]) -> Vec<usize> {
+    let mut starts = vec![0usize];
+    for (i, c) in chars.iter().enumerate() {
+        if *c == '\n' {
+            starts.push(i + 1);
+        }
+    }
+    starts
+}
+
+/// The 1-based line number containing character `index`.
+fn line_of(line_starts: &[usize], index: usize) -> usize {
+    line_starts.partition_point(|start| *start <= index)
+}
+
+/// Every `[text](destination)` — image or not — in already-masked text.
+///
+/// Scans for a balanced `[` … `]` immediately followed by `(`, rather than
+/// for the two characters `](`: a stray `](` in prose is not a link, and a
+/// gate that reports one teaches people to ignore it. The link *text* may
+/// span lines (a formatter is free to wrap it); the destination may not,
+/// which is CommonMark's own rule.
+fn inline_links(chars: &[char], line_starts: &[usize]) -> Vec<DocLink> {
+    let mut links = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        match chars.get(i) {
+            Some('\\') => {
+                i += 2;
+                continue;
+            }
+            Some('[') => {
+                if let Some(close) = matching_square_bracket(chars, i)
+                    && chars.get(close + 1) == Some(&'(')
+                    && let Some((target, end)) = link_destination(chars, close + 2)
+                {
+                    links.push(DocLink {
+                        line: line_of(line_starts, close + 2),
+                        target,
+                    });
+                    i = end;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    links
+}
+
+/// The index of the `]` that closes the `[` at `open`, honouring nesting and
+/// backslash escapes. `None` if it is never closed.
+fn matching_square_bracket(chars: &[char], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut i = open;
+    while let Some(c) = chars.get(i) {
+        match c {
+            '\\' => i += 1,
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The destination of an inline link whose `(` sits just before `from`, and
+/// the index just past the closing `)`.
+///
+/// Both CommonMark spellings: bare (`(docs/x.md)`, parentheses balanced so
+/// `(a(b).md)` survives) and angle-bracketed (`(<path with spaces>)`, which
+/// is the only way to write a destination containing a space). An optional
+/// `"title"` may follow. A newline inside the destination is not a link, so
+/// the scan gives up rather than swallowing the rest of the paragraph.
+fn link_destination(chars: &[char], from: usize) -> Option<(String, usize)> {
+    let mut i = from;
+    while matches!(chars.get(i), Some(' ' | '\t')) {
+        i += 1;
+    }
+
+    let mut destination = String::new();
+    if chars.get(i) == Some(&'<') {
+        i += 1;
+        loop {
+            match chars.get(i) {
+                None | Some('\n') => return None,
+                Some('>') => {
+                    i += 1;
+                    break;
+                }
+                Some('\\') => {
+                    destination.push(*chars.get(i + 1)?);
+                    i += 2;
+                }
+                Some(c) => {
+                    destination.push(*c);
+                    i += 1;
+                }
+            }
+        }
+    } else {
+        let mut depth = 0usize;
+        loop {
+            match chars.get(i) {
+                None | Some('\n') => return None,
+                Some('\\') => {
+                    destination.push(*chars.get(i + 1)?);
+                    i += 2;
+                }
+                Some('(') => {
+                    depth += 1;
+                    destination.push('(');
+                    i += 1;
+                }
+                Some(')') => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    destination.push(')');
+                    i += 1;
+                }
+                Some(c) if c.is_whitespace() => break,
+                Some(c) => {
+                    destination.push(*c);
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    // Whatever follows the destination — whitespace, then at most a title —
+    // has to end at the `)` that closes the link, or this was never one.
+    loop {
+        match chars.get(i) {
+            Some(')') => return Some((destination, i + 1)),
+            Some(c) if c.is_whitespace() && *c != '\n' => i += 1,
+            Some(quote @ ('"' | '\'')) => {
+                let quote = *quote;
+                i += 1;
+                loop {
+                    match chars.get(i) {
+                        None => return None,
+                        Some('\\') => i += 2,
+                        Some(c) if *c == quote => {
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Every `[label]: destination` definition in already-masked text.
+///
+/// Line-based, because that is what a definition is: it has to start a line
+/// (up to three spaces of indent, CommonMark's rule) and its destination runs
+/// to the first whitespace or to the closing `>`.
+fn reference_definitions(masked: &str) -> Vec<DocLink> {
+    let mut links = Vec::new();
+    for (index, raw) in masked.lines().enumerate() {
+        let line = raw.trim_start();
+        if raw.len() - line.len() > 3 || !line.starts_with('[') {
+            continue;
+        }
+        let Some(label_end) = line.find("]:") else {
+            continue;
+        };
+        let rest = line.get(label_end + 2..).unwrap_or_default().trim_start();
+        let target = if let Some(angled) = rest.strip_prefix('<') {
+            match angled.find('>') {
+                Some(end) => angled.get(..end).unwrap_or_default(),
+                None => continue,
+            }
+        } else {
+            rest.split_whitespace().next().unwrap_or_default()
+        };
+        if !target.is_empty() {
+            links.push(DocLink {
+                line: index + 1,
+                target: target.to_owned(),
+            });
+        }
+    }
+    links
+}
+
+/// Blank out every region of a Markdown document in which link syntax is not
+/// link syntax, preserving line breaks and character positions so a line
+/// number survives.
+///
+/// Three regions, masked in this order, and the order is the point:
+///
+/// 1. **Fenced code blocks.** A shell transcript that contains `[a](b)` is
+///    not a link, and this repository's runbooks are mostly transcripts.
+/// 2. **Inline code spans**, one line at a time. A backtick run only opens a
+///    span if a run of the same length closes it *on the same line*: a
+///    multi-line span is legal CommonMark, but honouring it here means one
+///    stray backtick can blank the rest of a document, and a masker that
+///    deletes too much makes this gate pass by finding nothing.
+/// 3. **HTML comments**, and only when terminated, for the same reason: an
+///    unclosed `<!--` is left as ordinary text rather than swallowing the
+///    file.
+fn mask_non_links(text: &str) -> String {
+    mask_html_comments(&mask_code_spans(&mask_fenced_blocks(text)))
+}
+
+/// Replace the contents of every ```` ``` ````/`~~~` fenced block — and the
+/// fence lines themselves — with spaces.
+fn mask_fenced_blocks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut fence: Option<(char, usize)> = None;
+    for line in text.split_inclusive('\n') {
+        let marker = fence_marker(line);
+        let inside = match (fence, marker) {
+            (None, Some((c, len, _))) => {
+                fence = Some((c, len));
+                true
+            }
+            (Some((open_char, open_len)), Some((c, len, has_info)))
+                if c == open_char && len >= open_len && !has_info =>
+            {
+                fence = None;
+                true
+            }
+            (Some(_), _) => true,
+            (None, None) => false,
+        };
+        if inside {
+            out.extend(line.chars().map(|c| if c == '\n' { '\n' } else { ' ' }));
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+/// The fence character, its run length, and whether an info string follows,
+/// if this line could open or close a fenced code block. Up to three spaces
+/// of indent, three or more backticks or tildes.
+///
+/// The info-string flag is what keeps nested fences from unbalancing the
+/// mask: CommonMark lets only a *bare* fence close a block, so a document
+/// that quotes ```` ```rust ```` inside a longer fence does not end it three
+/// lines early — and a mask that ended early would expose code as prose,
+/// which is the direction that produces false failures.
+///
+/// # The clause that is not pedantry
+///
+/// CommonMark also says a backtick fence's info string may not itself
+/// contain a backtick, and that clause is doing real work here.
+/// `docs/status.md` line 69 begins
+/// ```` ```` ```ignore ```` ```` — a four-backtick *code span* whose content
+/// is a three-backtick fence, which is how this repository writes about
+/// doctest fences. Read as an opening fence it never closes, and the mask
+/// swallows 2 200 of that file's 2 268 lines: `verify-links` would have
+/// reported `ok` while checking almost nothing in the most link-dense
+/// document in the tree. Measured rather than reasoned about — the link
+/// count went 591 → 672 when this clause was added, and
+/// `a_backtick_run_whose_info_string_holds_backticks_opens_no_fence` fails
+/// if it is taken out again.
+fn fence_marker(line: &str) -> Option<(char, usize, bool)> {
+    let trimmed = line.trim_start_matches(' ');
+    if line.len() - trimmed.len() > 3 {
+        return None;
+    }
+    let marker = trimmed.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let run = trimmed.chars().take_while(|c| *c == marker).count();
+    let info = trimmed.get(run..).unwrap_or_default().trim();
+    if run < 3 || (marker == '`' && info.contains('`')) {
+        return None;
+    }
+    Some((marker, run, !info.is_empty()))
+}
+
+/// Replace every inline code span, delimiters included, with spaces.
+fn mask_code_spans(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let chars: Vec<char> = line.chars().collect();
+        let mut masked: Vec<char> = chars.clone();
+        let mut i = 0usize;
+        while i < chars.len() {
+            if chars.get(i) != Some(&'`') {
+                i += 1;
+                continue;
+            }
+            let open_len = chars
+                .get(i..)
+                .map_or(0, |rest| rest.iter().take_while(|c| **c == '`').count());
+            let mut j = i + open_len;
+            let close = loop {
+                match chars.get(j) {
+                    None => break None,
+                    Some('`') => {
+                        let run = chars
+                            .get(j..)
+                            .map_or(0, |rest| rest.iter().take_while(|c| **c == '`').count());
+                        if run == open_len {
+                            break Some(j + run);
+                        }
+                        j += run;
+                    }
+                    Some(_) => j += 1,
+                }
+            };
+            match close {
+                Some(end) => {
+                    for slot in masked.get_mut(i..end).into_iter().flatten() {
+                        if *slot != '\n' {
+                            *slot = ' ';
+                        }
+                    }
+                    i = end;
+                }
+                None => i += open_len,
+            }
+        }
+        out.extend(masked);
+    }
+    out
+}
+
+/// Replace every terminated `<!-- … -->` with spaces, across lines.
+fn mask_html_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<!--") {
+        let after = rest.get(start + 4..).unwrap_or_default();
+        let Some(end) = after.find("-->") else {
+            break;
+        };
+        out.push_str(rest.get(..start).unwrap_or_default());
+        let comment = rest.get(start..start + 4 + end + 3).unwrap_or_default();
+        out.extend(comment.chars().map(|c| if c == '\n' { '\n' } else { ' ' }));
+        rest = rest.get(start + 4 + end + 3..).unwrap_or_default();
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The repository path a link destination points at, or `None` if this gate
+/// does not resolve that kind of destination.
+///
+/// `None` for an empty destination, a pure `#anchor`, an `http(s)` URL and a
+/// `mailto:` — see [`verify_links`] for why each is out of scope. Otherwise
+/// the fragment and a trailing `:line` (or `:line:column`) suffix are removed
+/// and percent escapes are decoded, because `docs/flows/errors.md#retry` and
+/// `backends/crates/vpay-db/src/lib.rs:42` both name a file that either
+/// exists or does not.
+fn resolvable_path(target: &str) -> Option<String> {
+    let target = target.trim();
+    if target.is_empty() || target.starts_with('#') {
+        return None;
+    }
+    let lower = target.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:")
+    {
+        return None;
+    }
+
+    let without_fragment = target.split('#').next().unwrap_or_default();
+    let decoded = percent_decode(without_fragment);
+    let path = strip_line_suffix(&decoded);
+    (!path.is_empty()).then(|| path.to_owned())
+}
+
+/// `path` without a trailing `:42` or `:42:7`.
+///
+/// Editors and this repository's own prose cite a source location that way
+/// (`src/lib.rs:42`), and the file is what a link checker can answer for.
+fn strip_line_suffix(path: &str) -> &str {
+    let once = strip_one_numeric_suffix(path);
+    strip_one_numeric_suffix(once)
+}
+
+/// `path` without one trailing `:<digits>`, if it has one and something
+/// precedes it.
+fn strip_one_numeric_suffix(path: &str) -> &str {
+    match path.rsplit_once(':') {
+        Some((head, tail))
+            if !head.is_empty() && !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            head
+        }
+        _ => path,
+    }
+}
+
+/// Decode `%XX` escapes. A malformed escape is left exactly as written — a
+/// link that does not decode is a link that does not resolve, and showing the
+/// author what they typed beats showing them a mangling of it.
+fn percent_decode(target: &str) -> String {
+    let bytes = target.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while let Some(byte) = bytes.get(i) {
+        let decoded = (*byte == b'%')
+            .then(|| {
+                let hex = target.get(i + 1..i + 3)?;
+                u8::from_str_radix(hex, 16).ok()
+            })
+            .flatten();
+        match decoded {
+            Some(value) => {
+                out.push(value);
+                i += 3;
+            }
+            None => {
+                out.push(*byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| target.to_owned())
+}
+
+/// `target` resolved against the directory holding `from`, folded to a
+/// repo-relative path. `None` if it climbs above the repository root, which
+/// is broken in a way no path can name.
+///
+/// A leading `/` is read as repo-root-relative: that is what a reader of a
+/// rendered document expects, and if the repository does not hold the path,
+/// the gate fails on the resolved name either way.
+fn resolve_against(from: &str, target: &str) -> Option<String> {
+    let mut segments: Vec<&str> = Vec::new();
+    if !target.starts_with('/')
+        && let Some((dir, _)) = from.rsplit_once('/')
+    {
+        segments.extend(dir.split('/'));
+    }
+    for segment in target.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop()?;
+            }
+            other => segments.push(other),
+        }
+    }
+    Some(segments.join("/"))
+}
+
+// ---------------------------------------------------------------------------
+// verify-citations
+// ---------------------------------------------------------------------------
+
+/// Names this repository has been published under, for reading a GitHub URL
+/// written before a rename.
+///
+/// The live name is asked of `gh` rather than hard-coded (see
+/// [`github_repository`]); these are the historical ones, and they are here
+/// because the tree contains URLs under all of them — the remote is
+/// `vymalo/vpay`, `gh` resolves it to `vaam-apps/vpay`, and
+/// `docs/flows/deployment.md` still links `vaam-store/vpay`, the name it had
+/// before 2026-09-05. GitHub redirects all three to the same repository, so
+/// treating them as one is not a convenience: an id under any of them is a
+/// claim about *our* history and has to resolve.
+const REPOSITORY_ALIASES: [&str; 3] = ["vaam-apps/vpay", "vaam-store/vpay", "vymalo/vpay"];
+
+/// `(file, id)` pairs that look like citations and are deliberately not
+/// claims.
+///
+/// Two entries, one finding: the Step 9 release-claims notes and their review
+/// both record a mutation test in which a real run id was replaced by
+/// `39999999999` to show that *nothing in the repository noticed*. That
+/// finding is what this command exists to close, and a document cannot state
+/// it without printing an id that does not exist. Both files carry a dated
+/// note saying the gap is closed.
+///
+/// A constant here rather than a marker in the prose, on purpose. A marker
+/// (`<!-- verify-citations: ignore -->`) is invisible to a reader and can be
+/// sprayed over a document by anyone who wants a gate to be quiet; a pair in
+/// this array is a code change that shows up in review, and it is scoped to
+/// one file, so the same eleven digits written anywhere else are still
+/// checked.
+const CITATIONS_THAT_ARE_NOT_CLAIMS: [(&str, &str); 2] = [
+    ("docs/plans/step9-notes/release-claims.md", "39999999999"),
+    (
+        "docs/plans/step9-notes/release-claims-review.md",
+        "39999999999",
+    ),
+];
+
+/// What a cited id names, and therefore which endpoint answers for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CitationKind {
+    /// A GitHub Actions workflow run.
+    Run,
+    /// A pull request. Resolved against `/pulls/{n}`, which 404s for a plain
+    /// issue — so "PR #11" fails when 11 is an issue, which is the whole
+    /// point of tracking the cue rather than lumping both together.
+    Pull,
+    /// An issue. Resolved against `/issues/{n}`, which answers for pull
+    /// requests too, so an `#n` cited as an issue is satisfied either way.
+    Issue,
+}
+
+impl CitationKind {
+    /// The `gh api` path that resolves an id of this kind against the
+    /// repository `gh` is pointed at.
+    fn api_path(self, id: &str) -> String {
+        match self {
+            Self::Run => format!("repos/{{owner}}/{{repo}}/actions/runs/{id}"),
+            Self::Pull => format!("repos/{{owner}}/{{repo}}/pulls/{id}"),
+            Self::Issue => format!("repos/{{owner}}/{{repo}}/issues/{id}"),
+        }
+    }
+
+    /// How the id is spelled back to a human in a report line.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Pull => "PR",
+            Self::Issue => "issue",
+        }
+    }
+}
+
+/// One id a document cites as evidence.
+#[derive(Debug, PartialEq, Eq)]
+struct Citation {
+    kind: CitationKind,
+    id: String,
+    /// 1-based line of the occurrence.
+    line: usize,
+}
+
+/// Fail if a document cites a workflow run, pull request or issue id that
+/// does not exist.
+///
+/// # Why this needs the network, and why it still must not be skippable
+///
+/// This repository's documents argue from evidence: "run `33929374661`
+/// pushed four digests", "PR #31 reopened the event vocabulary". An id is
+/// the strongest kind of claim a document here makes, because a reader can
+/// check it — and the only thing that can check it is GitHub. So this is a
+/// gate that needs the network, which makes it unfit for `just ci` (a CI job
+/// that fails when the API rate-limits is a job people learn to re-run
+/// without reading). It is opt-in: `just docs-check-citations`.
+///
+/// What it will **not** do is print "skipped" and exit 0. A check that
+/// downgrades itself when its dependency is missing reports success for a
+/// run in which nothing was checked, and that is indistinguishable, in a log,
+/// from a run in which everything passed. Without `gh`, or without
+/// authentication, this command fails and says which.
+///
+/// # What counts as a citation
+///
+/// * **A run:** any standalone eleven-digit number, and any
+///   `actions/runs/<digits>` in a URL naming this repository. Eleven digits
+///   rather than the word `run` followed by digits, and that is a deliberate
+///   widening: this repository writes runs in comma-separated lists
+///   (``Runs `33772512791`, `33784613048`, `33789060270` ``), where a
+///   cue-word rule would check the first and ignore the rest — which is
+///   exactly where a wrong id hides. Every eleven-digit number in the tree is
+///   a run id; `sha-33929374661` and `339293746612` are not standalone and do
+///   not count.
+/// * **A pull request:** `#n` whose nearest preceding word is `PR`, `PRs`,
+///   `pull`, `pulls` or `pull request(s)`, plus any `#n` continuing such a
+///   run through nothing but separators (`PRs #16–#17`, `PR #27 and #28`);
+///   and `pull/<n>` in a URL naming this repository.
+/// * **An issue:** the same, cued by `issue`/`issues`, plus `issues/<n>` in a
+///   URL naming this repository.
+///
+/// # What is deliberately not a citation
+///
+/// A cue is required because `#n` on its own is ambiguous in this tree and
+/// resolving the ambiguous ones would fail the gate on correct prose:
+/// `Order #42` and `Order #1234` are example payloads in the runbooks,
+/// ``Commit `#7` `` and `(#1, CLI/env config)` number commits rather than
+/// pull requests, and `AGENTS.md open question #4` numbers a question. A `#n`
+/// that begins a line is a Markdown heading. `PKCS#8` and `authkestra#287`
+/// are excluded by the character before the `#`: the second is a
+/// cross-repository reference, and resolving one means knowing which
+/// repository it belongs to — out of scope here, and better wrong-loudly
+/// than wrong-quietly.
+///
+/// The cost of the cue rule, stated rather than hidden: an id cited *only*
+/// without a cue is not checked. On 2026-09-05 that set is empty — every
+/// bold `**#17**` in `docs/roadmap.md`'s third addendum is also written
+/// `PR #17` elsewhere in the same file, so every one is resolved.
+fn verify_citations(root: &Path) -> Result<(), String> {
+    let repository = github_repository(root)?;
+    let mut aliases: Vec<String> = REPOSITORY_ALIASES.iter().map(|a| (*a).to_owned()).collect();
+    aliases.push(repository.clone());
+
+    let tracked = tracked_paths(root)?;
+    let markdown: Vec<&String> = tracked.iter().filter(|p| p.ends_with(".md")).collect();
+
+    // Deduped by (kind, id) so the API is asked once however often a document
+    // repeats an id — `33929374661` appears eleven times in this tree.
+    let mut cited: BTreeMap<(CitationKind, String), Vec<String>> = BTreeMap::new();
+    for path in &markdown {
+        let text = fs::read_to_string(root.join(path)).map_err(|e| format!("{path}: {e}"))?;
+        for citation in citations_in(&text, &aliases) {
+            if CITATIONS_THAT_ARE_NOT_CLAIMS
+                .iter()
+                .any(|(file, id)| *file == path.as_str() && *id == citation.id)
+            {
+                continue;
+            }
+            cited
+                .entry((citation.kind, citation.id))
+                .or_default()
+                .push(format!("{path}:{}", citation.line));
+        }
+    }
+
+    let mut missing = Vec::new();
+    for ((kind, id), sites) in &cited {
+        let status = gh_status(root, &kind.api_path(id))?;
+        if status == 200 {
+            println!(
+                "  ok    {} {id} ({} citation(s))",
+                kind.label(),
+                sites.len()
+            );
+        } else {
+            println!("  MISS  {} {id} — HTTP {status}", kind.label());
+            missing.push(format!(
+                "{} {id} does not exist (HTTP {status}), cited at {}",
+                kind.label(),
+                sites.join(", ")
+            ));
+        }
+    }
+
+    if !missing.is_empty() {
+        return Err(format!(
+            "{} cited id(s) do not exist in {repository}. A citation that does not \
+             resolve is a false claim: strike it through with a dated correction \
+             rather than replacing it with an id you have not checked.\n  - {}",
+            missing.len(),
+            missing.join("\n  - ")
+        ));
+    }
+
+    println!(
+        "verify-citations: ok — {} unique id(s) cited by {} markdown file(s) all resolve against {repository}",
+        cited.len(),
+        markdown.len()
+    );
+    Ok(())
+}
+
+/// The `owner/repo` `gh` resolves the current checkout to.
+///
+/// This is also the preflight: it is the call that fails when `gh` is absent,
+/// unauthenticated, or pointed at a repository it cannot read, so every later
+/// failure can be reported as what it is — a citation that does not exist —
+/// rather than as an outage.
+fn github_repository(root: &Path) -> Result<String, String> {
+    let output = std::process::Command::new("gh")
+        .args(["api", "repos/{owner}/{repo}", "--jq", ".full_name"])
+        .current_dir(root)
+        .output()
+        .map_err(|e| {
+            format!(
+                "verify-citations needs the GitHub CLI and cannot run without it: {e}. \
+                 Install `gh` and run `gh auth login`. This command never skips — a \
+                 citation nothing resolved is a citation nothing checked."
+            )
+        })?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "`gh api repos/{{owner}}/{{repo}}` failed ({}): {}. Run `gh auth status`; \
+             this command needs a token that can read this repository.",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if name.is_empty() {
+        return Err("`gh api repos/{owner}/{repo}` returned no repository name".to_owned());
+    }
+    Ok(name)
+}
+
+/// The HTTP status GitHub answers `path` with.
+///
+/// `gh api -i` rather than the exit code: the two answers this gate has to
+/// tell apart — "that id does not exist" (404, a false claim, and the
+/// failure) and "GitHub would not answer" (403, 429, 5xx, an outage) — are
+/// both a non-zero exit. Anything that is not a 200 or a 404 stops the whole
+/// command rather than being reported per id, because a rate-limited run
+/// would otherwise report every remaining citation as missing and send
+/// somebody to delete true claims.
+fn gh_status(root: &Path, path: &str) -> Result<u16, String> {
+    let output = std::process::Command::new("gh")
+        .args(["api", "-i", path])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("running `gh api -i {path}`: {e}"))?;
+
+    let head = String::from_utf8_lossy(&output.stdout);
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| {
+            format!(
+                "could not read a status line from `gh api -i {path}`: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+        })?;
+
+    match status {
+        200 | 404 => Ok(status),
+        403 | 429 => Err(format!(
+            "GitHub refused `{path}` with HTTP {status} — rate limited or out of scope \
+             for this token. Nothing was concluded about the remaining citations; \
+             re-run when the limit resets rather than treating them as unresolved."
+        )),
+        other => Err(format!("GitHub answered `{path}` with HTTP {other}")),
+    }
+}
+
+/// Every citation in a document, with its 1-based line.
+///
+/// Unlike [`doc_links`], this reads the text as written — fenced blocks and
+/// code spans included. An id inside a fence is still a claim: this
+/// repository's runbooks cite evidence by pasting the command that produces
+/// it (``gh run view `33929374661` ``), and the ids are almost always inside
+/// backticks.
+fn citations_in(text: &str, repository_aliases: &[String]) -> Vec<Citation> {
+    let mut citations = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let line_number = index + 1;
+        for (kind, id) in repository_url_citations(line, repository_aliases) {
+            citations.push(Citation {
+                kind,
+                id,
+                line: line_number,
+            });
+        }
+        for id in run_id_citations(line) {
+            citations.push(Citation {
+                kind: CitationKind::Run,
+                id,
+                line: line_number,
+            });
+        }
+        for (kind, id) in hash_citations(line) {
+            citations.push(Citation {
+                kind,
+                id,
+                line: line_number,
+            });
+        }
+    }
+    citations
+}
+
+/// Citations written as a GitHub URL, but only when the URL names *this*
+/// repository. `github.com/marcjazz/authkestra/issues/185` is somebody
+/// else's tracker and resolving it here would ask GitHub the wrong question.
+fn repository_url_citations(line: &str, aliases: &[String]) -> Vec<(CitationKind, String)> {
+    let mut found = Vec::new();
+    let mut rest = line;
+    while let Some(at) = rest.find("github.com/") {
+        let tail = rest.get(at + "github.com/".len()..).unwrap_or_default();
+        rest = tail;
+        let mut segments = tail.split('/');
+        let (Some(owner), Some(repo)) = (segments.next(), segments.next()) else {
+            continue;
+        };
+        if !aliases
+            .iter()
+            .any(|alias| *alias == format!("{owner}/{repo}"))
+        {
+            continue;
+        }
+        let kind = match segments.next() {
+            Some("pull") => CitationKind::Pull,
+            Some("issues") => CitationKind::Issue,
+            Some("actions") if segments.next() == Some("runs") => CitationKind::Run,
+            _ => continue,
+        };
+        let digits: String = segments
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if !digits.is_empty() {
+            found.push((kind, digits));
+        }
+    }
+    found
+}
+
+/// The number of digits a GitHub Actions run id has had for this
+/// repository's whole history, and the width every id in this tree is
+/// written at.
+const RUN_ID_DIGITS: usize = 11;
+
+/// Every standalone eleven-digit number on a line.
+///
+/// "Standalone" excludes a run that is part of a longer word, path or
+/// dotted number: `sha-33929374661` names an image tag, `runs/33929374661`
+/// is answered for by [`repository_url_citations`] (which knows *whose* run
+/// it is), and a twelve-digit number is not a run id.
+fn run_id_citations(line: &str) -> Vec<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut ids = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if !chars.get(i).is_some_and(char::is_ascii_digit) {
+            i += 1;
+            continue;
+        }
+        let mut end = i;
+        while chars.get(end).is_some_and(char::is_ascii_digit) {
+            end += 1;
+        }
+        let before = i.checked_sub(1).and_then(|k| chars.get(k)).copied();
+        let after = chars.get(end).copied();
+        let attached_before =
+            before.is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '/' | '.'));
+        let attached_after =
+            after.is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '/'));
+        if end - i == RUN_ID_DIGITS && !attached_before && !attached_after {
+            ids.push(chars.get(i..end).unwrap_or_default().iter().collect());
+        }
+        i = end;
+    }
+    ids
+}
+
+/// Every `#n` on a line that a cue marks as a pull request or an issue.
+///
+/// See [`verify_citations`] for the rule and for what it deliberately does
+/// not claim.
+fn hash_citations(line: &str) -> Vec<(CitationKind, String)> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut found = Vec::new();
+    let mut previous: Option<(CitationKind, usize)> = None;
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars.get(i) != Some(&'#') {
+            i += 1;
+            continue;
+        }
+        let mut end = i + 1;
+        while chars.get(end).is_some_and(char::is_ascii_digit) {
+            end += 1;
+        }
+        if end == i + 1 {
+            i += 1;
+            continue;
+        }
+        let before = i.checked_sub(1).and_then(|k| chars.get(k)).copied();
+        let after = chars.get(end).copied();
+        let attached_before = before.is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '/'));
+        let attached_after = after.is_some_and(|c| c.is_alphanumeric() || matches!(c, '-' | '_'));
+        let heading = chars
+            .get(..i)
+            .is_some_and(|prefix| prefix.iter().all(|c| c.is_whitespace()));
+        if attached_before || attached_after || heading {
+            i = end;
+            continue;
+        }
+
+        let kind = continued_citation(&chars, previous, i)
+            .or_else(|| cue_before(chars.get(..i).unwrap_or_default()));
+        if let Some(kind) = kind {
+            found.push((
+                kind,
+                chars.get(i + 1..end).unwrap_or_default().iter().collect(),
+            ));
+            previous = Some((kind, end));
+        }
+        i = end;
+    }
+    found
+}
+
+/// Characters that may sit between a cue word and the `#` it cues —
+/// formatting and opening punctuation, nothing that carries meaning.
+const CUE_SKIPPED: [char; 7] = ['(', '[', '{', '*', '_', '`', '~'];
+
+/// The kind a `#n` at `hash` inherits from the citation before it, when the
+/// two are separated by nothing but list punctuation.
+///
+/// `PRs #16–#17`, `PRs #23, #24` and `PR #27 and #28` all cite two pull
+/// requests and carry one cue between them. Anything with a word other than
+/// `and` in the gap — `PR #20) — the real Order #42` — is not a
+/// continuation, which is what keeps a cue from bleeding down a line.
+fn continued_citation(
+    chars: &[char],
+    previous: Option<(CitationKind, usize)>,
+    hash: usize,
+) -> Option<CitationKind> {
+    let (kind, end) = previous?;
+    let gap: String = chars.get(end..hash)?.iter().collect();
+    let without_and = gap.to_lowercase().replace("and", " ");
+    without_and
+        .chars()
+        .all(|c| {
+            c.is_whitespace() || matches!(c, ',' | '&' | '+' | '–' | '—' | '-' | '/' | '*' | '`')
+        })
+        .then_some(kind)
+}
+
+/// The kind the word before a `#n` cues, if it cues one.
+fn cue_before(prefix: &[char]) -> Option<CitationKind> {
+    let word = trailing_word(prefix)?;
+    match word.0.as_str() {
+        "pr" | "prs" | "pull" | "pulls" => Some(CitationKind::Pull),
+        "issue" | "issues" => Some(CitationKind::Issue),
+        // `pull request #14` — the cue is two words, and only the second one
+        // is adjacent.
+        "request" | "requests" => match trailing_word(prefix.get(..word.1).unwrap_or_default()) {
+            Some((previous, _)) if previous == "pull" => Some(CitationKind::Pull),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The last alphabetic word in `prefix`, lowercased, and the index at which
+/// it starts — so a caller can ask for the word before it.
+fn trailing_word(prefix: &[char]) -> Option<(String, usize)> {
+    let mut end = prefix.len();
+    while end > 0
+        && prefix
+            .get(end - 1)
+            .is_some_and(|c| c.is_whitespace() || CUE_SKIPPED.contains(c))
+    {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && prefix.get(start - 1).is_some_and(|c| c.is_alphabetic()) {
+        start -= 1;
+    }
+    if start == end {
+        return None;
+    }
+    Some((
+        prefix
+            .get(start..end)
+            .unwrap_or_default()
+            .iter()
+            .collect::<String>()
+            .to_lowercase(),
+        start,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -4742,5 +5902,512 @@ mod sdk_parity_tests {
             "the matrix should name many tests, named {}",
             outcome.proven
         );
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+    use crate::signing_key_tests::TempDir;
+
+    /// A throwaway git repository holding `files`, all staged.
+    ///
+    /// Staged rather than committed: `git ls-files` reads the index, so this
+    /// needs no `user.email` and no commit, and the tests drive the real
+    /// [`tracked_paths`] rather than a stand-in for it — which is the point,
+    /// because "tracked" is the rule the gate turns on.
+    fn repo_with(files: &[(&str, &str)]) -> TempDir {
+        let dir = TempDir::new("verify-links");
+        write_all(dir.path(), files);
+        git(dir.path(), &["init", "-q"]);
+        git(dir.path(), &["add", "-A"]);
+        dir
+    }
+
+    fn write_all(root: &Path, files: &[(&str, &str)]) {
+        for (path, contents) in files {
+            let full = root.join(path);
+            if let Some(parent) = full.parent() {
+                fs::create_dir_all(parent).expect("the parent directory is creatable");
+            }
+            fs::write(&full, contents).expect("the file is writable");
+        }
+    }
+
+    fn git(root: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .expect("git is on PATH — verify-links needs it too");
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    /// The decisive negative: one wrong path, and the gate fails naming the
+    /// file, the line, what was written and what it resolved to.
+    #[test]
+    fn one_broken_relative_link_fails_the_gate() {
+        let repo = repo_with(&[("docs/a.md", "See [b](b.md).\n")]);
+        let error = verify_links(repo.path()).expect_err("b.md is not tracked");
+        assert!(
+            error.contains("docs/a.md:1: b.md -> docs/b.md"),
+            "the message must locate the link and show the resolution: {error}"
+        );
+    }
+
+    /// The other half of the pair: the same document passes once the file it
+    /// names exists, so the failure above is about the target and not about
+    /// the parser refusing every link.
+    #[test]
+    fn the_same_link_passes_once_its_target_is_tracked() {
+        let repo = repo_with(&[("docs/a.md", "See [b](b.md).\n"), ("docs/b.md", "# B\n")]);
+        assert!(verify_links(repo.path()).is_ok());
+    }
+
+    /// A file that exists on this machine and nowhere else does not satisfy a
+    /// link. This is what `git ls-files` buys over a directory walk, and it
+    /// is the rule that keeps a green run meaningful on a fresh clone.
+    #[test]
+    fn a_file_that_is_present_but_untracked_does_not_satisfy_a_link() {
+        let repo = repo_with(&[("docs/a.md", "See [b](b.md).\n")]);
+        write_all(repo.path(), &[("docs/b.md", "# B, never staged\n")]);
+        let error = verify_links(repo.path()).expect_err("b.md is on disk but untracked");
+        assert!(error.contains("docs/a.md:1: b.md -> docs/b.md"), "{error}");
+    }
+
+    #[test]
+    fn a_link_inside_a_fenced_block_is_not_a_link() {
+        let repo = repo_with(&[(
+            "docs/a.md",
+            "Prose.\n\n```text\n[gone](gone.md)\n```\n\nMore prose.\n",
+        )]);
+        assert!(verify_links(repo.path()).is_ok());
+    }
+
+    /// A fence's info string may not itself contain a backtick — the clause
+    /// that keeps ```` ```` ```ignore ```` ```` (a four-backtick code span, and
+    /// how `docs/status.md` line 69 is written) from opening a block that
+    /// never closes. Delete it from [`fence_marker`] and this test passes
+    /// vacuously while 2 200 of `docs/status.md`'s lines stop being checked.
+    #[test]
+    fn a_backtick_run_whose_info_string_holds_backticks_opens_no_fence() {
+        // Line 1 is `docs/status.md`'s line 69, shape for shape: a
+        // four-backtick code span, at the start of a line, whose content is a
+        // three-backtick fence.
+        let repo = repo_with(&[(
+            "docs/a.md",
+            "```` ```ignore ```` doctest fences are reported.\n\nSee [gone](gone.md).\n",
+        )]);
+        let error = verify_links(repo.path()).expect_err("the link after the code span is checked");
+        assert!(
+            error.contains("docs/a.md:3: gone.md -> docs/gone.md"),
+            "{error}"
+        );
+    }
+
+    /// A closing fence carries no info string, so an inner ```` ```rust ````
+    /// does not end the block three lines early and expose code as prose.
+    #[test]
+    fn an_inner_fence_with_an_info_string_does_not_close_the_block() {
+        let repo = repo_with(&[(
+            "docs/a.md",
+            "````markdown\n```rust\n[gone](gone.md)\n```\n````\n",
+        )]);
+        assert!(verify_links(repo.path()).is_ok());
+    }
+
+    #[test]
+    fn a_link_inside_a_code_span_or_an_html_comment_is_not_a_link() {
+        let repo = repo_with(&[(
+            "docs/a.md",
+            "Write it `[gone](gone.md)` like this.\n\n<!-- [also-gone](also-gone.md) -->\n",
+        )]);
+        assert!(verify_links(repo.path()).is_ok());
+    }
+
+    /// An unterminated `<!--` is left as ordinary text rather than masking
+    /// the rest of the file: a masker that deletes too much makes this gate
+    /// pass by finding nothing.
+    #[test]
+    fn an_unterminated_html_comment_does_not_swallow_the_document() {
+        let repo = repo_with(&[(
+            "docs/a.md",
+            "<!-- opened and never closed\n\n[gone](gone.md)\n",
+        )]);
+        assert!(verify_links(repo.path()).is_err());
+    }
+
+    #[test]
+    fn a_fragment_and_a_line_suffix_resolve_to_the_file_itself() {
+        let repo = repo_with(&[
+            (
+                "docs/a.md",
+                "[h](b.md#a-heading) and [src](../src/lib.rs:42) and [col](../src/lib.rs:42:7)\n",
+            ),
+            ("docs/b.md", "# A heading\n"),
+            ("src/lib.rs", "fn main() {}\n"),
+        ]);
+        assert!(verify_links(repo.path()).is_ok());
+    }
+
+    /// The fragment is stripped, never resolved — so a *file* that is gone is
+    /// still reported, with the target shown as the author wrote it.
+    #[test]
+    fn a_fragment_does_not_excuse_a_missing_file() {
+        let repo = repo_with(&[("docs/a.md", "[h](gone.md#a-heading)\n")]);
+        let error = verify_links(repo.path()).expect_err("gone.md is not tracked");
+        assert!(
+            error.contains("docs/a.md:1: gone.md#a-heading -> docs/gone.md"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_reference_definition_is_checked() {
+        let repo = repo_with(&[(
+            "docs/a.md",
+            "See [the flow][flow].\n\n[flow]: gone.md \"A title\"\n",
+        )]);
+        let error = verify_links(repo.path()).expect_err("the definition names a missing file");
+        assert!(
+            error.contains("docs/a.md:3: gone.md -> docs/gone.md"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_angle_bracketed_target_with_spaces_parses() {
+        let repo = repo_with(&[
+            ("docs/a.md", "[x](<a file.md>) and [y](<gone file.md>)\n"),
+            ("docs/a file.md", "# Spaces\n"),
+        ]);
+        let error = verify_links(repo.path()).expect_err("the second target is missing");
+        assert!(
+            error.contains("docs/a.md:1: gone file.md -> docs/gone file.md"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("docs/a file.md"),
+            "the first target resolves: {error}"
+        );
+    }
+
+    #[test]
+    fn an_image_target_is_checked_like_any_other() {
+        let repo = repo_with(&[("docs/a.md", "![a diagram](diagram.svg)\n")]);
+        assert!(verify_links(repo.path()).is_err());
+    }
+
+    #[test]
+    fn a_link_to_a_directory_that_holds_a_tracked_file_resolves() {
+        let repo = repo_with(&[
+            ("docs/a.md", "See [the runbooks](../docs/runbooks).\n"),
+            ("docs/runbooks/one.md", "# One\n"),
+        ]);
+        assert!(verify_links(repo.path()).is_ok());
+    }
+
+    #[test]
+    fn a_target_that_climbs_above_the_repository_root_is_reported() {
+        let repo = repo_with(&[("docs/a.md", "[out](../../elsewhere.md)\n")]);
+        let error = verify_links(repo.path()).expect_err("the target leaves the repository");
+        assert!(error.contains("escapes the repository root"), "{error}");
+    }
+
+    #[test]
+    fn http_mailto_and_bare_anchor_targets_are_skipped() {
+        let repo = repo_with(&[(
+            "docs/a.md",
+            "[a](https://example.invalid/x) [b](HTTP://EXAMPLE.INVALID) \
+             [c](mailto:nobody@example.invalid) [d](#a-heading)\n",
+        )]);
+        assert!(verify_links(repo.path()).is_ok());
+    }
+
+    #[test]
+    fn a_percent_escaped_target_is_decoded_before_it_is_resolved() {
+        let repo = repo_with(&[
+            ("docs/a.md", "[x](a%20file.md)\n"),
+            ("docs/a file.md", "# Spaces\n"),
+        ]);
+        assert!(verify_links(repo.path()).is_ok());
+    }
+
+    // ---- the parser, driven directly ------------------------------------
+
+    #[test]
+    fn a_stray_close_bracket_and_paren_in_prose_is_not_a_link() {
+        assert!(doc_links("the closing ]( of a thing\n").is_empty());
+    }
+
+    #[test]
+    fn a_destination_may_carry_balanced_parentheses_and_a_title() {
+        assert_eq!(
+            doc_links("[x](docs/a(b).md \"why\")\n"),
+            vec![DocLink {
+                line: 1,
+                target: "docs/a(b).md".to_owned()
+            }]
+        );
+    }
+
+    /// Link *text* may wrap; the line reported is the destination's, which is
+    /// the line an author has to edit.
+    #[test]
+    fn link_text_may_wrap_across_lines() {
+        assert_eq!(
+            doc_links("see [the long\ntext](docs/a.md)\n"),
+            vec![DocLink {
+                line: 2,
+                target: "docs/a.md".to_owned()
+            }]
+        );
+    }
+
+    /// A destination may not contain a newline, so an unclosed `(` gives up
+    /// instead of consuming the paragraph.
+    #[test]
+    fn a_destination_containing_a_newline_is_not_a_link() {
+        assert!(doc_links("[x](docs/\na.md)\n").is_empty());
+    }
+
+    #[test]
+    fn a_line_suffix_is_stripped_only_when_it_is_digits() {
+        assert_eq!(strip_line_suffix("src/lib.rs:42"), "src/lib.rs");
+        assert_eq!(strip_line_suffix("src/lib.rs:42:7"), "src/lib.rs");
+        assert_eq!(strip_line_suffix("docs/a:b.md"), "docs/a:b.md");
+    }
+
+    #[test]
+    fn a_root_relative_target_resolves_from_the_repository_root() {
+        assert_eq!(
+            resolve_against("docs/plans/a.md", "/docs/status.md").as_deref(),
+            Some("docs/status.md")
+        );
+        assert_eq!(
+            resolve_against("docs/plans/a.md", "../status.md").as_deref(),
+            Some("docs/status.md")
+        );
+        assert_eq!(resolve_against("a.md", "../../x.md"), None);
+    }
+}
+
+#[cfg(test)]
+mod citation_tests {
+    use super::*;
+
+    /// The aliases the extraction is given in these tests. The live name is
+    /// asked of `gh` in production; here it is fixed so the patterns can be
+    /// proven with no network at all.
+    fn aliases() -> Vec<String> {
+        REPOSITORY_ALIASES.iter().map(|a| (*a).to_owned()).collect()
+    }
+
+    fn kinds_and_ids(text: &str) -> Vec<(CitationKind, String)> {
+        citations_in(text, &aliases())
+            .into_iter()
+            .map(|c| (c.kind, c.id))
+            .collect()
+    }
+
+    /// The reason the rule is "eleven digits" rather than "the word `run`
+    /// followed by digits": this repository writes runs in lists, and a
+    /// cue-word rule checks the first and ignores the three places a wrong id
+    /// would actually hide.
+    #[test]
+    fn every_run_id_in_a_list_is_a_citation_not_just_the_first() {
+        assert_eq!(
+            run_id_citations(
+                "Runs `33772512791`, `33784613048`, `33789060270` and `33792230539` are green."
+            ),
+            vec!["33772512791", "33784613048", "33789060270", "33792230539"]
+        );
+    }
+
+    #[test]
+    fn digits_attached_to_something_else_are_not_a_run_id() {
+        // An image tag, a URL path (answered for by the URL rule, which knows
+        // *whose* run it is), a twelve-digit number, and a dotted one.
+        assert!(run_id_citations("pushed as `:sha-33929374661`").is_empty());
+        assert!(
+            run_id_citations("https://github.com/marcjazz/authkestra/actions/runs/33929374661")
+                .is_empty()
+        );
+        assert!(run_id_citations("the number 339293746612").is_empty());
+        assert!(run_id_citations("version 1.33929374661").is_empty());
+    }
+
+    #[test]
+    fn a_pull_request_cue_and_an_issue_cue_choose_different_endpoints() {
+        assert_eq!(
+            kinds_and_ids("Delivered in PR #15 and tracked by Issue #11.\n"),
+            vec![
+                (CitationKind::Pull, "15".to_owned()),
+                (CitationKind::Issue, "11".to_owned()),
+            ]
+        );
+        assert_eq!(
+            CitationKind::Pull.api_path("15"),
+            "repos/{owner}/{repo}/pulls/15"
+        );
+        assert_eq!(
+            CitationKind::Issue.api_path("11"),
+            "repos/{owner}/{repo}/issues/11"
+        );
+        assert_eq!(
+            CitationKind::Run.api_path("33929374661"),
+            "repos/{owner}/{repo}/actions/runs/33929374661"
+        );
+    }
+
+    /// One cue can carry a list. All three separators this tree actually
+    /// uses.
+    #[test]
+    fn a_second_number_continues_the_first_citations_cue() {
+        assert_eq!(
+            hash_citations("Steps 2–3, PRs #16–#17"),
+            vec![
+                (CitationKind::Pull, "16".to_owned()),
+                (CitationKind::Pull, "17".to_owned())
+            ]
+        );
+        assert_eq!(
+            hash_citations("an audit and a CI timeout fix (PRs #23, #24)"),
+            vec![
+                (CitationKind::Pull, "23".to_owned()),
+                (CitationKind::Pull, "24".to_owned())
+            ]
+        );
+        assert_eq!(
+            hash_citations("(Steps 0–8 merged, PR #27 and #28)"),
+            vec![
+                (CitationKind::Pull, "27".to_owned()),
+                (CitationKind::Pull, "28".to_owned())
+            ]
+        );
+    }
+
+    /// A cue must not bleed down the line past a word: the second number here
+    /// is an example payload in a runbook, not a pull request.
+    #[test]
+    fn a_cue_does_not_carry_past_intervening_prose() {
+        assert_eq!(
+            hash_citations("Delivered in PR #20 — then `-d \"description=Order #1234\"`"),
+            vec![(CitationKind::Pull, "20".to_owned())]
+        );
+    }
+
+    /// Every uncued `#n` this tree actually contains, and why none of them is
+    /// a citation. If the cue rule is ever loosened, this is the test that
+    /// fails first.
+    #[test]
+    fn an_uncued_hash_number_is_not_a_citation() {
+        for line in [
+            // Runbook example payloads.
+            "        description: \"Order #42 (rush)\"",
+            "  -d \"description=Order #1234\"",
+            // Commit ordinals in docs/roadmap.md, not pull requests.
+            "`237c716` (#1, CLI/env config) → `9e92d02` (#2, kebab-case rename)",
+            "**Status.** In progress. Commit `#7`",
+            // A numbered question in ADR-0009.
+            "`AGENTS.md` open question #4 records, as of that writing:",
+        ] {
+            assert!(
+                hash_citations(line).is_empty(),
+                "must not be read as a citation: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hash_attached_to_a_word_is_a_cross_repository_reference_or_not_a_number_at_all() {
+        // Someone else's tracker, and a cryptography standard.
+        assert!(hash_citations("RFC 9449 DPoP replay tracking, authkestra#291").is_empty());
+        assert!(hash_citations("a PEM RSA private key (PKCS#8 or PKCS#1)").is_empty());
+    }
+
+    #[test]
+    fn a_markdown_heading_and_an_anchor_link_are_not_citations() {
+        assert!(hash_citations("### 9 the known flake").is_empty());
+        assert!(hash_citations("#9 would be a heading if it were one").is_empty());
+        assert!(hash_citations("Was [§9](#9-the-known-flake-a-real-defect)").is_empty());
+    }
+
+    #[test]
+    fn the_two_word_pull_request_cue_is_recognised() {
+        assert_eq!(
+            hash_citations("the first green `ci` on this fix's own pull request (#14)"),
+            vec![(CitationKind::Pull, "14".to_owned())]
+        );
+    }
+
+    #[test]
+    fn a_url_is_a_citation_only_when_it_names_this_repository() {
+        assert_eq!(
+            repository_url_citations("https://github.com/vaam-apps/vpay/issues/11", &aliases()),
+            vec![(CitationKind::Issue, "11".to_owned())]
+        );
+        assert_eq!(
+            repository_url_citations("https://github.com/vaam-store/vpay/pull/24", &aliases()),
+            vec![(CitationKind::Pull, "24".to_owned())]
+        );
+        assert_eq!(
+            repository_url_citations(
+                "https://github.com/vymalo/vpay/actions/runs/33929374661",
+                &aliases()
+            ),
+            vec![(CitationKind::Run, "33929374661".to_owned())]
+        );
+        // Somebody else's repository. Resolving it here asks GitHub the wrong
+        // question, and a wrong question with a confident answer is worse
+        // than no check.
+        assert!(
+            repository_url_citations(
+                "https://github.com/marcjazz/authkestra/issues/185",
+                &aliases()
+            )
+            .is_empty()
+        );
+    }
+
+    /// Unlike [`doc_links`], a citation inside a fence or a code span still
+    /// counts: the runbooks cite evidence by pasting the command that
+    /// produces it, and the ids are almost always inside backticks.
+    #[test]
+    fn a_citation_inside_a_code_fence_is_still_a_claim() {
+        let text = "```console\n$ gh run view 33929374661\n```\n";
+        assert_eq!(
+            kinds_and_ids(text),
+            vec![(CitationKind::Run, "33929374661".to_owned())]
+        );
+    }
+
+    #[test]
+    fn a_citation_carries_the_line_it_was_written_on() {
+        let text = "first line\n\nDelivered in PR #15.\n";
+        assert_eq!(
+            citations_in(text, &aliases()),
+            vec![Citation {
+                kind: CitationKind::Pull,
+                id: "15".to_owned(),
+                line: 3,
+            }]
+        );
+    }
+
+    /// The escape hatch is two named pairs, not a marker anyone can write.
+    /// Both are the mutation record that motivated this command: a document
+    /// that reports "substituting `39999999999` leaves every gate green" has
+    /// to be able to print the id in order to say so.
+    #[test]
+    fn the_only_exempt_ids_are_the_two_mutation_records() {
+        assert_eq!(CITATIONS_THAT_ARE_NOT_CLAIMS.len(), 2);
+        for (file, id) in CITATIONS_THAT_ARE_NOT_CLAIMS {
+            assert_eq!(id, "39999999999");
+            assert!(
+                file.starts_with("docs/plans/step9-notes/release-claims"),
+                "an exemption outside the mutation records needs its own reasoning: {file}"
+            );
+        }
     }
 }
