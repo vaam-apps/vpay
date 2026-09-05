@@ -149,8 +149,9 @@ correction.
   percent escapes, resolves against the linking file's own directory, and
   requires the result to be a **tracked** file or directory — a link
   satisfied by an untracked scratch file resolves on one machine and nowhere
-  else. **Measured 2026-09-05: 113 files scanned, 672 repository links
-  checked, 5 broken, 5 fixed.** All five were in `docs/plans/step8-notes/`
+  else. **Measured 2026-09-05: 114 files scanned (113 on `master`
+  plus the notes for this change), 672 repository links checked, 5 broken,
+  5 fixed.** All five were in `docs/plans/step8-notes/`
   (`lane-c.md` ×3, `lane-h.md` ×2): four were links copied verbatim out of a
   `docs/flows/` document into a blockquote, keeping the quoted file's own
   relative path, and one was a `../` one level short. Nothing was deleted —
@@ -164,17 +165,18 @@ correction.
   (`just docs-check-citations`) and is in no CI job.** It resolves every
   workflow-run id, pull request and issue a tracked `*.md` cites as evidence
   against this repository with `gh api -i`, deduped so one id costs one call
-  however often it is written. **Measured 2026-09-05: 39 unique ids — 24
-  workflow runs, 14 pull requests, 1 issue — all resolve against
+  however often it is written. **Measured 2026-09-05: 39 unique ids across those 114
+  files — 24 workflow runs, 14 pull requests, 1 issue — all resolve against
   `vaam-apps/vpay`; 0 false citations found.** It **fails** when `gh` is
   missing or unauthenticated and never prints "skipped", because a check that
   downgrades itself reports success for a run in which nothing was checked;
   a 403 or 429 stops the whole run rather than reporting the remaining ids as
   missing, so a rate limit can never send somebody to delete true claims.
-  Two `(file, id)` pairs are exempt in `CITATIONS_THAT_ARE_NOT_CLAIMS`, both
-  the mutation records that motivated the command, because a document that
-  says "substituting `39999999999` leaves every gate green" has to be able to
-  print the id. **What it is not:** the `#n` rule needs a `PR`/`pull
+  Three `(file, id)` pairs are exempt in `CITATIONS_THAT_ARE_NOT_CLAIMS`, all
+  of them the same invented eleven-digit id in a mutation record, because a
+  document reporting that substituting a nonexistent run id left every gate
+  green has to be able to print that id. The exemption is scoped per file, so
+  those digits anywhere else are still checked. **What it is not:** the `#n` rule needs a `PR`/`pull
   request`/`issue` cue, so an id cited *only* without one is not checked —
   today that set is empty, because every bold `**#17**` in `docs/roadmap.md`
   is also written `PR #17` in the same file. Cross-repository references

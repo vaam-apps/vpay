@@ -2867,12 +2867,13 @@ const REPOSITORY_ALIASES: [&str; 3] = ["vaam-apps/vpay", "vaam-store/vpay", "vym
 /// `(file, id)` pairs that look like citations and are deliberately not
 /// claims.
 ///
-/// Two entries, one finding: the Step 9 release-claims notes and their review
-/// both record a mutation test in which a real run id was replaced by
-/// `39999999999` to show that *nothing in the repository noticed*. That
-/// finding is what this command exists to close, and a document cannot state
-/// it without printing an id that does not exist. Both files carry a dated
-/// note saying the gap is closed.
+/// Three entries, one id, one finding: the Step 9 release-claims notes, their
+/// review, and this command's own notes all record a mutation test in which a
+/// real run id was replaced by `39999999999` to show that *nothing in the
+/// repository noticed*. That finding is what this command exists to close,
+/// and a document cannot state it without printing an id that does not exist.
+/// The first two carry a dated note saying the gap is closed; the third is
+/// the record of closing it.
 ///
 /// A constant here rather than a marker in the prose, on purpose. A marker
 /// (`<!-- verify-citations: ignore -->`) is invisible to a reader and can be
@@ -2880,7 +2881,8 @@ const REPOSITORY_ALIASES: [&str; 3] = ["vaam-apps/vpay", "vaam-store/vpay", "vym
 /// this array is a code change that shows up in review, and it is scoped to
 /// one file, so the same eleven digits written anywhere else are still
 /// checked.
-const CITATIONS_THAT_ARE_NOT_CLAIMS: [(&str, &str); 2] = [
+const CITATIONS_THAT_ARE_NOT_CLAIMS: [(&str, &str); 3] = [
+    ("docs/plans/exp6-notes/opus.md", "39999999999"),
     ("docs/plans/step9-notes/release-claims.md", "39999999999"),
     (
         "docs/plans/step9-notes/release-claims-review.md",
@@ -6395,17 +6397,20 @@ mod citation_tests {
         );
     }
 
-    /// The escape hatch is two named pairs, not a marker anyone can write.
-    /// Both are the mutation record that motivated this command: a document
-    /// that reports "substituting `39999999999` leaves every gate green" has
-    /// to be able to print the id in order to say so.
+    /// The escape hatch is three named pairs of one id, not a marker anyone
+    /// can write. All three are mutation records: a document that reports
+    /// "substituting `39999999999` leaves every gate green" has to be able to
+    /// print the id in order to say so. An exemption for any other id, or for
+    /// a document that is not one of those records, fails here and has to
+    /// argue for itself in review.
     #[test]
-    fn the_only_exempt_ids_are_the_two_mutation_records() {
-        assert_eq!(CITATIONS_THAT_ARE_NOT_CLAIMS.len(), 2);
+    fn every_exempt_id_is_the_one_invented_run_in_a_mutation_record() {
+        assert_eq!(CITATIONS_THAT_ARE_NOT_CLAIMS.len(), 3);
         for (file, id) in CITATIONS_THAT_ARE_NOT_CLAIMS {
             assert_eq!(id, "39999999999");
             assert!(
-                file.starts_with("docs/plans/step9-notes/release-claims"),
+                file.starts_with("docs/plans/step9-notes/release-claims")
+                    || file == "docs/plans/exp6-notes/opus.md",
                 "an exemption outside the mutation records needs its own reasoning: {file}"
             );
         }

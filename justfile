@@ -763,6 +763,16 @@ expected_suites := "42"
 # shapes (a nested block comment and a comment carrying an odd `"`) went into
 # an existing case rather than a new one, so they move no counter. No new
 # test binary, so `expected_suites` stays 42 and the floor stays 1080.
+#
+# Re-measured 2026-09-05 with `verify-links` and `verify-citations`: `just
+# verify-ignored` reports **1202 total, 42 test binaries, 0 ignored** — 1166
+# plus thirty-six, all in `xtask` (90 → 126). Twenty-three for the link
+# parser and the gate (nine of them driving `verify_links` end to end over a
+# throwaway `git init`ed tree, because "tracked, not merely present" is the
+# rule that makes a green run mean anything and only a real index proves it),
+# thirteen for the citation patterns offline. No new test binary — both
+# commands live in `.xtask/src/main.rs` — so `expected_suites` stays 42, and
+# the floor stays 1080: thirty-six tests is not a reason to move a floor.
 min_tests := "1080"
 
 verify-ignored:
