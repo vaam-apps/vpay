@@ -403,7 +403,7 @@ audit-web:
 # The checks that keep this repository honest, plus one report. CI's
 # `self-checks` job runs exactly this list, in this order:
 # verify-no-mocks, verify-status, verify-errors, verify-sdk-parity,
-# verify-links, and then verify-docs last.
+# verify-links, verify-npm-scope, and then verify-docs last.
 #
 # That sentence was false until 2026-09-04: `verify-sdk-parity` ran here but
 # had no step in `.github/workflows/ci.yml`, so ADR-0015's decision 3 ("CI
@@ -413,7 +413,7 @@ audit-web:
 # this comment honest is someone reading the workflow beside it.
 #
 # `verify-docs` is NOT a check: it exits 0 whatever it finds, so the
-# "verify: ok" below means the five gates passed and says nothing about the
+# "verify: ok" below means the six gates passed and says nothing about the
 # numbers `verify-docs` printed. It is last so that the report a human reads
 # is the final thing on the terminal, after every gate has had its say.
 #
@@ -422,9 +422,16 @@ audit-web:
 # and `just ci` is where claims get checked; it needs no network and no
 # database, so it costs a `git ls-files` and a pass over 113 files.
 #
-# The five self-checks, then the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-docs
-    @echo "verify: ok — the five gates above passed; the verify-docs report is advisory"
+# `verify-npm-scope` joined it the same day as the sixth, for a reason
+# measured rather than assumed: deleting `publishConfig.access` from
+# `sdks/nodejs/package.json` — the one line between `npm publish` and a
+# scoped package's default `restricted` — was caught by nothing. Not the
+# lockfile, not `pnpm -r typecheck`, not `lint-web`, not `test-web`, not any
+# of the five gates above.
+#
+# The six self-checks, then the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope verify-docs
+    @echo "verify: ok — the six gates above passed; the verify-docs report is advisory"
 
 verify-no-mocks:
     cargo xtask verify-no-mocks
@@ -470,6 +477,26 @@ verify-sdk-parity:
 # Fail if a doc links to a file this repository does not track.
 verify-links:
     cargo xtask verify-links
+
+# Every publishable npm package under `sdks/` is named `@vaam-apps/vpay-*`,
+# declares `publishConfig.access: "public"`, names this repository, carries a
+# license, and ships a `files` allowlist with an entry point under `dist/`;
+# every private one declares no `publishConfig` at all; and no retired
+# `@vpay/*` package name survives outside `docs/plans`, `docs/adr` and
+# `docs/status.md`.
+#
+# The `files`/`main` half is not tidiness. `sdks/stripe-compat` has no build,
+# no `main` and no `files`, so `pnpm pack` on it produces a tarball of five
+# `*.compat.test.ts` files and a `vitest.config.ts` — which is exactly why it
+# is the one SDK that stays `"private": true`, and why the gate objects to a
+# private package that advertises publish-readiness anyway.
+#
+# What it does NOT check: that `dist/` exists (gitignored — a gate needing a
+# build would fail on a clean checkout for a reason that is not its subject;
+# `lint-web` and CI's `web` job build it) and the registry (that needs the
+# network, which is `verify-citations`' exception and not this one's).
+verify-npm-scope:
+    cargo xtask verify-npm-scope
 
 # A REPORT, not a gate: doc-comment lines against code lines per crate, the
 # production functions of 80 lines or more, every ```ignore doctest fence and

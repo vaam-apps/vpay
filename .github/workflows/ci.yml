@@ -86,6 +86,12 @@ jobs:
       # is deliberately not run here.
       - name: verify-links
         run: cargo xtask verify-links
+      # The sixth gate, and the one this job would have been the last place
+      # to catch: on 2026-09-05, deleting `publishConfig.access` from
+      # `sdks/nodejs/package.json` passed the lockfile, every typecheck,
+      # every web lint and test, and all five gates above it.
+      - name: verify-npm-scope
+        run: cargo xtask verify-npm-scope
       # A report, not a gate — it exits 0 whatever it finds (Step 7,
       # decision (4)). It is here so `justfile`'s claim that this job runs
       # exactly what `just verify` runs stays true, and so the doc-volume,

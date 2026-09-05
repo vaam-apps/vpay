@@ -1,6 +1,6 @@
 //! Repository automation. Run via `cargo xtask <cmd>` or `just`.
 //!
-//! Five of these commands are the gates `just verify` runs, because a promise
+//! Six of these commands are the gates `just verify` runs, because a promise
 //! nothing checks is a promise that decays:
 //!
 //! * `verify-no-mocks`  — no test double is reachable from a shipping binary.
@@ -12,6 +12,13 @@
 //! * `verify-links`     — every relative link in a tracked `*.md` resolves to
 //!   a tracked path. New 2026-09-05; before it, `just docs-check` printed
 //!   "link checking is not implemented yet" and exited 0.
+//! * `verify-npm-scope` — every publishable npm package under `sdks/` is
+//!   named `@vaam-apps/vpay-*`, says `publishConfig.access: "public"`, and
+//!   ships a `files` allowlist with a `dist/` entry point; every private one
+//!   declares no `publishConfig`; and no retired `@vpay/*` package name
+//!   survives outside `docs/plans`, `docs/adr` and `docs/status.md`. New
+//!   2026-09-05: before it, deleting the one line that makes a scoped
+//!   `npm publish` possible was caught by nothing in the repository.
 //!
 //! A sixth is a gate that needs the network, so it is opt-in
 //! (`just docs-check-citations`) and is **not** part of `just ci`:
@@ -74,6 +81,7 @@ fn main() -> ExitCode {
         "verify-errors" => verify_errors(&root),
         "verify-sdk-parity" => verify_sdk_parity(&root),
         "verify-links" => verify_links(&root),
+        "verify-npm-scope" => verify_npm_scope(&root),
         "verify-citations" => verify_citations(&root),
         // `verify-citations` is deliberately absent from `verify-all`: it
         // needs the network, and `verify-all` is what an offline gate list
@@ -82,7 +90,8 @@ fn main() -> ExitCode {
             .and_then(|()| verify_status(&root))
             .and_then(|()| verify_errors(&root))
             .and_then(|()| verify_sdk_parity(&root))
-            .and_then(|()| verify_links(&root)),
+            .and_then(|()| verify_links(&root))
+            .and_then(|()| verify_npm_scope(&root)),
         // Not `Result`-shaped like the three gates above, and that is the
         // point: there is nothing here for a caller to fail on. See
         // `verify_docs`.
@@ -95,7 +104,7 @@ fn main() -> ExitCode {
             println!(
                 "usage: cargo xtask \
                  <verify-no-mocks|verify-status|verify-errors|verify-sdk-parity|verify-links\
-                 |verify-all>\n\
+                 |verify-npm-scope|verify-all>\n\
                  \x20      cargo xtask verify-citations   (a gate; needs `gh` and the network)\n\
                  \x20      cargo xtask verify-docs        (a report; never fails)\n\
                  \x20      cargo xtask gen-signing-key --out <dir>"
@@ -2345,6 +2354,333 @@ fn tracked_paths(root: &Path) -> Result<Vec<String>, String> {
         .filter(|entry| !entry.is_empty())
         .map(str::to_owned)
         .collect())
+}
+
+/// The scope every **publishable** npm package in this repository is named
+/// under, since the organisation rename of 2026-09-04 (`vaam-store` ->
+/// `vaam-apps`) and the package rename of 2026-09-05.
+///
+/// The scope is the organisation; the package name keeps `vpay`, so
+/// `@vaam-apps/vpay-sdk` says both who ships it and what it is.
+const NPM_PUBLISHABLE_PREFIX: &str = "@vaam-apps/vpay-";
+
+/// The names those packages carried before 2026-09-05.
+///
+/// Nothing was ever published under any of them (`npm view` answered `E404`
+/// for all three on 2026-09-05, recorded in `docs/status.md`), so these are
+/// retired rather than deprecated: an occurrence outside the allowlist below
+/// is a reference that no longer resolves, not a compatibility note.
+const NPM_RETIRED_NAMES: [&str; 3] = ["@vpay/sdk", "@vpay/stripe-js", "@vpay/stripe-compat"];
+
+/// Where a retired name is a **record** rather than a reference.
+///
+/// * `docs/plans/` — closed, dated plan and step notes. Rewriting them would
+///   falsify a record of what was run on a day when the name was correct.
+/// * `docs/adr/` — AGENTS.md makes ADRs immutable ("supersede, never edit").
+/// * `docs/status.md` — the dated entry recording the rename has to spell
+///   what it renamed.
+/// * `.xtask/src/main.rs` — this file. The check cannot name what it forbids
+///   without containing it, and neither can its tests. The cost is stated
+///   rather than hidden: a retired name that reappears *in this file* is the
+///   one place this gate cannot see.
+const NPM_RETIRED_NAME_ALLOWED: [&str; 4] = [
+    "docs/plans/",
+    "docs/adr/",
+    "docs/status.md",
+    ".xtask/src/main.rs",
+];
+
+/// Every publishable npm manifest is publishable **honestly**, and no retired
+/// package name survives outside the places that record history.
+///
+/// # Why this is a gate rather than a convention
+///
+/// Measured on 2026-09-05, on the branch that performed the rename: deleting
+/// `publishConfig.access` from `sdks/nodejs/package.json` — the one line that
+/// stands between `npm publish` and `E402 payment required` on a scoped
+/// package — was caught by **nothing**. Not `pnpm install --frozen-lockfile`,
+/// not `pnpm -r typecheck`, not `just lint-web`, not `just test-web`, not any
+/// of the five `just verify` gates. Renaming a package's own `name` field
+/// back to its retired spelling was likewise not caught by the lockfile: pnpm
+/// keys `importers` by *directory*, so a workspace package's own name is not
+/// in `pnpm-lock.yaml` at all and `--frozen-lockfile` exits 0. Only a
+/// *dependent's* dependency key is checked there.
+///
+/// So the two properties the 2026-09-05 rename actually depends on had no
+/// mechanical guard. This is that guard.
+///
+/// # The two rules
+///
+/// 1. **A manifest under `sdks/` that is not `"private": true` is
+///    publishable, and must look it**: the [`NPM_PUBLISHABLE_PREFIX`] scope,
+///    `publishConfig.access: "public"` (a scoped package defaults to
+///    `restricted`), a `repository` naming this repository, a `license`, a
+///    `files` allowlist naming `dist`, an entry point under `./dist/`, and a
+///    `prepack` that builds it.
+///    The last two are what keep a "publishable" package from shipping its
+///    own test suite: `sdks/stripe-compat` has no build, no `main` and no
+///    `files`, so `pnpm pack` puts five `*.compat.test.ts` files and a
+///    `vitest.config.ts` in the tarball — which is why it stays private.
+/// 2. **A private manifest under `sdks/` may not carry `publishConfig`.** A
+///    package that cannot be published does not get to look ready; the flag
+///    would be read as "one word away from shipping" by the next person, and
+///    for `sdks/stripe-compat` that word is the only thing preventing a
+///    tarball of tests.
+/// 3. **No retired name outside [`NPM_RETIRED_NAME_ALLOWED`].**
+///
+/// # What it does not check
+///
+/// That `dist/` exists — it is gitignored, and a gate that needed a build
+/// would fail on a clean checkout for a reason that is not its subject.
+/// `just lint-web` and CI's `web` job build it; `pnpm pack` in each SDK
+/// directory is what proves the tarball, and the listings are in
+/// `docs/plans/exp7-notes/opus-review.md`. Nor does it check the registry:
+/// that needs the network, which is `verify-citations`' exception and not
+/// this one's.
+///
+/// Fields are matched as **text**, like the other `verify-*` commands and for
+/// the same reason (`.xtask` takes no JSON dependency): a top-level key is a
+/// line whose first non-space characters are `"key"`. A manifest that
+/// reformatted its top level onto one line would be read as having none of
+/// them and would fail loudly rather than pass quietly.
+fn verify_npm_scope(root: &Path) -> Result<(), String> {
+    let tracked = tracked_paths(root)?;
+    let mut problems = Vec::new();
+    let mut publishable = Vec::new();
+    let mut private_sdk = 0usize;
+
+    for path in tracked.iter().filter(|p| p.ends_with("package.json")) {
+        let text = fs::read_to_string(root.join(path)).map_err(|e| format!("{path}: {e}"))?;
+        let name = json_top_level_string(&text, "name").unwrap_or("<no name field>");
+
+        if !path.starts_with("sdks/") {
+            // The publishable scope is reserved for `sdks/`, published or
+            // not. A workspace app or internal library wearing it would read
+            // as something a merchant can install.
+            if name.starts_with(NPM_PUBLISHABLE_PREFIX) {
+                problems.push(format!(
+                    "{path}: `{name}` is not under `sdks/`, so it must not use the `{NPM_PUBLISHABLE_PREFIX}` scope — that scope names the SDKs a merchant installs"
+                ));
+            }
+            continue;
+        }
+
+        if json_top_level_is_true(&text, "private") {
+            private_sdk += 1;
+            if json_has_top_level_key(&text, "publishConfig") {
+                problems.push(format!(
+                    "{path}: `{name}` is `\"private\": true` but declares `publishConfig` — a package that cannot be published must not advertise that it is ready to be"
+                ));
+            }
+            continue;
+        }
+
+        publishable.push(format!("{name} ({path})"));
+
+        if !name.starts_with(NPM_PUBLISHABLE_PREFIX) {
+            problems.push(format!(
+                "{path}: publishable package `{name}` is not named under `{NPM_PUBLISHABLE_PREFIX}`"
+            ));
+        }
+        match json_nested_string(&text, "publishConfig", "access") {
+            Some("public") => {}
+            Some(other) => problems.push(format!(
+                "{path}: `{name}` declares `publishConfig.access: \"{other}\"`; a scoped package must say \"public\" or `npm publish` fails"
+            )),
+            None => problems.push(format!(
+                "{path}: `{name}` has no `publishConfig.access` — a scoped package defaults to `restricted`, and publishing one fails"
+            )),
+        }
+        if !text.contains("github.com/vaam-apps/vpay") {
+            problems.push(format!(
+                "{path}: `{name}` has no `repository`/`homepage` naming github.com/vaam-apps/vpay"
+            ));
+        }
+        if !json_has_top_level_key(&text, "license") {
+            problems.push(format!(
+                "{path}: `{name}` has no `license` field, so the registry would show it as UNLICENSED"
+            ));
+        }
+        if !json_has_top_level_key(&text, "files") {
+            problems.push(format!(
+                "{path}: `{name}` has no `files` allowlist, so `npm pack` would ship its sources and its tests"
+            ));
+        } else if !text.contains("\"dist\"") {
+            problems.push(format!(
+                "{path}: `{name}`'s `files` does not name `dist`, so the tarball would carry no build output"
+            ));
+        }
+        // `dist/` is gitignored, so a clone that has never built ships a
+        // tarball of README and LICENSE with `main` pointing at nothing.
+        // Measured 2026-09-05: with `dist/` absent, `pnpm pack` produced a
+        // 15 kB `@vaam-apps/vpay-sdk` tarball containing four files, none of
+        // them JavaScript. `prepack` is what closes that, and npm and pnpm
+        // both run it for `pack` and for `publish`.
+        match json_nested_string(&text, "scripts", "prepack") {
+            Some(script) if script.contains("build") => {}
+            Some(script) => problems.push(format!(
+                "{path}: `{name}`'s `prepack` is `{script}`, which does not build — `dist/` is gitignored, so a tarball made without a build ships no JavaScript"
+            )),
+            None => problems.push(format!(
+                "{path}: `{name}` has no `prepack` script — `dist/` is gitignored, so `npm publish` from a clean clone would ship a tarball whose `main` resolves to nothing"
+            )),
+        }
+        let entry = json_top_level_string(&text, "main");
+        if !entry.is_some_and(|m| m.contains("dist/")) {
+            problems.push(format!(
+                "{path}: `{name}`'s `main` does not point into `dist/`, so an installer would resolve nothing"
+            ));
+        }
+    }
+
+    let mut retired = Vec::new();
+    for path in &tracked {
+        if NPM_RETIRED_NAME_ALLOWED
+            .iter()
+            .any(|allowed| path.starts_with(allowed))
+        {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(root.join(path)) else {
+            continue; // Not UTF-8: a binary blob cannot name a package.
+        };
+        for (line_no, line) in text.lines().enumerate() {
+            for needle in NPM_RETIRED_NAMES {
+                if line.contains(needle) {
+                    retired.push(format!("{path}:{}: {needle}", line_no + 1));
+                }
+            }
+        }
+    }
+    if !retired.is_empty() {
+        problems.push(format!(
+            "{} occurrence(s) of a retired package name outside the documents that record history:\n      {}",
+            retired.len(),
+            retired.join("\n      ")
+        ));
+    }
+
+    if !problems.is_empty() {
+        return Err(format!(
+            "{} npm packaging problem(s):\n  - {}",
+            problems.len(),
+            problems.join("\n  - ")
+        ));
+    }
+
+    println!(
+        "verify-npm-scope: ok — {} publishable package(s) under sdks/ ({}), {private_sdk} private one(s) declaring no publishConfig, and no retired package name outside docs/plans, docs/adr and docs/status.md",
+        publishable.len(),
+        publishable.join(", ")
+    );
+    Ok(())
+}
+
+/// Each line of `text`, paired with the nesting depth it *starts* at.
+///
+/// Depth counts `{` and `[` outside string literals, so a key written at
+/// depth 1 is a top-level member of the manifest object and a key written at
+/// depth 2 belongs to something nested inside it. Indentation is deliberately
+/// not the rule: a manifest reindented by a formatter would still be read
+/// correctly, and a `"private": true` buried inside another object still
+/// would not be mistaken for the manifest's own.
+fn depth_annotated(text: &str) -> Vec<(usize, &str)> {
+    let mut depth = 0usize;
+    let mut annotated = Vec::new();
+    for line in text.lines() {
+        annotated.push((depth, line));
+        let mut in_string = false;
+        let mut escaped = false;
+        for ch in line.chars() {
+            if escaped {
+                escaped = false;
+            } else if in_string && ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = !in_string;
+            } else if !in_string && (ch == '{' || ch == '[') {
+                depth += 1;
+            } else if !in_string && (ch == '}' || ch == ']') {
+                depth = depth.saturating_sub(1);
+            }
+        }
+    }
+    annotated
+}
+
+/// Whether `line` is the declaration of `key` — its first non-space
+/// characters are `"key"` and a `:` follows.
+fn declares(line: &str, key: &str) -> bool {
+    let opener = format!("\"{key}\"");
+    line.trim_start().starts_with(&opener) && line.contains(':')
+}
+
+/// The string value of a **top-level** JSON key, matched as text.
+///
+/// "Top level" is nesting depth, not indentation — see [`depth_annotated`].
+/// A nested key of the same name is not returned; [`json_nested_string`] is
+/// the one nested lookup this gate needs.
+fn json_top_level_string<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    depth_annotated(text)
+        .into_iter()
+        .find(|(depth, line)| *depth == 1 && declares(line, key))
+        .and_then(|(_, line)| line.split_once(':'))
+        .and_then(|(_, rest)| quoted(rest))
+}
+
+/// Whether a top-level key is present at all, whatever its value's shape.
+fn json_has_top_level_key(text: &str, key: &str) -> bool {
+    depth_annotated(text)
+        .into_iter()
+        .any(|(depth, line)| depth == 1 && declares(line, key))
+}
+
+/// Whether a top-level key is present and literally `true`.
+fn json_top_level_is_true(text: &str, key: &str) -> bool {
+    depth_annotated(text).into_iter().any(|(depth, line)| {
+        depth == 1
+            && declares(line, key)
+            && line
+                .split_once(':')
+                .is_some_and(|(_, v)| v.contains("true"))
+    })
+}
+
+/// The string value of `outer.inner`, where `outer` is a top-level object.
+///
+/// Only members of *that* object are considered, so an `"access"` belonging
+/// to some neighbouring object is not mistaken for `publishConfig`'s.
+fn json_nested_string<'a>(text: &'a str, outer: &str, inner: &str) -> Option<&'a str> {
+    let annotated = depth_annotated(text);
+    let mut lines = annotated
+        .iter()
+        .skip_while(|(depth, line)| !(*depth == 1 && declares(line, outer)));
+    let (_, opening) = lines.next()?;
+    // The object may be written inline on its opening line, in which case
+    // the value is on that line and there is nothing to scan for.
+    if let Some(value) = opening
+        .split_once(&format!("\"{inner}\"")[..])
+        .and_then(|(_, rest)| rest.split_once(':'))
+        .and_then(|(_, rest)| quoted(rest))
+    {
+        return Some(value);
+    }
+    for (depth, line) in lines {
+        if *depth < 2 {
+            return None;
+        }
+        if *depth == 2 && declares(line, inner) {
+            return line.split_once(':').and_then(|(_, rest)| quoted(rest));
+        }
+    }
+    None
+}
+
+/// The first double-quoted run in `rest`, without its quotes.
+fn quoted(rest: &str) -> Option<&str> {
+    let start = rest.find('"')? + 1;
+    let end = rest[start..].find('"')? + start;
+    Some(&rest[start..end])
 }
 
 /// Every directory that contains a tracked file, at every depth.
@@ -6556,5 +6892,260 @@ mod citation_tests {
                 "an exemption outside the mutation records needs its own reasoning: {file}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod npm_scope_tests {
+    use super::*;
+    use crate::signing_key_tests::TempDir;
+
+    /// A throwaway git repository holding `files`, all staged — the same
+    /// device `link_tests` uses, and for the same reason: [`tracked_paths`]
+    /// reads the index, so "tracked" is exercised rather than stubbed.
+    fn repo_with(files: &[(&str, &str)]) -> TempDir {
+        let dir = TempDir::new("verify-npm-scope");
+        for (path, contents) in files {
+            let full = dir.path().join(path);
+            if let Some(parent) = full.parent() {
+                fs::create_dir_all(parent).expect("the parent directory is creatable");
+            }
+            fs::write(&full, contents).expect("the file is writable");
+        }
+        for args in [["init", "-q"], ["add", "-A"]] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .status()
+                .expect("git is on PATH — verify-links needs it too");
+            assert!(status.success(), "git {args:?} failed");
+        }
+        dir
+    }
+
+    /// A manifest that satisfies every rule, with `edit` applied to it first.
+    fn publishable(edit: impl Fn(String) -> String) -> String {
+        edit(
+            r#"{
+  "name": "@vaam-apps/vpay-sdk",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vaam-apps/vpay.git"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "pnpm run build"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}
+"#
+            .to_owned(),
+        )
+    }
+
+    #[test]
+    fn a_manifest_meeting_every_rule_passes() {
+        let repo = repo_with(&[("sdks/nodejs/package.json", &publishable(|m| m))]);
+        assert!(verify_npm_scope(repo.path()).is_ok());
+    }
+
+    /// **The decisive case.** `publishConfig.access` is the one line between
+    /// `npm publish` and a scoped package's default `restricted`. Deleting it
+    /// on 2026-09-05 was caught by nothing else in this repository — not the
+    /// lockfile, not the typechecks, not the other five gates. Delete the
+    /// `publishConfig` arm of [`verify_npm_scope`] and this test fails.
+    #[test]
+    fn a_publishable_package_without_publish_access_fails() {
+        let manifest = publishable(|m| {
+            m.replace(
+                "  \"publishConfig\": {\n    \"access\": \"public\"\n  },\n",
+                "",
+            )
+        });
+        let repo = repo_with(&[("sdks/nodejs/package.json", &manifest)]);
+        let error = verify_npm_scope(repo.path()).expect_err("no publishConfig.access");
+        assert!(
+            error.contains("no `publishConfig.access`") && error.contains("restricted"),
+            "the message must name the field and why it matters: {error}"
+        );
+    }
+
+    /// `"access": "restricted"` is not "absent", and it fails for its own
+    /// reason — a scoped package published restricted is a paid feature and a
+    /// merchant cannot install it.
+    #[test]
+    fn a_publishable_package_declaring_restricted_access_fails() {
+        let manifest = publishable(|m| m.replace("\"public\"", "\"restricted\""));
+        let repo = repo_with(&[("sdks/nodejs/package.json", &manifest)]);
+        let error = verify_npm_scope(repo.path()).expect_err("restricted access");
+        assert!(error.contains("\"restricted\""), "{error}");
+    }
+
+    /// The rename's own property: a publishable package carries the new
+    /// scope. Reverting `sdks/stripe-js`'s own `name` was **not** caught by
+    /// `pnpm install --frozen-lockfile` (measured 2026-09-05: exit 0), because
+    /// pnpm keys `importers` by directory and a workspace package's own name
+    /// never reaches the lockfile.
+    #[test]
+    fn a_publishable_package_under_the_old_scope_fails() {
+        let manifest = publishable(|m| m.replace("@vaam-apps/vpay-sdk", "@acme/sdk"));
+        let repo = repo_with(&[("sdks/nodejs/package.json", &manifest)]);
+        let error = verify_npm_scope(repo.path()).expect_err("wrong scope");
+        assert!(
+            error.contains("is not named under `@vaam-apps/vpay-`"),
+            "{error}"
+        );
+    }
+
+    /// The rule that keeps `sdks/stripe-compat` honest: it is a conformance
+    /// suite whose `src/` is five `*.compat.test.ts` files, it has no build
+    /// and no `files`, and `pnpm pack` therefore puts those tests in the
+    /// tarball. A package in that state must not advertise publish-readiness.
+    #[test]
+    fn a_private_package_declaring_publish_config_fails() {
+        let manifest = r#"{
+  "name": "@vaam-apps/vpay-stripe-compat",
+  "private": true,
+  "publishConfig": {
+    "access": "public"
+  }
+}
+"#;
+        let repo = repo_with(&[("sdks/stripe-compat/package.json", manifest)]);
+        let error = verify_npm_scope(repo.path()).expect_err("private + publishConfig");
+        assert!(error.contains("must not advertise"), "{error}");
+    }
+
+    /// The same package, with the flag and nothing else, is fine — the gate
+    /// objects to the claim, not to the package.
+    #[test]
+    fn a_private_package_without_publish_config_passes() {
+        let manifest =
+            "{\n  \"name\": \"@vaam-apps/vpay-stripe-compat\",\n  \"private\": true\n}\n";
+        let repo = repo_with(&[("sdks/stripe-compat/package.json", manifest)]);
+        assert!(verify_npm_scope(repo.path()).is_ok());
+    }
+
+    /// No `files` allowlist means `npm pack` ships everything the directory
+    /// holds, tests included.
+    #[test]
+    fn a_publishable_package_without_a_files_allowlist_fails() {
+        let manifest = publishable(|m| {
+            m.replace(
+                "  \"files\": [\n    \"dist\",\n    \"README.md\"\n  ]\n",
+                "  \"x\": 1\n",
+            )
+        });
+        let repo = repo_with(&[("sdks/nodejs/package.json", &manifest)]);
+        let error = verify_npm_scope(repo.path()).expect_err("no files allowlist");
+        assert!(
+            error.contains("would ship its sources and its tests"),
+            "{error}"
+        );
+    }
+
+    /// **The second decisive case.** `dist/` is gitignored, so a clone that
+    /// has never run a build packs a tarball of README and LICENSE with
+    /// `main` pointing at nothing. Measured on 2026-09-05 against the tree
+    /// this gate was added to: with `sdks/nodejs/dist` removed, `pnpm pack`
+    /// produced 14 934 bytes containing `LICENSE`, `package.json`,
+    /// `README.md` and `scripts/mint-assertion.mjs` — no JavaScript at all.
+    #[test]
+    fn a_publishable_package_without_a_prepack_build_fails() {
+        let manifest = publishable(|m| m.replace(",\n    \"prepack\": \"pnpm run build\"", ""));
+        let repo = repo_with(&[("sdks/nodejs/package.json", &manifest)]);
+        let error = verify_npm_scope(repo.path()).expect_err("no prepack");
+        assert!(
+            error.contains("no `prepack` script") && error.contains("gitignored"),
+            "the message must say what is missing and why it matters: {error}"
+        );
+    }
+
+    /// A `prepack` that does not build is not a `prepack`.
+    #[test]
+    fn a_publishable_package_whose_prepack_does_not_build_fails() {
+        let manifest = publishable(|m| m.replace("\"pnpm run build\"", "\"echo hi\""));
+        let repo = repo_with(&[("sdks/nodejs/package.json", &manifest)]);
+        let error = verify_npm_scope(repo.path()).expect_err("prepack does not build");
+        assert!(error.contains("which does not build"), "{error}");
+    }
+
+    /// An entry point that does not resolve into the built output makes the
+    /// tarball useless to an installer even when everything else is right.
+    #[test]
+    fn a_publishable_package_whose_main_is_not_in_dist_fails() {
+        let manifest = publishable(|m| m.replace("./dist/index.js", "./src/index.ts"));
+        let repo = repo_with(&[("sdks/nodejs/package.json", &manifest)]);
+        let error = verify_npm_scope(repo.path()).expect_err("main outside dist");
+        assert!(error.contains("does not point into `dist/`"), "{error}");
+    }
+
+    /// A retired name in a live document is a reference that resolves to
+    /// nothing, and the gate locates it by file and line.
+    #[test]
+    fn a_retired_name_in_a_live_file_fails() {
+        let repo = repo_with(&[
+            ("sdks/nodejs/package.json", &publishable(|m| m)),
+            ("README.md", "Install it:\n\n    pnpm add @vpay/sdk\n"),
+        ]);
+        let error = verify_npm_scope(repo.path()).expect_err("retired name in README");
+        assert!(error.contains("README.md:3: @vpay/sdk"), "{error}");
+    }
+
+    /// The other half: the identical text under `docs/plans/` is a dated
+    /// record of a command that really was run under that spelling, and
+    /// rewriting it would falsify the record. Delete `docs/plans/` from
+    /// [`NPM_RETIRED_NAME_ALLOWED`] and this test fails.
+    #[test]
+    fn the_same_retired_name_under_docs_plans_passes() {
+        let repo = repo_with(&[
+            ("sdks/nodejs/package.json", &publishable(|m| m)),
+            (
+                "docs/plans/step9-notes/lane-5.md",
+                "Ran `pnpm --filter @vpay/sdk build` on 2026-09-04.\n",
+            ),
+        ]);
+        assert!(verify_npm_scope(repo.path()).is_ok());
+    }
+
+    /// The text matcher reads only *top-level* keys, so a `"private": true`
+    /// nested inside some other object cannot make a publishable package look
+    /// private and skip every rule above.
+    #[test]
+    fn a_nested_private_key_does_not_exempt_a_package() {
+        let manifest = publishable(|m| {
+            m.replace(
+                "  \"main\": \"./dist/index.js\",\n",
+                "  \"nested\": {\n    \"private\": true\n  },\n  \"main\": \"./dist/index.js\",\n",
+            )
+            .replace("  \"license\": \"Apache-2.0\",\n", "")
+        });
+        let repo = repo_with(&[("sdks/nodejs/package.json", &manifest)]);
+        let error = verify_npm_scope(repo.path()).expect_err("still publishable, and unlicensed");
+        assert!(error.contains("no `license` field"), "{error}");
+    }
+
+    /// `publishConfig.access` is read from *that* object, not from the first
+    /// `"access"` anywhere in the file.
+    #[test]
+    fn access_is_read_from_publish_config_and_not_from_a_neighbour() {
+        let manifest = publishable(|m| {
+            m.replace(
+                "  \"publishConfig\": {\n    \"access\": \"public\"\n  },\n",
+                "  \"someOtherThing\": {\n    \"access\": \"public\"\n  },\n",
+            )
+        });
+        let repo = repo_with(&[("sdks/nodejs/package.json", &manifest)]);
+        let error = verify_npm_scope(repo.path()).expect_err("the access is a neighbour's");
+        assert!(error.contains("no `publishConfig.access`"), "{error}");
     }
 }

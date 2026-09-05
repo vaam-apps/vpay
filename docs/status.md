@@ -196,6 +196,25 @@ were run under the old spelling — so a Step 5b note reading `pnpm --filter
 [ADR-0015](adr/0015-sdk-parity.md), which AGENTS.md makes immutable —
 superseding those two is a maintainer decision, not this change's.
 
+**New 2026-09-05: `cargo xtask verify-npm-scope` is the sixth gate.** It
+asserts what the rename above depends on and what nothing else checked:
+every publishable package under `sdks/` is named `@vaam-apps/vpay-*`, says
+`publishConfig.access: "public"`, names this repository, carries a `license`,
+ships a `files` allowlist with an entry point under `dist/` and a `prepack`
+that builds it; every private one under `sdks/` declares no `publishConfig`;
+no package outside `sdks/` wears the publishable scope; and no retired
+`@vpay/{sdk,stripe-js,stripe-compat}` name survives outside `docs/plans`,
+`docs/adr` and `docs/status.md`. Measured before it existed, on the branch
+that performed the rename: deleting `publishConfig.access` from
+`sdks/nodejs/package.json` — the one line between `npm publish` and a scoped
+package's default `restricted` — passed `pnpm install --frozen-lockfile`,
+`pnpm -r typecheck`, `just lint-web`, `just test-web`, `just audit-web` and
+all five gates. Reverting a package's own `name` to its retired spelling
+passed the lockfile too: pnpm keys `importers` by directory, so a workspace
+package's own name never reaches `pnpm-lock.yaml`. Fourteen unit tests in
+`.xtask` drive the gate itself through each rule. What it does **not** check:
+that `dist/` exists (gitignored) and the registry (needs the network).
+
 **New 2026-09-05: `cargo xtask verify-links` is the fifth gate, and
 `cargo xtask verify-citations` is a sixth that is opt-in.** Until this
 landed, `just docs-check` ran `verify-status` and printed `note: link
