@@ -323,8 +323,13 @@ adapter over HTTP and moves the intent** — `processing` on a push rail,
 `requires_action` with a redirect on a redirect rail, `409 charge_declined`
 when the rail refuses, `502` when it cannot be reached. Whether that rail is
 MTN or a WireMock stub is a line in `config/application.yml`, and to date it
-has only ever been a stub. `/v1/refunds`, `/v1/events` and `/v1/balance`
-still answer the honest 404. `vpay-worker-bin` stays up answering shutdown signals but its
+has only ever been a stub. `GET /v1/events`, `GET /v1/events/{id}` (Step 5,
+2026-09-03) and `GET /v1/refunds/{id}` (issue #45, 2026-09-05) are served
+too; `POST /v1/refunds` and `GET /v1/balance` still answer the honest 404,
+and creating a refund will keep doing so until a rail can refund. This
+sentence named all three of `/v1/refunds`, `/v1/events` and `/v1/balance` as
+unrouted, and had been wrong about `/v1/events` since Step 5.
+`vpay-worker-bin` stays up answering shutdown signals but its
 job loop is not implemented, and it says so in a startup banner and a repeating
 heartbeat log line.
 
