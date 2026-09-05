@@ -166,7 +166,31 @@ not fail where the brief predicted they would, and both are recorded as such.
   The Node column's protection for this field is `tsc`, reached by
   `just lint-web`, not vitest. Mutation 4 is the measurement that says so.
 
-## 7. Out of scope, and said so
+## 7. The gate, measured
+
+`just ci` end to end on this branch, **exit 0**, twice — once at `78c1d2d` and
+again at `0ccd785` after the citation correction. From the second run's log:
+
+* `fmt-check`, `clippy --workspace --all-targets -- -D warnings`: clean.
+* `verify`: *"ok — the ten gates above passed"*.
+* `test-rust`: **1289 tests run, 1289 passed, 0 skipped** in 793 s, against
+  real Postgres and WireMock containers (testcontainers).
+* `verify-ignored`: *"0 ignored (expected 0), 41 test binaries (expected 41),
+  1289 total"*. Base `65a5952` was 1279 across the same 41 binaries, so this
+  branch adds **10** Rust tests: 2 in `postgres_smoke`, 1 in `vpay-core`, 6 in
+  `vpay-api::model`, 1 in `vpay-sdk`.
+* `test-doc`: every crate ok; `vpay-core` 46 passed, which includes the two
+  new `RefundStatus` examples.
+* `lint-web` (`pnpm -r typecheck` then `pnpm -r lint`): clean. `test-web`:
+  `sdks/nodejs` **173 passed**, including the new case; every other package
+  unchanged.
+* `deny`: *"advisories ok, bans ok, licenses ok, sources ok"*.
+
+Separately, and **not** part of `just ci` because it needs the network:
+`cargo xtask verify-citations` with a token — *"ok — 45 unique id(s) cited by
+131 markdown file(s) all resolve"*. It failed on the first run; see section 1.
+
+## 8. Out of scope, and said so
 
 * **`fee_borne_by` and `fee_settlement_ref`.** Marketplace concepts. Fault
   attribution is the platform's judgement, not the rail's; vpay reports what
@@ -180,7 +204,7 @@ not fail where the brief predicted they would, and both are recorded as such.
   decision — reported only, not posted — and names invariant 2 as the line
   that has to change before anything posts one.
 
-## 8. What a reviewer should be sceptical about
+## 9. What a reviewer should be sceptical about
 
 * This PR adds **more server surface than the issue proposed** (the issue's
   steps 1–4 were docs and SDKs only). `RefundObject`, `RefundRow` and
