@@ -1858,10 +1858,14 @@ asserted:
   `an_unreported_refund_fee_renders_null_and_a_reported_zero_renders_zero`,
   `a_refund_delivered_as_either_refund_event_carries_fee_present_and_null`;
 - the port's own `vpay_provider::Refunded::fee` (`Option<Money>`), the only
-  thing that could ever fill it — note that a bullet in this section may not
-  *begin* with a backticked path, because `verify-status` reads exactly those
-  as declared `NotImplemented` tokens and this is not one;
-- both merchant SDKs' `Refund.fee`, with the parity row and its four tests.
+  thing that could ever fill it;
+- both merchant SDKs' `Refund.fee`, with the parity row and its five tests.
+
+None of those four bullets *begins* with a backticked path, and none may:
+`verify-status` reads exactly that shape — `- ` then a backtick — as a
+declared `NotImplemented` token, and the docs→code half of the gate would
+then fail because no shipping code carries one. That is the gate working
+rather than a trap, and it is why each bullet above opens with a noun.
 
 **What has to exist before it is ever anything but `null`.** For MTN: a
 Disbursements subscription key and token scope in `config/application.yml` /
