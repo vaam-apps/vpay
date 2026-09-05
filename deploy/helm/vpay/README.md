@@ -540,7 +540,11 @@ Written 2026-09-03, step 6 block B.
   whole claim.
 * The resource requests and limits are placeholders. No profiling exists.
 * The images the chart references have never been pulled from GHCR by this
-  chart; publishing them is block A.
+  chart; ~~publishing them is block A.~~ **Updated 2026-09-05: publishing has
+  happened** — release run `33929374661` (2026-09-04) pushed and signed all
+  four. The unproven half is the pull, not the push: nobody has pulled one,
+  and GHCR package visibility could not be measured (no `read:packages` scope;
+  anonymous pull refused).
 
 ### Follow-ups
 

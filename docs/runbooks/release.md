@@ -1,11 +1,45 @@
 # Release: cut a tag, verify a signature, pin a digest
 
-**Nobody has done this.** No tag has been pushed, `.github/workflows/release.yml`
+~~**Nobody has done this.** No tag has been pushed, `.github/workflows/release.yml`
 has never run, no image exists at `ghcr.io/vaam-apps/vpay-*`, and nothing has
-been signed. This runbook is written from the workflow file and the documented
-behaviour of the tools it calls. Read [../status.md](../status.md) before you
-trust a step here; the first real run is what turns it from a plan into a
-procedure.
+been signed.~~
+
+**Corrected 2026-09-05.** Three of those four clauses are no longer true.
+`gh run list --workflow release --branch master --limit 20` returns **13 runs,
+12 green** (2026-09-03 15:25 UTC → 2026-09-04 23:24 UTC; the one failure,
+`33894388991`, is the organisation rename described in
+[../status.md](../status.md)). In the most recent, **`33929374661`** (head
+`33d6c25`), all 13 jobs succeeded, and its log records the four manifest lists
+being pushed and then signed:
+
+| Image | Index digest pushed to `:edge` and `:sha-33d6c25…` | Rekor tlog index |
+|---|---|---|
+| `ghcr.io/vaam-apps/vpay-server` | `sha256:5485db5e397edd8e672737e676756ca4e9eb56a23fb117a6bc762e0532b50537` | 2717616118 |
+| `ghcr.io/vaam-apps/vpay-worker` | `sha256:08667b03bae210802d04d59dba92820be9bccb4052f8337c74f0ea0a80d68a78` | 2717617767 |
+| `ghcr.io/vaam-apps/vpay-dashboard` | `sha256:ba6d6712dc143598c66c34300dffa3e38cdd5a21de98dfc9b43a13103b21a7a7` | 2717616040 |
+| `ghcr.io/vaam-apps/vpay-checkout` | `sha256:5214e408be6062123b51374d99988ef20e28081fa96e7bcb0eb4ac2b5b12e51e` | 2717615975 |
+
+Digests come from the `create the manifest list` step's `pushing <digest> to
+<image>:edge` lines; tlog indices from each `cosign sign (keyless, GitHub
+OIDC)` step in the matching `manifest list + sign (<image>)` job.
+
+**GHCR package visibility is still unmeasured, and not for want of trying.**
+`gh api "orgs/vaam-apps/packages?package_type=container"` returns HTTP 403
+`You need at least read:packages scope to list packages` — the available token
+carries `gist, project, read:org, repo, user, workflow` and was not authorised
+for packages. An unauthenticated pull is refused too: `GET
+https://ghcr.io/token?scope=repository:vaam-apps/vpay-server:pull` answers
+`UNAUTHORIZED`, and the tags endpoint 401s. That is evidence the four packages
+are **not anonymously pullable**; it does not by itself distinguish "private"
+from "absent", and the run log above is what establishes that they exist.
+
+**What is still true, and it is the fourth clause:** **no `v*` tag has been
+pushed.** Every run above took the `type=raw,value=edge` branch, so §2's semver
+table is still unexercised, and §3's `cosign verify` has never been run by
+anyone — see "What is unproven" (§6). This runbook's *tag-cutting* half is
+therefore still written from the workflow file rather than from a procedure
+anyone has followed. Read [../status.md](../status.md) before you trust a step
+here.
 
 ---
 
@@ -165,11 +199,34 @@ Two rollbacks are **not** safe and are documented where they bite:
 
 Everything above. Specifically:
 
-* No `release.yml` run exists. Not one image has been built by it, pushed,
-  merged into a manifest list or signed.
-* `aarch64-unknown-linux-musl` has never been compiled — not in CI, not
+* ~~No `release.yml` run exists. Not one image has been built by it, pushed,
+  merged into a manifest list or signed.~~ **Retired 2026-09-05: 13 runs
+  exist, 12 green, the latest `33929374661` — see the correction at the top of
+  this page for the digests and tlog indices.**
+* ~~`aarch64-unknown-linux-musl` has never been compiled — not in CI, not
   locally. The arm64 half of every manifest list is unbuilt code paths in a
-  workflow file.
+  workflow file.~~ **Retired 2026-09-05:** in `33929374661` all four
+  `build … (arm64)` jobs ran on `ubuntu-24.04-arm` and succeeded — including
+  `build vpay-server (arm64)` and `build vpay-worker (arm64)`, the two built
+  from `backends/Dockerfile`, which is where the musl triple is actually
+  compiled. So the triple builds and the arm64 half of each manifest list is
+  real. **How that is read, because the string
+  `aarch64-unknown-linux-musl` appears nowhere in the run log:**
+  `backends/Dockerfile` deliberately does not name a target and builds the
+  builder's own host triple (see its header), the builder resolves to
+  `docker.io/library/rust:1.95.0-alpine3.22` on `linux/arm64` in that job, and
+  the job logs `Compiling vpay-server v0.1.0` then ``Finished `dist` profile
+  [optimized] target(s) in 4m 32s`` — an alpine (musl) rust image on an arm64
+  host has exactly one host triple. Nobody has run `rustc -vV` in that image
+  and read the triple back
+  ([ADR-0014](../adr/0014-builder-host-musl-triple.md) still records why the
+  `+crt-static` entry is needed).
+* **No `v*` tag has ever been pushed.** Every run took the
+  `type=raw,value=edge` branch, so the semver tag path (`{{version}}`,
+  `{{major}}.{{minor}}`) in §1's table has never produced a tag.
+* **No image from any run has been pulled or executed anywhere**, and GHCR
+  package visibility is unmeasured (the token lacks `read:packages`;
+  anonymous pull is refused). A green push is not a reachable image.
 * `cosign verify` has never been run against anything from this repository, so
   the regexp in §3 is derived from the workflow's `on:` block and Fulcio's
   documented identity format, not from a certificate anyone has read.

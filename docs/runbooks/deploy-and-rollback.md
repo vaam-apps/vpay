@@ -10,8 +10,18 @@ Kubernetes API server.
 9090; `--observability-bind` and that route landed on 2026-09-03 (step-6
 block A) and both binaries' `tests/cli.rs` prove they answer. Against an image
 older than that there is nothing on 9090 and the kubelet restarts both pods in
-a loop. No image has been published at all yet — see §6 — so today the only
-correct value for `images.*.digest` is one that does not exist.
+a loop. ~~No image has been published at all yet — see §6 — so today the only
+correct value for `images.*.digest` is one that does not exist.~~ **Corrected
+2026-09-05: images have been published.** Release run `33929374661`
+(2026-09-04, head `33d6c25`) pushed and signed all four; the two this chart
+deploys are `ghcr.io/vaam-apps/vpay-server`
+`sha256:5485db5e397edd8e672737e676756ca4e9eb56a23fb117a6bc762e0532b50537` and
+`ghcr.io/vaam-apps/vpay-worker`
+`sha256:08667b03bae210802d04d59dba92820be9bccb4052f8337c74f0ea0a80d68a78`,
+both built from a commit later than 2026-09-03 and so both carrying the
+`/livez` listener this section requires. Those are real values for
+`images.*.digest` — but nobody has pulled either, so see §6 before you rely
+on one.
 
 ---
 
@@ -214,9 +224,17 @@ Everything operational on this page. Specifically:
 - ~~**The liveness probes point at a listener no image has.**~~ Corrected
   2026-09-03: the listener landed the same day. See the note at the top for
   what is still true about older images.
-- **No image exists** at `ghcr.io/vaam-apps/vpay-server` or `-worker`;
+- ~~**No image exists** at `ghcr.io/vaam-apps/vpay-server` or `-worker`;
   `release.yml` has never run, so every digest a values file could pin today
-  would be invented ([release.md](release.md)).
+  would be invented~~ ([release.md](release.md)). **Retired 2026-09-05:**
+  `release.yml` has run 13 times on `master`, 12 green; the latest,
+  `33929374661`, pushed and cosign-signed a manifest list for each of the four
+  images. A digest pinned from that run is measured, not invented. **What
+  replaces this bullet:** nobody has ever *pulled* one of those images, GHCR
+  package visibility is unmeasured (the available token has no
+  `read:packages` scope and anonymous pull is refused), and no `cosign verify`
+  has been run — so a cluster that cannot authenticate to GHCR would fail at
+  `ImagePullBackOff` and nothing here would have predicted it.
 - ~~The server's drain timeout has no test.~~ Corrected 2026-09-03: it has
   one. `an_in_flight_request_that_outlasts_the_grace_period_is_exit_1_and_says_so`
   in `backends/apps/vpay-server/tests/cli.rs` holds a real request open on a

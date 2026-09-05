@@ -15,11 +15,25 @@ name: release
 # Nothing else in this repository pushes an image; `ci.yml` builds them and
 # throws them away.
 #
-# NOTHING IN THIS FILE HAS EVER RUN. It was written 2026-09-03 against
-# `backends/Dockerfile`, `frontends/Dockerfile` and the documented behaviour of
-# the actions it calls. No tag has been pushed, no image has been published and
-# nothing has been signed. `actionlint` says it parses; that is the whole of
-# the evidence. See docs/status.md and docs/runbooks/release.md.
+# This header used to open "NOTHING IN THIS FILE HAS EVER RUN … no image has
+# been published and nothing has been signed", written 2026-09-03 when it was
+# true. Corrected 2026-09-05: `gh run list --workflow release --branch master`
+# returns 13 runs, 12 of them green (2026-09-03 15:25 UTC → 2026-09-04 23:24
+# UTC); the single failure is `33894388991`, the rename breakage described
+# above. In the latest, `33929374661` (head `33d6c25`), all 13 jobs succeeded
+# and its log shows each of the four manifest lists pushed to `:edge` and
+# `:sha-<40 hex>` —
+#   vpay-server    sha256:5485db5e397edd8e672737e676756ca4e9eb56a23fb117a6bc762e0532b50537
+#   vpay-worker    sha256:08667b03bae210802d04d59dba92820be9bccb4052f8337c74f0ea0a80d68a78
+#   vpay-dashboard sha256:ba6d6712dc143598c66c34300dffa3e38cdd5a21de98dfc9b43a13103b21a7a7
+#   vpay-checkout  sha256:5214e408be6062123b51374d99988ef20e28081fa96e7bcb0eb4ac2b5b12e51e
+# — and four `cosign sign` steps that each logged "Pushing signature to:" and
+# a Rekor tlog index (server 2717616118, worker 2717617767, dashboard
+# 2717616040, checkout 2717615975). What is still true of the original
+# sentence: **no `v*` tag has been pushed**, so the
+# `type=semver` path below has never been taken, and nobody has run
+# `cosign verify` against any of those digests. See docs/status.md and
+# docs/runbooks/release.md.
 #
 # Two Dockerfiles, three targets, one shape: both are built from the
 # repository root (`context: .`), exactly as `compose.e2e.yml` builds them.
