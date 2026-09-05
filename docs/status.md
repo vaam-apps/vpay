@@ -1856,7 +1856,14 @@ asserted:
 - the wire field `vpay_api::model::RefundObject::fee` and the ten-key
   tripwire on that object — `the_refund_object_is_the_documented_ten_keys`,
   `an_unreported_refund_fee_renders_null_and_a_reported_zero_renders_zero`,
-  `a_refund_delivered_as_either_refund_event_carries_fee_present_and_null`;
+  `a_refund_delivered_as_either_refund_event_carries_fee_present_and_null`
+  (which renders through **both** refund event types, since `data.object` is
+  this object), and `a_reported_fee_never_moves_the_payers_amount`, which
+  holds the one invariant the field exists to protect: `amount` is the
+  payer's money and is never net of the fee. That last case was added on
+  review — until it existed, `amount: row.amount - row.fee.unwrap_or(0)`
+  passed all 244 of `vpay-api`'s tests
+  ([plans/issue-46-notes/review.md](plans/issue-46-notes/review.md), F1);
 - the port's own `vpay_provider::Refunded::fee` (`Option<Money>`), the only
   thing that could ever fill it;
 - both merchant SDKs' `Refund.fee`, with the parity row and its five tests.

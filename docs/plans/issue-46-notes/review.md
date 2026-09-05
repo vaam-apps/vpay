@@ -209,3 +209,113 @@ not-routed table, and `docs/status.md` says so in both directions.
 * **`docs/flows/merchant-auth.md`'s Resources table omits `/v1/checkout/sessions`
   entirely** (three routes, served). Pre-existing, unrelated to `fee`, and
   filling it in means writing request fields for a different feature.
+
+---
+
+# Phase 2 — what was changed, and the proof
+
+Seven commits on top of `9228ca4`, one per finding (F3 covers three files,
+F8 folds in one more sentence from the same paragraph). **No test or gate was
+weakened**; every commit either adds an assertion or corrects a sentence.
+
+| Finding | Commit | Decisive proof |
+|---|---|---|
+| F1 money | `test(api): the payer's amount is never net of the refund fee` | mutation 7 now **fails**: `a fee of Some(250) changed the amount the payer gets back` |
+| F6 coverage | `test(api): render a refund through both refund event types, not one` | deleting the `"charge.refund.updated"` arm of `KnownEventType::from_wire` now **fails** it (`left: None`, `right: Some(ChargeRefundUpdated)`) |
+| F5 doc | `docs(merchant-auth): /v1/events is served — the Resources table said 404` | `V1_ROUTES` re-read (nine entries); `verify-links` ok |
+| F2 proof | `test(sdk-node): pin fee's three read states at the type level` | mutation 8 now **fails**: `fee?: number` and `fee: number \| null` both give `types.test.ts(229,7): error TS2322` |
+| F3 doc | `docs(sdks): exactOptionalPropertyTypes is not what keeps absent and null apart` | the two-column `tsc` measurement, quoted in the commit |
+| F4 doc | `docs(sdk-rust): serde(default) is not what decodes an absent fee` | mutation 9, quoted in the commit |
+| F7 nit | `docs(status): lift the verify-status syntax note out of the port bullet` | `verify-status` ok — 1 unimplemented item |
+| F8 nit | `docs(parity): restore the referent the new refund.fee paragraph displaced` | `verify-sdk-parity` ok — 347 named tests |
+
+Two knock-on edits, in the commits that caused them rather than as a tidy-up:
+
+* `a_refund_delivered_as_charge_refunded_carries_fee_present_and_null` was
+  **renamed** to `…_as_either_refund_event_…`; `docs/status.md` and
+  `docs/flows/webhooks.md` moved with it. impl.md's mutation table keeps the
+  old name, because it is a record of a run at `9228ca4` and rewriting it
+  would falsify the measurement rather than update it.
+* `docs/status.md`'s refund register gained
+  `a_reported_fee_never_moves_the_payers_amount` and the reason it exists.
+
+## Judgements, so they are visible rather than buried
+
+* **`#[serde(default)]` stays**, although F4 shows it is redundant. The issue
+  specified it, and an explicit attribute in a declaration is cheap; what was
+  wrong was the claim made *about* it, not the attribute.
+* **`docs/roadmap.md:664`'s stale "`/v1/events` … unrouted" is left alone.**
+  It is inside a dated phase addendum that a later addendum already
+  supersedes; correcting closed history would make the record worse, not
+  better.
+* **The extra server surface stays** — see the criterion map above.
+
+## The gate on the final tree
+
+Recorded honestly, because the host fought back. `just test-rust` failed
+**four** times in a row on this tree — three at nextest's default concurrency
+and once at `--test-threads 4` — each time on a *different*, untouched
+`vpay-db` container test, and each time with
+
+    Error: postgres:16-alpine container starts (it is cached locally on this machine)
+    Caused by: failed to create a container: Timeout error        (or: container startup timeout)
+
+never an assertion. The cause was the host, not the tree: another agent was
+running vpay's container suite concurrently (load average 13–24), and
+`docker ps -a` held **250 containers stuck in `Created`**, all
+`org.testcontainers.managed-by=testcontainers`, accumulating since
+2026-09-05 11:58. 240 of them older than thirty minutes were removed — dead
+debris that had never started, so no live run depended on them — and once the
+other agent's run finished, the workspace suite came back **1290 run, 1290
+passed, 0 skipped**.
+
+`just ci` end to end on the final tree, **exit 0 for all nine recipes**
+(2026-09-06, 00:53 → 01:07):
+
+| Recipe | Exit | What it printed |
+|---|---|---|
+| `fmt-check` | 0 | clean |
+| `clippy` | 0 | `--workspace --all-targets -- -D warnings`, clean |
+| `verify` | 0 | *"ok — the ten gates above passed"*; `verify-status` **1** unimplemented item; `verify-sdk-parity` **347** named tests, 26 dated gaps; `verify-links` **730** links in 132 files; `verify-serde` 51 types, 15 exempted |
+| `test-rust` | 0 | **1290 tests run, 1290 passed, 0 skipped** in 778 s |
+| `test-doc` | 0 | every crate ok |
+| `verify-ignored` | 0 | *"0 ignored (expected 0), 41 test binaries (expected 41), 1290 total"* |
+| `lint-web` | 0 | `pnpm -r typecheck`, `pnpm -r lint` clean |
+| `test-web` | 0 | `sdks/nodejs` **174 passed** (was 173) |
+| `deny` | 0 | advisories/bans/licenses/sources ok |
+
+1290 is `9228ca4`'s 1289 plus `a_reported_fee_never_moves_the_payers_amount`;
+`a_refund_delivered_as_either_refund_event_carries_fee_present_and_null` runs
+two event types inside one case, so it stays one test. 174 is 173 plus the
+Node type-level assertion. `expected_suites` is untouched at 41 — every new
+case landed in a binary that already existed.
+
+This table was measured on the tree of the commit **before** this paragraph
+was written into it; the only difference is this file. `just verify` — the
+one recipe that reads markdown — was re-run afterwards and is quoted at the
+end of the final commit message.
+
+## Verdict
+
+**Safe as delivered: yes, after Phase 2.** As delivered at `9228ca4` it was
+safe in the sense that nothing false shipped in *code*, but the invariant the
+whole field exists to protect (F1) had no test, one half of the SDK contract
+had no gate (F2), and three documented rationales were measurably wrong
+(F3, F4, F5).
+
+A PR from this branch can honestly say **`Closes #46`**. Every step of the
+issue's proposal is delivered; `fee_borne_by`, `fee_settlement_ref`, any rail
+call and populating the fee were declared out of scope **by the issue
+itself**, and the field being `null` on every object this deployment can
+produce is what the issue predicted and what `docs/status.md` now records.
+
+## Not checked
+
+* **Whether either rail reports a refund fee at all.** Unchanged and
+  unchangeable here: MTN's Disbursements product has never been called from
+  this repository and Orange documents no refund API.
+* **`cargo xtask verify-citations`.** Needs the network and a token; not part
+  of `just ci`. impl.md records it passing on 2026-09-05 after the correction
+  in `0ccd785`; this pass did not re-run it.
+* **Anything downstream of a `refunds` row**, because none is ever written.
+
