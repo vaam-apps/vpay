@@ -141,6 +141,42 @@ pub struct Submitted {
     pub redirect_url: Option<String>,
 }
 
+/// What a rail answered when asked to return money.
+///
+/// # Why not [`Submitted`]
+///
+/// `refund` returned `Submitted` until 2026-09-05 (issue #46). That type
+/// carries `redirect_url`, which a refund can never have — no payer's
+/// browser is involved in giving money back — so every adapter had to
+/// answer `None` to a question nobody could ask. Splitting the two is what
+/// lets [`fee`](Refunded::fee) exist here without also appearing on the
+/// charge path, where the rail's charge fee is a *different* number with a
+/// different owner.
+#[derive(Debug, Clone)]
+pub struct Refunded {
+    /// Key material the core must commit, exactly as on [`Submitted`]: a
+    /// refund is addressed on the rail by a reference this side generated
+    /// before the call (`docs/flows/crash-safety.md`).
+    pub ref_extra: RefExtra,
+    /// What the rail charged **us** to move the money, in the refund's own
+    /// currency — never a second currency, and never a float
+    /// (`docs/flows/money.md`).
+    ///
+    /// `None` means the rail did not report a fee, and `Some(zero)` means it
+    /// reported that the movement was free. Those are different answers and
+    /// must stay different all the way to the merchant's `refund.fee`: an
+    /// adapter that collapsed "unknown" into `0` would put an invented number
+    /// in a settlement statement, which is the exact failure issue #46 was
+    /// filed about (an integrator hardcoding `provider_fee_minor: 0`).
+    ///
+    /// **No adapter populates this today**, and none may until it has a real
+    /// rail response carrying a fee — see `docs/status.md`. `Money` rather
+    /// than `i64` so the currency travels with the amount and a fee in the
+    /// wrong currency cannot be silently rendered as minor units of the
+    /// refund's.
+    pub fee: Option<Money>,
+}
+
 /// The authoritative status read. Never derived from a callback body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChargeStatus {
@@ -772,7 +808,7 @@ pub trait ProviderAdapter: Debug + Send + Sync {
         _charge: &ChargeRef,
         _amount: Money,
         _config: &ProviderConfig,
-    ) -> Result<Submitted, ProviderError> {
+    ) -> Result<Refunded, ProviderError> {
         Err(ProviderError::Unsupported)
     }
 

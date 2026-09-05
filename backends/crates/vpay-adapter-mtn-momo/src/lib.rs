@@ -26,7 +26,7 @@ use tokio::sync::RwLock;
 use vpay_core::{FailureCode, Money, ProviderFlow};
 use vpay_provider::{
     AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter,
-    ProviderConfig, ProviderError, RefExtra, Submitted,
+    ProviderConfig, ProviderError, RefExtra, Refunded, Submitted,
 };
 
 use crate::token::{Credentials, SUBSCRIPTION_KEY_HEADER, TARGET_ENVIRONMENT_HEADER};
@@ -688,7 +688,7 @@ impl ProviderAdapter for Adapter {
         _charge: &ChargeRef,
         _amount: Money,
         _config: &ProviderConfig,
-    ) -> Result<Submitted, ProviderError> {
+    ) -> Result<Refunded, ProviderError> {
         Err(ProviderError::NotImplemented("mtn_momo::refund"))
     }
 

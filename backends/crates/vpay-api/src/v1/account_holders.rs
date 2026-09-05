@@ -403,7 +403,7 @@ mod tests {
     use vpay_core::{Money, ProviderFlow};
     use vpay_provider::{
         AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderConfig,
-        ProviderError, Submitted,
+        ProviderError, Refunded, Submitted,
     };
 
     use super::*;
@@ -490,7 +490,7 @@ mod tests {
             _charge: &ChargeRef,
             _amount: Money,
             _config: &ProviderConfig,
-        ) -> Result<Submitted, ProviderError> {
+        ) -> Result<Refunded, ProviderError> {
             Err(ProviderError::Unsupported)
         }
 
