@@ -43,6 +43,62 @@ must match the registered `providerCallbackHost`.
 
 Status: `GET /collection/v1_0/requesttopay/{ref}` → `PENDING` | `SUCCESSFUL` | `FAILED`.
 
+## The account-holder call
+
+```http
+GET /collection/v1_0/accountholder/msisdn/{msisdn}/basicuserinfo
+Authorization: Bearer <token>
+Ocp-Apim-Subscription-Key: <collections key>
+X-Target-Environment: sandbox | mtncameroon
+```
+
+```json
+{ "given_name": "…", "family_name": "…", "birthdate": "…",
+  "locale": "…", "gender": "…", "status": "…" }
+```
+
+**The same Collections subscription key and the same token scope as
+`requesttopay`** — which is what makes this buildable where `refund` is not:
+no deployment needs a credential it does not already hold. Transcribed from
+the operation's own OpenAPI components on MTN's developer portal
+(`GetBasicUserinfo`), retrieved 2026-09-05; the exact citation is in
+[account-holder-lookup.md](account-holder-lookup.md) and in
+`docs/plans/issue-47-notes/impl.md`.
+
+**vpay reads two of those six fields.**
+`vpay_adapter_mtn_momo::wire::BasicUserInfo` deserialises `given_name` and
+`family_name` and has no home for the rest, so serde drops `birthdate`,
+`locale`, `gender`, `status` and anything MTN adds later, at the first point
+the bytes become a Rust value. The port returns a
+`vpay_provider::AccountHolder`, which carries a name and nothing else and
+whose `Debug` redacts even that. [account-holder-lookup.md](account-holder-lookup.md)
+is the policy; this is the wire.
+
+| HTTP | → |
+|---|---|
+| `200` with a `given_name` and/or a `family_name` | `Ok(Some(AccountHolder))` |
+| `200` with neither | `Malformed` — an answer we cannot act on, and **not** `Ok(None)` |
+| `404` | `Ok(None)` — the rail has no record. **See the note below: MTN does not document this status for this operation** |
+| `401` / `403` | `Rejected { provider_account_blocked }` — our own credentials, and it pages |
+| `400` | `Malformed` naming the status — our request, not the rail's health |
+| `500` | the same three-configuration-codes table `requesttopay` uses; otherwise `Transport` |
+| any other 5xx | `Transport` |
+| any 3xx | `Malformed` — redirects are never followed |
+
+**Two things about this endpoint are unverified and are recorded rather than
+smoothed over.** First, the `accountHolderIdType` path segment: MTN's portal
+declares the parameter's values **upper-case** (`MSISDN | Email | Alias |
+ID`) while every published example spells the segment **lower-case**, and
+vpay sends lower-case (`vpay_adapter_mtn_momo::ACCOUNT_HOLDER_ID_TYPE`, one
+constant, so changing the answer is one edit). Second, the `404`: the portal
+documents only `200`, `401` and `500` for `GetBasicUserinfo`, where it
+documents "404 Resource not found" explicitly for
+`RequesttoPayTransactionStatus`. Mapping it is a deliberate assumption, safe
+in the direction that matters — if MTN never sends one the arm is dead code,
+and if it sends one for another reason a caller's fail-closed rule still
+refuses. **Neither has been checked against MTN's real sandbox, because
+nothing in this repository has ever called it.**
+
 ## Failure mapping
 
 | MTN `reason` | → core code |
@@ -91,6 +147,21 @@ different subscription key, a separately-scoped token and a `transfer` call.
 No deployment holds those credentials, so there is nothing to build against.
 `supports_refunds` stays `true` because the *rail* refunds; it is we who have
 not built it, and answering `Unsupported` would be a lie about MTN.
+
+**`account_holder_name` IS implemented** (issue #47, 2026-09-05), and
+`supports_account_holder_lookup` is `true` — a claim about the rail *and*
+about this code. Five conformance cases run it against a real WireMock
+container, parameterised over both rails out of one body
+(`an_account_holder_lookup_returns_a_name_and_nothing_else`,
+`a_number_the_rail_has_no_record_of_is_not_an_error`,
+`a_lookup_that_cannot_reach_the_rail_is_never_reported_as_a_missing_holder`,
+`an_oversized_account_holder_body_is_refused_at_the_cap`,
+`an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing`) —
+the last of those asserting against **captured `tracing` output** that
+neither the holder's name nor the payer's number reaches a log line. The
+same "never against the real sandbox" caveat below applies, and two specific
+things about the endpoint are unverified: see "The account-holder call"
+above.
 
 ### What the token cache does
 
@@ -226,6 +297,20 @@ non-digit input, which is why this table has two columns and not one.
 redirect rail whose submit body carries an `order_id` and no MSISDN, so there
 is no payer-typed field on that rail for a documentation number to steer by;
 its outcomes are steered by the amount.
+
+**The account-holder MSISDNs are a separate, digits-only family, and
+deliberately so.** `basicuserinfo.json` stubs `237600000200` (a named
+holder), `237600000404` (no record), `237600000560` (a delayed answer),
+`237600000616` (an oversized body) and `237600000700` (a body full of
+personal data), plus the demo pair `237600000100` / `237600000199`. None of
+them carries a hex letter, because `GET /v1/account_holders` validates
+Cameroon E.164 **server-side** and would refuse one before the rail was
+called — so a hex steering number is unreachable through that route by
+construction, which
+`a_number_that_is_not_e164_is_refused_before_the_rail_is_asked` asserts.
+`237600000100` is shared with the settling row above on purpose: a merchant's
+real question is whether the number they are about to pay belongs to the
+person they think it does.
 
 **The demo stack settles both rails in XAF, and this table is unaffected by
 that**: no MTN mapping matches on a currency at all, in a request body or

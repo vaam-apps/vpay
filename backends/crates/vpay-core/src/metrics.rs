@@ -29,7 +29,15 @@
 //! vpay_webhook_deliveries_total{outcome}                            counter
 //! vpay_error_events_total{category,code,severity}                   counter
 //! vpay_alert_events_total{category,code}                            counter
+//! vpay_account_holder_lookups_total{outcome}                        counter
 //! ```
+//!
+//! The last line is the only one that is **not** in that plan document: it
+//! landed with `GET /v1/account_holders` (issue #47), after it was written.
+//! It is here rather than folded into `vpay_http_requests_total` because the
+//! four outcomes a lookup has are not four status codes — `found` and
+//! `not_found` are both `200`, and telling them apart is the whole question
+//! an operator asks of this route.
 //!
 //! A described-but-unrecorded metric never appears in a scrape (the
 //! Prometheus exporter renders registered *handles*, not descriptions), so a
@@ -163,6 +171,24 @@ pub const ERROR_EVENTS_TOTAL: &str = "vpay_error_events_total";
 /// about what a page is.
 pub const ALERT_EVENTS_TOTAL: &str = "vpay_alert_events_total";
 
+/// Account-holder lookups served by `GET /v1/account_holders`, by outcome.
+///
+/// See [`account_holder_outcome`] for the four values, and
+/// `docs/flows/account-holder-lookup.md` for the route.
+///
+/// **One label, and it can only ever be one of four constants.** The number
+/// looked up is a person's phone number and the answer is a person's name;
+/// neither may become a label, because a Prometheus label is retained,
+/// queryable and shipped wherever the scrape goes — which would turn the
+/// metric into the name-harvesting record the route exists not to keep. The
+/// merchant is not a label either, for the same reason it is not audited
+/// today: see the flow doc's reserved decision.
+///
+/// Emitted by `vpay_api::v1::account_holders::retrieve`, once per request,
+/// on every path including the refusals — a merchant asking a rail that
+/// cannot answer is exactly what an operator wants the rate of.
+pub const ACCOUNT_HOLDER_LOOKUPS_TOTAL: &str = "vpay_account_holder_lookups_total";
+
 /// Every name in this module, in the order the module doc lists them.
 ///
 /// Public so a binary's own test can assert its `/metrics` output against the
@@ -199,6 +225,7 @@ pub const ALL: &[&str] = &[
     WEBHOOK_DELIVERIES_TOTAL,
     ERROR_EVENTS_TOTAL,
     ALERT_EVENTS_TOTAL,
+    ACCOUNT_HOLDER_LOOKUPS_TOTAL,
 ];
 
 /// The `outcome` label on [`JOBS_COMPLETED_TOTAL`].
@@ -282,8 +309,9 @@ pub mod webhook_outcome {
 ///     provider_operation::SUBMIT,
 ///     provider_operation::QUERY_STATUS,
 ///     provider_operation::REFUND,
+///     provider_operation::ACCOUNT_HOLDER_NAME,
 /// ];
-/// assert_eq!(all, ["submit", "query_status", "refund"]);
+/// assert_eq!(all, ["submit", "query_status", "refund", "account_holder_name"]);
 /// ```
 pub mod provider_operation {
     /// `ProviderAdapter::submit` — opening a charge on the rail.
@@ -293,6 +321,47 @@ pub mod provider_operation {
     pub const QUERY_STATUS: &str = "query_status";
     /// `ProviderAdapter::refund`.
     pub const REFUND: &str = "refund";
+    /// `ProviderAdapter::account_holder_name` — the stateless identity read
+    /// (issue #47). It moves no money and touches no charge, but it is a
+    /// call to the rail over the same credential, so it belongs in the same
+    /// series: a rail that has started refusing our subscription key refuses
+    /// this too, and an operator should see one rate, not two.
+    pub const ACCOUNT_HOLDER_NAME: &str = "account_holder_name";
+}
+
+/// The `outcome` label on [`ACCOUNT_HOLDER_LOOKUPS_TOTAL`].
+///
+/// A closed vocabulary, spelled once, for [`job_outcome`]'s reason. The four
+/// values are the four things `GET /v1/account_holders` can answer, and they
+/// are deliberately *not* derivable from the HTTP status: the first two are
+/// both `200`.
+///
+/// ```
+/// use vpay_core::metrics::account_holder_outcome;
+///
+/// let all = [
+///     account_holder_outcome::FOUND,
+///     account_holder_outcome::NOT_FOUND,
+///     account_holder_outcome::UNSUPPORTED,
+///     account_holder_outcome::ERROR,
+/// ];
+/// assert_eq!(all, ["found", "not_found", "unsupported", "error"]);
+/// ```
+pub mod account_holder_outcome {
+    /// The rail named a holder. `200` with a `name` and `verified: true`.
+    pub const FOUND: &str = "found";
+    /// The rail has no record of the number. `200` with a null `name` and
+    /// `verified: false` — **not** an error, and the distinction the route
+    /// exists to preserve.
+    pub const NOT_FOUND: &str = "not_found";
+    /// The merchant named a `payment_method_type` whose rail has no
+    /// account-holder API. A `400` naming the parameter, decided on the
+    /// capability value and never on the rail's code (ADR-0002).
+    pub const UNSUPPORTED: &str = "unsupported";
+    /// Everything else: the rail could not be reached, refused our
+    /// credentials, answered something unreadable, or the deployment is
+    /// misconfigured. A classified 4xx/5xx, never a `200` with nulls.
+    pub const ERROR: &str = "error";
 }
 
 /// This build's commit, or [`UNKNOWN_GIT_SHA`].
@@ -430,6 +499,13 @@ pub fn describe_all() {
         ALERT_EVENTS_TOTAL,
         Unit::Count,
         "Classified errors at Severity::Page — the ones that wake someone up."
+    );
+    describe_counter!(
+        ACCOUNT_HOLDER_LOOKUPS_TOTAL,
+        Unit::Count,
+        "Account-holder lookups served by GET /v1/account_holders, by outcome: found, \
+         not_found, unsupported or error. No label carries the number looked up or the name \
+         returned."
     );
 }
 

@@ -328,6 +328,16 @@ impl ProviderAdapter for Adapter {
             supports_partial_refunds: false,
             delivers_callbacks: true,
             requires_ip_allowlist: false,
+            // `false`, and it means "Orange's Web Payment product documents
+            // no account-holder lookup", not "we have not written one".
+            // That is why this adapter overrides nothing and inherits the
+            // port's `Unsupported` — the same shape `refund` already has
+            // here, and the opposite of `mtn_momo`, whose rail *does* expose
+            // one. Orange has a KYC/customer product elsewhere; its route is
+            // unconfirmed from this repository and belongs on
+            // `docs/flows/adapter-orange-money.md`'s "to confirm" list, not
+            // in a `true` nobody can honour (issue #47).
+            supports_account_holder_lookup: false,
         }
     }
 

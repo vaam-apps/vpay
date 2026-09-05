@@ -1108,7 +1108,7 @@ fn the_observability_listener_serves_livez_and_metrics_on_its_own_port_only() {
         // `describe_all` never gave it help text either.
         //
         // Sample lines, not `# HELP` lines: descriptions are registered for
-        // all twelve names whether or not anything records them, so asserting
+        // all thirteen names whether or not anything records them, so asserting
         // on those would prove only that `describe_all` ran (which the
         // assertion above already does). The histogram suffixes Prometheus
         // adds (`_bucket`, `_sum`, `_count`) are folded back to their family.

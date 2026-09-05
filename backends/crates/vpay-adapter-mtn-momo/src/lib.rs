@@ -25,8 +25,8 @@ use reqwest::header::{HeaderName, HeaderValue};
 use tokio::sync::RwLock;
 use vpay_core::{FailureCode, Money, ProviderFlow};
 use vpay_provider::{
-    CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig,
-    ProviderError, RefExtra, Submitted,
+    AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter,
+    ProviderConfig, ProviderError, RefExtra, Submitted,
 };
 
 use crate::token::{Credentials, SUBSCRIPTION_KEY_HEADER, TARGET_ENVIRONMENT_HEADER};
@@ -367,6 +367,99 @@ fn status_outcome(status: StatusCode, body: &str) -> Result<ChargeStatus, Provid
     }
 }
 
+/// The `accountHolderIdType` path segment this adapter sends.
+///
+/// **Lower-case, and MTN's own portal declares the enum upper-case.** The
+/// APIM operation `GetBasicUserinfo` lists the parameter's values as
+/// `MSISDN | Email | Alias | ID`, while every published example of the
+/// endpoint — and issue #47's own citation — spells the segment `msisdn`.
+/// Both cannot be right about a case-sensitive backend, and **this has never
+/// been called against MTN's real sandbox**, so the constant records which
+/// one vpay sends rather than pretending the question is settled
+/// (`docs/flows/account-holder-lookup.md`, "unverified against the real
+/// rail"). A single constant is what makes changing the answer one edit.
+const ACCOUNT_HOLDER_ID_TYPE: &str = "msisdn";
+
+/// What a `basicuserinfo` response means, as a pure function of the status
+/// and the body. Same reasoning as [`submit_outcome`] and [`status_outcome`]:
+/// the table is the part that has to be right, and it is proven row by row
+/// without a network.
+///
+/// # The one row this whole method exists for
+///
+/// `404 -> Ok(None)`. Everything else that is not a `200` is an `Err`,
+/// because `Ok(None)` is the port's word for "the rail has no record" and a
+/// caller (issue #47's nominated-refund name match) treats it as a fact
+/// about the *number* rather than about the lookup. A transport failure
+/// reported as `Ok(None)` would tell that caller a real account is
+/// unregistered.
+///
+/// **MTN documents no 404 for this operation** — the portal lists 200, 401
+/// and 500 and nothing else, unlike `RequesttoPayTransactionStatus`, which
+/// documents "404 Resource not found" explicitly. Mapping it anyway is a
+/// deliberate, stated assumption: a 404 is the only status a REST resource
+/// has for "no such thing", vpay must not turn one into a 502 the merchant
+/// reads as an outage, and the assumption is safe in the direction that
+/// matters — if MTN never sends a 404, this arm is simply dead code, and if
+/// it sends one for some *other* reason, the caller's fail-closed rule
+/// (`Ok(None)` refuses the nomination) still holds.
+fn account_holder_outcome(
+    status: StatusCode,
+    body: &str,
+) -> Result<Option<AccountHolder>, ProviderError> {
+    match status.as_u16() {
+        200 => {
+            let parsed: wire::BasicUserInfo = serde_json::from_str(body).map_err(|e| {
+                ProviderError::malformed(format!("mtn_momo: basicuserinfo response: {e}"))
+            })?;
+            // A 200 that names nobody is an answer this adapter cannot act
+            // on, and emphatically **not** `Ok(None)`: see the function doc.
+            let name = parsed.name().ok_or_else(|| {
+                ProviderError::malformed(
+                    "mtn_momo: basicuserinfo answered 200 with neither a given_name nor a \
+                     family_name"
+                        .to_owned(),
+                )
+            })?;
+            Ok(Some(AccountHolder::new(name)))
+        }
+        // The row above. See the function doc for why this is mapped at all
+        // and why it is safe that MTN does not document it.
+        404 => Ok(None),
+        401 | 403 => Err(rail_credentials_refused(status)),
+        // Our request, not the rail's health: the MSISDN we interpolated is
+        // not one MTN can parse. `Malformed` rather than `Config` because
+        // nothing in the deployment's configuration produced it — the number
+        // came from the caller, past `/v1`'s own E.164 check — and
+        // emphatically not `Ok(None)`, which would report a rejected request
+        // as an unregistered person.
+        400 => Err(ProviderError::malformed(format!(
+            "mtn_momo: basicuserinfo answered HTTP {status}: {}",
+            truncated(body)
+        ))),
+        // The same 500 table `submit` uses: three of MTN's 500s are really
+        // our misconfiguration and must not be retried forever.
+        500 => Err(mapping::internal_error(
+            wire::ApiError::parse(body).code.as_deref(),
+            &truncated(body),
+        )),
+        _ if status.is_server_error() => Err(ProviderError::transport(format!(
+            "mtn_momo: basicuserinfo answered HTTP {status}"
+        ))),
+        // Redirects are never followed (`vpay_provider::http` builds every
+        // client with `redirect::Policy::none()`), so a 3xx would otherwise
+        // send our subscription key and bearer token to wherever `Location`
+        // pointed.
+        _ if status.is_redirection() => Err(ProviderError::malformed(format!(
+            "mtn_momo: basicuserinfo answered a redirect (HTTP {status}), which is not \
+             followed; check base_url"
+        ))),
+        _ => Err(ProviderError::malformed(format!(
+            "mtn_momo: basicuserinfo answered an unexpected HTTP {status}"
+        ))),
+    }
+}
+
 /// Bounds what a rail's body can put in a log line or an error message.
 ///
 /// A rail is free to answer with a megabyte of HTML from a load balancer, and
@@ -393,6 +486,13 @@ impl ProviderAdapter for Adapter {
             supports_partial_refunds: true,
             delivers_callbacks: true,
             requires_ip_allowlist: true,
+            // MTN Collections exposes `GET
+            // /collection/v1_0/accountholder/MSISDN/{msisdn}/basicuserinfo`
+            // under the subscription key and token scope this adapter
+            // already holds, and `account_holder_name` below calls it — so
+            // `true` here is a claim about the rail *and* about this code
+            // (issue #47).
+            supports_account_holder_lookup: true,
         }
     }
 
@@ -545,6 +645,65 @@ impl ProviderAdapter for Adapter {
         _config: &ProviderConfig,
     ) -> Result<Submitted, ProviderError> {
         Err(ProviderError::NotImplemented("mtn_momo::refund"))
+    }
+
+    /// `GET /collection/v1_0/accountholder/msisdn/{msisdn}/basicuserinfo` —
+    /// the registered holder's name for a number (issue #47).
+    ///
+    /// Under the **Collections** subscription key and token scope `submit`
+    /// and `query_status` already use, which is what makes this buildable at
+    /// all: unlike `refund`, no deployment needs a credential it does not
+    /// hold. The response is MTN's OIDC-shaped `basicuserinfo` body and is
+    /// projected to a name by `wire::BasicUserInfo`, which has no field for
+    /// anything else — see that type.
+    ///
+    /// **Nothing here logs the number or the name.** The `debug!` below
+    /// carries the HTTP status and the rail's code only; the masked MSISDN
+    /// that reaches an operator's log is written by the `/v1` handler, once,
+    /// and `docs/flows/account-holder-lookup.md` is the policy.
+    ///
+    /// # Errors
+    ///
+    /// See [`account_holder_outcome`] for the whole table, and the port's
+    /// error-surface table for what each variant means. The row worth
+    /// naming: a rail that could not be reached is
+    /// [`ProviderError::Transport`] and **never** `Ok(None)`.
+    async fn account_holder_name(
+        &self,
+        msisdn: &str,
+        config: &ProviderConfig,
+    ) -> Result<Option<AccountHolder>, ProviderError> {
+        let credentials = Credentials::from_config(config)?;
+        let (subscription, environment) = Adapter::common_headers(&credentials)?;
+        // Percent-encoded, although `/v1`'s own validation admits digits
+        // only: this adapter is reachable from the port by any caller, and a
+        // path segment interpolated raw is a segment a `/` or a `?` could
+        // move to a different endpoint under our own credentials.
+        let url = format!(
+            "{}/collection/v1_0/accountholder/{ACCOUNT_HOLDER_ID_TYPE}/{}/basicuserinfo",
+            base_url(config),
+            vpay_provider::http::path_segment(msisdn),
+        );
+
+        let response = self
+            .send_authorized(config, &credentials, |token| {
+                Ok(self
+                    .http
+                    .get(&url)
+                    .bearer_auth(token)
+                    .header(SUBSCRIPTION_KEY_HEADER, subscription.clone())
+                    .header(TARGET_ENVIRONMENT_HEADER, environment.clone())
+                    .timeout(config.request_timeout))
+            })
+            .await?;
+
+        let (status, text) = read_body(response).await?;
+        tracing::debug!(
+            rail = "mtn_momo",
+            status = status.as_u16(),
+            "basicuserinfo answered"
+        );
+        account_holder_outcome(status, &text)
     }
 }
 
@@ -957,6 +1116,149 @@ mod tests {
             adapter().submit(&charge, &config()).await,
             Err(ProviderError::Config(_))
         ));
+    }
+
+    // -- account holder ----------------------------------------------------
+
+    /// The whole [`account_holder_outcome`] table, row by row, without a
+    /// network. The conformance suite then proves the same rows arrive over
+    /// a real socket from a real WireMock.
+    #[test]
+    fn the_account_holder_table_maps_every_documented_status() {
+        let found = account_holder_outcome(
+            StatusCode::OK,
+            r#"{"given_name":"David","family_name":"Mbarga","birthdate":"1970-01-01",
+                "locale":"fr_CM","gender":"MALE","status":"ACTIVE"}"#,
+        )
+        .expect("a 200 with a name is an answer");
+        assert_eq!(
+            found.as_ref().map(vpay_provider::AccountHolder::name),
+            Some("David Mbarga")
+        );
+
+        // The row the whole method exists for: 404 is "no record", not an
+        // error, and not a fabricated name.
+        assert_eq!(
+            account_holder_outcome(StatusCode::NOT_FOUND, r#"{"code":"NOT_FOUND"}"#)
+                .expect("a 404 is an answer, not a failure"),
+            None
+        );
+
+        // Our own credentials, refused. Pages, per docs/flows/failures.md.
+        for status in [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN] {
+            assert!(
+                matches!(
+                    account_holder_outcome(status, ""),
+                    Err(ProviderError::Rejected {
+                        code: FailureCode::ProviderAccountBlocked,
+                        ..
+                    })
+                ),
+                "{status}"
+            );
+        }
+
+        // A 500 naming one of MTN's three configuration codes is ours to
+        // fix and must not be retried forever.
+        assert!(matches!(
+            account_holder_outcome(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                r#"{"code":"NOT_ALLOWED_TARGET_ENVIRONMENT"}"#
+            ),
+            Err(ProviderError::Config(_))
+        ));
+
+        // Everything else that is not a 200 or a 404 leaves us unable to
+        // answer, and **never** produces `Ok(None)`.
+        for (status, body) in [
+            (StatusCode::BAD_REQUEST, r#"{"code":"BAD_REQUEST"}"#),
+            (StatusCode::TEMPORARY_REDIRECT, ""),
+            (StatusCode::IM_A_TEAPOT, ""),
+            (StatusCode::OK, "not json"),
+            (StatusCode::OK, "{}"),
+            (StatusCode::OK, r#"{"birthdate":"1970-01-01"}"#),
+        ] {
+            assert!(
+                matches!(
+                    account_holder_outcome(status, body),
+                    Err(ProviderError::Malformed { .. })
+                ),
+                "{status} {body}"
+            );
+        }
+        for status in [
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            assert!(
+                matches!(
+                    account_holder_outcome(status, ""),
+                    Err(ProviderError::Transport { .. })
+                ),
+                "{status}"
+            );
+        }
+    }
+
+    /// The mutation this pins: an adapter that returned the rail's whole
+    /// body — or any field of it other than the two names — would fail here
+    /// before it ever reached the conformance suite.
+    #[test]
+    fn nothing_but_the_name_survives_the_projection() {
+        let body = r#"{"given_name":"David","family_name":"Mbarga",
+            "birthdate":"1970-01-01","locale":"fr_CM","gender":"MALE",
+            "status":"ACTIVE","sub":"cust_0001"}"#;
+        let holder = account_holder_outcome(StatusCode::OK, body)
+            .expect("a 200 with a name is an answer")
+            .expect("and it is Some");
+
+        assert_eq!(holder.name(), "David Mbarga");
+        // The type carries one field and `Debug` redacts it, so there is no
+        // rendering of the value in which anything else could appear.
+        let rendered = format!("{holder:?}");
+        for dropped in ["1970-01-01", "fr_CM", "MALE", "ACTIVE", "cust_0001"] {
+            assert!(!rendered.contains(dropped), "{dropped} in {rendered}");
+        }
+        assert!(
+            !rendered.contains("David"),
+            "AccountHolder's Debug must redact the name: {rendered}"
+        );
+    }
+
+    /// `/v1` admits digits only, but the port is reachable by any caller in
+    /// this process, and an unescaped `/` would move the request to another
+    /// MTN endpoint carrying our subscription key and bearer token.
+    #[test]
+    fn a_payer_reference_is_escaped_before_it_becomes_a_path_segment() {
+        assert_eq!(
+            vpay_provider::http::path_segment("../token/"),
+            "..%2Ftoken%2F"
+        );
+        assert_eq!(
+            vpay_provider::http::path_segment("237600000000"),
+            "237600000000",
+            "the ordinary case must not be mangled"
+        );
+    }
+
+    /// The capability is a claim about MTN *and* about this code: the rail
+    /// exposes `basicuserinfo` and the adapter calls it, so `true` here must
+    /// not be a rail whose method still answers `Unsupported`.
+    #[tokio::test]
+    async fn the_account_holder_capability_is_backed_by_an_implementation() {
+        let adapter = adapter();
+        assert!(adapter.capabilities().supports_account_holder_lookup);
+
+        // `config()` points at a port nothing listens on with a 100 ms
+        // deadline, so this reaches the transport and fails there — which is
+        // the proof that it is not the port's `Unsupported` default.
+        let outcome = adapter.account_holder_name("237600000000", &config()).await;
+        assert!(
+            matches!(outcome, Err(ProviderError::Transport { .. })),
+            "a rail that cannot be reached is a transport failure, never Unsupported and \
+             never Ok(None): {outcome:?}"
+        );
     }
 
     // -- callbacks ---------------------------------------------------------

@@ -102,6 +102,21 @@ method, not a core change.
 5. Refund/disbursement availability.
 6. Pass-through settlement, or forced aggregation (a regulatory question).
 7. Transaction and daily limits for XAF.
+8. **Whether Orange exposes an account-holder name lookup at all, and under
+   which product and credential** (issue #47, added 2026-09-05). MTN Collections
+   has `GET /v1_0/accountholder/msisdn/{msisdn}/basicuserinfo` under the same
+   subscription key `submit` already uses; Orange has a KYC/customer product,
+   and **its route is not confirmed from this repository and is not being
+   claimed**. Until it is, `orange_money` declares
+   `supports_account_holder_lookup: false` and inherits the port's
+   `ProviderError::Unsupported` — a permanent capability answer the core
+   branches on, *not* a `NotImplemented` token, because nothing here is unbuilt
+   work someone owes. `a_number_the_rail_has_no_record_of_is_not_an_error` and
+   its three siblings in the conformance suite assert exactly that for this
+   rail. If the answer to this item turns out to be "yes, here", the flag
+   becomes `true`, this adapter overrides
+   `ProviderAdapter::account_holder_name` with its own `NotImplemented` token
+   until it is written, and `docs/status.md` grows a row.
 
 ## Status
 
@@ -203,4 +218,7 @@ measured from the *send*, not the answer
   rather than a payer abandoning the page.
 - **Nothing here has ever called Orange.** Every wire assertion above is
   against WireMock; a mapping faithful to this document but not to Orange
-  would pass. All seven "to confirm" items above still stand.
+  would pass. All **eight** "to confirm" items above still stand — the eighth,
+Orange's account-holder route, was added on 2026-09-05 with issue #47 and is
+the reason `supports_account_holder_lookup` is `false` for this rail rather
+than unbuilt.

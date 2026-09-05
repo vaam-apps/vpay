@@ -27,6 +27,18 @@ testcontainers.workspace = true
 # `ChargeRef::reference_id` is a `Uuid`, and every case selects its stubbed
 # response by reference — see the mapping contract in the suite's module doc.
 uuid.workspace = true
+# The account-holder cases assert on what an operator would SEE, not on the
+# arguments a macro was called with: `a_holders_personal_data_never_reaches_a_log_line`
+# installs a scoped subscriber over the port call and greps the captured
+# output. A test that asserted "we did not call `tracing::info!`" would pass
+# the day someone logged the body from a different macro; capturing the sink
+# is the only assertion that cannot.
+#
+# NOT a test double under ADR-0006: nothing is substituted for the adapter,
+# the client or the rail — this is a writer attached to the real `tracing`
+# output of the real code under test.
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 # NOT here, deliberately: the Rust `wiremock` crate. ADR-0006 makes a rail stub
 # a WireMock *container* reached over HTTP; an in-process double would replace

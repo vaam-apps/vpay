@@ -127,6 +127,7 @@ person reads it as current.
 | `Reason` | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs` | `#[serde(untagged)]` — MTN sends `reason` as a bare string or as an object, and neither shape carries a variant name. |
 | `Scalar` | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs` | `#[serde(untagged)]` — a value MTN sends as a string or a number; no variant name on the wire. |
 | `ApiError` | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs` | Models MTN's error envelope. That module's own doc comment forbids `rename_all` for every type in it, for the reason above. |
+| `BasicUserInfo` | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs` | Models MTN's OIDC-shaped `basicuserinfo` body (`given_name`, `family_name`). Already snake_case by coincidence — the same trap `TokenResponse` above names, and the same answer: the attribute would be a no-op today and a silent claim about MTN's wire tomorrow. Added 2026-09-05 (issue #47). |
 | `WebPaymentRequest` | `backends/crates/vpay-adapter-orange-money/src/wire.rs` | Models Orange's Web Payment wire. Snake_case today, which makes the attribute more dangerous rather than less. |
 | `WebPaymentResponse` | `backends/crates/vpay-adapter-orange-money/src/wire.rs` | Models Orange's Web Payment wire. |
 | `TransactionStatusRequest` | `backends/crates/vpay-adapter-orange-money/src/wire.rs` | Models Orange's Web Payment wire. |
@@ -136,7 +137,7 @@ person reads it as current.
 | `ExpandableIntent` | `backends/crates/vpay-api/src/model.rs` | `#[serde(untagged)]` — the wire shape is a string or an object with no discriminator, exactly as Stripe's expansion is. |
 | `Currency` | `backends/crates/vpay-core/src/money.rs` | `rename_all = "UPPERCASE"`: ISO-4217 codes, not vpay field names. `"XAF"` is the spelling the database, both adapters and `Currency::code` already agree on. |
 
-Fifteen rows, and the reason each one gives is a claim about somebody else's
+Sixteen rows, and the reason each one gives is a claim about somebody else's
 wire that a reviewer can check against that rail's documentation. **The gate
 cannot judge a reason** — "models MTN's camelCase Collections wire" and "too
 many to fix" are both non-empty strings — so it only refuses a blank one. The

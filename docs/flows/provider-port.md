@@ -42,11 +42,34 @@ ignore it.
 ## Capabilities
 
 `flow`, `supports_refunds`, `supports_partial_refunds`, `delivers_callbacks`,
-`requires_ip_allowlist`.
+`requires_ip_allowlist`, `supports_account_holder_lookup`.
+
+| Capability | `mtn_momo` | `orange_money` | What the core does with it |
+|---|---|---|---|
+| `flow` | `Push` | `Redirect` | decides whether a confirm needs a `payer_ref` or a `return_url`, and whether `submit` may answer a `redirect_url` |
+| `supports_refunds` | `true` | `false` | refuses a refund on a rail with no refund API, with no rail-specific branch |
+| `supports_partial_refunds` | `true` | `false` | implies `supports_refunds`; a CHECK constraint in migration `0002` says so too |
+| `delivers_callbacks` | `true` | `true` | whether to expect a notification at all. Callbacks are hints either way |
+| `requires_ip_allowlist` | `true` | `false` | an operational fact for a deployment, not a code path |
+| `supports_account_holder_lookup` | `true` | `false` | refuses `GET /v1/account_holders` on a rail with no such API, with a `400` naming the parameter ([account-holder-lookup.md](account-holder-lookup.md), issue #47) |
 
 `orange_money` declares `supports_refunds: false`, and that flag — not a
 rail-specific branch — is what makes the core refuse a refund on that rail. The
 capability system earns its keep on day one.
+
+**The last row is the newest and the only one that is not persisted.** The
+five above it are columns on `providers` (migration `0002`), seeded at boot
+from the adapter's own declaration;
+`supports_account_holder_lookup` has no column and no `ProviderSeed` field,
+because nothing reads a capability *out of* that table — `vpay_api` resolves
+an adapter in-process and asks it — so a column would be a second copy of an
+answer the linked code already owns. The flow doc records the decision.
+
+**A rail that *has* the API but has not written the call declares `true`
+anyway**, and overrides the port method with its own
+`ProviderError::NotImplemented` token, exactly as `mtn_momo::refund` does.
+`Unsupported` is a claim about the *rail*; a token is an admission about
+*us*, and `verify-status` only sees the second one.
 
 ## Preconditions, per flow shape
 

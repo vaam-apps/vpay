@@ -28,6 +28,7 @@ code expresses it belongs in `../reference/`.
 | [webhooks.md](webhooks.md) | The two-step outbox and the signature scheme |
 | [ledger.md](ledger.md) | Double-entry postings and the four invariants |
 | [errors.md](errors.md) | How an error travels from where it happens to where it is acted on: leaf/composite/boundary tiers, the `Classify` policy table, `anyhow` at the edge only |
+| [account-holder-lookup.md](account-holder-lookup.md) | `GET /v1/account_holders`: the three-way answer a name lookup has, the privacy rules that apply only here, and the three controls issue #47 asked for that are **reserved decisions rather than built** |
 | [adapter-mtn-momo.md](adapter-mtn-momo.md) | MTN specifics — push flow |
 | [adapter-orange-money.md](adapter-orange-money.md) | Orange specifics — redirect flow |
 | [deployment.md](deployment.md) | What ships, what must exist before a pod starts, the boot order, the `subPath` overlay rule, and what guards a bad deployment |

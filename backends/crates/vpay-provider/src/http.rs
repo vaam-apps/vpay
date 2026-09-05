@@ -385,6 +385,60 @@ pub async fn read_rail_body(
     }
 }
 
+/// Percent-encodes one URL **path segment** an adapter is about to
+/// interpolate into a rail's endpoint.
+///
+/// # Why this is in the port and not in an adapter
+///
+/// It is the same cross-rail concern [`crate::measured`]'s header names: a
+/// rail-specific copy of "escape the thing the caller gave us" is a copy
+/// that can disagree, and the second rail to interpolate caller data into a
+/// path is the one that forgets. Every value an adapter puts in a path
+/// comes from outside the process — a payer's number, an id a merchant
+/// sent — and an unescaped `/` moves the request to a **different endpoint
+/// under our own credentials**, while a `?` or a `#` truncates the path and
+/// turns the rest into a query or a fragment.
+///
+/// # The rule
+///
+/// Everything but the RFC 3986 unreserved set (`ALPHA / DIGIT / "-" / "."
+/// / "_" / "~"`) is escaped, upper-case hex, byte by byte over UTF-8. That
+/// is deliberately *stricter* than `sdks/rust`'s `percent_encode`, which
+/// matches JavaScript's `encodeURIComponent` and leaves `!*'()` alone
+/// because the two SDKs have to address the same URL as each other. Nothing
+/// here has to agree with a JavaScript twin — it has to be safe — so the
+/// narrower set is the right one, and over-escaping a segment is harmless
+/// to any conforming server.
+///
+/// ```
+/// use vpay_provider::http::path_segment;
+///
+/// // The ordinary case is a no-op: a Cameroon MSISDN survives verbatim.
+/// assert_eq!(path_segment("237600000000"), "237600000000");
+/// // The case this exists for.
+/// assert_eq!(path_segment("../v1_0/token"), "..%2Fv1_0%2Ftoken");
+/// assert_eq!(path_segment("a?b#c d"), "a%3Fb%23c%20d");
+/// // Multi-byte input is escaped per UTF-8 byte, upper-case hex.
+/// assert_eq!(path_segment("é"), "%C3%A9");
+/// ```
+#[must_use]
+pub fn path_segment(input: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            // Writing to a `String` is infallible; the `Result` is dropped
+            // rather than unwrapped because `unwrap` is denied in production
+            // code (ADR-0007).
+            let _ = write!(out, "%{byte:02X}");
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

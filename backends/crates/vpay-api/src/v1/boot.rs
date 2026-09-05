@@ -381,6 +381,7 @@ mod tests {
                 supports_partial_refunds: true,
                 delivers_callbacks: true,
                 requires_ip_allowlist: false,
+                supports_account_holder_lookup: false,
             }
         }
 

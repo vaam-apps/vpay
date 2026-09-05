@@ -157,6 +157,72 @@ impl Scalar {
     }
 }
 
+/// `GET /collection/v1_0/accountholder/msisdn/{msisdn}/basicuserinfo` —
+/// **two fields of six**, and the four that are missing are the point.
+///
+/// MTN's documented `BasicUserInfoJsonResponse` (fetched from the portal's
+/// own OpenAPI components on 2026-09-05 — see
+/// `docs/flows/account-holder-lookup.md` for the citation) is:
+///
+/// ```text
+/// { "given_name": "…", "family_name": "…", "birthdate": "…",
+///   "locale": "…",     "gender": "…",      "status": "…" }
+/// ```
+///
+/// `birthdate`, `locale`, `gender` and `status` are deliberately **absent
+/// from this struct**, and `serde` drops any field it has no home for. That
+/// is the projection issue #47 asks for, and it is done here — at the first
+/// point the bytes become a Rust value — rather than downstream, because
+/// every layer a whole-body type reached would be one more place a third
+/// party's date of birth could be logged, stored or serialised. A future
+/// field MTN adds is dropped by the same rule, without an edit.
+///
+/// The field names are MTN's OIDC-shaped snake_case, which happens to agree
+/// with this workspace's own convention; there is still no `rename_all` on
+/// it, for this module's stated reason — the attribute is a statement about
+/// *vpay's* wire, and a rail whose casing coincides with ours today is not a
+/// promise about tomorrow.
+#[derive(Debug, Deserialize)]
+pub(crate) struct BasicUserInfo {
+    #[serde(default)]
+    given_name: Option<String>,
+    #[serde(default)]
+    family_name: Option<String>,
+}
+
+impl BasicUserInfo {
+    /// The holder's name, or `None` when the body carried neither part of
+    /// one.
+    ///
+    /// Both halves are `Option` and either may be blank: MTN's schema
+    /// documents both as plain strings with no `required` list, and its own
+    /// note on `family_name` says "in some cultures, people can have … no
+    /// family name". So a holder with only a given name is a real answer and
+    /// is returned; a body with neither is not, and the caller turns it into
+    /// [`ProviderError::Malformed`] rather than into `Ok(None)` — "the rail
+    /// answered something we cannot act on" is a different fact from "the
+    /// rail has no record", and only the second may be `Ok(None)`.
+    ///
+    /// Joined with a single space and trimmed, so `{"given_name":"David",
+    /// "family_name":""}` is `David` and not `David `.
+    pub(crate) fn name(&self) -> Option<String> {
+        let joined = [
+            self.given_name.as_deref().unwrap_or_default().trim(),
+            self.family_name.as_deref().unwrap_or_default().trim(),
+        ]
+        .iter()
+        .filter(|part| !part.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ");
+        if joined.is_empty() {
+            None
+        } else {
+            Some(joined)
+        }
+    }
+}
+
 /// MTN's error envelope, shared by its 400s and by the 500s that are really
 /// logical errors.
 #[derive(Debug, Default, Deserialize)]
@@ -345,6 +411,62 @@ mod tests {
                 Some("1234567890".to_owned()),
                 "{body}"
             );
+        }
+    }
+
+    /// The projection issue #47 turns on: four documented fields have no
+    /// home in the struct, so they cannot reach anything downstream — not a
+    /// log, not a response, not a database. The assertion is on the
+    /// *rendered* `Debug`, because that is the shape a careless
+    /// `tracing::debug!(?parsed)` would print.
+    #[test]
+    fn a_basic_user_info_body_keeps_only_the_two_name_fields() {
+        let parsed: BasicUserInfo = serde_json::from_str(
+            r#"{"given_name":"David","family_name":"Mbarga","birthdate":"1970-01-01",
+                "locale":"fr_CM","gender":"MALE","status":"ACTIVE",
+                "sub":"a-customer-id","address":"12 rue de la Paix"}"#,
+        )
+        .expect("a body with more fields than we read still parses");
+
+        assert_eq!(parsed.name().as_deref(), Some("David Mbarga"));
+        let rendered = format!("{parsed:?}");
+        for dropped in [
+            "1970-01-01",
+            "fr_CM",
+            "MALE",
+            "ACTIVE",
+            "a-customer-id",
+            "12 rue de la Paix",
+        ] {
+            assert!(
+                !rendered.contains(dropped),
+                "{dropped} survived the projection: {rendered}"
+            );
+        }
+    }
+
+    /// MTN documents neither name field as required, and says outright that
+    /// a holder may have no family name. One half is a name; neither half is
+    /// not, and the caller must be able to tell that from "no record".
+    #[test]
+    fn a_name_needs_only_one_of_its_two_halves() {
+        for (body, expected) in [
+            (
+                r#"{"given_name":"David","family_name":"Mbarga"}"#,
+                Some("David Mbarga"),
+            ),
+            (r#"{"given_name":"David"}"#, Some("David")),
+            (r#"{"family_name":"Mbarga"}"#, Some("Mbarga")),
+            (
+                r#"{"given_name":"David","family_name":"   "}"#,
+                Some("David"),
+            ),
+            (r#"{}"#, None),
+            (r#"{"given_name":"","family_name":""}"#, None),
+            (r#"{"given_name":"  ","family_name":null}"#, None),
+        ] {
+            let parsed: BasicUserInfo = serde_json::from_str(body).expect("parses");
+            assert_eq!(parsed.name().as_deref(), expected, "{body}");
         }
     }
 
