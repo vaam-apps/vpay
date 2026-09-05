@@ -63,8 +63,10 @@ so the second number is unchanged. `15` / `14` is what `cargo xtask
 verify-errors` printed on the merged gate branch on 2026-09-04.)*
 
 **New 2026-09-03 (Step 7, lane 4): `just verify` is three gates and one
-report** — four gates since `verify-sdk-parity` and **five since
-`verify-links` (2026-09-05)**, both below. `cargo xtask
+report** — four gates since `verify-sdk-parity`, **five since
+`verify-links` (2026-09-05)**, **six since `verify-npm-scope` (2026-09-05)**
+and **seven since `check-schema` (2026-09-05, the CrateStack schema gate —
+see "CrateStack" below)**, all four below. `cargo xtask
 verify-docs` prints, per crate, doc-comment lines
 against code lines, every production function of 80 lines or more, every
 ```` ```ignore ```` doctest fence and every `#[allow]`/`#[expect]` in
@@ -215,8 +217,9 @@ package's own name never reaches `pnpm-lock.yaml`. Fourteen unit tests in
 `.xtask` drive the gate itself through each rule. What it does **not** check:
 that `dist/` exists (gitignored) and the registry (needs the network).
 
-**New 2026-09-05: `cargo xtask verify-links` is the fifth gate, and
-`cargo xtask verify-citations` is a sixth that is opt-in.** Until this
+**New 2026-09-05: `cargo xtask verify-links` is the fifth gate,
+`cargo xtask verify-npm-scope` the sixth, `just check-schema` the seventh,
+and `cargo xtask verify-citations` an eighth that is opt-in.** Until this
 landed, `just docs-check` ran `verify-status` and printed `note: link
 checking is not implemented yet`; the one class of claim this repository
 makes about itself most often — *the document you are reading points at the
@@ -259,6 +262,20 @@ correction.
   guess, and a wrong guess fails correct documents), `http(s)` URLs, and
   reference *usages* with no definition (which render as literal text, so a
   reader sees them).
+- **`check-schema` — a gate, in `just verify`, `just ci` and CI's
+  `self-checks` job.** `cratestack check --schema schemas/vpay.cstack` at the
+  version this repository pins. It is the first gate here that shells out to
+  a tool this repository does not build, and the first thing in the
+  repository that reads `schemas/vpay.cstack` at all — the file is excluded
+  from the build graph, so no compiler has ever looked at it. Until this
+  landed, the evidence that it parses was a transcript someone pasted into
+  the "CrateStack" section below after running the CLI by hand; the grammar
+  moved four times in five weeks (0.7.8 → 0.7.10 → 0.10.1 → 0.11.1) and
+  nothing would have noticed the file going stale. **A missing binary is a
+  red gate**, printing the install command rather than "skipped" — same rule
+  as `verify-citations` without `gh`. See "CrateStack" below for the version,
+  the mutations that prove the gate fires, and what a green run does *not*
+  prove.
 - **`verify-citations` — a gate that needs the network, so it is opt-in
   (`just docs-check-citations`) and is in no CI job.** It resolves every
   workflow-run id, pull request and issue a tracked `*.md` cites as evidence
@@ -1786,7 +1803,7 @@ makes the core refuse a refund on that rail.
 | `cargo xtask verify-docs` — a report, never a gate | ✅ | **New 2026-09-03 (Step 7, lane 4), and ✅ for being a report, not for anything it enforces.** Per crate: doc-comment lines against code lines; every production function of 80 lines or more (a brace-depth scan that blanks string literals — a naive one miscounts on a `format!` body containing `{`); every ```` ```ignore ```` doctest fence; every `#[allow]`/`#[expect]` in production code. It **exits 0 whatever it finds** — Step 7's decision (4), because the cheapest way to pass a doc-ratio gate is to delete the `# Errors` sections [ADR-0011](adr/0011-error-modelling.md) depends on. `just verify` runs it after the three gates and says so in its own success line; CI's `self-checks` job runs it too, so the justfile's claim that the job runs exactly `just verify` stays true. Numbers on this tree: **prose 13 048 / compiled-example 1 111 / code 12 938 across the twelve crates — **100.8%** prose-to-code, measured on the final tree. The comparable pair is the *old* convention (every doc line counted as prose, looser denominator), where the design's pre-step baseline was **97.1%** and this tree reads **88.6%** — the full table is in the header above, including the four crates still over 100%. Six production functions of 80 lines or more, down from the eleven Phase A measured; the longest is now `vpay_config::validate_all` at 138, and nothing over 200 remains. **Zero** ```` ```ignore ```` fences in the two trees it scans. Four `#[allow]`/`#[expect]`, exactly the ones Phase A already named — none was added to make a function shorter, which was the live temptation in `poll_charge`**. **Scope, and the limits that follow from it:** `backends/crates` + `backends/apps`, `src/` only, everything from a file's first `#[cfg(test)]` onward excluded — so `sdks/rust` and `.xtask` are outside every number, and its ```` ```ignore ```` list therefore does **not** include the one in `sdks/rust/src/lib.rs` that `cargo test --doc` reports as ignored. 13 unit tests over synthetic sources back it, including one for the defect it shipped with for a single run: three files *discuss* `#[cfg(test)]` in their module headers, a scan over raw text stopped at the sentence, and two 200-line functions and two `#[expect]`s vanished from the report. A report that measures nothing looks exactly like a clean one, which is why it also shouts when it finds no sources at all |
 | Local demo (`just demo`, `examples/merchant-demo`, `compose.demo.yml`) | 🟡 | New 2026-09-02. `just demo` generates a throwaway server signing key and a demo merchant keypair (`just gen-demo-keys`: `cargo xtask gen-signing-key` for the merchant, its public JWK written into a git-ignored `demo` profile overlay `.e2e/application-demo.yml` that `compose.demo.yml` bind-mounts beside the baked base config), brings up `compose.yml` + `compose.e2e.yml` + `compose.demo.yml`, waits for `/healthz`, and runs `cargo run -p merchant-demo` — a Rust binary using `vpay-sdk` that prints one line per step: discovery and JWKS, an access token's decoded claims (never the token), the 401 envelope without a bearer, and the authenticated 404 `unknown_route` for `payment_intents().retrieve(..)` with the sentence "payment intents are not built yet — this is where the next step lands". `compose.demo.yml` publishes no host port for Postgres (`ports: !reset []`) because 5432 is the most commonly occupied port on a developer machine and the demo never reaches Postgres from the host. **🟡, not ✅:** the demo is an assertion harness a human reads, not a test CI runs — nothing fails a build if it regresses; and it demonstrates authentication only, because no `/v1` resource exists yet. Its first run found the runtime-image panic recorded in the "Resource-server JWT validation" row, which is the kind of thing it exists to find. **Updated 2026-09-03 (Step 2): four steps became five, and the fifth is the honest one.** The demo now runs discovery + JWKS, a token, the unauthenticated `401`, then **`payment_intents().create(…)` followed by `.retrieve(…)` through the shipping Rust SDK** — a real write to a real database, asserting the retrieve returns the object the create did — and finally **`.confirm(…)`, whose success condition is a `501 not_implemented`**. A printed payment intent that had been *confirmed* would mean something fabricated one. `just demo` is also port-configurable now: `just demo_port=18080 demo` propagates one number to the three places that must agree — the published port, the demo overlay's `deployment.public_base_url` (which becomes the OP's `issuer`, and a mismatch is an `invalid_client` whose message names no port), and `VPAY_BASE_URL` for the demo binary — and `gen-demo-keys` regenerates the overlay when either that URL or the newly-required `merchant_id` field is missing from it, a check added after a measured failure in which `just demo` spent its whole 120 s readiness budget on a crash loop while the recipe reported it had kept a file that no longer loads. **Updated 2026-09-03 (Step 3): still five steps, and step 5 now *succeeds*.** `payment_intents().confirm(…)` reaches the compose stack's WireMock MTN rail over HTTP and the demo asserts the intent came back **`processing`** with `next_action: null` — a push rail's one success state — then re-reads it and asserts the confirm's response and the later retrieve are the same object, so a status the handler rendered but did not commit would fail the run. It also asserts the *opposite* of what it used to: a confirm that does **not** reach `processing` is now the failure. The demo intent is **EUR**, because `config/application.yml` puts `mtn_momo` on EUR (MTN's sandbox rejects XAF) and `/v1` refuses a confirm whose intent currency is not the rail's — a property of the profile, expressed as config, never a code branch. **Updated again 2026-09-03 (Step 4): five steps became six, and the sixth ends in `succeeded`.** Step 6 polls `payment_intents().retrieve(…)` — exactly as a merchant integration would, through the SDK and nothing else — until the intent leaves `processing`, and asserts it arrived at **`succeeded`**. Nothing in the demo fakes an approval: the `vpay-worker` container (`compose.demo.yml`) claims the poll job the confirm committed, asks the WireMock MTN rail over HTTP, and the stub answers `PENDING` on the first query and `SUCCESSFUL` on the second because the confirm's documentation MSISDN enters a scenario keyed on that number. The first rung of the ladder is 10 s, so the step normally takes ~10–15 s. What step 6 deliberately **cannot** show is `amount_received`: the settlement writes it, the `payment_intent` object does not carry it, and printing it would mean reading the database behind the API the demo exists to demonstrate — the demo says so itself rather than omitting it. **Still 🟡, and the reason changed on 2026-09-03.** It is no longer "nobody has run it". **It was observed end to end on 2026-09-03 during Step 5b's rebase verification** (`just demo_port=18080 demo`): all **seven** steps passed — six became seven with Step 5, which added the webhook step this row's body above does not yet describe: discovery and JWKS, a token, the unauthenticated `401`, create + retrieve, a confirm that reached `processing`, a poll that reached `succeeded` after 7 retrieves, and step 7, the receiver's journal showing a delivery whose `Stripe-Signature` was byte-identical to its `Vpay-Signature` and verified with `vpay-sdk`. The row stays 🟡 because that run is a human reading output, not a build gate: nothing fails CI if the demo regresses, and the step that would catch it there is `sdks/stripe-compat` rather than this. **Updated 2026-09-04 (Step 8, lane A): six steps became four, and the fourth is six payments on both rails.** The walkthrough is now a table — MTN push to `succeeded`, to `insufficient_funds` (payer decline) and to `payer_timeout` (the prompt expired); Orange redirect to `succeeded` with the `next_action.redirect_to_url` printed, to `payer_timeout` (the hosted page expired) and to `provider_error` (the rail refused and documents no reason) — and each one prints the intent's public fields, asserts the exact `last_payment_error.code`, and verifies the `Vpay-Signature` of the webhook that settlement produced, read out of the receiver's own request journal. **Every outcome is selected at the rail stub by a field a merchant controls** — the MSISDN on MTN (documentation numbers `237600000f01`/`237600000f02`, carried to the status query by WireMock scenario, since MTN's status query is a `GET` that steers no other way) and the amount on Orange (5001/5002, which travel on its `POST` status body) — never by rewriting stored state. `just demo` is now `demo-up` + `demo-walk`, both of which exist separately, alongside `demo-status` and `demo-down`; readiness is `docker compose up --wait` on healthchecks (both rail stubs gained one) plus an external `/healthz` poll for the two `FROM scratch` services that cannot carry one. `compose.demo.yml`'s `name:` reads `${VPAY_DEMO_PROJECT:-vpay-demo}` and three `just` variables (`demo_project`, `demo_port`, `demo_receiver_port`) let two stacks run at once — **proven by running both**, two networks, two volumes, two databases, and the second stack's walkthrough green while the first was up. `docs/runbooks/demo.md` is the procedure, with the output of a real run pasted rather than narrated. **Still 🟡, and the reason changed twice on 2026-09-04.** Lane A first recorded that `just demo` from nothing had **never been observed green**: six walkthrough attempts gave two greens and four `500`s on a confirm, every one of them the `write_matched_no_row` race between `vpay-api`'s confirm and `vpay-worker`'s immediately-runnable poll job — **a defect in vpay, not in the demo** (`docs/runbooks/demo.md` §9, `docs/plans/step8-notes/lane-a.md` §3). **Lane G fixed that defect the same day** (see the confirm/worker race row). ~~Lane A's rebased branch — carrying the fix — then ran the walkthrough from nothing green, six outcomes for six with zero `write_matched_no_row`, and that is the measurement this row rests on.~~ **Corrected 2026-09-04, and the correction matters because it removes this row's only end-to-end evidence for the fix:** one green run from nothing exists (lane A's rebased branch, 2026-09-04, **without** lane G — that branch was rebased onto `068d8b7`, master plus lanes B and D, and lane G merged later as `53f7a7e`; the race is timing-dependent and did not fire, so this is one green *pre-fix* run and not evidence for the fix), lane A's own earlier count was two greens in six attempts and zero for three from nothing, lane G did not re-run the demo. Run on the merged branch, 2026-09-04, in the `vpay-ci` VM (code as of `4b5a9d7`, lanes G and H in): `just demo` from nothing six times, **four green** (six outcomes for six each, exit 0); the two failures were the VM's Postgres answering single statements in 14–36 s under host I/O pressure, with the settlement and the webhook both landing in the worker's log after the demo's budgets; `write_matched_no_row` appeared in no run. Three from nothing is met in count, not consecutively. What that one run does establish is the walkthrough itself: exit 0, six outcomes for six, `grep -c write_matched_no_row` = 0 over both logs, on a quiet machine. The row therefore stays 🟡 for three reasons and not one: the demo is a human reading output rather than a build gate, both rails and the receiver are WireMock hosts, and the merged branch's own demo run does not exist yet. **Updated 2026-09-04 (Step 9): four steps became five, the currency became XAF on both rails, the stack became eight services, and the merged branch's demo run now exists.** Step 5 creates one hosted and one embedded Checkout Session, each on its own fresh intent, reads each back, prints the hosted `url` in full and redacts the embedded secret — and stops there: it opens no browser and pays neither. `just demo-up` now also starts `vpay-checkout` (vpay's own payment page) and `vpay-shop` (the demo merchant's storefront), and `demo_checkout_port`/`demo_shop_port` join the four existing variables. **Run from nothing three consecutive times, green, in the `vpay-ci` VM on 2026-09-04 on the merged Step 9 branch** (`551ec80`): six outcomes for six each, XAF on both rails, both sessions created and read back, exit 0, `write_matched_no_row` in no run's logs. Step 8's bar of three from nothing is therefore met **and consecutive**, which it was not before. The row stays 🟡 for the two reasons that survive: nothing in CI fails if the demo regresses, and every rail and receiver in it is a WireMock host |
 | Two demos on one machine | 🟡 | **New 2026-09-04 (Step 8, lane A).** Compose-layer isolation is done and proven (`${VPAY_DEMO_PROJECT}`, `demo_project`/`demo_port`/`demo_receiver_port`; two projects, networks, volumes and databases observed side by side, the second stack's walkthrough green while the first was up). **`.e2e/` is not isolated:** one merchant key pair and one profile overlay serve the whole checkout, so a second `demo-up` on a different `demo_port` regenerates the shared pair and the first stack's `demo-walk` then fails `invalid_client`. Sequential use is fine; interleaved `demo-up` is not. Fixing it means keying `.e2e/` on `demo_project`, which touches `.github/workflows/ci.yml` (the e2e job's signing-key path), `just stripe-compat`, `examples/merchant-stripe-node` and `sdks/stripe-compat` — whose failure mode here is a *silent* `invalid_client`. **Not fixed, and named as a gap rather than left to be discovered** — see `docs/plans/step8-notes/lane-a.md` §4 |
-| `schemas/*.cstack` | 🟡 | **Syntax verified against real CrateStack 0.10.1** (and 0.7.10 / 0.7.8 before it); content remains a design sketch, excluded from the build graph — see below. **The migrations are now the authoritative schema, and this file has diverged from them on two constraints**: raw SQL in `backends/migrations/0002_create-providers.sql` and `0003_create-payment-intents.sql` expresses two `CHECK` constraints (`partial_refunds_imply_refunds`, `no_over_refund`) that CrateStack's grammar cannot — no `@@check(expr)` exists in 0.7.8, 0.7.10 or 0.10.1
+| `schemas/*.cstack` | 🟡 | ~~**Syntax verified against real CrateStack 0.10.1** (and 0.7.10 / 0.7.8 before it)~~ **Corrected 2026-09-05: that was a hand-run claim, and it is now a gate.** `just check-schema` runs `cratestack check --schema schemas/vpay.cstack` inside `just verify`, `just ci` and CI's `self-checks` job, against **cratestack-cli 0.11.1** — pinned once, as `cratestack_version` in `justfile`, which the workflow reads back rather than repeating. The file passes at 0.11.1 unchanged: **no edit to `schemas/vpay.cstack` was needed** to move from the 0.10.1 the old claim named. Content remains a design sketch, excluded from the build graph — see below. **The migrations are now the authoritative schema, and this file has diverged from them on two constraints**: raw SQL in `backends/migrations/0002_create-providers.sql` and `0003_create-payment-intents.sql` expresses two `CHECK` constraints (`partial_refunds_imply_refunds`, `no_over_refund`) that CrateStack's grammar cannot — no `@@check(expr)` exists in 0.7.8, 0.7.10, 0.10.1 or the pinned 0.11.1
 (0.10.1's parser adds `@@sql`/`@@embedded_sql`/`@@server_sql` — for views, not
 constraints — plus `@@paged`, `@@subscribe`, `@@audit` and `@@soft_delete`, none
 of which is a cross-column constraint, and `cratestack-migrate` still gates
@@ -1914,32 +1931,117 @@ be higher.
 
 ### CrateStack
 
-`schemas/vpay.cstack` was rewritten in this pass against CrateStack's real
-grammar (previously it was an invented, Prisma-like guess, because
-`cratestack.dev/docs` 404s publicly and no authoritative reference was found).
-The new file was cross-checked field by field against `cratestack-parser`'s
-own test suite, and:
+**This section used to be a transcript. It is a gate now (2026-09-05).**
+`just check-schema` runs `cratestack check --schema schemas/vpay.cstack` and
+is the **seventh gate in `just verify`**, so it is in `just ci` and in CI's
+`self-checks` job — which runs the recipe, not a copy of the command, for the
+reason `just audit-web` and `just helm-check` are called the same way. It is
+the only thing in this repository that reads this file: the schema is
+excluded from the build graph, so no compiler has ever looked at it, and
+before this the evidence it parsed was whatever transcript was last pasted
+here by hand.
+
+**Pinned to `cratestack-cli 0.11.1`** (published 2026-09-03; the latest
+release on crates.io on 2026-09-05, and the version this pass measured). The
+pin lives in exactly one place — `cratestack_version` in `justfile` — and
+`.github/workflows/ci.yml` reads it back with `just --evaluate
+cratestack_version` rather than repeating it, the same way every Rust job
+there reads the compiler channel out of `rust-toolchain.toml`. CI installs it
+with the upstream action
+`cratestack/cratestack/.github/actions/install-cratestack-cli`, pinned to the
+commit `v0.11.1` was tagged at (`6b3053f`) rather than the `@main` its
+documentation shows; that action downloads the prebuilt
+`x86_64-unknown-linux-gnu` binary and verifies it against the published
+`.sha256` sidecar before putting it on `PATH`.
+
+**Installing it locally needs a compiler this repository does not pin.**
+`cratestack-cli 0.11.1` declares `rust-version = "1.98.0"` and
+`rust-toolchain.toml` here pins `1.95.0`, so `cargo install` run *inside* the
+worktree refuses — measured, not assumed:
 
 ```
-$ cratestack check --schema schemas/vpay.cstack
+$ cargo install cratestack-cli --locked --version 0.11.1   # inside the worktree
+error: cannot install package `cratestack-cli 0.11.1`, it requires rustc 1.98.0 or newer,
+while the currently active rustc version is 1.95.0
+`cratestack-cli 0.8.15` supports rustc 1.95.0
+```
+
+Install it from a directory outside the checkout instead
+(`cd ~ && cargo +stable install cratestack-cli --locked --version 0.11.1`,
+built here with `rustc 1.98.0`), or take the prebuilt binary. `just check-schema`'s
+failure message says exactly this. `just install-rust` deliberately does not
+install it.
+
+~~`cratestack.dev/docs` 404s publicly and no authoritative reference was
+found.~~ **Corrected 2026-09-05: the docs exist, and this claim only ever
+described one wrong URL.** `https://cratestack.dev/docs` still 404s (checked
+2026-09-05), but the documentation lives under
+`https://cratestack.dev/getting-started/quickstart`,
+`https://cratestack.dev/guides/*`, `https://cratestack.dev/architecture/*`,
+`https://cratestack.dev/reference/*` and `https://cratestack.dev/tooling/*` —
+including `https://cratestack.dev/tooling/cli-install`, which is where the
+install action, the five prebuilt target triples and the sentence that Linux
+**musl has no prebuilt binary yet** come from, and
+`https://cratestack.dev/tooling/schema-diff` for `cratestack diff`. The
+history the struck sentence belongs to still stands: `schemas/vpay.cstack`
+began as an invented, Prisma-like guess and was rewritten on 2026-09-02
+against the real grammar, cross-checked field by field against
+`cratestack-parser`'s own test suite rather than against a docs page — which
+is why it was correct anyway, and why moving the pin to 0.11.1 needed no
+edit.
+
+The gate's output on this tree:
+
+```
+$ just check-schema
+check-schema: cratestack 0.11.1, schema schemas/vpay.cstack
 schema OK: schemas/vpay.cstack
+check-schema: ok — schemas/vpay.cstack type-checks under cratestack 0.11.1
 ```
 
-Independently re-run against `cratestack 0.10.1` (installed via `cargo install
-cratestack-cli --version 0.10.1 --locked` on 2026-09-02, the latest release on
-crates.io that day), and against `0.7.10` and `0.7.8` before it — same output
-verbatim from all three, so each release is a clean re-verification rather
-than a claim inherited from an older run. The 0.10 grammar's new block
-attributes are listed in the file's own header; none affects this file.
+Independently re-run against `0.10.1`, `0.7.10` and `0.7.8` before it — same
+`schema OK` line from all of them, so each release was a clean
+re-verification rather than a claim inherited from an older run. **Moving the
+pin from 0.10.1 to 0.11.1 required no edit to `schemas/vpay.cstack`.**
+
+**0.11.1 still has no `@@check(expr)`, so the two GAP comments below stand.**
+Checked against the pinned crates' own sources rather than a changelog:
+`grep -rn '@@check' cratestack-parser-0.11.1/src cratestack-migrate-0.11.1/src`
+returns nothing, `KNOWN_ATTRIBUTE_NAMES` in
+`cratestack-parser-0.11.1/src/validate/misspelled_attributes.rs` — which that
+module documents as the union of every attribute name the language knows —
+lists no `check`, and `cratestack-migrate-0.11.1/src/convert/checks.rs` still
+promotes CHECKs from `@db_enforce` on a **single field**
+(`field_has_db_enforce(field: &Field)`). What was **not** done: enumerating
+what 0.11 *added* over 0.10. The block attributes the schema's own header
+lists as unused are still unused, and no attempt was made to find new grammar
+this file could benefit from.
+
+**Three mutations prove the gate fires** (2026-09-05,
+`docs/plans/exp9-notes/opus.md` has the transcripts): adding `tags String[]`
+to `PaymentIntent` fails `just verify` with the list-arity rejection the
+file's own header quotes, and `verify-docs` never runs; pointing the recipe
+at a schema path that does not exist fails with `failed to read schema file`
+rather than passing on nothing to check; and running with the binary off
+`PATH` fails and prints the install command. Each was reverted.
 
 What this does and does not prove:
 
-- **Syntax is verified.** Every scalar, attribute, relation and enum in the
-  file parses and type-checks against the real CrateStack 0.10.1 grammar.
+- **Syntax is verified, and now re-verified on every `just ci`.** Every
+  scalar, attribute, relation and enum in the file parses and type-checks
+  against the real CrateStack 0.11.1 grammar.
 - **It does not prove a working migration or a running server.** The file is
   still **excluded from the build graph** — no crate depends on it, no macro
   consumes it, and `cratestack migrate diff` has never been run against a real
-  vpay Postgres.
+  vpay Postgres. `just check-schema` does not change that: it parses and
+  type-checks the file and stops there. Nothing generates code from it,
+  nothing diffs it against `backends/migrations/*.sql`, and this row stays 🟡
+  for exactly that reason.
+- **`docs/flows/*.md` Status sections did not change, and that is checked
+  rather than assumed.** The only two flow documents that mention this file —
+  `docs/flows/ledger.md` and `docs/flows/configuration.md` — cite it for what
+  its *grammar cannot express*, which the gate does not touch; neither
+  Status section makes a claim about whether the file parses.
 - **Content is a design sketch, not full coverage.** It models only entities
   with a real, tested Rust type to mirror: `Currency`, `Provider`,
   `PaymentIntent`, `Charge`, and the new `LedgerTransaction`/`LedgerEntry`
@@ -1963,7 +2065,8 @@ What this does and does not prove:
   `vpay-provider::tests::partial_refunds_imply_refunds`) still enforces the
   first of those in Rust too — belt and braces, not a replacement for the DB
   constraint. **This file has diverged from what it mirrors**: it is still
-  syntax-verified against real CrateStack 0.10.1 and still excluded from the
+  syntax-verified against real CrateStack 0.11.1 (by a gate, since
+  2026-09-05) and still excluded from the
   build graph (below), but on these two constraints specifically it is now a
   design sketch that the migrations have moved past, not the other way
   around — see `docs/flows/configuration.md` and `docs/flows/ledger.md` for

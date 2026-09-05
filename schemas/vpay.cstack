@@ -4,18 +4,29 @@
 // │ STATUS: SYNTAX VERIFIED, CONTENT IS A DESIGN SKETCH — NOT WIRED IN        │
 // │                                                                          │
 // │ The previous version of this file admitted the real .cstack grammar was  │
-// │ unknown (cratestack.dev/docs 404s publicly) and was written in an        │
-// │ invented Prisma-like shape. It has been rewritten against the real       │
-// │ grammar, cross-checked field by field against cratestack-parser's own    │
-// │ test suite rather than guessed from an overview page.                    │
+// │ unknown and was written in an invented Prisma-like shape. It has been   │
+// │ rewritten against the real grammar, cross-checked field by field        │
+// │ against cratestack-parser's own test suite rather than guessed from an  │
+// │ overview page. (That note used to blame "cratestack.dev/docs 404s       │
+// │ publicly". Corrected 2026-09-05: /docs does 404, but the docs are at    │
+// │ cratestack.dev/getting-started/quickstart, /guides/*, /architecture/*,  │
+// │ /reference/* and /tooling/*.)                                           │
 // │                                                                          │
-// │ Verified against CrateStack 0.10.1 (and 0.7.10 / 0.7.8 before it):       │
+// │ NOTHING HERE IS A HAND-RUN CLAIM ANY MORE. Since 2026-09-05             │
+// │ `just check-schema` runs                                                │
 // │   $ cratestack check --schema schemas/vpay.cstack                       │
 // │   schema OK: schemas/vpay.cstack                                        │
-// │ Re-checked on the 0.10.1 release (2026-09-02); no regression. The       │
-// │ 0.10 grammar adds block attributes this file does not use (@@sql,       │
+// │ as the sixth gate in `just verify`, so `just ci` and CI's `self-checks` │
+// │ job re-verify this file on every run, at the cratestack-cli version     │
+// │ pinned as `cratestack_version` in the justfile — 0.11.1 today. It       │
+// │ passed at 0.10.1, 0.7.10 and 0.7.8 before that, and moving the pin to   │
+// │ 0.11.1 needed no edit here.                                             │
+// │                                                                          │
+// │ The 0.10 grammar added block attributes this file does not use (@@sql,  │
 // │ @@embedded_sql, @@server_sql for views; @@paged, @@subscribe, @@audit,  │
-// │ @@soft_delete) and still no @@check(expr) — the GAP notes on            │
+// │ @@soft_delete). 0.11.1 still has no @@check(expr) — verified against    │
+// │ cratestack-parser 0.11.1's own KNOWN_ATTRIBUTE_NAMES and                │
+// │ cratestack-migrate 0.11.1's convert/checks.rs — so the GAP notes on     │
 // │ cross-column CHECKs below remain accurate.                              │
 // │                                                                          │
 // │ That proves the file *parses and type-checks* against the real grammar  │
