@@ -722,6 +722,151 @@ describe("resource methods", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// /v1/account_holders — issue #47.
+//
+// These mirror `sdks/rust/tests/resources.rs`'s account-holder block one for
+// one, down to the encoded query string: ADR-0015's parity rule is about
+// *wire semantics*, and only a byte-level assertion on both sides catches two
+// SDKs that both "support account-holder lookup" while sending different
+// query strings.
+// ---------------------------------------------------------------------------
+
+describe("account holders", () => {
+  it("accountHolders.retrieve: sends the documented query and decodes the name", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: {
+          object: "account_holder",
+          payment_method_type: "mtn_momo",
+          name: "David Mbarga",
+          verified: true,
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    const holder = await client.accountHolders.retrieve({
+      msisdn: "237600000200",
+      payment_method_type: "mtn_momo",
+    });
+
+    expect(holder.object).toBe("account_holder");
+    expect(holder.payment_method_type).toBe("mtn_momo");
+    expect(holder.name).toBe("David Mbarga");
+    expect(holder.verified).toBe(true);
+
+    const req = server.requests.find((r) =>
+      r.url.startsWith("/v1/account_holders"),
+    )!;
+    expect(req.method).toBe("GET");
+    // Byte for byte, in this order: `sdks/rust/tests/resources.rs` pins the
+    // identical string. A GET carries no body and no `Idempotency-Key` —
+    // that header is a write-path property, and sending one here would be a
+    // second thing for the two SDKs to disagree about.
+    expect(req.url).toBe(
+      "/v1/account_holders?msisdn=237600000200&payment_method_type=mtn_momo",
+    );
+    expect(req.body).toBe("");
+    expect(req.headers["idempotency-key"]).toBeUndefined();
+  });
+
+  it("accountHolders.retrieve: a holder the rail does not know decodes as a present null name", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: {
+          object: "account_holder",
+          payment_method_type: "mtn_momo",
+          name: null,
+          verified: false,
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    const holder = await client.accountHolders.retrieve({
+      msisdn: "237600000404",
+      payment_method_type: "mtn_momo",
+    });
+
+    // `null`, not `undefined`: "the rail has no record" is an answer, and a
+    // caller must be able to tell it from a key that was never sent.
+    expect(holder.name).toBeNull();
+    expect(holder.verified).toBe(false);
+  });
+
+  it("accountHolders.retrieve: a rail that could not be asked throws rather than answering a null name", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 502,
+        body: {
+          error: {
+            type: "api_error",
+            code: "provider_unavailable",
+            message: "The payment provider is unavailable. We are retrying.",
+          },
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    // The distinction the whole resource exists for: a caller matching a
+    // nominated refund destination refuses on both this and a null name, but
+    // only one of them is the payer's to fix.
+    await expect(
+      client.accountHolders.retrieve({
+        msisdn: "237600000200",
+        payment_method_type: "mtn_momo",
+      }),
+    ).rejects.toMatchObject({
+      name: "VpayApiError",
+      status: 502,
+      code: "provider_unavailable",
+    });
+  });
+
+  it("accountHolders.retrieve: a rail with no such API surfaces the server's named parameter", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 400,
+        body: {
+          error: {
+            type: "invalid_request_error",
+            code: "invalid_request",
+            param: "payment_method_type",
+            message:
+              "This payment method cannot look up an account holder on this deployment.",
+          },
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    await expect(
+      client.accountHolders.retrieve({
+        msisdn: "237600000200",
+        payment_method_type: "orange_money",
+      }),
+    ).rejects.toMatchObject({
+      name: "VpayApiError",
+      status: 400,
+      param: "payment_method_type",
+    });
+
+    // The SDK sent the request rather than refusing locally: whether a rail
+    // can answer is a property of the deployment, and an SDK-side table of it
+    // would refuse a rail a later deployment enables.
+    const req = server.requests.find((r) =>
+      r.url.startsWith("/v1/account_holders"),
+    )!;
+    expect(req.url).toBe(
+      "/v1/account_holders?msisdn=237600000200&payment_method_type=orange_money",
+    );
+  });
+});
+
 describe("error mapping", () => {
   it("maps a 400 with the Stripe envelope to VpayApiError with all fields", async () => {
     const server = await withServer({

@@ -5,6 +5,7 @@ import {
   type TokenManager,
 } from "./auth.js";
 import { HttpClient } from "./http.js";
+import { AccountHoldersResource } from "./resources/account-holders.js";
 import { BalanceResource } from "./resources/balance.js";
 import { CheckoutResource } from "./resources/checkout-sessions.js";
 import { EventsResource } from "./resources/events.js";
@@ -63,6 +64,8 @@ export class VpayClient {
   readonly refunds: RefundsResource;
   readonly events: EventsResource;
   readonly balance: BalanceResource;
+  /** `/v1/account_holders` — issue #47. */
+  readonly accountHolders: AccountHoldersResource;
 
   constructor(options: VpayClientOptions) {
     // Validation, defaulting and the `TokenManager` itself live in
@@ -87,6 +90,7 @@ export class VpayClient {
     this.refunds = new RefundsResource(httpClient);
     this.events = new EventsResource(httpClient);
     this.balance = new BalanceResource(httpClient);
+    this.accountHolders = new AccountHoldersResource(httpClient);
   }
 
   /** A safe, redacted representation — never the private key. */

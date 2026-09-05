@@ -20,6 +20,18 @@ assertion-audience row (Step 9, lane 5b), and again on **2026-09-04** for the
 two `checkout.session.expired` rows. Nothing here is inferred from a file name
 or a doc comment.
 
+Again on **2026-09-05** for the five `account_holders` rows (issue #47). Two
+things about those are worth stating rather than leaving to be discovered:
+the Node accessor is `client.accountHolders` (camelCase, like
+`client.paymentIntents`) while its **request field** is
+`payment_method_type` (snake_case, like every other params type in that
+package and like the wire) — the issue's own sketch spelled the field
+`paymentMethodType`, and following it would have made this the only
+camelCase request field in the SDK. And neither SDK validates the MSISDN
+locally, deliberately and identically: a phone-number rule is a *market*
+rule vpay owns and may widen, so an SDK copy would refuse offline a number a
+later server version accepts.
+
 A note on the first of those two, because the two SDKs are at parity on the
 *capability* and not on the shape: `@vaam-apps/vpay-sdk` has always carried a
 `KnownEventType` string union, and `sdks/rust` had no event-type vocabulary at
@@ -106,6 +118,11 @@ method name).
 | `events.list`, with cursors and the `type` filter | ✅ `list_events_filters_by_type_and_keeps_data_object_as_raw_json` | ✅ `events.list: exact query string including type` |
 | `events.retrieve` — `GET /v1/events/{id}` | ⛔ 2026-09-03 — the route is mounted and served (`vpay_api::v1::V1_ROUTES`, `events::retrieve`) and this SDK has no method for it. A merchant who missed a webhook is told to re-read the event, and cannot. Owner: SDK maintainers | ⛔ 2026-09-03 — same: `EventsResource` exposes `list` only. Owner: SDK maintainers |
 | `balance.retrieve` | ✅ `retrieve_balance_is_a_bare_get_and_decodes_both_buckets` | ✅ `balance.retrieve: exact path, no body` |
+| `account_holders.retrieve` — path, query string, response object (issue #47) | ✅ `retrieve_account_holder_sends_the_documented_query_and_decodes_the_name` | ✅ `accountHolders.retrieve: sends the documented query and decodes the name` |
+| An account holder the rail has no record of decodes as a **present null** `name`, not as an absence and not as an error | ✅ `a_holder_the_rail_does_not_know_decodes_as_a_present_null_name` | ✅ `accountHolders.retrieve: a holder the rail does not know decodes as a present null name` |
+| A rail that could not be *asked* raises this SDK's API error rather than answering a null `name` — the distinction the resource exists for | ✅ `a_rail_that_could_not_be_asked_is_an_error_and_not_a_null_name` | ✅ `accountHolders.retrieve: a rail that could not be asked throws rather than answering a null name` |
+| A `payment_method_type` whose rail has no account-holder API is surfaced as the server's `400` naming the parameter, and is **not** pre-empted locally | ✅ `a_rail_with_no_account_holder_api_surfaces_the_servers_named_parameter` | ✅ `accountHolders.retrieve: a rail with no such API surfaces the server's named parameter` |
+| `account_holders.retrieve` exercised against a running vpay | ⛔ 2026-09-05 — every server in these cases is `wiremock`. The route is real and `backends/tests/integration/tests/account_holders.rs` drives it over a socket against the shipping adapter, but **not through this SDK**, so "the stub answers the way this SDK expects" is the whole of the evidence here. Recorded ⛔/⛔ because both SDKs are equally short of the server. Owner: SDK maintainers | ⛔ 2026-09-05 — same: every server in these cases is `src/testing/test-server.ts`. Owner: SDK maintainers |
 | `checkout.sessions.create` — path, body, and every unset field omitted rather than sent empty | ✅ `create_checkout_session_sends_the_documented_body_and_decodes_the_object`, `create_checkout_session_omits_absent_optional_fields_rather_than_sending_them_empty` | ✅ `checkout.sessions.create: exact path, method, Idempotency-Key, and body`, `checkout.sessions.create omits every field the caller left unset`, `checkout.sessions.create generates an Idempotency-Key when the caller supplies none` |
 | `checkout.sessions.create` puts byte-identical bodies on the wire from both SDKs | ✅ `create_checkout_session_body_matches_the_node_sdk_byte_for_byte` | ✅ `checkout.sessions.create sends an embedded session's return_url` |
 | `checkout.sessions.retrieve`, and the `client_secret` it carries | ✅ `retrieve_checkout_session_is_a_get_with_no_body_and_surfaces_client_secret` | ✅ `checkout.sessions.retrieve: exact GET path, and the client_secret it carries` |
@@ -238,6 +255,7 @@ Every ⛔ above, in one list. The cells are authoritative; this is an index.
 | No `async-stripe` authenticator (three rows) | `sdks/rust` | 2026-09-03 | SDK maintainers |
 | The browser package has never run against a live stack | `sdks/stripe-js` | 2026-09-03 | SDK maintainers |
 | Checkout Sessions have never run against a live stack | both | 2026-09-04 | SDK maintainers |
+| `account_holders.retrieve` has never run against a live stack | both | 2026-09-05 | SDK maintainers |
 
 ## What this matrix does not claim
 

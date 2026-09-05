@@ -28,6 +28,8 @@ export {
 } from "./errors.js";
 
 export type {
+  AccountHolder,
+  RetrieveAccountHolderParams,
   CheckoutSession,
   CheckoutSessionStatus,
   CheckoutSessionUiMode,

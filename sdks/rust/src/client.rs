@@ -23,8 +23,8 @@ use crate::auth::{self, CLIENT_ASSERTION_TYPE_JWT_BEARER, Credentials};
 use crate::error::{ConfigError, Error};
 use crate::form::FormValue;
 use crate::resources::{
-    BalanceResource, CheckoutResource, EventsResource, PaymentIntentsResource, RefundsResource,
-    RequestOptions,
+    AccountHoldersResource, BalanceResource, CheckoutResource, EventsResource,
+    PaymentIntentsResource, RefundsResource, RequestOptions,
 };
 
 /// The `aud` value `/v1` access tokens must carry. Requested by default on
@@ -312,6 +312,13 @@ impl Client {
     #[must_use]
     pub fn balance(&self) -> BalanceResource<'_> {
         BalanceResource { client: self }
+    }
+
+    /// `/v1/account_holders` — whose mobile-money account a number is
+    /// (issue #47).
+    #[must_use]
+    pub fn account_holders(&self) -> AccountHoldersResource<'_> {
+        AccountHoldersResource { client: self }
     }
 
     fn resource_url(&self, path: &str) -> String {

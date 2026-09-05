@@ -64,16 +64,27 @@ pub use auth::Credentials;
 pub use client::{Client, ClientBuilder, DEFAULT_AUDIENCE};
 pub use error::{ConfigError, Error, WebhookError};
 pub use model::{
-    Balance, BalanceEntry, CheckoutPaymentStatus, CheckoutSession, CheckoutSessionStatus,
-    CheckoutUiMode, Event, EventData, IntentStatus, KnownEventType, LastPaymentError, List,
-    NextAction, PaymentIntent, PaymentMethodType, RedirectToUrl, Refund, RefundStatus,
+    AccountHolder, Balance, BalanceEntry, CheckoutPaymentStatus, CheckoutSession,
+    CheckoutSessionStatus, CheckoutUiMode, Event, EventData, IntentStatus, KnownEventType,
+    LastPaymentError, List, NextAction, PaymentIntent, PaymentMethodType, RedirectToUrl, Refund,
+    RefundStatus,
 };
 pub use resources::{
-    BalanceResource, CheckoutResource, CheckoutSessionsResource, ConfirmPaymentIntentParams,
-    CreateCheckoutSessionParams, CreatePaymentIntentParams, CreateRefundParams, EventsResource,
-    ListCheckoutSessionsParams, ListEventsParams, ListPaymentIntentsParams, PaymentIntentsResource,
-    RefundsResource, RequestOptions,
+    AccountHoldersResource, BalanceResource, CheckoutResource, CheckoutSessionsResource,
+    ConfirmPaymentIntentParams, CreateCheckoutSessionParams, CreatePaymentIntentParams,
+    CreateRefundParams, EventsResource, ListCheckoutSessionsParams, ListEventsParams,
+    ListPaymentIntentsParams, PaymentIntentsResource, RefundsResource, RequestOptions,
+    RetrieveAccountHolderParams,
 };
+
+/// See [`payment_intents`]. The account-holder lookup (issue #47): a
+/// stateless read of a rail, and the one resource on this surface that
+/// returns a **third party's** name — `docs/flows/account-holder-lookup.md`
+/// is the policy around it.
+pub mod account_holders {
+    pub use crate::model::{AccountHolder, PaymentMethodType};
+    pub use crate::resources::{AccountHoldersResource, RetrieveAccountHolderParams};
+}
 
 /// Re-exports the `payment_intents` params/resource types under a
 /// module-shaped path, matching how a merchant is likely to `use` them
