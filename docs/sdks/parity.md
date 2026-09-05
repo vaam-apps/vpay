@@ -92,11 +92,13 @@ Both preserve the distinction that carries meaning and that the field
 exists for — **unknown versus a measured zero** — and each cell's tests assert
 exactly that. The asymmetry is deliberate: `Option<Option<i64>>` would push a
 state with no producer (vpay always emits every documented key) into every
-match a Rust merchant writes, and dropping `?` in TypeScript would make an
-older vpay's response fail to type-check for no gain.
+match a Rust merchant writes, and dropping `?` in TypeScript would declare
+the key always present — which an older vpay's response makes a lie, since
+nothing type-checks a decoded body at runtime.
 
-A note on the first of those two, because the two SDKs are at parity on the
-*capability* and not on the shape: `@vaam-apps/vpay-sdk` has always carried a
+A note on the two `checkout.session.expired` rows, because there too the SDKs
+are at parity on the *capability* and not on the shape:
+`@vaam-apps/vpay-sdk` has always carried a
 `KnownEventType` string union, and `sdks/rust` had no event-type vocabulary at
 all until 2026-09-04. Adding the type meant adding
 `vpay_sdk::KnownEventType` — a `#[non_exhaustive]` enum with `as_wire_str` /
