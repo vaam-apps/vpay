@@ -37,12 +37,14 @@
 //!
 //! The `verify-*` commands other than `verify-no-mocks` take no crate
 //! dependencies at all and match on text rather than on types — see
-//! [`has_classify_impl`] for what that costs. Two of them shell out instead:
-//! `verify-links` asks `git ls-files` what the repository actually tracks (a
-//! directory walk would let an untracked scratch file satisfy a link), and
-//! `verify-citations` asks `gh` — the one command here allowed to need the
-//! network, and the reason it is not in `just ci`.
-//! That is still true of them. `gen-signing-key` is what put four crates
+//! [`has_classify_impl`] for what that costs. That is still true of them, and
+//! of the two added on 2026-09-05, which reach for a *subprocess* rather than
+//! a crate: `verify-links` asks `git ls-files` what the repository actually
+//! tracks, because a directory walk would let an untracked scratch file
+//! satisfy a link, and `verify-citations` asks `gh` — the one command here
+//! allowed to need the network, and the reason it is not in `just ci`.
+//!
+//! `gen-signing-key` is what put four crates
 //! (`rsa`, `rand`, `sha2`, `base64`) in this crate's manifest: generating an
 //! RSA key and computing an RFC 7638 thumbprint cannot be done by string
 //! matching. They are all already in the workspace lockfile, so nothing new
