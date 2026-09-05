@@ -2269,6 +2269,20 @@ advisories ok, bans ok, licenses ok, sources ok
 ```
 
 1277 is 1272 (the section below) plus `vpay_db::sql_audit`'s five.
+
+**Re-measured 2026-09-05 after the sabotage review of this branch: 1278.**
+The extra case is `vpay_db::sql_audit`'s
+`a_positional_capture_is_reported_and_is_neither_a_constant_nor_allowed`, and
+the reason it exists is a finding rather than an addition: as first written,
+the injection audit below could be walked straight past by spelling the
+interpolation positionally. `format!("SELECT {COLUMNS} FROM charges WHERE
+payment_intent_id = '{}'", payment_intent_id)` — a live SQL injection through
+`AssertSqlSafe`, in the one crate that wraps it 36 times — passed all five
+tests, because the scanner dropped a capture with no name and only the
+`{payment_intent_id}` spelling was ever mutated. `interpolations` now reports
+an unnamed capture as a violation on sight, and the mutation that was silent
+now fails `every_interpolation_into_a_statement_is_a_crate_constant`. See
+`docs/reference/vpay-db.md` § dynamic SQL strings and sqlx 0.9.
 `just test-doc`: **90 passed, 0 failed, 1 ignored** (the ignored one is
 `sdks/rust`'s README block, pre-existing). Web: vitest across 8 packages, all
 passing. **An earlier attempt at this same gate failed** and is recorded

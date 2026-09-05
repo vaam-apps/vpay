@@ -14,6 +14,13 @@
 //! exceptions, are in `docs/reference/vpay-db.md` § dynamic SQL strings and
 //! sqlx 0.9.
 //!
+//! "Interpolates a `const`" means **captured by name**: `{COLUMNS}`, not
+//! `{}`. A positional capture takes its value from the argument list, which
+//! this module deliberately does not resolve, so it is reported as a violation
+//! on sight — see [`POSITIONAL_CAPTURE`], which is where this module's own
+//! blind spot was, and what a review mutation walked straight through on
+//! 2026-09-05.
+//!
 //! `#[cfg(test)]`: it reads this crate's own sources off disk through
 //! `CARGO_MANIFEST_DIR`, which is a test-time fact, and it must not be
 //! compiled into a shipping binary.
@@ -164,13 +171,34 @@ fn sql_format_bodies(text: &str) -> Vec<String> {
     out
 }
 
-/// Every `{name}` in a format string, ignoring `{{`/`}}` escapes and the
-/// positional/empty `{}` form.
+/// What [`interpolations`] calls a capture that has no name of its own —
+/// `{}`, `{0}` written as `{}`, or a spec-only `{:>8}`.
+///
+/// **This is the hole the first version of this module had, found by a review
+/// mutation on 2026-09-05 and fixed here.** `interpolations` used to *discard*
+/// an empty capture, so `format!("… WHERE payment_intent_id = '{}'",
+/// payment_intent_id)` — the natural spelling of the exact injection this
+/// module exists to stop, and the one a reviewer is least likely to notice
+/// next to thirty-five identical-looking constant interpolations — passed all
+/// five tests below. The named spelling `{payment_intent_id}` was caught; the
+/// positional one was invisible.
+///
+/// Reported as a name rather than silently allowed, because a positional
+/// capture is *never* checkable here: the value comes from the argument list,
+/// which this scanner deliberately does not try to resolve. Every legitimate
+/// statement in this crate implicitly captures a `const` by name, so "use
+/// `{CONSTANT}`" is always an available answer.
+const POSITIONAL_CAPTURE: &str = "<positional `{}`>";
+
+/// Every capture in a format string, ignoring `{{`/`}}` escapes.
 ///
 /// `{{}}` appears for real in `charges.rs` (`COALESCE(provider_ref_extra,
 /// '{{}}'::JSONB)`) — an escaped empty JSON object, not an interpolation. A
 /// scanner that missed that would report a nonexistent capture called `` and
 /// this test would fail on a statement that is fine.
+///
+/// A capture with no name is reported as [`POSITIONAL_CAPTURE`] rather than
+/// dropped; read that constant for why.
 fn interpolations(body: &str) -> BTreeSet<String> {
     let chars: Vec<char> = body.chars().collect();
     let mut out = BTreeSet::new();
@@ -193,13 +221,15 @@ fn interpolations(body: &str) -> BTreeSet<String> {
             name.push(*c);
             j += 1;
         }
-        // `{:?}`-style formatting specs are not names; none of the SQL
-        // statements uses one, and splitting on `:` keeps that true if one
-        // ever appears.
+        // `{:?}`-style formatting specs are not names; splitting on `:` leaves
+        // `{value:>8}` as `value` and `{:>8}` as nothing, which the line below
+        // then reports as a positional capture.
         let name = name.split(':').next().unwrap_or_default().trim().to_owned();
-        if !name.is_empty() {
-            out.insert(name);
-        }
+        out.insert(if name.is_empty() {
+            POSITIONAL_CAPTURE.to_owned()
+        } else {
+            name
+        });
         i = j + 1;
     }
     out
@@ -249,6 +279,17 @@ mod tests {
                 checked += 1;
                 for name in interpolations(&body) {
                     if constants.contains(&name) || allowed.contains(name.as_str()) {
+                        continue;
+                    }
+                    if name == POSITIONAL_CAPTURE {
+                        problems.push(format!(
+                            "{file}: a statement uses a positional `{{}}` capture, whose value \
+                             comes from the argument list and cannot be checked here. If it is a \
+                             caller's value it must be a bind parameter; if it is a fixed \
+                             fragment, capture the `const` by name (`{{COLUMNS}}`) so this test \
+                             can see what it is — see docs/reference/vpay-db.md § dynamic SQL \
+                             strings and sqlx 0.9"
+                        ));
                         continue;
                     }
                     problems.push(format!(
@@ -369,6 +410,57 @@ mod tests {
                 .collect::<BTreeSet<String>>(),
             "`{{}}` is an escaped empty JSON object, not a capture"
         );
+    }
+
+    /// A positional `{}` is seen, and is not a name any allowlist can hold.
+    ///
+    /// The regression test for this module's own blind spot, found by a review
+    /// mutation on 2026-09-05: `interpolations` used to discard an unnamed
+    /// capture, so `format!("… = '{}'", payment_intent_id)` — a live injection
+    /// — passed every test here, while the named spelling
+    /// `{payment_intent_id}` failed. Driven over text, so it stays a statement
+    /// about the scanner rather than about whatever the crate happens to
+    /// contain.
+    ///
+    /// Decisive: delete the `POSITIONAL_CAPTURE` branch of `interpolations`
+    /// and this fails, and so does the gate above once a positional capture
+    /// exists.
+    #[test]
+    fn a_positional_capture_is_reported_and_is_neither_a_constant_nor_allowed() {
+        let text = r#"
+            let sql = format!("SELECT {COLUMNS} FROM charges WHERE id = '{}'", caller_value);
+        "#;
+        let bodies = sql_format_bodies(text);
+        let body = bodies.first().expect("one statement-building format!");
+        assert_eq!(
+            interpolations(body),
+            ["COLUMNS", POSITIONAL_CAPTURE]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<BTreeSet<String>>(),
+            "an unnamed capture must be reported, not dropped"
+        );
+
+        // And it cannot be waved through the way a name can: it is in neither
+        // set the gate consults.
+        let constants = string_constants(&sources());
+        assert!(!constants.contains(POSITIONAL_CAPTURE));
+        assert!(
+            !ALLOWED_NON_CONSTANTS
+                .iter()
+                .any(|(name, _)| *name == POSITIONAL_CAPTURE),
+            "the allowlist must never name the positional capture — its value is \
+             not visible to this module at all"
+        );
+
+        // A spec-only capture is the same case; a named one with a spec is not.
+        assert!(interpolations("{:>8}").contains(POSITIONAL_CAPTURE));
+        assert!(interpolations("{COLUMNS:>8}").contains("COLUMNS"));
+
+        // `{{}}` is still an escape and still produces nothing — the property
+        // `the_scanners_survive_nested_parens_and_escaped_braces` pins, re-
+        // asserted here because it is what this change could plausibly break.
+        assert!(interpolations("'{{}}'::JSONB").is_empty());
     }
 
     /// A `format!` that is not building a statement is not audited, and must

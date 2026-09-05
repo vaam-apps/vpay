@@ -1106,6 +1106,23 @@ reverted:
 The third is the one that matters most: without it the audit could be bypassed
 by not using the variable the audit looks at.
 
+**A fourth mutation, added by review on 2026-09-05, is why the list above was
+not enough.** All three mutations above spell the interpolation by *name*.
+Written positionally —
+
+```rust
+let sql = format!("SELECT {COLUMNS} FROM charges WHERE payment_intent_id = '{}'", payment_intent_id);
+```
+
+— the same injection passed all five tests, because the scanner discarded a
+capture with no name. Since a positional capture's value comes from the
+argument list, which this module does not resolve, it is now reported as a
+violation on sight (`sql_audit::POSITIONAL_CAPTURE`), and
+`a_positional_capture_is_reported_and_is_neither_a_constant_nor_allowed` pins
+the scanner behaviour over synthetic text. **Every statement in this crate
+captures its constants by name; `{}` is never the right spelling here**, which
+is what makes a blanket refusal the correct rule rather than a heuristic.
+
 ### Why not `QueryBuilder`
 
 sqlx's own suggested alternative. It was considered and rejected: it would

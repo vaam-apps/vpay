@@ -960,6 +960,16 @@ verify-docs:
 # `vpay-db` lib target), so `expected_suites` stays 41 and the floor stays
 # 1080. `just test-doc` is unchanged at **90 passed, 1 ignored**: the audit
 # module is `#[cfg(test)]` and rustdoc does not reach it.
+#
+# **1277 -> 1278 on 2026-09-05**, from the sabotage review of that same branch:
+# `vpay_db::sql_audit` gained
+# `a_positional_capture_is_reported_and_is_neither_a_constant_nor_allowed`,
+# the regression test for a hole the module had on the day it was written —
+# `format!("… = '{{}}'", payment_intent_id)` interpolated a caller's value into
+# a statement and passed all five of the tests whose whole purpose is to catch
+# exactly that, because the scanner discarded a capture with no name. Same
+# binary again, so `expected_suites` stays 41; `just test-doc` unchanged at
+# **90 passed, 1 ignored**.
 expected_ignored := "0"
 expected_suites := "41"
 # A floor, not a target — set a little under the measured 1059
