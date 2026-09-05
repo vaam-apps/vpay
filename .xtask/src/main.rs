@@ -2991,7 +2991,23 @@ struct Citation {
 /// bold `**#17**` in `docs/roadmap.md`'s third addendum is also written
 /// `PR #17` elsewhere in the same file, so every one is resolved.
 fn verify_citations(root: &Path) -> Result<(), String> {
-    let repository = github_repository(root)?;
+    verify_citations_via(root, GH)
+}
+
+/// The GitHub CLI this command shells out to. A constant so a test can pass a
+/// name that is not on `PATH` and prove the "it never skips" paragraph above
+/// is behaviour rather than prose — see
+/// `a_missing_gh_fails_the_gate_rather_than_skipping`.
+const GH: &str = "gh";
+
+/// [`verify_citations`], with the CLI to shell out to named.
+///
+/// The seam exists for one test and is worth it: "fails rather than skips when
+/// `gh` is missing" was the property with no guard on it when this command
+/// landed, which is the shape of gap CLAUDE.md's "a skipped test is not a
+/// passing test" is about. Every other caller uses [`GH`].
+fn verify_citations_via(root: &Path, gh: &str) -> Result<(), String> {
+    let repository = github_repository(root, gh)?;
     let mut aliases: Vec<String> = REPOSITORY_ALIASES.iter().map(|a| (*a).to_owned()).collect();
     aliases.push(repository.clone());
 
@@ -3019,7 +3035,7 @@ fn verify_citations(root: &Path) -> Result<(), String> {
 
     let mut missing = Vec::new();
     for ((kind, id), sites) in &cited {
-        let status = gh_status(root, &kind.api_path(id))?;
+        let status = gh_status(root, gh, &kind.api_path(id))?;
         if status == 200 {
             println!(
                 "  ok    {} {id} ({} citation(s))",
@@ -3060,8 +3076,8 @@ fn verify_citations(root: &Path) -> Result<(), String> {
 /// unauthenticated, or pointed at a repository it cannot read, so every later
 /// failure can be reported as what it is — a citation that does not exist —
 /// rather than as an outage.
-fn github_repository(root: &Path) -> Result<String, String> {
-    let output = std::process::Command::new("gh")
+fn github_repository(root: &Path, gh: &str) -> Result<String, String> {
+    let output = std::process::Command::new(gh)
         .args(["api", "repos/{owner}/{repo}", "--jq", ".full_name"])
         .current_dir(root)
         .output()
@@ -3098,8 +3114,8 @@ fn github_repository(root: &Path) -> Result<String, String> {
 /// command rather than being reported per id, because a rate-limited run
 /// would otherwise report every remaining citation as missing and send
 /// somebody to delete true claims.
-fn gh_status(root: &Path, path: &str) -> Result<u16, String> {
-    let output = std::process::Command::new("gh")
+fn gh_status(root: &Path, gh: &str, path: &str) -> Result<u16, String> {
+    let output = std::process::Command::new(gh)
         .args(["api", "-i", path])
         .current_dir(root)
         .output()
@@ -3118,6 +3134,18 @@ fn gh_status(root: &Path, path: &str) -> Result<u16, String> {
             )
         })?;
 
+    classify_gh_status(path, status)
+}
+
+/// Which of GitHub's answers is a finding and which is an outage.
+///
+/// Pure, and separate from [`gh_status`], so the distinction this gate turns
+/// on can be tested without the network: a 404 is the *finding* this command
+/// exists to report (a cited id that does not exist), and everything else that
+/// is not a 200 is an outage that must stop the run. Reporting a rate-limited
+/// batch as "missing" would send somebody to delete true claims, which is the
+/// worst thing this command could do.
+fn classify_gh_status(path: &str, status: u16) -> Result<u16, String> {
     match status {
         200 | 404 => Ok(status),
         403 | 429 => Err(format!(
@@ -6405,6 +6433,37 @@ mod citation_tests {
     /// print the id in order to say so. An exemption for any other id, or for
     /// a document that is not one of those records, fails here and has to
     /// argue for itself in review.
+    /// The decisive negative for the property this command's own doc comment
+    /// puts first: **it fails rather than skips when `gh` is missing**. Until
+    /// 2026-09-05 that was prose with no guard — every other test here is a
+    /// pattern test, so replacing the `?` in `verify_citations_via` with
+    /// `println!("skipped"); return Ok(())` passed the whole suite. It does
+    /// not now.
+    #[test]
+    fn a_missing_gh_fails_the_gate_rather_than_skipping() {
+        let error = verify_citations_via(&repo_root(), "gh-that-is-not-installed")
+            .expect_err("a citation nothing resolved is a citation nothing checked");
+        assert!(
+            error.contains("needs the GitHub CLI and cannot run without it"),
+            "the failure must name the missing dependency: {error}"
+        );
+    }
+
+    /// The other half of never-skipping: a rate limit is an outage, not a
+    /// finding. A 404 is the finding this gate reports; a 403 or 429 has to
+    /// stop the run, because reporting the rest of the batch as missing sends
+    /// somebody to delete claims that are true.
+    #[test]
+    fn a_refused_request_stops_the_run_rather_than_reporting_a_missing_id() {
+        assert_eq!(classify_gh_status("p", 200), Ok(200));
+        assert_eq!(classify_gh_status("p", 404), Ok(404));
+        for refused in [403u16, 429] {
+            let error = classify_gh_status("p", refused).expect_err("an outage is not a finding");
+            assert!(error.contains("Nothing was concluded"), "{error}");
+        }
+        assert!(classify_gh_status("p", 500).is_err());
+    }
+
     #[test]
     fn every_exempt_id_is_the_one_invented_run_in_a_mutation_record() {
         assert_eq!(CITATIONS_THAT_ARE_NOT_CLAIMS.len(), 3);
