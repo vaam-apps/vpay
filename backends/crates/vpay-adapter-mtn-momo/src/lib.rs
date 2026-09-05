@@ -380,6 +380,32 @@ fn status_outcome(status: StatusCode, body: &str) -> Result<ChargeStatus, Provid
 /// rail"). A single constant is what makes changing the answer one edit.
 const ACCOUNT_HOLDER_ID_TYPE: &str = "msisdn";
 
+/// The `basicuserinfo` URL this adapter sends, for a base and a payer
+/// reference.
+///
+/// # Why this is a function and not two lines inside the method
+///
+/// The `path_segment` call is the only thing standing between a caller and
+/// an arbitrary endpoint on MTN's API **under this deployment's own
+/// subscription key and bearer token**: an unescaped `/` moves the request,
+/// a `?` or a `#` truncates the path. It was inlined until 2026-09-06, and
+/// a mutation that deleted the call left 113 tests green —
+/// `a_payer_reference_is_escaped_before_it_becomes_a_path_segment` exercised
+/// `vpay_provider::http::path_segment` itself and never the adapter's *use*
+/// of it, and every stubbed MSISDN is digits-only, where escaping is a
+/// no-op. A pure function is what lets
+/// [`tests::the_lookup_url_escapes_the_payer_reference_it_interpolates`]
+/// assert on the string the adapter would actually put on the wire.
+///
+/// `ACCOUNT_HOLDER_ID_TYPE` is interpolated verbatim, not escaped: it is a
+/// constant in this file, not caller data.
+fn account_holder_url(base: &str, msisdn: &str) -> String {
+    format!(
+        "{base}/collection/v1_0/accountholder/{ACCOUNT_HOLDER_ID_TYPE}/{}/basicuserinfo",
+        vpay_provider::http::path_segment(msisdn),
+    )
+}
+
 /// What a `basicuserinfo` response means, as a pure function of the status
 /// and the body. Same reasoning as [`submit_outcome`] and [`status_outcome`]:
 /// the table is the part that has to be right, and it is proven row by row
@@ -675,15 +701,12 @@ impl ProviderAdapter for Adapter {
     ) -> Result<Option<AccountHolder>, ProviderError> {
         let credentials = Credentials::from_config(config)?;
         let (subscription, environment) = Adapter::common_headers(&credentials)?;
-        // Percent-encoded, although `/v1`'s own validation admits digits
-        // only: this adapter is reachable from the port by any caller, and a
-        // path segment interpolated raw is a segment a `/` or a `?` could
-        // move to a different endpoint under our own credentials.
-        let url = format!(
-            "{}/collection/v1_0/accountholder/{ACCOUNT_HOLDER_ID_TYPE}/{}/basicuserinfo",
-            base_url(config),
-            vpay_provider::http::path_segment(msisdn),
-        );
+        // Percent-encoded inside `account_holder_url`, although `/v1`'s own
+        // validation admits digits only: this adapter is reachable from the
+        // port by any caller, and a path segment interpolated raw is a
+        // segment a `/` or a `?` could move to a different endpoint under
+        // our own credentials.
+        let url = account_holder_url(base_url(config), msisdn);
 
         let response = self
             .send_authorized(config, &credentials, |token| {
@@ -1229,16 +1252,42 @@ mod tests {
     /// `/v1` admits digits only, but the port is reachable by any caller in
     /// this process, and an unescaped `/` would move the request to another
     /// MTN endpoint carrying our subscription key and bearer token.
+    ///
+    /// **Asserted on the URL [`account_holder_url`] builds**, not on
+    /// `path_segment` in isolation. The isolated version is what this test
+    /// used to be, and a mutation on 2026-09-06 showed it proved nothing
+    /// about the adapter: deleting the `path_segment` call from the method
+    /// left it — and 112 other tests — green, because every stubbed MSISDN
+    /// is digits-only and escaping them is a no-op.
     #[test]
-    fn a_payer_reference_is_escaped_before_it_becomes_a_path_segment() {
+    fn the_lookup_url_escapes_the_payer_reference_it_interpolates() {
+        // The ordinary case, byte for byte: this is the path
+        // `wiremock/mtn/mappings/basicuserinfo.json` matches on, so a change
+        // to either one is a 404 in CI.
         assert_eq!(
-            vpay_provider::http::path_segment("../token/"),
-            "..%2Ftoken%2F"
+            account_holder_url("http://rail.test", "237600000200"),
+            "http://rail.test/collection/v1_0/accountholder/msisdn/237600000200/basicuserinfo",
         );
+
+        // The case the escaping exists for: a traversal must stay inside its
+        // own segment rather than becoming a different endpoint.
+        let escaped = account_holder_url("http://rail.test", "../../v1_0/token");
         assert_eq!(
-            vpay_provider::http::path_segment("237600000000"),
-            "237600000000",
-            "the ordinary case must not be mangled"
+            escaped,
+            "http://rail.test/collection/v1_0/accountholder/msisdn/\
+             ..%2F..%2Fv1_0%2Ftoken/basicuserinfo",
+        );
+        assert!(
+            !escaped.contains("/v1_0/token/basicuserinfo"),
+            "the payer reference escaped its path segment: {escaped}"
+        );
+
+        // A `?` would otherwise truncate the path and turn the rest into a
+        // query string, so the request would not name `basicuserinfo` at all.
+        let query = account_holder_url("http://rail.test", "237?x=1");
+        assert!(
+            query.ends_with("/237%3Fx%3D1/basicuserinfo"),
+            "a `?` must not truncate the path: {query}"
         );
     }
 
