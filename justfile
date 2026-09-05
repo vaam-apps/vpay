@@ -1,15 +1,20 @@
 # vpay task runner. `just` with no argument lists everything.
 #
-# Four invariants this repo enforces on itself, all wired into `just verify`:
+# Five invariants this repo enforces on itself, all wired into `just verify`:
 #   * no test double is reachable from a shipping binary
 #   * every unimplemented item is declared in docs/status.md
 #   * every error type is classified (ADR-0011) and anyhow stays in the binaries
 #   * the merchant SDKs stay at parity (ADR-0015): every claimed capability
 #     names a test that exists, every gap is dated and owned
+#   * every relative link in a tracked *.md resolves to a tracked path
 #
-# `just verify` prints a fifth thing that is NOT an invariant and never fails
+# `just verify` prints a sixth thing that is NOT an invariant and never fails
 # the build: `verify-docs`, a report on doc-comment volume, long functions,
 # ```ignore fences and #[allow]s (Step 7, decision 4).
+#
+# A seventh check is a gate that is NOT in `just ci`, because it needs the
+# network: `just docs-check-citations` resolves every run id, PR and issue a
+# document cites against GitHub. See its recipe at the bottom of this file.
 
 set shell := ["bash", "-uc"]
 
@@ -397,8 +402,8 @@ audit-web:
 
 # The checks that keep this repository honest, plus one report. CI's
 # `self-checks` job runs exactly this list, in this order:
-# verify-no-mocks, verify-status, verify-errors, verify-sdk-parity, and then
-# verify-docs last.
+# verify-no-mocks, verify-status, verify-errors, verify-sdk-parity,
+# verify-links, and then verify-docs last.
 #
 # That sentence was false until 2026-09-04: `verify-sdk-parity` ran here but
 # had no step in `.github/workflows/ci.yml`, so ADR-0015's decision 3 ("CI
@@ -408,13 +413,18 @@ audit-web:
 # this comment honest is someone reading the workflow beside it.
 #
 # `verify-docs` is NOT a check: it exits 0 whatever it finds, so the
-# "verify: ok" below means the four gates passed and says nothing about the
+# "verify: ok" below means the five gates passed and says nothing about the
 # numbers `verify-docs` printed. It is last so that the report a human reads
 # is the final thing on the terminal, after every gate has had its say.
 #
-# The four self-checks, then the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-docs
-    @echo "verify: ok — the four gates above passed; the verify-docs report is advisory"
+# `verify-links` joined the list on 2026-09-05 as the fifth gate. It is here
+# rather than only in `docs-check` because a link is a claim like any other
+# and `just ci` is where claims get checked; it needs no network and no
+# database, so it costs a `git ls-files` and a pass over 113 files.
+#
+# The five self-checks, then the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-docs
+    @echo "verify: ok — the five gates above passed; the verify-docs report is advisory"
 
 verify-no-mocks:
     cargo xtask verify-no-mocks
@@ -445,6 +455,21 @@ verify-errors:
 # SDK's sources, and every ⛔ carries a dated, owned gap.
 verify-sdk-parity:
     cargo xtask verify-sdk-parity
+
+# Every relative link in every tracked *.md resolves to a tracked file or
+# directory. `git ls-files`, not a directory walk: a link satisfied by an
+# untracked scratch file resolves on the author's machine and nowhere else.
+#
+# What it does NOT check, so nobody reads a green run as more than it is:
+# `#anchor` fragments (agreeing with GitHub's heading-slug algorithm is a
+# guess, and a wrong guess fails correct documents), `http(s)` URLs and
+# `mailto:` targets. Fenced code blocks, inline code spans and HTML comments
+# are masked out first.
+#
+# Before 2026-09-05 this did not exist and `docs-check` said so in an echo.
+# Fail if a doc links to a file this repository does not track.
+verify-links:
+    cargo xtask verify-links
 
 # A REPORT, not a gate: doc-comment lines against code lines per crate, the
 # production functions of 80 lines or more, every ```ignore doctest fence and
@@ -2073,7 +2098,25 @@ dev-dashboard:
 
 # ------------------------------------------------------------------ docs ---
 
-# Fail if a doc links to a file that does not exist.
-docs-check:
-    cargo xtask verify-status
-    @echo "note: link checking is not implemented yet — see docs/status.md"
+# The docs gates that need nothing but the checkout. Both are also in
+# `just verify`, so `just ci` runs them; this recipe is the short way to run
+# only the documentation ones while editing.
+#
+# Fail if a doc claims an unimplemented item wrongly, or links to a dead path.
+docs-check: verify-status verify-links
+
+# NOT part of `just ci`, and deliberately: it needs the network and a GitHub
+# token. It resolves every workflow-run id, pull request and issue that a
+# tracked *.md cites as evidence — `run 33929374661`, `PR #31`, `Issue #11` —
+# against this repository, and fails on one that does not exist. A cited id
+# that resolves to nothing is a false claim; fix it with a struck-through,
+# dated correction rather than by substituting an id you have not checked.
+#
+# It FAILS when `gh` is missing or unauthenticated. It does not print
+# "skipped" and exit 0, because a check that downgrades itself reports
+# success for a run in which nothing was checked, and in a log that is
+# indistinguishable from a run in which everything passed.
+#
+# Fail if a doc cites a CI run, PR or issue id that does not exist (network).
+docs-check-citations:
+    cargo xtask verify-citations
