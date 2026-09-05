@@ -129,6 +129,55 @@ had then spoken to a real checkout session, and lane 5b added the
 client-assertion audience row. See the "Merchant SDKs" section below and the
 matrix's own "Gap ledger" for the list.
 
+**New 2026-09-05: the three publishable npm packages are renamed
+`@vpay/*` → `@vaam-apps/vpay-*`.** The organisation was renamed
+`vaam-store` → `vaam-apps` on 2026-09-04, and the scope now matches it while
+the package name keeps `vpay` so the name still says what it is:
+
+| Was | Is | Directory |
+|---|---|---|
+| `@vpay/sdk` | `@vaam-apps/vpay-sdk` | `sdks/nodejs` |
+| `@vpay/stripe-js` | `@vaam-apps/vpay-stripe-js` | `sdks/stripe-js` |
+| `@vpay/stripe-compat` | `@vaam-apps/vpay-stripe-compat` | `sdks/stripe-compat` |
+
+**Nothing had ever been published under the old names, so the rename cost
+nothing and would have been expensive after a first publish.** Verified
+rather than assumed, 2026-09-05, against `https://registry.npmjs.org/`:
+`npm view @vpay/sdk version`, `npm view @vpay/stripe-js version` and
+`npm view @vpay/stripe-compat version` each exit 1 with `E404 … is not in
+this registry`, and so do all three *new* names, so none of them is taken by
+anybody else either. The outputs are in
+[docs/plans/exp7-notes/opus.md](plans/exp7-notes/opus.md).
+
+Three things this rename did **not** change, stated because each could be
+read into it:
+
+- **The packages are still `"private": true`, so none of them is publishable
+  today** — that flag is what the word "publishable" above is about being
+  *intended* for, not a description of the current manifests, and the
+  repository has no `npm publish` step in any workflow. Each of the three now
+  carries `publishConfig.access: "public"` (a scoped package defaults to
+  `restricted`) alongside `repository`, `homepage` and `bugs` pointing at
+  `github.com/vaam-apps/vpay`, so the manifests are *ready*; removing
+  `"private": true` is a separate, deliberate decision and is left to a
+  maintainer.
+- **The Node SDK's `User-Agent` is unchanged**, and deliberately: it is
+  `vpay-sdk-node/<version>`, which never carried the npm scope. It is a wire
+  contract `sdks/rust` holds itself to byte-for-byte, so moving it would have
+  broken parity to no purpose.
+- **The Rust crate is still `vpay-sdk`** (`sdks/rust`, `publish = false`);
+  crates.io has no scopes, so nothing about it follows from an npm rename.
+
+Every occurrence of the three old names in *this* file was rewritten
+mechanically, including inside dated notes recording commands that really
+were run under the old spelling — so a Step 5b note reading `pnpm --filter
+@vaam-apps/vpay-sdk build` is the current spelling of a command that ran as
+`pnpm --filter @vpay/sdk build`. The old names survive verbatim in
+`docs/plans/**` (closed, dated step and design notes) and in
+[ADR-0010](adr/0010-merchant-auth-private-key-jwt.md) and
+[ADR-0015](adr/0015-sdk-parity.md), which AGENTS.md makes immutable —
+superseding those two is a maintainer decision, not this change's.
+
 **New 2026-09-05: `cargo xtask verify-links` is the fifth gate, and
 `cargo xtask verify-citations` is a sixth that is opt-in.** Until this
 landed, `just docs-check` ran `verify-status` and printed `note: link
