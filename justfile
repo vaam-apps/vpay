@@ -773,6 +773,15 @@ expected_suites := "42"
 # thirteen for the citation patterns offline. No new test binary — both
 # commands live in `.xtask/src/main.rs` — so `expected_suites` stays 42, and
 # the floor stays 1080: thirty-six tests is not a reason to move a floor.
+#
+# Re-measured 2026-09-05 after this branch's review, which added four more to
+# `xtask` (126 -> 130) and no test binary: **1206 total, 42 test binaries, 0
+# ignored**. Three of the four are guards for properties that were prose:
+# `verify-citations` fails rather than skips when `gh` is missing, a 403/429
+# stops the run instead of reporting the batch missing, and a zero-padded
+# eleven-digit number is a timestamp rather than a run id. The fourth is a
+# link to the repository root. `expected_suites` stays 42; the floor stays
+# 1080.
 min_tests := "1080"
 
 verify-ignored:

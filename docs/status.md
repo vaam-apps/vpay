@@ -149,9 +149,11 @@ correction.
   percent escapes, resolves against the linking file's own directory, and
   requires the result to be a **tracked** file or directory — a link
   satisfied by an untracked scratch file resolves on one machine and nowhere
-  else. **Measured 2026-09-05: 114 files scanned (113 on `master`
-  plus the notes for this change), 672 repository links checked, 5 broken,
-  5 fixed.** All five were in `docs/plans/step8-notes/`
+  else. **Measured 2026-09-05: 115 files scanned (113 on `master`, plus this
+  change's notes and its review's), 673 repository links checked, 5 broken,
+  5 fixed** — the 5 are the count on `master`, and an independent oracle built
+  on markdown-it-py 3.0.0 agrees with both numbers exactly (this branch's
+  review, `docs/plans/exp6-notes/opus-review.md`). All five were in `docs/plans/step8-notes/`
   (`lane-c.md` ×3, `lane-h.md` ×2), and ~~four were links copied verbatim out
   of a `docs/flows/` document into a blockquote, keeping the quoted file's own
   relative path, and one was a `../` one level short~~ **all five are the same
@@ -175,7 +177,7 @@ correction.
   (`just docs-check-citations`) and is in no CI job.** It resolves every
   workflow-run id, pull request and issue a tracked `*.md` cites as evidence
   against this repository with `gh api -i`, deduped so one id costs one call
-  however often it is written. **Measured 2026-09-05: 39 unique ids across those 114
+  however often it is written. **Measured 2026-09-05: 39 unique ids across those 115
   files — 24 workflow runs, 14 pull requests, 1 issue — all resolve against
   `vaam-apps/vpay`; 0 false citations found.** It **fails** when `gh` is
   missing or unauthenticated and never prints "skipped", because a check that
@@ -191,7 +193,13 @@ correction.
   today that set is empty, because every bold `**#17**` in `docs/roadmap.md`
   is also written `PR #17` in the same file. Cross-repository references
   (`authkestra#287`) are out of scope, and so is anything under a
-  `github.com/<someone else>/` URL.
+  `github.com/<someone else>/` URL. **And an eleven-digit number that is not a
+  run id is a false failure, not a false pass:** a zero-padded webhook
+  timestamp is refused since this branch's review (a run id is never
+  zero-padded), but an eleven-digit phone number written in a document would
+  still be looked up and reported missing. That is the price of matching every
+  id in a list rather than only the one after the word `run`, and it is paid
+  in the direction that fails a correct document.
 
 
 Last verified: 2026-09-04, on branch `claude/step9-hosted-checkout` at

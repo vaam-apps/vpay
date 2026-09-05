@@ -76,7 +76,12 @@ re-run without reading.
   digits>`, deliberately.** This tree writes runs in lists — ``Runs
   `33772512791`, `33784613048`, `33789060270`, `33792230539` `` — where a
   cue-word rule checks the first and ignores the three places a wrong id would
-  actually hide. Every eleven-digit number in the tree is a run id.
+  actually hide. ~~Every eleven-digit number in the tree is a run id.~~
+  **Corrected 2026-09-05 (review, finding F3): every eleven-digit number in
+  tracked *Markdown* is a run id; the tree also holds two zero-padded webhook
+  timestamps and a phone number.** A leading zero is refused since the review
+  — a run id is never zero-padded — and the phone-number case is a live false
+  failure, stated rather than fixed.
   `:sha-33929374661`, `1.33929374661` and twelve-digit numbers are not
   standalone and do not count.
 - **A pull request** is `#n` whose nearest preceding word is `PR`, `PRs`,
@@ -112,6 +117,10 @@ this repository — the live name from `gh`, plus the two historical ones
 disagree, and GitHub redirects both).
 
 **It never skips.** Without `gh`, or unauthenticated, it fails and says which.
+(Nothing *proved* that until the review: every citation test was an offline
+pattern test, and a mutation printing "skipped" and returning `Ok(())` left
+126/126 green. Guarded now by
+`a_missing_gh_fails_the_gate_rather_than_skipping` — finding F2.)
 A 403 or 429 stops the whole run rather than reporting the remaining ids as
 missing, so a rate limit can never send somebody to delete true claims.
 
@@ -131,8 +140,8 @@ below proves.
 
 | | |
 |---|---|
-| Markdown files scanned | **114** (`git ls-files '*.md'`) — 113 on `master`, plus this notes file |
-| Repository links checked | **672** |
+| Markdown files scanned | **114** (`git ls-files '*.md'`) — 113 on `master`, plus this notes file. **115 since the review added `opus-review.md`** |
+| Repository links checked | **672** (**673** with the review's notes) |
 | Broken links found | **5** |
 | Broken links fixed | **5** |
 | Links skipped as out of scope | 90 bare anchors, 5 `http(s)`/`mailto` (counted separately; not part of the 672) |
@@ -153,12 +162,25 @@ meant.
 | `lane-h.md:289` | `flows/provider-port.md` | `docs/plans/step8-notes/flows/provider-port.md` | `../../flows/provider-port.md` |
 | `lane-h.md:332` | `../reference/vpay-api.md` | `docs/plans/reference/vpay-api.md` | `../../reference/vpay-api.md` |
 
-The first four are one mistake: the notes quote a passage out of a
+~~The first four are one mistake: the notes quote a passage out of a
 `docs/flows/` document into a blockquote and keep the quoted document's own
-relative path, which is correct there and wrong here. Display text is
-unchanged, so the quotes still read as the originals do.
+relative path, which is correct there and wrong here.~~ **Corrected 2026-09-05
+(review, finding F1): all five are that, `lane-h.md:332` included — its
+`../reference/vpay-api.md` is exactly what `docs/flows/reconciler.md:95`
+contains, not a `../` one level short.** Display text is unchanged, so the
+quotes still read as the originals do — but the **destinations are no longer
+verbatim**, and `lane-c.md:108` said they were. Each site now carries a dated
+note naming the applied text; see [opus-review.md](opus-review.md) §3, F1.
 
 ### The citation run, in full
+
+**Stale, corrected 2026-09-05 (review, finding F6).** The per-id counts below
+are from before this file finished growing; re-measured on the reviewed head
+they read `run 33929374661 (40)`, `PR 17 (5)`, `PR 24 (5)` and so on, over
+**115** files. The line that matters is unchanged — **39 unique ids, 24 runs,
+14 pull requests, 1 issue, all resolving** — and is re-run in
+[opus-review.md](opus-review.md) §4. The transcript is left as it was measured
+rather than edited to look current.
 
 ```
 $ just docs-check-citations
@@ -246,7 +268,9 @@ unterminated `<!--` is left as ordinary text
 ## Tests
 
 36 new, all in `.xtask/src/main.rs`; `xtask` goes 90 → 126 and the workspace
-1166 → 1202. No new test binary, so `verify-ignored`'s `expected_suites` stays
+1166 → 1202. (**The review added four more: 130 and 1206** — three guards for
+properties that were prose only, and one for a link to the repository root.
+See [opus-review.md](opus-review.md) §3.) No new test binary, so `verify-ignored`'s `expected_suites` stays
 42 and its floor stays 1080; the justfile's history comment records the bump.
 
 `link_tests` (23). Nine drive `verify_links` end to end over a throwaway
