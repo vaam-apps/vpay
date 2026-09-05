@@ -846,6 +846,28 @@ fn cratestack_version() -> anyhow::Result<String> {
     Ok(version.to_owned())
 }
 
+/// The `cratestack_version` the `justfile` pins, read out of the `justfile`.
+///
+/// The banner below used to name `0.11.1` as a literal beside the version it
+/// had actually run. That is a claim about a file this test can read, and a
+/// literal keeps printing `0.11.1` after the pin moves — a false sentence in
+/// the log of the one test whose entire subject is where a number came from.
+///
+/// # Errors
+///
+/// Fails if the `justfile` stops declaring the pin, rather than falling back
+/// to a default: a silent default is how the banner would go stale a second
+/// time.
+fn pinned_cratestack_version(root: &std::path::Path) -> anyhow::Result<String> {
+    let justfile =
+        std::fs::read_to_string(root.join("justfile")).context("reading the justfile")?;
+    let pin = justfile
+        .lines()
+        .find_map(|line| line.strip_prefix("cratestack_version := "))
+        .context("`justfile` should declare `cratestack_version := \"<semver>\"` at column 0")?;
+    Ok(pin.trim().trim_matches('"').to_owned())
+}
+
 /// Parses `migrate baseline`'s header — `drift detected in 17
 /// table(s)/view(s) (86 change(s) total):` — into `(relations, changes)`.
 ///
@@ -907,13 +929,29 @@ fn tables_missing_from_the_schema(stdout: &str) -> Vec<String> {
 /// `docs/status.md`, "CrateStack", for what this number means.
 #[tokio::test]
 async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> anyhow::Result<()> {
+    let root = repo_root()?;
+
     // Printed unconditionally: the grammar that answered is part of the
     // measurement, and `justfile`'s `cratestack_version` pin is reported
-    // rather than enforced locally for the reason `check-schema` gives.
+    // rather than enforced locally for the reason `check-schema` gives —
+    // "CI installs the pin exactly and CI is the gate of record, and blocking
+    // every contributor whose PATH carries a newer release is how a gate
+    // acquires a local opt-out". The warning on a mismatch is the other half
+    // of that recipe's rule and was missing here: measured 2026-09-05, a shim
+    // printing `cratestack 9.9.9-review-fake` ran the whole measurement and
+    // said nothing about it. Whether a mismatch should instead FAIL this test
+    // — the pinned 86 is a number about one grammar — is a maintainer's call,
+    // and this matches `check-schema` rather than taking it.
+    let pinned = pinned_cratestack_version(&root)?;
     let version = cratestack_version()?;
-    eprintln!("cratestack CLI under test: {version} (justfile pins 0.11.1)");
-
-    let root = repo_root()?;
+    eprintln!("cratestack CLI under test: {version} (justfile pins {pinned})");
+    if version != pinned {
+        eprintln!(
+            "WARNING: cratestack {version} on PATH, this repository pins {pinned}. The \
+             measurement below still ran in full, but against the {version} grammar, and \
+             every constant it asserts was measured against {pinned}."
+        );
+    }
     let schema = root.join("schemas/vpay.cstack");
     let schema_before = std::fs::read(&schema).context("reading schemas/vpay.cstack")?;
 
