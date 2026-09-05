@@ -224,7 +224,11 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         // the migration creates.
         "checkout_sessions",
     ] {
-        sqlx::query(&format!("SELECT COUNT(*) FROM {table}"))
+        // sqlx 0.9 (sqlx#3723) wants the injection audit written down. The
+        // only interpolation is `table`, bound by the `for` above to one of
+        // the string literals in that list — an identifier cannot be a bind
+        // parameter, which is why this is a `format!` at all.
+        sqlx::query(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
             .fetch_one(&pool)
             .await
             .with_context(|| format!("table {table} should exist and be queryable"))?;
@@ -444,10 +448,15 @@ async fn insert_signing_key(
     active: bool,
     expires_at_clause: &str,
 ) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
-    sqlx::query(&format!(
+    // sqlx 0.9 (sqlx#3723) wants the injection audit written down.
+    // `expires_at_clause` is a *SQL expression*, not a value — `NULL` or
+    // `now() + interval '…'` — which is exactly why it cannot be a bind
+    // parameter. Every one of the four call sites below passes a literal
+    // written in this file; nothing here reads a value from outside the test.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "INSERT INTO oauth_signing_keys (kid, public_jwk, active, expires_at) \
          VALUES ($1, $2::jsonb, $3, {expires_at_clause})"
-    ))
+    )))
     .bind(kid)
     .bind(FIXTURE_PUBLIC_JWK)
     .bind(active)

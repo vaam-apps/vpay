@@ -21,6 +21,12 @@
 
 use std::fmt;
 
+// `AssertSqlSafe`: sqlx 0.9 accepts a statement only as `&'static str` or
+// through this wrapper (sqlx#3723). Every `format!` below interpolates crate
+// constants and nothing else — never a caller's value — which is the audit the
+// wrapper's name demands, written down in `docs/reference/vpay-db.md` § dynamic
+// SQL strings and sqlx 0.9 and enforced by `crate::sql_audit`.
+use sqlx::AssertSqlSafe;
 use time::OffsetDateTime;
 
 use crate::error::{DbError, classify_write};
@@ -780,7 +786,7 @@ impl CheckoutSessions for crate::repository::PgRepositories {
              RETURNING {COLUMNS}"
         );
 
-        sqlx::query_as::<_, CheckoutSessionRow>(&sql)
+        sqlx::query_as::<_, CheckoutSessionRow>(AssertSqlSafe(sql))
             .bind(&new.id)
             .bind(&new.merchant_id)
             .bind(&new.payment_intent_id)
@@ -807,7 +813,7 @@ impl CheckoutSessions for crate::repository::PgRepositories {
         let sql =
             format!("SELECT {COLUMNS} FROM checkout_sessions WHERE merchant_id = $1 AND id = $2");
 
-        sqlx::query_as::<_, CheckoutSessionRow>(&sql)
+        sqlx::query_as::<_, CheckoutSessionRow>(AssertSqlSafe(sql))
             .bind(merchant_id)
             .bind(id)
             .fetch_optional(&self.pool)
@@ -818,7 +824,7 @@ impl CheckoutSessions for crate::repository::PgRepositories {
     async fn get_by_id_unscoped(&self, id: &str) -> Result<Option<CheckoutSessionRow>, DbError> {
         let sql = format!("SELECT {COLUMNS} FROM checkout_sessions WHERE id = $1");
 
-        sqlx::query_as::<_, CheckoutSessionRow>(&sql)
+        sqlx::query_as::<_, CheckoutSessionRow>(AssertSqlSafe(sql))
             .bind(id)
             .fetch_optional(&self.pool)
             .await
@@ -834,7 +840,7 @@ impl CheckoutSessions for crate::repository::PgRepositories {
              WHERE payment_intent_id = $1 AND status = '{OPEN}'"
         );
 
-        sqlx::query_as::<_, CheckoutSessionRow>(&sql)
+        sqlx::query_as::<_, CheckoutSessionRow>(AssertSqlSafe(sql))
             .bind(payment_intent_id)
             .fetch_optional(&self.pool)
             .await
@@ -856,7 +862,7 @@ impl CheckoutSessions for crate::repository::PgRepositories {
              LIMIT 1"
         );
 
-        sqlx::query_as::<_, CheckoutSessionRow>(&sql)
+        sqlx::query_as::<_, CheckoutSessionRow>(AssertSqlSafe(sql))
             .bind(payment_intent_id)
             .fetch_optional(&self.pool)
             .await
@@ -893,7 +899,7 @@ impl CheckoutSessions for crate::repository::PgRepositories {
              LIMIT $5"
         );
 
-        let mut rows = sqlx::query_as::<_, CheckoutSessionRow>(&sql)
+        let mut rows = sqlx::query_as::<_, CheckoutSessionRow>(AssertSqlSafe(sql))
             .bind(merchant_id)
             .bind(page.starting_after.as_deref())
             .bind(page.ending_before.as_deref())
@@ -929,7 +935,7 @@ impl CheckoutSessions for crate::repository::PgRepositories {
              RETURNING {COLUMNS}"
         );
 
-        sqlx::query_as::<_, CheckoutSessionRow>(&sql)
+        sqlx::query_as::<_, CheckoutSessionRow>(AssertSqlSafe(sql))
             .bind(merchant_id)
             .bind(id)
             .fetch_optional(&self.pool)
@@ -957,7 +963,7 @@ impl CheckoutSessions for crate::repository::PgRepositories {
              LIMIT $2"
         );
 
-        sqlx::query_as::<_, CheckoutSessionRow>(&sql)
+        sqlx::query_as::<_, CheckoutSessionRow>(AssertSqlSafe(sql))
             .bind(now)
             .bind(limit)
             .fetch_all(&self.pool)
@@ -987,7 +993,7 @@ impl CheckoutSessions for crate::repository::PgRepositories {
              RETURNING {COLUMNS}"
         );
 
-        let expired = sqlx::query_as::<_, CheckoutSessionRow>(&sql)
+        let expired = sqlx::query_as::<_, CheckoutSessionRow>(AssertSqlSafe(sql))
             .bind(id)
             .bind(now)
             .fetch_optional(&mut *tx)

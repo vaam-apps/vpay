@@ -43,6 +43,10 @@ application's side of them.
   - [`pull_forward_in_tx` is the exception, and it has to be asked for](#pull_forward_in_tx-is-the-exception-and-it-has-to-be-asked-for)
   - [Why claiming does not consider lease expiry](#why-claiming-does-not-consider-lease-expiry)
   - [Why a dead letter is parked and not deleted](#why-a-dead-letter-is-parked-and-not-deleted)
+- [Dynamic SQL strings and sqlx 0.9](#dynamic-sql-strings-and-sqlx-09)
+  - [The audit, done rather than asserted](#the-audit-done-rather-than-asserted)
+  - [Why not `QueryBuilder`](#why-not-querybuilder)
+  - [The two interpolations that are not constants](#the-two-interpolations-that-are-not-constants)
 - [TLS: no `CryptoProvider` is installed here](#tls-no-cryptoprovider-is-installed-here)
 
 ---
@@ -1037,6 +1041,95 @@ a human deciding the underlying data is fixed.
 a `#[source]`, so the column would otherwise say "the request to the rail
 failed" and never "operation timed out".
 
+## Dynamic SQL strings and sqlx 0.9
+
+Every statement in this crate is built with `format!` and then wrapped in
+`sqlx::AssertSqlSafe`. Both halves need explaining, because the wrapper's name
+is a promise and a promise nobody re-reads is worth nothing.
+
+sqlx 0.9 (sqlx#3723) changed `query`, `query_as` and `query_scalar` to take
+`impl SqlSafeStr`, which is implemented for `&'static str` and for the explicit
+`AssertSqlSafe` wrapper — and for nothing else. A `String` built by `format!`
+therefore no longer compiles as a statement. Under 0.8 this crate passed
+`&sql` at 36 call sites; under 0.9 it passes `AssertSqlSafe(sql)` at the same
+36. Taking the `String` **by value** rather than `AssertSqlSafe(&sql)` is
+deliberate: the borrowed form goes through `AssertSqlSafe<&str>`, which sqlx's
+own docs describe as copying the string.
+
+The `format!` predates 0.9 and is not what that change is about. Each of these
+statements ends in a column list — `RETURNING {COLUMNS}`, `SELECT {COLUMNS}` —
+and that list is a `const … : &str` declared once per module so that a column
+added to a `SELECT` cannot drift from the column read out of the `PgRow`. That
+is the entire reason a statement here is not a literal.
+
+### The audit, done rather than asserted
+
+`AssertSqlSafe`'s contract is that the caller audited the string. Here is the
+audit, re-done on 2026-09-05 from the source rather than inherited:
+
+All 36 statements interpolate exactly two kinds of value.
+
+* **A `const … : &str` declared in this crate.** Ten of them:
+  `charges::COLUMNS`, `checkout_sessions::COLUMNS`, `events::COLUMNS`,
+  `payment_intents::COLUMNS`, `webhook_deliveries::COLUMNS`,
+  `checkout_sessions::OPEN`, `payment_intents::LIVE_CHARGE_STATES`,
+  `payment_intents::SETTLEABLE_STATUSES`, `jobs::CLAIM_RETURNING` and
+  `settlement::PREVIOUS_STATE`. A `const` cannot carry a caller's value.
+* **`direction`**, which is
+  `let direction = if backwards { "ASC" } else { "DESC" };` — a `bool`
+  choosing between two literals written in the same function
+  (`events.rs`, `payment_intents.rs`, `checkout_sessions.rs`, in each case
+  inside `list_page`). Postgres has no bind parameter for a sort direction,
+  which is why it is interpolated at all.
+
+**No caller-supplied value reaches a statement string anywhere in this crate.**
+Every merchant id, intent id, cursor, limit, status, timestamp and payload is
+already a bind parameter — the `.bind(..)` calls immediately below each
+statement are the whole argument list.
+
+That audit is a claim about a file that people edit, so it is also a test:
+`vpay_db::sql_audit` (test-only, `backends/crates/vpay-db/src/sql_audit.rs`)
+reads this crate's own sources and fails if a `format!` bound to `sql`
+interpolates anything that is not one of the constants above or one of the two
+named exceptions. It was proven to fire by three mutations on 2026-09-05, each
+reverted:
+
+* interpolating `{payment_intent_id}` into `charges::get_for_intent` →
+  `every_interpolation_into_a_statement_is_a_crate_constant` fails, naming the
+  file and the capture;
+* redefining `direction` as anything other than the two-literal `if` →
+  `the_audited_non_constants_are_still_what_the_audit_says_they_are` fails;
+* wrapping a fresh `format!` in `AssertSqlSafe` instead of the audited `sql`
+  variable → `every_assert_sql_safe_wraps_the_variable_the_audit_covers`
+  fails.
+
+The third is the one that matters most: without it the audit could be bypassed
+by not using the variable the audit looks at.
+
+### Why not `QueryBuilder`
+
+sqlx's own suggested alternative. It was considered and rejected: it would
+rewrite 36 working, reviewed statements to remove a risk the audit above shows
+is not present, and it would replace SQL that reads as SQL with SQL assembled
+by method calls — in a crate where the statement text *is* the design
+(`FOR UPDATE SKIP LOCKED`, `UPDATE … WHERE state = $2 RETURNING`, the
+`NOT EXISTS` guards that make cancellation atomic). `QueryBuilder` earns its
+place where the *shape* of a statement varies with input. Nothing here has
+that shape: the only variability is a sort direction and a fixed column list.
+
+### The two interpolations that are not constants
+
+`sql_audit`'s allowlist has exactly two entries and both are checked rather
+than merely permitted:
+
+* `direction` — the file must still contain the literal two-branch `if`.
+* `columns` — `settlement.rs` writes `columns = crate::charges::COLUMNS` as a
+  named argument, because it interpolates another module's constant and the
+  implicit-capture form cannot name a path.
+
+A third entry is a deliberate edit to that file, which is the review this
+arrangement exists to force.
+
 ## TLS: no `CryptoProvider` is installed here
 
 The root `Cargo.toml`'s comment on the `authkestra-*` dependencies documents a
@@ -1048,10 +1141,18 @@ not.
 `sqlx` is configured with `tls-rustls-ring`, which vendors Mozilla's CA bundle
 via `webpki-roots` (the runtime image is `FROM scratch` per ADR-0004, so there
 is no OS trust store for the `-native-roots` alternative to read). Reading
-`sqlx-core` 0.8.6's own TLS setup (`src/net/tls/tls_rustls.rs`) shows it never
+`sqlx-core`'s own TLS setup (`src/net/tls/tls_rustls.rs`) shows it never
 calls `rustls::crypto::CryptoProvider::get_default()` — the call that panics
 without an installed default. It builds its own provider inline and passes it
 explicitly:
+
+**Re-read at 0.9.0 on 2026-09-05**, because a claim about a dependency's
+internals is exactly what a major bump invalidates. Unchanged: `handshake`
+still selects `rustls::crypto::ring::default_provider()` under
+`_tls-rustls-ring-webpki` (the feature `tls-rustls-ring` expands to) and still
+hands it to `builder_with_provider`. The `aws_lc_rs` arm next to it is
+`cfg`-ed out by that same feature, and `deny.toml` bans the crate outright, so
+both halves of the invariant are checked.
 
 ```text
 let provider = Arc::new(rustls::crypto::ring::default_provider());

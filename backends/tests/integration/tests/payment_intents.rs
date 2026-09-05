@@ -389,7 +389,13 @@ fn api_error(error: vpay_sdk::Error) -> (u16, String, Option<String>, Option<Str
     }
 }
 
-async fn count(pool: &PgPool, sql: &str, bind: &str) -> anyhow::Result<i64> {
+/// `sql: &'static str` rather than `&str`, since sqlx 0.9 (sqlx#3723): a
+/// statement is now `impl SqlSafeStr`, implemented for `&'static str` and for
+/// the explicit `AssertSqlSafe` wrapper and nothing else. Every caller here
+/// passes a literal, so tightening the parameter is the answer that keeps the
+/// compiler doing the checking; `AssertSqlSafe` would have moved it to a
+/// comment.
+async fn count(pool: &PgPool, sql: &'static str, bind: &str) -> anyhow::Result<i64> {
     sqlx::query_scalar::<_, i64>(sql)
         .bind(bind)
         .fetch_one(pool)

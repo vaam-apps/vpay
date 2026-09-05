@@ -20,7 +20,12 @@
 //! counter lives in this layer, and what the after-the-commit timing costs.
 
 use sqlx::postgres::PgRow;
-use sqlx::{FromRow, PgConnection, Row};
+// `AssertSqlSafe`: sqlx 0.9 accepts a statement only as `&'static str` or
+// through this wrapper (sqlx#3723). Every `format!` below interpolates crate
+// constants and nothing else — never a caller's value — which is the audit the
+// wrapper's name demands, written down in `docs/reference/vpay-db.md` § dynamic
+// SQL strings and sqlx 0.9 and enforced by `crate::sql_audit`.
+use sqlx::{AssertSqlSafe, FromRow, PgConnection, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
 use vpay_core::ChargeState;
@@ -251,7 +256,7 @@ pub(crate) async fn insert_for_intent(
          RETURNING {COLUMNS}"
     );
 
-    let row = sqlx::query_as::<_, ChargeRow>(&sql)
+    let row = sqlx::query_as::<_, ChargeRow>(AssertSqlSafe(sql))
         .bind(&new.id)
         .bind(&new.payment_intent_id)
         .bind(&new.provider_code)
@@ -314,7 +319,7 @@ pub(crate) async fn mark_submitted(
          RETURNING {COLUMNS}"
     );
 
-    let row = sqlx::query_as::<_, ChargeRow>(&sql)
+    let row = sqlx::query_as::<_, ChargeRow>(AssertSqlSafe(sql))
         .bind(id)
         .bind(state)
         .bind(provider_ref_extra)
@@ -364,7 +369,7 @@ pub(crate) async fn mark_failed(
          RETURNING {COLUMNS}"
     );
 
-    let row = sqlx::query_as::<_, ChargeRow>(&sql)
+    let row = sqlx::query_as::<_, ChargeRow>(AssertSqlSafe(sql))
         .bind(id)
         .bind(failure_code)
         .bind(failure_raw)
@@ -526,7 +531,7 @@ impl Charges for crate::repository::PgRepositories {
     async fn get_for_intent(&self, payment_intent_id: &str) -> Result<Option<ChargeRow>, DbError> {
         let sql = format!("SELECT {COLUMNS} FROM charges WHERE payment_intent_id = $1");
 
-        sqlx::query_as::<_, ChargeRow>(&sql)
+        sqlx::query_as::<_, ChargeRow>(AssertSqlSafe(sql))
             .bind(payment_intent_id)
             .fetch_optional(&self.pool)
             .await
@@ -544,7 +549,7 @@ impl Charges for crate::repository::PgRepositories {
     async fn get_by_id_as_of(&self, id: &str) -> Result<Option<ChargeAsOf>, DbError> {
         let sql = format!("SELECT {COLUMNS}, now() AS db_now FROM charges WHERE id = $1");
 
-        sqlx::query_as::<_, ChargeAsOf>(&sql)
+        sqlx::query_as::<_, ChargeAsOf>(AssertSqlSafe(sql))
             .bind(id)
             .fetch_optional(&self.pool)
             .await
@@ -566,7 +571,7 @@ impl Charges for crate::repository::PgRepositories {
              ORDER BY created_at DESC, id DESC LIMIT 1"
         );
 
-        sqlx::query_as::<_, ChargeRow>(&sql)
+        sqlx::query_as::<_, ChargeRow>(AssertSqlSafe(sql))
             .bind(provider_code)
             .bind(provider_reference_id)
             .fetch_optional(&self.pool)

@@ -26,9 +26,12 @@ const MAX_CONNECTIONS: u32 = 10;
 /// How long a caller waits for a connection to become available from
 /// [`sqlx::PgPool::acquire`] before giving up (`PgPoolOptions::acquire_timeout`).
 ///
-/// This is the *only* timeout `sqlx` 0.8's `PoolOptions` exposes on the path
+/// This is the *only* timeout `sqlx`'s `PoolOptions` exposes on the path
 /// to a usable connection — there is no separate `connect_timeout` knob (an
-/// older sqlx API had one; `sqlx-core` 0.8.6 removed it). Its own doc
+/// older sqlx API had one; `sqlx-core` 0.8.6 removed it, and **re-checked at
+/// 0.9.0 on 2026-09-05 during the bump: still one field**, with
+/// `PoolOptions`' own `Debug` printing `acquire_timeout` under the name
+/// `connect_timeout`). Its own doc
 /// comment says explicitly that `acquire_timeout` bounds *all* of: waiting
 /// for a pool permit, testing an idle connection's liveness, **and**, when a
 /// new connection must be opened, "I/O, handshaking, and initialization

@@ -11,6 +11,12 @@
 
 use std::fmt;
 
+// `AssertSqlSafe`: sqlx 0.9 accepts a statement only as `&'static str` or
+// through this wrapper (sqlx#3723). Every `format!` below interpolates crate
+// constants and nothing else — never a caller's value — which is the audit the
+// wrapper's name demands, written down in `docs/reference/vpay-db.md` § dynamic
+// SQL strings and sqlx 0.9 and enforced by `crate::sql_audit`.
+use sqlx::AssertSqlSafe;
 use time::OffsetDateTime;
 
 use crate::error::{DbError, classify_write};
@@ -272,7 +278,7 @@ where
          RETURNING {COLUMNS}"
     );
 
-    sqlx::query_as::<_, PaymentIntentRow>(&sql)
+    sqlx::query_as::<_, PaymentIntentRow>(AssertSqlSafe(sql))
         .bind(merchant_id)
         .bind(id)
         .bind(expected)
@@ -330,7 +336,7 @@ pub(crate) async fn record_payment_error(
          RETURNING {COLUMNS}"
     );
 
-    sqlx::query_as::<_, PaymentIntentRow>(&sql)
+    sqlx::query_as::<_, PaymentIntentRow>(AssertSqlSafe(sql))
         .bind(merchant_id)
         .bind(id)
         .bind(expected)
@@ -405,7 +411,7 @@ pub(crate) async fn succeed_after_submission(
          RETURNING {COLUMNS}"
     );
 
-    sqlx::query_as::<_, PaymentIntentRow>(&sql)
+    sqlx::query_as::<_, PaymentIntentRow>(AssertSqlSafe(sql))
         .bind(id)
         .fetch_optional(&mut *tx)
         .await
@@ -458,7 +464,7 @@ pub(crate) async fn fail_after_submission(
          RETURNING {COLUMNS}"
     );
 
-    sqlx::query_as::<_, PaymentIntentRow>(&sql)
+    sqlx::query_as::<_, PaymentIntentRow>(AssertSqlSafe(sql))
         .bind(id)
         .bind(code)
         .bind(&bounded)
@@ -648,7 +654,7 @@ impl PaymentIntents for crate::repository::PgRepositories {
          RETURNING {COLUMNS}"
         );
 
-        sqlx::query_as::<_, PaymentIntentRow>(&sql)
+        sqlx::query_as::<_, PaymentIntentRow>(AssertSqlSafe(sql))
             .bind(&new.id)
             .bind(&new.merchant_id)
             .bind(new.livemode)
@@ -675,7 +681,7 @@ impl PaymentIntents for crate::repository::PgRepositories {
         let sql =
             format!("SELECT {COLUMNS} FROM payment_intents WHERE merchant_id = $1 AND id = $2");
 
-        sqlx::query_as::<_, PaymentIntentRow>(&sql)
+        sqlx::query_as::<_, PaymentIntentRow>(AssertSqlSafe(sql))
             .bind(merchant_id)
             .bind(id)
             .fetch_optional(&self.pool)
@@ -686,7 +692,7 @@ impl PaymentIntents for crate::repository::PgRepositories {
     async fn get_by_id(&self, id: &str) -> Result<Option<PaymentIntentRow>, DbError> {
         let sql = format!("SELECT {COLUMNS} FROM payment_intents WHERE id = $1");
 
-        sqlx::query_as::<_, PaymentIntentRow>(&sql)
+        sqlx::query_as::<_, PaymentIntentRow>(AssertSqlSafe(sql))
             .bind(id)
             .fetch_optional(&self.pool)
             .await
@@ -719,7 +725,7 @@ impl PaymentIntents for crate::repository::PgRepositories {
          LIMIT $4"
         );
 
-        let mut rows = sqlx::query_as::<_, PaymentIntentRow>(&sql)
+        let mut rows = sqlx::query_as::<_, PaymentIntentRow>(AssertSqlSafe(sql))
             .bind(merchant_id)
             .bind(page.starting_after.as_deref())
             .bind(page.ending_before.as_deref())
@@ -764,7 +770,7 @@ impl PaymentIntents for crate::repository::PgRepositories {
          RETURNING {COLUMNS}"
         );
 
-        sqlx::query_as::<_, PaymentIntentRow>(&sql)
+        sqlx::query_as::<_, PaymentIntentRow>(AssertSqlSafe(sql))
             .bind(merchant_id)
             .bind(id)
             .fetch_optional(&self.pool)

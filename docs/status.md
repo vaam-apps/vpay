@@ -2138,6 +2138,127 @@ on 2026-09-05**, which brought [ADR-0016](adr/0016-engineering-standards.md)'s
 branch's ten, all in `xtask` (184 → 194). `verify-toolchain` is the **tenth**
 gate after that rebase, not the eighth it was written as.
 
+### sqlx 0.8 -> 0.9 (2026-09-05)
+
+**Landed.** `[workspace.dependencies] sqlx` is `0.9` and `Cargo.lock` resolves
+**exactly one sqlx major**:
+
+```
+$ cargo metadata | (every package whose name starts with "sqlx")
+sqlx 0.9.0  sqlx-core 0.9.0  sqlx-macros 0.9.0  sqlx-macros-core 0.9.0
+sqlx-mysql 0.9.0  sqlx-postgres 0.9.0  sqlx-sqlite 0.9.0
+```
+
+(`sqlx-mysql`/`sqlx-sqlite` appear because `cargo metadata` enumerates
+optional dependencies whether or not a feature activates them; nothing enables
+them — `default-features = false` plus eight named features — and `cargo tree`
+does not show them.) `cargo tree -d` lists **no sqlx version duplicate**; the
+two `sqlx-core v0.9.0 (*)` lines in its output are the same version twice, the
+same shape it prints for `base64 v0.22.1` and `log v0.4.33` on this workspace.
+
+**Why at all.** `cratestack-sqlx 0.11.1` pins `sqlx-core =0.9.0` and
+`sqlx-postgres =0.9.0`. Under the old pin, a crate depending on both
+CrateStack and `vpay-db` resolved two majors — two `sqlx::Transaction` types
+that cannot share a transaction. See the "decisive negative" below.
+
+**The feature list is copied across unchanged**, checked against both
+releases' own manifests rather than assumed: all eight exist in 0.9.0 with the
+same meaning, `tls-rustls-ring` still expands to `tls-rustls-ring-webpki`
+(vendored Mozilla roots — non-negotiable for a `FROM scratch` image, ADR-0004),
+and the four features 0.9 deleted (sqlx#3821: the runtime+TLS combinations)
+were none of vpay's. `webpki-roots` moves 0.26.11 -> 1.0.9 and is still
+`CDLA-Permissive-2.0`, which `deny.toml` already allows with its own written
+reason, so that file needed no edit.
+
+**One API change reached this workspace, and it is the only one.** sqlx#3723
+made `query`/`query_as`/`query_scalar` take `impl SqlSafeStr`, implemented for
+`&'static str` and for `AssertSqlSafe` and nothing else, so a `format!`-built
+`String` no longer compiles as a statement. `cargo check --workspace
+--all-targets` produced **36 errors, all of that one kind, all in `vpay-db`**,
+and zero warnings. Everything the bump might have been expected to break did
+not: `Executor`/`Acquire` bounds, `Transaction<'static, Postgres>` in
+`PendingTransaction`, `PgRow`/`FromRow`, `sqlx::migrate!`, `sqlx::Error`
+variants, `PgPoolOptions::acquire_timeout`/`connect_lazy`, `classify_write`.
+There are no `query!` macros in this workspace and no `.sqlx/` directory, so
+`cargo sqlx prepare` is **not applicable** rather than skipped.
+
+**Two more sites that a lib-only check would not have found**, both in
+`vpay-tests-integration` and both new to this pass (the earlier measurement in
+`docs/plans/exp12-notes/opus.md` could not build that crate at all):
+`postgres_smoke.rs`'s `SELECT COUNT(*) FROM {table}` and its
+`insert_signing_key({expires_at_clause})`, each now wrapped with its own audit
+comment — a table name and a SQL expression, neither of which can be a bind
+parameter, both interpolating literals written in that file. And
+`payment_intents.rs`'s `count(pool, sql, bind)` helper, whose `sql: &str`
+became `sql: &'static str`: every caller passes a literal, so tightening the
+parameter keeps the *compiler* doing the checking instead of moving it into a
+comment.
+
+**The audit is a test, not a comment.** `AssertSqlSafe`'s contract is that the
+caller audited the string; a contract discharged by prose is discharged by
+whoever last read the prose. All 36 statements interpolate a `const … : &str`
+declared in `vpay-db` — the five per-module `COLUMNS`, `OPEN`,
+`LIVE_CHARGE_STATES`, `SETTLEABLE_STATUSES`, `CLAIM_RETURNING`,
+`PREVIOUS_STATE` — or `direction`, which is
+`if backwards { "ASC" } else { "DESC" }`. **No caller-supplied value reaches a
+statement string anywhere in the crate**; every id, cursor, limit and status is
+already a bind parameter. `vpay_db::sql_audit` (test-only, 5 tests) reads the
+crate's own sources and enforces exactly that, and it was **proven to fire by
+three mutations**, each reverted: interpolating `{payment_intent_id}` into
+`charges::get_for_intent`; redefining `direction` as something other than the
+two-literal `if`; and wrapping a fresh `format!` in `AssertSqlSafe` instead of
+the audited `sql` variable. The third is the one that matters — without it the
+audit could be bypassed by not using the variable the audit looks at. Full
+reasoning: [docs/reference/vpay-db.md § dynamic SQL strings and
+sqlx 0.9](reference/vpay-db.md#dynamic-sql-strings-and-sqlx-09).
+`QueryBuilder` was considered and rejected there.
+
+**The MSRV floor moved, 1.88 -> 1.94.** `rust-version` in the root
+`Cargo.toml` is derived from `cargo metadata`'s `rust_version` across the whole
+resolved graph, and sqlx 0.9.0 declares `1.94.0` where 0.8.6 declared none;
+the seven `sqlx-*` packages are now the sole maximum. Re-derived by
+measurement over all 469 packages, 112 of which declare nothing. The toolchain
+pin (`1.98.0`) is unaffected and is what this workspace is actually compiled
+with; the floor has never been verified by compiling under 1.94.
+
+**Supply chain.** `cargo deny check`: **advisories ok, bans ok, licenses ok,
+sources ok**. `cargo tree -i` finds no `aws-lc-rs`, `aws-lc-sys`,
+`openssl-sys` or `native-tls`. `deny.toml` was not edited. The bans warnings
+grew by the RustCrypto 0.10/0.11 split sqlx 0.9 pulls in (`digest`,
+`sha2`, `hmac`, `hkdf`, `block-buffer`, `crypto-common`, `cpufeatures`) —
+warnings, because `multiple-versions = "warn"`, not errors. The two
+`license-not-encountered` warnings (`CC0-1.0`, `MPL-2.0`) are unchanged:
+measured at two before the bump and two after, by running
+`cargo deny check licenses` against the pre-bump lockfile.
+
+**The `sqlx-core` TLS claim was re-read at 0.9.0**, because that is exactly the
+kind of statement about a dependency's internals a major bump invalidates. It
+still holds: `handshake` selects `rustls::crypto::ring::default_provider()`
+under `_tls-rustls-ring-webpki` and hands it to `builder_with_provider`, never
+calling `CryptoProvider::get_default()` — so `vpay-db` still does not need to
+install a process-wide provider.
+
+**The decisive negative, re-measured on this branch.** A scratch crate
+*outside* the workspace depending on `cratestack-sqlx = "0.11.1"` **and** on
+`vpay-db` by path:
+
+- with the workspace pin at **0.8**: `sqlx 0.8.6`, `sqlx-core 0.8.6` **and**
+  `sqlx-core 0.9.0`, `sqlx-postgres 0.8.6` **and** `sqlx-postgres 0.9.0` — two
+  majors, i.e. two incompatible `Transaction` types;
+- with the pin at **0.9**: one major, and `cargo check` finishes
+  (`Checking cratestack-sqlx v0.11.1 … Checking vpay-db … Finished`).
+
+The scratch crate was deleted afterwards and **no CrateStack crate was added
+to this workspace**. `schemas/vpay.cstack` is still outside the build graph and
+still checked only by `just check-schema`; this bump makes CrateStack
+*possible*, and adopting it is a separate piece of work nobody has started.
+
+**Reserved for the maintainer.** Whether to adopt `cratestack-sqlx` at all now
+that it resolves, and asking authkestra upstream to move
+`authkestra-store-sqlx` to sqlx 0.9 (see the section below).
+
+---
+
 ### The three OP stores that pinned sqlx 0.8 (2026-09-05)
 
 **What changed.** `vpay_api::op::MerchantOp::new` filled three of
