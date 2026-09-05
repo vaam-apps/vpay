@@ -335,8 +335,8 @@ repeated here rather than being restated in a second place that can drift.
 | `GET` | `/v1/payment_intents` | `limit`, `starting_after`, `ending_before` | `list` of `payment_intent` | ✅ |
 | `POST` | `/v1/refunds` | `payment_intent`, `amount` (omit for full), `reason`, `metadata[…]` | `refund` | ⛔ 404 |
 | `GET` | `/v1/refunds/{id}` | | `refund` | ✅ |
-| `GET` | `/v1/events` | `limit`, `starting_after`, `ending_before`, `type` | `list` of `event` | ✅ — `type` is accepted and **ignored**, not implemented ([../api/README.md](../api/README.md)) |
-| `GET` | `/v1/events/{id}` | | `event` | ✅ |
+| `GET` | `/v1/events` | `limit`, `starting_after`, `ending_before`, `type` | `list` of `event` | ✅ since 2026-09-03 (Step 5), merchant-scoped and newest first (`events_are_listed_newest_first_scoped_to_the_merchant`). **`type` is accepted and ignored**, not refused — a filtered call gets an unfiltered page ([../status.md](../status.md)) |
+| `GET` | `/v1/events/{id}` | | `event` | ✅ since 2026-09-03 (Step 5). A foreign merchant's id is the same `404` a nonexistent one gets, byte for byte (`events_get_by_id_is_merchant_scoped`) |
 | `GET` | `/v1/balance` | | `balance` | ⛔ 404 |
 | `GET` | `/v1/account_holders` | `msisdn`, `payment_method_type` | `account_holder` | ✅ **New 2026-09-05 (issue #47).** Reaches the rail over HTTP; 🟡 in the sense every rail claim here is 🟡 — that rail has only ever been a WireMock stub. `payments:read` is enough. Nothing is persisted, and the response carries a name and nothing else ([account-holder-lookup.md](account-holder-lookup.md)) |
 
