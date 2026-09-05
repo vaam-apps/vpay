@@ -2,6 +2,10 @@
 
 Date: 2026-09-05. Branch `claude/exp12b-sqlx09-opus`, base `d086084`
 (master: Rust 1.98.0, ten gates, 1270 tests in 42 binaries, 0 ignored).
+**Rebased onto `8d907f9` the same day** — PR #44's CrateStack drift test
+landed on `master` in between — and every count below that names `d086084` is
+superseded by §11, which re-measures on the new base rather than adjusting the
+old numbers.
 Host: the authoring machine, rootless Docker
 (`DOCKER_HOST=unix:///run/user/1000/docker.sock`), `CARGO_BUILD_JOBS=4`,
 Node 22.23.2 via nvm, other agents running container tests concurrently.
@@ -339,3 +343,95 @@ prints `vpay-server 0.1.0`, image **16 MB** (`FROM scratch`, musl static).
   part of `just ci`; the first needs Cypress's CDN and the second needs the
   network.
 * **Did not push, and did not open a PR.**
+## 11. Rebased onto `8d907f9` (2026-09-05)
+
+`master` moved while this branch sat: [PR
+#44](https://github.com/vaam-apps/vpay/pull/44) merged the exp13 drift work —
+`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` in
+`backends/tests/integration/tests/postgres_smoke.rs`, a CI step installing the
+pinned CrateStack CLI in the `rust` job, the `docs/status.md` "The measured
+drift" section, a `schemas/vpay.cstack` header and a `justfile` `check-schema`
+comment. `git rebase origin/master` replayed all ten commits of this branch
+with **one conflict**.
+
+**`justfile` — the only conflict, resolved by keeping both sides.** Both
+branches appended a dated entry to the comment block above
+`expected_ignored`/`expected_suites`: #44's recording *1271 total, 42 test
+binaries*, and this branch's recording *42 → 41* when
+`authkestra_op_smoke.rs` was deleted. Neither block was dropped — each names
+the base it was measured on, and deleting either would have erased a measured
+fact to make an arithmetic chain look tidy. `expected_suites` is **41**: #44's
+case joined `postgres_smoke`, a binary that already existed, so it added a
+test and not a suite, while this branch removed a whole binary. Verified
+rather than reasoned — `cargo nextest list --workspace` on the rebased tree
+prints **1279 total, 41 test binaries, 0 ignored** — and a third entry was
+added to that comment saying so, because the 1272/1277/1278 in the entries
+above it were all measured on `d086084` and none of them had seen #44.
+
+**No other file conflicted, which is the part that needed checking rather than
+trusting.** `postgres_smoke.rs` was edited by both branches and git merged it
+silently: #44 split `migrated_postgres` into a delegating wrapper over a new
+`migrated_postgres_with_url` and appended ~530 lines of drift test at the end;
+this branch edited the table list, the `AssertSqlSafe` wrapping and
+`insert_signing_key` in the middle. Both sides were re-read in full against
+their own diffs rather than accepted because the merge was quiet. Intact on
+the rebased tree: #44's `migrated_postgres_with_url`, `OutDir`, `repo_root`,
+`pinned_cratestack_version`, `parse_drift_header`,
+`tables_missing_from_the_schema` and the drift test itself; this branch's
+`authkestra.oauth_dpop_jti` row, its three migration-0013 column assertions
+and both of its `sqlx::AssertSqlSafe(format!(…))` wrappings. Nothing was
+half-merged and no brace went missing — `cargo build --workspace
+--all-targets` is the check that would have caught it, and it was run before
+anything else. `docs/status.md` merged cleanly too (this branch's 343-line
+insertion sits ~130 lines above #44's edits), and both sets of rows are
+present.
+
+**The gate, end to end, on the rebased tree.**
+
+```
+verify: ok — the ten gates above passed; the verify-docs report is advisory
+    Starting 1279 tests across 41 binaries
+     Summary [ 676.578s] 1279 tests run: 1279 passed, 0 skipped
+verify-ignored: 0 ignored (expected 0), 41 test binaries (expected 41), 1279 total (minimum 1080)
+advisories ok, bans ok, licenses ok, sources ok
+JUST_CI_EXIT=0
+```
+
+Ten gates by name: `verify-no-mocks`, `verify-status` (1 unimplemented item,
+declared), `verify-errors` (16 error types), `verify-sdk-parity` (342 proving
+tests, 26 dated gaps), `verify-links` (718 links in 130 files),
+`verify-npm-scope`, `check-schema` (cratestack 0.11.1, 12 declarations),
+`verify-serde`, `verify-repositories`, `verify-toolchain` (1.98.0 in both
+places). `just test-doc`: **90 passed, 0 failed, 1 ignored** — unchanged, as
+expected: #44 added no doctest. Web: vitest across 8 packages — checkout 302,
+nodejs SDK 172, stripe-js 119, config 63, shop 57, api-client 4, tokens 3,
+ui 3. By name from that run: `merchant_token_flow` **10/10** including
+`the_three_grants_vpay_does_not_serve_are_refused_before_any_store`;
+`vpay-api op::refusing_stores` **4/4**; `vpay-db sql_audit` **6/6**;
+`postgres_smoke` **16/16** including
+`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` (1.893 s,
+so the CLI really ran — that test fails rather than skips when `cratestack` is
+off `PATH`); `worker_kill9` **2/2** (35.2 s and 6.0 s).
+
+**Both decisive mutations re-run on the rebased tree**, because a rebase is
+exactly when a gate quietly stops gating:
+
+| # | Mutation | Observed |
+|---|---|---|
+| M4 | `authkestra-op = { workspace = true, features = ["sqlx-postgres"] }` in `vpay-api` | `cargo tree -d`: `sqlx v0.8.6` beside `sqlx v0.9.0`. `cargo deny check bans`: `error[banned]: crate 'sqlx = 0.8.6' is explicitly banned`, `error[banned]: crate 'sqlx-core = 0.8.6' …`, **bans FAILED, exit 2** |
+| M1 | `charges::get_for_intent` interpolates `payment_intent_id` as a positional `{}` with the bind removed | **FAIL** `sql_audit::tests::every_interpolation_into_a_statement_is_a_crate_constant` — "charges.rs: a statement uses a positional `{}` capture, whose value comes from the argument list and cannot be checked here" |
+
+Both reverted (`git checkout --` on the mutated files plus a `cargo metadata`
+to restore `Cargo.lock`); `cargo deny check bans` is **bans ok** and
+`sql_audit` is **6 passed** again, and `git status` shows only the
+documentation edits this section belongs to.
+
+**Image.** `docker buildx build -f backends/Dockerfile --target server .` on a
+private builder `vpay-exp12b-land` (created for this, removed afterwards; the
+shared default builder was never touched or pruned): **exit 0**, `docker run
+--rm … --version` prints `vpay-server 0.1.0`, image **16 MB**.
+
+**Nothing in §10 changed.** The rebase added no functionality: there is still
+no real OP storage, the 1.94 MSRV has still never been compiled, and
+`authkestra` upstream has still not been asked to move
+`authkestra-store-sqlx` to sqlx 0.9.

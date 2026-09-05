@@ -970,6 +970,21 @@ verify-docs:
 # exactly that, because the scanner discarded a capture with no name. Same
 # binary again, so `expected_suites` stays 41; `just test-doc` unchanged at
 # **90 passed, 1 ignored**.
+#
+# **Rebased onto `8d907f9` on 2026-09-05, and re-measured on that tree rather
+# than recomputed from the three entries above.** Each of those names the base
+# it was measured on and each is left as written; none of them had seen PR
+# #44, which added the `schemas/vpay.cstack` drift case to `postgres_smoke`.
+# On the rebased tree `cargo nextest list --workspace` lists **1279 total, 41
+# test binaries, 0 ignored** — 1271/42 on `8d907f9`, minus
+# `authkestra_op_smoke.rs`'s 3 cases and its binary, plus
+# `merchant_token_flow` case (i), `vpay_api::op::refusing_stores`' 4 units and
+# `vpay_db::sql_audit`'s 6. **1279/41 is the pair this file now asserts**; the
+# 1272/1277/1278 above are history, not arithmetic to continue.
+# `expected_suites` stays 41 across the rebase, and that is the point worth
+# checking rather than assuming: #44's case joined a binary that already
+# existed, so it added a test and not a suite, while this branch deleted a
+# whole binary. `just test-doc` is unchanged again at **90 passed, 1 ignored**.
 expected_ignored := "0"
 expected_suites := "41"
 # A floor, not a target — set a little under the measured 1059

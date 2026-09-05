@@ -2341,6 +2341,52 @@ builder (`vpay-exp12b-opus`, removed afterwards; the shared default builder
 was never touched or pruned): **exit 0**, `docker run --rm … --version` prints
 `vpay-server 0.1.0`, image **16 MB** (`FROM scratch`, musl static, ADR-0004).
 
+**Rebased onto `8d907f9` on 2026-09-05, and the gate re-run there.** The three
+transcripts above were measured on `d086084`; [PR
+#44](https://github.com/vaam-apps/vpay/pull/44) landed on `master` in between
+and added the `schemas/vpay.cstack` drift case to
+`backends/tests/integration/tests/postgres_smoke.rs` ("The measured drift"
+under CrateStack, below). One conflict, in `justfile` and in exactly one
+place: both branches appended to the comment above `expected_ignored`, #44
+recording 1271/42 and this branch 42 → 41. **Both blocks were kept** — each
+names the base it was measured on — and the constant is 41, because #44's case
+joined a test binary that already existed while this branch deleted one.
+`docs/status.md` and `postgres_smoke.rs` merged without conflict and were
+checked line by line rather than trusted: #44's `migrated_postgres_with_url`
+and its whole drift test are intact, and so are this branch's three
+`AssertSqlSafe` wrappings, its `authkestra.oauth_dpop_jti` row and its
+migration-0013 column assertions.
+
+On the rebased tree, `just ci` end to end:
+
+```
+verify: ok — the ten gates above passed; the verify-docs report is advisory
+    Starting 1279 tests across 41 binaries
+     Summary [ 676.578s] 1279 tests run: 1279 passed, 0 skipped
+verify-ignored: 0 ignored (expected 0), 41 test binaries (expected 41), 1279 total (minimum 1080)
+advisories ok, bans ok, licenses ok, sources ok
+JUST_CI_EXIT=0
+```
+
+Run **twice** on this tree, before and after these paragraphs were written —
+the second run is the one on the commit this branch pushes, and reported the
+same three numbers. The `postgres_smoke` case #44 added is in there by name
+(`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`, PASS),
+which is worth checking rather than inferring from the total: it shells out to
+the `cratestack` CLI and *fails* rather than skipping when that binary is
+absent, so a green run is evidence the tool ran.
+
+1279 is `8d907f9`'s 1271 minus `authkestra_op_smoke.rs`'s 3, plus
+`merchant_token_flow` case (i), `op::refusing_stores`' 4 and
+`vpay_db::sql_audit`'s 6. `just test-doc`: **90 passed, 0 failed, 1 ignored**,
+unchanged. Web: vitest across 8 packages, all passing. Both mutations were
+re-run on the rebased tree and both still fail closed — re-enabling
+`sqlx-postgres` on `authkestra-op` reds `cargo deny check bans`, and a
+positional `{}` interpolation of a caller's value in `vpay-db` reds
+`vpay_db::sql_audit`. Image: `docker buildx build -f backends/Dockerfile
+--target server .` on a private builder (`vpay-exp12b-land`, removed
+afterwards), `--version` prints `vpay-server 0.1.0`, image **16 MB**.
+
 ---
 
 ### The three OP stores that pinned sqlx 0.8 (2026-09-05)
