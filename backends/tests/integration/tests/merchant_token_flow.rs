@@ -1137,3 +1137,113 @@ async fn a_named_scope_narrows_and_an_unregistered_one_is_refused() -> anyhow::R
     harness.shutdown().await;
     Ok(())
 }
+
+// --------------------------------------------------------------- case (i)
+
+/// The three grants `/v1` does not serve are refused **before any store is
+/// consulted** — `unauthorized_client`/400 for each, never a
+/// `server_error`/500.
+///
+/// This is the case that lets the three `OpStore` slots be fail-closed
+/// stores (`vpay_api::op::refusing_stores`) rather than real Postgres ones.
+/// Those stores return `Err` from all twelve of their methods; every one of
+/// `authkestra_op`'s grant handlers turns *any* store error into
+/// `server_error`. So "the stores are unreachable" and "a merchant sees a
+/// 500 on these grants" are the same question asked twice, and this test is
+/// the answer that stops being true if the reasoning is wrong.
+///
+/// It is not asserting a property of vpay's own code: the refusal comes from
+/// `default_handle_authorization_code`, `default_handle_refresh_token` and
+/// `handle_device_code`, each of which checks
+/// `client.allows_grant_type(..)` as its first statement, and a merchant
+/// registration can only ever declare `client_credentials`
+/// (`vpay_config::ConfigError::DisallowedMerchantGrant`). That is a claim
+/// about a pinned dependency's control flow, which is exactly the kind of
+/// claim that stops being true at a version bump with nothing noticing —
+/// so it is measured here rather than argued in a comment.
+///
+/// Every field the grant's own handler would need is supplied (`code`,
+/// `redirect_uri`, `refresh_token`, `device_code`), so a refusal cannot be
+/// "you left out a parameter": `default_handle_refresh_token` and
+/// `handle_device_code` both answer `invalid_request` for a missing one,
+/// which would pass an `is not 500` assertion while proving nothing about
+/// the grant check. The credential is a real, freshly minted assertion for a
+/// registered client — an unauthenticated request is refused at
+/// `authenticate_client`, upstream of the dispatch this case is about.
+///
+/// Decisive: point one slot at a store that answers `Ok(None)` instead of
+/// refusing and this test still passes — because nothing reaches it. Delete
+/// the `allows_grant_type` check inside `authkestra-op` and it fails with a
+/// 500, which is the failure it exists to catch.
+#[tokio::test]
+async fn the_three_grants_vpay_does_not_serve_are_refused_before_any_store() -> anyhow::Result<()> {
+    let harness = harness().await?;
+
+    for grant_type in [
+        "authorization_code",
+        "refresh_token",
+        "urn:ietf:params:oauth:grant-type:device_code",
+    ] {
+        // A fresh assertion per grant: `jti`s are single-use (case (e)), so
+        // reusing one would make the second and third iterations
+        // `invalid_client` and this loop would test replay protection three
+        // times instead of the grant check once each.
+        let assertion = vpay_sdk::auth::mint_client_assertion(
+            &harness.credentials(),
+            &harness.token_endpoint(),
+            Duration::from_secs(60),
+        )
+        .context("minting an assertion for an unserved grant")?;
+
+        let mut form = token_request_form(&assertion);
+        form.retain(|(field, _)| *field != "grant_type");
+        form.push(("grant_type", grant_type.to_owned()));
+        form.push(("code", "code-that-was-never-issued".to_owned()));
+        form.push((
+            "redirect_uri",
+            "https://merchant.example/callback".to_owned(),
+        ));
+        form.push(("refresh_token", "token-that-was-never-issued".to_owned()));
+        form.push((
+            "device_code",
+            "device-code-that-was-never-issued".to_owned(),
+        ));
+
+        let (status, body) = post_token(&harness, &form).await?;
+
+        assert_ne!(
+            status, 500,
+            "grant_type={grant_type} reached a store: {body:#}"
+        );
+        assert_ne!(
+            body.get("error").and_then(Value::as_str),
+            Some("server_error"),
+            "grant_type={grant_type} reached a store: {body:#}"
+        );
+        assert_eq!(
+            status, 400,
+            "grant_type={grant_type} must be a request-level refusal: {body:#}"
+        );
+        assert_eq!(
+            body.get("error").and_then(Value::as_str),
+            Some("unauthorized_client"),
+            "grant_type={grant_type}: the registration allows client_credentials only, \
+             so the grant check refuses before any store is consulted: {body:#}"
+        );
+    }
+
+    // The control: the same harness still mints a token for the grant `/v1`
+    // does serve. Without it, a harness that refused *everything* — a broken
+    // registration, a mis-signed assertion — would pass the loop above.
+    let assertion = vpay_sdk::auth::mint_client_assertion(
+        &harness.credentials(),
+        &harness.token_endpoint(),
+        Duration::from_secs(60),
+    )
+    .context("minting an assertion for the one grant /v1 does serve")?;
+    let (status, body) = post_token(&harness, &token_request_form(&assertion)).await?;
+    access_token(status, &body)?;
+
+    harness.shutdown().await;
+    Ok(())
+}

@@ -2,7 +2,9 @@
 #
 # `backends/tests/integration` (package `vpay-tests-integration`) starts a
 # fresh `postgres:16-alpine` testcontainer per `#[tokio::test]` — 13+ tests
-# across `postgres_smoke.rs` and `authkestra_op_smoke.rs`. Left unbounded,
+# across `postgres_smoke.rs` and its siblings (`authkestra_op_smoke.rs` was
+# one of them until 2026-09-05; see the `expected_suites` note in the
+# justfile). Left unbounded,
 # nextest's default parallelism (one thread per available CPU) races all of
 # them to start and port-map a container at once, which intermittently fails
 # with testcontainers' own "container port" error under that contention —

@@ -476,6 +476,21 @@ no requested audience carries the `client_id` as `aud` and is refused on
 - `the_same_client_assertion_cannot_be_spent_twice` — one assertion, sent
   twice by hand; the second is `invalid_client`/401 while still inside its
   own lifetime.
+- `the_three_grants_vpay_does_not_serve_are_refused_before_any_store`
+  (**added 2026-09-05**, so the list above is ten cases now, not seven) —
+  `authorization_code`, `refresh_token` and
+  `urn:ietf:params:oauth:grant-type:device_code`, each posted with a real
+  freshly minted assertion and with every parameter its own handler would
+  need, each answered **`unauthorized_client`/400**. This is what the
+  "one grant only" claim at the top of this document actually rests on, and
+  it is also load-bearing for the *implementation*: `/v1`'s OP fills the
+  three `OpStore` slots those grants would use with fail-closed stores
+  (`vpay_api::op::refusing_stores`) whose every method returns an error, and
+  a store error renders as `server_error`/500 — so a 400 here is the proof
+  that nothing reaches them. Measured on the tree before that change too,
+  with the previous Postgres-backed stores: the same
+  `unauthorized_client`/400. See "The three OP stores that pinned sqlx 0.8"
+  in [`docs/status.md`](../status.md).
 
 **Evidence, corrected 2026-09-03.** The previous version of this paragraph
 said these tests had run once, by hand, against a scratch database, because

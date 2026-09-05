@@ -935,8 +935,25 @@ verify-docs:
 # `cratestack` CLI and fails, rather than skipping, when that binary is
 # absent; `just test-rust` therefore needs it on PATH, the same way
 # `check-schema` does.
+#
+# **42 -> 41 on 2026-09-05**, and this is the one entry below that records a
+# test binary being *deleted* rather than added, so it is worth spelling out.
+# `backends/tests/integration/tests/authkestra_op_smoke.rs` drove
+# `authkestra_op::sqlx_store::SqlxOpStore` against migrations 0006/0013 to
+# prove that transcription faithful. That store was the last thing in the
+# workspace pinning `sqlx ^0.8`; `vpay_api::op::refusing_stores` replaced the
+# three slots that used it, the `sqlx-postgres` feature came off both
+# manifests, and the file could no longer compile — nor describe anything this
+# system does. `just verify-ignored` lists **1272 total, 41 test binaries, 0
+# ignored**: 1270 minus that file's 3 cases, plus `merchant_token_flow`'s new
+# case (i) (the three unserved grants are refused before any store) and
+# `vpay_api::op::refusing_stores`' 4 units. The floor stays 1080 — a deleted
+# binary is what the floor exists to catch, and 1272 clears it by the same
+# margin 1270 did, which is precisely why the *suite count* and not the floor
+# is what makes this a deliberate edit. `just test-doc` measures **90 passed,
+# 1 ignored** (86 + the four examples on `refusing_stores`).
 expected_ignored := "0"
-expected_suites := "42"
+expected_suites := "41"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

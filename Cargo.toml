@@ -171,15 +171,24 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 time = { version = "0.3", features = ["serde", "macros"] }
 rust_decimal = "1"
 # Not part of vpay's own `time`-crate convention (docs above/ADR none yet) —
-# pulled in solely because `authkestra-op`'s `sqlx` dependency hardcodes the
-# `chrono` feature (its own Cargo.toml: `sqlx = { version = "0.8", features =
-# ["runtime-tokio", "json", "chrono"] }`, not optional), so every
-# `DateTime<Utc>` column SqlxOpStore reads/writes (oauth_codes.expires_at,
-# oauth_refresh_tokens.expires_at/revoked_at, oauth_device_codes.expires_at/
-# last_polled_at) is chrono-typed, not time-typed, and the acceptance test in
-# backends/tests/integration/tests/authkestra_op_smoke.rs has to speak the
-# same type to construct an `AuthorizationCode`. Confined to a dev-dependency
-# of that one test crate — no shipping crate depends on chrono today.
+# pulled in because `authkestra-op`'s own API is chrono-typed: every
+# `DateTime<Utc>` in `code.rs`, `refresh.rs`, `device.rs` and, the one that
+# matters to a shipping crate, `ClientAssertionStore::record_jti`'s
+# `expires_at`.
+#
+# **Corrected 2026-09-05.** This comment used to say chrono was "confined to a
+# dev-dependency of that one test crate — no shipping crate depends on chrono
+# today", naming `backends/tests/integration/tests/authkestra_op_smoke.rs`.
+# Both halves had gone stale: `vpay-db` has carried `chrono` in
+# `[dependencies]` since Step 7 (`client_assertion.rs`, which converts to
+# `time::OffsetDateTime` at its one boundary and binds nothing chrono-typed to
+# sqlx), and that test file was deleted on 2026-09-05 with the `SqlxOpStore`
+# it drove. It is also no longer true that sqlx pulls chrono in: that came
+# from `authkestra-op`'s `sqlx-postgres` feature hardcoding sqlx's `chrono`
+# flag, and no manifest enables that feature any more. Today: one shipping
+# crate (`vpay-db`) and two test-only consumers (`vpay-api`,
+# `vpay-tests-integration`) depend on chrono, all three to speak
+# `authkestra-op`'s own types.
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 
 # --- serde & config ---

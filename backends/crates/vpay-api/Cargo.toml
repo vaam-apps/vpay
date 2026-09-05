@@ -74,18 +74,23 @@ authkestra-resource.workspace = true
 # enabled there — so this is an edge, not a new package.
 reqwest.workspace = true
 # The merchant OP itself (`/v1/oauth`, ADR-0010): the `ClientStore` trait,
-# `CompositeOpStore`, the token handler, and `SqlxOpStore` for the three
-# grant stores no `/v1` grant uses but the `OpStore` supertrait demands
-# (hence `sqlx-postgres`, which also unifies sqlx's `chrono` feature into the
-# graph — harmless to vpay-db, which converts at its boundary explicitly).
+# `CompositeOpStore`, the token handler, and the three store traits the
+# `OpStore` supertrait demands for grants no `/v1` request reaches.
+#
+# **No `sqlx-postgres` since 2026-09-05.** That feature exists to gate
+# `authkestra_op::sqlx_store::SqlxOpStore`, which `op::MerchantOp` used to put
+# in those three slots; it pins `sqlx ^0.8` and was the *only* reverse
+# dependency of that major left in the workspace, so it alone held every other
+# crate back from sqlx 0.9. `op::refusing_stores` fills the slots instead and
+# needs no database at all. Turning the feature off also stops unifying sqlx's
+# `chrono` feature into the graph, which nothing wanted: `vpay-db` converts
+# chrono to `time` explicitly at its one boundary (`client_assertion.rs`).
+#
 # In both binaries' graphs, not just the server's: `vpay-worker-bin` links
 # `vpay-api` (and, independently, `vpay-db`, which implements
 # `ClientAssertionStore`), so it compiles the OP although it serves no HTTP
-# — `cargo tree -p vpay-worker-bin -i authkestra-op` shows both paths. No
-# third-party package enters `Cargo.lock` because of this crate's OP work:
-# diffed against `master`, the lockfile gains 34 lines and zero new
-# `[[package]]` entries — only new edges onto already-resolved crates.
-authkestra-op = { workspace = true, features = ["sqlx-postgres"] }
+# — `cargo tree -p vpay-worker-bin -i authkestra-op` shows both paths.
+authkestra-op.workspace = true
 # `TokenManager::new_asymmetric` — the RS256 signer the OP mints with.
 authkestra-engine.workspace = true
 # `authkestra-resource` depends on jsonwebtoken with the `rust_crypto`
@@ -122,16 +127,6 @@ base64 = "0.22"
 # crate owns (`ROTATION_OVERLAP`) has to be expressed in the same units to
 # reach it. Workspace pin; already in both binaries' graphs via vpay-db.
 time.workspace = true
-# `op::MerchantOp` names `SqlxOpStore<sqlx::Postgres>` — the three grant
-# stores the `OpStore` supertrait demands and no `/v1` grant reaches (see
-# that type's docs). Naming the backend requires the `sqlx` crate itself, so
-# this moved from `[dev-dependencies]` (where it was for a `sqlx::Error` in a
-# test) up to a real dependency. No new package and no new feature in any
-# graph: `vpay-db` already depends on the same workspace pin, and both
-# binaries already link it. Tests in this crate keep using it for the same
-# `sqlx::Error` construction as before — a `[dependencies]` entry is visible
-# to them too.
-sqlx.workspace = true
 # Step 2's `confirm` path mints the `provider_reference_id` a charge row
 # carries before anything is submitted to a rail (`docs/flows/crash-safety.md`:
 # persist the reference *before* submitting), and `vpay_db::ChargeRow` names it
@@ -143,6 +138,22 @@ sqlx.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# Test-only again as of 2026-09-05, and back where it was before the OP work.
+# It was promoted to `[dependencies]` for one reason — `op::MerchantOp` had to
+# name `SqlxOpStore<sqlx::Postgres>`, and naming the backend needs the crate —
+# and `op::refusing_stores` removed that name. Nothing under `src/` outside a
+# `#[cfg(test)]` module mentions `sqlx` now, so `vpay-api` naming no `sqlx`
+# type in shipping code is structural rather than a convention. What still
+# uses it: `error.rs`'s tests, which construct a `sqlx::Error` to prove a
+# driver's text reaches the log and not the response body.
+sqlx.workspace = true
+# Test-only: `op::refusing_stores`' unit tests construct an
+# `authkestra_op::AuthorizationCode` / `RefreshToken` / `DeviceCodeSession` to
+# offer the twelve refusing methods something to refuse, and those types are
+# chrono-typed (`authkestra-op-0.7.1/src/code.rs`). vpay's own convention is
+# the `time` crate; this stays test-only for that reason, and no shipping code
+# in this crate names chrono.
+chrono.workspace = true
 # Test-only, and deliberately the *shipping* exporter rather than
 # `metrics-util`'s `DebuggingRecorder`: the router tests assert on the
 # rendered Prometheus text, which is what a scrape of a pod actually
