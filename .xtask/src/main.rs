@@ -2356,6 +2356,12 @@ fn tracked_paths(root: &Path) -> Result<Vec<String>, String> {
 /// the repository, and a link into one is broken for everybody else.
 fn ancestor_directories(tracked: &[String]) -> BTreeSet<String> {
     let mut dirs = BTreeSet::new();
+    // The repository root, spelled the way [`resolve_against`] folds it: a
+    // link written `[the repo](../)` from `docs/` resolves to no segments at
+    // all, and the root is a directory like any other. Without this the gate
+    // reports a correct link as broken, which is the failure direction that
+    // gets a gate switched off.
+    dirs.insert(String::new());
     for path in tracked {
         let mut current = path.as_str();
         while let Some((parent, _)) = current.rsplit_once('/') {
@@ -6231,6 +6237,19 @@ mod link_tests {
         assert_eq!(strip_line_suffix("src/lib.rs:42"), "src/lib.rs");
         assert_eq!(strip_line_suffix("src/lib.rs:42:7"), "src/lib.rs");
         assert_eq!(strip_line_suffix("docs/a:b.md"), "docs/a:b.md");
+    }
+
+    /// A link to the repository root is a link, not a broken one. It folds
+    /// to no path segments at all, which is neither a tracked file nor an
+    /// ancestor of one until [`ancestor_directories`] says the root counts —
+    /// delete that line and this fails.
+    #[test]
+    fn a_link_to_the_repository_root_resolves() {
+        let repo = repo_with(&[("docs/a.md", "See [the repository](../).\n")]);
+        assert!(
+            verify_links(repo.path()).is_ok(),
+            "the root is a directory this repository has"
+        );
     }
 
     #[test]
