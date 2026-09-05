@@ -138,9 +138,70 @@ Named so they are visible, not silently swept in — none is this branch's:
 
 ## The gate, recipe by recipe
 
-`just ci` on the delivered tree (`14f66d7`) and again on the final tree. Both
-green end to end; the second run's numbers are in `impl.md`'s successor section
-below and in the reviewer's report.
+`just ci` on the delivered tree (`14f66d7`): **EXIT=0**, 1293 tests run, 1293
+passed, 0 skipped.
+
+`just ci` on the final tree (`a2c0a4a`), read from the log file rather than a
+harness banner: **EXIT=0**.
+
+| Recipe | Result |
+|---|---|
+| `fmt-check` | ok |
+| `clippy` (`--workspace --all-targets -D warnings`) | ok |
+| `verify` — the ten gates | `verify-no-mocks` ok; `verify-status` ok (1 unimplemented item, declared); `verify-errors` ok (16 error types); `verify-sdk-parity` ok (**346** proving tests, 26 dated gaps); `verify-links` ok (734 links in 132 files); `verify-npm-scope` ok; `check-schema` ok (cratestack 0.11.1); `verify-serde` ok (50 types, 15 exempted); `verify-repositories` ok (3 concrete impls, named by none of 67 outside files); `verify-toolchain` ok (1.98.0) |
+| `test-rust` | **1294 tests run: 1294 passed (4 slow), 0 skipped** |
+| `test-doc` | **90 passed, 1 ignored** |
+| `verify-ignored` | 0 ignored (expected 0), **42** test binaries (expected 42), **1294** total (minimum 1080) |
+| `lint-web` | ok (typecheck + lint, all packages) |
+| `test-web` | `sdks/nodejs` **174 passed**; `sdks/stripe-js` 119; checkout 302; shop 57; config 63; ui 3; tokens 3; api-client 4 |
+| `deny` | advisories ok, bans ok, licenses ok, sources ok |
+
+**Three earlier attempts on the final tree aborted and none of them was this
+change.** Each died the same way — `postgres:16-alpine container starts` /
+`failed to create a container: Timeout error` after 120 s — on a *different*
+test each time (`over_refund_is_rejected_by_the_database`,
+`oldest_runnable_run_at_ignores_leased_future_and_parked_jobs`,
+`check_connection_succeeds_against_a_live_database`), none of which touches
+refunds. Diagnosed rather than assumed: the host was at load average 24 with
+288 containers (31 running) belonging to other agents; a plain `docker run -d
+postgres:16-alpine` succeeded immediately, and both of the first two failing
+tests passed in **1.1 s and 1.3 s** when re-run in isolation. The green run
+above was taken with `NEXTEST_TEST_THREADS=6` in the environment — the recipe
+itself is unchanged and every test still runs with every assertion; only how
+many containers are created at once is bounded. Recorded because it is a
+deviation from running the bare command, not because it changes what was
+proven.
+
+## Incident: a mutation from another process landed in a review commit
+
+**What happened.** While Phase 2 was committing, this worktree was mutated by
+something other than this review — the `/refunds/{id}` entry was deleted from
+`V1_ROUTES` and the `re_` short-circuit from `v1::refunds`, which are exactly
+the reviewer's MU2 and MU6 mutations, reapplied out of band. `git reflog`
+shows a `reset: moving to HEAD` immediately after the first review commit,
+which discards a working tree. The result was that commit
+`3648bd4` — a *documentation* commit — carried `-5` lines of
+`backends/crates/vpay-api/src/v1/mod.rs`, deleting the route the whole change
+exists to serve, and `HEAD` was left with the route missing.
+
+**How it was caught.** Not by a test — by reading `git diff --stat` before the
+next commit and noticing a shipping source file in a docs-only change.
+
+**What was done.** The branch was rebuilt rather than patched forward, so no
+commit in the history is broken and `git bisect` stays meaningful: five clean
+per-file patches were extracted from the contaminated commits with their
+original messages, `git reset --hard 14f66d7`, and each re-applied and
+re-committed. Verified afterwards, per commit and at `HEAD`: the route, the
+short-circuit and the new test are present in **every** commit from `14f66d7`
+on, each commit touches only the files its message claims, and the only
+shipping source file any review commit changes is `vpay-api/src/lib.rs` — a
+doc comment, no behaviour.
+
+**The rule this is evidence for.** A mutation left in a worktree is a live
+hazard for as long as it is uncommitted, and `git add -A` will happily
+absorb one. Revert a mutation and check `git status` in the same command,
+and read `git diff --stat` before every commit — a docs-only commit that
+touches `.rs` is the tell.
 
 ## Flake, observed
 
