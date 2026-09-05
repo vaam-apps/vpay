@@ -1,3 +1,4 @@
+import daisyui from 'daisyui';
 import type { Config } from 'tailwindcss';
 
 export default {
@@ -6,6 +7,6 @@ export default {
     './components/**/*.{ts,tsx}',
     '../../packages/ui/src/**/*.{ts,tsx}',
   ],
-  plugins: [require('daisyui')],
+  plugins: [daisyui],
   daisyui: { themes: ['corporate', 'business'], logs: false },
 } satisfies Config;

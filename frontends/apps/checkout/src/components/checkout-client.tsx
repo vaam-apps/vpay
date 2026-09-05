@@ -57,6 +57,12 @@ export function CheckoutClient(props: CheckoutClientProps) {
     });
 
     if (decision.kind === 'refused') {
+      // REAL finding, not suppressed as a false positive: `decideEntry` reads
+      // `window.location`/`document.referrer`, which a Next server render
+      // cannot, so the first state is settled in an effect. Fixing it properly
+      // means reshaping this page's entry state machine; that is not a lint
+      // pass's change.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setState({ name: 'refused', reason: 'embed_not_allowed', context: null });
       return;
     }
@@ -139,6 +145,10 @@ export function CheckoutClient(props: CheckoutClientProps) {
   // own outcome to itself.
   useEffect(() => {
     if (state.name !== 'outcome' || destination === null) {
+      // REAL finding: the countdown is interval-driven state that could be
+      // derived during render instead. Left as it is; the timer is covered by
+      // `checkout-view.test.tsx`.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSecondsLeft(null);
       return;
     }

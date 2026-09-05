@@ -44,12 +44,18 @@ export class MemoryShopStore implements ShopStore {
     return this.#orders;
   }
 
+  // implements `ShopStore`'s async contract; `PrismaShopStore` awaits, this
+  // in-memory double has nothing to await.
+  // eslint-disable-next-line @typescript-eslint/require-await
   async listProducts(): Promise<Product[]> {
     return [...this.#products.values()].sort(
       (a, b) => a.priceMinor - b.priceMinor || a.id.localeCompare(b.id),
     );
   }
 
+  // implements `ShopStore`'s async contract; `PrismaShopStore` awaits, this
+  // in-memory double has nothing to await.
+  // eslint-disable-next-line @typescript-eslint/require-await
   async findProducts(ids: readonly string[]): Promise<Product[]> {
     const found: Product[] = [];
     for (const id of ids) {
@@ -61,6 +67,9 @@ export class MemoryShopStore implements ShopStore {
     return found;
   }
 
+  // implements `ShopStore`'s async contract; `PrismaShopStore` awaits, this
+  // in-memory double has nothing to await.
+  // eslint-disable-next-line @typescript-eslint/require-await
   async createOrder(input: NewOrder): Promise<Order> {
     const id = `ord_${this.#nextOrder}`;
     this.#nextOrder += 1;
@@ -79,6 +88,9 @@ export class MemoryShopStore implements ShopStore {
     return { ...order, items: order.items.map((item) => ({ ...item })) };
   }
 
+  // implements `ShopStore`'s async contract; `PrismaShopStore` awaits, this
+  // in-memory double has nothing to await.
+  // eslint-disable-next-line @typescript-eslint/require-await
   async getOrder(id: string): Promise<Order | null> {
     const order = this.#orders.get(id);
     return order === undefined
@@ -86,6 +98,9 @@ export class MemoryShopStore implements ShopStore {
       : { ...order, items: order.items.map((item) => ({ ...item })) };
   }
 
+  // implements `ShopStore`'s async contract; `PrismaShopStore` awaits, this
+  // in-memory double has nothing to await.
+  // eslint-disable-next-line @typescript-eslint/require-await
   async setPaymentIntentId(
     orderId: string,
     paymentIntentId: string,
@@ -108,6 +123,9 @@ export class MemoryShopStore implements ShopStore {
     return { ...order, items: order.items.map((item) => ({ ...item })) };
   }
 
+  // implements `ShopStore`'s async contract; `PrismaShopStore` awaits, this
+  // in-memory double has nothing to await.
+  // eslint-disable-next-line @typescript-eslint/require-await
   async setCheckoutSessionId(
     orderId: string,
     checkoutSessionId: string,
@@ -117,6 +135,9 @@ export class MemoryShopStore implements ShopStore {
     return { ...order, items: order.items.map((item) => ({ ...item })) };
   }
 
+  // implements `ShopStore`'s async contract; `PrismaShopStore` awaits, this
+  // in-memory double has nothing to await.
+  // eslint-disable-next-line @typescript-eslint/require-await
   async applyWebhookEvent(
     application: WebhookApplication,
   ): Promise<WebhookOutcome> {

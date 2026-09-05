@@ -8,7 +8,9 @@
   },
   "scripts": {
     "compat": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "pnpm run deps && eslint . --max-warnings 0",
+    "deps": "pnpm --filter @vpay/sdk build"
   },
   "dependencies": {
     "@vpay/sdk": "workspace:*",
@@ -16,6 +18,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@vpay/config": "workspace:*",
+    "eslint": "9.39.5",
     "typescript": "^5.7.0",
     "vitest": "^3.2.7"
   }

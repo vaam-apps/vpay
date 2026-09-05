@@ -163,7 +163,7 @@ export class PrismaShopStore implements ShopStore {
       });
       const decision = decideWebhook({
         alreadySeen: seen !== null,
-        orderStatus: order === null ? null : (order.status as OrderStatus),
+        orderStatus: order === null ? null : order.status,
         nextStatus: application.nextStatus,
       });
       if (decision.recordEvent && order !== null) {

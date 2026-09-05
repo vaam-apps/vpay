@@ -5,9 +5,14 @@
   "type": "module",
   "scripts": {
     "mint": "node mint.mjs",
-    "serve": "node serve.mjs"
+    "serve": "node serve.mjs",
+    "lint": "eslint . --max-warnings 0"
   },
   "dependencies": {
     "@vpay/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@vpay/config": "workspace:*",
+    "eslint": "9.39.5"
   }
 }

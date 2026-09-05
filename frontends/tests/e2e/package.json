@@ -8,11 +8,15 @@
     "e2e:default": "cypress run",
     "e2e:framed": "VPAY_E2E_FRAMED=1 cypress run",
     "open": "cypress open",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "pnpm run deps && eslint . --max-warnings 0",
+    "deps": "pnpm --filter @vpay/sdk build"
   },
   "devDependencies": {
+    "@vpay/config": "workspace:*",
     "@vpay/sdk": "workspace:*",
     "cypress": "^15.21.1",
+    "eslint": "9.39.5",
     "typescript": "^5.7.0"
   }
 }

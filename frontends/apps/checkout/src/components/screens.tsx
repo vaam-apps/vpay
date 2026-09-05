@@ -192,7 +192,12 @@ export function MsisdnForm({
         onSubmit={(event) => {
           event.preventDefault();
           const data = new FormData(event.currentTarget);
-          onSubmit(String(data.get('msisdn') ?? ''));
+          // `FormData.get` is `string | File | null`. A non-string entry is
+          // not something this form can produce, but stringifying one would
+          // hand the MSISDN validator the text "[object File]" rather than
+          // an empty field.
+          const raw = data.get('msisdn');
+          onSubmit(typeof raw === 'string' ? raw : '');
         }}
       >
         <label className="font-medium" htmlFor={inputId}>

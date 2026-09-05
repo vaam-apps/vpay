@@ -32,6 +32,11 @@ export function CartTable({ showCheckoutLink }: { showCheckoutLink: boolean }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // REAL finding: the cart lives in `localStorage`, which a server render
+    // cannot read, so it is loaded on mount. `useSyncExternalStore` is the
+    // shape that would satisfy this rule; rewriting the demo shop's cart is not
+    // a lint pass's change.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLines(readCart());
     return onCartChange(() => setLines(readCart()));
   }, []);

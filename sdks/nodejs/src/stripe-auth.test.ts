@@ -430,6 +430,9 @@ describe("createStripeAuthenticator — host binding", () => {
    */
   it("treats an omitted port as the scheme's default on both sides", async () => {
     let tokenCalls = 0;
+    // `typeof fetch` is promise-returning; this stand-in answers from a
+    // literal.
+    // eslint-disable-next-line @typescript-eslint/require-await
     const fetchImpl: typeof fetch = async () => {
       tokenCalls += 1;
       return new Response(
@@ -788,10 +791,14 @@ describe("createStripeAuthenticator — stripe-node compatibility", () => {
     const intent = await stripe.paymentIntents.create({
       amount: 5000,
       currency: "xaf",
-      // `mtn_momo` is a vpay rail code, not one of Stripe's — the cast is the
-      // documented divergence, not a shortcut around a type error.
+      // `mtn_momo` is a vpay rail code, not one of Stripe's. It needs no
+      // cast: stripe-node types `payment_method_types` as `Array<string>`,
+      // so the divergence is in the value, not in the type. (This line
+      // carried an `as unknown as Stripe.PaymentIntentCreateParams` until
+      // `@typescript-eslint/no-unnecessary-type-assertion` pointed out that
+      // the assertion changed nothing.)
       payment_method_types: ["mtn_momo"],
-    } as unknown as Stripe.PaymentIntentCreateParams);
+    });
 
     expect(intent.id).toBe("pi_e2e_1");
 

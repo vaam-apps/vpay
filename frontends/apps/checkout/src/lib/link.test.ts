@@ -77,7 +77,7 @@ describe('the remembered publishable key', () => {
       key: (i: number) => Array.from(map.keys())[i] ?? null,
       removeItem: (k: string) => map.delete(k),
       setItem: (k: string, v: string) => void map.set(k, v),
-    } as Storage;
+    };
   }
 
   it('round-trips per session id', () => {

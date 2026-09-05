@@ -9,7 +9,8 @@
     "build": "pnpm run deps && next build",
     "start": "next start -p 3001",
     "typecheck": "pnpm run deps && tsc --noEmit",
-    "test": "pnpm run deps && vitest run"
+    "test": "pnpm run deps && vitest run",
+    "lint": "pnpm run deps && eslint . --max-warnings 0"
   },
   "dependencies": {
     "@vpay/stripe-js": "workspace:*",
@@ -24,8 +25,10 @@
     "@testing-library/react": "^16.1.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@vpay/config": "workspace:*",
     "autoprefixer": "^10.4.20",
     "daisyui": "^4.12.23",
+    "eslint": "9.39.5",
     "jsdom": "^25.0.1",
     "postcss": "^8.5.28",
     "tailwindcss": "^3.4.17",

@@ -205,18 +205,29 @@ jobs:
       # auditing it twice per pull request buys nothing.
       - name: audit-web (pnpm audit; high and critical fail)
         run: just audit-web
-      # Before `typecheck`, not after it. The Node SDK is the one package
-      # whose `build` actually emits JS (`dist/`, consumed by merchants and by
-      # `just sdk-conformance-node`), so `pnpm -r typecheck` alone would not
-      # catch an emit-time failure — but it is also a *prerequisite* of the
-      # typecheck now: `sdks/stripe-compat` imports `@vpay/sdk/stripe`, whose
-      # types resolve through the package's `exports` to `dist/stripe-auth.d.ts`,
-      # and `dist/` is gitignored. Run in the old order this job failed on a
-      # clean checkout with `TS2307: Cannot find module '@vpay/sdk/stripe'`.
-      # The `e2e` job builds it for the same reason; neither job can borrow
-      # the other's artefacts.
-      - run: pnpm --filter @vpay/sdk build
-      - run: pnpm -r typecheck
+      # `just lint-web`, not a copy of its commands — the same reason the
+      # audit step above runs the recipe: the gate and what a contributor
+      # runs locally cannot drift. The recipe is `build-sdk-node`, then
+      # `pnpm -r typecheck`, then `pnpm -r lint`.
+      #
+      # The build comes first, and not only to catch an emit-time failure in
+      # the one package whose `build` actually emits JS (`dist/`, consumed by
+      # merchants and by `just sdk-conformance-node`). It is a *prerequisite*
+      # of both checks after it: `sdks/stripe-compat` imports
+      # `@vpay/sdk/stripe`, whose types resolve through the package's
+      # `exports` to `dist/stripe-auth.d.ts`, and `dist/` is gitignored. Run
+      # in the old order this job failed on a clean checkout with `TS2307:
+      # Cannot find module '@vpay/sdk/stripe'`; the lint is worse, because an
+      # unbuilt `dist/` resolves to `any` and the type-aware rules report the
+      # missing artefact as 233 `no-unsafe-*` findings instead. The `e2e` job
+      # builds it for the same reason; neither job can borrow the other's
+      # artefacts.
+      #
+      # `pnpm -r lint` is new on 2026-09-05. Before it, that command died on
+      # the first package declaring a `lint` script for an ESLint nobody had
+      # installed, and this job never ran a linter at all.
+      - name: lint-web (pnpm -r typecheck, then pnpm -r lint)
+        run: just lint-web
       - run: pnpm -r test
       - run: pnpm --filter @vpay/ui build-storybook
 

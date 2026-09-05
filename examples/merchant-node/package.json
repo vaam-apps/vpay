@@ -4,9 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node index.mjs"
+    "start": "node index.mjs",
+    "lint": "eslint . --max-warnings 0"
   },
   "dependencies": {
     "@vpay/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@vpay/config": "workspace:*",
+    "eslint": "9.39.5"
   }
 }

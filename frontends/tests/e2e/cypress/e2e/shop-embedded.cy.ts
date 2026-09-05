@@ -96,6 +96,9 @@ describe("the shop, paid inside an iframe on its own page", () => {
       cy.get("#vpay-embedded-checkout iframe", { timeout: 60_000 })
         .should("have.attr", "src")
         .then((value) => {
+          // `.should('have.attr', ...)` yields the attribute string at runtime;
+          // Cypress's types leave the subject typed as the element.
+          // eslint-disable-next-line @typescript-eslint/no-base-to-string
           const src = String(value);
           readOrder(orderId).then((order) => {
             const sessionId = order.checkoutSessionId;

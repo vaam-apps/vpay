@@ -46,6 +46,9 @@ export function formatAmount(minor: number, currency: string): string {
 }
 
 /** @throws NotImplementedError always. */
+// async is the shape `PaymentIntentView[]` callers await; there is nothing to
+// await until this is implemented.
+// eslint-disable-next-line @typescript-eslint/require-await
 export async function listPayments(): Promise<PaymentIntentView[]> {
   throw new NotImplementedError('listPayments');
 }

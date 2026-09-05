@@ -40,6 +40,9 @@ export function ReturnClient(props: ReturnClientProps) {
       rememberedKey: recallPublishableKey(window.sessionStorage, props.sessionId),
     });
     if (decision.kind === 'error') {
+      // REAL finding, same shape as `checkout-client.tsx`: the return trip's
+      // token is read from the URL, which only the browser can do.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setState({ name: 'error', error: { code: decision.code } });
       return;
     }
@@ -78,6 +81,8 @@ export function ReturnClient(props: ReturnClientProps) {
 
   useEffect(() => {
     if (state.name !== 'outcome' || destination === null) {
+      // REAL finding: see the same countdown in `checkout-client.tsx`.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSecondsLeft(null);
       return;
     }

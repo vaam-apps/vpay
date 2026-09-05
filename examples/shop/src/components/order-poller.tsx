@@ -22,6 +22,10 @@ export function OrderPoller({ initial }: { initial: OrderView }) {
   const [polls, setPolls] = useState(0);
   const settled = order.status !== "unpaid";
   const settledRef = useRef(settled);
+  // REAL finding: this writes a ref during render so the poll interval can see
+  // the latest status without re-subscribing. Correct fix is to derive it
+  // inside the effect.
+  // eslint-disable-next-line react-hooks/refs
   settledRef.current = settled;
 
   useEffect(() => {

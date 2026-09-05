@@ -30,7 +30,7 @@ function isErrorEnvelope(value: unknown): value is {
   if (typeof value !== "object" || value === null || !("error" in value)) {
     return false;
   }
-  const err = (value as { error: unknown }).error;
+  const err = value.error;
   return (
     typeof err === "object" &&
     err !== null &&
@@ -50,8 +50,8 @@ export class HttpClient {
   async request<T>(
     method: HttpMethod,
     path: string,
-    params?: Record<string, FormValue> | undefined,
-    requestOptions?: RequestOptions | undefined,
+    params?: Record<string, FormValue>,
+    requestOptions?: RequestOptions,
   ): Promise<T> {
     let url = `${this.#options.baseUrl}${path}`;
     let body: string | undefined;

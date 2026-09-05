@@ -169,7 +169,7 @@ is: **no automated test covers `PrismaShopStore` anywhere in this
 repository.** `just demo` does not, whatever it may look like — it brings the
 `vpay-shop` container up, waits for its healthcheck and prints its URL, and
 never places an order (`docs/runbooks/demo.md` §5 lists "that the shop works"
-under *does not prove*). Lane 6's Cypress specs — `shop-hosted.cy.ts` and
+under _does not prove_). Lane 6's Cypress specs — `shop-hosted.cy.ts` and
 `shop-embedded.cy.ts` — **have** merged, and they drive this class in a real
 browser against the demo stack; but they assert on the shop's pages, never on
 `PrismaShopStore` itself, so the sentence above stands: no unit or integration

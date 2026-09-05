@@ -405,7 +405,14 @@ describe("loadStripe", () => {
     const stripe = await loadStripe(PK, {
       baseUrl: stub.url,
       fetch: (input, init) => {
-        calls.push(String(input));
+        // A `Request` stringifies to "[object Request]".
+        calls.push(
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url,
+        );
         return fetch(input, init);
       },
     });
