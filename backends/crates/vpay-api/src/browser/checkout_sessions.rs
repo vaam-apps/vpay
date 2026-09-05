@@ -121,6 +121,7 @@ fn not_found(id: &str) -> ApiError {
 /// naming `query` — while a missing credential is not a shape error a payer
 /// can fix by reading a message. It is the uniform 404.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(super) struct SessionCredential {
     key: Option<String>,
     client_secret: Option<String>,
@@ -135,6 +136,7 @@ pub(super) struct SessionCredential {
 /// Orange's own URL handling and fit inside whatever length its `return_url`
 /// field accepts.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(super) struct ReturnCredential {
     key: Option<String>,
     t: Option<String>,
@@ -142,6 +144,7 @@ pub(super) struct ReturnCredential {
 
 /// The origins route's only parameter.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(super) struct OriginsQuery {
     key: Option<String>,
 }
@@ -152,6 +155,7 @@ pub(super) struct OriginsQuery {
 /// second fact about the tenant's page — a display name, a locale — without
 /// every caller having to branch on the JSON's *type*.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
 struct Origins {
     origins: Vec<String>,
 }

@@ -155,6 +155,20 @@ jobs:
       # build graph, so no compiler would have noticed it going stale.
       - name: check-schema (schemas/vpay.cstack)
         run: just check-schema
+      # The eighth and ninth gates, both ADR-0016 (2026-09-05). Through the
+      # justfile rather than `cargo xtask` directly, the same rule
+      # `check-schema` above follows: the recipe carries the reasoning a
+      # contributor reads locally, so the gate and the local check cannot
+      # drift.
+      #
+      # They are in this job rather than `rust` because they are conventions
+      # rather than behaviour — no database, no network, no Node — and because
+      # `justfile`'s claim that "CI's self-checks job runs exactly this list"
+      # is only kept honest by someone reading this file beside it.
+      - name: verify-serde (ADR-0016 standard 3)
+        run: just verify-serde
+      - name: verify-repositories (ADR-0016 standard 5)
+        run: just verify-repositories
       # A report, not a gate — it exits 0 whatever it finds (Step 7,
       # decision (4)). It is here so `justfile`'s claim that this job runs
       # exactly what `just verify` runs stays true, and so the doc-volume,

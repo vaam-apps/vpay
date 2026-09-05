@@ -27,8 +27,6 @@ use vpay_api::op::clients::YamlClientStore;
 use vpay_config::MERCHANT_AUDIENCE;
 use vpay_config::oauth::{GrantType, MerchantClient};
 
-use vpay_db::SqlClientAssertionStore;
-
 mod support;
 
 use support::migrated_postgres;
@@ -143,7 +141,7 @@ async fn find_client_reflects_the_disabled_clients_kill_switch() -> anyhow::Resu
 #[tokio::test]
 async fn expired_client_assertion_jtis_are_swept_and_live_ones_are_kept() -> anyhow::Result<()> {
     let (_container, repositories, pool) = migrated_postgres().await?;
-    let store = SqlClientAssertionStore::new(repositories.op_store_pool());
+    let store = vpay_db::client_assertion_store(repositories.op_store_pool());
 
     // Recorded through the real store rather than a hand-written INSERT, so
     // the sweep is proven against rows in exactly the shape the production

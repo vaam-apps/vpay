@@ -1,6 +1,6 @@
 # vpay task runner. `just` with no argument lists everything.
 #
-# Seven invariants this repo enforces on itself, all wired into `just verify`:
+# Nine invariants this repo enforces on itself, all wired into `just verify`:
 #   * no test double is reachable from a shipping binary
 #   * every unimplemented item is declared in docs/status.md
 #   * every error type is classified (ADR-0011) and anyhow stays in the binaries
@@ -11,12 +11,18 @@
 #     and is publishable for real (`verify-npm-scope`, 2026-09-05)
 #   * schemas/vpay.cstack parses and type-checks against the real CrateStack
 #     grammar, at the pinned CLI version (`check-schema`, 2026-09-05)
+#   * every serialisable type in backends/crates carries
+#     #[serde(rename_all = "snake_case")], renames every field itself, or is
+#     exempted with a reason in ADR-0016's table (`verify-serde`, 2026-09-05)
+#   * nothing outside vpay-db names a concrete repository implementation
+#     (`verify-repositories`, 2026-09-05)
 #
-# `just verify` prints an eighth thing that is NOT an invariant and never
-# fails the build: `verify-docs`, a report on doc-comment volume, long
-# functions, ```ignore fences and #[allow]s (Step 7, decision 4).
+# `just verify` prints a tenth thing that is NOT an invariant and never
+# fails the build: `verify-docs`, a report on doc-comment volume, in-file
+# comment volume, externalised module docs, long functions, ```ignore fences
+# and #[allow]s (Step 7 decision 4; ADR-0016 standard 6 keeps it a report).
 #
-# A ninth check is a gate that is NOT in `just ci`, because it needs the
+# An eleventh check is a gate that is NOT in `just ci`, because it needs the
 # network: `just docs-check-citations` resolves every run id, PR and issue a
 # document cites against GitHub. See its recipe at the bottom of this file.
 
@@ -407,7 +413,8 @@ audit-web:
 # The checks that keep this repository honest, plus one report. CI's
 # `self-checks` job runs exactly this list, in this order:
 # verify-no-mocks, verify-status, verify-errors, verify-sdk-parity,
-# verify-links, verify-npm-scope, check-schema, and then verify-docs last.
+# verify-links, verify-npm-scope, check-schema, verify-serde,
+# verify-repositories, and then verify-docs last.
 #
 # That sentence was false until 2026-09-04: `verify-sdk-parity` ran here but
 # had no step in `.github/workflows/ci.yml`, so ADR-0015's decision 3 ("CI
@@ -417,7 +424,7 @@ audit-web:
 # this comment honest is someone reading the workflow beside it.
 #
 # `verify-docs` is NOT a check: it exits 0 whatever it finds, so the
-# "verify: ok" below means the seven gates passed and says nothing about the
+# "verify: ok" below means the nine gates passed and says nothing about the
 # numbers `verify-docs` printed. It is last so that the report a human reads
 # is the final thing on the terminal, after every gate has had its say.
 #
@@ -441,9 +448,24 @@ audit-web:
 # this file exists to replace. See the recipe below for what happens when the
 # binary is absent (it fails; it does not skip).
 #
-# The seven self-checks, then the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-docs
-    @echo "verify: ok — the seven gates above passed; the verify-docs report is advisory"
+# `verify-serde` and `verify-repositories` joined on 2026-09-05 as the eighth
+# and ninth, both from ADR-0016 — the ADR that finally wrote down the six
+# engineering standards this repository had been applying in prose. They are
+# after `check-schema` rather than beside their nearest relative
+# (`verify-errors`) because the list is chronological and a reader comparing
+# it with `.github/workflows/ci.yml` should be comparing two lists in the same
+# order.
+#
+# What they were worth on the day they landed, measured rather than assumed:
+# `verify-serde` found 28 of 64 serialisable types under `backends/crates`
+# without the workspace's `rename_all`, of which 13 were fixed and 15 carry a
+# reason in the ADR's table; `verify-repositories` found `vpay-api` naming
+# `vpay_db::SqlClientAssertionStore`, a concrete implementation that had been
+# `pub` since Step 6 and that no gate, lint or compiler error objected to.
+#
+# The nine self-checks, then the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-docs
+    @echo "verify: ok — the nine gates above passed; the verify-docs report is advisory"
 
 verify-no-mocks:
     cargo xtask verify-no-mocks
@@ -662,6 +684,37 @@ check-schema:
 # can fail because of it.
 #
 # Report doc volume, long functions, ```ignore fences and #[allow]s.
+# ADR-0016 standard 3: every type deriving Serialize/Deserialize under
+# backends/crates/*/src carries #[serde(rename_all = "snake_case")], renames
+# every field/variant itself, or is listed in the ADR's exemption table with a
+# reason. Visibility is deliberately not part of the rule — both adapters'
+# wire modules are pub(crate), and a wire does not care what Rust thinks of a
+# type's visibility.
+#
+# Two-directional, like verify-status: an exemption row naming a type that now
+# complies, or a type that no longer exists, fails the build too. A stale
+# exemption is a decision the code has already reversed, described in the ADR
+# as if it were current.
+#
+# What it does NOT check: whether a reason is a good one. "models MTN's
+# camelCase Collections wire" and "too many to fix" are both non-empty
+# strings; the gate refuses only a blank reason, and the table exists to put
+# the sentence where a reviewer sees it.
+verify-serde:
+    cargo xtask verify-serde
+
+# ADR-0016 standard 5: repositories are traits, their implementations are
+# private to vpay-db, and a handler names the trait. The set of concrete
+# implementations is derived from vpay-db's own source — a declaration holding
+# a PgPool/Transaction field, or a type on the right of `impl <a vpay-db
+# trait> for …` — rather than listed in the gate, so a store nobody has
+# written yet is covered the day it is added.
+#
+# No exemption mechanism, deliberately: there is no exception today, and an
+# escape hatch nobody needs is the one that gets used.
+verify-repositories:
+    cargo xtask verify-repositories
+
 verify-docs:
     cargo xtask verify-docs
 
@@ -962,6 +1015,26 @@ expected_suites := "42"
 # eleven-digit number is a timestamp rather than a run id. The fourth is a
 # link to the repository root. `expected_suites` stays 42; the floor stays
 # 1080.
+# Re-measured 2026-09-05 for ADR-0016's two gates (`verify-serde`,
+# `verify-repositories`): `just verify-ignored` reports **1260 total, 42 test
+# binaries, 0 ignored**, of which 40 are this change's, all in `xtask`
+# (144 → 184): 13 driving `verify_serde` and its scanner, 15 driving
+# `verify_repositories` and the three signals it unions, 8 on the declaration
+# scanner the two share, and 4 on the report lines `verify-docs` gained. Four
+# of the 40 are the mutations recorded in `docs/plans/exp10-notes/opus.md`,
+# and 3 are the review's: the alias evasion that cleared the first draft of
+# `verify_repositories` (see that function's third signal).
+#
+# The 1206 above was measured on an older base, and the paragraphs between
+# were written on branches that did not see each other. `xtask` on this
+# branch's base (`master` `2ce13d0`) was measured directly at **144**
+# (`cargo test -p xtask` before any of this landed), so the base total is
+# 1260 - 40 = 1220 — derived from that one measurement rather than listed
+# separately, and stated as derived. No new test binary
+# either way, so `expected_suites` stays 42 and the floor stays 1080: 40 tests
+# is not a reason to move a floor. `just test-doc` measures **86 passed, 1
+# ignored** — unchanged; this change added no example, and the 13
+# `#[serde(rename_all)]` attributes it did add appear in no doctest.
 min_tests := "1080"
 
 verify-ignored:

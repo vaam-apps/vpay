@@ -1,4 +1,4 @@
-//! [`SqlClientAssertionStore`] — Postgres-backed replay protection for
+//! [`client_assertion_store`] — Postgres-backed replay protection for
 //! `private_key_jwt` client assertions (RFC 7523 §3 point 7), against
 //! `oauth_client_assertion_jtis` (`backends/migrations/0011_create-oauth-
 //! client-assertion-jtis.sql`).
@@ -23,22 +23,38 @@ use time::OffsetDateTime;
 
 use crate::error::DbError;
 
-/// Postgres-backed [`ClientAssertionStore`], durable and shared across every
-/// vpay replica.
+/// A Postgres-backed [`ClientAssertionStore`] over `pool`, durable and shared
+/// across every vpay replica.
 ///
-/// `PgPool` is a cheap `Arc`-backed handle (per `sqlx`'s own docs), so
-/// [`SqlClientAssertionStore::new`] does not open a connection — it just
-/// clones the handle in.
-#[derive(Debug, Clone)]
-pub struct SqlClientAssertionStore {
-    pool: PgPool,
+/// Returns `impl ClientAssertionStore` rather than the concrete type, and that
+/// is the whole point of the function existing: ADR-0016 standard 5 says a
+/// repository implementation is private to this crate and reached only through
+/// its trait, and until 2026-09-05 this one was the exception — `vpay-api`
+/// wrote `SqlClientAssertionStore::new(pool)` by name. A caller now gets the
+/// behaviour and has no way to spell the type, which is what `connect`
+/// already does for [`crate::Repositories`].
+///
+/// A free function rather than a method on [`crate::Repositories`]: this store
+/// implements a *foreign* trait (`authkestra_op`'s), and putting an
+/// authkestra type in vpay's own umbrella trait would make every consumer of
+/// `Repositories` — the worker included, which mints no tokens — depend on the
+/// OP's vocabulary.
+///
+/// `PgPool` is a cheap `Arc`-backed handle (per `sqlx`'s own docs), so this
+/// opens no connection; it clones the handle in.
+#[must_use]
+pub fn client_assertion_store(pool: PgPool) -> impl ClientAssertionStore {
+    SqlClientAssertionStore { pool }
 }
 
-impl SqlClientAssertionStore {
-    /// Builds a store against `pool`.
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
-    }
+/// The only [`ClientAssertionStore`] in the workspace.
+///
+/// `pub(crate)`: [`client_assertion_store`] is the whole public surface, so
+/// no caller outside this crate can name the implementation or substitute
+/// another one for it (ADR-0016 standard 5, ADR-0006).
+#[derive(Debug, Clone)]
+pub(crate) struct SqlClientAssertionStore {
+    pool: PgPool,
 }
 
 /// Converts `authkestra-op`'s `chrono::DateTime<Utc>` into the `time::

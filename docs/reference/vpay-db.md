@@ -146,9 +146,19 @@ why nothing in ADR-0006's dependency rules would object to a binary using it.
 `cargo xtask verify-no-mocks` nonetheless fails the build if it appears in
 non-test code anywhere under `backends/apps`.
 
-`SqlClientAssertionStore` is the one place a *foreign* trait
-(`authkestra_op::client::ClientAssertionStore`) is implemented over the
-database, and it was the precedent this seam followed.
+`client_assertion_store` is the one place a *foreign* trait
+(`authkestra_op::client_assertion::ClientAssertionStore`) is implemented over
+the database, and it was the precedent this seam followed.
+
+It returns `impl ClientAssertionStore` rather than a named type, and that is
+the seam again rather than a flourish: [ADR-0016](../adr/0016-engineering-standards.md)
+standard 5 says an implementation is private to this crate and reached through
+its trait, and until 2026-09-05 this store was the exception — it was `pub` and
+`vpay-api` wrote `SqlClientAssertionStore::new(pool)` by name. `cargo xtask
+verify-repositories` is what keeps it that way now. A free function rather than
+a method on `Repositories`, because the trait it implements is authkestra's and
+putting an authkestra type on vpay's umbrella trait would make the worker —
+which mints no tokens — depend on the OP's vocabulary.
 
 ## `payment_intents`
 
