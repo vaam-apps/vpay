@@ -868,9 +868,22 @@ mod tests {
         );
     }
 
-    /// The three spellings a caller may send, and the one canonical answer —
-    /// the same table `frontends/apps/checkout/src/lib/msisdn.ts`'s own tests
-    /// hold, which is what keeps the two implementations one rule.
+    /// The three spellings a caller may send, and the one canonical answer.
+    ///
+    /// Every input in `frontends/apps/checkout/src/lib/msisdn.test.ts`'s own
+    /// accept- and refuse-tables was checked against this function by hand
+    /// (2026-09-06) and the two agree on all of them, which is what
+    /// [`canonical_msisdn`] means by "one rule".
+    ///
+    /// **One deliberate divergence, and it is server-only:**
+    /// [`MAX_MSISDN_INPUT_CHARS`] has no counterpart on the page. An input
+    /// past 32 characters — reachable only by padding a number with more
+    /// separators than a human types — is refused here and normalised
+    /// there. The server being the stricter of the two is the safe
+    /// direction, and it is why this is a divergence rather than a
+    /// disagreement; a page that accepted something `/v1` refuses shows the
+    /// payer an error one round trip later, where the reverse would be a
+    /// hole.
     #[test]
     fn every_spelling_a_caller_sends_canonicalises_to_the_form_the_rail_takes() {
         for input in [

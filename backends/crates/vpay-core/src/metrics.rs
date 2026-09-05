@@ -354,13 +354,32 @@ pub mod account_holder_outcome {
     /// `verified: false` — **not** an error, and the distinction the route
     /// exists to preserve.
     pub const NOT_FOUND: &str = "not_found";
-    /// The merchant named a `payment_method_type` whose rail has no
-    /// account-holder API. A `400` naming the parameter, decided on the
-    /// capability value and never on the rail's code (ADR-0002).
+    /// **No rail was asked, because none could have answered.** The
+    /// merchant named a `payment_method_type` whose rail has no
+    /// account-holder API — or named one this deployment does not offer or
+    /// has disabled, or named none at all. A `400` naming the parameter,
+    /// decided on the capability value and never on the rail's code
+    /// (ADR-0002).
+    ///
+    /// The four spellings are one label on purpose: `/v1` answers them with
+    /// a byte-identical envelope precisely so a merchant cannot tell which
+    /// rails a deployment has configured but switched off, and a metric
+    /// that split them would leak on the operator's side what the response
+    /// deliberately does not on the merchant's.
     pub const UNSUPPORTED: &str = "unsupported";
-    /// Everything else: the rail could not be reached, refused our
-    /// credentials, answered something unreadable, or the deployment is
-    /// misconfigured. A classified 4xx/5xx, never a `200` with nulls.
+    /// **Everything else that is not a served answer**: the rail could not
+    /// be reached, refused our credentials, answered something unreadable,
+    /// the deployment is misconfigured — **and a malformed `msisdn`**, which
+    /// is the merchant's mistake rather than the rail's and is counted here
+    /// because there is no fifth constant for it.
+    ///
+    /// That last row is a **reserved decision, not an oversight**: an
+    /// `invalid_request` value would separate "a merchant is sending
+    /// rubbish" from "the rail is down", which is a real question for an
+    /// operator, and it is also a fifth series and a dashboard change nobody
+    /// has asked for. Named here so the label is not read as meaning only
+    /// rail trouble. A classified 4xx/5xx either way, never a `200` with
+    /// nulls.
     pub const ERROR: &str = "error";
 }
 

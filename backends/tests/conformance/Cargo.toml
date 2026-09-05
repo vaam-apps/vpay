@@ -28,7 +28,8 @@ testcontainers.workspace = true
 # response by reference — see the mapping contract in the suite's module doc.
 uuid.workspace = true
 # The account-holder cases assert on what an operator would SEE, not on the
-# arguments a macro was called with: `a_holders_personal_data_never_reaches_a_log_line`
+# arguments a macro was called with:
+# `an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing`
 # installs a scoped subscriber over the port call and greps the captured
 # output. A test that asserted "we did not call `tracing::info!`" would pass
 # the day someone logged the body from a different macro; capturing the sink

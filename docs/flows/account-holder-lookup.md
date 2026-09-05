@@ -216,6 +216,15 @@ either way.
 `outcome` one of `found` / `not_found` / `unsupported` / `error`
 (`vpay_core::metrics::account_holder_outcome`).
 
+`unsupported` covers every refusal decided on the `payment_method_type` —
+missing, unknown, disabled, or a rail whose capability is `false` — for the
+same reason `/v1` answers all four with a byte-identical envelope: splitting
+them would leak on the operator's side what the response deliberately does
+not on the merchant's. `error` covers a **malformed `msisdn`** as well as
+rail trouble, which is a merchant's mistake sitting in a label an operator
+reads as an outage; a fifth `invalid_request` value is a reserved decision,
+recorded on the constant rather than taken here.
+
 **No label carries the number looked up, the name returned, the merchant, or
 even the rail.** A Prometheus label is retained, queryable and shipped
 wherever the scrape goes; a number in one would be exactly the stored record
@@ -231,6 +240,13 @@ about the *rail*, and this one answers a question about the *route*.
 ## Status
 
 **Built, and proven against a WireMock stub only.**
+
+> **Not safe to expose to untrusted merchants without ingress rate
+> limiting.** As shipped, any credential that can call `/v1` can turn a list
+> of phone numbers into a list of names at whatever rate it can make HTTP
+> requests, and vpay keeps no record that it happened (rules 2 and 4 below —
+> and they are the same fact, pointing in two directions). That is the
+> condition on turning this route on, not a caveat about it.
 
 - `GET /v1/account_holders` — served (`vpay_api::v1::V1_ROUTES`). Merchant
   token required (`payments:read` or `payments:write`), tenant-scoped
@@ -252,6 +268,22 @@ about the *rail*, and this one answers a question about the *route*.
   the case of the `accountHolderIdType` path segment, and whether MTN answers
   `404` for an unknown holder at all (it documents `200`, `401` and `500`
   only for this operation). See [adapter-mtn-momo.md](adapter-mtn-momo.md).
+
+  **The two compound, and that is the failure mode to watch for on the first
+  real call.** If the path segment's case is wrong, MTN's gateway answers
+  `404` to *every* lookup; the `404 -> Ok(None)` mapping then renders every
+  one of them as `{ "name": null, "verified": false }` with HTTP `200`. A
+  total misconfiguration would look exactly like "nobody in Cameroon is
+  registered" — no error, no page, nothing in
+  `vpay_account_holder_lookups_total` but a `not_found` rate of 1.0. Neither
+  assumption is unsafe about *money* (the caller refuses on `Ok(None)` just as
+  it refuses on an error), and the mapping is still the right default for the
+  reason the adapter's own doc gives; what is worth knowing is that the two
+  wrong together are **silent**, where either alone is not. The first
+  sandbox call should therefore check a number known to be registered before
+  it trusts a `not_found`, and an operator should alert on a sustained
+  `not_found` rate near 1.0. Reversing either decision costs one constant
+  (`vpay_adapter_mtn_momo::ACCOUNT_HOLDER_ID_TYPE`) or one match arm.
 - **Orange's route is unconfirmed**, so `false` there is "we do not know of
   one", not "Orange has none".
 - **No rate limit, no audit log, no dedicated scope** — the three reserved

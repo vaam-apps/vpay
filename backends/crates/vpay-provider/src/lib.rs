@@ -187,7 +187,8 @@ pub struct AccountHolder {
 /// `docs/flows/account-holder-lookup.md` forbids.
 ///
 /// This is belt, not braces: the route logs no name at all, and
-/// `a_holders_name_never_reaches_a_log_line` in the conformance suite is
+/// `an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing`
+/// in the conformance suite is
 /// what proves it. This impl is what stops a *future* `tracing::debug!(?holder)`
 /// from silently undoing that.
 impl std::fmt::Debug for AccountHolder {

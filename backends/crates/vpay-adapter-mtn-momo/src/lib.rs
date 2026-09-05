@@ -389,8 +389,10 @@ const ACCOUNT_HOLDER_ID_TYPE: &str = "msisdn";
 /// an arbitrary endpoint on MTN's API **under this deployment's own
 /// subscription key and bearer token**: an unescaped `/` moves the request,
 /// a `?` or a `#` truncates the path. It was inlined until 2026-09-06, and
-/// a mutation that deleted the call left 113 tests green —
-/// `a_payer_reference_is_escaped_before_it_becomes_a_path_segment` exercised
+/// a mutation that deleted the call left 113 tests green — the test that
+/// was supposed to hold it (then named
+/// `a_payer_reference_is_escaped_before_it_becomes_a_path_segment`, since
+/// rewritten onto this function) exercised
 /// `vpay_provider::http::path_segment` itself and never the adapter's *use*
 /// of it, and every stubbed MSISDN is digits-only, where escaping is a
 /// no-op. A pure function is what lets
@@ -429,6 +431,17 @@ fn account_holder_url(base: &str, msisdn: &str) -> String {
 /// matters — if MTN never sends a 404, this arm is simply dead code, and if
 /// it sends one for some *other* reason, the caller's fail-closed rule
 /// (`Ok(None)` refuses the nomination) still holds.
+///
+/// **Where it is not free, and it is not "money" but "silence":** this
+/// assumption compounds with the other unverified one on this endpoint, the
+/// case of [`ACCOUNT_HOLDER_ID_TYPE`]. If that segment's case is wrong,
+/// MTN's gateway answers 404 to *every* lookup and this arm renders every
+/// one as "the rail has no record" — a total misconfiguration that looks
+/// exactly like an empty subscriber base, with no error and nothing in the
+/// metrics but a `not_found` rate of 1.0. Either assumption alone fails
+/// loudly; the two together fail quietly. `docs/flows/account-holder-lookup.md`
+/// carries what to check on the first real sandbox call, and reversing
+/// either costs one constant or this one match arm.
 fn account_holder_outcome(
     status: StatusCode,
     body: &str,
@@ -513,11 +526,17 @@ impl ProviderAdapter for Adapter {
             delivers_callbacks: true,
             requires_ip_allowlist: true,
             // MTN Collections exposes `GET
-            // /collection/v1_0/accountholder/MSISDN/{msisdn}/basicuserinfo`
+            // /collection/v1_0/accountholder/{idType}/{msisdn}/basicuserinfo`
             // under the subscription key and token scope this adapter
             // already holds, and `account_holder_name` below calls it — so
             // `true` here is a claim about the rail *and* about this code
-            // (issue #47).
+            // (issue #47). The segment is spelled by
+            // `ACCOUNT_HOLDER_ID_TYPE`, deliberately NOT written out here:
+            // MTN's portal declares the enum upper-case and every published
+            // example spells it lower-case, vpay sends lower-case, and this
+            // comment said `MSISDN` until 2026-09-06 — a second, silently
+            // contradicting spelling of the one thing that constant exists
+            // to keep in a single place.
             supports_account_holder_lookup: true,
         }
     }

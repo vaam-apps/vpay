@@ -997,6 +997,16 @@ verify-docs:
 # which is the whole of the 41 -> 42 move and the reason this number is edited
 # rather than left alone. Still **0 ignored**: nothing here describes unbuilt
 # behaviour. The floor stays 1080 — 40 tests is not a reason to move a floor.
+#
+# `just test-doc` **moved too, 90 -> 94 passed (1 ignored, unchanged)**, and
+# is called out here because every entry above it says "unchanged at 90" and
+# a reader would otherwise carry that number forward. The four are
+# `AccountHolder::name`, `vpay_provider::http::path_segment`,
+# `vpay_api::model::AccountHolderObject` and
+# `vpay_core::metrics::account_holder_outcome`. Measured on this tree with
+# `cargo test --doc --workspace`, not computed. It is not a gate — no recipe
+# asserts a doctest count — which is exactly why the number has to be true
+# in the prose or it is true nowhere.
 expected_ignored := "0"
 expected_suites := "42"
 # A floor, not a target — set a little under the measured 1059

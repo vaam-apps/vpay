@@ -107,7 +107,7 @@
           "A TIMEOUT AND NOT A 503, deliberately: a 503 produces a ProviderError::Transport",
           "with no `source` (the rail answered, badly), whereas a deadline that fires",
           "produces one carrying the reqwest error, which is what",
-          "`a_lookup_that_cannot_reach_the_rail_is_a_transport_error_never_a_missing_holder`",
+          "`a_lookup_that_cannot_reach_the_rail_is_never_reported_as_a_missing_holder`",
           "walks with vpay_core::error::source_chain. Reporting an unreachable rail as",
           "Ok(None) is the single worst thing this method could do, and a source chain an",
           "operator can read is how the real failure survives to a log.",

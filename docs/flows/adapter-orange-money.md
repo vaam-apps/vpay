@@ -111,9 +111,13 @@ method, not a core change.
    `supports_account_holder_lookup: false` and inherits the port's
    `ProviderError::Unsupported` — a permanent capability answer the core
    branches on, *not* a `NotImplemented` token, because nothing here is unbuilt
-   work someone owes. `a_number_the_rail_has_no_record_of_is_not_an_error` and
-   its three siblings in the conformance suite assert exactly that for this
-   rail. If the answer to this item turns out to be "yes, here", the flag
+   work someone owes. All **five** account-holder cases in the conformance
+   suite run on this rail's parameterisation and assert exactly that
+   (`an_account_holder_lookup_returns_a_name_and_nothing_else`,
+   `a_number_the_rail_has_no_record_of_is_not_an_error`,
+   `a_lookup_that_cannot_reach_the_rail_is_never_reported_as_a_missing_holder`,
+   `an_oversized_account_holder_body_is_refused_at_the_cap`,
+   `an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing`). If the answer to this item turns out to be "yes, here", the flag
    becomes `true`, this adapter overrides
    `ProviderAdapter::account_holder_name` with its own `NotImplemented` token
    until it is written, and `docs/status.md` grows a row.
@@ -218,7 +222,7 @@ measured from the *send*, not the answer
   rather than a payer abandoning the page.
 - **Nothing here has ever called Orange.** Every wire assertion above is
   against WireMock; a mapping faithful to this document but not to Orange
-  would pass. All **eight** "to confirm" items above still stand — the eighth,
-Orange's account-holder route, was added on 2026-09-05 with issue #47 and is
-the reason `supports_account_holder_lookup` is `false` for this rail rather
-than unbuilt.
+  would pass. All **eight** "to confirm" items above still stand — the
+  eighth, Orange's account-holder route, was added on 2026-09-05 with issue
+  #47 and is the reason `supports_account_holder_lookup` is `false` for this
+  rail rather than unbuilt.
