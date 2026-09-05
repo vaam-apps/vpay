@@ -157,6 +157,10 @@
 # cargo-chef gives a project that does not use fat LTO. Reproduced in review
 # on the same host under heavier load: 105 s for a source-touch rebuild and
 # 101 s for a sha-only one, against 193-212 s for a cold one-stage build.
+# Whether `[profile.dist]` should override `release`'s `lto = "fat"` with
+# `"thin"` is a real question this change deliberately does not answer: no
+# ADR records the fat-LTO choice and no comment in `Cargo.toml` explains it,
+# so it is a maintainer's call, not a build-plumbing one.
 # ---------------------------------------------------------------------------
 
 # The tool stage. `musl-dev`/`pkgconfig` are installed here rather than in

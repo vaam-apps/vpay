@@ -316,3 +316,11 @@ A fat-LTO link re-consumes every dependency's LLVM IR, so the final
 `cargo build` costs about two minutes however much of the graph is already
 compiled. Halving an incremental build is what cargo-chef buys here — not the
 near-instant rebuild it buys a project without fat LTO.
+
+**An open question this change deliberately leaves open.** Nothing records
+why `[profile.release]` sets `lto = "fat"` — no ADR mentions LTO and
+`Cargo.toml` carries no comment on that line — so whether `[profile.dist]`
+should override it with `lto = "thin"` (much cheaper links, a slower binary
+by an unmeasured amount) is a maintainer's decision about the shipped
+artefact, not a build-plumbing one. It is named here because it, and not
+cargo-chef, is what now bounds a release rebuild.

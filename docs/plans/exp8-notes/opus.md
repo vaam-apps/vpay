@@ -299,7 +299,14 @@ link time, so the final `cargo build` costs ~2 minutes however much of the
 graph is already compiled. cargo-chef removes the *frontend* compilation of
 ~317 packages (75 s of cook) and cannot remove the LTO link. A project on
 thin or no LTO would see a much larger ratio. Nothing here trades away the
-LTO — that is ADR-0004's performance decision and not this task's to reopen.
+LTO, and it is not this task's to reopen.
+
+> **Corrected in review, 2026-09-05:** the fat LTO is *not* ADR-0004's
+> decision. ADR-0004 is about musl and mimalloc and says nothing about LTO;
+> no ADR mentions it, and the `lto = "fat"` line in `[profile.release]`
+> carries no comment. It is an unrecorded choice, which makes "should
+> `[profile.dist]` set `lto = \"thin\"`?" an open maintainer decision rather
+> than a settled one. Recorded, not taken.
 
 ## Gates
 
