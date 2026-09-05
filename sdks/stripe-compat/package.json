@@ -2,9 +2,6 @@
   "name": "@vaam-apps/vpay-stripe-compat",
   "version": "0.0.0",
   "private": true,
-  "publishConfig": {
-    "access": "public"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/vaam-apps/vpay.git",
