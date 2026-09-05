@@ -9,7 +9,7 @@
     "lint": "eslint . --max-warnings 0"
   },
   "dependencies": {
-    "@vpay/sdk": "workspace:*"
+    "@vaam-apps/vpay-sdk": "workspace:*"
   },
   "devDependencies": {
     "@vpay/config": "workspace:*",

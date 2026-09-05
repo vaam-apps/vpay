@@ -1,7 +1,7 @@
 # `examples/checkout-browser`
 
 A plain HTML + JavaScript payer page built on
-[`@vpay/stripe-js`](../../sdks/stripe-js/) — no framework, no bundler for
+[`@vaam-apps/vpay-stripe-js`](../../sdks/stripe-js/) — no framework, no bundler for
 this page itself. It reads a publishable key and a payment intent's
 `client_secret` from its own URL, confirms an MTN MoMo push, and polls until
 the intent settles, exactly the way `sdks/stripe-js/README.md`'s "Using it"
@@ -20,10 +20,10 @@ browser hold) and renders `pk` + `client_secret` into the page; the
    running; `just demo` already runs `examples/merchant-demo`'s own
    walkthrough (four steps, the last of which is six payments on both rails)
    and prints the URLs it used — this example is separate from that.
-2. `just build-checkout-browser` — builds `@vpay/stripe-js` and vendors its
+2. `just build-checkout-browser` — builds `@vaam-apps/vpay-stripe-js` and vendors its
    `dist/` into `dist/stripe-js/` here (gitignored, rebuilt on every run).
 3. `pnpm install` (once, if you have not already) so this directory's own
-   `@vpay/sdk` dependency is linked.
+   `@vaam-apps/vpay-sdk` dependency is linked.
 4. `node examples/checkout-browser/mint.mjs` — mints a 50.00 EUR `mtn_momo`
    PaymentIntent through `demo-merchant`'s credential and prints a ready-to-open
    URL, `http://localhost:4180/?pk=...&client_secret=...&api=http://localhost:8080`.
@@ -53,7 +53,7 @@ step 4's URL (`mint.mjs` reads `VPAY_BASE_URL`, so
   Actions run — see `docs/flows/browser-checkout.md`.
 - This page ships **push-only** (decision D4,
   `docs/plans/2026-09-03-step5c-stripejs.md`). `confirmPayment`/redirect
-  rails are not exercised here; `@vpay/stripe-js`'s README covers what would
+  rails are not exercised here; `@vaam-apps/vpay-stripe-js`'s README covers what would
   happen and what is missing (the Orange return trip has no route yet).
 - Nothing here has taken real money. Both rails are WireMock stubs on the
   compose network, same as everywhere else in this repository —
@@ -64,7 +64,7 @@ step 4's URL (`mint.mjs` reads `VPAY_BASE_URL`, so
 For the same reason `examples/merchant-node` is: this is a standalone
 example with no build step, so a `.mjs` script is simpler than adding one
 just to type-check a few dozen lines. It is not working around a typing
-gap — `@vpay/sdk`'s `PaymentIntent` type (`sdks/nodejs/src/types.ts`) now
+gap — `@vaam-apps/vpay-sdk`'s `PaymentIntent` type (`sdks/nodejs/src/types.ts`) now
 declares `client_secret?: string` (`c40a137`, 2026-09-03), matching the
 server's `create`/`retrieve` responses since migration `0026`, so
 `intent.client_secret` is typed for a TypeScript caller too — see the
@@ -77,5 +77,5 @@ comment at the top of `mint.mjs`.
 | `index.html`      | The page: an error region, a status summary (`dl#summary`, `data-status` on `dd#status`), an MSISDN form.                                                   |
 | `checkout.js`     | All the logic — `loadStripe`, `retrievePaymentIntent`, `confirmMobileMoneyPayment`, `waitForPaymentIntent`. Plain ESM, imports `./dist/stripe-js/index.js`. |
 | `serve.mjs`       | Zero-dependency static file server for this directory (see its own header comment for why not the dashboard container or an npm package).                   |
-| `mint.mjs`        | The "merchant server" half — mints an intent with `@vpay/sdk` and prints a checkout URL.                                                                    |
+| `mint.mjs`        | The "merchant server" half — mints an intent with `@vaam-apps/vpay-sdk` and prints a checkout URL.                                                          |
 | `dist/stripe-js/` | **Generated, gitignored.** `just build-checkout-browser`'s output; a copy of `sdks/stripe-js/dist/`.                                                        |

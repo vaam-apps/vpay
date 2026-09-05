@@ -176,7 +176,7 @@ describe("the shop, paid inside an iframe on its own page", () => {
     //
     // An iframe may not navigate its parent — `FRAME_SANDBOX` withholds
     // `allow-top-navigation` — so vpay's page posts `{type:'vpay:redirect',
-    // url}` and `@vpay/stripe-js` performs `win.top.location.assign(url)`.
+    // url}` and `@vaam-apps/vpay-stripe-js` performs `win.top.location.assign(url)`.
     // In a payer's browser `win.top` is the merchant's own tab. Under Cypress
     // it is the RUNNER's window, and this run has the frame-busting rewrite
     // off (see `cypress.config.ts`), so the SDK would navigate Cypress itself
@@ -187,7 +187,7 @@ describe("the shop, paid inside an iframe on its own page", () => {
     // would have performed, to the byte-identical URL it was given.
     //
     // What that does NOT prove, stated rather than implied: that
-    // `@vpay/stripe-js` calls `window.top.location.assign` with that URL.
+    // `@vaam-apps/vpay-stripe-js` calls `window.top.location.assign` with that URL.
     // `sdks/stripe-js`'s vitest covers exactly that. What IS proven here, in
     // a real browser, is everything either side of it — the framed page
     // confirms with the rail, asks its parent to move, names the rail's own

@@ -1516,7 +1516,7 @@ async fn step_5_checkout_sessions(client: &Client) -> anyhow::Result<()> {
     println!();
     println!("      EMBEDDED — what a merchant's own page does with it:");
     println!();
-    println!("        import {{ initEmbeddedCheckout }} from '@vpay/stripe-js';");
+    println!("        import {{ initEmbeddedCheckout }} from '@vaam-apps/vpay-stripe-js';");
     println!("        const checkout = await initEmbeddedCheckout({{");
     println!("          publishableKey: 'pk_test_demomerchantsandbox01',");
     println!(

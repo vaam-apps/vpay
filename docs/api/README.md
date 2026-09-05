@@ -212,7 +212,7 @@ happened, so do not decide state from arrival order — reason from
 **8 times over about 31 hours** and then abandoned, and every non-2xx walks that
 whole ladder, `4xx` included: answering `410 Gone` does not stop it. Verify the raw bytes as received: a framework that parses the
 JSON and re-serialises it before verifying breaks every delivery. Both SDKs ship
-the verifier (`vpay_sdk::webhooks::verify`, `@vpay/sdk`'s `verifyWebhook`), both
+the verifier (`vpay_sdk::webhooks::verify`, `@vaam-apps/vpay-sdk`'s `verifyWebhook`), both
 reject a `t` more than 5 minutes from the receiver's clock, and both try every
 `v1=`. The request deadline is **10 seconds end to end** (5 to connect), so
 acknowledge with any `2xx` first and do the work afterwards; a `3xx` is a failed
@@ -337,7 +337,7 @@ the `private_key_jwt` handshake.
 
 ```js
 import Stripe from "stripe";
-import { createStripeAuthenticator } from "@vpay/sdk/stripe";
+import { createStripeAuthenticator } from "@vaam-apps/vpay-sdk/stripe";
 
 const stripe = new Stripe("", {
   authenticator: createStripeAuthenticator({
@@ -411,7 +411,7 @@ See [../status.md](../status.md) for the tests behind each claim above and
 for the state of the evidence.
 
 **Client-side, two SDKs implement this surface** — [`sdks/rust`](../../sdks/rust)
-(`vpay-sdk`) and [`sdks/nodejs`](../../sdks/nodejs) (`@vpay/sdk`). They do
+(`vpay-sdk`) and [`sdks/nodejs`](../../sdks/nodejs) (`@vaam-apps/vpay-sdk`). They do
 the `private_key_jwt` handshake, token caching, the form-encoded resource
 calls in the table below and webhook verification. The exact wire contract
 they implement, and the server must serve, is
@@ -449,7 +449,7 @@ boundary — its own table is `BROWSER_ROUTES`, its own `.nest`, its own
 `.fallback(not_found)`. The property the route table's test pins is not the
 count but that **exactly one entry answers a non-`GET` method**: the confirm
 that has been there since Step 5c. Step 9 added three reads and no second way
-to move money. This is the surface `@vpay/stripe-js`
+to move money. This is the surface `@vaam-apps/vpay-stripe-js`
 (`sdks/stripe-js/`) speaks, because `@stripe/stripe-js` cannot be pointed at
 vpay (verified directly — see that package's own README).
 

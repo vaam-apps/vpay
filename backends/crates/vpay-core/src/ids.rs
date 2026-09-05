@@ -200,7 +200,7 @@ pub fn checkout_session_id() -> String {
 
 /// What joins an object id to its secret suffix: `pi_…` + this + the suffix.
 ///
-/// Public because it is a **wire contract**: `@vpay/stripe-js` splits a
+/// Public because it is a **wire contract**: `@vaam-apps/vpay-stripe-js` splits a
 /// `clientSecret` on this exact string (`sdks/stripe-js/src/client.ts`'s
 /// `SECRET_SEPARATOR`), and Stripe spells its own client secrets the same
 /// way. Spelled once here so the minting side and any Rust-side parser cannot
@@ -317,7 +317,7 @@ pub fn return_token() -> String {
 ///     "pi_0123456789abcdefghjkmnpq_secret_wxyz0123456789abcdefghjkmnpqrstv"
 /// );
 ///
-/// // What `@vpay/stripe-js` does to recover the id it builds a URL from.
+/// // What `@vaam-apps/vpay-stripe-js` does to recover the id it builds a URL from.
 /// assert_eq!(secret.split_once(CLIENT_SECRET_INFIX), Some((id, "wxyz0123456789abcdefghjkmnpqrstv")));
 /// ```
 #[must_use]
@@ -580,7 +580,7 @@ mod tests {
         }
     }
 
-    /// The joined credential, and the property `@vpay/stripe-js` relies on:
+    /// The joined credential, and the property `@vaam-apps/vpay-stripe-js` relies on:
     /// splitting on the **first** `_secret_` recovers the id.
     ///
     /// The separator is asserted as a literal because it is a wire contract
@@ -671,7 +671,7 @@ mod tests {
     }
 
     /// A session's `client_secret` is spelled with the *session's* id, and
-    /// splitting it recovers that id — the property `@vpay/stripe-js`'s
+    /// splitting it recovers that id — the property `@vaam-apps/vpay-stripe-js`'s
     /// `retrieveCheckoutSession` relies on, exactly as it does for an
     /// intent's.
     #[test]

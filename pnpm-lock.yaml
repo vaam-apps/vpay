@@ -29,7 +29,7 @@ importers:
 
   examples/checkout-browser:
     dependencies:
-      '@vpay/sdk':
+      '@vaam-apps/vpay-sdk':
         specifier: workspace:*
         version: link:../../sdks/nodejs
     devDependencies:
@@ -42,7 +42,7 @@ importers:
 
   examples/merchant-node:
     dependencies:
-      '@vpay/sdk':
+      '@vaam-apps/vpay-sdk':
         specifier: workspace:*
         version: link:../../sdks/nodejs
     devDependencies:
@@ -55,7 +55,7 @@ importers:
 
   examples/merchant-stripe-node:
     dependencies:
-      '@vpay/sdk':
+      '@vaam-apps/vpay-sdk':
         specifier: workspace:*
         version: link:../../sdks/nodejs
       stripe:
@@ -86,10 +86,10 @@ importers:
       '@trpc/server':
         specifier: 11.18.0
         version: 11.18.0(typescript@5.9.3)
-      '@vpay/sdk':
+      '@vaam-apps/vpay-sdk':
         specifier: workspace:*
         version: link:../../sdks/nodejs
-      '@vpay/stripe-js':
+      '@vaam-apps/vpay-stripe-js':
         specifier: workspace:*
         version: link:../../sdks/stripe-js
       '@zenstackhq/runtime':
@@ -150,7 +150,7 @@ importers:
 
   frontends/apps/checkout:
     dependencies:
-      '@vpay/stripe-js':
+      '@vaam-apps/vpay-stripe-js':
         specifier: workspace:*
         version: link:../../../sdks/stripe-js
       '@vpay/tokens':
@@ -410,12 +410,12 @@ importers:
 
   frontends/tests/e2e:
     devDependencies:
+      '@vaam-apps/vpay-sdk':
+        specifier: workspace:*
+        version: link:../../../sdks/nodejs
       '@vpay/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@vpay/sdk':
-        specifier: workspace:*
-        version: link:../../../sdks/nodejs
       cypress:
         specifier: ^15.21.1
         version: 15.21.1
@@ -449,7 +449,7 @@ importers:
 
   sdks/stripe-compat:
     dependencies:
-      '@vpay/sdk':
+      '@vaam-apps/vpay-sdk':
         specifier: workspace:*
         version: link:../nodejs
       stripe:

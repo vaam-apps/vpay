@@ -52,9 +52,9 @@ CMD ["node", "frontends/apps/dashboard/server.js"]
 FROM base AS checkout-builder
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json .npmrc ./
 # `sdks/` as well as `frontends/`, and it is load-bearing rather than tidy:
-# `@vpay/checkout` depends on `@vpay/stripe-js` (`workspace:*`), whose
+# `@vpay/checkout` depends on `@vaam-apps/vpay-stripe-js` (`workspace:*`), whose
 # `exports` resolve to `dist/` — which is gitignored. Its own `build`,
-# `typecheck` and `test` scripts each run `pnpm --filter @vpay/stripe-js
+# `typecheck` and `test` scripts each run `pnpm --filter @vaam-apps/vpay-stripe-js
 # build` first for exactly that reason (lane 3's note §5), so the SDK's
 # SOURCE has to be in this context or `next build` fails with TS2307 on the
 # first import. `examples/` stays out, as above.

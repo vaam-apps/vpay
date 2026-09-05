@@ -3,7 +3,7 @@
   "compilerOptions": {
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    // Node-only, like @vpay/sdk itself: no DOM lib, `fetch` comes from
+    // Node-only, like @vaam-apps/vpay-sdk itself: no DOM lib, `fetch` comes from
     // @types/node.
     "lib": ["ES2023"],
     "noEmit": true,

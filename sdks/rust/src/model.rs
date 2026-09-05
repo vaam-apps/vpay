@@ -161,7 +161,7 @@ pub struct PaymentIntent {
     /// `false` for a sandbox deployment's objects.
     pub livemode: bool,
     /// `pi_…_secret_…` — the payer credential `/v1/browser` accepts to
-    /// confirm this intent from a browser (`@vpay/stripe-js`).
+    /// confirm this intent from a browser (`@vaam-apps/vpay-stripe-js`).
     ///
     /// Present only on `POST /v1/payment_intents` and
     /// `GET /v1/payment_intents/{id}` responses (Step 5c's D2,
@@ -249,7 +249,7 @@ pub enum CheckoutPaymentStatus {
 pub enum CheckoutUiMode {
     /// vpay serves a top-level page and answers with [`CheckoutSession::url`].
     Hosted,
-    /// The merchant frames vpay's page with `@vpay/stripe-js`.
+    /// The merchant frames vpay's page with `@vaam-apps/vpay-stripe-js`.
     Embedded,
 }
 
@@ -299,7 +299,7 @@ pub struct CheckoutSession {
     pub livemode: bool,
     /// The `pi_…` this session drives — an **id**, on every `/v1` route.
     ///
-    /// `@vpay/stripe-js`'s browser-side `CheckoutSession` types the same
+    /// `@vaam-apps/vpay-stripe-js`'s browser-side `CheckoutSession` types the same
     /// field as the whole expanded intent, because the browser session read
     /// expands it (the checkout page confirms and polls the intent through
     /// the browser routes and cannot fetch it separately). A deliberate
@@ -337,7 +337,7 @@ pub struct CheckoutSession {
     /// Unix seconds.
     pub created: i64,
     /// `cs_…_secret_…` — the payer credential the browser presents to read
-    /// this session, and what `@vpay/stripe-js`'s
+    /// this session, and what `@vaam-apps/vpay-stripe-js`'s
     /// `initEmbeddedCheckout`'s `fetchClientSecret` must return.
     ///
     /// A **different** credential from [`PaymentIntent::client_secret`]: it

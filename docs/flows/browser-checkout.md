@@ -1,4 +1,4 @@
-# Browser checkout (`/v1/browser`, `@vpay/stripe-js`)
+# Browser checkout (`/v1/browser`, `@vaam-apps/vpay-stripe-js`)
 
 ## The invariant
 
@@ -13,7 +13,7 @@ This is Stripe's own split (`pk_…` + `client_secret`, Stripe.js), reproduced
 here because `@stripe/stripe-js` itself cannot be pointed at vpay —
 `StripeConstructorOptions` has no host/base-URL member and the loader
 hardcodes `https://js.stripe.com` (verified directly; see
-`sdks/stripe-js/README.md`'s "Why this exists"). `@vpay/stripe-js` is a
+`sdks/stripe-js/README.md`'s "Why this exists"). `@vaam-apps/vpay-stripe-js` is a
 package of vpay's own, Stripe.js-*shaped*, speaking the two routes below.
 
 ## Decisions (D1–D5)
@@ -251,7 +251,7 @@ enforces that today, and nothing in CI checks that an operator has done it.
 
 Step 5c shipped **push-only**, and the reason was that vpay never told a
 redirect rail where to send the payer. `confirmPayment` returned the rail's
-real `next_action.redirect_to_url` and `@vpay/stripe-js` navigated to it, but
+real `next_action.redirect_to_url` and `@vaam-apps/vpay-stripe-js` navigated to it, but
 `vpay-adapter-orange-money` read `return_url` from a **deployment** setting
 (`setting(config, "return_url").unwrap_or(callback_url)`), so with
 `config/application.yml` setting none, Orange returned every payer to
@@ -292,7 +292,7 @@ Orange's own hosted page → the return page → back to the merchant's
 [hosted-checkout.md](hosted-checkout.md).
 
 **What is still open, and it is not the return trip.** A merchant integrating
-`@vpay/stripe-js` **directly** against a redirect rail, with no Checkout
+`@vaam-apps/vpay-stripe-js` **directly** against a redirect rail, with no Checkout
 Session, still lands the payer on its **own** `return_url` and must poll
 `GET /v1/browser/payment_intents/{id}` from there — the outcome comes from
 vpay's authenticated status query and never from the fact that a payer came
@@ -313,7 +313,7 @@ most integrations should use: a **Checkout Session**, and a page vpay serves.
   collects what the rail needs, confirms, polls, shows the outcome and forwards
   the payer to `success_url` or `cancel_url`.
 - **Embedded.** The merchant's server creates a session with
-  `ui_mode: embedded`, hands the `client_secret` to `@vpay/stripe-js`'s
+  `ui_mode: embedded`, hands the `client_secret` to `@vaam-apps/vpay-stripe-js`'s
   `initEmbeddedCheckout`, and vpay's page renders in an iframe on the
   merchant's own site. The frame's origin is checked twice — by
   `Content-Security-Policy: frame-ancestors`, derived from the merchant's
@@ -342,7 +342,7 @@ items and events), and `sdks/rust/src/model.rs` carries
 retrieve surface it, a list item is `None`), `sdks/rust/tests/debug_redaction.rs`,
 and `sdks/nodejs/src/client.test.ts`; the cast in
 `frontends/tests/e2e/cypress/tasks/checkoutTasks.ts` is gone. A merchant hands
-the value to `@vpay/stripe-js` in the browser and never logs it.
+the value to `@vaam-apps/vpay-stripe-js` in the browser and never logs it.
 
 ## What proves this surface exists
 
@@ -360,7 +360,7 @@ the value to `@vpay/stripe-js` in the browser and never logs it.
   `vpay-server`/`vpay-worker-bin`; an SDK's own unit-test stub, excluded from
   `dist/` and imported only from `*.test.ts`, is neither.
 - **`examples/checkout-browser/`** — a plain HTML + JS payer page, no
-  framework, importing the built `@vpay/stripe-js` ESM. See its own README
+  framework, importing the built `@vaam-apps/vpay-stripe-js` ESM. See its own README
   for the 7-step walkthrough against `just demo`.
 - **`frontends/apps/checkout`** — since Step 9, vpay's *own* payer page over
   the same routes, driven in a real browser by `shop-hosted.cy.ts` and

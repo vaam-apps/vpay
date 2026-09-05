@@ -1,5 +1,5 @@
 /**
- * `@vpay/sdk` — the Node.js merchant SDK for vpay.
+ * `@vaam-apps/vpay-sdk` — the Node.js merchant SDK for vpay.
  *
  * See README.md for the handshake, a usage example, and this package's own
  * Status section (the server serves `/v1/oauth` and the `/v1` auth boundary;

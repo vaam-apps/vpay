@@ -7,7 +7,7 @@
  * reach a secret cannot leak one.
  */
 import { initTRPC } from "@trpc/server";
-import type { VpayClient } from "@vpay/sdk";
+import type { VpayClient } from "@vaam-apps/vpay-sdk";
 import type { PaymentMethodType } from "./config";
 import type { ShopStore } from "./store/types";
 

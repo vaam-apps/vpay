@@ -15,11 +15,11 @@
  * 2. the merchant handshake completes — the configured `client_id` and
  *    private key are the pair this stack registered. Done here rather than
  *    left to the first test because a `invalid_client` surfacing out of
- *    stripe-node is the one failure mode `@vpay/sdk`'s README documents as
+ *    stripe-node is the one failure mode `@vaam-apps/vpay-sdk`'s README documents as
  *    *never settling* (a stripe-node defect), so a suite that discovers it
  *    inside a test hangs instead of reporting.
  */
-import { createStripeAuthenticator } from "@vpay/sdk/stripe";
+import { createStripeAuthenticator } from "@vaam-apps/vpay-sdk/stripe";
 
 import { readCompatEnv } from "./env.js";
 
@@ -38,7 +38,7 @@ export default async function preflight(): Promise<void> {
     status = response.status;
   } catch (cause) {
     throw new Error(
-      `@vpay/stripe-compat: no vpay answered ${healthz}. This suite runs OUT OF PROCESS ` +
+      `@vaam-apps/vpay-stripe-compat: no vpay answered ${healthz}. This suite runs OUT OF PROCESS ` +
         `against a real stack and must not be run without one — bring it up with ` +
         `\`just stripe-compat\`.`,
       { cause },
@@ -46,7 +46,7 @@ export default async function preflight(): Promise<void> {
   }
   if (status !== 200) {
     throw new Error(
-      `@vpay/stripe-compat: ${healthz} answered ${status}, not 200. The server is up but ` +
+      `@vaam-apps/vpay-stripe-compat: ${healthz} answered ${status}, not 200. The server is up but ` +
         `not healthy; check \`docker compose logs vpay-server\`.`,
     );
   }
@@ -69,7 +69,7 @@ export default async function preflight(): Promise<void> {
     );
   } catch (cause) {
     throw new Error(
-      `@vpay/stripe-compat: the merchant handshake failed for client_id=${env.clientId} ` +
+      `@vaam-apps/vpay-stripe-compat: the merchant handshake failed for client_id=${env.clientId} ` +
         `using ${env.privateKeyPath}. The stack must be running the \`demo\` profile overlay ` +
         `that registers this key's public half (\`just gen-demo-keys\` + \`-f compose.demo.yml\`).`,
       { cause },
@@ -77,7 +77,7 @@ export default async function preflight(): Promise<void> {
   }
   if (typeof probe.headers["Authorization"] !== "string") {
     throw new Error(
-      "@vpay/stripe-compat: the handshake resolved but set no Authorization header.",
+      "@vaam-apps/vpay-stripe-compat: the handshake resolved but set no Authorization header.",
     );
   }
 }

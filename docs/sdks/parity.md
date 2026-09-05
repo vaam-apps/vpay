@@ -21,7 +21,7 @@ two `checkout.session.expired` rows. Nothing here is inferred from a file name
 or a doc comment.
 
 A note on the first of those two, because the two SDKs are at parity on the
-*capability* and not on the shape: `@vpay/sdk` has always carried a
+*capability* and not on the shape: `@vaam-apps/vpay-sdk` has always carried a
 `KnownEventType` string union, and `sdks/rust` had no event-type vocabulary at
 all until 2026-09-04. Adding the type meant adding
 `vpay_sdk::KnownEventType` — a `#[non_exhaustive]` enum with `as_wire_str` /
@@ -85,7 +85,7 @@ method name).
 | `User-Agent` names this SDK and its own version | ✅ `the_user_agent_names_this_sdk_and_its_version` | ✅ `sends Accept and User-Agent on a GET resource call`, `sends Accept and User-Agent on a POST resource call`, `sends the same User-Agent on the token call and the resource call`, `matches package.json, so the User-Agent never lies about the version` |
 | Documented endpoint defaults derived from one `base_url` | ✅ `derives_the_documented_defaults`, `overriding_the_issuer_moves_the_default_token_endpoint_but_not_the_resource_base` | ✅ `strips one trailing slash so paths and the assertion aud never double a slash` |
 | One trailing slash on the base URL is normalised | ✅ `strips_a_trailing_slash_from_base_url` | ✅ `strips one trailing slash so paths and the assertion aud never double a slash` |
-| A **repeated** trailing slash is normalised | ⛔ 2026-09-03 — `trim_end_matches` does strip a run, but no test covers it, so the two SDKs' answers to `https://api.vpay.example//` are unproven and known to differ. Owner: SDK maintainers | ⛔ 2026-09-03 — `stripTrailingSlash` removes exactly one, so `https://api.vpay.example//` yields `//v1`. `@vpay/stripe-js` already fixed this class of bug for the browser surface. Owner: SDK maintainers |
+| A **repeated** trailing slash is normalised | ⛔ 2026-09-03 — `trim_end_matches` does strip a run, but no test covers it, so the two SDKs' answers to `https://api.vpay.example//` are unproven and known to differ. Owner: SDK maintainers | ⛔ 2026-09-03 — `stripTrailingSlash` removes exactly one, so `https://api.vpay.example//` yields `//v1`. `@vaam-apps/vpay-stripe-js` already fixed this class of bug for the browser surface. Owner: SDK maintainers |
 | A merchant-supplied id is percent-encoded and cannot escape `/v1` | ✅ `an_id_with_url_metacharacters_is_percent_encoded_into_the_path`, `confirm_and_cancel_encode_the_id_too` | ✅ `percent-encodes a path id so it can never escape the /v1 namespace`, `percent-encodes a hostile id on confirm too` |
 | The two SDKs encode byte-identical form bodies | ✅ `create_payment_intent_body_matches_the_node_sdk_byte_for_byte`, `confirm_body_matches_the_node_sdk_byte_for_byte`, `leaves_exactly_the_characters_encodeuricomponent_leaves` | ✅ `encodes the pinned payment_intents.create example exactly`, `encodes nested objects with bracket notation`, `encodes arrays with numeric indices, in order`, `percent-encodes brackets a merchant put inside a key, rather than reading them as structure`, `keeps a merchant bracket key distinct from the structure it imitates` |
 | A request timeout fires and surfaces as this SDK's transport error | ⛔ 2026-09-03 — `ClientBuilder::timeout` is applied to the reqwest client and defaults to 30 s, but no test makes one fire, so nothing proves it maps to `Error::Transport` rather than escaping as something else. Owner: SDK maintainers | ✅ `maps a server that accepts the connection and never answers to VpayTransportError`, `maps a stall part-way through the response body to VpayTransportError`, `maps a stall part-way through the token response body to VpayTransportError` |
@@ -145,7 +145,7 @@ method name).
 | A cached access token never reaches diagnostic output | ✅ `a_cached_access_token_never_appears_in_the_clients_debug_output`, `client_debug_output_never_contains_the_pem_or_a_cached_token` | ✅ `never appears in util.inspect of the client, even after a successful exchange` |
 | A cached access token never reaches a **thrown error's** output | ⛔ 2026-09-03 — no error variant carries a header or a token, so there is nothing to leak; but nothing asserts that, and the Node suite does. Recorded rather than assumed. Owner: SDK maintainers | ✅ `never appears in util.inspect of a thrown VpayApiError`, `never appears in util.inspect of a thrown VpayTransportError, cause chain included`, `never appears in util.inspect of a thrown VpayUnexpectedResponseError` |
 | `client_secret` decodes on `create`/`retrieve` and is absent on a list item | ✅ `create_surfaces_client_secret_when_the_server_sends_it`, `retrieve_surfaces_client_secret_when_the_server_sends_it`, `a_list_items_client_secret_is_none`, `a_create_or_retrieve_response_carrying_client_secret_decodes_it` | ✅ `payment_intents.create surfaces client_secret typed, when the server sends it`, `payment_intents.retrieve surfaces client_secret typed, when the server sends it` |
-| `client_secret` is redacted from the payment intent's own diagnostic output | ✅ `a_payment_intents_debug_output_never_contains_its_client_secret`, `client_secret_never_appears_in_debug_output_but_its_absence_or_length_does` | ⛔ 2026-09-03 — `PaymentIntent` is a plain interface, so `console.log(intent)` and `JSON.stringify(intent)` print a live payer credential verbatim. `@vpay/stripe-js` redacts its own. Owner: SDK maintainers |
+| `client_secret` is redacted from the payment intent's own diagnostic output | ✅ `a_payment_intents_debug_output_never_contains_its_client_secret`, `client_secret_never_appears_in_debug_output_but_its_absence_or_length_does` | ⛔ 2026-09-03 — `PaymentIntent` is a plain interface, so `console.log(intent)` and `JSON.stringify(intent)` print a live payer credential verbatim. `@vaam-apps/vpay-stripe-js` redacts its own. Owner: SDK maintainers |
 | A checkout session's `client_secret` — **and the `url` fragment carrying the same value** — are redacted from diagnostic output | ✅ `a_checkout_sessions_debug_output_never_contains_its_client_secret_or_its_url_fragment`, `a_checkout_session_without_a_secret_or_a_fragment_renders_no_redaction_marker` | ✅ `redacts a checkout session's client_secret from util.inspect, and leaves JSON faithful`, `redacts a list item's url fragment too, though it has no client_secret to redact`, `leaves a session whose url has no fragment untouched` |
 | Public option types are safe under `exactOptionalPropertyTypes` | ⛔ 2026-09-03 — not applicable to Rust and recorded as such rather than left blank: `Option<T>` has no equivalent hazard, so there is nothing here to build or to test. Owner: n/a | ✅ `accepts an explicitly undefined value for every optional property` |
 
@@ -173,7 +173,7 @@ method name).
 
 ---
 
-## The browser surface — `@vpay/stripe-js`
+## The browser surface — `@vaam-apps/vpay-stripe-js`
 
 A different surface, not a third merchant SDK: it authenticates a **payer's
 browser** with a publishable key and a per-intent `client_secret`
@@ -206,7 +206,7 @@ table for the same reason they exist.
 | Exercised against a running vpay | ⛔ 2026-09-03 — every server in this package's suite is `src/testing/browser-stub.ts`. The `/v1/browser` routes are proven server-side by `backends/tests/integration/tests/browser_checkout.rs`, and `examples/checkout-browser` vendors the built package, but no test drives this package against a live stack. Still true on 2026-09-04 for the Checkout rows added that day: `initEmbeddedCheckout` runs against a real `iframe` in jsdom and `retrieveCheckoutSession` against the `node:http` stub, and the checkout app and its browser route are lanes 3 and 1 of the same step. Owner: SDK maintainers |
 
 `sdks/stripe-compat` is **evidence, not an SDK**, and gets no rows: it drives
-the real `stripe@22.6.1` package through `@vpay/sdk/stripe` against a live
+the real `stripe@22.6.1` package through `@vaam-apps/vpay-sdk/stripe` against a live
 compose stack. It is where the `request-id` mirror and the
 `stripe-should-retry` advisory are actually observed — which is exactly why
 the two ⛔ rows above are gaps in the *merchant SDKs* rather than in the

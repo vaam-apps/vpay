@@ -46,7 +46,7 @@ to create two intents for them.
 **3. Only the webhook marks an order paid.** The return page displays the
 `session_id` vpay substituted into `success_url` and takes no decision from
 it. `POST /api/vpay/webhook` verifies the `Vpay-Signature` header with
-`@vpay/sdk`'s `verifyWebhook`, dedupes on vpay's event id in `webhook_events`,
+`@vaam-apps/vpay-sdk`'s `verifyWebhook`, dedupes on vpay's event id in `webhook_events`,
 and answers 2xx **after** the write.
 
 ## Running it
@@ -93,14 +93,14 @@ The `/v1/oauth` issuer works too — the OP accepts either.
 
 ## The stack, and why each piece is here
 
-| Piece                          | Version   | Why                                                                             |
-| ------------------------------ | --------- | ------------------------------------------------------------------------------- |
-| Next.js (App Router)           | 16.3.4    | D11. `output: 'standalone'` for the image.                                      |
-| tRPC                           | 11.18.0   | D11. Server-side callers for pages, one HTTP client for the browser.            |
-| ZenStack                       | 2.22.3    | D11. `schema.zmodel` is the source of truth; `enhance()` enforces its policies. |
-| Prisma                         | 6.19.3    | ZenStack 2.x's ORM. **Not 7** — see below.                                      |
-| Zod                            | 4.5.4     | tRPC input validation.                                                          |
-| `@vpay/sdk`, `@vpay/stripe-js` | workspace | The merchant SDK and the browser SDK.                                           |
+| Piece                                              | Version   | Why                                                                             |
+| -------------------------------------------------- | --------- | ------------------------------------------------------------------------------- |
+| Next.js (App Router)                               | 16.3.4    | D11. `output: 'standalone'` for the image.                                      |
+| tRPC                                               | 11.18.0   | D11. Server-side callers for pages, one HTTP client for the browser.            |
+| ZenStack                                           | 2.22.3    | D11. `schema.zmodel` is the source of truth; `enhance()` enforces its policies. |
+| Prisma                                             | 6.19.3    | ZenStack 2.x's ORM. **Not 7** — see below.                                      |
+| Zod                                                | 4.5.4     | tRPC input validation.                                                          |
+| `@vaam-apps/vpay-sdk`, `@vaam-apps/vpay-stripe-js` | workspace | The merchant SDK and the browser SDK.                                           |
 
 **Why Prisma 6 and not 7.** ZenStack 2.22.3 prints _"Prisma 7 support is
 untested and not planned"_ and generates a `datasource` block with
@@ -176,7 +176,7 @@ browser against the demo stack; but they assert on the shop's pages, never on
 test covers it.
 
 Also not covered by unit tests: the React components, and the browser end of
-`initEmbeddedCheckout` (that is `@vpay/stripe-js`'s own suite, and lane 6's
+`initEmbeddedCheckout` (that is `@vaam-apps/vpay-stripe-js`'s own suite, and lane 6's
 merged `shop-embedded.cy.ts`).
 
 ## The image
@@ -185,7 +185,7 @@ merged `shop-embedded.cy.ts`).
 docker build -f examples/shop/Dockerfile .        # from the repository root
 ```
 
-Root context, because `@vpay/sdk` and `@vpay/stripe-js` are workspace
+Root context, because `@vaam-apps/vpay-sdk` and `@vaam-apps/vpay-stripe-js` are workspace
 dependencies. Standalone output, non-root (`node`, uid 1000), read-only root
 filesystem with a tmpfs on `/tmp`, and an entrypoint that runs
 `prisma migrate deploy` before the server — so a container that starts has a

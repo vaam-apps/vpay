@@ -2,7 +2,7 @@
  * The wire shapes this page reads, from
  * `docs/plans/2026-09-04-step9-hosted-checkout.md`'s "The wire contract".
  *
- * The PaymentIntent types are **imported** from `@vpay/stripe-js` rather than
+ * The PaymentIntent types are **imported** from `@vaam-apps/vpay-stripe-js` rather than
  * restated: that package's `PaymentIntent` is already pinned against
  * `vpay_api::model::PaymentIntentWithSecret`'s twelve keys plus the secret,
  * and a second copy here would be a second thing to keep in step with the
@@ -15,7 +15,7 @@
  * is what stops the return page from ever calling `confirm`: there is no
  * secret on the object to pass.
  */
-import type { PaymentIntent } from '@vpay/stripe-js';
+import type { PaymentIntent } from '@vaam-apps/vpay-stripe-js';
 
 export type { PaymentIntent };
 

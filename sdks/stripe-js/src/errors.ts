@@ -1,5 +1,5 @@
 /**
- * The error half of `@vpay/stripe-js`.
+ * The error half of `@vaam-apps/vpay-stripe-js`.
  *
  * Two rules hold everywhere in this package and are what this module exists
  * to enforce in one place:

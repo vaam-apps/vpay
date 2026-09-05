@@ -123,7 +123,7 @@ function parseCompleteEvent(
 /**
  * The `document` and `window` this handle drives, or a `TypeError`.
  *
- * `@vpay/stripe-js` runs under Node in its own tests and in SSR frameworks
+ * `@vaam-apps/vpay-stripe-js` runs under Node in its own tests and in SSR frameworks
  * at a merchant, where neither binding exists. An embedded checkout with no
  * DOM cannot be silently degraded into anything useful, so it is refused
  * with the same shape as `loadStripe`'s argument checks.

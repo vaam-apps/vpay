@@ -1,7 +1,7 @@
 /**
  * The child half of the iframe↔parent protocol (D8).
  *
- * `@vpay/stripe-js`'s `initEmbeddedCheckout` is the parent half and lane 5
+ * `@vaam-apps/vpay-stripe-js`'s `initEmbeddedCheckout` is the parent half and lane 5
  * owns it. This is what runs *inside* the frame, and it holds exactly one
  * rule that matters more than the rest:
  *

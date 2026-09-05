@@ -1,4 +1,4 @@
-# @vpay/stripe-compat
+# @vaam-apps/vpay-stripe-compat
 
 The **official `stripe` package**, driven against a **real vpay stack**,
 asserting that a merchant's existing Stripe integration works once
@@ -26,12 +26,12 @@ confirmed intent to `succeeded`, and the receiver is what records the delivery
 Against an already-running stack:
 
 ```bash
-pnpm --filter @vpay/sdk build     # the suite imports @vpay/sdk/stripe
+pnpm --filter @vaam-apps/vpay-sdk build     # the suite imports @vaam-apps/vpay-sdk/stripe
 VPAY_BASE_URL=http://localhost:18080 \
 VPAY_RECEIVER_URL=http://localhost:8083 \
 VPAY_MERCHANT_CLIENT_ID=demo-merchant \
 VPAY_MERCHANT_PRIVATE_KEY_PATH="$PWD/.e2e/demo-merchant/oauth-signing-key.pem" \
-  pnpm --filter @vpay/stripe-compat compat
+  pnpm --filter @vaam-apps/vpay-stripe-compat compat
 ```
 
 | Variable | Default |

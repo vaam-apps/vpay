@@ -4,7 +4,7 @@
  *
  * This is the case that closes the gap three documents used to carry: vpay's
  * `Stripe-Signature` was argued to be byte-identical to Stripe's, and pinned
- * against a second copy of the HMAC and against `@vpay/sdk`'s verifier, but it
+ * against a second copy of the HMAC and against `@vaam-apps/vpay-sdk`'s verifier, but it
  * had never been handed to the library a merchant actually installs. An
  * argument from "the scheme is the same" is not an observation, and the whole
  * point of `Stripe-Signature` is that a copy-pasted Stripe recipe works
@@ -198,7 +198,7 @@ describe("a delivered webhook, through the real stripe package", () => {
 
       // The duplicate header exists so a Stripe-shaped handler keeps working
       // unedited; one that drifted from the header it mirrors would verify in
-      // @vpay/sdk and fail in the merchant's own code.
+      // @vaam-apps/vpay-sdk and fail in the merchant's own code.
       expect(delivered.stripeSignature).toBe(delivered.vpaySignature);
 
       // The call a merchant's handler makes, verbatim, against the real

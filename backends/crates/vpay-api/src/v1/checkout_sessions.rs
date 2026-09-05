@@ -172,7 +172,7 @@ enum UiMode {
     /// `cancel_url` when it is done.
     Hosted,
     /// vpay answers a `client_secret`; the merchant hands it to
-    /// `@vpay/stripe-js`, which mounts vpay's page in an iframe on their own
+    /// `@vaam-apps/vpay-stripe-js`, which mounts vpay's page in an iframe on their own
     /// site and receives a `vpay:complete` message.
     Embedded,
 }
@@ -200,7 +200,7 @@ impl UiMode {
             Some(_) => Err(ApiError::invalid_param(
                 "ui_mode",
                 "`ui_mode` must be `hosted` (vpay returns a `url` to redirect the payer to) or \
-                 `embedded` (vpay returns a `client_secret` for @vpay/stripe-js).",
+                 `embedded` (vpay returns a `client_secret` for @vaam-apps/vpay-stripe-js).",
             )),
         }
     }

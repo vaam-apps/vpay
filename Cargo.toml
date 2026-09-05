@@ -32,7 +32,18 @@ edition = "2024"
 # in rust-toolchain.toml.
 rust-version = "1.88"
 license = "Apache-2.0"
-repository = "https://github.com/vymalo/vpay"
+# `vaam-apps`, not `vymalo`: the organisation was renamed `vaam-store` ->
+# `vaam-apps` on 2026-09-04 and `github.com/vymalo/vpay` now answers a 301 to
+# it (verified 2026-09-05). The old URL still resolves through that redirect,
+# which is exactly why it survived unnoticed; a `repository` field is read by
+# crates.io and by tooling that does not follow redirects, so it names the
+# canonical owner. `git remote -v` and the three npm manifests already do.
+#
+# `authors` and `LICENSE`'s copyright line still say "Vymalo" on purpose:
+# those are attribution, not a URL, and changing whom a project is
+# copyrighted to is not a rename. Left for the maintainer — see
+# `docs/plans/exp7-notes/opus-review.md`.
+repository = "https://github.com/vaam-apps/vpay"
 authors = ["Vymalo"]
 
 [workspace.lints.rust]

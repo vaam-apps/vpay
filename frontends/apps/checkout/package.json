@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "deps": "pnpm --filter @vpay/stripe-js build",
+    "deps": "pnpm --filter @vaam-apps/vpay-stripe-js build",
     "dev": "pnpm run deps && next dev -p 3001",
     "build": "pnpm run deps && next build",
     "start": "next start -p 3001",
@@ -13,7 +13,7 @@
     "lint": "pnpm run deps && eslint . --max-warnings 0"
   },
   "dependencies": {
-    "@vpay/stripe-js": "workspace:*",
+    "@vaam-apps/vpay-stripe-js": "workspace:*",
     "@vpay/tokens": "workspace:*",
     "next": "^15.5.25",
     "react": "^19.0.0",

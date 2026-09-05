@@ -6,10 +6,10 @@
  * `vpay-server` or `vpay-worker-bin`; this file is TypeScript in an SDK
  * package, excluded from `dist` by `tsconfig.build.json`, and imported only
  * from `*.test.ts`. Nothing in the Rust workspace can reach it, and no
- * shipping byte of `@vpay/stripe-js` can either.
+ * shipping byte of `@vaam-apps/vpay-stripe-js` can either.
  *
  * It is a real HTTP server on a real socket, not a patched `fetch`, for the
- * same reason `@vpay/sdk` uses one: the assertions that matter here are
+ * same reason `@vaam-apps/vpay-sdk` uses one: the assertions that matter here are
  * about **bytes on the wire** — the exact form encoding of
  * `payment_method_data[mtn_momo][msisdn]`, the query string carrying `key`
  * and `client_secret`, the absence of an `Idempotency-Key` header. A mocked

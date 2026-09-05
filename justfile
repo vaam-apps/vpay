@@ -107,22 +107,22 @@ test-sdk-rust:
     cargo nextest run -p vpay-sdk
 
 test-sdk-node:
-    pnpm --filter @vpay/sdk test
+    pnpm --filter @vaam-apps/vpay-sdk test
 
 build-sdk-node:
-    pnpm --filter @vpay/sdk build
+    pnpm --filter @vaam-apps/vpay-sdk build
 
 test-sdk-browser:
-    pnpm --filter @vpay/stripe-js test
+    pnpm --filter @vaam-apps/vpay-stripe-js test
 
-# `@vpay/stripe-js` is browser ESM: nothing in the workspace imports it as a
+# `@vaam-apps/vpay-stripe-js` is browser ESM: nothing in the workspace imports it as a
 # TypeScript source, so `lint-web` does not need it built the way it needs
 # `build-sdk-node`. The static checkout example loads `dist/index.js`
 # directly, which is what this recipe is for.
 build-sdk-browser:
-    pnpm --filter @vpay/stripe-js build
+    pnpm --filter @vaam-apps/vpay-stripe-js build
 
-# Vendors `@vpay/stripe-js`'s build output into
+# Vendors `@vaam-apps/vpay-stripe-js`'s build output into
 # `examples/checkout-browser/dist/stripe-js/`, which its `index.html` imports
 # as a plain relative ESM path (no bundler, no import map). A COPY rather
 # than a symlink: the compose/CI environment that eventually serves this
@@ -169,9 +169,9 @@ sdk-conformance-node: build-sdk-node
 #
 # The three build steps are prerequisites rather than lines in the body so
 # that a failure in one names itself. `gen-demo-keys` writes the throwaway key
-# pairs and the profile overlay; `build-sdk-node` makes `@vpay/sdk`'s gitignored
+# pairs and the profile overlay; `build-sdk-node` makes `@vaam-apps/vpay-sdk`'s gitignored
 # `dist/` exist for `cy.task('mintCheckoutPaymentIntent')`; `build-checkout-browser`
-# vendors `@vpay/stripe-js`'s into `examples/checkout-browser/`.
+# vendors `@vaam-apps/vpay-stripe-js`'s into `examples/checkout-browser/`.
 #
 # Every service, not `demo_services`: the dashboard is in the file set and
 # `dashboard.cy.ts` visits it.
@@ -255,10 +255,10 @@ clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
 # Depends on `build-sdk-node` because the typecheck does: `sdks/stripe-compat`
-# imports `@vpay/sdk/stripe`, whose types resolve through that package's
+# imports `@vaam-apps/vpay-sdk/stripe`, whose types resolve through that package's
 # `exports` map to `dist/stripe-auth.d.ts`, and `dist/` is gitignored. Without
 # the build this recipe fails on a clean checkout with `TS2307: Cannot find
-# module '@vpay/sdk/stripe'` — a missing artefact reported as a broken import.
+# module '@vaam-apps/vpay-sdk/stripe'` — a missing artefact reported as a broken import.
 #
 # WHAT IS LINTED, AND WHAT IS NOT. Until 2026-09-05 this recipe ran the
 # typecheck alone, and `pnpm -r lint` was broken repo-wide: four packages
@@ -324,7 +324,7 @@ deny:
 #
 # Two runs, not one, and the narrower one first. `--prod` walks only the
 # production dependency graph — what a merchant would actually receive from
-# `@vpay/sdk` / `@vpay/stripe-js`, and what `frontends/Dockerfile` ships —
+# `@vaam-apps/vpay-sdk` / `@vaam-apps/vpay-stripe-js`, and what `frontends/Dockerfile` ships —
 # so a failure there is a different kind of news from a failure in the build
 # tooling, and reporting both under one exit code would flatten that. The
 # second run covers everything, dev dependencies included, because every
@@ -403,7 +403,7 @@ audit-web:
 # The checks that keep this repository honest, plus one report. CI's
 # `self-checks` job runs exactly this list, in this order:
 # verify-no-mocks, verify-status, verify-errors, verify-sdk-parity,
-# verify-links, and then verify-docs last.
+# verify-links, verify-npm-scope, and then verify-docs last.
 #
 # That sentence was false until 2026-09-04: `verify-sdk-parity` ran here but
 # had no step in `.github/workflows/ci.yml`, so ADR-0015's decision 3 ("CI
@@ -413,7 +413,7 @@ audit-web:
 # this comment honest is someone reading the workflow beside it.
 #
 # `verify-docs` is NOT a check: it exits 0 whatever it finds, so the
-# "verify: ok" below means the five gates passed and says nothing about the
+# "verify: ok" below means the six gates passed and says nothing about the
 # numbers `verify-docs` printed. It is last so that the report a human reads
 # is the final thing on the terminal, after every gate has had its say.
 #
@@ -422,9 +422,16 @@ audit-web:
 # and `just ci` is where claims get checked; it needs no network and no
 # database, so it costs a `git ls-files` and a pass over 113 files.
 #
-# The five self-checks, then the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-docs
-    @echo "verify: ok — the five gates above passed; the verify-docs report is advisory"
+# `verify-npm-scope` joined it the same day as the sixth, for a reason
+# measured rather than assumed: deleting `publishConfig.access` from
+# `sdks/nodejs/package.json` — the one line between `npm publish` and a
+# scoped package's default `restricted` — was caught by nothing. Not the
+# lockfile, not `pnpm -r typecheck`, not `lint-web`, not `test-web`, not any
+# of the five gates above.
+#
+# The six self-checks, then the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope verify-docs
+    @echo "verify: ok — the six gates above passed; the verify-docs report is advisory"
 
 verify-no-mocks:
     cargo xtask verify-no-mocks
@@ -470,6 +477,26 @@ verify-sdk-parity:
 # Fail if a doc links to a file this repository does not track.
 verify-links:
     cargo xtask verify-links
+
+# Every publishable npm package under `sdks/` is named `@vaam-apps/vpay-*`,
+# declares `publishConfig.access: "public"`, names this repository, carries a
+# license, and ships a `files` allowlist with an entry point under `dist/`;
+# every private one declares no `publishConfig` at all; and no retired
+# `@vpay/*` package name survives outside `docs/plans`, `docs/adr` and
+# `docs/status.md`.
+#
+# The `files`/`main` half is not tidiness. `sdks/stripe-compat` has no build,
+# no `main` and no `files`, so `pnpm pack` on it produces a tarball of five
+# `*.compat.test.ts` files and a `vitest.config.ts` — which is exactly why it
+# is the one SDK that stays `"private": true`, and why the gate objects to a
+# private package that advertises publish-readiness anyway.
+#
+# What it does NOT check: that `dist/` exists (gitignored — a gate needing a
+# build would fail on a clean checkout for a reason that is not its subject;
+# `lint-web` and CI's `web` job build it) and the registry (that needs the
+# network, which is `verify-citations`' exception and not this one's).
+verify-npm-scope:
+    cargo xtask verify-npm-scope
 
 # A REPORT, not a gate: doc-comment lines against code lines per crate, the
 # production functions of 80 lines or more, every ```ignore doctest fence and
@@ -531,7 +558,7 @@ verify-docs:
 # one.
 #
 # Re-measured again 2026-09-03 after Step 5c (`browser_checkout.rs`, the
-# `@vpay/stripe-js` unit suite which cargo does not run and this count does
+# `@vaam-apps/vpay-stripe-js` unit suite which cargo does not run and this count does
 # not cover, and the `track_http_metrics`-on-the-browser-nest test added
 # while rebasing 5c onto Step 6) was rebased onto that tree:
 # `cargo nextest list --workspace` lists **969 total, 39 test binaries, 0
@@ -1022,7 +1049,7 @@ release-dry-run:
     # `backends/Dockerfile` COPYs `sdks/rust` and `examples/merchant-demo`
     # because cargo refuses to load a workspace whose `members` list names a
     # missing directory, and `frontends/Dockerfile`'s `checkout` target COPYs
-    # `sdks/` so `@vpay/stripe-js` resolves.
+    # `sdks/` so `@vaam-apps/vpay-stripe-js` resolves.
     #
     # No `--build-arg VPAY_GIT_SHA` here, deliberately, and that is a
     # difference from the workflow rather than an omission: a dry run is not
@@ -1719,7 +1746,7 @@ gen-demo-keys: gen-e2e-signing-key
         # OP answers invalid_target, and the server refuses to boot.
         allowed_audiences: ["vpay:v1"]
         # What a payer's browser presents on /v1/browser alongside the payment
-        # intent's own client_secret (Step 5c, @vpay/stripe-js). Not secret:
+        # intent's own client_secret (Step 5c, @vaam-apps/vpay-stripe-js). Not secret:
         # it is rendered into the checkout page, it names this tenant, and it
         # authorises nothing on its own.
         #
@@ -2044,7 +2071,7 @@ demo-checkout:
 # a suite that skipped them would report a green that proves less than it
 # looks like.
 #
-# `build-sdk-node` is not optional: the suite imports `@vpay/sdk/stripe`,
+# `build-sdk-node` is not optional: the suite imports `@vaam-apps/vpay-sdk/stripe`,
 # which resolves to `sdks/nodejs/dist/stripe-auth.js`.
 #
 # The stack is left UP on purpose, exactly as `just demo` leaves it — a failed
@@ -2101,7 +2128,7 @@ stripe-compat: gen-demo-keys build-sdk-node
     VPAY_RECEIVER_URL=http://localhost:{{demo_receiver_port}} \
     VPAY_MERCHANT_CLIENT_ID=demo-merchant \
     VPAY_MERCHANT_PRIVATE_KEY_PATH="$PWD/.e2e/demo-merchant/oauth-signing-key.pem" \
-      pnpm --filter @vpay/stripe-compat compat
+      pnpm --filter @vaam-apps/vpay-stripe-compat compat
     status=$?
     set -e
 

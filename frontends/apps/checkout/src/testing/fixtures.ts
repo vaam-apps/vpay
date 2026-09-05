@@ -9,7 +9,7 @@
  * `.stories.tsx` may name it, and one does: Storybook is built by
  * `pnpm --filter @vpay/ui build-storybook` and is not part of `next build`.
  */
-import type { PaymentIntent } from '@vpay/stripe-js';
+import type { PaymentIntent } from '@vaam-apps/vpay-stripe-js';
 
 import type { CheckoutContext } from '../lib/machine';
 import type { CheckoutSession, PublicPaymentIntent } from '../lib/types';

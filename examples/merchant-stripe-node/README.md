@@ -28,8 +28,8 @@ free"; use `8080` if it is free on your machine, and keep the number the same
 everywhere — the OP's issuer is derived from it.
 
 1. `pnpm install`
-2. `pnpm --filter @vpay/sdk build` — the example imports `@vpay/sdk/stripe`,
-   which resolves to `sdks/nodejs/dist/`.
+2. `pnpm --filter @vaam-apps/vpay-sdk build` — the example imports
+   `@vaam-apps/vpay-sdk/stripe`, which resolves to `sdks/nodejs/dist/`.
 3. `just demo_port=18080 gen-demo-keys` — writes a throwaway merchant keypair
    into git-ignored `.e2e/` and the profile overlay that registers its public
    half.
@@ -93,6 +93,6 @@ approval is a stub mapping answering `SUCCESSFUL`.
   divergences — no `automatic_payment_methods`, no `confirm: true` on create,
   no `expand`, no Connect, no `client_secret` — are listed in
   [`docs/flows/stripe-sdk-compat.md`](../../docs/flows/stripe-sdk-compat.md).
-- Not a reason to prefer stripe-node over [`@vpay/sdk`](../../sdks/nodejs/).
-  Use this if you already have Stripe integration code; use `@vpay/sdk` if you
+- Not a reason to prefer stripe-node over [`@vaam-apps/vpay-sdk`](../../sdks/nodejs/).
+  Use this if you already have Stripe integration code; use `@vaam-apps/vpay-sdk` if you
   do not.

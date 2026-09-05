@@ -9,7 +9,7 @@
 //!
 //! This surface exists because `@stripe/stripe-js` cannot be pointed at
 //! vpay — `StripeConstructorOptions` has no host, and the loader hardcodes
-//! `js.stripe.com`. `sdks/stripe-js` (`@vpay/stripe-js`) is the drop-in
+//! `js.stripe.com`. `sdks/stripe-js` (`@vaam-apps/vpay-stripe-js`) is the drop-in
 //! replacement, and *this* module is what it speaks to. The wire shape is
 //! fixed by that package: query `key` + `client_secret` on the `GET`, form
 //! `key`, `client_secret`, `payment_method_data[…]`, `return_url` on the
@@ -111,7 +111,7 @@ const RESOURCE: &str = "payment intent";
 ///
 /// # Two, until Step 9; five since
 ///
-/// The first two are the payment-intent surface `@vpay/stripe-js` speaks to,
+/// The first two are the payment-intent surface `@vaam-apps/vpay-stripe-js` speaks to,
 /// and they still are: **Step 9 added no way to confirm.** vpay's own
 /// checkout page drives exactly the same `POST
 /// /v1/browser/payment_intents/{id}/confirm` a merchant's page does, which is
@@ -419,7 +419,7 @@ pub async fn authenticate(
 ///
 /// One struct with `#[serde(flatten)]` at each call site rather than two, so
 /// the `GET`'s query parameters and the `POST`'s form fields cannot be
-/// spelled differently — `@vpay/stripe-js` sends the same two names in both
+/// spelled differently — `@vaam-apps/vpay-stripe-js` sends the same two names in both
 /// places (`sdks/stripe-js/src/client.ts`).
 ///
 /// Both fields are `Option<String>` although both are required: the wire is
@@ -453,7 +453,7 @@ impl PayerCredential {
 
 /// `GET /v1/browser/payment_intents/{id}?key=…&client_secret=…`.
 ///
-/// The polling endpoint: `@vpay/stripe-js`'s `waitForPaymentIntent` calls it
+/// The polling endpoint: `@vaam-apps/vpay-stripe-js`'s `waitForPaymentIntent` calls it
 /// every couple of seconds until the intent stops moving, which is how a
 /// merchant's page learns a push confirm succeeded without a webhook.
 ///

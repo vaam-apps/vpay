@@ -150,7 +150,7 @@ merchant_clients:
     # boot without it (ConfigError::MerchantMissingV1Audience).
     allowed_audiences: ["vpay:v1"]
     # The keys a payer's *browser* presents on `/v1/browser` alongside the
-    # payment intent's own `client_secret` (Step 5c, `@vpay/stripe-js`).
+    # payment intent's own `client_secret` (Step 5c, `@vaam-apps/vpay-stripe-js`).
     #
     # Not secret — this value is rendered into the merchant's public checkout
     # page by construction, exactly like `jwks` above, and it authorises

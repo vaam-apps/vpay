@@ -1,7 +1,20 @@
 {
-  "name": "@vpay/sdk",
+  "name": "@vaam-apps/vpay-sdk",
   "version": "0.1.0",
-  "private": true,
+  "description": "The Node.js merchant SDK for vpay's /v1 API: OAuth2 private_key_jwt, payment intents, checkout sessions, refunds, events and webhook verification.",
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vaam-apps/vpay.git",
+    "directory": "sdks/nodejs"
+  },
+  "homepage": "https://github.com/vaam-apps/vpay/tree/master/sdks/nodejs#readme",
+  "bugs": {
+    "url": "https://github.com/vaam-apps/vpay/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.11.0"
@@ -26,6 +39,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "prepack": "pnpm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "lint": "eslint . --max-warnings 0"

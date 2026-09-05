@@ -11,7 +11,7 @@
  *
  * A test that merely asserted `window.location.assign` was called would pass
  * for an implementation that also resolved. `settled` is what makes the
- * difference observable — `pnpm --filter @vpay/stripe-js test` fails if
+ * difference observable — `pnpm --filter @vaam-apps/vpay-stripe-js test` fails if
  * `#followRedirect` is changed to `return Promise.resolve(result)` after
  * navigating.
  */

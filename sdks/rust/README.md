@@ -5,7 +5,7 @@ The Rust merchant SDK for vpay's `/v1` API. Implements the wire contract in
 `private_key_jwt` client assertions, `client_credentials` token exchange and
 caching, the form-encoded resource calls, and outbound-webhook verification.
 
-Its sibling is [`sdks/nodejs`](../nodejs) (`@vpay/sdk`). The two implement one
+Its sibling is [`sdks/nodejs`](../nodejs) (`@vaam-apps/vpay-sdk`). The two implement one
 contract and are held to producing **byte-identical** request bodies; see
 "Cross-SDK parity" below.
 
@@ -124,7 +124,7 @@ let intent = client
 // `intent.client_secret` — not to be confused with the OAuth
 // `client_secret` this SDK never sends (see "The handshake, in prose") — is
 // the payer credential `/v1/browser` accepts for a browser-side confirm via
-// `@vpay/stripe-js`. `create()` and `retrieve()` are the only calls that set
+// `@vaam-apps/vpay-stripe-js`. `create()` and `retrieve()` are the only calls that set
 // it: a `list()` item and an `Event`'s payload always decode it as `None`,
 // so it never reaches a merchant's listing view or a stored/forwarded
 // webhook body. Hand it to your frontend; never log it — `PaymentIntent`'s
@@ -311,7 +311,7 @@ Two types, deliberately:
   who want one `?`-able type.
 - **`Error`** — everything that happens on, or instead of, the wire:
 
-| Variant                     | When                                                                                                           | Carries                                                              | `@vpay/sdk` equivalent                         |
+| Variant                     | When                                                                                                           | Carries                                                              | `@vaam-apps/vpay-sdk` equivalent               |
 | --------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------- |
 | `Error::Api`                | A non-2xx `/v1` response shaped like `vpay_api::error_envelope`.                                               | `status`, `kind` (the envelope's `type`), `code`, `message`, `param` | `VpayApiError`                                 |
 | `Error::TokenEndpoint`      | The token endpoint refused (`invalid_client`, …). **Never retried.**                                           | `error`, `description`                                               | `VpayAuthError` (`error` / `errorDescription`) |
@@ -378,7 +378,7 @@ race a real five-minute window. Both accept more than one `v1=` in the header
 `subtle`, and reject a malformed header, a timestamp outside the tolerance, or
 a body whose signature does not match — in that order.
 
-The header grammar is held byte-for-byte to `@vpay/sdk`'s, because a delivery
+The header grammar is held byte-for-byte to `@vaam-apps/vpay-sdk`'s, because a delivery
 one SDK accepts and the other rejects is a defect neither side can see alone:
 
 - `t` must be a bare run of decimal digits. `+1753401600`, `-1`, `1753401600.0`

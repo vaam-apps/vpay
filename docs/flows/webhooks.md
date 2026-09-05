@@ -34,7 +34,7 @@ and replayed on every rung of the ladder. So `url: null` in an event does
 **not** mean the session was embedded; read `ui_mode`. `client_secret` is
 absent entirely, as is the `return_token`, which is a column and on no wire
 object at all. Both merchant SDKs carry the type in their vocabulary
-(`vpay_sdk::KnownEventType::CheckoutSessionExpired`, `@vpay/sdk`'s
+(`vpay_sdk::KnownEventType::CheckoutSessionExpired`, `@vaam-apps/vpay-sdk`'s
 `KnownEventType`) with a narrowing accessor for the payload
 (`Event::checkout_session`, `isCheckoutSessionEvent`), and both keep working
 unchanged for a type they do not know: `type` is a `string` in both, not the
@@ -110,7 +110,7 @@ either.**
 **Updated 2026-09-04 (Step 9): the receiver in the demo stack is now a real
 merchant handler, and the sentence above is narrowed rather than retired.**
 `examples/shop` exposes `POST /api/vpay/webhook`, which verifies the
-`Vpay-Signature` header with `@vpay/sdk`, dedupes by event id, marks an order
+`Vpay-Signature` header with `@vaam-apps/vpay-sdk`, dedupes by event id, marks an order
 `paid` on `payment_intent.succeeded` and `failed` on
 `payment_intent.payment_failed`, and answers `2xx` only after the write. It is
 the first thing in this repository's history to *act* on a delivery rather than
@@ -243,7 +243,7 @@ would replay a signed event body at a host the operator never configured.
 straight to `vpay_sdk::webhooks::verify_at`
 (`the_delivered_signature_verifies_with_the_shipping_rust_sdk`, which also flips
 one byte of the recorded body and requires `SignatureMismatch`) and to the
-built `@vpay/sdk` in a `node` subprocess
+built `@vaam-apps/vpay-sdk` in a `node` subprocess
 (`the_delivered_signature_verifies_with_the_shipping_node_sdk` — it **fails**
 rather than skips when `node` is missing; CI sets `VPAY_REQUIRE_NODE=1`). Two
 configured secrets produce exactly two `v1=` values and either one verifies

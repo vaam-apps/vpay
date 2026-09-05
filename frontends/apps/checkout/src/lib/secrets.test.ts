@@ -40,7 +40,7 @@
  * and not) and {@link traceAReturn} (the return page, which is a different
  * document with a different credential).
  */
-import { loadStripe } from '@vpay/stripe-js';
+import { loadStripe } from '@vaam-apps/vpay-stripe-js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { startCheckoutStub, type CheckoutStub } from '../testing/browser-stub';

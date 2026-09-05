@@ -20,8 +20,8 @@
  * The 2xx is answered **after** the write, never before: `applyWebhookEvent`
  * is awaited and its outcome is what the response reports.
  */
-import { verifyWebhook, WebhookSignatureError } from "@vpay/sdk";
-import type { Event } from "@vpay/sdk";
+import { verifyWebhook, WebhookSignatureError } from "@vaam-apps/vpay-sdk";
+import type { Event } from "@vaam-apps/vpay-sdk";
 import type { OrderStatus, ShopStore, WebhookOutcome } from "./store/types";
 
 /**

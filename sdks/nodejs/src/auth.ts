@@ -427,7 +427,7 @@ function stripTrailingSlash(url: string): string {
  * - **A bad key is a startup failure.** `createPrivateKey('')`, or a PEM with
  *   a mangled header, throws an OpenSSL `Error` out of `crypto`. Left to the
  *   first mint, that surfaced as an unrecognisable exception from the middle
- *   of a token exchange — and, through `@vpay/sdk/stripe`, as stripe-node's
+ *   of a token exchange — and, through `@vaam-apps/vpay-sdk/stripe`, as stripe-node's
  *   detached `unhandledRejection` (see `stripe-auth.ts`). Parsed here it is a
  *   {@link VpayConfigError} raised by the constructor the merchant wrote.
  * - **One parse, not one per request.** RSA PEM decoding is not free, and

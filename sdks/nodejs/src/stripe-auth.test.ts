@@ -1,5 +1,5 @@
 /**
- * Tests for `@vpay/sdk/stripe`.
+ * Tests for `@vaam-apps/vpay-sdk/stripe`.
  *
  * Everything that touches HTTP runs against a real `node:http` server started
  * by the test, and the last case drives the **real `stripe` package** end to
@@ -687,7 +687,7 @@ describe("createStripeAuthenticator — stripe-node compatibility", () => {
    * `StripeRequest` out structurally rather than importing it (so the module
    * builds with `stripe` absent); these assignments are what stops that
    * hand-written shape from silently drifting from the real one. They are
-   * checked by `pnpm --filter @vpay/sdk typecheck`, not by vitest — which
+   * checked by `pnpm --filter @vaam-apps/vpay-sdk typecheck`, not by vitest — which
    * strips types without checking them — so the `it` block below exists only
    * so the values are constructed at runtime too.
    */

@@ -4,7 +4,7 @@
  * Every assertion here is about a state name or a field the reducer wrote —
  * never about a status this file supplied and then read back. The intents
  * are the wire contract's shapes; the outcomes are derived from them by the
- * same two-field rule `@vpay/stripe-js` polls on.
+ * same two-field rule `@vaam-apps/vpay-stripe-js` polls on.
  */
 import { describe, expect, it } from 'vitest';
 

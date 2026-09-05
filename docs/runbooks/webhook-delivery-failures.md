@@ -553,7 +553,7 @@ identical from vpay's side.
   exactly as received. A framework that parses JSON and re-serialises it before
   verification breaks every delivery; take the raw body first.
 - **Use the SDK's verifier.** `vpay_sdk::webhooks::verify` (Rust) or
-  `verifyWebhook` from `@vpay/sdk` (Node). Both are exercised against bytes this
+  `verifyWebhook` from `@vaam-apps/vpay-sdk` (Node). Both are exercised against bytes this
   server emitted, in `backends/tests/integration/tests/webhooks.rs`.
 - **A Stripe-shaped handler works unmodified.** `Stripe-Signature` carries the
   same value as `Vpay-Signature`, byte for byte, so

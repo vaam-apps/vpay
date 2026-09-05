@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { loadStripe } from "@vpay/stripe-js";
-import type { EmbeddedCheckout } from "@vpay/stripe-js";
+import { loadStripe } from "@vaam-apps/vpay-stripe-js";
+import type { EmbeddedCheckout } from "@vaam-apps/vpay-stripe-js";
 import { trpc } from "@/lib/trpc";
 
 /**

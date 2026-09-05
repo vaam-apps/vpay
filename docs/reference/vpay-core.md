@@ -117,7 +117,7 @@ is minted; adding a second RNG crate to this dependency-light crate would be a
 second thing to audit for the same guarantee.
 
 `CLIENT_SECRET_INFIX` is a **wire contract**, not an implementation detail:
-`@vpay/stripe-js` splits a `clientSecret` on that exact string to recover the id
+`@vaam-apps/vpay-stripe-js` splits a `clientSecret` on that exact string to recover the id
 it must build a URL from (`sdks/stripe-js/src/client.ts`'s `SECRET_SEPARATOR`),
 and Stripe spells its own client secrets the same way. `client_secret` is the
 one place the two halves are joined, on the minting side and the checking side

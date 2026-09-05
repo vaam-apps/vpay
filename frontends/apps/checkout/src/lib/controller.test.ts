@@ -2,12 +2,12 @@
  * The whole page flow, driven against a real HTTP stub of the five routes
  * it speaks to.
  *
- * Not a mocked `fetch`: `@vpay/stripe-js` builds the confirm body and the
+ * Not a mocked `fetch`: `@vaam-apps/vpay-stripe-js` builds the confirm body and the
  * poll URL itself, and the point of these tests is that vpay's browser
  * surface, that package and this page agree on the wire — which a stubbed
  * function they all share cannot show.
  */
-import { loadStripe } from '@vpay/stripe-js';
+import { loadStripe } from '@vaam-apps/vpay-stripe-js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { startCheckoutStub, type CheckoutStub } from '../testing/browser-stub';
@@ -96,7 +96,7 @@ describe('the MTN push, end to end', () => {
     await h.controller.start();
     await h.controller.submitMsisdn(' +237 600 000 400 ');
     const confirm = h.stub.requests.find((r) => r.method === 'POST');
-    // `@vpay/stripe-js`'s own form encoding, asserted verbatim: brackets
+    // `@vaam-apps/vpay-stripe-js`'s own form encoding, asserted verbatim: brackets
     // are legal in a query component and it does not escape them.
     expect(confirm?.body).toContain('payment_method_data[mtn_momo][msisdn]=237600000400');
     expect(confirm?.body).not.toContain('+237');

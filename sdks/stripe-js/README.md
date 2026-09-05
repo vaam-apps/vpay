@@ -1,7 +1,19 @@
-# `@vpay/stripe-js`
+# `@vaam-apps/vpay-stripe-js`
 
 A Stripe.js-shaped browser client for vpay's payer surface. Zero runtime
 dependencies, ESM, TypeScript strict.
+
+**Not yet on the registry.** `npm view @vaam-apps/vpay-stripe-js` answered
+`E404` on 2026-09-05 and no workflow in this repository publishes anything;
+the manifest stopped saying `"private": true` on that date so that a release
+can happen without editing it. Once published:
+
+```bash
+pnpm add @vaam-apps/vpay-stripe-js   # not yet published — see above
+```
+
+Inside this workspace it is a `workspace:*` dependency, built with
+`pnpm --filter @vaam-apps/vpay-stripe-js build`.
 
 ## Why this exists rather than `@stripe/stripe-js`
 
@@ -24,7 +36,7 @@ loaded at runtime.
 **Compatible**: the payment-intent half of Stripe.js against a
 push (mobile-money) or redirect rail.
 
-| Stripe.js                                                          | `@vpay/stripe-js`                                                                                                          |
+| Stripe.js                                                          | `@vaam-apps/vpay-stripe-js`                                                                                                          |
 | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
 | `loadStripe(pk)`                                                   | `loadStripe(pk, { baseUrl, checkoutBaseUrl? })` — plus a required `baseUrl`; no `<script>` is downloaded                   |
 | `stripe.retrievePaymentIntent(clientSecret)`                       | same signature, same `PaymentIntentResult` shape                                                                           |
@@ -102,7 +114,7 @@ package's `typecheck` fails if either side moves.
 
 ```ts
 import type { PaymentIntentResult as StripeResult } from "@stripe/stripe-js";
-import type { PaymentIntentResult as VpayResult } from "@vpay/stripe-js";
+import type { PaymentIntentResult as VpayResult } from "@vaam-apps/vpay-stripe-js";
 
 // The same function body compiles against either alias.
 function render(result: VpayResult): string {
@@ -118,7 +130,7 @@ the merchant SDK and renders the publishable key and the `client_secret` into
 the page; the **browser** never holds a merchant API key.
 
 ```ts
-// server (Node, @vpay/sdk, OAuth2 private_key_jwt)
+// server (Node, @vaam-apps/vpay-sdk, OAuth2 private_key_jwt)
 const intent = await vpay.paymentIntents.create({
   amount: 5000,
   currency: "xaf",
@@ -132,7 +144,7 @@ res.render("checkout", {
 
 ```ts
 // browser
-import { loadStripe } from "@vpay/stripe-js";
+import { loadStripe } from "@vaam-apps/vpay-stripe-js";
 
 const stripe = await loadStripe(publishableKey, {
   baseUrl: "https://api.vpay.example",
@@ -186,7 +198,7 @@ afterwards. It is a second credential of the same shape as the intent's:
 particular it is not the secret that authorises `confirm`.
 
 ```ts
-// server (Node, @vpay/sdk)
+// server (Node, @vaam-apps/vpay-sdk)
 const session = await vpay.checkout.sessions.create({
   payment_intent: intent.id,
   ui_mode: "embedded",
@@ -258,7 +270,7 @@ On that route `payment_intent` is the **expanded intent**, not the `pi_…`
 id, `client_secret` included — vpay's checkout page has to confirm and poll
 it through the existing browser routes, and a second round trip to fetch it
 would need a credential the page does not have yet. On the merchant SDKs
-(`@vpay/sdk`, `vpay_sdk`) the same field stays the id. So:
+(`@vaam-apps/vpay-sdk`, `vpay_sdk`) the same field stays the id. So:
 
 ```ts
 const { checkoutSession, error } = await stripe.retrieveCheckoutSession(cs);
@@ -312,9 +324,9 @@ never-rejects contract.
 ## Development
 
 ```bash
-pnpm --filter @vpay/stripe-js typecheck
-pnpm --filter @vpay/stripe-js test
-pnpm --filter @vpay/stripe-js build   # tsc → dist/, gitignored
+pnpm --filter @vaam-apps/vpay-stripe-js typecheck
+pnpm --filter @vaam-apps/vpay-stripe-js test
+pnpm --filter @vaam-apps/vpay-stripe-js build   # tsc → dist/, gitignored
 ```
 
 Unit tests run against a real `node:http` server standing in for

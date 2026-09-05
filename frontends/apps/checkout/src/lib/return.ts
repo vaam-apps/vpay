@@ -6,7 +6,7 @@
  *
  * **There is no intent secret on this trip.** D6: the `return_token` in the
  * query authorises reading the session and polling its intent, and nothing
- * else. So this page cannot use `@vpay/stripe-js`'s poll ladder at all — it
+ * else. So this page cannot use `@vaam-apps/vpay-stripe-js`'s poll ladder at all — it
  * polls `GET /v1/browser/checkout/sessions/{id}/return`, which renders the
  * intent *without* its `client_secret`. That is a smaller credential doing a
  * smaller job, and it is why this file has its own reducer rather than
@@ -17,7 +17,7 @@
  * fragment before the payer left is gone; the token in the query string is
  * all there is.
  */
-import type { FailureCode } from '@vpay/stripe-js';
+import type { FailureCode } from '@vaam-apps/vpay-stripe-js';
 
 import type { MessageKey } from '../i18n/index';
 import type { BrowserCheckoutApi, ReturnCredentials } from './api';

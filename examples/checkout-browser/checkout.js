@@ -1,4 +1,4 @@
-// A plain-JS payer page against `@vpay/stripe-js`. No bundler: this file is
+// A plain-JS payer page against `@vaam-apps/vpay-stripe-js`. No bundler: this file is
 // served as-is and imports the vendored package build by relative path.
 //
 // `./dist/stripe-js/index.js` is NOT checked in — it is `sdks/stripe-js/dist/`
