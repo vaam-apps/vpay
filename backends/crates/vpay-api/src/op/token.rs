@@ -36,7 +36,7 @@ use crate::op::{
 /// `authkestra_op::handlers::token::authenticate_client`, which resolves the
 /// client through [`crate::op::clients::YamlClientStore`] (so the
 /// `disabled_clients` kill switch applies) and spends the assertion's `jti`
-/// through [`vpay_db::SqlClientAssertionStore`] (so it is single-use).
+/// through [`vpay_db::client_assertion_store`] (so it is single-use).
 ///
 /// `Form<TokenRequest>` because RFC 6749 §4.4.2 fixes the request encoding
 /// as `application/x-www-form-urlencoded`; a JSON body is not an alternative

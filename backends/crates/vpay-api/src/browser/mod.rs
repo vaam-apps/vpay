@@ -429,6 +429,7 @@ pub async fn authenticate(
 /// is not a shape error a payer can fix by reading a message — it is the
 /// uniform 404, decided below.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 struct PayerCredential {
     key: Option<String>,
     client_secret: Option<String>,
@@ -485,6 +486,7 @@ async fn retrieve(
 /// nested under the *rail's own code*, so a typed struct here would name
 /// `mtn_momo` as a field.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 struct BrowserConfirmParams {
     payment_method_data: Option<Map<String, Value>>,
     return_url: Option<String>,

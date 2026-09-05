@@ -353,6 +353,7 @@ impl ProviderHost {
 /// [`Deployment`] so the next egress rule — an allowlist, a
 /// per-endpoint override — has a home that does not move this one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
 pub struct WebhookPolicy {
     /// Whether a webhook delivery may connect to a loopback, private,
     /// link-local, CGNAT, multicast or otherwise non-public address

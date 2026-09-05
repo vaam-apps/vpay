@@ -23,7 +23,7 @@
 //!   derives from the base URL independently of the server (that the *SDK*
 //!   derives the same ones is what case (a) shows, by using them).
 //! - **(e)** a `client_assertion` presented twice is refused the second
-//!   time — the proof that `SqlClientAssertionStore` is actually wired into
+//!   time — the proof that `vpay_db::client_assertion_store` is actually wired into
 //!   the store the token handler consults, which no unit test can show
 //!   because the wiring is the thing under test.
 //! - **(f)** a token request that omits `audience` is *accepted* by the
@@ -887,7 +887,7 @@ async fn the_jwks_and_discovery_documents_describe_this_process() -> anyhow::Res
 
 // --------------------------------------------------------------- case (e)
 
-/// Replay protection, which is the whole reason `SqlClientAssertionStore`
+/// Replay protection, which is the whole reason `vpay_db::client_assertion_store`
 /// exists and the only thing that proves it is wired into the store the
 /// token handler consults.
 ///

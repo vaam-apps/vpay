@@ -140,6 +140,7 @@ impl ResourceClaims {
 /// needs a concrete `Deserialize` target, and it deliberately carries no more
 /// than `ResourceClaims` re-exposes.
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
 struct RawClaims {
     sub: String,
     #[serde(default)]

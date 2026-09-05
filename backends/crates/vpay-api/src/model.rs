@@ -669,6 +669,7 @@ impl CheckoutSessionObject {
 /// strength of recognising who they are paying, and every other identifier
 /// this system holds is an internal one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct CheckoutMerchantObject {
     /// `merchant_clients[].display_name`. There is no fallback: a merchant
     /// with none configured renders no `merchant` member at all — see
@@ -694,6 +695,7 @@ pub struct CheckoutMerchantObject {
 /// `#[serde(flatten)]`, so the wire shape is the session's own keys plus
 /// `merchant` at the top level, which is what the page's envelope check reads.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct CheckoutSessionForPayer {
     /// The documented keys, rendered by the same code every other surface
     /// uses.

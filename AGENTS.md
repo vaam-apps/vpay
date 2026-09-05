@@ -10,21 +10,26 @@ writing code.
 These are not style preferences. Both are machine-enforced by `just verify`, and
 CI runs it.
 
-`just verify` is **seven** gates and one report. The gates
+`just verify` is **nine** gates and one report. The gates
 (`verify-no-mocks`, `verify-status`, `verify-errors`, `verify-sdk-parity`,
-`verify-links`, `verify-npm-scope`, `check-schema`) fail the build. The
-report (`verify-docs`) never does — it prints doc-comment volume per crate,
-the production functions of 80 lines or more, every ```` ```ignore ````
-doctest fence and every `#[allow]`/`#[expect]`, and nothing more. Read it; it is not a gate you can pass or fail.
+`verify-links`, `verify-npm-scope`, `check-schema`, `verify-serde`,
+`verify-repositories`) fail the build. The report (`verify-docs`) never
+does — it prints doc-comment volume per crate, in-file comment volume per
+crate, the number of `#[doc = include_str!]` modules, the production
+functions of 80 lines or more, every ```` ```ignore ```` doctest fence and
+every `#[allow]`/`#[expect]`, and nothing more. Read it; it is not a gate you
+can pass or fail.
 
 This paragraph said "three gates" until 2026-09-05, and had been wrong since
 `verify-sdk-parity` landed on 2026-09-03; `verify-links` made it wrong by two.
 It then said "five" for the rest of that day, because `verify-npm-scope` and
 `check-schema` both landed on 2026-09-05 on branches that did not see each
-other — the count is corrected here, where the two met. Six of the seven are
-`cargo xtask` commands; `check-schema` is a justfile recipe, because it shells
-out to the CrateStack CLI, a binary this workspace does not build.
-There is an eighth check, `cargo xtask verify-citations` (`just
+other — the count was corrected to seven where the two met, and `verify-serde`
+and `verify-repositories` ([ADR-0016](docs/adr/0016-engineering-standards.md),
+2026-09-05) make it nine. Eight of the nine are `cargo xtask` commands;
+`check-schema` is a justfile recipe, because it shells out to the CrateStack
+CLI, a binary this workspace does not build.
+There is a tenth check, `cargo xtask verify-citations` (`just
 docs-check-citations`), which is a gate but **not** part of `just verify` or
 `just ci`: it needs the network and a GitHub token. Run it when you add or
 edit a document that cites a CI run id, a pull request or an issue.
@@ -58,6 +63,46 @@ structurally possible.
 
 If you are unsure whether something counts as done: would a test fail if it
 broke? If no, it is not done.
+
+---
+
+## Standards
+
+Six engineering standards, written down in
+[ADR-0016](docs/adr/0016-engineering-standards.md) with the rationale for each,
+what enforces it, and what only a reviewer can judge. Read the ADR once. These
+are the parts you apply on **every** change:
+
+1. **Errors** — a library crate's own failures are `thiserror` enums, each with
+   one `impl vpay_core::error::Classify`; a layer that consumes several crates
+   `#[from]`s them and delegates rather than re-deciding; `anyhow` only in
+   `backends/apps/*` `main()` and `[dev-dependencies]`.
+   ([ADR-0011](docs/adr/0011-error-modelling.md), `verify-errors`)
+2. **Adapters** — a rail is reached only through `ProviderAdapter`, and its
+   failures are *mapped* into `FailureCode`/`ProviderError`, never flattened
+   into a `String`. ([ADR-0002](docs/adr/0002-provider-port.md))
+3. **serde** — every type deriving `Serialize`/`Deserialize` under
+   `backends/crates/*/src` carries `#[serde(rename_all = "snake_case")]`, or
+   renames every field/variant itself, or gets a row with a reason in
+   ADR-0016's exemption table. Visibility is not part of the rule. `rename_all`
+   is a statement about *our* wire — a rail's casing is the rail's.
+   (`verify-serde`; the table is checked in both directions, so a stale
+   exemption fails too)
+4. **SOLID and DRY** — no gate, and the ADR says so. Ask what would have to
+   change for a piece of code to be wrong, and whether that lives in one place.
+5. **Repositories** — `vpay-db` exposes traits; every implementation is
+   `pub(crate)` and reached through `vpay_db::connect` or a function returning
+   `impl Trait`. Name the trait, never `PgRepositories` or a `Sql…Store`.
+   (`verify-repositories`)
+6. **Docs** — an example in a doc comment is compiled (`just test-doc`); never
+   reach for ```` ```ignore ```` to make one build. Long reasoning goes in
+   `docs/reference/<crate>.md`, not in an 80-line module header; a module doc
+   that *is* a document uses `#[doc = include_str!("…md")]`. Prefer one more
+   `///` explaining why over one more `//` restating what.
+
+**The migration rule: existing code is migrated as it is touched; a new crate
+complies from its first commit.** Do not open a sweep. Do not, in particular,
+add an exemption row to make a gate pass on code you did not have to touch.
 
 ---
 

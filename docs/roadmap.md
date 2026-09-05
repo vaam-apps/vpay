@@ -325,7 +325,7 @@ imply dashboard login blocks the payment path, which it does not.
   not on that hot path. The one place `authkestra-op` itself would benefit
   from something Redis-shaped — a TTL'd single-use `jti` guard — is exactly
   where vpay chose Postgres durability instead
-  (`vpay_db::SqlClientAssertionStore`, `INSERT … ON CONFLICT DO NOTHING`,
+  (`vpay_db::client_assertion_store`, `INSERT … ON CONFLICT DO NOTHING`,
   proven race-safe by a 10-way concurrent test). There was never a drop-in
   Redis option to choose against *at the time*: `authkestra-op` shipped no
   Redis-backed store at `0.3.4`, confirmed against an open upstream issue,

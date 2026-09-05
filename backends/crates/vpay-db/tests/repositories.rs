@@ -1,5 +1,5 @@
 //! Integration tests for the OP-2 repository layer —
-//! [`vpay_db::SqlClientAssertionStore`], the `disabled_clients` kill-switch
+//! [`vpay_db::client_assertion_store`], the `disabled_clients` kill-switch
 //! lookup, and the `oauth_signing_keys` repository — against a real Postgres
 //! via testcontainers.
 //!
@@ -223,7 +223,7 @@ mod one_tx {
     }
 }
 
-// --- SqlClientAssertionStore -----------------------------------------------
+// --- client_assertion_store -----------------------------------------------
 
 /// A `jti` is fresh exactly once: the first `record_jti` call must accept
 /// (return `Ok(true)`), and a second call with the same `jti` must be
@@ -232,7 +232,7 @@ mod one_tx {
 #[tokio::test]
 async fn a_client_assertion_jti_is_fresh_once_then_replayed() -> anyhow::Result<()> {
     let (_container, repositories, _pool) = migrated_postgres().await?;
-    let store = vpay_db::SqlClientAssertionStore::new(repositories.op_store_pool());
+    let store = vpay_db::client_assertion_store(repositories.op_store_pool());
     let expires_at = Utc::now() + chrono::Duration::seconds(60);
 
     let first = store
@@ -266,7 +266,7 @@ async fn a_client_assertion_jti_is_fresh_once_then_replayed() -> anyhow::Result<
 async fn concurrent_record_jti_calls_for_the_same_jti_yield_exactly_one_fresh_result()
 -> anyhow::Result<()> {
     let (_container, repositories, _pool) = migrated_postgres().await?;
-    let store = Arc::new(vpay_db::SqlClientAssertionStore::new(
+    let store = Arc::new(vpay_db::client_assertion_store(
         repositories.op_store_pool(),
     ));
     let expires_at = Utc::now() + chrono::Duration::seconds(60);

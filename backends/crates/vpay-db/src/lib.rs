@@ -65,7 +65,7 @@ pub use charges::{ChargeAsOf, ChargeRow, Charges, NewCharge};
 pub use checkout_sessions::{
     CheckoutSessionRow, CheckoutSessions, NewCheckoutSession, SessionListPage,
 };
-pub use client_assertion::{ClientAssertions, SqlClientAssertionStore};
+pub use client_assertion::{ClientAssertions, client_assertion_store};
 pub use config_reconcile::{ConfigReconcile, CurrencySeed, ProviderSeed};
 pub use disabled_clients::DisabledClients;
 pub use error::DbError;

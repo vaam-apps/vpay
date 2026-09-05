@@ -137,6 +137,7 @@ impl JobKind {
 /// on `charges` would make a rail's indexing lag look like a property of the
 /// payment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct PollChargePayload {
     /// The `ch_…` id to poll.
     pub charge_id: String,
@@ -207,6 +208,7 @@ impl PollChargePayload {
 /// `charges.provider_reference_id` and never from a payload, so no queue row
 /// can ever cause a second reference to be minted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct ResubmitPayload {
     /// The `ch_…` id to submit again, with its existing reference.
     pub charge_id: String,
@@ -236,6 +238,7 @@ impl ResubmitPayload {
 /// would only be a place for a future argument to be added without anyone
 /// asking whether the drain should be parameterised.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct DeliverWebhookPayload {
     /// The `webhook_deliveries.id` to attempt.
     pub delivery_id: Uuid,

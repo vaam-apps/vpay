@@ -64,11 +64,15 @@ verify-errors` printed on the merged gate branch on 2026-09-04.)*
 
 **New 2026-09-03 (Step 7, lane 4): `just verify` is three gates and one
 report** — four gates since `verify-sdk-parity`, **five since
-`verify-links` (2026-09-05)**, **six since `verify-npm-scope` (2026-09-05)**
-and **seven since `check-schema` (2026-09-05, the CrateStack schema gate —
-see "CrateStack" below)**, all four below. `cargo xtask
+`verify-links` (2026-09-05)**, **six since `verify-npm-scope` (2026-09-05)**,
+**seven since `check-schema` (2026-09-05, the CrateStack schema gate —
+see "CrateStack" below)** and **nine since `verify-serde` and
+`verify-repositories` (2026-09-05, [ADR-0016](adr/0016-engineering-standards.md))**,
+all six below. `cargo xtask
 verify-docs` prints, per crate, doc-comment lines
-against code lines, every production function of 80 lines or more, every
+against code lines, **in-file comment lines against code lines, the number of
+`#[doc = include_str!]` modules**, every production function of 80 lines or
+more, every
 ```` ```ignore ```` doctest fence and every `#[allow]`/`#[expect]` in
 production code — and **exits 0 whatever it finds**. That is Step 7's
 decision (4) and not an oversight: the cheapest way to pass a doc-ratio gate
@@ -311,6 +315,69 @@ correction.
   still be looked up and reported missing. That is the price of matching every
   id in a list rather than only the one after the word `run`, and it is paid
   in the direction that fails a correct document.
+
+**New 2026-09-05: `cargo xtask verify-serde` is the eighth gate and
+`cargo xtask verify-repositories` the ninth**, both from
+[ADR-0016](adr/0016-engineering-standards.md), the ADR that finally wrote down
+the six engineering standards this repository had been applying in prose. Both
+are in `just verify`, `just ci` and CI's `self-checks` job; neither needs a
+network, a database or a binary this workspace does not build.
+
+- **`verify-serde` — a gate.** Every type deriving `Serialize`/`Deserialize`
+  under `backends/crates/*/src` (`#[cfg(test)]` items and comments stripped,
+  line numbers preserved) carries `#[serde(rename_all = "snake_case")]`,
+  renames every field/variant itself, or is listed in ADR-0016's exemption
+  table with a reason. **Measured on `2ce13d0` before the rule existed: 64
+  serialisable types, 28 without the attribute.** After: **49 comply, 15
+  are exempted, 0 violations** — 13 were fixed by adding the attribute
+  (`SessionCredential`, `ReturnCredential`, `OriginsQuery`, `Origins`,
+  `PayerCredential`, `BrowserConfirmParams`, `CheckoutMerchantObject`,
+  `CheckoutSessionForPayer`, `RawClaims`, `WebhookPolicy`,
+  `PollChargePayload`, `ResubmitPayload`, `DeliverWebhookPayload`), **and the
+  wire did not move for any of them**: every field of all thirteen is already
+  snake_case in Rust, so `rename_all = "snake_case"` is the identity on each
+  one, which is why no fixture, no SDK type and no `.sql` changed. The 15
+  exemptions are the two adapters' `wire.rs`/`token.rs` types (a rail's casing
+  is the rail's), the four `#[serde(untagged)]` unions whose variant names
+  never reach a wire, and `vpay_core::Currency` (`UPPERCASE`, ISO-4217). The
+  count of 28 is not a count of *defects*: the convention was already written
+  down in `docs/reference/rails.md`, in both adapters' module docs and in a
+  comment above `Currency` — in four places, checked by nobody. **The table is
+  read in both directions:** a row naming a type that now complies, or a type
+  that no longer exists, fails the build. **What it does not check:** whether
+  a reason is a good one; "too many to fix" is a non-empty string and the gate
+  cannot tell it from "models MTN's camelCase Collections wire".
+- **`verify-repositories` — a gate.** Nothing outside `vpay-db` names a
+  concrete repository implementation. The set of concrete types is *derived*
+  from `vpay-db`'s own source — a declaration holding a `PgPool`/`Transaction`
+  field, or a type on the right of `impl <a vpay-db pub trait> for …`, minus a
+  blanket impl's own type parameter — rather than listed in the gate, so a
+  store nobody has written yet is covered the day it is added. **Measured on
+  `2ce13d0`: 3 implementations (`PgRepositories`, `PendingTransaction`,
+  `SqlClientAssertionStore`) and 2 violations, both in
+  `backends/crates/vpay-api/src/op/mod.rs`** — `SqlClientAssertionStore` was
+  `pub` and `vpay-api` constructed it by name. Fixed rather than exempted: the
+  type is now `pub(crate)` and `vpay_db::client_assertion_store(pool)` returns
+  `impl ClientAssertionStore`, so a caller gets the behaviour and no way to
+  spell the type. **After: 0 violations across 65 source files outside
+  `vpay-db`.** The gate has **no exemption mechanism**, deliberately — there is
+  no exception today, and `Repositories::op_store_pool` (Step 7 decision 9) is
+  a decision about a *pool*, not a licence to name an implementation type.
+- **`verify-docs` gained two report lines, both advisory** (ADR-0016 standard
+  6 asks for fewer in-file comments and for long reasoning to live in
+  `docs/reference/<crate>.md`, and neither had a baseline). **Measured
+  2026-09-05: 1789 in-file `//` comment lines against 15157 code lines
+  (11.8%) across `backends/crates` and `backends/apps`, and 0
+  `#[doc = include_str!]` modules.** Zero is the honest number: the
+  externalised-module-doc habit does not exist in this tree yet. Neither
+  number can fail a build, and ADR-0016 records why — the cheapest way to pass
+  a comment-volume gate is to delete the sentence that said why, and an
+  `include_str!` gate is passed by moving a paragraph into a file nobody links
+  to. **Nothing was moved in the change that added the measurement.**
+- **`cargo test -p xtask`: 144 before, 181 after.** 33 for the two gates and
+  the declaration scanner they share, 4 for the two report lines. Four of them
+  are the mutations recorded in
+  [`docs/plans/exp10-notes/opus.md`](plans/exp10-notes/opus.md).
 
 
 Last verified: 2026-09-04, on branch `claude/step9-hosted-checkout` at

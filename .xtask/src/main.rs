@@ -1,10 +1,10 @@
 //! Repository automation. Run via `cargo xtask <cmd>` or `just`.
 //!
-//! `just verify` runs seven gates, because a promise nothing checks is a
-//! promise that decays. Six of them are commands here; the seventh,
+//! `just verify` runs nine gates, because a promise nothing checks is a
+//! promise that decays. Eight of them are commands here; the ninth,
 //! `check-schema` (2026-09-05), is a justfile recipe rather than an xtask
 //! command because it shells out to the CrateStack CLI, a binary this
-//! workspace does not build — see the `justfile` for it. The six here:
+//! workspace does not build — see the `justfile` for it. The eight here:
 //!
 //! * `verify-no-mocks`  — no test double is reachable from a shipping binary.
 //! * `verify-status`    — every `NotImplemented` is declared in `docs/status.md`.
@@ -22,8 +22,17 @@
 //!   survives outside `docs/plans`, `docs/adr` and `docs/status.md`. New
 //!   2026-09-05: before it, deleting the one line that makes a scoped
 //!   `npm publish` possible was caught by nothing in the repository.
+//! * `verify-serde`  — every serialisable type under `backends/crates/*/src`
+//!   carries `#[serde(rename_all = "snake_case")]`, renames every
+//!   field/variant itself, or is exempted with a reason in ADR-0016's table.
+//!   Two-directional: an exemption for a type that now complies fails too.
+//!   New 2026-09-05 (ADR-0016, standard 3).
+//! * `verify-repositories` — nothing outside `vpay-db` names a concrete
+//!   repository implementation. New 2026-09-05 (ADR-0016, standard 5); the
+//!   set of concrete types is derived from `vpay-db`'s own source rather than
+//!   listed, so a store nobody has written yet is covered.
 //!
-//! An eighth gate needs the network, so it is opt-in
+//! A tenth gate needs the network, so it is opt-in
 //! (`just docs-check-citations`) and is **not** part of `just ci`:
 //!
 //! * `verify-citations` — every workflow-run id, pull request and issue a
@@ -85,6 +94,8 @@ fn main() -> ExitCode {
         "verify-sdk-parity" => verify_sdk_parity(&root),
         "verify-links" => verify_links(&root),
         "verify-npm-scope" => verify_npm_scope(&root),
+        "verify-serde" => verify_serde(&root),
+        "verify-repositories" => verify_repositories(&root),
         "verify-citations" => verify_citations(&root),
         // `verify-citations` is deliberately absent from `verify-all`: it
         // needs the network, and `verify-all` is what an offline gate list
@@ -94,7 +105,9 @@ fn main() -> ExitCode {
             .and_then(|()| verify_errors(&root))
             .and_then(|()| verify_sdk_parity(&root))
             .and_then(|()| verify_links(&root))
-            .and_then(|()| verify_npm_scope(&root)),
+            .and_then(|()| verify_npm_scope(&root))
+            .and_then(|()| verify_serde(&root))
+            .and_then(|()| verify_repositories(&root)),
         // Not `Result`-shaped like the three gates above, and that is the
         // point: there is nothing here for a caller to fail on. See
         // `verify_docs`.
@@ -107,7 +120,7 @@ fn main() -> ExitCode {
             println!(
                 "usage: cargo xtask \
                  <verify-no-mocks|verify-status|verify-errors|verify-sdk-parity|verify-links\
-                 |verify-npm-scope|verify-all>\n\
+                 |verify-npm-scope|verify-serde|verify-repositories|verify-all>\n\
                  \x20      cargo xtask verify-citations   (a gate; needs `gh` and the network)\n\
                  \x20      cargo xtask verify-docs        (a report; never fails)\n\
                  \x20      cargo xtask gen-signing-key --out <dir>"
@@ -1413,8 +1426,19 @@ const CLASSIFY_METHODS: [&str; 5] = ["category", "code", "retry", "severity", "p
 /// String literals are honoured: a `#[error("a { b")]` inside the block must
 /// not unbalance it.
 fn balanced_block(text: &str, from: usize) -> Option<&str> {
-    let open = from + text.get(from..)?.find('{')?;
-    let body_start = open + 1;
+    balanced_delimited(text, from, '{', '}')
+}
+
+/// The `open … close` pair that starts at or after `from`, balanced, without
+/// the delimiters.
+///
+/// Generalised out of [`balanced_block`] when [`declaration_shape`] needed the
+/// same walk over `( … )` to read a tuple struct's field types. The brace
+/// spelling is the only one the older gates use and is kept as its own
+/// function so their call sites still read as what they are.
+fn balanced_delimited(text: &str, from: usize, open_char: char, close_char: char) -> Option<&str> {
+    let open = from + text.get(from..)?.find(open_char)?;
+    let body_start = open + open_char.len_utf8();
     let mut depth = 0usize;
     let mut in_string = false;
     let mut escaped = false;
@@ -1429,16 +1453,17 @@ fn balanced_block(text: &str, from: usize) -> Option<&str> {
             }
             continue;
         }
-        match c {
-            '"' => in_string = true,
-            '{' => depth += 1,
-            '}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return text.get(body_start..open + offset);
-                }
+        if c == '"' {
+            in_string = true;
+            continue;
+        }
+        if c == open_char {
+            depth += 1;
+        } else if c == close_char {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return text.get(body_start..open + offset);
             }
-            _ => {}
         }
     }
     None
@@ -1625,6 +1650,1012 @@ fn rust_sources(dir: &Path) -> Vec<PathBuf> {
         } else if path.extension().is_some_and(|e| e == "rs") {
             out.push(path);
         }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// declarations — shared by verify-serde and verify-repositories
+// ---------------------------------------------------------------------------
+
+/// What `#[serde(rename_all = …)]` would actually rename on a declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeclShape {
+    /// `struct X { a: A }` — the attribute renames the fields.
+    NamedFields,
+    /// `enum X { A, B }` — the attribute renames the variants.
+    Variants,
+    /// `struct X(A);` or `struct X;` — a tuple or unit struct. Nothing it
+    /// serialises carries a name, so the attribute would rename nothing and
+    /// requiring it would be a rule about characters rather than about a wire.
+    Unnameable,
+}
+
+/// A `struct`/`enum` declaration found by text scan.
+#[derive(Debug)]
+struct Declaration<'a> {
+    name: String,
+    /// 1-based, so a violation can be pasted into an editor.
+    line: usize,
+    /// Byte index of the `struct`/`enum` keyword, for the attribute walk.
+    at: usize,
+    shape: DeclShape,
+    /// The delimited content: a braced body's fields or variants, or a tuple
+    /// struct's parenthesised types. `None` for a unit struct.
+    body: Option<&'a str>,
+}
+
+/// Every `struct`/`enum` declared in `text`.
+///
+/// `text` must have been through [`strip_comments`] and
+/// [`blank_cfg_test_items`], which between them remove every comment and
+/// every `#[cfg(test)]` item *without moving a line*: the two gates that read
+/// this print `file:line`, so a stripper that deleted characters would point
+/// every violation after it at the wrong place.
+///
+/// String literals are left as written, which is the same trade
+/// [`scan_not_implemented`] makes and for a related reason — `verify-serde`'s
+/// rule is about `rename_all = "snake_case"`, and the value is a literal that
+/// blanking would erase. The cost is that a `"pub struct Foo"` written inside
+/// a string in production code would be scanned as a declaration. That fails
+/// loudly (a violation naming a line a human can read) rather than silently,
+/// which is the safe direction; nothing in `backends/crates` writes one today.
+fn declarations(text: &str) -> Vec<Declaration<'_>> {
+    let mut out = Vec::new();
+    for keyword in ["struct", "enum"] {
+        for (i, _) in text.match_indices(keyword) {
+            if text
+                .get(..i)
+                .and_then(|before| before.chars().next_back())
+                .is_some_and(is_ident_char)
+            {
+                continue;
+            }
+            let Some(rest) = text.get(i + keyword.len()..) else {
+                continue;
+            };
+            // A keyword is a whole word: `structural` declares nothing.
+            if rest.chars().next().is_some_and(is_ident_char) {
+                continue;
+            }
+            let gap = rest.len() - rest.trim_start().len();
+            let name: String = rest
+                .trim_start()
+                .chars()
+                .take_while(|c| is_ident_char(*c))
+                .collect();
+            if name.is_empty() {
+                continue;
+            }
+            let after_name = i + keyword.len() + gap + name.len();
+            let (shape, body) = declaration_shape(text, after_name, keyword == "enum");
+            out.push(Declaration {
+                line: text.get(..i).unwrap_or_default().matches('\n').count() + 1,
+                name,
+                at: i,
+                shape,
+                body,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.line.cmp(&b.line).then_with(|| a.name.cmp(&b.name)));
+    out
+}
+
+/// What the declaration whose name ends at `after_name` is shaped like, and
+/// its delimited content.
+///
+/// `<>` depth is tracked so a generic parameter list (`struct Req<'a> {`) is
+/// crossed rather than mistaken for the body, and a `where` clause is crossed
+/// because the search is for the first delimiter at depth zero.
+fn declaration_shape(text: &str, after_name: usize, is_enum: bool) -> (DeclShape, Option<&str>) {
+    let mut depth = 0usize;
+    let mut i = after_name;
+    while let Some(c) = text.get(i..).and_then(|rest| rest.chars().next()) {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            '{' if depth == 0 => {
+                let shape = if is_enum {
+                    DeclShape::Variants
+                } else {
+                    DeclShape::NamedFields
+                };
+                return (shape, balanced_block(text, i));
+            }
+            // A tuple struct's fields have no names and a unit struct has no
+            // fields; there is nothing for `rename_all` to rename either way.
+            // The content is still returned, because `verify-repositories`
+            // asks what a declaration *holds* rather than what it names.
+            '(' if depth == 0 => {
+                return (DeclShape::Unnameable, balanced_delimited(text, i, '(', ')'));
+            }
+            ';' if depth == 0 => return (DeclShape::Unnameable, None),
+            _ => {}
+        }
+        i += c.len_utf8();
+    }
+    (DeclShape::Unnameable, None)
+}
+
+/// The byte index at which the declaration whose keyword sits at `keyword`
+/// begins: the start of its visibility, if it has one.
+///
+/// Needed because [`attribute_block_before`] walks backwards over `#[..]`
+/// blocks, and `#[derive(Serialize)] pub struct X` puts the word `pub`
+/// between the attribute and the keyword — a walk that started at `struct`
+/// would find no attribute at all and quietly scan nothing.
+fn declaration_start(text: &str, keyword: usize) -> usize {
+    let before = text.get(..keyword).unwrap_or_default().trim_end();
+    // `pub(crate)`, `pub(super)`, `pub(in a::b)`.
+    let head = if before.ends_with(')') {
+        match matching_open_paren(before) {
+            Some(open) => before.get(..open).unwrap_or_default().trim_end(),
+            None => return keyword,
+        }
+    } else {
+        before
+    };
+    let Some(stem) = head.strip_suffix("pub") else {
+        return keyword;
+    };
+    if stem.chars().next_back().is_some_and(is_ident_char) {
+        return keyword;
+    }
+    stem.len()
+}
+
+/// The byte index of the `(` matching the `)` that ends `text`.
+///
+/// [`matching_open_bracket`] for parentheses; kept separate rather than
+/// generalised so each reads as the one delimiter it is about.
+fn matching_open_paren(text: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in text.char_indices().rev() {
+        match c {
+            ')' => depth += 1,
+            '(' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The bodies of the consecutive `#[..]` attributes immediately above
+/// `decl_start`, joined and whitespace-normalised.
+///
+/// Stops at the first thing that is not an attribute, so a `derive` on an
+/// unrelated earlier item cannot bleed onto this declaration —
+/// [`derives_error`]'s rule, generalised from "does this block derive `Error`"
+/// to "what does this block say", because standard 3 asks two questions of the
+/// same block.
+fn attribute_block_before(text: &str, decl_start: usize) -> String {
+    let mut before = text.get(..decl_start).unwrap_or_default();
+    let mut collected: Vec<&str> = Vec::new();
+    loop {
+        before = before.trim_end();
+        if !before.ends_with(']') {
+            break;
+        }
+        let Some(open) = matching_open_bracket(before) else {
+            break;
+        };
+        let Some(body) = before.get(open + 1..before.len() - 1) else {
+            break;
+        };
+        let head = before.get(..open).unwrap_or_default().trim_end();
+        // `#[..]`, not `[..]` and not the `#![..]` of a module attribute.
+        let Some(stem) = head.strip_suffix('#') else {
+            break;
+        };
+        collected.push(body);
+        before = stem;
+    }
+    collected.reverse();
+    normalise_whitespace(&collected.join(" "))
+}
+
+/// Whitespace runs collapsed to one space, so an attribute rustfmt wrapped
+/// across three lines matches the same way one written on a single line does.
+fn normalise_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// ---------------------------------------------------------------------------
+// verify-serde
+// ---------------------------------------------------------------------------
+
+/// The document whose exemption table this gate reads.
+///
+/// The table lives in the ADR rather than in a constant here for the reason
+/// [`verify_status`] reads `docs/status.md` and [`verify_sdk_parity`] reads
+/// the parity matrix: the list a human is asked to justify an exception in
+/// should be the list the build checks, or the two drift and only one of them
+/// is read.
+const SERDE_ADR: &str = "docs/adr/0016-engineering-standards.md";
+
+/// The first header cell that marks the exemption table in [`SERDE_ADR`].
+///
+/// A marker rather than "every table in the ADR", for [`PARITY_TABLE_MARKER`]'s
+/// reason: the document carries other tables, and a check that read those as
+/// exemptions would either fail on prose or push the prose out of the ADR.
+const SERDE_EXEMPTION_MARKER: &str = "Type";
+
+/// The one spelling of standard 3, whitespace-normalised.
+const SNAKE_CASE_RENAME_ALL: &str = "rename_all = \"snake_case\"";
+
+/// One type that derives `Serialize` or `Deserialize`, and everything the
+/// rule needs to know about it.
+#[derive(Debug)]
+struct SerdeType {
+    name: String,
+    line: usize,
+    shape: DeclShape,
+    /// The value of the type's own `rename_all`, or `None` if it carries none.
+    rename_all: Option<String>,
+    /// Whether every field or variant carries its own
+    /// `#[serde(rename = "…")]`, which pins each wire name exactly and makes
+    /// a blanket `rename_all` inert.
+    every_member_renamed: bool,
+}
+
+impl SerdeType {
+    /// The three ways standard 3 is satisfied, in the order the ADR states
+    /// them.
+    ///
+    /// A `rename_all` that is *not* `snake_case` does not comply on its own:
+    /// it is a deliberate choice about somebody else's wire, and the ADR wants
+    /// that choice written down in the exemption table where a reviewer sees
+    /// it. It does comply when every member is renamed explicitly as well,
+    /// because then the blanket attribute renames nothing.
+    fn complies(&self) -> bool {
+        if self.rename_all.as_deref() == Some("snake_case") {
+            return true;
+        }
+        self.shape == DeclShape::Unnameable || self.every_member_renamed
+    }
+}
+
+/// One row of [`SERDE_ADR`]'s exemption table.
+#[derive(Debug)]
+struct SerdeExemption {
+    type_name: String,
+    file: String,
+    reason: String,
+    /// 1-based line of the row in the ADR.
+    line: usize,
+}
+
+/// Fail if a serialisable type in a library crate neither spells the
+/// workspace's wire convention nor is exempted, **or** if the ADR exempts a
+/// type that does not need it.
+///
+/// Standard 3 ([ADR-0016](../../docs/adr/0016-engineering-standards.md)):
+/// every type deriving `Serialize`/`Deserialize` under `backends/crates/*/src`
+/// carries `#[serde(rename_all = "snake_case")]`, or renames every
+/// field/variant explicitly, or is listed in the ADR's exemption table with a
+/// reason.
+///
+/// # Why the gate runs in both directions
+///
+/// [`verify_status`] learned this the expensive way: the direction that rots
+/// is the one nobody exercises. A missing attribute fails the moment someone
+/// adds a type, which is loud. A *stale exemption* fails never — it sits in
+/// the ADR describing a decision the code has already reversed, and the next
+/// person reads it as current. So an exemption naming a type that now
+/// complies, or a type that no longer exists, is a violation too.
+///
+/// # What it deliberately does not check
+///
+/// Whether a *reason* is a good one. "models MTN's camelCase Collections
+/// wire" and "too many to fix" are both non-empty strings and no gate can
+/// tell them apart; that is a reviewer's job, and the table exists to put the
+/// sentence where a reviewer will see it. The gate only refuses a blank one.
+///
+/// Visibility is not part of the rule, and that is deliberate.
+/// [`verify_errors`] scans `pub` types only, because a `pub(crate)` error
+/// reaches no boundary — but a `pub(crate)` type with a `Serialize` derive
+/// reaches a *rail*, and `vpay-adapter-mtn-momo`'s entire wire module is
+/// `pub(crate)`. A wire does not care what Rust thinks of a type's visibility.
+fn verify_serde(root: &Path) -> Result<(), String> {
+    let crates_dir = root.join(LIBRARY_CRATES_DIR);
+    let mut crate_dirs: Vec<PathBuf> = fs::read_dir(&crates_dir)
+        .map_err(|e| format!("{LIBRARY_CRATES_DIR}: {e}"))?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    crate_dirs.sort();
+    if crate_dirs.is_empty() {
+        return Err(format!(
+            "{LIBRARY_CRATES_DIR} contains no crate directories"
+        ));
+    }
+
+    let adr_path = root.join(SERDE_ADR);
+    let adr = fs::read_to_string(&adr_path).map_err(|e| {
+        format!("{SERDE_ADR}: {e} (the exemption table is mandatory — it is what this gate reads)")
+    })?;
+    let exemptions = serde_exemptions(&adr);
+
+    let mut problems = Vec::new();
+    let mut compliant = 0usize;
+    let mut exempted = 0usize;
+    let mut used: BTreeSet<(String, String)> = BTreeSet::new();
+
+    for crate_dir in &crate_dirs {
+        let mut sources: Vec<PathBuf> = rust_sources(crate_dir)
+            .into_iter()
+            // `src/` only. A crate's own `tests/` serialises fixtures, and a
+            // fixture names nothing on a wire anyone reaches.
+            .filter(|path| path.components().any(|c| c.as_os_str() == "src"))
+            .collect();
+        sources.sort();
+        for path in sources {
+            let text = fs::read_to_string(&path).unwrap_or_default();
+            let scanned = blank_cfg_test_items(&strip_comments(&text));
+            let file = relative(root, &path);
+            for found in scan_serde_types(&scanned) {
+                let exemption = exemptions
+                    .iter()
+                    .find(|e| e.file == file && e.type_name == found.name);
+                if let Some(exemption) = exemption {
+                    used.insert((file.clone(), found.name.clone()));
+                    if found.complies() {
+                        compliant += 1;
+                        problems.push(format!(
+                            "{SERDE_ADR}:{}: `{}` ({file}:{}) is exempted but complies — delete \
+                             the row; an exemption nobody needs is a decision the ADR describes \
+                             and the code has already reversed",
+                            exemption.line, found.name, found.line,
+                        ));
+                        continue;
+                    }
+                    exempted += 1;
+                    if exemption.reason.trim().is_empty() {
+                        problems.push(format!(
+                            "{SERDE_ADR}:{}: the exemption for `{}` carries no reason",
+                            exemption.line, found.name,
+                        ));
+                    }
+                    continue;
+                }
+                if found.complies() {
+                    compliant += 1;
+                    continue;
+                }
+                problems.push(format!(
+                    "{file}:{}: `{}` derives serde but carries no \
+                     `#[serde({SNAKE_CASE_RENAME_ALL})]`, does not rename every {}, and is not \
+                     in {SERDE_ADR}'s exemption table (ADR-0016, standard 3)",
+                    found.line,
+                    found.name,
+                    match found.shape {
+                        DeclShape::Variants => "variant",
+                        _ => "field",
+                    },
+                ));
+            }
+        }
+    }
+
+    for exemption in &exemptions {
+        if !used.contains(&(exemption.file.clone(), exemption.type_name.clone())) {
+            problems.push(format!(
+                "{SERDE_ADR}:{}: the exemption names `{}` in `{}`, and this gate found no such \
+                 serialisable type there",
+                exemption.line, exemption.type_name, exemption.file,
+            ));
+        }
+    }
+
+    if problems.is_empty() {
+        println!(
+            "verify-serde: ok — {compliant} serialisable type(s) spell the workspace's wire \
+             convention, {exempted} exempted with a reason in {SERDE_ADR}"
+        );
+        Ok(())
+    } else {
+        Err(format!(
+            "serde convention violations:\n  - {}",
+            problems.join("\n  - ")
+        ))
+    }
+}
+
+/// The rows of [`SERDE_ADR`]'s exemption table.
+///
+/// Takes the document text rather than reading it, so the parser can be
+/// driven over tables this repository does not have — a row for a type that
+/// was deleted, a row with no reason.
+fn serde_exemptions(doc: &str) -> Vec<SerdeExemption> {
+    let lines: Vec<&str> = doc.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+
+    while i < lines.len() {
+        let Some(header) = lines.get(i).and_then(|l| table_row(l)) else {
+            i += 1;
+            continue;
+        };
+        if header.first().map(String::as_str) != Some(SERDE_EXEMPTION_MARKER) || header.len() < 3 {
+            i += 1;
+            continue;
+        }
+        let Some(separator) = lines.get(i + 1).and_then(|l| table_row(l)) else {
+            i += 1;
+            continue;
+        };
+        if separator.len() != header.len() || !separator.iter().all(|c| is_separator_cell(c)) {
+            i += 1;
+            continue;
+        }
+
+        let mut j = i + 2;
+        while let Some(cells) = lines.get(j).and_then(|l| table_row(l)) {
+            let unwrapped = |n: usize| -> String {
+                cells
+                    .get(n)
+                    .map(|raw| {
+                        code_spans(raw)
+                            .into_iter()
+                            .next()
+                            .unwrap_or_else(|| raw.clone())
+                    })
+                    .unwrap_or_default()
+            };
+            out.push(SerdeExemption {
+                type_name: unwrapped(0),
+                file: unwrapped(1),
+                reason: cells.get(2).cloned().unwrap_or_default(),
+                line: j + 1,
+            });
+            j += 1;
+        }
+        i = j;
+    }
+
+    out
+}
+
+/// Every declaration in `text` that derives `Serialize` or `Deserialize`.
+fn scan_serde_types(text: &str) -> Vec<SerdeType> {
+    declarations(text)
+        .into_iter()
+        .filter_map(|declaration| {
+            let attributes = attribute_block_before(text, declaration_start(text, declaration.at));
+            if !derives_serde(&attributes) {
+                return None;
+            }
+            Some(SerdeType {
+                name: declaration.name,
+                line: declaration.line,
+                shape: declaration.shape,
+                rename_all: rename_all_value(&attributes),
+                every_member_renamed: declaration.body.is_none_or(every_member_renamed),
+            })
+        })
+        .collect()
+}
+
+/// Whether an attribute block derives `Serialize` or `Deserialize`.
+///
+/// Both spellings count — a bare `Serialize` brought in by a `use`, and the
+/// qualified `serde::Serialize` — and only the final path segment is compared,
+/// the same rule [`attribute_derives_error`] applies to `Error`.
+fn derives_serde(attributes: &str) -> bool {
+    derive_entries(attributes).iter().any(|path| {
+        path.rsplit("::")
+            .next()
+            .is_some_and(|last| last == "Serialize" || last == "Deserialize")
+    })
+}
+
+/// Every path named inside a `derive(..)` in an attribute block.
+fn derive_entries(attributes: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = attributes;
+    while let Some(at) = rest.find("derive") {
+        let Some(after) = rest.get(at + "derive".len()..) else {
+            break;
+        };
+        let trimmed = after.trim_start();
+        let Some(list) = trimmed.strip_prefix('(') else {
+            rest = after;
+            continue;
+        };
+        let end = list.find(')').unwrap_or(list.len());
+        out.extend(
+            list.get(..end)
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_owned),
+        );
+        rest = list.get(end..).unwrap_or_default();
+    }
+    out
+}
+
+/// The value of a `#[serde(rename_all = "…")]` in an attribute block, if any.
+///
+/// Both spacings are read. The block has been through
+/// [`normalise_whitespace`], so `rename_all = "` is what rustfmt produces;
+/// `rename_all="` is accepted too because an attribute's interior is not
+/// rustfmt's to normalise.
+fn rename_all_value(attributes: &str) -> Option<String> {
+    for opening in ["rename_all = \"", "rename_all=\""] {
+        let Some(at) = attributes.find(opening) else {
+            continue;
+        };
+        let after = attributes.get(at + opening.len()..)?;
+        let end = after.find('"')?;
+        return after.get(..end).map(str::to_owned);
+    }
+    None
+}
+
+/// Whether every field or variant in a declaration body carries its own
+/// `#[serde(rename = "…")]`.
+///
+/// The second of standard 3's three ways to comply: a type that pins every
+/// wire name exactly needs no blanket rule, because there is nothing left for
+/// a blanket rule to decide. An empty body satisfies it vacuously, which is
+/// the honest answer — a struct with no fields serialises no names.
+fn every_member_renamed(body: &str) -> bool {
+    let members = top_level_members(body);
+    members.iter().all(|member| {
+        let normalised = normalise_whitespace(member);
+        normalised.contains("rename = \"") || normalised.contains("rename=\"")
+    })
+}
+
+/// The `,`-separated members of a declaration body, each carrying whatever
+/// attributes were written above it.
+///
+/// Depth is tracked through `()`, `[]`, `{}` and `<>` so the comma in
+/// `Option<Map<String, Value>>` or in `#[serde(default, rename = "x")]` does
+/// not split a member in two, and literals are skipped ([`end_of_literal`])
+/// so an `#[error("a, b")]` does not either.
+fn top_level_members(body: &str) -> Vec<String> {
+    let chars: Vec<char> = body.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while let Some(&c) = chars.get(i) {
+        if let Some(end) = end_of_literal(&chars, i) {
+            for j in i..end {
+                if let Some(&literal) = chars.get(j) {
+                    current.push(literal);
+                }
+            }
+            i = end;
+            continue;
+        }
+        match c {
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' | ']' | '}' | '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                if !current.trim().is_empty() {
+                    out.push(std::mem::take(&mut current));
+                }
+                current.clear();
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        current.push(c);
+        i += 1;
+    }
+    if !current.trim().is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// [`strip_cfg_test_items`], but blanking rather than deleting.
+///
+/// The gates that came before these two report a type name and let a reader
+/// find it; `verify-serde` and `verify-repositories` report `file:line`, and a
+/// stripper that *removes* a `#[cfg(test)] mod tests` from the middle of a
+/// file renumbers every line after it. Same walk, same two primitives
+/// ([`match_cfg_test`], [`end_of_cfg_test_item`]); only the output differs —
+/// every removed character becomes a space, and every removed line break stays
+/// a line break.
+fn blank_cfg_test_items(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        if let Some(after_attr) = match_cfg_test(&chars, i) {
+            let end = end_of_cfg_test_item(&chars, after_attr);
+            for j in i..end {
+                out.push(if chars.get(j) == Some(&'\n') {
+                    '\n'
+                } else {
+                    ' '
+                });
+            }
+            i = end;
+            continue;
+        }
+        if let Some(c) = chars.get(i) {
+            out.push(*c);
+        }
+        i += 1;
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// verify-repositories
+// ---------------------------------------------------------------------------
+
+/// The crate that owns persistence. Standard 5 (ADR-0016) is a rule about
+/// this directory's boundary, so the gate is written in terms of it rather
+/// than in terms of a hard-coded list of type names.
+const REPOSITORY_CRATE_DIR: &str = "backends/crates/vpay-db";
+
+/// Field types that make a declaration an *implementation* rather than data.
+///
+/// This is the mechanical form of "owns a database handle". A row struct
+/// (`ChargeRow`, `JobRow`) carries columns; an implementation carries the
+/// connection it runs them on, and `sqlx` gives it exactly two shapes — a
+/// pool or an open transaction. Deriving the set this way rather than listing
+/// `PgRepositories` and its siblings by name is what makes the gate cover a
+/// type nobody has written yet: a new `SqlSomethingStore { pool: PgPool }` is
+/// caught the day it is added, without anyone remembering to extend a
+/// constant.
+const DB_HANDLE_TYPES: [&str; 2] = ["PgPool", "Transaction"];
+
+/// Where a reach for a concrete implementation would be a defect: every
+/// library crate that is not [`REPOSITORY_CRATE_DIR`], and both binaries.
+const REPOSITORY_CONSUMER_DIRS: [&str; 2] = [LIBRARY_CRATES_DIR, "backends/apps"];
+
+/// Fail if anything outside `vpay-db` names a concrete repository
+/// implementation.
+///
+/// Standard 5 (ADR-0016): repositories are traits, their implementations are
+/// private to `vpay-db`, and a handler or a service names the trait. The
+/// compiler enforces the easy half — `pub(crate) struct PgRepositories` cannot
+/// be named from another crate at all — and enforces nothing about the half
+/// that actually happens, which is a type being made `pub` "just for this one
+/// call site" and a `use` appearing in `vpay-api`. That is not a compile
+/// error; it is a design decision reversed in a diff nobody reads as one.
+///
+/// # How the set of concrete types is established
+///
+/// Two signals, unioned, both derived from `vpay-db`'s own source rather than
+/// listed here:
+///
+/// * a declaration whose body carries a [`DB_HANDLE_TYPES`] field — it owns a
+///   connection, so it is an implementation and not data;
+/// * a type on the right of `impl <T> for <U>` where `<T>` is a trait
+///   `vpay-db` declares `pub` — it *is* one of the repositories, whatever it
+///   holds.
+///
+/// The first catches a store over a foreign trait (`SqlClientAssertionStore`
+/// implements `authkestra_op`'s `ClientAssertionStore`, which the second
+/// signal cannot see). The second catches an implementation that reaches its
+/// pool indirectly, which the first cannot. Neither alone is enough; both
+/// were measured against this tree.
+///
+/// # Comments are stripped, unlike `verify-no-mocks`
+///
+/// `verify-no-mocks` matches `MockAdapter` in a comment on purpose: there is
+/// no such code path, so a comment describing one is describing an intention.
+/// Here the opposite holds — `PgRepositories` is a real type with a real
+/// reason to be discussed, and an intra-doc link from `vpay-api` to
+/// `vpay_db::…` is documentation rather than a reach. A `pub(crate)` type
+/// cannot be linked to from another crate anyway, so rustdoc already fails
+/// the case that would matter.
+fn verify_repositories(root: &Path) -> Result<(), String> {
+    let db_dir = root.join(REPOSITORY_CRATE_DIR);
+    if !db_dir.is_dir() {
+        return Err(format!(
+            "{REPOSITORY_CRATE_DIR} is not a directory; this gate reads it to learn which types \
+             are implementations, so a moved crate must fail rather than check nothing"
+        ));
+    }
+
+    let db_sources: Vec<String> = rust_sources(&db_dir)
+        .into_iter()
+        .filter(|path| path.components().any(|c| c.as_os_str() == "src"))
+        .map(|path| {
+            let text = fs::read_to_string(&path).unwrap_or_default();
+            blank_cfg_test_items(&strip_comments(&text))
+        })
+        .collect();
+
+    let concrete = concrete_repository_types(&db_sources);
+    if concrete.is_empty() {
+        return Err(format!(
+            "{REPOSITORY_CRATE_DIR} declares no repository implementation this gate can see; \
+             a check with nothing to look for passes by checking nothing"
+        ));
+    }
+
+    let mut problems = Vec::new();
+    let mut scanned = 0usize;
+    for dir in REPOSITORY_CONSUMER_DIRS {
+        let Ok(entries) = fs::read_dir(root.join(dir)) else {
+            return Err(format!("{dir}: not readable"));
+        };
+        let mut crate_dirs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir() && *path != db_dir)
+            .collect();
+        crate_dirs.sort();
+        for crate_dir in crate_dirs {
+            for path in rust_sources(&crate_dir) {
+                if !path.components().any(|c| c.as_os_str() == "src") {
+                    continue;
+                }
+                let text = fs::read_to_string(&path).unwrap_or_default();
+                let searched = blank_cfg_test_items(&strip_comments(&text));
+                scanned += 1;
+                let file = relative(root, &path);
+                for name in &concrete {
+                    for line in word_lines(&searched, name) {
+                        problems.push(format!(
+                            "{file}:{line}: `{name}` is a concrete repository implementation in \
+                             `vpay-db`; name the trait instead (ADR-0016, standard 5)"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    if problems.is_empty() {
+        println!(
+            "verify-repositories: ok — {} concrete implementation(s) in {REPOSITORY_CRATE_DIR} \
+             ({}), named by none of the {scanned} source file(s) outside it",
+            concrete.len(),
+            concrete
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        Ok(())
+    } else {
+        Err(format!(
+            "repository-pattern violations:\n  - {}",
+            problems.join("\n  - ")
+        ))
+    }
+}
+
+/// The concrete repository implementations declared by `vpay-db`'s sources.
+///
+/// Takes the already-scanned texts rather than reading the tree, so the two
+/// signals can be driven over a synthetic crate — including one this
+/// repository does not have (an implementation that holds no pool of its own).
+fn concrete_repository_types(sources: &[String]) -> BTreeSet<String> {
+    let mut traits = BTreeSet::new();
+    for text in sources {
+        traits.extend(public_traits(text));
+    }
+
+    let mut out = BTreeSet::new();
+    for text in sources {
+        for declaration in declarations(text) {
+            if declaration.body.is_some_and(|body| {
+                DB_HANDLE_TYPES
+                    .iter()
+                    .any(|ty| !word_lines(body, ty).is_empty())
+            }) {
+                out.insert(declaration.name.clone());
+            }
+        }
+        for (trait_name, type_name) in trait_impls(text) {
+            if traits.contains(&trait_name) {
+                out.insert(type_name);
+            }
+        }
+    }
+    out
+}
+
+/// Every trait a crate declares `pub`.
+fn public_traits(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, m) in text.match_indices("pub trait ") {
+        if text
+            .get(..i)
+            .and_then(|before| before.chars().next_back())
+            .is_some_and(is_ident_char)
+        {
+            continue;
+        }
+        let name: String = text
+            .get(i + m.len()..)
+            .unwrap_or_default()
+            .chars()
+            .take_while(|c| is_ident_char(*c))
+            .collect();
+        if !name.is_empty() {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// Every `impl <trait> for <type>` in `text`, as `(trait, type)`, each
+/// reduced to its final path segment with any generic arguments dropped.
+///
+/// `impl PaymentIntents for crate::repository::PgRepositories` yields
+/// `("PaymentIntents", "PgRepositories")`: the gate is about which *type* is
+/// being implemented for, and the path it is spelled through is the author's
+/// choice rather than part of the rule.
+fn trait_impls(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (i, m) in text.match_indices("impl") {
+        if text
+            .get(..i)
+            .and_then(|before| before.chars().next_back())
+            .is_some_and(is_ident_char)
+        {
+            continue;
+        }
+        let Some(rest) = text.get(i + m.len()..) else {
+            continue;
+        };
+        if rest.chars().next().is_some_and(is_ident_char) {
+            continue;
+        }
+        let header = rest
+            .get(..rest.find(['{', ';']).unwrap_or(rest.len()))
+            .unwrap_or_default();
+        let (parameters, header) = strip_impl_generics(header);
+        let Some((subject, target)) = split_impl_header(header) else {
+            continue;
+        };
+        let target = final_segment(&target);
+        // A blanket impl's target is the impl's own type *parameter*, not a
+        // type: `impl<S: TransactionSource + ?Sized> UnitOfWork for S` gives
+        // every transaction source a `transaction` method and declares no
+        // implementation of its own. Counting `S` would have put a
+        // one-character "concrete type" in the set, and `S` occurs in a
+        // generic bound in half of `vpay-api` — the gate would have failed 37
+        // times on the workspace it is meant to pass on. Measured, not
+        // imagined: that is exactly what it did before this line existed.
+        if parameters.contains(&target) {
+            continue;
+        }
+        out.push((final_segment(&subject), target));
+    }
+    out
+}
+
+/// An `impl` header's own generic parameter names, and the rest of the header.
+///
+/// Both halves earn their keep. `impl<'a> Jobs<'a> for Pg<'a>` names the trait
+/// `Jobs`, and a scan that read the header from the first character would read
+/// the trait as `<'a> Jobs<'a>` and reduce it to nothing — a *silent* miss,
+/// the direction this file's module docs warn about, because a trait that
+/// reduces to the empty string matches no declared trait and the impl is
+/// simply never seen. The parameter *names* matter for the opposite reason:
+/// they are what tells a blanket impl from a real one.
+///
+/// Lifetimes are dropped (no impl targets one) and `const N: usize` yields
+/// `N`, because a const parameter is as un-concrete a target as a type
+/// parameter.
+fn strip_impl_generics(header: &str) -> (Vec<String>, &str) {
+    let trimmed = header.trim_start();
+    if !trimmed.starts_with('<') {
+        return (Vec::new(), trimmed);
+    }
+    let mut depth = 0usize;
+    for (i, c) in trimmed.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let inside = trimmed.get(1..i).unwrap_or_default();
+                    let rest = trimmed.get(i + c.len_utf8()..).unwrap_or_default();
+                    return (generic_parameter_names(inside), rest);
+                }
+            }
+            _ => {}
+        }
+    }
+    (Vec::new(), trimmed)
+}
+
+/// The names declared by a generic parameter list's interior.
+fn generic_parameter_names(inside: &str) -> Vec<String> {
+    top_level_members(inside)
+        .iter()
+        .filter_map(|parameter| {
+            let parameter = parameter.trim();
+            let parameter = parameter.strip_prefix("const ").unwrap_or(parameter);
+            let name: String = parameter
+                .trim_start()
+                .chars()
+                .take_while(|c| is_ident_char(*c))
+                .collect();
+            (!name.is_empty()).then_some(name)
+        })
+        .collect()
+}
+
+/// An `impl` header split at its `for`, or `None` for an inherent `impl`.
+///
+/// Depth is tracked so a higher-ranked bound (`for<'a>`) inside the generics
+/// is not mistaken for the keyword that separates a trait from its type.
+fn split_impl_header(header: &str) -> Option<(String, String)> {
+    let chars: Vec<char> = header.chars().collect();
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while i < chars.len() {
+        match chars.get(i) {
+            Some('<' | '(' | '[') => depth += 1,
+            Some('>' | ')' | ']') => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if depth == 0
+            && chars.get(i) == Some(&'f')
+            && chars.get(i + 1) == Some(&'o')
+            && chars.get(i + 2) == Some(&'r')
+            && !chars.get(i.wrapping_sub(1)).copied().is_some_and(is_ident_char)
+            && !chars.get(i + 3).copied().is_some_and(is_ident_char)
+            // `for<'a>` opens a bound, not a target.
+            && chars.get(i + 3) != Some(&'<')
+        {
+            let subject: String = chars.get(..i)?.iter().collect();
+            let target: String = chars.get(i + 3..)?.iter().collect();
+            return Some((subject.trim().to_owned(), target.trim().to_owned()));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The final `::` segment of a path, with generic arguments and `where`
+/// noise removed — `crate::repository::PgRepositories` is `PgRepositories`.
+fn final_segment(path: &str) -> String {
+    let trimmed = path.trim();
+    let head = trimmed
+        .get(..trimmed.find(['<', ' ']).unwrap_or(trimmed.len()))
+        .unwrap_or_default();
+    head.rsplit("::").next().unwrap_or(head).trim().to_owned()
+}
+
+/// The 1-based lines on which `word` appears in `text` as a whole identifier.
+///
+/// Whole-word, so `PgRepositoriesBuilder` is not a reach for `PgRepositories`
+/// — the same guard [`has_classify_impl`] applies for the same reason: a
+/// longer name is a different type.
+fn word_lines(text: &str, word: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    for (i, m) in text.match_indices(word) {
+        if text
+            .get(..i)
+            .and_then(|before| before.chars().next_back())
+            .is_some_and(is_ident_char)
+        {
+            continue;
+        }
+        if text
+            .get(i + m.len()..)
+            .and_then(|after| after.chars().next())
+            .is_some_and(is_ident_char)
+        {
+            continue;
+        }
+        out.push(text.get(..i).unwrap_or_default().matches('\n').count() + 1);
     }
     out
 }
@@ -3815,6 +4846,21 @@ struct DocCounts {
     /// Every non-doc line, blanks and `//` comments included — the design's
     /// own denominator, kept so the totals stay comparable with its table.
     other: usize,
+    /// Lines whose first non-space characters are `//` but neither `///` nor
+    /// `//!`: an in-file comment rather than documentation.
+    ///
+    /// [ADR-0016](../../docs/adr/0016-engineering-standards.md) standard 6
+    /// asks for "fewer in-file comments", and this is the number that rule is
+    /// about — `doc` is not, because a `///` line is the documentation the
+    /// rule wants *more* of. Reported, never enforced, for the same reason
+    /// the ratio above is: the cheapest way to pass a comment-volume gate is
+    /// to delete the sentence that explained why, and this repository's
+    /// comments are mostly that sentence.
+    ///
+    /// `/* … */` paragraphs are counted in neither this nor `code`:
+    /// [`strip_block_comments`] blanks them before the count, so they land in
+    /// `other` alone. There are none in the trees this report covers.
+    comment: usize,
 }
 
 impl DocCounts {
@@ -3839,6 +4885,7 @@ impl DocCounts {
         self.example += rhs.example;
         self.code += rhs.code;
         self.other += rhs.other;
+        self.comment += rhs.comment;
     }
 }
 
@@ -3858,6 +4905,10 @@ struct FileReport {
     long_functions: Vec<LongFunction>,
     ignore_fences: Vec<usize>,
     allows: Vec<(usize, String)>,
+    /// `#[doc = include_str!("…")]` / `#![doc = include_str!("…")]` sites —
+    /// documentation that lives in a `.md` file rather than in a module
+    /// header (ADR-0016, standard 6).
+    included_docs: usize,
 }
 
 /// Print the documentation report. **Never fails**, by construction.
@@ -3873,6 +4924,17 @@ struct FileReport {
 /// (each crate's own `tests/` is a different kind of code and is skipped):
 ///
 /// * doc-comment lines against code lines;
+/// * **in-file comment lines against code lines, and the number of
+///   `#[doc = include_str!]` modules** (both new 2026-09-05, both advisory).
+///   [ADR-0016](../../docs/adr/0016-engineering-standards.md) standard 6 asks
+///   for fewer in-file comments and for the long explanations to live in
+///   `docs/reference/<crate>.md`; these two numbers are the baseline that
+///   rule did not have. They are printed and **not** enforced, for the reason
+///   the whole of `verify-docs` is not enforced: a comment-volume gate is
+///   passed most cheaply by deleting the sentence that said why, and a
+///   `include_str!` gate would be passed by moving a paragraph into a file
+///   nobody links to. A number a human compares against last month's is worth
+///   more here than a threshold a build fails on;
 /// * functions of [`LONG_FUNCTION_LINES`] lines or more;
 /// * ```` ```ignore ```` doctest fences — a doctest that is compiled by
 ///   nobody is a claim nothing checks, which is what `just test-doc` exists
@@ -3920,6 +4982,7 @@ fn verify_docs(root: &Path) {
                         long_functions: long_functions(&region.cleaned),
                         ignore_fences: ignore_fences(&region.raw),
                         allows: allow_sites(&region),
+                        included_docs: included_doc_sites(&region.raw),
                     }
                 })
                 .collect();
@@ -3940,6 +5003,7 @@ fn verify_docs(root: &Path) {
     }
 
     print_ratio_table(&crates);
+    print_comment_table(&crates);
     print_long_functions(&crates);
     print_ignore_fences(&crates);
     print_allow_sites(&crates);
@@ -4029,6 +5093,62 @@ fn print_ratio_table(crates: &[(String, Vec<FileReport>)]) {
             file.counts.code,
         );
     }
+}
+
+/// In-file comment volume and externalised-doc count, per crate.
+///
+/// A second table rather than two more columns on the first: that one is
+/// about documentation, this one is about the two habits ADR-0016 standard 6
+/// names, and reading them together is how "we deleted 200 comments" gets
+/// mistaken for progress when the doc ratio fell with it.
+///
+/// **Advisory. Nothing here can fail a build**, and `verify-docs` returns
+/// nothing for a caller to fail on — see [`verify_docs`].
+fn print_comment_table(crates: &[(String, Vec<FileReport>)]) {
+    let width = crates
+        .iter()
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(4)
+        .max(5);
+    println!("\nin-file comments against code lines, and externalised module docs");
+    println!(
+        "  `comment` counts `//` lines that are neither `///` nor `//!` — the in-file kind\n  \
+         ADR-0016 standard 6 asks for fewer of. `include_str` counts modules whose docs live\n  \
+         in a `.md` file. Both are reported and neither is a gate."
+    );
+    println!(
+        "  {:width$}  {:>8}  {:>7}  {:>8}  {:>11}",
+        "crate", "comment", "code", "ratio", "include_str"
+    );
+    let mut total = DocCounts::default();
+    let mut total_included = 0usize;
+    for (name, files) in crates {
+        let mut counts = DocCounts::default();
+        let mut included = 0usize;
+        for file in files {
+            counts.add(file.counts);
+            included += file.included_docs;
+        }
+        total.add(counts);
+        total_included += included;
+        println!(
+            "  {:width$}  {:>8}  {:>7}  {:>8}  {:>11}",
+            name,
+            counts.comment,
+            counts.code,
+            percent(ratio_tenths(counts.comment, counts.code)),
+            included,
+        );
+    }
+    println!(
+        "  {:width$}  {:>8}  {:>7}  {:>8}  {:>11}",
+        "TOTAL",
+        total.comment,
+        total.code,
+        percent(ratio_tenths(total.comment, total.code)),
+        total_included,
+    );
 }
 
 fn print_long_functions(crates: &[(String, Vec<FileReport>)]) {
@@ -4157,7 +5277,9 @@ fn count_doc_and_code(region: &str) -> DocCounts {
         else {
             in_fence = false;
             counts.other += 1;
-            if !trimmed.is_empty() && !trimmed.starts_with("//") {
+            if trimmed.starts_with("//") {
+                counts.comment += 1;
+            } else if !trimmed.is_empty() {
                 counts.code += 1;
             }
             continue;
@@ -4301,6 +5423,26 @@ fn ignore_fences(region: &str) -> Vec<usize> {
 /// in a doc comment (this file does it twice) or built inside a macro's
 /// string is not counted, then reported from the original line so the message
 /// shows what was actually written.
+/// How many `#[doc = include_str!(…)]` / `#![doc = include_str!(…)]`
+/// attributes a production region carries.
+///
+/// Counted on the raw region, not the cleaned one: the attribute's argument
+/// is a string literal, and [`strip_code_noise`] blanks literals. Both the
+/// inner (`#!`) and outer (`#`) spellings count — a module doc is written
+/// with the first, an item doc with the second, and standard 6 is about the
+/// documentation moving to a `.md` file either way.
+fn included_doc_sites(region: &str) -> usize {
+    region
+        .match_indices("doc = include_str!")
+        .filter(|(i, _)| {
+            region
+                .get(..*i)
+                .and_then(|before| before.chars().next_back())
+                .is_some_and(|c| c == '[')
+        })
+        .count()
+}
+
 fn allow_sites(region: &Region) -> Vec<(usize, String)> {
     let cleaned = &region.cleaned;
     let raw: Vec<&str> = region.raw.lines().collect();
@@ -4460,6 +5602,57 @@ fn strip_code_noise(text: &str) -> String {
 #[cfg(test)]
 mod doc_report_tests {
     use super::*;
+
+    /// The two numbers ADR-0016 standard 6 asks the report to publish, and the
+    /// line that separates them from the doc counts: a `//` comment is neither
+    /// documentation nor code.
+    #[test]
+    fn an_in_file_comment_is_counted_as_neither_doc_nor_code() {
+        let counts = count_doc_and_code(
+            "/// documentation\n//! module documentation\n// an in-file comment\nlet x = 1;\n\n",
+        );
+        assert_eq!(counts.doc, 2);
+        assert_eq!(counts.comment, 1);
+        assert_eq!(counts.code, 1);
+        // The design's own denominator is unchanged by the split: every
+        // non-doc line still counts, blanks and comments included.
+        assert_eq!(counts.other, 3);
+    }
+
+    /// `verify-docs` is a report and this is what "advisory" has to mean in
+    /// practice: no number it prints can be wrong in a way that fails a build,
+    /// because it returns nothing to fail on.
+    #[test]
+    fn the_comment_count_is_a_report_and_returns_nothing_to_fail_on() {
+        let counts = count_doc_and_code("// only comments\n// and more\n");
+        assert_eq!(counts.comment, 2);
+        assert_eq!(counts.code, 0);
+        assert_eq!(
+            ratio_tenths(counts.comment, counts.code),
+            0,
+            "no divide by zero"
+        );
+    }
+
+    #[test]
+    fn an_externalised_module_doc_is_counted_in_both_spellings() {
+        assert_eq!(
+            included_doc_sites(
+                "#![doc = include_str!(\"../README.md\")]\n#[doc = include_str!(\"x.md\")]\nfn f() {}\n"
+            ),
+            2
+        );
+    }
+
+    /// Prose about the attribute is not the attribute. The report counts a
+    /// habit, and a document describing the habit is not evidence of it.
+    #[test]
+    fn a_doc_comment_mentioning_include_str_is_not_a_module_doc() {
+        assert_eq!(
+            included_doc_sites("/// Use `doc = include_str!(\"x.md\")` for long module docs.\n"),
+            0
+        );
+    }
 
     /// Everything this report prints is a `path:line`, and every line number
     /// comes from counting characters in [`strip_code_noise`]'s output
@@ -7150,5 +8343,523 @@ mod npm_scope_tests {
         let repo = repo_with(&[("sdks/nodejs/package.json", &manifest)]);
         let error = verify_npm_scope(repo.path()).expect_err("the access is a neighbour's");
         assert!(error.contains("no `publishConfig.access`"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+    use crate::signing_key_tests::TempDir;
+
+    /// The pipeline the gate runs each source file through, so a test drives
+    /// exactly what production does rather than a simplification of it.
+    fn scan(source: &str) -> Vec<SerdeType> {
+        scan_serde_types(&blank_cfg_test_items(&strip_comments(source)))
+    }
+
+    fn find<'a>(found: &'a [SerdeType], name: &str) -> &'a SerdeType {
+        found
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("`{name}` was not scanned at all: {found:?}"))
+    }
+
+    /// An exemption table with the given rows, in the shape the ADR writes it.
+    fn table(rows: &[(&str, &str, &str)]) -> String {
+        let mut doc =
+            format!("# ADR\n\n| {SERDE_EXEMPTION_MARKER} | File | Reason |\n|---|---|---|\n");
+        for (name, file, reason) in rows {
+            doc.push_str(&format!("| `{name}` | `{file}` | {reason} |\n"));
+        }
+        doc
+    }
+
+    /// Builds a one-crate tree with one source file and one ADR.
+    fn tree(dir: &TempDir, source: &str, adr: &str) -> PathBuf {
+        let root = dir.path();
+        let src = root.join(LIBRARY_CRATES_DIR).join("probe/src");
+        fs::create_dir_all(&src).expect("the temp tree is creatable");
+        fs::create_dir_all(root.join("docs/adr")).expect("the temp tree is creatable");
+        fs::write(src.join("lib.rs"), source).expect("the source file is writable");
+        fs::write(root.join(SERDE_ADR), adr).expect("the ADR is writable");
+        root.to_path_buf()
+    }
+
+    #[test]
+    fn a_type_with_the_attribute_complies() {
+        let found = scan(
+            "#[derive(Serialize)]\n#[serde(rename_all = \"snake_case\")]\npub struct A {\n    a_b: u8,\n}\n",
+        );
+        assert!(find(&found, "A").complies());
+    }
+
+    #[test]
+    fn a_type_without_the_attribute_does_not() {
+        let found = scan("#[derive(Serialize)]\npub struct A {\n    a_b: u8,\n}\n");
+        assert!(!find(&found, "A").complies());
+    }
+
+    /// The mutation the notes record: deleting the attribute from a type that
+    /// has no exemption must make the gate name it.
+    #[test]
+    fn deleting_the_attribute_is_visible_to_the_gate_itself() {
+        let dir = TempDir::new("verify-serde-mutation");
+        let with = "#[derive(Serialize)]\n#[serde(rename_all = \"snake_case\")]\npub struct Payload {\n    charge_id: String,\n}\n";
+        let root = tree(&dir, with, &table(&[]));
+        verify_serde(&root).expect("a type carrying the attribute passes");
+
+        let without = "#[derive(Serialize)]\npub struct Payload {\n    charge_id: String,\n}\n";
+        fs::write(
+            root.join(LIBRARY_CRATES_DIR).join("probe/src/lib.rs"),
+            without,
+        )
+        .expect("the source file is writable");
+        let error = verify_serde(&root).expect_err("the attribute is gone");
+        assert!(
+            error.contains("`Payload`") && error.contains("probe/src/lib.rs:2"),
+            "the gate must name the type and the line: {error}"
+        );
+    }
+
+    /// The second way to comply: every field pinned by name. `Payer` in
+    /// `vpay-adapter-mtn-momo` is written this way and must not be forced
+    /// into an exemption row.
+    #[test]
+    fn renaming_every_field_complies_without_the_blanket_attribute() {
+        let found = scan(
+            "#[derive(Serialize)]\nstruct Payer {\n    \
+             #[serde(rename = \"partyIdType\")]\n    party_id_type: &'static str,\n    \
+             #[serde(rename = \"partyId\")]\n    party_id: String,\n}\n",
+        );
+        assert!(find(&found, "Payer").complies());
+    }
+
+    #[test]
+    fn renaming_only_some_fields_does_not_comply() {
+        let found = scan(
+            "#[derive(Serialize)]\nstruct RequestToPay {\n    amount: String,\n    \
+             #[serde(rename = \"externalId\")]\n    external_id: String,\n}\n",
+        );
+        assert!(
+            !find(&found, "RequestToPay").complies(),
+            "one renamed field must not vouch for the others — that is the \
+             silent-wire-break case the rule exists for"
+        );
+    }
+
+    /// A tuple struct and a unit struct serialise no name, so the attribute
+    /// would rename nothing.
+    #[test]
+    fn a_tuple_or_unit_struct_needs_no_attribute() {
+        let found = scan(
+            "#[derive(Serialize)]\npub struct Cents(i64);\n#[derive(Serialize)]\npub struct Empty;\n",
+        );
+        assert!(find(&found, "Cents").complies());
+        assert!(find(&found, "Empty").complies());
+    }
+
+    /// An enum's variants *are* serialised, so the same shape is not a free
+    /// pass there.
+    #[test]
+    fn an_enum_with_bare_variants_does_not_comply() {
+        let found =
+            scan("#[derive(Serialize)]\npub enum Kind {\n    PollCharge,\n    Resubmit,\n}\n");
+        let kind = find(&found, "Kind");
+        assert_eq!(kind.shape, DeclShape::Variants);
+        assert!(!kind.complies());
+    }
+
+    /// `rename_all = "UPPERCASE"` is a decision about somebody else's
+    /// vocabulary (`vpay_core::Currency`, ISO-4217). It is not compliance —
+    /// the ADR wants it in the table where a reviewer sees it.
+    #[test]
+    fn a_different_rename_all_is_not_compliance() {
+        let found = scan(
+            "#[derive(Serialize)]\n#[serde(rename_all = \"UPPERCASE\")]\npub enum Currency {\n    Xaf,\n}\n",
+        );
+        let currency = find(&found, "Currency");
+        assert_eq!(currency.rename_all.as_deref(), Some("UPPERCASE"));
+        assert!(!currency.complies());
+    }
+
+    #[test]
+    fn a_type_without_a_serde_derive_is_out_of_scope() {
+        let found = scan("#[derive(Debug, Clone)]\npub struct NotOnTheWire {\n    a_b: u8,\n}\n");
+        assert!(
+            found.is_empty(),
+            "a type nothing serialises is not this rule's business: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_qualified_derive_is_still_a_serde_derive() {
+        let found = scan("#[derive(Debug, serde::Deserialize)]\npub struct A {\n    a_b: u8,\n}\n");
+        assert_eq!(found.len(), 1, "{found:?}");
+    }
+
+    /// A doc comment quoting the attribute must not satisfy the check — the
+    /// two adapters' wire modules both *describe* it at length in prose.
+    #[test]
+    fn a_comment_quoting_the_attribute_satisfies_nothing() {
+        let found = scan(
+            "/// No `#[serde(rename_all = \"snake_case\")]` in this file, ever.\n\
+             #[derive(Serialize)]\npub struct A {\n    a_b: u8,\n}\n",
+        );
+        assert!(!find(&found, "A").complies());
+    }
+
+    /// A type declared under `#[cfg(test)]` reaches no wire, and — the
+    /// direction that matters — the line numbers of everything after it must
+    /// not move.
+    #[test]
+    fn test_types_are_invisible_and_do_not_renumber_the_file() {
+        let source = "#[cfg(test)]\nmod tests {\n    #[derive(Serialize)]\n    \
+                      pub struct Fixture {\n        a_b: u8,\n    }\n}\n\
+                      #[derive(Serialize)]\npub struct Real {\n    a_b: u8,\n}\n";
+        let found = scan(source);
+        assert_eq!(found.len(), 1, "only the shipping type counts: {found:?}");
+        assert_eq!(found.first().map(|t| t.line), Some(9));
+    }
+
+    #[test]
+    fn an_exemption_lets_a_non_compliant_type_pass() {
+        let dir = TempDir::new("verify-serde-exempt");
+        let root = tree(
+            &dir,
+            "#[derive(Deserialize)]\npub struct CallbackBody {\n    pay_token: String,\n}\n",
+            &table(&[(
+                "CallbackBody",
+                "backends/crates/probe/src/lib.rs",
+                "models Orange's wire",
+            )]),
+        );
+        verify_serde(&root).expect("an exempted type passes");
+    }
+
+    /// The mutation: delete the row of a type that still needs it.
+    #[test]
+    fn deleting_a_needed_exemption_fails() {
+        let dir = TempDir::new("verify-serde-deleted-row");
+        let root = tree(
+            &dir,
+            "#[derive(Deserialize)]\npub struct CallbackBody {\n    pay_token: String,\n}\n",
+            &table(&[]),
+        );
+        let error = verify_serde(&root).expect_err("the row is gone and the type still needs it");
+        assert!(error.contains("`CallbackBody`"), "{error}");
+    }
+
+    /// The other direction, which is the one that rots: a row for a type that
+    /// now complies.
+    #[test]
+    fn an_exemption_for_a_complying_type_fails() {
+        let dir = TempDir::new("verify-serde-stale-row");
+        let root = tree(
+            &dir,
+            "#[derive(Deserialize)]\n#[serde(rename_all = \"snake_case\")]\npub struct A {\n    a_b: u8,\n}\n",
+            &table(&[("A", "backends/crates/probe/src/lib.rs", "no longer true")]),
+        );
+        let error = verify_serde(&root).expect_err("the exemption is stale");
+        assert!(
+            error.contains("exempted but complies"),
+            "the message must say which direction failed: {error}"
+        );
+    }
+
+    /// And a row for a type that does not exist at all — what a rename or a
+    /// deletion leaves behind.
+    #[test]
+    fn an_exemption_naming_nothing_fails() {
+        let dir = TempDir::new("verify-serde-phantom-row");
+        let root = tree(
+            &dir,
+            "#[derive(Deserialize)]\n#[serde(rename_all = \"snake_case\")]\npub struct A {\n    a_b: u8,\n}\n",
+            &table(&[("Deleted", "backends/crates/probe/src/lib.rs", "stale")]),
+        );
+        let error = verify_serde(&root).expect_err("the exemption names nothing");
+        assert!(error.contains("found no such serialisable type"), "{error}");
+    }
+
+    #[test]
+    fn an_exemption_with_no_reason_fails() {
+        let dir = TempDir::new("verify-serde-blank-reason");
+        let root = tree(
+            &dir,
+            "#[derive(Deserialize)]\npub struct CallbackBody {\n    pay_token: String,\n}\n",
+            &table(&[("CallbackBody", "backends/crates/probe/src/lib.rs", "  ")]),
+        );
+        let error = verify_serde(&root).expect_err("the reason is blank");
+        assert!(error.contains("carries no reason"), "{error}");
+    }
+
+    /// The file column is part of the key: two crates each have a
+    /// `CallbackBody` and a `TokenResponse`, and an exemption for one must not
+    /// silently cover the other.
+    #[test]
+    fn an_exemption_is_keyed_by_file_as_well_as_name() {
+        let dir = TempDir::new("verify-serde-two-files");
+        let root = dir.path();
+        for crate_name in ["mtn", "orange"] {
+            let src = root.join(LIBRARY_CRATES_DIR).join(crate_name).join("src");
+            fs::create_dir_all(&src).expect("the temp tree is creatable");
+            fs::write(
+                src.join("wire.rs"),
+                "#[derive(Deserialize)]\npub struct CallbackBody {\n    pay_token: String,\n}\n",
+            )
+            .expect("the source file is writable");
+        }
+        fs::create_dir_all(root.join("docs/adr")).expect("the temp tree is creatable");
+        fs::write(
+            root.join(SERDE_ADR),
+            table(&[(
+                "CallbackBody",
+                "backends/crates/mtn/src/wire.rs",
+                "models MTN's wire",
+            )]),
+        )
+        .expect("the ADR is writable");
+        let error = verify_serde(root).expect_err("only one of the two is exempted");
+        assert!(
+            error.contains("backends/crates/orange/src/wire.rs"),
+            "the unexempted twin must fail: {error}"
+        );
+        assert!(
+            !error.contains("backends/crates/mtn/src/wire.rs"),
+            "the exempted one must not: {error}"
+        );
+    }
+
+    /// A missing ADR is a red gate, not an empty exemption list: an empty list
+    /// would fail every exempted type at once and name the wrong cause.
+    #[test]
+    fn a_missing_adr_fails_rather_than_exempting_nothing() {
+        let dir = TempDir::new("verify-serde-no-adr");
+        let root = dir.path();
+        fs::create_dir_all(root.join(LIBRARY_CRATES_DIR).join("probe/src"))
+            .expect("the temp tree is creatable");
+        let error = verify_serde(root).expect_err("the ADR is absent");
+        assert!(error.contains(SERDE_ADR), "{error}");
+    }
+
+    /// The repository's own tree passes. Not a tautology: this is what turns
+    /// the exemption table into a two-directional record of the real code
+    /// rather than a document.
+    #[test]
+    fn the_repositorys_own_tree_passes() {
+        verify_serde(&repo_root()).expect("the workspace complies with ADR-0016 standard 3");
+    }
+
+    #[test]
+    fn generic_parameters_are_crossed_rather_than_read_as_a_body() {
+        let found = scan(
+            "#[derive(Serialize)]\n#[serde(rename_all = \"snake_case\")]\npub struct Req<'a> {\n    merchant_key: &'a str,\n}\n",
+        );
+        let req = find(&found, "Req");
+        assert_eq!(req.shape, DeclShape::NamedFields);
+        assert!(req.complies());
+    }
+
+    #[test]
+    fn a_comma_inside_a_generic_argument_does_not_split_a_field() {
+        assert_eq!(
+            top_level_members(
+                "#[serde(rename = \"a\")] a: Map<String, Value>, #[serde(rename = \"b\")] b: u8"
+            )
+            .len(),
+            2
+        );
+        assert!(every_member_renamed(
+            "#[serde(rename = \"a\")] a: Map<String, Value>, #[serde(rename = \"b\")] b: u8"
+        ));
+    }
+
+    #[test]
+    fn a_comma_inside_a_literal_does_not_split_a_field() {
+        let body = "#[serde(rename = \"a,b\")] a: u8";
+        assert_eq!(top_level_members(body).len(), 1);
+    }
+
+    #[test]
+    fn rename_all_is_not_read_as_a_per_field_rename() {
+        assert!(
+            !every_member_renamed("#[serde(rename_all = \"snake_case\")] a_b: u8"),
+            "`rename_all` on a field is not a `rename`; treating it as one \
+             would make the blanket attribute vouch for itself"
+        );
+    }
+}
+
+#[cfg(test)]
+mod repository_tests {
+    use super::*;
+    use crate::signing_key_tests::TempDir;
+
+    fn scanned(source: &str) -> String {
+        blank_cfg_test_items(&strip_comments(source))
+    }
+
+    /// A crate with one repository trait, one implementation of it, one store
+    /// that only holds a pool, and one row struct that is neither.
+    const DB: &str = "\
+pub trait Charges: Send + Sync {}
+pub(crate) struct PgRepositories {
+    pool: PgPool,
+}
+impl Charges for crate::repository::PgRepositories {}
+pub(crate) struct SqlClientAssertionStore {
+    pool: PgPool,
+}
+pub struct PendingTransaction(Transaction<'static, Postgres>);
+impl TxRepositories for PendingTransaction {}
+pub struct ChargeRow {
+    id: String,
+    amount: i64,
+}
+";
+
+    #[test]
+    fn both_signals_find_the_implementations_and_neither_finds_a_row() {
+        let found = concrete_repository_types(&[scanned(DB)]);
+        assert!(found.contains("PgRepositories"), "{found:?}");
+        assert!(found.contains("SqlClientAssertionStore"), "{found:?}");
+        assert!(found.contains("PendingTransaction"), "{found:?}");
+        assert!(
+            !found.contains("ChargeRow"),
+            "a row struct carries columns, not a connection: {found:?}"
+        );
+    }
+
+    /// The handle signal alone would miss a tuple-struct implementation's
+    /// sibling and the trait signal alone would miss a store over a *foreign*
+    /// trait. Both are needed, and this pins which one catches which.
+    #[test]
+    fn the_trait_signal_catches_what_the_handle_signal_cannot() {
+        let source = "\
+pub trait Jobs: Send + Sync {}
+pub(crate) struct Delegating {
+    inner: Arc<PgRepositories>,
+}
+impl Jobs for Delegating {}
+";
+        let found = concrete_repository_types(&[scanned(source)]);
+        assert!(
+            found.contains("Delegating"),
+            "an implementation that reaches its pool indirectly is still an \
+             implementation: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_trait_the_db_crate_does_not_declare_is_not_a_repository_trait() {
+        let source = "pub struct Whatever {\n    name: String,\n}\nimpl Display for Whatever {}\n";
+        assert!(concrete_repository_types(&[scanned(source)]).is_empty());
+    }
+
+    #[test]
+    fn an_impl_header_splits_at_its_for() {
+        assert_eq!(
+            trait_impls("impl Charges for crate::repository::PgRepositories {}"),
+            vec![("Charges".to_owned(), "PgRepositories".to_owned())]
+        );
+        assert_eq!(
+            trait_impls("impl<'a> Jobs<'a> for Pg<'a> {}"),
+            vec![("Jobs".to_owned(), "Pg".to_owned())]
+        );
+        assert!(
+            trait_impls("impl<S: TransactionSource + ?Sized> UnitOfWork for S {}").is_empty(),
+            "a blanket impl's target is the impl's own type parameter, not a type"
+        );
+        assert!(
+            trait_impls("impl PgRepositories { fn new() {} }").is_empty(),
+            "an inherent impl names no trait"
+        );
+    }
+
+    /// The mutation the notes record: a `vpay-api` module that names a
+    /// concrete implementation must fail, and the gate must say where.
+    #[test]
+    fn a_consumer_naming_a_concrete_type_fails_the_gate_itself() {
+        let dir = TempDir::new("verify-repositories");
+        let root = dir.path();
+        let db = root.join("backends/crates/vpay-db/src");
+        let api = root.join("backends/crates/vpay-api/src");
+        fs::create_dir_all(&db).expect("the temp tree is creatable");
+        fs::create_dir_all(&api).expect("the temp tree is creatable");
+        fs::create_dir_all(root.join("backends/apps")).expect("the temp tree is creatable");
+        fs::write(db.join("lib.rs"), DB).expect("the source file is writable");
+
+        fs::write(
+            api.join("op.rs"),
+            "use vpay_db::Repositories;\nfn build(r: &dyn Repositories) {}\n",
+        )
+        .expect("the source file is writable");
+        verify_repositories(root).expect("naming only the trait passes");
+
+        fs::write(
+            api.join("op.rs"),
+            "use vpay_db::{Repositories, SqlClientAssertionStore};\n\
+             fn build(pool: PgPool) {\n    SqlClientAssertionStore::new(pool);\n}\n",
+        )
+        .expect("the source file is writable");
+        let error = verify_repositories(root).expect_err("the concrete type is named");
+        assert!(
+            error.contains("vpay-api/src/op.rs:1") && error.contains("SqlClientAssertionStore"),
+            "the gate must name the file, the line and the type: {error}"
+        );
+        assert!(
+            error.contains("vpay-api/src/op.rs:3"),
+            "every site is reported, not just the first: {error}"
+        );
+    }
+
+    /// A doc comment linking to the type is documentation, not a reach — and
+    /// a `#[cfg(test)]` construction is a test's business. Both must pass, or
+    /// the cheapest way to clear the gate is to delete an honest sentence.
+    #[test]
+    fn a_doc_link_and_a_test_construction_are_not_reaches() {
+        let dir = TempDir::new("verify-repositories-prose");
+        let root = dir.path();
+        let db = root.join("backends/crates/vpay-db/src");
+        let api = root.join("backends/crates/vpay-api/src");
+        fs::create_dir_all(&db).expect("the temp tree is creatable");
+        fs::create_dir_all(&api).expect("the temp tree is creatable");
+        fs::create_dir_all(root.join("backends/apps")).expect("the temp tree is creatable");
+        fs::write(db.join("lib.rs"), DB).expect("the source file is writable");
+        fs::write(
+            api.join("op.rs"),
+            "/// Spent jtis go to `PgRepositories` — see vpay-db.\n\
+             fn build() {}\n\
+             #[cfg(test)]\nmod tests {\n    fn f() { PgRepositories::boxed(pool); }\n}\n",
+        )
+        .expect("the source file is writable");
+        verify_repositories(root).expect("prose and test code are not reaches");
+    }
+
+    #[test]
+    fn a_longer_name_is_a_different_type() {
+        assert!(
+            word_lines("let x: PgRepositoriesBuilder = ..;", "PgRepositories").is_empty(),
+            "whole-word only"
+        );
+        assert_eq!(
+            word_lines("a\nb\nPgRepositories\n", "PgRepositories"),
+            vec![3]
+        );
+    }
+
+    /// A moved `vpay-db` must fail rather than find nothing to look for.
+    #[test]
+    fn an_empty_db_crate_fails_rather_than_passing_vacuously() {
+        let dir = TempDir::new("verify-repositories-empty");
+        let root = dir.path();
+        fs::create_dir_all(root.join("backends/crates/vpay-db/src"))
+            .expect("the temp tree is creatable");
+        let error = verify_repositories(root).expect_err("there is nothing to look for");
+        assert!(error.contains("no repository implementation"), "{error}");
+    }
+
+    #[test]
+    fn the_repositorys_own_tree_passes() {
+        verify_repositories(&repo_root()).expect("the workspace complies with ADR-0016 standard 5");
     }
 }

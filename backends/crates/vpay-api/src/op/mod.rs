@@ -23,7 +23,7 @@ use authkestra_op::config::OpConfig;
 use authkestra_op::sqlx_store::SqlxOpStore;
 use authkestra_op::store::CompositeOpStore;
 use vpay_config::Config;
-use vpay_db::{Repositories, SqlClientAssertionStore};
+use vpay_db::Repositories;
 
 use crate::op::clients::YamlClientStore;
 use crate::op::keys::LoadedSigningKey;
@@ -171,7 +171,7 @@ impl MerchantOp {
     ///
     /// Clients come from [`YamlClientStore`] (YAML for identity, the
     /// `disabled_clients` table for revocation). Spent `client_assertion`
-    /// `jti`s go to [`SqlClientAssertionStore`], which is what turns a
+    /// `jti`s go to [`vpay_db::client_assertion_store`], which is what turns a
     /// captured assertion from a replayable bearer credential into a
     /// single-use one — `authkestra_op`'s `OpStore` refuses every assertion
     /// unless one is wired (`NoClientAssertionStore` fails closed).
@@ -201,7 +201,7 @@ impl MerchantOp {
         repositories: Arc<dyn Repositories>,
     ) -> Self {
         // The one place `vpay_db` still hands out a raw pool, and the reason
-        // it does: `SqlxOpStore` and `SqlClientAssertionStore` are *foreign*
+        // it does: `SqlxOpStore` and vpay-db's client-assertion store are *foreign*
         // trait implementations over a pool (ADR-0010), whose queries vpay
         // does not own and cannot express as repository methods. Step 7's
         // decision (9) — see `docs/status.md`.
@@ -212,7 +212,7 @@ impl MerchantOp {
             SqlxOpStore::<sqlx::Postgres>::new(pool.clone()),
             SqlxOpStore::<sqlx::Postgres>::new(pool.clone()),
         )
-        .with_client_assertion_store(SqlClientAssertionStore::new(pool));
+        .with_client_assertion_store(vpay_db::client_assertion_store(pool));
 
         Self {
             default_scopes: default_scopes(config),
