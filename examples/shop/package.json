@@ -15,7 +15,7 @@
     "start": "next start -p 3000",
     "typecheck": "pnpm run build:deps && tsc --noEmit",
     "test": "pnpm run build:deps && vitest run",
-    "lint": "prettier --check \"**/*.{ts,tsx,css,json,md,mjs}\""
+    "lint": "pnpm run build:deps && eslint . --max-warnings 0 && prettier --check \"**/*.{ts,tsx,css,json,md,mjs}\""
   },
   "dependencies": {
     "@prisma/client": "6.19.3",
@@ -35,6 +35,8 @@
     "@types/node": "^22.10.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.7",
+    "@vpay/config": "workspace:*",
+    "eslint": "9.39.5",
     "prettier": "^3.4.0",
     "prisma": "6.19.3",
     "typescript": "^5.7.0",

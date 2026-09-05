@@ -27,7 +27,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "lint": "eslint . --max-warnings 0"
   },
   "peerDependencies": {
     "stripe": "^22.6.1"
@@ -39,6 +40,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@vpay/config": "workspace:*",
+    "eslint": "9.39.5",
     "stripe": "^22.6.1",
     "typescript": "^5.7.0",
     "vitest": "^3.2.7"

@@ -65,7 +65,7 @@ export default async function preflight(): Promise<void> {
       // The authenticator reads `headers` and nothing else; the rest of
       // stripe-node's `StripeRequest` is not needed to mint a token, and
       // inventing values for it here would suggest it were.
-      probe as Parameters<typeof authenticator>[0],
+      probe,
     );
   } catch (cause) {
     throw new Error(

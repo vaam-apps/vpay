@@ -22,8 +22,18 @@ function request(path: string): NextRequest {
 /** A `fetch` that answers the origins route and records what it was asked. */
 function originsFetch(origins: string[] | null, status = 200) {
   const calls: string[] = [];
+  // a `fetch` stand-in must return a promise; this one answers from a literal.
+  // eslint-disable-next-line @typescript-eslint/require-await
   const impl = vi.fn(async (input: RequestInfo | URL) => {
-    calls.push(String(input));
+    // A `Request` stringifies to "[object Request]"; these calls are
+    // asserted against by URL.
+    calls.push(
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url,
+    );
     if (origins === null) {
       throw new TypeError('network');
     }

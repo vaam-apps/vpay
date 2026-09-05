@@ -1818,9 +1818,10 @@ describe("checkout.sessions", () => {
     expect(JSON.stringify(session)).toContain("cs_123_secret_abc123");
     // The inspect hook is invisible to everything else.
     expect(Object.keys(session)).not.toContain("client_secret_redacted");
-    expect(JSON.parse(JSON.stringify(session)).client_secret).toBe(
-      "cs_123_secret_abc123",
-    );
+    const roundTripped = JSON.parse(JSON.stringify(session)) as {
+      client_secret?: string;
+    };
+    expect(roundTripped.client_secret).toBe("cs_123_secret_abc123");
   });
 
   it("redacts a list item's url fragment too, though it has no client_secret to redact", async () => {

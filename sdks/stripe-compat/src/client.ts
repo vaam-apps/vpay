@@ -108,6 +108,9 @@ export function stripeClient(
 export function stripeClientWithBadCredential(): Stripe {
   const env = readCompatEnv();
   return new Stripe("", {
+    // stripe-node's `Authenticator` type is promise-returning; this one only
+    // sets a header.
+    // eslint-disable-next-line @typescript-eslint/require-await
     authenticator: async (request) => {
       request.headers["Authorization"] = "Bearer not-a-vpay-access-token";
     },

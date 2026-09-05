@@ -136,7 +136,10 @@ just up               # Postgres + a WireMock host per rail
 **Prerequisites:** Docker (with Compose v2.24+ — the demo overlay uses `!reset`),
 the Rust toolchain `rust-toolchain.toml` pins, `just`, `jq`, `curl` and
 `openssl`. `pnpm` is needed only if you want to work on the dashboard; the demo
-does not start it (see below).
+does not start it (see below). The Node baseline is `.nvmrc` — `22.23.2`, the
+current 22 LTS — and `.npmrc` sets `engine-strict=true`, so `pnpm install`
+**fails** rather than warns on an older Node. It moved up from `22.11.0` on
+2026-09-05; see the `install-node` recipe in the `justfile` for why.
 
 ```bash
 just demo

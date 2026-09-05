@@ -23,7 +23,7 @@ import {
   unexpectedResponseError,
   type StripeError,
 } from "./errors.js";
-import { createEmbeddedCheckout, originOf } from "./embedded.js";
+import { createEmbeddedCheckout } from "./embedded.js";
 import { encodeForm, FormEncodingError, type FormValue } from "./form.js";
 import type {
   CheckoutSession,
@@ -686,6 +686,9 @@ function sleep(ms: number): Promise<void> {
  * their never-rejects contract precisely because the arguments were checked
  * once, here.
  */
+// async purely for source compatibility with `@stripe/stripe-js`'s
+// `loadStripe`; see the doc comment above.
+// eslint-disable-next-line @typescript-eslint/require-await
 export async function loadStripe(
   publishableKey: string,
   options: VpayStripeOptions,

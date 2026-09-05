@@ -49,7 +49,7 @@ const meta = {
   argTypes: {
     locale: { control: 'inline-radio', options: ['fr', 'en'] },
   },
-  args: { locale: 'fr' as Locale },
+  args: { locale: 'fr' },
   tags: ['autodocs'],
 } satisfies Meta<typeof Screen>;
 

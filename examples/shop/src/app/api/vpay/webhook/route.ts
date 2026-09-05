@@ -28,9 +28,11 @@ export async function POST(request: Request): Promise<Response> {
     },
   );
 
-  // The only log line this endpoint writes. The event id and type are
-  // identifiers; the body, the signature header and the secret are not
-  // printed, here or anywhere.
+  // The only log line this endpoint writes, and a demo merchant has no
+  // logger to write it to instead. The event id and type are identifiers;
+  // the body, the signature header and the secret are not printed, here or
+  // anywhere.
+  // eslint-disable-next-line no-console
   console.info(
     `vpay webhook: ${result.eventType ?? "<unverified>"} ${result.eventId ?? ""} -> ` +
       `${result.status} ${"outcome" in result.body ? result.body.outcome : result.body.error}`,

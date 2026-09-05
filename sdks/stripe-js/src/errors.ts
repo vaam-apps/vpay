@@ -124,7 +124,7 @@ export function parseErrorEnvelope(body: unknown): StripeError | undefined {
   if (typeof body !== "object" || body === null || !("error" in body)) {
     return undefined;
   }
-  const raw: unknown = (body as { error: unknown }).error;
+  const raw: unknown = body.error;
   if (typeof raw !== "object" || raw === null) {
     return undefined;
   }

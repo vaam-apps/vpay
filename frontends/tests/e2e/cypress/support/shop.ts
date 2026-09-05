@@ -61,7 +61,10 @@ export function orderIdFromUrl(): Cypress.Chainable<string> {
 
 /** What `orders.get` answers with — the shop's own database, and nothing else. */
 export interface ShopOrder {
-  status: "unpaid" | "paid" | "failed" | "cancelled" | string;
+  // The four values `examples/shop`'s `OrderStatus` (and `schema.zmodel`'s
+  // enum) can hold. No `| string`: that widened the union back to `string`
+  // and `waitForOrderStatus` would have accepted a misspelled status.
+  status: "unpaid" | "paid" | "failed" | "cancelled";
   paymentIntentId: string | null;
   checkoutSessionId: string | null;
 }

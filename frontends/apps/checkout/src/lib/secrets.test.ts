@@ -85,8 +85,16 @@ function spyOnFetch(sink: string[]): { mockRestore: () => void } {
   return vi
     .spyOn(globalThis, 'fetch')
     .mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      sink.push(typeof input === 'string' ? input : String(input));
-      return realFetch(input as RequestInfo, init);
+      // Not `String(input)`: a `Request` stringifies to "[object Request]",
+      // and this sink is what the credential trace greps for a secret.
+      sink.push(
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url,
+      );
+      return realFetch(input, init);
     });
 }
 

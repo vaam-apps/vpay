@@ -51,7 +51,7 @@ function contextOf(state: CheckoutState) {
 }
 
 export function CheckoutView(props: CheckoutViewProps) {
-  const { state, t, locale, destination, secondsLeft } = props;
+  const { state, t, locale } = props;
   const context = contextOf(state);
   const amount =
     context === null ? '' : formatAmount(context.intent.amount, context.intent.currency, locale);

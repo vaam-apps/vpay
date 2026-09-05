@@ -28,6 +28,16 @@ install-rust:
     cargo install cargo-nextest --locked || true
     cargo install cargo-deny --locked || true
 
+# The Node baseline lives in `.nvmrc` (`22.23.2`, the current 22 LTS) and is
+# enforced, not merely suggested: `.npmrc` sets `engine-strict=true`, the root
+# `package.json` declares `engines.node: >=22.13.0`, and CI's `web`, `rust` and
+# `e2e` jobs all install Node with `node-version-file: .nvmrc`. It moved from
+# `22.11.0` to `22.x` on 2026-09-05 because the ESLint 9.39 dependency tree
+# (`eslint-visitor-keys@5.0.1`) requires `^20.19.0 || ^22.13.0 || >=24`, which
+# `22.11.0` does not satisfy — `pnpm install --frozen-lockfile` exits 1 under
+# it. `frontends/Dockerfile` and `examples/shop/Dockerfile` build on
+# `node:22-alpine`, a floating tag with no minor pin, which resolves to the
+# same 22 LTS; nothing there needs to change when this line does.
 install-node:
     corepack enable
     pnpm install
@@ -244,8 +254,61 @@ clippy:
 # `exports` map to `dist/stripe-auth.d.ts`, and `dist/` is gitignored. Without
 # the build this recipe fails on a clean checkout with `TS2307: Cannot find
 # module '@vpay/sdk/stripe'` — a missing artefact reported as a broken import.
+#
+# WHAT IS LINTED, AND WHAT IS NOT. Until 2026-09-05 this recipe ran the
+# typecheck alone, and `pnpm -r lint` was broken repo-wide: four packages
+# declared a `lint` script for a tool no package had installed, so the sweep
+# died on the first of them (`@vpay/tokens`, `eslint: not found`) before a
+# single rule ran, and the `web` gate claimed a lint it did not perform.
+#
+# It now runs both, and `pnpm -r lint` is real: ESLint 9.39.5 in flat config,
+# one shared rule set exported from `@vpay/config/eslint`, over **all 15**
+# TypeScript/JavaScript workspace packages — 214 files, every `.ts`, `.tsx`,
+# `.js` and `.mjs` in the tree that is not build output. Each package's
+# `lint` script carries `--max-warnings 0`, so a rule configured at `warn`
+# cannot pass this gate quietly. The rules: `@eslint/js` recommended — on
+# TypeScript as well as `.js`, which is a composition order the config file
+# spells out and which the first version of it got wrong,
+# `typescript-eslint` recommended-**type-checked** (a real type checker, from
+# each package's own tsconfig — so `strict`, `noUncheckedIndexedAccess` and
+# `exactOptionalPropertyTypes` are what the rules reason about),
+# `eslint-plugin-react-hooks` on the four React packages,
+# `@next/eslint-plugin-next` on the three Next apps, `no-console` as an error
+# in shipping source, and `no-restricted-imports` refusing `testing/**` from
+# shipping code in `frontends/apps/checkout` and `examples/shop` — a second
+# lock on the hand-written vitest guards those two already carry.
+#
+# WHAT KEEPS THAT TRUE. A lint gate reports its own absence as success, so
+# `frontends/packages/config/src/eslint.test.js` (run by `just test-web`)
+# asserts the gate is still a gate: every package `git ls-files` finds still
+# declares `eslint . --max-warnings 0` and still reaches the shared factory,
+# each rule family above is still on for the files it is claimed for, and no
+# file carries a whole-file disable directive or a suppression with no stated
+# reason. Every assertion in it was written against a mutation that had been
+# measured to leave `pnpm -r lint` at exit 0 — a deleted `lint` script (pnpm
+# skips a missing script in silence, which is how ten packages went unlinted
+# before this), an `eslint.config.js` rewritten to `export default []`, a
+# dropped `--max-warnings 0`, and a deleted rule block.
+#
+# NOT linted, and each for a stated reason: build output (`dist/`, `.next/`,
+# `storybook-static/`) and the `next-env.d.ts` Next regenerates, because none
+# of it is authored here; and `frontends/packages/ui/.storybook/{main,preview}.ts`
+# is linted WITHOUT the type-aware rules, because `include: [".storybook"]` in
+# that package's tsconfig does not actually reach it — TypeScript's
+# include-glob expansion skips dot-directories, so `tsc --listFiles` lists
+# neither file and `pnpm -r typecheck` has never covered them either. That is
+# a gap in the typecheck, recorded rather than papered over: fixing it means
+# changing what `pnpm -r typecheck` covers, a different gate, so it is left
+# as a maintainer's call.
+#
+# `no-console` is off in tests, Storybook stories, Cypress specs, `testing/`
+# helpers and the command-line examples (`examples/*/index.mjs`,
+# `checkout-browser`'s `mint.mjs`/`serve.mjs`, `sdks/nodejs/scripts/`) —
+# those print on purpose. It is ON everywhere else, including
+# `examples/checkout-browser/checkout.js`, the payer page.
 lint-web: build-sdk-node
     pnpm -r typecheck
+    pnpm -r lint
 
 deny:
     cargo deny check

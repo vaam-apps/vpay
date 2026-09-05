@@ -738,6 +738,37 @@ byte-identical to `origin/master`'s. The record is
 `docs/plans/step9-notes/verify-status-lexer.md` and
 `verify-status-lexer-review.md`.
 
+**Follow-up, 2026-09-05: one shared ESLint flat config, `pnpm -r lint` real on
+15 packages** — experiment sample 4, opus arm, reviewed with nine mutations (3
+of 9 caught as delivered; all nine after the review's four fixes). Unrelated
+to hosted checkout — it fixes `pnpm -r lint`, which five of fifteen packages
+could not even run (four named an ESLint installed nowhere in the workspace,
+ten declared no `lint` script at all) and which `just lint-web` never invoked
+in the first place — but landed the same day through the same process, so it
+is recorded here rather than left to a commit message. One factory,
+`frontends/packages/config/src/eslint.js` (exported as `@vpay/config/eslint`,
+the export the package had declared since it was created at a file that did
+not exist), covers all 15 packages / 214 files; ESLint stays pinned to 9.39.5
+rather than the current 10, though **not for the reason first given** — the
+pass argued 10 needed a Node baseline `.nvmrc` did not carry, and then CI
+failed all three of `web`, `rust` and `e2e` at `pnpm install
+--frozen-lockfile` because ESLint **9**.39's own dependency tree
+(`eslint-visitor-keys@5.0.1`) already required `^22.13.0` under
+`engine-strict=true`. The baseline was raised deliberately on 2026-09-05
+(`.nvmrc` `22.11.0` → `22.23.2`, the current 22 LTS; root `engines.node`
+`>=22.13.0`), which retires that refusal and makes ESLint 10 equally
+admissible. Both the implementing pass and its review ran a newer Node than
+CI, so every local gate was green over a break only the runner could see. 51
+findings were raised on the tree, 30 fixed in source and 21 line-suppressed
+with a reason each. The review's four fixes made the base rules (`@eslint/js`
+recommended) actually reach `.ts` files, not only `.js` — they had been
+silently scoped to seven of the 214 — and added the guard,
+`frontends/packages/config/src/eslint.test.js`, that fails if a package leaves
+the gate (a deleted `lint` script, an emptied `eslint.config.js`, a dropped
+`--max-warnings 0`, or a reasonless disable all used to leave `pnpm -r lint`
+green). The record is `docs/plans/step9-notes/web-lint.md` and
+`web-lint-review.md`.
+
 **Follow-up, 2026-09-05: stale release-artefact claims retired against
 measured runs** — experiment sample 5, opus arm, docs-class review.
 Unrelated to hosted checkout — it retires the "`release.yml` has never run /
