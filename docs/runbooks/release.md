@@ -46,7 +46,7 @@ here.
 ## 1. What a release is
 
 A `v*` tag on `master`. Pushing it runs
-[`release.yml`](../../.github/workflows/release.yml), which builds three images
+[`release.yml`](../../.github/workflows/release.yml), which builds four images
 on two architectures, merges each pair into a manifest list, applies the tags,
 and signs each manifest-list digest with cosign.
 
@@ -57,8 +57,11 @@ and signs each manifest-list digest with cosign.
 
 There is deliberately no `latest`. A real deployment pins a digest (§4).
 
-The three images are `ghcr.io/vaam-apps/vpay-server`, `-worker` and
-`-dashboard` (step-6 decision (1)). The chart deploys the first two;
+The four images are `ghcr.io/vaam-apps/vpay-server`, `-worker`, `-dashboard`
+and `-checkout` (step-6 decision (1), plus `vpay-checkout` from Step 9 D3 on
+2026-09-04 — this section said "three" until the 2026-09-05 review pass
+noticed the count had moved). The chart deploys `-server` and `-worker`
+always and `-checkout` behind `checkout.enabled` (default false);
 `vpay-dashboard` is published and **not** templated — see
 `deploy/helm/vpay/README.md` for why.
 
@@ -71,7 +74,7 @@ green *and* that the chart's `appVersion` and the tag agree, because
 ```bash
 just verify              # the two self-checks
 just ci                  # everything CI runs, in CI's order
-just release-dry-run     # the three images for THIS host's arch, then helm-check
+just release-dry-run     # the four images for THIS host's arch, then helm-check
 gh run list --branch master --limit 3
 
 grep -n '^appVersion:' deploy/helm/vpay/Chart.yaml   # must match the tag, sans `v`
@@ -232,3 +235,108 @@ Everything above. Specifically:
   documented identity format, not from a certificate anyone has read.
 * `just release-dry-run` exercises the Dockerfiles and the chart. It exercises
   neither the registry, nor the attestations, nor the signature.
+* **No GitHub Actions cache-hit rate has ever been read for either
+  Dockerfile**, before or after the 2026-09-05 cargo-chef change (§7). What
+  §7 reports was measured on an authoring host with a local
+  `docker-container` builder. `type=gha` behaves differently — it is a
+  network-backed store with an eviction policy and a per-repository budget —
+  and nobody has looked at a `build-push-action` log to see which layers it
+  actually restored.
+
+## 7. What a release run recompiles (the build cache)
+
+Added 2026-09-05, when `backends/Dockerfile` gained
+[cargo-chef](https://github.com/LukeMathWalker/cargo-chef). Read this before
+changing that file, because the *order* of its instructions is now part of
+its behaviour.
+
+The Rust image is built in four stages:
+
+| Stage | What it does | When it re-runs |
+|---|---|---|
+| `chef` | `rust:1.95.0-alpine3.22`, `apk add musl-dev pkgconfig`, `cargo install cargo-chef --locked --version 0.1.78` | the base image tag or the cargo-chef pin changes |
+| `planner` | copies the workspace, runs `cargo chef prepare` → `recipe.json` (manifests + `Cargo.lock`, **no source**) | every build; it compiles nothing and takes ~0.1 s |
+| `builder` (cook) | `cargo chef cook --profile dist --target <host triple> -p vpay-server -p vpay-worker-bin` — compiles the ~317-package dependency graph into `target/` | `recipe.json` changes (a manifest or the lockfile moved), or `.cargo/config.toml` changes |
+| `builder` (build) | `ARG VPAY_GIT_SHA`, copy the real source, `cargo build`, `cp` to `/out` | any source edit, or a different `VPAY_GIT_SHA` |
+
+Three properties this shape depends on. Two of the ways to break them are
+silent — the build stays *correct*, it just stops caching — and one is loud;
+each entry says which, because they were established by mutation:
+
+1. **The cook's flags must match the build's.** Same `--profile dist`, same
+   `--target` (read from `rustc -vV`, never hardcoded — see the Dockerfile's
+   header and [ADR-0014](../adr/0014-builder-host-musl-triple.md)), same
+   `-p` selection, and `.cargo/` copied in first so `+crt-static` applies. A
+   cook under different rustflags writes fingerprints the real build rejects.
+   The two halves fail differently, and only one of them is visible: dropping
+   `--target` kills the cook in under a second (`cannot produce proc-macro
+   for async-trait ... x86_64-unknown-linux-musl does not support these crate
+   types`), while dropping `--profile dist` **succeeds**, cooks the `dev`
+   profile, and leaves the next `cargo build` to recompile everything — 305 s
+   for a rebuild that costs 105 s when the flags match.
+2. **`ARG VPAY_GIT_SHA` must stay below the cook.** `release.yml` passes a
+   different `github.sha` on every push; an `ARG`/`ENV` pair above the cook
+   invalidates the dependency layer on every release build.
+3. **`planner` and `builder` must copy the same workspace directories.** The
+   recipe has to describe the workspace the next stage compiles. Loud:
+   dropping `.xtask`/`sdks/rust` from the planner fails `cargo chef prepare`
+   in a second (`failed to read /build/sdks/rust/Cargo.toml`) rather than
+   emitting a shrunken recipe. The one deliberate difference is `.cargo`,
+   which only `builder` copies — so the recipe's `config_file` is `null` and
+   `.cargo/config.toml` reaches the cook through that stage's own `COPY`,
+   which is also what makes a change to it invalidate the cook.
+
+Measured on the authoring host on 2026-09-05, `linux/amd64`, on a dedicated
+`docker-container` buildx builder pruned before the cold run — see
+[../plans/exp8-notes/opus.md](../plans/exp8-notes/opus.md) for the logs:
+
+| Build | Before (one-stage) | After (cargo-chef) |
+|---|---|---|
+| cold, empty builder cache | 254 s | 238 s |
+| one comment line added to `vpay-server/src/main.rs` | 260 s | **125 s** (cook `CACHED`) |
+| `--build-arg VPAY_GIT_SHA` changed, nothing else | — | **116 s** (cook `CACHED`) |
+| the same, with rule 2 violated (`ARG` moved above the cook) | — | 251 s (cook re-ran) |
+
+**The cold row above is the one number that did not survive review, and the
+direction matters.** It was a single unpaired sample. Re-measured the same
+day as two matched pairs — the same isolated builder pruned between the two
+runs of each pair, the two runs back to back, and the second pair in the
+reverse order to control for a host that several agents were building on:
+
+| Pair | one-stage | cargo-chef |
+|---|---|---|
+| 1 (one-stage first) | 193 s | 256 s |
+| 2 (cargo-chef first) | 212 s | 248 s |
+
+**A cold build is 36-63 s slower than it was**, which is `cargo install
+cargo-chef` (32-58 s here) plus the cook's own pass over the graph. The warm
+numbers were reproduced in the same pass on the busier host, twice each —
+105 s and 114 s for a source touch, 101 s and 112 s for a sha-only rebuild,
+215 s for the same sha-only rebuild with rule 2 violated, and 1 s for a
+change to a `docs/` file, which `.dockerignore` keeps out of the context
+altogether. So the trade is: every
+cold build pays about 45 s; every warm one saves about 150 s.
+
+The runtime images are unchanged: `vpay-server` is 15.9 MB before and after,
+two layers both times, the `config/` layer the same digest in both, and
+`docker export` of it lists `config/` and `/vpay-server` and nothing else
+this build put there (the tar also carries the `/dev`, `/etc`, `/proc`,
+`/sys` and `.dockerenv` stubs the runtime creates for any container, which
+are not layers). cargo-chef is in the builder only. Re-verified in review
+against an image built from the pre-cargo-chef Dockerfile as well as this
+one, and both `scratch` images answer `--version` with exit 0.
+
+**The saving is bounded by `[profile.dist]`, and the number above is the
+honest one.** `dist` inherits `release`: `lto = "fat"`, `codegen-units = 1`.
+A fat-LTO link re-consumes every dependency's LLVM IR, so the final
+`cargo build` costs about two minutes however much of the graph is already
+compiled. Halving an incremental build is what cargo-chef buys here — not the
+near-instant rebuild it buys a project without fat LTO.
+
+**An open question this change deliberately leaves open.** Nothing records
+why `[profile.release]` sets `lto = "fat"` — no ADR mentions LTO and
+`Cargo.toml` carries no comment on that line — so whether `[profile.dist]`
+should override it with `lto = "thin"` (much cheaper links, a slower binary
+by an unmeasured amount) is a maintainer's decision about the shipped
+artefact, not a build-plumbing one. It is named here because it, and not
+cargo-chef, is what now bounds a release rebuild.

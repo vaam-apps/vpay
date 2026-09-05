@@ -1229,7 +1229,7 @@ release-dry-run:
     echo "==> helm-check"
     just helm-check
 
-    echo "release-dry-run: ok — three images built for $platform, chart checked."
+    echo "release-dry-run: ok — four images built for $platform, chart checked."
     echo "release-dry-run: NOT covered: the other architecture, provenance/SBOM,"
     echo "release-dry-run: push-by-digest, the manifest merge, and cosign signing."
 

@@ -195,10 +195,27 @@ jobs:
           # architecture (server and worker are separate jobs sharing one
           # builder stage but not one runner). The scope is per image AND per
           # architecture because an amd64 layer is useless to an arm64 build.
-          # Unmeasured: whether six `mode=max` scopes fit inside GitHub's
+          # Unmeasured: whether eight `mode=max` scopes fit inside GitHub's
           # per-repository cache budget without evicting each other. If they
           # do not, the symptom is slow builds, not wrong ones — drop to
           # `mode=min`, or drop the cache entirely.
+          #
+          # **These scopes mean exactly what they meant before 2026-09-05,
+          # when `backends/Dockerfile` gained cargo-chef** (see its header).
+          # A scope is still one image on one architecture, still `mode=max`,
+          # and nothing here changed. What changed is how much of a scope is
+          # reusable *across commits*: until that date `ARG`/`ENV
+          # VPAY_GIT_SHA` was the first instruction of the builder stage, and
+          # the `build-args` line below passes a different `github.sha` on
+          # every push — so every layer after it missed on every run, and
+          # `cache-from` could only ever restore the base image and the `apk
+          # add`. The `ARG` now sits after the dependency-compilation layer,
+          # so that layer survives a commit. **Measured by mutation on the
+          # authoring host, not on a runner:** with the `ARG` restored to the
+          # top, a build whose only change is the sha recompiles the
+          # dependency graph and takes 251 s; with it below, the same build
+          # reuses the layer and takes 116 s. Nobody has read a GitHub Actions
+          # cache-hit rate for this file, before or after.
           cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }}
       # An empty file named after the digest: the artifact IS the digest, so
