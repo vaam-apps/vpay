@@ -46,7 +46,7 @@ here.
 ## 1. What a release is
 
 A `v*` tag on `master`. Pushing it runs
-[`release.yml`](../../.github/workflows/release.yml), which builds three images
+[`release.yml`](../../.github/workflows/release.yml), which builds four images
 on two architectures, merges each pair into a manifest list, applies the tags,
 and signs each manifest-list digest with cosign.
 
@@ -57,8 +57,11 @@ and signs each manifest-list digest with cosign.
 
 There is deliberately no `latest`. A real deployment pins a digest (§4).
 
-The three images are `ghcr.io/vaam-apps/vpay-server`, `-worker` and
-`-dashboard` (step-6 decision (1)). The chart deploys the first two;
+The four images are `ghcr.io/vaam-apps/vpay-server`, `-worker`, `-dashboard`
+and `-checkout` (step-6 decision (1), plus `vpay-checkout` from Step 9 D3 on
+2026-09-04 — this section said "three" until the 2026-09-05 review pass
+noticed the count had moved). The chart deploys `-server` and `-worker`
+always and `-checkout` behind `checkout.enabled` (default false);
 `vpay-dashboard` is published and **not** templated — see
 `deploy/helm/vpay/README.md` for why.
 
@@ -71,7 +74,7 @@ green *and* that the chart's `appVersion` and the tag agree, because
 ```bash
 just verify              # the two self-checks
 just ci                  # everything CI runs, in CI's order
-just release-dry-run     # the three images for THIS host's arch, then helm-check
+just release-dry-run     # the four images for THIS host's arch, then helm-check
 gh run list --branch master --limit 3
 
 grep -n '^appVersion:' deploy/helm/vpay/Chart.yaml   # must match the tag, sans `v`
