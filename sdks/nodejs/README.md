@@ -602,10 +602,17 @@ payment-intent routes past it**: create, retrieve and list on
 confirm reaches a real rail adapter over HTTP and moves the intent to
 `processing`, and `vpay-worker` then polls the rail and settles it, so an
 intent does reach **`succeeded`** — `sdks/stripe-compat` watches one do so
-through `paymentIntents.retrieve` and nothing else. `/v1/events` is served
-(Step 5); `/v1/refunds` and `/v1/balance` are still the honest
-`404 unknown_route`. **This package has no client method for any of that
-beyond the payment-intent routes it already wraps.**
+through `paymentIntents.retrieve` and nothing else. `/v1/events`,
+`/v1/events/{id}` (Step 5) and `GET /v1/refunds/{id}` (issue #45,
+2026-09-05) are served; `POST /v1/refunds` and `/v1/balance` are still the
+honest `404 unknown_route`. ~~**This package has no client method for any of
+that beyond the payment-intent routes it already wraps.**~~ **— corrected
+2026-09-05: it has `refunds.retrieve(id)`,** added in the same change that
+served the route, so this package can now make the refund read a
+reconciliation job needs when a `charge.refund.updated` was missed or
+arrived out of order. It still has no `events.retrieve` — a dated gap in
+[`../../docs/sdks/parity.md`](../../docs/sdks/parity.md) — and
+`refunds.create` and `balance.retrieve` still reach the 404.
 
 **`checkout.sessions` is newer than this paragraph and less proven than the
 rest.** The four methods are implemented and tested against this package's
