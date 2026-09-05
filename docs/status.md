@@ -2128,9 +2128,15 @@ metadata-derived and uncompiled, exactly as before. See
 its output, and
 [plans/exp11-notes/opus-review.md](plans/exp11-notes/opus-review.md) for the
 sabotage review that re-ran all of it, its mutation table, and the two test
-counts that settle whether the suite shrank (it did not: `046892a` and this
-branch both list **1220 tests in 42 binaries**, each measured under its own
-pin).
+counts that settle whether the suite shrank (it did not: on the base this work
+was written against, `046892a`, that base and this branch both listed **1220
+tests in 42 binaries**, each measured under its own pin). Those two are a
+matched pair on `046892a` and are left as measured. **Rebased onto `02ae5cc`
+on 2026-09-05**, which brought [ADR-0016](adr/0016-engineering-standards.md)'s
+`verify-serde` and `verify-repositories` and their 40 tests, the branch lists
+**1270 tests in 42 binaries, 0 ignored** — 1260 on `02ae5cc` plus this
+branch's ten, all in `xtask` (184 → 194). `verify-toolchain` is the **tenth**
+gate after that rebase, not the eighth it was written as.
 
 ### CrateStack
 

@@ -34,7 +34,7 @@
 # drift apart by construction. Do not turn that into three literals.
 #
 # "Bump both together" is enforced since 2026-09-05 rather than merely asked
-# for: `cargo xtask verify-toolchain` (the eighth gate in `just verify`, and a
+# for: `cargo xtask verify-toolchain` (the tenth gate in `just verify`, and a
 # step in CI's `self-checks` job) fails if the version in the `FROM` line below
 # disagrees with `rust-toolchain.toml`'s `channel`. It checks the compiler
 # version only — the Alpine suffix is deliberately outside its subject, for

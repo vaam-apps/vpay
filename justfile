@@ -1071,6 +1071,19 @@ expected_suites := "42"
 # is not a reason to move a floor. `just test-doc` measures **86 passed, 1
 # ignored** — unchanged; this change added no example, and the 13
 # `#[serde(rename_all)]` attributes it did add appear in no doctest.
+#
+# Re-measured 2026-09-05 rebasing the toolchain bump (`verify-toolchain`, the
+# tenth gate) onto that: `just verify-ignored` reports **1270 total, 42 test
+# binaries, 0 ignored** — 1260 plus ten, all in `xtask` (184 → 194), all
+# driving `verify_toolchain`: the two files' agreement, a `FROM` line left
+# behind, an unreadable `channel`, a `channel` line CI's anchored `sed` could
+# not parse, the Alpine suffix being deliberately outside the subject, and the
+# repository's own two files. Four of the ten came from mutations of the gate
+# itself. The two branches did not see each other — ADR-0016's two gates and
+# this one both landed on 2026-09-05 — so the 1260 above and the 1270 here are
+# two measurements, not a contradiction. No new test binary, so
+# `expected_suites` stays 42 and the floor stays 1080. `just test-doc` measures
+# **86 passed, 1 ignored** — unchanged; a toolchain pin appears in no doctest.
 min_tests := "1080"
 
 verify-ignored:

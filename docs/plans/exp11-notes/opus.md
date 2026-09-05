@@ -315,3 +315,98 @@ buildx builder was never touched or pruned.
 * **`docs/plans/*-notes/` were not rewritten.** Their `1.95.0` strings are
   dated records of runs that really happened on that compiler, and so is
   `docs/runbooks/release.md` §6's account of release run `33929374661`.
+
+## 9. Rebased onto `02ae5cc` (2026-09-05)
+
+**Everything above was measured on base `046892a`. This branch was rebased
+onto `origin/master` `02ae5cc` — the merge of PR #42, ADR-0016's engineering
+standards — later the same day, and the numbers in §6 and §7 were *not*
+re-measured by that rebase; §9 is what was.** The rebase is why
+`verify-toolchain` is described above as the eighth gate and is the **tenth**
+in the tree you are reading.
+
+PR #42 added `verify-serde` and `verify-repositories` as the eighth and ninth
+gates, in the same five files this branch edits. Every conflict was resolved
+by **keeping both**, never by choosing a side:
+
+* `justfile` — `verify` now depends on all ten in master's order with
+  `verify-toolchain` appended after `verify-repositories`, before the advisory
+  `verify-docs`. The recipe bodies were reordered to match the gate order.
+  Appending rather than inserting is deliberate: it keeps every ordinal
+  already written down elsewhere true, `check-schema` included, which four
+  other files call the seventh gate.
+* `.github/workflows/ci.yml` — `self-checks` carries master's two new steps
+  **and** this branch's. The `verify-toolchain` step was changed from
+  `cargo xtask verify-toolchain` to `just verify-toolchain`, matching what
+  ADR-0016's two steps and `check-schema` do; the paragraph justifying the
+  `cargo xtask` spelling was rewritten rather than left to contradict the
+  step beneath it.
+* `.xtask/src/main.rs` — both sides' new functions and both sides' test
+  modules coexist. The end-of-file conflict was the dangerous one: git had
+  unified the trailing `}` of master's last test and this branch's, so
+  neither marker-delimited block was a whole module. Both were reconstructed
+  and then checked byte-for-byte against `origin/master` and `a30fff8`.
+* `AGENTS.md`, `docs/status.md`, `rust-toolchain.toml`, `backends/Dockerfile`
+  — every "nine gates"/"ninth" from either side became ten/tenth.
+
+Re-run on the rebased tree, not carried over:
+
+* `just ci` — **exit 0**. `cargo nextest run --workspace`:
+  **1270 tests run, 1270 passed, 0 skipped** in 761.5 s. `just test-doc`: 86
+  passed, 1 ignored. `just verify-ignored`: 0 ignored (expected 0), 42 test
+  binaries (expected 42), 1270 total (minimum 1080). `cargo deny`:
+  advisories ok, bans ok, licenses ok, sources ok.
+* `cargo test -p xtask` — **194 passed, 0 failed, 0 ignored**: master's 184
+  plus this branch's 10, which is the arithmetic that shows no test of either
+  side was lost in the merge.
+* `just verify` — the ten gates in order, then the advisory report.
+* `actionlint .github/workflows/ci.yml` — exit 0.
+* Both decisive mutations, re-run on this tree; see §9.1.
+
+### 9.1 The two mutations, re-run after the rebase
+
+`backends/Dockerfile`'s `FROM rust:` set back to 1.95.0 with
+`rust-toolchain.toml` still at 1.98.0 — the gate fails, naming the file, the
+line and both versions:
+
+```
+cargo xtask verify-toolchain
+xtask: 1 toolchain pin(s) out of step:
+  - backends/Dockerfile:197: `FROM rust:1.95.0-alpine3.22` builds with 1.95.0, but rust-toolchain.toml pins `channel = "1.98.0"` — every Rust job in CI reads that file, so this image would be the one thing in the repository compiled by a different compiler
+error: Recipe `verify-toolchain` failed on line 752 with exit code 1
+```
+
+The nine gates before it all printed `ok` in that same run, which is the
+point of the gate: nothing else in `just verify` notices.
+
+A scratch crate whose only dependency is `cratestack-core = "0.11.1"`, under
+each compiler — the test that makes the bump necessary and sufficient:
+
+```
+$ cargo +1.95.0 check
+    Updating crates.io index
+     Locking 96 packages to latest compatible versions
+      Adding cratestack-core v0.11.1 (requires Rust 1.98.0)
+error: rustc 1.95.0 is not supported by the following package:
+  cratestack-core@0.11.1 requires rustc 1.98.0
+Either upgrade rustc or select compatible dependency versions with
+`cargo update <name>@<current-ver> --precise <compatible-ver>`
+where `<compatible-ver>` is the latest version supporting rustc 1.95.0
+exit = 101
+
+$ cargo +1.98.0 check
+    Checking cratestack-core v0.11.1
+    Checking exp11-land-msrv v0.0.0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.96s
+exit = 0
+```
+
+Both files were restored afterwards and the tree is clean.
+
+### 9.2 Still not done, after the rebase
+
+The three gaps in §8 are unchanged by it: **no `arm64` build**, **no CI run
+of this change**, and **the 1.88 MSRV is still uncompiled** (re-derived
+numerically, never built). §8's fourth bullet — `CLAUDE.md` still naming
+`1.95.0` — was fixed by this branch's own review commit and is no longer
+outstanding.
