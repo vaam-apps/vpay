@@ -300,6 +300,38 @@ makes a green run mean anything and only a real index proves it:
 The network half of `verify-citations` is exercised by running the command,
 whose output is pasted above, and by mutations M2 and M3.
 
+## Gates run
+
+On this branch's head, in this worktree, `CARGO_BUILD_JOBS=4`,
+`DOCKER_HOST=unix:///run/user/1000/docker.sock`, `VPAY_REQUIRE_NODE=1`.
+
+| command | result |
+|---|---|
+| `just fmt-check` | ok |
+| `just clippy` (`cargo clippy --workspace --all-targets -- -D warnings`) | ok — the workspace **includes `.xtask`**, so both new commands and all 36 new tests are linted |
+| `just verify` | ok — five gates: `verify-no-mocks`, `verify-status` (1 unimplemented item), `verify-errors` (15 types, 14 `#[from]` variants), `verify-sdk-parity` (342 proving tests, 26 dated gaps), `verify-links` (672 links, 114 files) |
+| `just docs-check` | ok — `verify-status` **and `verify-links`**; no echo |
+| `just docs-check-citations` | ok — 39 unique ids, all resolve |
+| `cargo nextest run -p xtask` | **126 run, 126 passed, 0 skipped** (was 90) |
+| `just test-rust` (`cargo nextest run --workspace`) | **1202 run, 1202 passed, 0 skipped** |
+| `just test-doc` | **86 passed, 0 failed, 1 ignored** — the ignored one is `sdks/rust`'s README block and is pre-existing |
+| `just verify-ignored` | `0 ignored (expected 0), 42 test binaries (expected 42), 1202 total (minimum 1080)` |
+| `just lint-web` | ok |
+| `just test-web` | ok — 302 `@vpay/checkout`, 57 `examples/shop`, 3 `@vpay/ui`, and the rest |
+| `just deny` | `advisories ok, bans ok, licenses ok, sources ok` |
+
+**One environment finding, unrelated to this change and reported rather than
+worked around.** The first `just test-rust` in a fresh worktree fails
+`webhooks::the_delivered_signature_verifies_with_the_shipping_node_sdk` with
+`` "`pnpm --filter @vpay/sdk build` failed:\nsh: 1: tsc: not found" ``: that
+test shells out to the shipping Node SDK, `just test-rust` does not depend on
+`install-node`, and a worktree with no `node_modules` has no `tsc`. CI's
+`rust` job installs Node and builds the SDK first, so it does not see this.
+Running `pnpm install --frozen-lockfile` and re-running gives 1202/1202. The
+test is behaving exactly as designed — it fails rather than skipping, which is
+the point — but a first-run failure that looks like a signature defect and is
+a missing toolchain is worth someone's attention.
+
 ## What was NOT done
 
 - **No CI job runs `verify-citations`.** Whether a scheduled or nightly job
