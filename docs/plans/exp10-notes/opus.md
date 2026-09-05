@@ -287,6 +287,62 @@ into a tracked document is a claim about the tree that contains it.)*
   (`just verify-ignored`: 0 ignored, 42 test binaries, 1260 total).
   Run because non-test Rust outside `.xtask` changed — see below.
 
+### Rebased onto `046892a` (2026-09-05)
+
+This branch was rebased from `2ce13d0` onto `origin/master` at **`046892a`**
+(PR #41, cargo-chef in `backends/Dockerfile`); the five commits replayed
+`2b05405` → **`3326d6e`**. **Git reported no conflict, which is not by itself
+evidence of anything**, so the merge was checked by content instead: the two
+branches' `docs/status.md` edits are disjoint — this branch's are the gate-count
+paragraph near line 64 and the "New 2026-09-05" block near line 316, master's
+are three rows far below them (the `backends/Dockerfile` row, the
+image-publishing row, and the `just release-dry-run` row) — and the `justfile`
+edits likewise (this branch's seven hunks, master's one line in
+`release-dry-run`'s closing `echo`). `git diff origin/master HEAD` touches
+exactly the 23 files this branch changes and no others; `backends/Dockerfile`,
+`docs/runbooks/release.md`, `.github/workflows/release.yml` and
+`docs/plans/exp8-notes/opus.md` are byte-identical to master, so nothing of
+PR #41's was reverted, and no table row was duplicated (the only repeated line
+in `docs/status.md` is the `| Area | Status | Notes |` header, three times both
+before and after, as on master).
+
+**One number in the transcript above moved, and only one:** `verify-links` now
+reads **705 repository links in 124 tracked markdown files**, not 698 in 122.
+PR #41 added exactly two tracked documents — `docs/plans/exp8-notes/opus.md`
+and `docs/plans/exp8-notes/opus-review.md` — carrying seven links between them.
+That is the hazard the note under the transcript already names: those two
+numbers count the tree the document sits in, so a rebase moves them. Every
+other line of `just verify` is unchanged, including both new gates:
+`verify-serde` 49 complying / 15 exempted, `verify-repositories` 3
+implementations named by none of the 65 consumer files.
+
+Re-run on the rebased tree, in full:
+
+| gate | result |
+|---|---|
+| `just verify` | **exit 0**, nine gates |
+| `just docs-check` | ok |
+| `just fmt-check` | ok |
+| `just clippy` | ok, no warning |
+| `cargo test -p xtask` | **184 passed, 0 failed, 0 ignored** |
+| `actionlint .github/workflows/ci.yml` | ok |
+| `just test-rust` | **1260 run, 1260 passed, 0 skipped** (1001s, containers) |
+
+`verify-docs`' advisory baseline is unchanged by the rebase: **1789 in-file
+comment lines against 15157 code lines (11.8%) and 0 `#[doc = include_str!]`
+modules**.
+
+The two decisive mutations were re-run against the rebased tree, not assumed
+to still hold:
+
+| # | mutation | `just verify` | what it printed |
+|---|---|---|---|
+| M1 | delete `#[serde(rename_all = "snake_case")]` from `DeliverWebhookPayload` (`vpay-worker/src/jobs.rs:241`), a type with no exemption | **exit 1** | ``backends/crates/vpay-worker/src/jobs.rs:241: `DeliverWebhookPayload` derives serde but carries no `#[serde(rename_all = "snake_case")]`, does not rename every field, and is not in docs/adr/0016-engineering-standards.md's exemption table (ADR-0016, standard 3)`` |
+| M2 | add `use vpay_db::PgRepositories;` to `vpay-api/src/op/mod.rs` | **exit 1** | ``backends/crates/vpay-api/src/op/mod.rs:27: `PgRepositories` is a concrete repository implementation in `vpay-db`; name the trait instead (ADR-0016, standard 5)`` |
+
+Both were reverted with `git checkout --`, `just verify` returns to `ok`, and
+`git status` is clean at `3326d6e`.
+
 ## What I did not do
 
 - **No `docs/reference/<crate>.md` was written or moved, and no comment was
