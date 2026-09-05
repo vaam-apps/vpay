@@ -91,6 +91,7 @@ Additionally, and not as mutations:
 | F4 | robustness (latent) | `.xtask/src/main.rs` `mask_non_links` | documented, not fixed — reasoning below |
 | F5 | nit (a false failure) | `.xtask/src/main.rs` `ancestor_directories` | yes |
 | F6 | nit (stale measurement) | `docs/plans/exp6-notes/opus.md` | yes |
+| F7 | nit (stale reference) | `docs/plans/step9-notes/release-claims.md` §5 | yes |
 
 ### F1 — the five "broken links" were quotations, and the fix altered them
 
@@ -213,6 +214,17 @@ the next person re-measures instead of trusting a sentence.
 empty string; `ancestor_directories` derived no such entry, so neither set
 contained it. Latent — no such link exists today — but a false failure, so
 fixed and guarded by `a_link_to_the_repository_root_resolves`.
+
+### F7 — one more "docs-check does not check links", left uncorrected
+
+The branch corrected that claim in two places (`release-claims.md`'s closing
+paragraph, `release-claims-review.md`'s M2/M3 rows) and missed two more in the
+same file: `release-claims.md` §5's gates table ("**It does not check
+links.**") and the paragraph beneath it that justifies the throwaway link
+script. Both read as present tense about the repository. Struck through and
+dated like the others. `release-claims-review.md`'s F4 *evidence* cell is left
+as written — it quotes what the command printed on the day, inside a finding
+about that day.
 
 ### F6 — the pasted citation run is stale
 
