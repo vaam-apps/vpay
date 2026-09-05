@@ -267,6 +267,9 @@ Every ⛔ above, in one list. The cells are authoritative; this is an index.
 - **Not that a capability works against a deployed vpay.** Both merchant
   SDKs test against in-process stubs; see [`../status.md`](../status.md) for
   what has and has not spoken to a real server.
-- **Not that the server offers every capability.** `/v1/refunds` and
-  `/v1/balance` are not mounted at all, so the SDK methods for them reach the
-  nest's 404 — a server gap, tracked in `docs/status.md`, not a parity gap.
+- **Not that the server offers every capability.** ~~`/v1/refunds` and
+  `/v1/balance` are not mounted at all~~ **— corrected 2026-09-05 in the same
+  change that added the `refunds.retrieve` row above: `GET /v1/refunds/{id}`
+  is mounted (issue #45).** `refunds.create` and `balance.retrieve` are the
+  two SDK methods left with no route, and they reach the nest's 404 — a
+  server gap, tracked in `docs/status.md`, not a parity gap.
