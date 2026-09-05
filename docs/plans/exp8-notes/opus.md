@@ -349,3 +349,46 @@ comment line added and reverted twice as a cache probe.
   (pnpm) and was out of scope.
 * **`cargo chef cook --check` / `--clippy`** were not used; CI's Rust job
   builds outside Docker and this file exists to produce release binaries.
+
+## Rebased onto `2ce13d0` (2026-09-05)
+
+The branch was rebased from `a81b6b6` onto `2ce13d0`, keeping all twelve
+commits and their identities. `docs/status.md` conflicted twice — on the
+first commit and on the last — and both conflicts had the same shape: git
+widened the hunk to cover two adjacent table rows, so the marked region
+contained one row each side had changed *and* one row only the other side
+had changed. Taking either side wholesale would have been wrong, and
+concatenating both sides would have duplicated two rows. Resolved per row:
+the `backends/Dockerfile` row from this branch (it is a superset — master
+never touched it), the `frontends/Dockerfile` row from master (this branch
+never touched it, and master's version carries the `@vpay/stripe-js` →
+`@vaam-apps/vpay-stripe-js` scope rename this branch predates; keeping the
+branch's copy would have silently reverted the rename). The
+`Image publishing` and `just release-dry-run` rows auto-merged and kept
+their cargo-chef paragraphs. Checked afterwards rather than assumed: the
+branch's net diff against `2ce13d0` touches the same three rows, with
+byte-identical content, as its net diff against `a81b6b6` did, and
+`docs/status.md` outside those three rows is byte-identical to `2ce13d0`.
+
+The re-run on the rebased tree, same host, `linux/amd64`, on a dedicated
+`docker-container` builder (`vpay-exp8-land`) created fresh for the run:
+
+| gate | result |
+| --- | --- |
+| `just verify` | exit 0 — **seven** gates now, not the five this file's table above records: master has since added `verify-npm-scope` and `check-schema`. `verify-links` reports 691 links in 121 files (this branch adds two notes files to master's 119/684) |
+| `just docs-check` | exit 0 |
+| `just fmt-check` | exit 0 (no Rust source changed) |
+| `actionlint .github/workflows/release.yml` | exit 0, clean |
+| `just release-dry-run` | **exit 0**, 339 s wall for all four images from a cold builder, then `helm-check`: 17 guards all fired by name, `/v1` `limit-rps=20` / token `limit-rps=5`, kubeconform `Valid: 23, Invalid: 0, Errors: 0, Skipped: 0` |
+
+Both `scratch` images were then rebuilt with `--load` from the rebased tree
+and **run**: `vpay-server --version` → `vpay-server 0.1.0` and
+`vpay-worker --version` → `vpay-worker-bin 0.1.0`, both exit 0, 15.9 MB and
+12.7 MB, two layers each — unchanged. The `--load` rebuild took 2 s with the
+cook `CACHED` from the dry-run, which is the caching this change exists for,
+observed once more incidentally.
+
+Not re-measured: the cold/warm timing pairs above were not repeated on the
+rebased tree. The 339 s is one cold run of four images on a fresh builder and
+is **not** comparable to the controlled single-image pairs in this file — it
+is evidence the Dockerfile still builds, not a new performance number.
