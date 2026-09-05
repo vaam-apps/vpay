@@ -3236,12 +3236,34 @@ fn repository_url_citations(line: &str, aliases: &[String]) -> Vec<(CitationKind
 /// written at.
 const RUN_ID_DIGITS: usize = 11;
 
-/// Every standalone eleven-digit number on a line.
+/// Every standalone eleven-digit number on a line that could be a run id.
 ///
 /// "Standalone" excludes a run that is part of a longer word, path or
 /// dotted number: `sha-33929374661` names an image tag, `runs/33929374661`
 /// is answered for by [`repository_url_citations`] (which knows *whose* run
 /// it is), and a twelve-digit number is not a run id.
+///
+/// # The leading-zero clause, and the claim it replaces
+///
+/// This gate landed saying "every eleven-digit number in the tree is a run
+/// id". Measured on 2026-09-05, that is true of tracked *Markdown* and false
+/// of the tree: `01753401600` is a zero-padded webhook timestamp
+/// (`backends/crates/vpay-worker/src/signing.rs:243`,
+/// `sdks/rust/src/webhooks.rs:44`), `01700000100` is the same thing in
+/// `sdks/nodejs/src/webhooks.test.ts:180`, and `33612345678` is a French
+/// MSISDN in `frontends/apps/checkout/src/lib/msisdn.test.ts:32`. Only
+/// Markdown is scanned, so none of them reaches this function today — but
+/// `docs/flows/webhooks.md:5` already writes `t=1753401600` in prose, and the
+/// zero-padded form is exactly what the SDK doc comment above warns about, so
+/// one paste puts a timestamp in front of this pattern.
+///
+/// A GitHub Actions run id is a decimal integer and is never zero-padded, so
+/// refusing a leading zero can only remove a false positive and can never
+/// miss a real run. It does **not** rescue the MSISDN case: an eleven-digit
+/// phone number written in a document would still be looked up and reported
+/// missing. That residue is stated rather than fixed, because narrowing to a
+/// cue word is what this widening deliberately gave up — see
+/// [`verify_citations`].
 fn run_id_citations(line: &str) -> Vec<String> {
     let chars: Vec<char> = line.chars().collect();
     let mut ids = Vec::new();
@@ -3261,7 +3283,8 @@ fn run_id_citations(line: &str) -> Vec<String> {
             before.is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '/' | '.'));
         let attached_after =
             after.is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '/'));
-        if end - i == RUN_ID_DIGITS && !attached_before && !attached_after {
+        let zero_padded = chars.get(i) == Some(&'0');
+        if end - i == RUN_ID_DIGITS && !attached_before && !attached_after && !zero_padded {
             ids.push(chars.get(i..end).unwrap_or_default().iter().collect());
         }
         i = end;
@@ -6462,6 +6485,19 @@ mod citation_tests {
             assert!(error.contains("Nothing was concluded"), "{error}");
         }
         assert!(classify_gh_status("p", 500).is_err());
+    }
+
+    /// A GitHub run id is a decimal integer and is never zero-padded, so an
+    /// eleven-digit number that starts with `0` is something else. This tree
+    /// writes exactly that: `01753401600` is a webhook timestamp in
+    /// `sdks/rust/src/webhooks.rs` and `01700000100` in
+    /// `sdks/nodejs/src/webhooks.test.ts`. Neither is in Markdown today; the
+    /// `t=1753401600` in `docs/flows/webhooks.md:5` is one paste away.
+    #[test]
+    fn a_zero_padded_eleven_digit_number_is_not_a_run_id() {
+        assert!(run_id_citations("`t=01753401600,v1=<hex hmac>`").is_empty());
+        assert!(run_id_citations("the timestamp 01700000100 is padded").is_empty());
+        assert_eq!(run_id_citations("run 33929374661"), vec!["33929374661"]);
     }
 
     #[test]
