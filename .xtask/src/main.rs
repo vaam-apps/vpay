@@ -2441,6 +2441,33 @@ fn verify_repositories(root: &Path) -> Result<(), String> {
 /// Takes the already-scanned texts rather than reading the tree, so the two
 /// signals can be driven over a synthetic crate — including one this
 /// repository does not have (an implementation that holds no pool of its own).
+///
+/// # The third signal: a name `vpay-db` hands out for one of the first two
+///
+/// The two signals above find a *declaration*. Neither finds the other way a
+/// consumer can end up holding a concrete implementation, which is for
+/// `vpay-db` itself to publish a second name for one:
+///
+/// ```text
+/// pub use repository::PgRepositories as Repos;   // vpay-db
+/// pub type Repos = crate::repository::PgRepositories;
+/// use vpay_db::Repos;                            // vpay-api — same type
+/// ```
+///
+/// Measured on 2026-09-05, on the branch that introduced this gate: both
+/// spellings passed it. The gate matches names textually (`word_lines`), so a
+/// type that reaches a consumer under a different word is invisible to it, and
+/// "make it `pub(crate)` and re-export it under a friendlier name" is a
+/// plausible thing for someone to do *without* believing they are reversing
+/// ADR-0016 standard 5 — which is exactly the failure mode this gate exists
+/// for, since the compiler has no opinion either.
+///
+/// So an alias `vpay-db` declares for a type already in the set joins the set.
+/// Iterated to a fixpoint, because an alias of an alias is still a name for
+/// the same implementation. Nothing in `vpay-db` declares one today — the only
+/// `pub type` it has is `TxFuture`, whose right-hand side is a
+/// `Pin<Box<dyn Future>>` and therefore in nobody's set — so this signal adds
+/// no name to the current tree and is here for the day it would.
 fn concrete_repository_types(sources: &[String]) -> BTreeSet<String> {
     let mut traits = BTreeSet::new();
     for text in sources {
@@ -2464,6 +2491,95 @@ fn concrete_repository_types(sources: &[String]) -> BTreeSet<String> {
             }
         }
     }
+
+    let aliases: Vec<(String, String)> = sources.iter().flat_map(|t| exported_aliases(t)).collect();
+    // A fixpoint rather than one pass: `pub type A = PgRepositories; pub type
+    // B = A;` is two hops, and a bound of `aliases.len()` iterations is enough
+    // for any chain a file can spell without cycling.
+    for _ in 0..=aliases.len() {
+        let mut grew = false;
+        for (alias, target) in &aliases {
+            if out.contains(target) && out.insert(alias.clone()) {
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    out
+}
+
+/// Every `(alias, target)` a crate publishes: `pub use path::Target as Alias`
+/// and `pub type Alias = path::Target`.
+///
+/// `target` is reduced to its final path segment, matching the set
+/// [`concrete_repository_types`] compares it against; generic arguments are
+/// dropped by [`final_segment`], so `pub type Rows = Vec<ChargeRow>` yields
+/// `Vec` and matches nothing, which is the intended answer — a container of a
+/// row is not a repository implementation.
+///
+/// Only `pub` forms are read. A private alias cannot be named from another
+/// crate, so it is not a route out of `vpay-db`.
+fn exported_aliases(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+
+    for (i, m) in text.match_indices("pub use ") {
+        if text
+            .get(..i)
+            .and_then(|before| before.chars().next_back())
+            .is_some_and(is_ident_char)
+        {
+            continue;
+        }
+        let rest = text.get(i + m.len()..).unwrap_or_default();
+        let tree = rest
+            .get(..rest.find(';').unwrap_or(rest.len()))
+            .unwrap_or_default();
+        // A use tree is a nest of `{}` groups; splitting on the delimiters
+        // gives one atom per imported path, and only an atom carrying ` as `
+        // introduces a name that is not already the type's own.
+        for atom in tree.split(['{', '}', ',']) {
+            let Some((target, alias)) = atom.split_once(" as ") else {
+                continue;
+            };
+            let alias: String = alias
+                .trim_start()
+                .chars()
+                .take_while(|c| is_ident_char(*c))
+                .collect();
+            let target = final_segment(target);
+            if !alias.is_empty() && !target.is_empty() {
+                out.push((alias, target));
+            }
+        }
+    }
+
+    for (i, m) in text.match_indices("pub type ") {
+        if text
+            .get(..i)
+            .and_then(|before| before.chars().next_back())
+            .is_some_and(is_ident_char)
+        {
+            continue;
+        }
+        let rest = text.get(i + m.len()..).unwrap_or_default();
+        let alias: String = rest.chars().take_while(|c| is_ident_char(*c)).collect();
+        let statement = rest
+            .get(..rest.find(';').unwrap_or(rest.len()))
+            .unwrap_or_default();
+        // The `=` at depth zero, not the first one: `pub type F<T = Bar> = Baz`
+        // puts a defaulted type parameter's `=` before the assignment's, and
+        // splitting on that would read the alias's own default as its target.
+        let Some(right) = assignment_right_hand_side(statement) else {
+            continue;
+        };
+        let target = final_segment(right);
+        if !alias.is_empty() && !target.is_empty() {
+            out.push((alias, target));
+        }
+    }
+
     out
 }
 
@@ -2631,6 +2747,25 @@ fn final_segment(path: &str) -> String {
         .get(..trimmed.find(['<', ' ']).unwrap_or(trimmed.len()))
         .unwrap_or_default();
     head.rsplit("::").next().unwrap_or(head).trim().to_owned()
+}
+
+/// What a `pub type` statement assigns: everything after its `=` at depth
+/// zero, or `None` if it has none.
+///
+/// `<>` depth is tracked for [`declaration_shape`]'s reason — a generic
+/// parameter list is crossed rather than read — and `=` is the character that
+/// appears inside one, as a parameter default or an associated-type binding.
+fn assignment_right_hand_side(statement: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    for (i, c) in statement.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth = depth.saturating_sub(1),
+            '=' if depth == 0 => return statement.get(i + c.len_utf8()..),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The 1-based lines on which `word` appears in `text` as a whole identifier.
@@ -8716,6 +8851,84 @@ pub struct ChargeRow {
     amount: i64,
 }
 ";
+
+    /// The evasion measured on 2026-09-05: both spellings of "publish a
+    /// second name for it" cleared the gate as first written, because it
+    /// matches names textually and neither name is the type's own.
+    ///
+    /// Driven end to end rather than through [`concrete_repository_types`]
+    /// alone, because the claim being pinned is about the *gate*, and a unit
+    /// test of the set would still pass if the set stopped being consulted.
+    #[test]
+    fn a_name_the_db_crate_publishes_for_an_implementation_is_that_implementation() {
+        for alias in [
+            "pub use repository::PgRepositories as Repos;",
+            "pub type Repos = crate::repository::PgRepositories;",
+        ] {
+            let dir = TempDir::new("verify-repositories-alias");
+            let root = dir.path();
+            let db = root.join("backends/crates/vpay-db/src");
+            let api = root.join("backends/crates/vpay-api/src");
+            fs::create_dir_all(&db).expect("the temp tree is creatable");
+            fs::create_dir_all(&api).expect("the temp tree is creatable");
+            fs::create_dir_all(root.join("backends/apps")).expect("the temp tree is creatable");
+            fs::write(db.join("lib.rs"), format!("{DB}{alias}\n"))
+                .expect("the source file is writable");
+
+            let found = concrete_repository_types(&[scanned(&format!("{DB}{alias}\n"))]);
+            assert!(
+                found.contains("Repos"),
+                "`{alias}` publishes a second name for PgRepositories: {found:?}"
+            );
+
+            fs::write(api.join("op.rs"), "use vpay_db::Repos;\n")
+                .expect("the source file is writable");
+            let error = verify_repositories(root)
+                .expect_err("a consumer naming the alias holds the implementation");
+            assert!(
+                error.contains("vpay-api/src/op.rs:1") && error.contains("Repos"),
+                "the gate must name the alias and where it was reached: {error}"
+            );
+        }
+    }
+
+    /// An alias of an alias is still a name for the same implementation, and
+    /// an alias of something that is *not* one stays out of the set — the
+    /// fixpoint must not become "every `pub type` in the crate".
+    #[test]
+    fn aliases_chain_to_a_fixpoint_and_stop_at_types_that_are_not_implementations() {
+        let source = format!(
+            "{DB}\
+pub type First = PgRepositories;
+pub type Second = First;
+pub type Rows = Vec<ChargeRow>;
+pub type TxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+"
+        );
+        let found = concrete_repository_types(&[scanned(&source)]);
+        assert!(found.contains("First"), "{found:?}");
+        assert!(found.contains("Second"), "one hop is not enough: {found:?}");
+        assert!(
+            !found.contains("Rows"),
+            "a container of a row struct is not a repository implementation: {found:?}"
+        );
+        assert!(
+            !found.contains("TxFuture"),
+            "the assignment's `=` is the one at depth zero, not the one inside \
+             `Output = T`: {found:?}"
+        );
+    }
+
+    /// A *private* alias is not a route out of the crate, and reading it as
+    /// one would put a name no consumer can spell into the failure message.
+    #[test]
+    fn a_private_alias_is_not_an_exported_name() {
+        let found = concrete_repository_types(&[scanned(&format!(
+            "{DB}type Local = PgRepositories;\nuse repository::PgRepositories as Inner;\n"
+        ))]);
+        assert!(!found.contains("Local"), "{found:?}");
+        assert!(!found.contains("Inner"), "{found:?}");
+    }
 
     #[test]
     fn both_signals_find_the_implementations_and_neither_finds_a_row() {

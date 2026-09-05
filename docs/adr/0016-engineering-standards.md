@@ -189,11 +189,16 @@ an implementation type.
 
 - **Mechanically enforced by** `cargo xtask verify-repositories`. It derives
   the set of concrete implementations from `vpay-db`'s own source — a
-  declaration holding a `PgPool`/`Transaction` field, or a type on the right
-  of `impl <a vpay-db trait> for …` — rather than from a list here, so a store
-  nobody has written yet is covered the day it is added. There is no exemption
-  mechanism, because there is no exception today and an escape hatch nobody
-  needs is the one that gets used.
+  declaration holding a `PgPool`/`Transaction` field, a type on the right
+  of `impl <a vpay-db trait> for …`, or a name `vpay-db` publishes for one of
+  those (`pub use … as`, `pub type`, to a fixpoint) — rather than from a list
+  here, so a store nobody has written yet is covered the day it is added. The
+  third signal is there because the gate matches names textually and the first
+  draft of it did not have one: `pub use repository::PgRepositories as Repos;`
+  in `vpay-db` plus `use vpay_db::Repos;` in `vpay-api` is the same type
+  reaching the same handler under a word the gate had never heard of, and both
+  spellings passed. There is no exemption mechanism, because there is no
+  exception today and an escape hatch nobody needs is the one that gets used.
 - **Left to review:** whether a new method belongs on an existing trait or on
   a new one, and whether a query behind `op_store_pool` is a repository method
   that was not written.

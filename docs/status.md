@@ -350,9 +350,15 @@ network, a database or a binary this workspace does not build.
 - **`verify-repositories` — a gate.** Nothing outside `vpay-db` names a
   concrete repository implementation. The set of concrete types is *derived*
   from `vpay-db`'s own source — a declaration holding a `PgPool`/`Transaction`
-  field, or a type on the right of `impl <a vpay-db pub trait> for …`, minus a
-  blanket impl's own type parameter — rather than listed in the gate, so a
-  store nobody has written yet is covered the day it is added. **Measured on
+  field, a type on the right of `impl <a vpay-db pub trait> for …` (minus a
+  blanket impl's own type parameter), or a name `vpay-db` publishes for one of
+  those (`pub use … as`, `pub type`, to a fixpoint) — rather than listed in the
+  gate, so a store nobody has written yet is covered the day it is added. The
+  third signal was added on review, against a measured evasion: the gate
+  matches names textually, so `pub use repository::PgRepositories as Repos;`
+  in `vpay-db` plus `use vpay_db::Repos;` in `vpay-api` cleared it. Both
+  spellings now fail; the tree's own set is unchanged at 3, because `vpay-db`
+  publishes no such alias today. **Measured on
   `2ce13d0`: 3 implementations (`PgRepositories`, `PendingTransaction`,
   `SqlClientAssertionStore`) and 2 violations, both in
   `backends/crates/vpay-api/src/op/mod.rs`** — `SqlClientAssertionStore` was
@@ -374,7 +380,7 @@ network, a database or a binary this workspace does not build.
   a comment-volume gate is to delete the sentence that said why, and an
   `include_str!` gate is passed by moving a paragraph into a file nobody links
   to. **Nothing was moved in the change that added the measurement.**
-- **`cargo test -p xtask`: 144 before, 181 after.** 33 for the two gates and
+- **`cargo test -p xtask`: 144 before, 184 after.** 36 for the two gates and
   the declaration scanner they share, 4 for the two report lines. Four of them
   are the mutations recorded in
   [`docs/plans/exp10-notes/opus.md`](plans/exp10-notes/opus.md).

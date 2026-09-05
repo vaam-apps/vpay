@@ -1016,20 +1016,22 @@ expected_suites := "42"
 # link to the repository root. `expected_suites` stays 42; the floor stays
 # 1080.
 # Re-measured 2026-09-05 for ADR-0016's two gates (`verify-serde`,
-# `verify-repositories`): `just verify-ignored` reports **1257 total, 42 test
-# binaries, 0 ignored**, of which 37 are this change's, all in `xtask`
-# (144 → 181): 13 driving `verify_serde` and its scanner, 12 driving
-# `verify_repositories` and the two signals it unions, 8 on the declaration
+# `verify-repositories`): `just verify-ignored` reports **1260 total, 42 test
+# binaries, 0 ignored**, of which 40 are this change's, all in `xtask`
+# (144 → 184): 13 driving `verify_serde` and its scanner, 15 driving
+# `verify_repositories` and the three signals it unions, 8 on the declaration
 # scanner the two share, and 4 on the report lines `verify-docs` gained. Four
-# of the 37 are the mutations recorded in `docs/plans/exp10-notes/opus.md`.
+# of the 40 are the mutations recorded in `docs/plans/exp10-notes/opus.md`,
+# and 3 are the review's: the alias evasion that cleared the first draft of
+# `verify_repositories` (see that function's third signal).
 #
 # The 1206 above was measured on an older base, and the paragraphs between
 # were written on branches that did not see each other. `xtask` on this
 # branch's base (`master` `2ce13d0`) was measured directly at **144**
 # (`cargo test -p xtask` before any of this landed), so the base total is
-# 1257 - 37 = 1220 — derived from that one measurement rather than listed
+# 1260 - 40 = 1220 — derived from that one measurement rather than listed
 # separately, and stated as derived. No new test binary
-# either way, so `expected_suites` stays 42 and the floor stays 1080: 37 tests
+# either way, so `expected_suites` stays 42 and the floor stays 1080: 40 tests
 # is not a reason to move a floor. `just test-doc` measures **86 passed, 1
 # ignored** — unchanged; this change added no example, and the 13
 # `#[serde(rename_all)]` attributes it did add appear in no doctest.
