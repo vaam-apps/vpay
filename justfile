@@ -985,8 +985,20 @@ verify-docs:
 # checking rather than assuming: #44's case joined a binary that already
 # existed, so it added a test and not a suite, while this branch deleted a
 # whole binary. `just test-doc` is unchanged again at **90 passed, 1 ignored**.
+#
+# **1279 -> 1319, and 41 -> 42 test binaries, on 2026-09-05** (issue #47,
+# account-holder lookup). Measured on this tree, not computed: `cargo nextest
+# list --workspace` reports **1319 total, 42 test binaries, 0 ignored**. The
+# forty new cases are 13 units in `vpay_api::v1::account_holders`, 8 in
+# `vpay-adapter-mtn-momo` (`wire` and the outcome table), 1 in
+# `vpay_provider::measured`, 10 in the conformance suite (5 cases
+# parameterised over both rails), 4 in `vpay-sdk`'s `resources`, and 6 in the
+# **new binary** — `backends/tests/integration/tests/account_holders.rs`,
+# which is the whole of the 41 -> 42 move and the reason this number is edited
+# rather than left alone. Still **0 ignored**: nothing here describes unbuilt
+# behaviour. The floor stays 1080 — 40 tests is not a reason to move a floor.
 expected_ignored := "0"
-expected_suites := "41"
+expected_suites := "42"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.
