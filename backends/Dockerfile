@@ -110,9 +110,23 @@
 # `/vpay-server`; a grep of that listing for `cargo`, `chef` or `rust`
 # matches nothing.
 #
-# What it costs: the `chef` stage compiles cargo-chef from source, 33 s on
-# this host, once per change to the base image or the pin. The `planner`
-# stage re-runs on every build and takes 0.1 s.
+# What it costs: the `chef` stage compiles cargo-chef from source, 32-58 s
+# across six runs on this host, once per change to the base image or the pin.
+# The `planner` stage re-runs on every build and takes 0.1 s.
+#
+# **So a build with nothing cached is SLOWER than it was.** An earlier
+# version of this comment said the cold path did not regress, on one unpaired
+# sample; two matched pairs in the 2026-09-05 review say otherwise. Each pair
+# pruned the same isolated `docker-container` builder between its two runs
+# and ran them back to back: one-stage 193 s then cargo-chef 256 s, and —
+# order reversed, to control for a host several agents were building on —
+# cargo-chef 248 s then one-stage 212 s. Cold costs **+36 to +63 s**: the
+# `cargo install` plus the cook's own front-end pass over the graph. That is
+# the trade this file makes — every cold build pays ~45 s so that every warm
+# build saves ~150 s. In CI the `chef` stage is one of the layers
+# `cache-from: type=gha` can restore, so the install should be paid on a
+# cache miss rather than on every run; like everything else about that cache,
+# nobody has measured it.
 #
 # What it does NOT buy, stated because the number is smaller than the
 # advertising: `[profile.dist]` inherits `release`, which is `lto = "fat"`
@@ -120,7 +134,9 @@
 # LLVM IR, so the final `cargo build` stays expensive no matter how much of
 # the graph is already compiled. The measured incremental build went from
 # 260 s to 125 s — a little over half, not the near-instant rebuild
-# cargo-chef gives a project that does not use fat LTO.
+# cargo-chef gives a project that does not use fat LTO. Reproduced in review
+# on the same host under heavier load: 105 s for a source-touch rebuild and
+# 101 s for a sha-only one, against 193-212 s for a cold one-stage build.
 # ---------------------------------------------------------------------------
 
 # The tool stage. `musl-dev`/`pkgconfig` are installed here rather than in

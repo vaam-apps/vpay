@@ -281,6 +281,25 @@ Measured on the authoring host on 2026-09-05, `linux/amd64`, on a dedicated
 | `--build-arg VPAY_GIT_SHA` changed, nothing else | — | **116 s** (cook `CACHED`) |
 | the same, with rule 2 violated (`ARG` moved above the cook) | — | 251 s (cook re-ran) |
 
+**The cold row above is the one number that did not survive review, and the
+direction matters.** It was a single unpaired sample. Re-measured the same
+day as two matched pairs — the same isolated builder pruned between the two
+runs of each pair, the two runs back to back, and the second pair in the
+reverse order to control for a host that several agents were building on:
+
+| Pair | one-stage | cargo-chef |
+|---|---|---|
+| 1 (one-stage first) | 193 s | 256 s |
+| 2 (cargo-chef first) | 212 s | 248 s |
+
+**A cold build is 36-63 s slower than it was**, which is `cargo install
+cargo-chef` (32-58 s here) plus the cook's own pass over the graph. The warm
+numbers were reproduced in the same pass on the busier host — 105 s for a
+source touch, 101 s for a sha-only rebuild, 215 s for the same sha-only
+rebuild with rule 2 violated, and 1 s for a change to a `docs/` file, which
+`.dockerignore` keeps out of the context altogether. So the trade is: every
+cold build pays about 45 s; every warm one saves about 150 s.
+
 The runtime images are unchanged: `vpay-server` is 15.9 MB before and after,
 two layers both times, and `docker export` of it lists exactly `config/` and
 `/vpay-server`. cargo-chef is in the builder only.

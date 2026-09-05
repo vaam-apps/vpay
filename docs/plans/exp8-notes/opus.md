@@ -116,6 +116,15 @@ wall = 238 s
 Cold is 238 s against the one-stage file's 254 s — i.e. the cold path does
 not regress; the same work is split across two `RUN`s.
 
+> **Retracted by the review pass, 2026-09-05.** That conclusion came from two
+> unpaired samples taken at different times. Two matched pairs (same isolated
+> builder, pruned between the two runs of each pair, runs back to back, the
+> second pair in reverse order) give one-stage 193 s / cargo-chef 256 s and
+> cargo-chef 248 s / one-stage 212 s. **The cold path regresses by 36-63 s** —
+> the `cargo install` (32-58 s here) plus the cook's own pass. The trade is
+> still worth making, but this line was wrong about its cost. See
+> [opus-review.md](opus-review.md).
+
 ### Build B — one comment line added to `backends/apps/vpay-server/src/main.rs`
 
 ```
@@ -247,7 +256,7 @@ vpay-worker-bin 0.1.0
 
 | | one-stage (before) | cargo-chef (after) |
 |---|---|---|
-| cold build | 254 s | 238 s |
+| cold build | 254 s | 238 s — **retracted, see above; matched pairs give 193/256 and 212/248** |
 | source touched | 260 s | **125 s** |
 | `VPAY_GIT_SHA` changed | (~260 s by construction: `ENV` was the first builder instruction) | **116 s** |
 | `--target worker` after a `server` build | full rebuild | 1 s |
