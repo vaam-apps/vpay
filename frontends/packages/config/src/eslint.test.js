@@ -129,7 +129,7 @@ describe("every workspace package is actually linted", () => {
   });
 
   // Mutation: replace `sdks/nodejs/eslint.config.js` with `export default [];`.
-  // That package then lints zero rules and both `pnpm --filter @vpay/sdk lint`
+  // That package then lints zero rules and both `pnpm --filter @vaam-apps/vpay-sdk lint`
   // and `pnpm -r lint` exit 0.
   it.each(PACKAGE_DIRS)("%s uses the shared config", (dir) => {
     const configPath = path.join(REPO_ROOT, dir, "eslint.config.js");

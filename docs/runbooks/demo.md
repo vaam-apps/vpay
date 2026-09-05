@@ -520,7 +520,7 @@ vpay merchant demo
 
       EMBEDDED — what a merchant's own page does with it:
 
-        import { initEmbeddedCheckout } from '@vpay/stripe-js';
+        import { initEmbeddedCheckout } from '@vaam-apps/vpay-stripe-js';
         const checkout = await initEmbeddedCheckout({
           publishableKey: 'pk_test_demomerchantsandbox01',
           fetchClientSecret: async () => '[67 chars redacted]',
@@ -592,7 +592,7 @@ is **redacted**:
 ```
       EMBEDDED — what a merchant's own page does with it:
 
-        import { initEmbeddedCheckout } from '@vpay/stripe-js';
+        import { initEmbeddedCheckout } from '@vaam-apps/vpay-stripe-js';
         const checkout = await initEmbeddedCheckout({
           publishableKey: 'pk_test_demomerchantsandbox01',
           fetchClientSecret: async () => '[67 chars redacted]',
@@ -628,7 +628,7 @@ just demo-shop      # prints http://localhost:3001
 
 `examples/shop` is a merchant's own site: a catalogue in FCFA, a cart, a
 checkout that creates a PaymentIntent and a hosted session **server-side**
-through `@vpay/sdk`, and an order page that turns `paid` only when vpay's
+through `@vaam-apps/vpay-sdk`, and an order page that turns `paid` only when vpay's
 **webhook** lands — never from the return trip. The step-by-step walkthrough is
 [checkout.md](checkout.md) §"Buying something in the demo shop", which is also
 where a merchant integrating vpay should start.

@@ -10,7 +10,7 @@
  * accepts both.
  *
  * The assignments below are the actual assertion: they are checked by
- * `pnpm --filter @vpay/sdk typecheck`, not by vitest (which strips types
+ * `pnpm --filter @vaam-apps/vpay-sdk typecheck`, not by vitest (which strips types
  * without checking them). Reverting any `| undefined` in the option types
  * fails that command. The runtime `it` blocks exist so vitest does not error
  * on a file with no tests, and so the values are at least constructed.
@@ -114,7 +114,7 @@ describe("public option types under exactOptionalPropertyTypes", () => {
  * `vpay_api::model::CheckoutSessionObject::expired_snapshot` renders it.
  *
  * Built as a `CheckoutSession` rather than an untyped literal so the shape is
- * checked by `pnpm --filter @vpay/sdk typecheck` as well as by vitest.
+ * checked by `pnpm --filter @vaam-apps/vpay-sdk typecheck` as well as by vitest.
  */
 const expiredSession: CheckoutSession = {
   id: "cs_1",

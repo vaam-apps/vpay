@@ -1,4 +1,4 @@
-# @vpay/sdk
+# @vaam-apps/vpay-sdk
 
 The Node.js merchant SDK for vpay's `/v1` API. Implements the wire contract in
 [`docs/flows/merchant-auth.md`](../../docs/flows/merchant-auth.md) exactly —
@@ -13,11 +13,11 @@ for what the server it talks to actually serves.
 Inside this workspace:
 
 ```bash
-pnpm --filter @vpay/sdk build
+pnpm --filter @vaam-apps/vpay-sdk build
 ```
 
 There is nothing to install from a registry yet. Once a server exists and this
-package is published, installation will be `npm install @vpay/sdk` (or the
+package is published, installation will be `npm install @vaam-apps/vpay-sdk` (or the
 pnpm/yarn equivalent) like any other package. Requires Node.js `>=22.11.0`.
 
 ## The handshake, in prose
@@ -49,7 +49,7 @@ Every merchant is a statically registered OAuth2 client authenticating with
 
 ```ts
 import { readFileSync } from "node:fs";
-import { VpayClient } from "@vpay/sdk";
+import { VpayClient } from "@vaam-apps/vpay-sdk";
 
 const vpay = new VpayClient({
   baseUrl: "https://api.vpay.example",
@@ -117,7 +117,7 @@ const embedded = await vpay.checkout.sessions.create({
   ui_mode: "embedded",
   return_url: "https://shop.example/order/42",
 });
-// Hand embedded.client_secret to @vpay/stripe-js's initEmbeddedCheckout.
+// Hand embedded.client_secret to @vaam-apps/vpay-stripe-js's initEmbeddedCheckout.
 
 await vpay.checkout.sessions.retrieve(hosted.id);
 await vpay.checkout.sessions.list({ payment_intent: intent.id, limit: 10 });
@@ -126,7 +126,7 @@ await vpay.checkout.sessions.expire(hosted.id); // open -> expired
 
 `create()` and `retrieve()` responses carry a `client_secret` (`intent.client_secret`,
 typed `string | undefined`) — the payer credential `/v1/browser` accepts for a
-browser-side confirm. Hand it straight to `@vpay/stripe-js` on the page you
+browser-side confirm. Hand it straight to `@vaam-apps/vpay-stripe-js` on the page you
 render for the payer; never log it or send it anywhere but the browser. It is
 the one field on `PaymentIntent` that is genuinely absent — not `null` — from
 every other response shape: a `list()` item and `event.data.object` never
@@ -218,7 +218,7 @@ works as a catch-all; narrow further with `instanceof` on a specific subclass:
 | `WebhookSignatureError`       | `verifyWebhook` rejected a signature.                                                                                                                                                                                                                                                                                      | —                                            |
 
 ```ts
-import { VpayApiError, VpayAuthError, VpayError } from "@vpay/sdk";
+import { VpayApiError, VpayAuthError, VpayError } from "@vaam-apps/vpay-sdk";
 
 try {
   await vpay.paymentIntents.create({
@@ -257,7 +257,7 @@ if (err instanceof VpayApiError) {
 
 ```ts
 import { createServer } from "node:http";
-import { verifyWebhook, WebhookSignatureError } from "@vpay/sdk";
+import { verifyWebhook, WebhookSignatureError } from "@vaam-apps/vpay-sdk";
 
 // Read the secret once, at startup, so a misconfigured deployment fails
 // loudly instead of rejecting every delivery as a bad signature. Under
@@ -312,12 +312,12 @@ createServer((req, res) => {
 vpay's `/v1` surface is Stripe-shaped, and the official
 [`stripe`](https://www.npmjs.com/package/stripe) Node SDK can talk to it —
 with an **empty API key** and a `config.authenticator` that performs the
-`private_key_jwt` handshake above. `@vpay/sdk/stripe` is that authenticator:
+`private_key_jwt` handshake above. `@vaam-apps/vpay-sdk/stripe` is that authenticator:
 
 ```js
 import { readFileSync } from "node:fs";
 import Stripe from "stripe";
-import { createStripeAuthenticator } from "@vpay/sdk/stripe";
+import { createStripeAuthenticator } from "@vaam-apps/vpay-sdk/stripe";
 
 const authenticator = createStripeAuthenticator({
   baseUrl: "http://localhost:8080",
@@ -354,7 +354,7 @@ token against an unreachable endpoint or refuses every request as addressed
 elsewhere.
 
 `stripe` is an **optional peer dependency** of this package: install it
-yourself if you want this entry point, and `@vpay/sdk`'s core entry never
+yourself if you want this entry point, and `@vaam-apps/vpay-sdk`'s core entry never
 imports it. This package itself still has **zero runtime dependencies**.
 
 The empty first argument is not a trick — stripe-node's `_setAuthenticator`
@@ -434,7 +434,7 @@ try {
   a backoff path around it.
 - **`client_secret` is present, but only on `create`/`retrieve`.** vpay's
   `create()` and `retrieve()` responses carry it — see "Usage" above — for
-  `@vpay/stripe-js`'s browser-side confirm flow. `amount_received`,
+  `@vaam-apps/vpay-stripe-js`'s browser-side confirm flow. `amount_received`,
   `capture_method` and `confirmation_method` stay genuinely absent, though:
   stripe-node's TypeScript types declare all three as present on every
   response shape — it casts responses, it never validates them — so these
@@ -534,7 +534,7 @@ creating a PaymentIntent, with the stub asserting the `Authorization` header
 the authenticator minted, the form-encoded body, and stripe-node's
 auto-generated `Idempotency-Key`. The type-level assertion that the returned
 function is assignable to `Stripe.StripeConfig["authenticator"]` is checked by
-`pnpm --filter @vpay/sdk typecheck`.
+`pnpm --filter @vaam-apps/vpay-sdk typecheck`.
 
 What is **not** proven here:
 
@@ -572,7 +572,7 @@ Rust example driving `authkestra_op::client_assertion::verify_client_assertion`
 directly) without standing up a server:
 
 ```bash
-pnpm --filter @vpay/sdk build
+pnpm --filter @vaam-apps/vpay-sdk build
 VPAY_CLIENT_ID=merchant_a \
 VPAY_PRIVATE_KEY_FILE=./merchant_a.key.pem \
 VPAY_AUDIENCE=https://api.vpay.example/v1/oauth/token \

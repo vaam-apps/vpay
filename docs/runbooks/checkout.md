@@ -113,7 +113,7 @@ Do not move it into the query string, and do not log the `url`.
 
 **The shape.** Your server creates the PaymentIntent as above but stops there;
 your *page* asks your server for a session `client_secret` and hands it to
-`@vpay/stripe-js`, which frames vpay's page.
+`@vaam-apps/vpay-stripe-js`, which frames vpay's page.
 
 **Your server** — `examples/shop/src/server/orders.ts`, `embeddedClientSecret`:
 
@@ -184,7 +184,7 @@ thing that tells *you* is a signed webhook.
 `examples/shop/src/server/webhook.ts`:
 
 ```ts
-const event = verifyWebhook({ rawBody, signatureHeader, secret });   // @vpay/sdk
+const event = verifyWebhook({ rawBody, signatureHeader, secret });   // @vaam-apps/vpay-sdk
 
 // `Object.hasOwn`, not a bare index: `event.type` is text this code did not
 // produce, and SETTLING_EVENTS["constructor"] is a truthy function.

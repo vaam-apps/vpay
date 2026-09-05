@@ -1,7 +1,7 @@
 /**
  * A real `node:http` server standing in for vpay's `/v1/browser` surface —
  * the three checkout routes this app reads and the two payment-intent
- * routes `@vpay/stripe-js` reads on its behalf.
+ * routes `@vaam-apps/vpay-stripe-js` reads on its behalf.
  *
  * **This is not a test double reachable from a shipping process.** AGENTS.md
  * rule 1 and ADR-0006 forbid a mock, fake or stub being linked into
@@ -26,7 +26,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-import type { FailureCode } from '@vpay/stripe-js';
+import type { FailureCode } from '@vaam-apps/vpay-stripe-js';
 
 import type {
   CheckoutSession,

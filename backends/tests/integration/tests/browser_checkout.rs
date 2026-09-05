@@ -19,7 +19,7 @@
 //! `private_key_jwt` assertion and sends a bearer token on every request.
 //! There is no way to express "no credential except a query parameter"
 //! through it, and a browser cannot hold any of what it needs. The browser
-//! package that *does* speak this surface — `@vpay/stripe-js` — is
+//! package that *does* speak this surface — `@vaam-apps/vpay-stripe-js` — is
 //! TypeScript and cannot be linked here; its own suite drives a `node:http`
 //! stub, and this file is the other half of that claim: the stub's shape
 //! against a real server. The bytes asserted below (`key`, `client_secret`,
@@ -382,7 +382,7 @@ async fn create_intent(h: &Harness) -> anyhow::Result<(String, String)> {
     Ok((intent.id, secret))
 }
 
-/// A browser confirm: the exact form body `@vpay/stripe-js` sends, with no
+/// A browser confirm: the exact form body `@vaam-apps/vpay-stripe-js` sends, with no
 /// `Idempotency-Key` and no `Authorization`.
 async fn browser_confirm(
     h: &Harness,
@@ -419,7 +419,7 @@ async fn browser_retrieve(
     // (`ConfigError::MalformedPublishableKey`) and a client secret is
     // `vpay_core::ids`' base32 alphabet, which that module proves
     // `encodeURIComponent` is the identity on. That is the *same* reason
-    // `@vpay/stripe-js` can put them in a query string at all.
+    // `@vaam-apps/vpay-stripe-js` can put them in a query string at all.
     let response = browser()
         .get(h.url(&format!(
             "/v1/browser/payment_intents/{id}?key={key}&client_secret={secret}"
@@ -503,7 +503,7 @@ async fn a_browser_confirm_reaches_the_rail_and_moves_the_intent_to_processing()
         Some(id.as_str()),
         "{body:#}"
     );
-    // The credential comes back, because `@vpay/stripe-js` types every
+    // The credential comes back, because `@vaam-apps/vpay-stripe-js` types every
     // response on this surface as carrying one — a merchant's page polls with
     // the object it was just handed.
     assert_eq!(
@@ -772,7 +772,7 @@ async fn the_browser_nest_answers_a_preflight_and_the_merchant_nest_does_not() -
             .unwrap_or_default()
             .to_ascii_lowercase()
             .contains("content-type"),
-        "the form content type is the one header @vpay/stripe-js sets"
+        "the form content type is the one header @vaam-apps/vpay-stripe-js sets"
     );
     assert_eq!(
         headers
@@ -811,7 +811,7 @@ async fn the_browser_nest_answers_a_preflight_and_the_merchant_nest_does_not() -
 ///
 /// The `409`'s `code` is asserted, not just its status: a payer's page has to
 /// tell "already confirmed, go and poll" from "your card was declined", and
-/// `@vpay/stripe-js` surfaces `error.code` for exactly that.
+/// `@vaam-apps/vpay-stripe-js` surfaces `error.code` for exactly that.
 #[tokio::test]
 async fn a_browser_confirm_needs_no_idempotency_key_and_a_second_one_is_the_409()
 -> anyhow::Result<()> {

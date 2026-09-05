@@ -1,5 +1,5 @@
 /**
- * `@vpay/sdk/stripe` — a `config.authenticator` for the **official Stripe
+ * `@vaam-apps/vpay-sdk/stripe` — a `config.authenticator` for the **official Stripe
  * Node SDK**, so `stripe-node` can talk to vpay's `/v1` API.
  *
  * vpay never accepts an API key ([ADR-0010](../../../docs/adr/0010-merchant-auth-private-key-jwt.md)):
@@ -11,7 +11,7 @@
  *
  * ```js
  * import Stripe from "stripe";
- * import { createStripeAuthenticator } from "@vpay/sdk/stripe";
+ * import { createStripeAuthenticator } from "@vaam-apps/vpay-sdk/stripe";
  *
  * const stripe = new Stripe("", {
  *   authenticator: createStripeAuthenticator({
@@ -28,7 +28,7 @@
  *
  * This module deliberately imports **nothing** from `stripe`. `stripe` is an
  * optional peer dependency, and the request type below is written out
- * structurally rather than imported, so `@vpay/sdk` type-checks and builds
+ * structurally rather than imported, so `@vaam-apps/vpay-sdk` type-checks and builds
  * with `stripe` absent. `src/stripe-auth.test.ts` pins the structural type
  * against the real `Stripe.StripeConfig["authenticator"]`, so a divergence in
  * a future `stripe` release fails the build rather than the merchant's

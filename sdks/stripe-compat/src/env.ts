@@ -68,7 +68,7 @@ function required(name: string): string {
   const value = process.env[name];
   if (value === undefined || value.trim() === "") {
     throw new Error(
-      `@vpay/stripe-compat: ${name} is not set. This suite runs against a REAL vpay stack; ` +
+      `@vaam-apps/vpay-stripe-compat: ${name} is not set. This suite runs against a REAL vpay stack; ` +
         `bring one up with \`just stripe-compat\`, which sets all three of VPAY_BASE_URL, ` +
         `VPAY_MERCHANT_CLIENT_ID and VPAY_MERCHANT_PRIVATE_KEY_PATH for you.`,
     );
@@ -88,7 +88,7 @@ export function readCompatEnv(): CompatEnv {
   const url = new URL(baseUrl);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error(
-      `@vpay/stripe-compat: VPAY_BASE_URL must be http or https, got ${baseUrl}`,
+      `@vaam-apps/vpay-stripe-compat: VPAY_BASE_URL must be http or https, got ${baseUrl}`,
     );
   }
   const protocol = url.protocol === "https:" ? "https" : "http";
@@ -101,7 +101,7 @@ export function readCompatEnv(): CompatEnv {
     privateKeyPem = readFileSync(privateKeyPath, "utf8");
   } catch (cause) {
     throw new Error(
-      `@vpay/stripe-compat: cannot read the merchant private key at ${privateKeyPath}. ` +
+      `@vaam-apps/vpay-stripe-compat: cannot read the merchant private key at ${privateKeyPath}. ` +
         `\`just gen-demo-keys\` writes one to .e2e/demo-merchant/oauth-signing-key.pem.`,
       { cause },
     );

@@ -8,7 +8,7 @@
  * `{CHECKOUT_SESSION_ID}` placeholder, and the two ids the shop stored.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { VpayClient } from "@vpay/sdk";
+import { VpayClient } from "@vaam-apps/vpay-sdk";
 import { MemoryShopStore } from "../testing/memory-store";
 import { testPrivateKeyPem } from "../testing/keys";
 import {

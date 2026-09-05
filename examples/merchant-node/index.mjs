@@ -1,5 +1,5 @@
 /**
- * A merchant backend talking to vpay through `@vpay/sdk` (sdks/nodejs).
+ * A merchant backend talking to vpay through `@vaam-apps/vpay-sdk` (sdks/nodejs).
  *
  * CORRECTED 2026-09-03. This header used to say "/v1/* is not implemented,
  * and neither is the client_credentials + private_key_jwt token endpoint" —
@@ -15,15 +15,15 @@
  * Why this and not the Stripe SDK: vpay's object model and idempotency
  * semantics are Stripe-shaped, and its authentication is not (ADR-0010) — a
  * Stripe SDK sends a fixed bearer string and cannot sign an RFC 7523 client
- * assertion. `@vpay/sdk` does the handshake transparently on every call. A
+ * assertion. `@vaam-apps/vpay-sdk` does the handshake transparently on every call. A
  * Stripe SDK *can* be made to do it through `config.authenticator`, which is
- * what `@vpay/sdk/stripe` and `examples/merchant-stripe-node` are for; use
+ * what `@vaam-apps/vpay-sdk/stripe` and `examples/merchant-stripe-node` are for; use
  * that if you already have Stripe integration code, and this if you do not.
  *
- * Build the SDK first: `pnpm --filter @vpay/sdk build`.
+ * Build the SDK first: `pnpm --filter @vaam-apps/vpay-sdk build`.
  */
 import { readFileSync } from "node:fs";
-import { VpayClient, VpayError } from "@vpay/sdk";
+import { VpayClient, VpayError } from "@vaam-apps/vpay-sdk";
 
 const vpay = new VpayClient({
   baseUrl: process.env.VPAY_BASE_URL ?? "https://api.vpay.example",

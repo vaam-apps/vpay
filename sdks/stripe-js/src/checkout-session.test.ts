@@ -108,7 +108,7 @@ describe("retrieveCheckoutSession", () => {
   it("expands payment_intent into the whole intent, with the intent's own client_secret typed", async () => {
     // The integrator's ruling of 2026-09-04 on the one place the plan's
     // wire contract was readable two ways. On `/v1` the field is the `pi_…`
-    // id — `@vpay/sdk` and `vpay_sdk` both keep it a string — and on the
+    // id — `@vaam-apps/vpay-sdk` and `vpay_sdk` both keep it a string — and on the
     // browser routes it is the whole intent. A test that only checked
     // `typeof payment_intent === "object"` would pass for a half-rendered
     // one, so this asserts the intent's thirteen keys.
@@ -149,7 +149,7 @@ describe("retrieveCheckoutSession", () => {
   });
 
   it("keeps the expanded intent's secret out of the client's diagnostics, exactly as it keeps the session's", async () => {
-    // `@vpay/stripe-js` does not wrap wire objects, so there is no
+    // `@vaam-apps/vpay-stripe-js` does not wrap wire objects, so there is no
     // `CheckoutSession` inspect hook to redact through — the merchant SDKs
     // have that because they hand a long-lived object to a server-side
     // logger. What this package guarantees instead, for both credentials

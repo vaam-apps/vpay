@@ -66,7 +66,7 @@ clock a few seconds off still authenticates.
 `{deployment.public_base_url}/v1/oauth` issuer (`vpay_api::op::issuer_for`) —
 and against nothing else. A merchant whose server reaches vpay by an internal
 URL (a compose service name, a private DNS name, a mesh address) must say so:
-`assertionAudience` in `@vpay/sdk`, `ClientBuilder::assertion_audience` in
+`assertionAudience` in `@vaam-apps/vpay-sdk`, `ClientBuilder::assertion_audience` in
 `sdks/rust`. Both default to the token endpoint, which is right only when the
 two coincide. Left wrong, every token request answers `invalid_client` /
 `InvalidAudience` while the signature, the `client_id`, the `kid` and the
@@ -557,7 +557,7 @@ What the SDKs themselves prove is unchanged by any of this:
   `wiremock` HTTP stub, asserting the bytes on the wire. The webhook
   verifier never touches the network; its cases are unit tests in
   `src/webhooks.rs`.
-- **Node SDK** (`sdks/nodejs`, package `@vpay/sdk`): the same set, against a
+- **Node SDK** (`sdks/nodejs`, package `@vaam-apps/vpay-sdk`): the same set, against a
   real `node:http` server started by the test, with the assertion's
   signature verified by `node:crypto` against the public key and its claims
   asserted one by one against the table above. Node cannot link the Rust

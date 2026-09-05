@@ -25,7 +25,7 @@
 const MTN_E2E_POLL_MSISDN = "237600000ce0";
 
 describe("checkout-browser", () => {
-  it("confirms an MTN MoMo push through @vpay/stripe-js and settles to succeeded", () => {
+  it("confirms an MTN MoMo push through @vaam-apps/vpay-stripe-js and settles to succeeded", () => {
     cy.task("mintCheckoutPaymentIntent").then((minted) => {
       const { id, clientSecret, publishableKey, baseUrl } = minted as {
         id: string;

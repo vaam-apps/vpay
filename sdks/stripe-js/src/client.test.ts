@@ -1,5 +1,5 @@
 /**
- * `@vpay/stripe-js` against a real `node:http` stub of vpay's `/v1/browser`
+ * `@vaam-apps/vpay-stripe-js` against a real `node:http` stub of vpay's `/v1/browser`
  * surface.
  *
  * The stub is `src/testing/browser-stub.ts`. ADR-0006 and AGENTS.md's rule 1

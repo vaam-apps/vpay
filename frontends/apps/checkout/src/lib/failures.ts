@@ -6,7 +6,7 @@
  * alternative — `t(\`failure.${code}\`)` — renders the raw code on a payment
  * page the first time a rail reports something new.
  */
-import type { FailureCode } from '@vpay/stripe-js';
+import type { FailureCode } from '@vaam-apps/vpay-stripe-js';
 
 import type { MessageKey } from '../i18n/index';
 

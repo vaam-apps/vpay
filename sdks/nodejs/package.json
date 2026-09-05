@@ -1,7 +1,19 @@
 {
-  "name": "@vpay/sdk",
+  "name": "@vaam-apps/vpay-sdk",
   "version": "0.1.0",
   "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vaam-apps/vpay.git",
+    "directory": "sdks/nodejs"
+  },
+  "homepage": "https://github.com/vaam-apps/vpay/tree/master/sdks/nodejs#readme",
+  "bugs": {
+    "url": "https://github.com/vaam-apps/vpay/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.11.0"

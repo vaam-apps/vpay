@@ -12,9 +12,9 @@
  * One rule the shape enforces: **no state carries a status this page
  * invented.** `outcome` is reachable only from an `intent_updated` event
  * whose intent {@link intentOutcome} judged terminal, and `intentOutcome`
- * reads the same two fields `@vpay/stripe-js`'s poll ladder does.
+ * reads the same two fields `@vaam-apps/vpay-stripe-js`'s poll ladder does.
  */
-import type { FailureCode, PaymentIntentStatus } from '@vpay/stripe-js';
+import type { FailureCode, PaymentIntentStatus } from '@vaam-apps/vpay-stripe-js';
 
 import type { MessageKey } from '../i18n/index';
 import { railChoices, type RailChoices, type SupportedRail } from './rails';
@@ -171,7 +171,7 @@ export const INITIAL_STATE: CheckoutState = { name: 'loading' };
  * no `last_payment_error`, which is *also* the status of an intent nobody
  * has confirmed. Treating that as an outcome would render "payment not
  * completed" on a page the payer just opened. Same reading as
- * `@vpay/stripe-js`'s `hasStoppedMoving`, deliberately.
+ * `@vaam-apps/vpay-stripe-js`'s `hasStoppedMoving`, deliberately.
  */
 export function intentOutcome(
   intent: PaymentIntent | PublicPaymentIntent,

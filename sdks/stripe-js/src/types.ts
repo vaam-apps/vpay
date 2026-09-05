@@ -249,7 +249,7 @@ export type CheckoutSessionUiMode = "hosted" | "embedded";
  * with `payment_intent` expanded.
  *
  * The one place this differs from the merchant SDKs' `CheckoutSession`
- * (`@vpay/sdk`, `vpay_sdk`) is {@link payment_intent}, and the difference is
+ * (`@vaam-apps/vpay-sdk`, `vpay_sdk`) is {@link payment_intent}, and the difference is
  * deliberate rather than a skew: on `/v1` the field is the `pi_…` **id**; on
  * `GET /v1/browser/checkout/sessions/{id}` it is the whole intent, because
  * vpay's checkout page has to confirm and poll it through the existing

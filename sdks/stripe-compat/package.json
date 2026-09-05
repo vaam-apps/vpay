@@ -1,7 +1,19 @@
 {
-  "name": "@vpay/stripe-compat",
+  "name": "@vaam-apps/vpay-stripe-compat",
   "version": "0.0.0",
   "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vaam-apps/vpay.git",
+    "directory": "sdks/stripe-compat"
+  },
+  "homepage": "https://github.com/vaam-apps/vpay/tree/master/sdks/stripe-compat#readme",
+  "bugs": {
+    "url": "https://github.com/vaam-apps/vpay/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.11.0"
@@ -10,10 +22,10 @@
     "compat": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "pnpm run deps && eslint . --max-warnings 0",
-    "deps": "pnpm --filter @vpay/sdk build"
+    "deps": "pnpm --filter @vaam-apps/vpay-sdk build"
   },
   "dependencies": {
-    "@vpay/sdk": "workspace:*",
+    "@vaam-apps/vpay-sdk": "workspace:*",
     "stripe": "^22.6.1"
   },
   "devDependencies": {

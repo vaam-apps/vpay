@@ -14,7 +14,7 @@
  * at a real local HTTP server and assert the exact bytes that go on the wire.
  */
 import { TRPCError } from "@trpc/server";
-import type { VpayClient } from "@vpay/sdk";
+import type { VpayClient } from "@vaam-apps/vpay-sdk";
 import type { PaymentMethodType } from "./config";
 import type { Order, OrderLine, ShopStore } from "./store/types";
 

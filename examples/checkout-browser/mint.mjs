@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Mints a PaymentIntent with `@vpay/sdk` and prints a URL that opens this
+ * Mints a PaymentIntent with `@vaam-apps/vpay-sdk` and prints a URL that opens this
  * example ready to confirm it — the "server" half of the integration this
  * package's own README (`../../sdks/stripe-js/README.md`) describes:
  *
@@ -9,7 +9,7 @@
  *
  * Deliberately plain JavaScript, not TypeScript — same reason
  * `examples/merchant-node/index.mjs` is plain JS: no build step for a
- * standalone example. `@vpay/sdk`'s `PaymentIntent` type
+ * standalone example. `@vaam-apps/vpay-sdk`'s `PaymentIntent` type
  * (`sdks/nodejs/src/types.ts`) now declares `client_secret?: string`,
  * matching the server's `create`/`retrieve` responses since migration
  * `0026` (`vpay_api::model::PaymentIntentWithSecret`, decision D2) — so
@@ -20,7 +20,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { VpayClient, VpayError } from "@vpay/sdk";
+import { VpayClient, VpayError } from "@vaam-apps/vpay-sdk";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..");

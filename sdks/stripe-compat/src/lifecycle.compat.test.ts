@@ -52,7 +52,7 @@ describe("payment intent lifecycle through stripe-node", () => {
   it("creates and retrieves an intent, and both carry a request id", async () => {
     const created = await createIntent(stripe, {
       metadata: { suite: "stripe-compat", case: "create-retrieve" },
-      description: "created by @vpay/stripe-compat",
+      description: "created by @vaam-apps/vpay-stripe-compat",
     });
 
     expect(created.object).toBe("payment_intent");

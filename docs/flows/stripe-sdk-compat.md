@@ -16,7 +16,7 @@ is filled.
 ```js
 import { readFileSync } from "node:fs";
 import Stripe from "stripe";
-import { createStripeAuthenticator } from "@vpay/sdk/stripe";
+import { createStripeAuthenticator } from "@vaam-apps/vpay-sdk/stripe";
 
 const authenticator = createStripeAuthenticator({
   baseUrl: "https://api.vpay.example",
@@ -208,7 +208,7 @@ predictable consequence of the header, not because anything observed it.
   remain genuinely absent, although stripe-node's types declare them
   present — a type-level lie with no runtime effect,
   `StripeResource._makeRequest` casts and never validates. `client_secret`
-  now exists for a real reason: `@vpay/stripe-js`'s payer-facing
+  now exists for a real reason: `@vaam-apps/vpay-stripe-js`'s payer-facing
   confirmation flow, not stripe-node's (which has no client-side
   confirmation step of its own and never reads this field).
 - **`next_action` is only ever `redirect_to_url`**, and only on a redirect
@@ -327,7 +327,7 @@ collapse described above.
   against `^22.6.1`, tested at exactly `22.6.1`; a dependency bump is what
   will surface a break.
 
-**2026-09-04 (Step 9).** `@vpay/stripe-js`'s README no longer lists
+**2026-09-04 (Step 9).** `@vaam-apps/vpay-stripe-js`'s README no longer lists
 "Checkout (hosted or embedded)" under "Not compatible, ever". The retraction
 is narrower than the removal looks and is worded that way in the README:
 vpay now serves its **own** checkout page, hosted and embedded, and

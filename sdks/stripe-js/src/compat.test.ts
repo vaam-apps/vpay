@@ -1,5 +1,5 @@
 /**
- * What `@vpay/stripe-js` is and is not assignable to, against the real
+ * What `@vaam-apps/vpay-stripe-js` is and is not assignable to, against the real
  * `@stripe/stripe-js` type definitions (a devDependency, pinned exactly, and
  * used for nothing else — this package has zero runtime dependencies).
  *
@@ -7,7 +7,7 @@
  * Stripe.js. This file is where that claim is made precise, in both
  * directions, so it cannot quietly become false: every `true` and every
  * `false` below is a **compile-time** assertion — `pnpm --filter
- * @vpay/stripe-js typecheck` fails if either package's types move.
+ * @vaam-apps/vpay-stripe-js typecheck` fails if either package's types move.
  *
  * The short version, all four results pinned below:
  *

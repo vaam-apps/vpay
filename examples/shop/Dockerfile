@@ -2,7 +2,7 @@
 #
 #     docker build -f examples/shop/Dockerfile .
 #
-# The root context is not incidental: `@vpay/sdk` and `@vpay/stripe-js` are
+# The root context is not incidental: `@vaam-apps/vpay-sdk` and `@vaam-apps/vpay-stripe-js` are
 # workspace dependencies resolved through `pnpm-workspace.yaml`, so the
 # lockfile, the workspace file and `sdks/` all have to be inside the context
 # for `pnpm install --frozen-lockfile` to reproduce what a developer has.

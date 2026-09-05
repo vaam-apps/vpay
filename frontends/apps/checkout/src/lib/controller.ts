@@ -15,7 +15,7 @@
  *   the parent receives is the session's own, not this page's guess from the
  *   intent.
  */
-import type { Stripe, StripeError } from '@vpay/stripe-js';
+import type { Stripe, StripeError } from '@vaam-apps/vpay-stripe-js';
 
 import type { MessageKey } from '../i18n/index';
 import type { BrowserCheckoutApi, SessionCredentials } from './api';
@@ -31,7 +31,7 @@ import {
 import type { SupportedRail } from './rails';
 import type { CheckoutError, PaymentIntent } from './types';
 
-/** Maps a `@vpay/stripe-js` error onto a message this page can show in either language. */
+/** Maps a `@vaam-apps/vpay-stripe-js` error onto a message this page can show in either language. */
 export function messageForStripeError(error: StripeError): MessageKey {
   if (error.type === 'api_connection_error') {
     return 'error.network';
@@ -159,7 +159,7 @@ export class CheckoutController {
    * The Orange path: confirm with `redirect: 'if_required'`, then move the
    * payer ourselves.
    *
-   * `if_required` rather than letting `@vpay/stripe-js` navigate, because
+   * `if_required` rather than letting `@vaam-apps/vpay-stripe-js` navigate, because
    * *who* navigates depends on whether this page is framed, and that is a
    * fact only this page has. Framed: ask the parent
    * (`{type:'vpay:redirect', url}`) — an iframe navigating the top-level

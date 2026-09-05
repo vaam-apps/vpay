@@ -69,7 +69,7 @@ export interface PaymentIntent {
   livemode: boolean;
   /**
    * `pi_…_secret_…` — the payer credential `/v1/browser` accepts to confirm
-   * this intent from a browser (hand it to `@vpay/stripe-js`).
+   * this intent from a browser (hand it to `@vaam-apps/vpay-stripe-js`).
    *
    * Present **only** on `create()` and `retrieve()` responses (Step 5c's
    * D2, `vpay_api::model::PaymentIntentWithSecret`); absent — this property
@@ -183,7 +183,7 @@ export type CheckoutPaymentStatus = "unpaid" | "paid" | "failed";
 /**
  * Which surface the session is rendered on. `hosted` gets a
  * {@link CheckoutSession.url} to send the payer to; `embedded` gets a
- * `client_secret` to hand `@vpay/stripe-js`'s `initEmbeddedCheckout`.
+ * `client_secret` to hand `@vaam-apps/vpay-stripe-js`'s `initEmbeddedCheckout`.
  */
 export type CheckoutSessionUiMode = "hosted" | "embedded";
 
@@ -204,7 +204,7 @@ export interface CheckoutSession {
   /**
    * The `pi_…` this session drives — an **id**, on every `/v1` route.
    *
-   * `@vpay/stripe-js`'s `CheckoutSession` types the same field as the whole
+   * `@vaam-apps/vpay-stripe-js`'s `CheckoutSession` types the same field as the whole
    * expanded {@link PaymentIntent}, because the *browser* session read
    * expands it (the checkout page confirms and polls the intent through the
    * browser routes and cannot fetch it separately). That is a deliberate

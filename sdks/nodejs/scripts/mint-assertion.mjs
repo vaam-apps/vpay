@@ -15,7 +15,7 @@
  *   VPAY_AUDIENCE           required — the assertion's `aud` (token endpoint URL)
  *   VPAY_KID                optional
  *
- * Run after `pnpm --filter @vpay/sdk build` (imports from ../dist).
+ * Run after `pnpm --filter @vaam-apps/vpay-sdk build` (imports from ../dist).
  */
 import { readFileSync } from "node:fs";
 import { createPrivateKey, createPublicKey } from "node:crypto";

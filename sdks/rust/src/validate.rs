@@ -32,7 +32,7 @@ pub(crate) fn check_amount(amount: i64, field: &str) -> Result<(), Error> {
             param: field.to_string(),
             message: format!(
                 "must be a non-negative integer in minor units, at most {MAX_SAFE_INTEGER} \
-                 (JavaScript's Number.MAX_SAFE_INTEGER, for parity with @vpay/sdk), got {amount}"
+                 (JavaScript's Number.MAX_SAFE_INTEGER, for parity with @vaam-apps/vpay-sdk), got {amount}"
             ),
         });
     }

@@ -1,6 +1,6 @@
 /**
  * Stripe's bracket-nested `application/x-www-form-urlencoded` encoding —
- * the same one `@vpay/sdk`'s `src/form.ts` implements for `/v1`, because
+ * the same one `@vaam-apps/vpay-sdk`'s `src/form.ts` implements for `/v1`, because
  * `/v1/browser` is served by the same axum form extractor.
  *
  * | Shape | Wire form |
@@ -166,7 +166,7 @@ function encodePath(path: readonly string[]): string {
  * `encodeURIComponent` and not `URLSearchParams`: the latter encodes a space
  * as `+` and leaves `!'()*~` alone, so two encoders in one codebase would
  * put different bytes on the wire for the same MSISDN-bearing body. This is
- * byte-for-byte what `@vpay/sdk` sends.
+ * byte-for-byte what `@vaam-apps/vpay-sdk` sends.
  */
 export function encodeForm(params: Record<string, FormValue>): string {
   return flattenForm(params)

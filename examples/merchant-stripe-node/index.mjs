@@ -33,7 +33,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import Stripe from "stripe";
-import { createStripeAuthenticator } from "@vpay/sdk/stripe";
+import { createStripeAuthenticator } from "@vaam-apps/vpay-sdk/stripe";
 
 const BASE_URL = process.env.VPAY_BASE_URL ?? "http://localhost:18080";
 const CLIENT_ID = process.env.VPAY_MERCHANT_CLIENT_ID ?? "demo-merchant";

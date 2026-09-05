@@ -17,7 +17,7 @@
  * @vpay-examples/checkout-browser serve`), not a second implementation.
  *
  * Serves this directory only, including `dist/stripe-js/` — the vendored
- * copy of `@vpay/stripe-js`'s build output that `just build-checkout-browser`
+ * copy of `@vaam-apps/vpay-stripe-js`'s build output that `just build-checkout-browser`
  * produces (see the justfile). A missing `dist/stripe-js/index.js` is not an
  * error this server detects; the browser's own module-loading 404 is the
  * honest signal that the build step was skipped.
@@ -116,7 +116,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   );
   console.log(
     `checkout-browser: needs \`just build-checkout-browser\` run at least once — it vendors ` +
-      `@vpay/stripe-js's dist/ into dist/stripe-js/, which is gitignored and not built by this script.`,
+      `@vaam-apps/vpay-stripe-js's dist/ into dist/stripe-js/, which is gitignored and not built by this script.`,
   );
   for (const signal of ["SIGINT", "SIGTERM"]) {
     process.on(signal, () => server.close(() => process.exit(0)));

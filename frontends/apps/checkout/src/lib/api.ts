@@ -4,7 +4,7 @@
  * Deliberately **not** `@vpay/api-client`: that package is the dashboard's
  * client for `/dash/v1` under an OIDC session (ADR-0008), and this app never
  * holds a merchant credential of any kind. The two payment-intent routes
- * (`confirm` and the poll) are not here either — `@vpay/stripe-js` owns
+ * (`confirm` and the poll) are not here either — `@vaam-apps/vpay-stripe-js` owns
  * those, and re-implementing them would be a second client for the same
  * wire contract.
  *

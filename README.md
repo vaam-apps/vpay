@@ -36,7 +36,7 @@ each merchant is a statically registered client, holding its own private
 key, configured directly in vpay's YAML — vpay stores only the public half.
 A Stripe SDK cannot do that handshake by itself, but it does not have to:
 `stripe-node` takes an arbitrary `config.authenticator`, and
-[`@vpay/sdk/stripe`](sdks/nodejs/) supplies one, so `new Stripe("", {
+[`@vaam-apps/vpay-sdk/stripe`](sdks/nodejs/) supplies one, so `new Stripe("", {
 authenticator, host, port, protocol })` reaches vpay with an empty key —
 proven by [`sdks/stripe-compat`](sdks/stripe-compat/), which drives the real
 `stripe` package against a real stack in CI. *(This corrects "no Stripe SDK
@@ -48,7 +48,7 @@ what does and does not carry over, and
 [`examples/merchant-curl`](examples/merchant-curl/) for the underlying
 two-step flow. vpay ships its own merchant SDKs that do that handshake —
 [`sdks/rust`](sdks/rust/) (`vpay-sdk`) and [`sdks/nodejs`](sdks/nodejs/)
-(`@vpay/sdk`) — implementing the wire contract in
+(`@vaam-apps/vpay-sdk`) — implementing the wire contract in
 [`docs/flows/merchant-auth.md`](docs/flows/merchant-auth.md). The Rust one
 has completed a real handshake against a running `vpay-server` — that is
 what [`examples/merchant-demo`](examples/merchant-demo/) and `just demo`
@@ -103,8 +103,8 @@ frontends/
   apps/         dashboard (Next.js)
   tests/        e2e (Cypress)
 sdks/
-  rust/         vpay-sdk   — merchant SDK (workspace crate; private_key_jwt handshake, /v1 resources, webhooks)
-  nodejs/       @vpay/sdk  — the same, zero-dependency Node ≥ 22 ESM
+  rust/         vpay-sdk              — merchant SDK (workspace crate; private_key_jwt handshake, /v1 resources, webhooks)
+  nodejs/       @vaam-apps/vpay-sdk   — the same, zero-dependency Node ≥ 22 ESM
 examples/       merchant-demo (runnable: `just demo`) · merchant-curl · merchant-node · webhook-receiver
 docs/           adr/ · rfc/ · flows/ · runbooks/ · api/ · status.md
 schemas/        *.cstack   (syntax verified, design sketch, excluded from the build — see docs/status.md)

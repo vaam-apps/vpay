@@ -131,7 +131,7 @@ jobs:
           # Comma-separated in one string; a flow-style `{ tool: nextest, just }`
           # would repeat the `components:` mistake noted above.
           tool: nextest,just
-      # Node, and the built `@vpay/sdk`, for the webhook signature-parity
+      # Node, and the built `@vaam-apps/vpay-sdk`, for the webhook signature-parity
       # test. Before nextest on purpose: the test builds `dist/` on demand if
       # it is absent, and a build failure should be reported by the step
       # whose job it is rather than as a mysterious test failure.
@@ -139,7 +139,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version-file: .nvmrc, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @vpay/sdk build
+      - run: pnpm --filter @vaam-apps/vpay-sdk build
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # Runs the container-backed suites too (vpay-db, vpay-tests-integration,
@@ -226,10 +226,10 @@ jobs:
       # the one package whose `build` actually emits JS (`dist/`, consumed by
       # merchants and by `just sdk-conformance-node`). It is a *prerequisite*
       # of both checks after it: `sdks/stripe-compat` imports
-      # `@vpay/sdk/stripe`, whose types resolve through the package's
+      # `@vaam-apps/vpay-sdk/stripe`, whose types resolve through the package's
       # `exports` to `dist/stripe-auth.d.ts`, and `dist/` is gitignored. Run
       # in the old order this job failed on a clean checkout with `TS2307:
-      # Cannot find module '@vpay/sdk/stripe'`; the lint is worse, because an
+      # Cannot find module '@vaam-apps/vpay-sdk/stripe'`; the lint is worse, because an
       # unbuilt `dist/` resolves to `any` and the type-aware rules report the
       # missing artefact as 233 `no-unsafe-*` findings instead. The `e2e` job
       # builds it for the same reason; neither job can borrow the other's
@@ -292,14 +292,14 @@ jobs:
         env:
           CYPRESS_VERIFY_TIMEOUT: "120000"
       # The Node SDK's `dist/` — `sdks/stripe-compat` imports
-      # `@vpay/sdk/stripe`, which resolves to `dist/stripe-auth.js`. The `web`
+      # `@vaam-apps/vpay-sdk/stripe`, which resolves to `dist/stripe-auth.js`. The `web`
       # job builds it too; this job cannot borrow that job's artefacts.
-      - run: pnpm --filter @vpay/sdk build
-      # `@vpay/stripe-js`'s built ESM, vendored into
+      - run: pnpm --filter @vaam-apps/vpay-sdk build
+      # `@vaam-apps/vpay-stripe-js`'s built ESM, vendored into
       # `examples/checkout-browser/dist/stripe-js/` — what `checkout.js`
       # imports and what `checkout.cy.ts` (below) actually drives in a real
-      # browser. Both this build and `mint.mjs`'s `@vpay/sdk` dependency need
-      # `pnpm install` above; `@vpay/sdk`'s own `dist/` was just built by the
+      # browser. Both this build and `mint.mjs`'s `@vaam-apps/vpay-sdk` dependency need
+      # `pnpm install` above; `@vaam-apps/vpay-sdk`'s own `dist/` was just built by the
       # step above this one, and pnpm's workspace symlink resolves
       # `examples/checkout-browser`'s dependency to it directly.
       - run: just build-checkout-browser
@@ -409,7 +409,7 @@ jobs:
       # VPAY_BASE_URL/VPAY_MERCHANT_CLIENT_ID/VPAY_MERCHANT_PRIVATE_KEY_PATH
       # are read by `checkout.cy.ts`'s `cy.task('mintCheckoutPaymentIntent')`
       # (`frontends/tests/e2e/cypress/tasks/checkoutTasks.ts`) to mint a real
-      # PaymentIntent through `@vpay/sdk` before the spec visits the page —
+      # PaymentIntent through `@vaam-apps/vpay-sdk` before the spec visits the page —
       # the same three variables the "stripe-node conformance" step below
       # sets for the same demo-merchant keypair. 8080, not 18080: this job
       # never sets VPAY_DEMO_PORT, so compose.demo.yml's default stands (see
@@ -458,7 +458,7 @@ jobs:
           # package, not to the checkout, so a relative path here would be
           # resolved against `sdks/stripe-compat/`.
           VPAY_MERCHANT_PRIVATE_KEY_PATH: ${{ github.workspace }}/.e2e/demo-merchant/oauth-signing-key.pem
-        run: pnpm --filter @vpay/stripe-compat compat
+        run: pnpm --filter @vaam-apps/vpay-stripe-compat compat
       - if: always()
         run: docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml logs --no-color > compose.log
       - if: always()

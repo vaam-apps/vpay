@@ -26,7 +26,7 @@ session was created, whatever happened in between.
 | | Hosted | Embedded |
 |---|---|---|
 | What the merchant's server gets back | a `url` | a `client_secret` |
-| What the merchant does with it | redirects the payer to it | hands it to `@vpay/stripe-js`'s `initEmbeddedCheckout`, which frames the page |
+| What the merchant does with it | redirects the payer to it | hands it to `@vaam-apps/vpay-stripe-js`'s `initEmbeddedCheckout`, which frames the page |
 | The URL a browser loads | `{checkout.public_base_url}/c/{cs_id}?key={pk}#{client_secret}` | `{checkout.public_base_url}/e/{cs_id}?key={pk}#{client_secret}` |
 | `Content-Security-Policy` on that page | `frame-ancestors 'none'` | `frame-ancestors <the merchant's `checkout_origins`>` |
 | Required on create | `success_url` **and** `cancel_url` | `return_url` |

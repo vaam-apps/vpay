@@ -15,7 +15,7 @@
  */
 import Stripe from "stripe";
 
-import { createStripeAuthenticator } from "@vpay/sdk/stripe";
+import { createStripeAuthenticator } from "@vaam-apps/vpay-sdk/stripe";
 
 import { readCompatEnv } from "./env.js";
 
@@ -100,7 +100,7 @@ export function stripeClient(
  *
  * Deliberately a *well-formed request with a bad credential* rather than a
  * broken handshake: a handshake that rejects never settles through
- * stripe-node (a defect `@vpay/sdk`'s README documents and pins), so it is
+ * stripe-node (a defect `@vaam-apps/vpay-sdk`'s README documents and pins), so it is
  * not a thing a conformance suite can await. What a merchant with an expired
  * or revoked credential actually meets is this — a `401` from `/v1` — and
  * that is what the case asserts.

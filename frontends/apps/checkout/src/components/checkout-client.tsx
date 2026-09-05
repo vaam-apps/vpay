@@ -3,13 +3,13 @@
  *
  * Everything that needs a browser lives here and nowhere else: reading the
  * fragment, resolving the framer, opening the `postMessage` channel,
- * building the `@vpay/stripe-js` client, and the auto-forward countdown.
+ * building the `@vaam-apps/vpay-stripe-js` client, and the auto-forward countdown.
  * The decisions it makes are all imported — `decideEntry`, `reduce`,
  * `forwardTarget` — so this file is wiring, not policy.
  */
 'use client';
 
-import { loadStripe, type Stripe } from '@vpay/stripe-js';
+import { loadStripe, type Stripe } from '@vaam-apps/vpay-stripe-js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { pickLocale, translator, type Locale } from '../i18n/index';

@@ -45,7 +45,7 @@ function buyOnVpaysPage(): void {
   cy.get('[data-testid="to-checkout"]').click();
   cy.get('[data-testid="email"]').type("payer@example.test");
   // The shop's server now creates the PaymentIntent and the hosted Checkout
-  // Session through `@vpay/sdk` and answers with `session.url`; the browser
+  // Session through `@vaam-apps/vpay-sdk` and answers with `session.url`; the browser
   // performs a top-level navigation to vpay's origin.
   cy.get('[data-testid="pay-hosted"]').click();
 }
@@ -74,7 +74,7 @@ describe("the shop, paid on vpay's hosted page", () => {
         cy.get('button[type="submit"]').click();
 
         // `waiting` is the page polling `/v1/browser/payment_intents/{id}`
-        // through `@vpay/stripe-js`. What moves the intent underneath it is
+        // through `@vaam-apps/vpay-stripe-js`. What moves the intent underneath it is
         // `vpay-worker` polling MTN's stub — nothing in this spec pushes the
         // status forward.
         cy.get('[data-screen="waiting"]', { timeout: 60_000 }).should("exist");

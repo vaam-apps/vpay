@@ -48,7 +48,7 @@ CREATE TABLE checkout_sessions (
     livemode BOOLEAN NOT NULL,
     -- `hosted` (vpay answers a `url` to redirect the payer to) or `embedded`
     -- (vpay answers a `client_secret` the merchant hands to
-    -- `@vpay/stripe-js`, which mounts vpay's page in an iframe).
+    -- `@vaam-apps/vpay-stripe-js`, which mounts vpay's page in an iframe).
     ui_mode TEXT NOT NULL,
     -- D10's minimal lifecycle. `open` -> `complete` when the intent reaches
     -- `succeeded`; `open` -> `expired` on the 24-hour horizon, on an explicit

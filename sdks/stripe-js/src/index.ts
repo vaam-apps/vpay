@@ -1,5 +1,5 @@
 /**
- * `@vpay/stripe-js` — a Stripe.js-shaped browser client for vpay's payer
+ * `@vaam-apps/vpay-stripe-js` — a Stripe.js-shaped browser client for vpay's payer
  * surface.
  *
  * Drop-in for the *payment-intent* half of Stripe.js, plus vpay's own

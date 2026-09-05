@@ -10,7 +10,7 @@
  * procedures and route handlers.
  */
 import { readFileSync } from "node:fs";
-import { VpayClient } from "@vpay/sdk";
+import { VpayClient } from "@vaam-apps/vpay-sdk";
 import { shopConfig, type ShopConfig } from "./config";
 
 /** Builds a client for an explicit config — the form the tests use. */

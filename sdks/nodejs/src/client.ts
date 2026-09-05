@@ -66,7 +66,7 @@ export class VpayClient {
 
   constructor(options: VpayClientOptions) {
     // Validation, defaulting and the `TokenManager` itself live in
-    // `resolveMerchantAuth`, shared with `@vpay/sdk/stripe`'s authenticator:
+    // `resolveMerchantAuth`, shared with `@vaam-apps/vpay-sdk/stripe`'s authenticator:
     // both entry points must mint the same assertion against the same
     // endpoint with the same defaults, and one copy is how that stays true.
     const auth = resolveMerchantAuth(options);

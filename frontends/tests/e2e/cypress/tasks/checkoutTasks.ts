@@ -1,6 +1,6 @@
 /**
  * Node-side (Cypress `setupNodeEvents`) helper for `checkout.cy.ts`: mints a
- * real PaymentIntent through `@vpay/sdk` against the demo stack, the same
+ * real PaymentIntent through `@vaam-apps/vpay-sdk` against the demo stack, the same
  * way `examples/checkout-browser/mint.mjs` does for a human running the
  * example by hand.
  *
@@ -15,7 +15,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { VpayClient } from "@vpay/sdk";
+import { VpayClient } from "@vaam-apps/vpay-sdk";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // frontends/tests/e2e/cypress/tasks -> repo root is four levels up.
@@ -82,7 +82,7 @@ export async function mintCheckoutPaymentIntent(): Promise<MintedCheckout> {
     },
   );
 
-  // `@vpay/sdk`'s `PaymentIntent` type (sdks/nodejs/src/types.ts) declares
+  // `@vaam-apps/vpay-sdk`'s `PaymentIntent` type (sdks/nodejs/src/types.ts) declares
   // `client_secret?: string`, matching the server's `create()` response
   // (migration 0026, `vpay_api::model::PaymentIntentWithSecret`, decision
   // D2) — a typed check, no cast needed.

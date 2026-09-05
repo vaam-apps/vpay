@@ -1,5 +1,5 @@
 /**
- * Error taxonomy for `@vpay/sdk`, per docs/flows/merchant-auth.md's
+ * Error taxonomy for `@vaam-apps/vpay-sdk`, per docs/flows/merchant-auth.md's
  * "Errors" section and the token-endpoint error shape it documents.
  *
  * Every error extends {@link VpayError} so callers can `catch (err) { if
@@ -99,7 +99,7 @@ export class VpayTransportError extends VpayError {
  *
  * Almost always at construction (a missing `clientId`, an unreadable
  * `privateKey`, an `assertionLifetimeSeconds` outside the OP's `1..=300`).
- * The one exception is `@vpay/sdk/stripe`'s host binding: an authenticator
+ * The one exception is `@vaam-apps/vpay-sdk/stripe`'s host binding: an authenticator
  * asked to sign a request addressed somewhere other than its `baseUrl`
  * throws this *per request*, because that is when the destination becomes
  * knowable. Still before anything is sent — no token is minted and no

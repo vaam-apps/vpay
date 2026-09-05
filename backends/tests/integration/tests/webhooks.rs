@@ -32,7 +32,7 @@
 //! # Signature parity is proved twice, in two languages
 //!
 //! The header vpay emits is fed to `vpay_sdk::webhooks::verify_at` (the Rust
-//! SDK a merchant installs) and, in a subprocess, to `@vpay/sdk`'s
+//! SDK a merchant installs) and, in a subprocess, to `@vaam-apps/vpay-sdk`'s
 //! `verifyWebhook` (the Node one). The two verifiers have different parse
 //! paths — Node's `t` is a regex-checked string, Rust's is a checked
 //! `i64` — so the Rust test alone cannot prove Node's. The Node case
@@ -750,7 +750,7 @@ async fn the_delivered_signature_verifies_with_the_shipping_rust_sdk() {
 ///
 /// # Why this cannot be a fixture
 ///
-/// Feeding `@vpay/sdk` its own test vectors would prove the Node SDK agrees
+/// Feeding `@vaam-apps/vpay-sdk` its own test vectors would prove the Node SDK agrees
 /// with itself. What has to be proved is that the bytes *this server* emits
 /// are accepted there — the two verifiers parse `t` differently (Node:
 /// `/^\d+$/` over the literal text; Rust: a checked `i64`), and only a real
@@ -1386,20 +1386,20 @@ fn node_verifier_available() -> Result<(), String> {
         other => Err(if required {
             format!(
                 "VPAY_REQUIRE_NODE=1 and `node` is not usable ({other:?}). This job is the \
-                 evidence that the header vpay emits is accepted by @vpay/sdk; without node \
+                 evidence that the header vpay emits is accepted by @vaam-apps/vpay-sdk; without node \
                  there is no such evidence."
             )
         } else {
             format!(
                 "`node` is not on PATH ({other:?}). This test proves cross-language webhook \
                  signature parity and cannot be skipped: install Node (.nvmrc pins the \
-                 version) and run `pnpm --filter @vpay/sdk build`."
+                 version) and run `pnpm --filter @vaam-apps/vpay-sdk build`."
             )
         }),
     }
 }
 
-/// Verifies `body`/`signature` with the built `@vpay/sdk`, in a subprocess.
+/// Verifies `body`/`signature` with the built `@vaam-apps/vpay-sdk`, in a subprocess.
 ///
 /// Returns the parsed event on success, or the verifier's own stderr on
 /// failure — which is what the negative case asserts against.
@@ -1418,19 +1418,19 @@ fn verify_with_node(body: &[u8], signature: &str, secret: &str) -> Result<Value,
         // job before nextest, and a developer running this suite for the
         // first time should not have to know that.
         let built = Command::new("pnpm")
-            .args(["--filter", "@vpay/sdk", "build"])
+            .args(["--filter", "@vaam-apps/vpay-sdk", "build"])
             .current_dir(&root)
             .output()
             .map_err(|error| {
                 format!(
-                    "sdks/nodejs/dist is absent and `pnpm --filter @vpay/sdk build` could not \
+                    "sdks/nodejs/dist is absent and `pnpm --filter @vaam-apps/vpay-sdk build` could not \
                      run ({error}). CI builds it in the `rust` job before nextest; run it by \
                      hand, or `just build-sdk-node`."
                 )
             })?;
         if !built.status.success() {
             return Err(format!(
-                "`pnpm --filter @vpay/sdk build` failed:\n{}",
+                "`pnpm --filter @vaam-apps/vpay-sdk build` failed:\n{}",
                 String::from_utf8_lossy(&built.stderr)
             ));
         }
@@ -1450,7 +1450,7 @@ fn verify_with_node(body: &[u8], signature: &str, secret: &str) -> Result<Value,
     // parse-and-reserialise is the single most common way a merchant breaks
     // their own verification, and a test that did it would hide the case.
     //
-    // A dynamic `import()` rather than `require`: `@vpay/sdk` is
+    // A dynamic `import()` rather than `require`: `@vaam-apps/vpay-sdk` is
     // `"type": "module"`, so its `dist/` is ESM and `require` of it throws
     // `ERR_REQUIRE_ESM` — which would fail this test for a module-format
     // reason and read exactly like a signature failure. `pathToFileURL`

@@ -930,7 +930,7 @@ pub fn router(deps: RouterDeps) -> Router {
                 // Exactly what `BROWSER_ROUTES` answers, plus the preflight
                 // itself.
                 .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-                // The only header `@vpay/stripe-js` sets. Notably **not**
+                // The only header `@vaam-apps/vpay-stripe-js` sets. Notably **not**
                 // `Idempotency-Key` or `Authorization`: allowing either would
                 // invite a browser to send one, and sending one is what turns
                 // a simple request into a preflighted one (§0 S4).
