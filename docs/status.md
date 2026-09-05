@@ -2295,7 +2295,22 @@ advisories ok, bans ok, licenses ok, sources ok
 
 1277 is 1272 (the section below) plus `vpay_db::sql_audit`'s five.
 
-**Re-measured 2026-09-05 after the sabotage review of this branch: 1278.**
+**Re-measured 2026-09-05 after the sabotage review of this branch, in full:**
+
+```
+verify: ok — the ten gates above passed; the verify-docs report is advisory
+    Starting 1278 tests across 41 binaries
+     Summary [741.013s] 1278 tests run: 1278 passed, 0 skipped
+verify-ignored: 0 ignored (expected 0), 41 test binaries (expected 41), 1278 total (minimum 1080)
+advisories ok, bans ok, licenses ok, sources ok
+JUST_CI_EXIT=0
+```
+
+`just test-doc`: **90 passed, 0 failed, 1 ignored**, unchanged. Web: vitest
+across 8 packages, all passing. Image: `docker buildx build -f
+backends/Dockerfile --target server .` on a review-owned builder (removed
+after), `--version` prints `vpay-server 0.1.0`, **16 MB** — the same figure
+the implementer measured. **1278, not 1277:**
 The extra case is `vpay_db::sql_audit`'s
 `a_positional_capture_is_reported_and_is_neither_a_constant_nor_allowed`, and
 the reason it exists is a finding rather than an addition: as first written,

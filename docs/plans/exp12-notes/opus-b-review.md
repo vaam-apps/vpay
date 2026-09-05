@@ -152,8 +152,39 @@ reason for declining it is sound.
 
 ## 5. The gate, re-run in full after the fixes
 
-See §"The gate" in `docs/status.md` for the numbers, which are re-measured
-there rather than duplicated here.
+`just ci`, end to end, on this machine, after all four remediation commits:
+
+```
+fmt-check                      cargo fmt --all -- --check          (silent)
+clippy                         --workspace --all-targets -D warnings (clean)
+verify                         ok — the ten gates
+test-rust    Starting 1278 tests across 41 binaries
+             Summary [741.013s] 1278 tests run: 1278 passed, 0 skipped
+test-doc                       90 passed, 0 failed, 1 ignored
+verify-ignored                 0 ignored (expected 0), 41 test binaries
+                               (expected 41), 1278 total (minimum 1080)
+lint-web / test-web            8 packages, all passing
+deny                           advisories ok, bans ok, licenses ok, sources ok
+JUST_CI_EXIT=0
+```
+
+The one ignored doctest is `sdks/rust`'s README block and is pre-existing.
+1277 → 1278 is F1's regression test, in the same binary, so `expected_suites`
+stays 41.
+
+Named tests, run again on their own after the fixes —
+`merchant_token_flow`, `postgres_smoke`, `worker_kill9`, `worker_recovery`,
+every `idempot*`, `one_charge_per_intent`, every `claim` case,
+`refusing_stores` and `sql_audit`:
+
+```
+    Summary [176.467s] 105 tests run: 105 passed, 1173 skipped
+```
+
+Image: `--target server` on a review-owned buildx builder (`vpay-exp12b-opus-review`,
+removed afterwards; the shared default builder was not touched),
+`docker run --rm … --version` prints `vpay-server 0.1.0`, **16 MB** — the same
+number the implementer reported, confirmed independently.
 
 ## 6. Reserved for the maintainer
 
