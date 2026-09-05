@@ -1825,6 +1825,42 @@ mod tests {
         assert_eq!(fee_of(Some(250)), json!(250));
     }
 
+    /// **`amount` is the payer's money and is never net of `fee`.**
+    ///
+    /// `docs/flows/merchant-auth.md` says so, and the issue's first invariant
+    /// is "the buyer's refund never nets a fee" — the reason `fee` is a
+    /// second field rather than an adjustment to the first. That is a
+    /// property of the *renderer*, and until this case existed nothing held
+    /// it: `amount: row.amount - row.fee.unwrap_or(0)` passed all 244 of
+    /// this crate's tests (measured 2026-09-05), because every other refund
+    /// case that asserts an amount uses an unreported fee, and the two that
+    /// report one read only the `fee` key back.
+    ///
+    /// A buyer who is refunded 2,000 and shown 1,750 has been charged for a
+    /// movement they did not ask for; the fee is the *merchant's* settlement
+    /// line, which is the whole boundary the issue draws.
+    #[test]
+    fn a_reported_fee_never_moves_the_payers_amount() {
+        let amount_of = |fee| {
+            serde_json::to_value(
+                RefundObject::try_from(&refund_row(fee)).expect("a well-formed row renders"),
+            )
+            .expect("serialises")
+            .get("amount")
+            .cloned()
+            .expect("`amount` is always present")
+        };
+
+        // The row's own amount, whatever the rail charged to move it.
+        for fee in [None, Some(0), Some(250), Some(2_000), Some(9_999)] {
+            assert_eq!(
+                amount_of(fee),
+                json!(2_000),
+                "a fee of {fee:?} changed the amount the payer gets back"
+            );
+        }
+    }
+
     /// The contract's point, as for the payment intent: a merchant's own
     /// shipping client decodes what this renders, `fee` included.
     #[test]
