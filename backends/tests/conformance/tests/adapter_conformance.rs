@@ -306,6 +306,17 @@ const PERSONAL_DATA_THE_RAIL_SENDS: [&str; 8] = [
 /// reach a log.
 const PII_HOLDER_NAME: &str = "Amina Nkeng";
 
+/// The same name as the **two halves the rail sends it in**, which is the
+/// only form in which it can actually leak.
+///
+/// Asserting on [`PII_HOLDER_NAME`] alone was a hole, found by mutation on
+/// 2026-09-06: a `tracing::debug!(?parsed)` of the adapter's wire type
+/// printed `given_name: Some("Amina"), family_name: Some("Nkeng")` — the
+/// name, in an operator's log — and the joined string it greps for never
+/// appeared, so the case passed. The adapter joins the halves; MTN never
+/// sends them joined, so a leak is a leak of the halves.
+const PII_HOLDER_NAME_HALVES: [&str; 2] = ["Amina", "Nkeng"];
+
 /// Where the core says this charge's payer goes when a rail's page is done
 /// with them — the merchant's own site here, which is the case that closes
 /// browser-checkout's D4.
@@ -1635,6 +1646,18 @@ async fn an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing
          docs/flows/account-holder-lookup.md forbids outright:\n{logged}",
         rail.adapter.code(),
     );
+    // **Each half on its own**, because the joined form is one the rail
+    // never sends and a leak therefore never takes. See
+    // `PII_HOLDER_NAME_HALVES` for the mutation that got past the assertion
+    // above.
+    for half in PII_HOLDER_NAME_HALVES {
+        assert!(
+            !logged.contains(half),
+            "{}: `{half}` — half of the holder's name, which is the form the rail sends \
+             it in — reached a log line:\n{logged}",
+            rail.adapter.code(),
+        );
+    }
     assert!(
         !logged.contains(MSISDN_FULL_OF_PII),
         "{}: the payer's number reached a log line unmasked; only `/v1`'s masked form may \
