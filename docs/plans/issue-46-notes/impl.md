@@ -7,8 +7,20 @@ was deliberately not done.
 
 ## 1. The route truth, established rather than repeated
 
-The issue and PR #45 disagreed about whether `/v1/refunds` exists. Read from
-the source of each claim, on this branch, at base `65a5952`:
+Issue #46 says `/v1/refunds` "is not routed at all". The brief this work came
+from set that against a claim it attributed to a *pull request* numbered 45.
+
+**That attribution does not resolve, and is recorded rather than quietly
+dropped.** `cargo xtask verify-citations`, run on 2026-09-05 with a token,
+answers HTTP 404 for a pull request 45 in `vaam-apps/vpay`; there is none.
+Issue #45 does exist and is open, and says something else entirely —
+*"SDK/API: a refund cannot be polled — `RefundsResource` has only `create()`,
+and `GET /v1/refunds/{id}` is not in the wire contract"*. So the brief's
+source for "the SDKs have `refunds.create`" is not a document that exists. The
+statement itself is true; it was established by reading the SDKs, below, and
+not by trusting either citation.
+
+Read from the source of each claim, on this branch, at base `65a5952`:
 
 | Claim | Source read | Verdict |
 |---|---|---|

@@ -1007,10 +1007,11 @@ pub struct RefundObject {
     /// exist before that changes.
     ///
     /// The key is still always present, `null` and all: this module emits
-    /// every documented key on every object (see the module header), because
-    /// `sdks/nodejs`'s `Refund.fee` is an optional property and an omitted
-    /// key would be indistinguishable from a fee of unknown provenance in a
-    /// client that spreads the object.
+    /// every documented key on every object (see the module header). Both
+    /// SDKs model the field as *optional* so that a vpay predating it still
+    /// decodes, which is exactly why the server must not omit it — an absent
+    /// key would decode without complaint in either client, and a merchant
+    /// would simply never learn the field exists.
     pub fee: Option<i64>,
 }
 
