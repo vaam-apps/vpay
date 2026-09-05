@@ -2156,6 +2156,31 @@ does not show them.) `cargo tree -d` lists **no sqlx version duplicate**; the
 two `sqlx-core v0.9.0 (*)` lines in its output are the same version twice, the
 same shape it prints for `base64 v0.22.1` and `log v0.4.33` on this workspace.
 
+**And it is a gate now, not a sentence** (added 2026-09-05 by the review of
+this branch). `deny.toml`'s `[bans]` denies `sqlx < 0.9` and `sqlx-core
+< 0.9` outright. Until that entry existed, nothing in `just ci` held the
+one-major property: `multiple-versions` is `warn`, so restoring
+`authkestra-op`'s `sqlx-postgres` feature — one word in one manifest —
+resolved 0.8.6 and 0.9.0 side by side with `cargo deny check` still printing
+"bans ok" and every other recipe green. Measured, by doing exactly that:
+`cargo tree -d` then listed `sqlx v0.8.6` and `sqlx v0.9.0`, `sqlx-postgres`
+at both majors, and the whole gate stayed green. With the ban in place the
+same mutation is `error[banned]: crate 'sqlx = 0.8.6' is explicitly banned`
+and `cargo deny check bans` exits 2. Both bounds move together when the
+workspace goes to 0.10, in the same commit as the pin.
+
+**A cost the bump does carry, recorded rather than left for someone to find
+in a `cargo deny` log:** sqlx 0.9 brings the RustCrypto 0.11 generation
+(`sha2` 0.11.0, `digest` 0.11.3, `hmac` 0.13.0, `hkdf` 0.13.0,
+`crypto-common` 0.2.2, `block-buffer` 0.12.1) alongside the 0.10 generation
+the rest of the graph still uses, so `cargo deny check bans` warns about six
+duplicate crates it did not warn about before — fourteen in total now, eight
+before. Two independent SHA-2/HMAC implementations compile into
+`vpay-server`. `multiple-versions` stays `warn`, deliberately: the duplication
+is upstream's to resolve as `jsonwebtoken`/`rustls`/`sqlx` converge, and
+turning it into an error would gate this repo on other people's release
+schedules. Net package count went **down**, 477 -> 469.
+
 **Why at all.** `cratestack-sqlx 0.11.1` pins `sqlx-core =0.9.0` and
 `sqlx-postgres =0.9.0`. Under the old pin, a crate depending on both
 CrateStack and `vpay-db` resolved two majors — two `sqlx::Transaction` types
