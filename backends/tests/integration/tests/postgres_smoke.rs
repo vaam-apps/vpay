@@ -1100,9 +1100,21 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
     );
 
     // None of the ten reaches the report.
+    //
+    // Matched as the shape the report renders a CHECK in — ``CHECK `name` ``,
+    // from `cratestack-cli` 0.11.1's `src/migrate/drift_report.rs::describe`,
+    // which is the only way an `Op::AddCheck`/`Op::DropCheck` is ever printed
+    // — rather than as a bare substring of the whole report. Detection is
+    // identical and the false-positive class goes away: this repository names
+    // constraints by pattern, so `amount_non_negative` already appears on
+    // three tables and `id_length` on two, and a bare `contains` would trip on
+    // a multi-column CHECK that merely shares a name with a reported
+    // single-column one on some other table. It would trip red, not green —
+    // but with a message accusing the tool of a change it had not made.
     for (table, name) in &observed {
+        let rendered = format!("CHECK `{name}`");
         assert!(
-            !stdout.contains(name),
+            !stdout.contains(&rendered),
             "`{table}.{name}` is a multi-column CHECK that `migrate baseline` did not mention on \
              2026-09-05, at cratestack 0.11.1. It does now. That is a change in what the tool \
              can see — very likely the cross-column CHECK support this repository has been \
