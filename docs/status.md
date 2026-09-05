@@ -269,11 +269,13 @@ correction.
   repository that reads `schemas/vpay.cstack` at all — the file is excluded
   from the build graph, so no compiler has ever looked at it. Until this
   landed, the evidence that it parses was a transcript someone pasted into
-  the "CrateStack" section below after running the CLI by hand; the grammar
-  moved four times in five weeks (0.7.8 → 0.7.10 → 0.10.1 → 0.11.1) and
-  nothing would have noticed the file going stale. **A missing binary is a
-  red gate**, printing the install command rather than "skipped" — same rule
-  as `verify-citations` without `gh`. **A vacuous green is a red gate too**: an
+  the "CrateStack" section below after running the CLI by hand; crates.io
+  published **29 `cratestack-cli` releases between 0.7.8 (2026-08-08) and the
+  pinned 0.11.1 (2026-09-03)** — 26 days, not the "four times in five weeks"
+  an earlier draft of this bullet said — and nothing would have noticed the
+  file going stale across any of them. **A missing binary is a red gate**,
+  printing the install command rather than "skipped" — same rule as
+  `verify-citations` without `gh`. **A vacuous green is a red gate too**: an
   emptied schema, or one with no `datasource` block, gets `schema OK` and
   exit 0 out of the CLI, so the recipe asserts a `datasource` block and a
   floor of 12 `model`/`enum` declarations before it believes the result. See
