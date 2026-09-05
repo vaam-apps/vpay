@@ -259,8 +259,9 @@ The Rust image is built in four stages:
 | `builder` (cook) | `cargo chef cook --profile dist --target <host triple> -p vpay-server -p vpay-worker-bin` — compiles the ~317-package dependency graph into `target/` | `recipe.json` changes (a manifest or the lockfile moved), or `.cargo/config.toml` changes |
 | `builder` (build) | `ARG VPAY_GIT_SHA`, copy the real source, `cargo build`, `cp` to `/out` | any source edit, or a different `VPAY_GIT_SHA` |
 
-Three properties this shape depends on, each of which a plausible-looking
-edit destroys silently — the build stays *correct*, it just stops caching:
+Three properties this shape depends on. Two of the ways to break them are
+silent — the build stays *correct*, it just stops caching — and one is loud;
+each entry says which, because they were established by mutation:
 
 1. **The cook's flags must match the build's.** Same `--profile dist`, same
    `--target` (read from `rustc -vV`, never hardcoded — see the Dockerfile's
@@ -276,8 +277,14 @@ edit destroys silently — the build stays *correct*, it just stops caching:
 2. **`ARG VPAY_GIT_SHA` must stay below the cook.** `release.yml` passes a
    different `github.sha` on every push; an `ARG`/`ENV` pair above the cook
    invalidates the dependency layer on every release build.
-3. **`planner` and `builder` must copy the same directories.** The recipe has
-   to describe the workspace the next stage compiles.
+3. **`planner` and `builder` must copy the same workspace directories.** The
+   recipe has to describe the workspace the next stage compiles. Loud:
+   dropping `.xtask`/`sdks/rust` from the planner fails `cargo chef prepare`
+   in a second (`failed to read /build/sdks/rust/Cargo.toml`) rather than
+   emitting a shrunken recipe. The one deliberate difference is `.cargo`,
+   which only `builder` copies — so the recipe's `config_file` is `null` and
+   `.cargo/config.toml` reaches the cook through that stage's own `COPY`,
+   which is also what makes a change to it invalidate the cook.
 
 Measured on the authoring host on 2026-09-05, `linux/amd64`, on a dedicated
 `docker-container` buildx builder pruned before the cold run — see
@@ -310,8 +317,13 @@ rebuild with rule 2 violated, and 1 s for a change to a `docs/` file, which
 cold build pays about 45 s; every warm one saves about 150 s.
 
 The runtime images are unchanged: `vpay-server` is 15.9 MB before and after,
-two layers both times, and `docker export` of it lists exactly `config/` and
-`/vpay-server`. cargo-chef is in the builder only.
+two layers both times, the `config/` layer the same digest in both, and
+`docker export` of it lists `config/` and `/vpay-server` and nothing else
+this build put there (the tar also carries the `/dev`, `/etc`, `/proc`,
+`/sys` and `.dockerenv` stubs the runtime creates for any container, which
+are not layers). cargo-chef is in the builder only. Re-verified in review
+against an image built from the pre-cargo-chef Dockerfile as well as this
+one, and both `scratch` images answer `--version` with exit 0.
 
 **The saving is bounded by `[profile.dist]`, and the number above is the
 honest one.** `dist` inherits `release`: `lto = "fat"`, `codegen-units = 1`.
