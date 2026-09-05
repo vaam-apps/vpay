@@ -10,16 +10,21 @@ writing code.
 These are not style preferences. Both are machine-enforced by `just verify`, and
 CI runs it.
 
-`just verify` is **five** gates and one report. The gates
+`just verify` is **seven** gates and one report. The gates
 (`verify-no-mocks`, `verify-status`, `verify-errors`, `verify-sdk-parity`,
-`verify-links`) fail the build. The report (`verify-docs`) never does — it
-prints doc-comment volume per crate, the production functions of 80 lines or
-more, every ```` ```ignore ```` doctest fence and every `#[allow]`/`#[expect]`,
-and nothing more. Read it; it is not a gate you can pass or fail.
+`verify-links`, `verify-npm-scope`, `check-schema`) fail the build. The
+report (`verify-docs`) never does — it prints doc-comment volume per crate,
+the production functions of 80 lines or more, every ```` ```ignore ````
+doctest fence and every `#[allow]`/`#[expect]`, and nothing more. Read it; it is not a gate you can pass or fail.
 
 This paragraph said "three gates" until 2026-09-05, and had been wrong since
 `verify-sdk-parity` landed on 2026-09-03; `verify-links` made it wrong by two.
-There is a sixth check, `cargo xtask verify-citations` (`just
+It then said "five" for the rest of that day, because `verify-npm-scope` and
+`check-schema` both landed on 2026-09-05 on branches that did not see each
+other — the count is corrected here, where the two met. Six of the seven are
+`cargo xtask` commands; `check-schema` is a justfile recipe, because it shells
+out to the CrateStack CLI, a binary this workspace does not build.
+There is an eighth check, `cargo xtask verify-citations` (`just
 docs-check-citations`), which is a gate but **not** part of `just verify` or
 `just ci`: it needs the network and a GitHub token. Run it when you add or
 edit a document that cites a CI run id, a pull request or an issue.
