@@ -39,7 +39,10 @@
 # the maintainer chose to move the pin rather than pin CrateStack back to
 # 0.8.15. The Alpine base deliberately did NOT move with it:
 # `rust:1.98.0-alpine3.22` exists on Docker Hub (`docker manifest inspect`,
-# checked 2026-09-05, six architecture entries, same as the 1.95.0 tag), so
+# checked 2026-09-05: six manifest entries, of which THREE are architectures —
+# linux/amd64, linux/arm64/v8, linux/ppc64le — and three are `unknown/unknown`
+# attestation manifests; the 1.95.0 tag carries exactly the same six. The
+# arm64 entry is the one `release.yml` needs), so
 # this bump changes the compiler and nothing else about the build
 # environment. `rust:1.98.0-alpine3.23` also exists and was NOT taken: an
 # Alpine major bump changes musl and gcc under a static build and is its own

@@ -2050,8 +2050,12 @@ version** — every Rust job in `ci.yml` and `docs.yml` already `sed`s
 `channel` out of `rust-toolchain.toml`, so nothing there had to change and
 the extraction was re-run by hand to confirm it yields `1.98.0`. The **Alpine
 base did not move**: `rust:1.98.0-alpine3.22` exists on Docker Hub
-(`docker manifest inspect`, six architecture entries, the same as the 1.95.0
-tag), so this changes the compiler and nothing else about the build
+(`docker manifest inspect`: six manifest entries, of which **three are
+architectures** — `linux/amd64`, `linux/arm64/v8`, `linux/ppc64le` — and three
+are `unknown/unknown` attestation manifests; the 1.95.0 tag carries exactly
+the same six, and the arm64 one is what `release.yml` needs. This page and
+the Dockerfile read "six architecture entries" until the review pass of the
+same day counted them), so this changes the compiler and nothing else about the build
 environment. `rust:1.98.0-alpine3.23` also exists and was **not** taken — an
 Alpine major bump changes musl and gcc under a static build and deserves its
 own evidence rather than riding along on a compiler bump. `Cargo.toml`'s
