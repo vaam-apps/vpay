@@ -269,6 +269,16 @@ The ten new tests add no test *binary* (they are in `.xtask`, which already
 had one), so `expected_suites` stays 42; `min_tests` is a floor and 1230
 clears it, so neither pin in `justfile` moved.
 
+A **third** run, on the exact final `HEAD` (this file's own commit included)
+and with the pinned CrateStack CLI on `PATH` rather than the one another
+process left there, also exited **0**: `verify: ok — the eight gates above
+passed`, `check-schema: ok — schemas/vpay.cstack type-checks under cratestack
+0.11.1`, `Summary [794.415s] 1230 tests run: 1230 passed, 0 skipped`,
+`verify-ignored: 0 ignored (expected 0), 42 test binaries (expected 42), 1230
+total (minimum 1080)`, `advisories ok, bans ok, licenses ok, sources ok`. That
+is the run that covers the tree as delivered; the second one covers everything
+in it except this file's final section.
+
 ## 7. Docker, and one piece of shared-host interference
 
 Built from the final tree on a dedicated `docker-container` builder
