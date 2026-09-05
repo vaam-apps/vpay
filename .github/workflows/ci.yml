@@ -92,9 +92,10 @@ jobs:
       # every web lint and test, and all five gates above it.
       - name: verify-npm-scope
         run: cargo xtask verify-npm-scope
-      # New 2026-09-05, and the seventh gate `just verify` runs. Three steps
+      # New 2026-09-05, and the seventh gate `just verify` runs. Four steps
       # rather than one because each is a different failure to report: `just`
-      # missing, the CrateStack CLI missing, the schema not parsing.
+      # missing, the version pin unreadable, the CrateStack CLI missing, the
+      # schema not parsing.
       #
       # `just` is pinned to a full commit SHA rather than the `@v2` the `rust`
       # and `e2e` jobs use, matching what `web` and `deploy` do — this is the

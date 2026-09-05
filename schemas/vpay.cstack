@@ -1,54 +1,54 @@
 // vpay — CrateStack schema
 //
 // ┌──────────────────────────────────────────────────────────────────────────┐
-// │ STATUS: SYNTAX VERIFIED, CONTENT IS A DESIGN SKETCH — NOT WIRED IN        │
+// │ STATUS: SYNTAX VERIFIED, CONTENT IS A DESIGN SKETCH — NOT WIRED IN       │
 // │                                                                          │
 // │ The previous version of this file admitted the real .cstack grammar was  │
-// │ unknown and was written in an invented Prisma-like shape. It has been   │
-// │ rewritten against the real grammar, cross-checked field by field        │
-// │ against cratestack-parser's own test suite rather than guessed from an  │
-// │ overview page. (That note used to blame "cratestack.dev/docs 404s       │
-// │ publicly". Corrected 2026-09-05: /docs does 404, but the docs are at    │
-// │ cratestack.dev/getting-started/quickstart, /guides/*, /architecture/*,  │
-// │ /reference/* and /tooling/*.)                                           │
+// │ unknown and was written in an invented Prisma-like shape. It has been    │
+// │ rewritten against the real grammar, cross-checked field by field         │
+// │ against cratestack-parser's own test suite rather than guessed from an   │
+// │ overview page. (That note used to blame "cratestack.dev/docs 404s        │
+// │ publicly". Corrected 2026-09-05: /docs does 404, but the docs are at     │
+// │ cratestack.dev/getting-started/quickstart, /guides/*, /architecture/*,   │
+// │ /reference/* and /tooling/*.)                                            │
 // │                                                                          │
-// │ NOTHING HERE IS A HAND-RUN CLAIM ANY MORE. Since 2026-09-05             │
-// │ `just check-schema` runs                                                │
-// │   $ cratestack check --schema schemas/vpay.cstack                       │
-// │   schema OK: schemas/vpay.cstack                                        │
-// │ as the sixth gate in `just verify`, so `just ci` and CI's `self-checks` │
-// │ job re-verify this file on every run, at the cratestack-cli version     │
-// │ pinned as `cratestack_version` in the justfile — 0.11.1 today. It       │
-// │ passed at 0.10.1, 0.7.10 and 0.7.8 before that, and moving the pin to   │
-// │ 0.11.1 needed no edit here.                                             │
+// │ NOTHING HERE IS A HAND-RUN CLAIM ANY MORE. Since 2026-09-05              │
+// │ `just check-schema` runs                                                 │
+// │   $ cratestack check --schema schemas/vpay.cstack                        │
+// │   schema OK: schemas/vpay.cstack                                         │
+// │ as the sixth gate in `just verify`, so `just ci` and CI's `self-checks`  │
+// │ job re-verify this file on every run, at the cratestack-cli version      │
+// │ pinned as `cratestack_version` in the justfile — 0.11.1 today. It        │
+// │ passed at 0.10.1, 0.7.10 and 0.7.8 before that, and moving the pin to    │
+// │ 0.11.1 needed no edit here.                                              │
 // │                                                                          │
-// │ The 0.10 grammar added block attributes this file does not use (@@sql,  │
-// │ @@embedded_sql, @@server_sql for views; @@paged, @@subscribe, @@audit,  │
-// │ @@soft_delete). 0.11.1 still has no @@check(expr) — no hit for         │
-// │ '@@check' anywhere in cratestack-parser 0.11.1 or cratestack-migrate   │
-// │ 0.11.1, and the latter's convert/checks.rs still promotes a CHECK      │
-// │ only from @db_enforce on a single field — so the GAP notes on          │
-// │ cross-column CHECKs below remain accurate. (KNOWN_ATTRIBUTE_NAMES was  │
-// │ cited here too until 2026-09-05; it is a typo-suggestion table and     │
-// │ lists no 'index' either, so it proves nothing. See docs/status.md.)    │
+// │ The 0.10 grammar added block attributes this file does not use (@@sql,   │
+// │ @@embedded_sql, @@server_sql for views; @@paged, @@subscribe, @@audit,   │
+// │ @@soft_delete). 0.11.1 still has no @@check(expr) — no hit for           │
+// │ '@@check' anywhere in cratestack-parser 0.11.1 or cratestack-migrate     │
+// │ 0.11.1, and the latter's convert/checks.rs still promotes a CHECK        │
+// │ only from @db_enforce on a single field — so the GAP notes on            │
+// │ cross-column CHECKs below remain accurate. (KNOWN_ATTRIBUTE_NAMES was    │
+// │ cited here too until 2026-09-05; it is a typo-suggestion table and       │
+// │ lists no 'index' either, so it proves nothing. See docs/status.md.)      │
 // │                                                                          │
-// │ That proves the file *parses and type-checks* against the real grammar  │
-// │ — every scalar, attribute, relation and enum below was cross-checked    │
-// │ against cratestack-parser's own test suite, not guessed from a public   │
-// │ overview page. It does NOT prove a working migration or a running       │
-// │ server: this file is still EXCLUDED FROM THE BUILD GRAPH. No crate      │
-// │ depends on it, `cratestack migrate diff` has never been run against a   │
-// │ real vpay Postgres, and `docs/status.md` still lists the database       │
-// │ schema itself as not started. Wiring it in is separate future work.     │
+// │ That proves the file *parses and type-checks* against the real grammar   │
+// │ — every scalar, attribute, relation and enum below was cross-checked     │
+// │ against cratestack-parser's own test suite, not guessed from a public    │
+// │ overview page. It does NOT prove a working migration or a running        │
+// │ server: this file is still EXCLUDED FROM THE BUILD GRAPH. No crate       │
+// │ depends on it, `cratestack migrate diff` has never been run against a    │
+// │ real vpay Postgres, and `docs/status.md` still lists the database        │
+// │ schema itself as not started. Wiring it in is separate future work.      │
 // │                                                                          │
-// │ One more thing this rewrite had to learn the hard way: `cratestack      │
-// │ check` rejects column-aligned field declarations (multiple spaces       │
-// │ between a field name and its type) with a confusing "invalid type       │
-// │ reference" error that points at the wrong token entirely. Every field   │
-// │ below is therefore single-spaced, matching the real project's own       │
-// │ example schemas — not a style choice, a parser constraint.              │
+// │ One more thing this rewrite had to learn the hard way: `cratestack       │
+// │ check` rejects column-aligned field declarations (multiple spaces        │
+// │ between a field name and its type) with a confusing "invalid type        │
+// │ reference" error that points at the wrong token entirely. Every field    │
+// │ below is therefore single-spaced, matching the real project's own        │
+// │ example schemas — not a style choice, a parser constraint.               │
 // │                                                                          │
-// │ This file models only what has real, tested Rust types to mirror        │
+// │ This file models only what has real, tested Rust types to mirror         │
 // │ (vpay-core::state, vpay-core::failure, vpay-provider::Capabilities,      │
 // │ vpay-ledger). It deliberately does NOT invent shapes for entities that   │
 // │ exist only as prose in docs/flows/*.md with zero backing Rust type —     │
