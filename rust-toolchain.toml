@@ -3,9 +3,12 @@
 #   - `channel` below (rustup, developers, `just`),
 #   - `.github/workflows/ci.yml`, which reads `channel` from this file,
 #   - `backends/Dockerfile`'s `FROM rust:<version>-alpine...` builder image,
-#     which cannot read this file and is pinned by hand. Since 2026-09-05 it
-#     is named TWICE there — the `chef` stage and the `builder` stage that
-#     is `FROM chef` — and the two must stay identical.
+#     which cannot read this file and is pinned by hand. It is named there
+#     exactly ONCE, by the `chef` stage: `planner` and `builder` are both
+#     `FROM chef`, so one literal covers all three stages and they cannot
+#     drift apart. (This comment said "named TWICE... and the two must stay
+#     identical" between the cargo-chef change and 2026-09-05; that was wrong
+#     — `FROM chef` names no version.)
 # Until 2026-09-02 this said `channel = "stable"`, so a developer, CI and the
 # image could all be on different compilers with nothing noticing.
 #
