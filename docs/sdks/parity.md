@@ -82,8 +82,12 @@ The `refund.fee` row is at parity on the *capability* and not on the shape,
 for the same reason the note below records about `KnownEventType`: Rust models
 the field as `Option<i64>` with `#[serde(default)]`, which collapses an absent
 key and an explicit `null` into `None`, while TypeScript models it as
-`fee?: number | null` under `exactOptionalPropertyTypes`, which keeps the two
-apart. Both preserve the distinction that carries meaning and that the field
+`fee?: number | null`, whose read type is exactly `number | null | undefined`,
+which keeps the two apart. **It is the `?` that does that, not this repo's
+`exactOptionalPropertyTypes`** — measured 2026-09-05 with the workspace's own
+`tsc`, the read type is identical with the flag and without it; what the flag
+adds is that `{ fee: undefined }` stops being a legal way to write "absent".
+Both preserve the distinction that carries meaning and that the field
 exists for — **unknown versus a measured zero** — and each cell's tests assert
 exactly that. The asymmetry is deliberate: `Option<Option<i64>>` would push a
 state with no producer (vpay always emits every documented key) into every

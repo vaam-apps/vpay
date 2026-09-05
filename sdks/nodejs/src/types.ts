@@ -109,12 +109,23 @@ export interface Refund {
    * a measured zero, and substituting it for either is how an invented number
    * reaches a merchant's settlement statement.
    *
-   * Optional rather than `number | null` on purpose, and this package's
-   * `exactOptionalPropertyTypes` is what makes the choice meaningful: it
-   * keeps "absent" a state the type system forces a caller to consider,
-   * rather than one that silently reads as `null`. Narrow with
-   * `typeof refund.fee === "number"`; `refund.fee ?? 0` and `refund.fee || 0`
-   * are both the bug.
+   * Optional **and** `| null` on purpose: it is the `?` that puts
+   * `undefined` in the read type, so `Refund["fee"]` is exactly
+   * `number | null | undefined` and all three answers survive. That is
+   * pinned by a type-level assertion — see `types fee so that absent, null
+   * and a measured zero stay three different answers` in `types.test.ts`,
+   * which fails if either the `?` or the `| null` is dropped.
+   *
+   * This package's `exactOptionalPropertyTypes` is **not** what creates the
+   * distinction, although an earlier version of this comment said it was.
+   * Measured 2026-09-05 with the repo's own `tsc`: the read type is
+   * `number | null | undefined` with the flag and without it, and an absent
+   * property never reads as `null` in either. What the flag actually adds is
+   * narrower — `{ fee: undefined }` stops being a legal way to spell
+   * "absent".
+   *
+   * Narrow with `typeof refund.fee === "number"`; `refund.fee ?? 0` and
+   * `refund.fee || 0` are both the bug.
    *
    * **It is `null` from every vpay deployment today.** Neither rail reports a
    * refund fee — Orange has no refund API and MTN refunds are the

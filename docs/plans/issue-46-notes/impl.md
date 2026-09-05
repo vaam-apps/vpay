@@ -126,8 +126,14 @@ CHECK for a refund.
 | `0` | `Some(0)` | `0` |
 
 **The asymmetry is deliberate and documented in `docs/sdks/parity.md`.** Rust
-collapses absent and `null`; TypeScript, under this package's
-`exactOptionalPropertyTypes`, keeps them apart. Both preserve the distinction
+collapses absent and `null`; TypeScript keeps them apart.
+
+> **Corrected on review, 2026-09-05 (F3 in [review.md](review.md)).** This
+> paragraph originally credited the TypeScript half to "this package's
+> `exactOptionalPropertyTypes`". Measured with the workspace's own `tsc`, the
+> read type of `fee?: number | null` is `number | null | undefined` with that
+> flag and without it — the `?` is what keeps absent and `null` apart. The
+> flag's contribution is only that `{ fee: undefined }` stops compiling. Both preserve the distinction
 the field exists for — unknown versus a measured zero. `Option<Option<i64>>`
 in Rust would push a state with no producer (vpay emits every documented key
 on every object) into every match a merchant writes; dropping `?` in
