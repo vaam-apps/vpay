@@ -105,7 +105,7 @@ use serde_json::Value;
 use vpay_sdk::{
     CheckoutPaymentStatus, CheckoutSession, CheckoutSessionStatus, CheckoutUiMode, Client,
     ConfirmPaymentIntentParams, CreateCheckoutSessionParams, CreatePaymentIntentParams,
-    Credentials, IntentStatus, NextAction, PaymentIntent, PaymentMethodType, RequestOptions,
+    Credentials, Error, IntentStatus, NextAction, PaymentIntent, PaymentMethodType, RequestOptions,
     RetrieveAccountHolderParams,
 };
 
@@ -1590,22 +1590,49 @@ async fn step_5_checkout_sessions(client: &Client) -> anyhow::Result<()> {
 /// about to send money to belong to the person I think it does", and showing
 /// the same number both paying and having a name is closer to that than two
 /// unrelated fixtures would be.
-const ACCOUNT_HOLDER_CASES: [(&str, &str); 3] = [
+const ACCOUNT_HOLDER_CASES: [(&str, AccountHolderExpectation, &str); 3] = [
     (
         "237600000100",
+        AccountHolderExpectation::Named("David Mbarga"),
         "registered — the rail names its holder, so `verified` is true",
     ),
     (
         "237600000199",
+        AccountHolderExpectation::NoRecord,
         "no record — the rail answered and does not know this number, so `name` is null \
          and `verified` is false. NOT an error: a caller may act on it",
     ),
     (
         "237600000f01",
+        AccountHolderExpectation::Refused,
         "refused before the rail is asked — a hex steering number is not a phone number, \
          and `/v1` says so with a 400 naming `msisdn`",
     ),
 ];
+
+/// What each row of [`ACCOUNT_HOLDER_CASES`] must actually get back.
+///
+/// **Every other step in this program `bail!`s when the answer is not the
+/// one it narrates** — step 3 on anything but a `401`, step 4 on any outcome
+/// but the row's own. Step 6 shipped printing whatever came back and
+/// returning `Ok(())`, which meant a broken route, an unreachable rail or a
+/// rail that had stopped naming holders would all be narrated as three
+/// answers and then summarised as "✔ all six steps behaved as expected".
+/// A walkthrough that cannot fail is a screenshot, not a demonstration, and
+/// this is the type that makes the third answer distinguishable from the
+/// first two failing.
+#[derive(Debug, Clone, Copy)]
+enum AccountHolderExpectation {
+    /// A `200` naming exactly this holder, `verified: true`.
+    Named(&'static str),
+    /// A `200` with a null `name` and `verified: false` — an answer, not a
+    /// failure.
+    NoRecord,
+    /// A `400` from `/v1` naming `msisdn`, before the rail is asked. The one
+    /// row that is *supposed* to be an error, which is why an untyped
+    /// "printed the error" cannot stand in for it.
+    Refused,
+}
 
 // ------------------------------------------------------------------ step 6
 
@@ -1638,6 +1665,8 @@ const ACCOUNT_HOLDER_CASES: [(&str, &str); 3] = [
 /// `backends/tests/integration/tests/account_holders.rs` boots exactly that
 /// deployment and asserts the `502`.
 async fn step_6_account_holders(client: &Client) -> anyhow::Result<()> {
+    const STEP: &str = "step 6 (account-holder lookup)";
+
     println!();
     println!("[6/6] GET /v1/account_holders — whose account is this number? (issue #47)");
     println!(
@@ -1650,7 +1679,7 @@ async fn step_6_account_holders(client: &Client) -> anyhow::Result<()> {
     );
     println!();
 
-    for (msisdn, what) in ACCOUNT_HOLDER_CASES {
+    for (msisdn, expected, what) in ACCOUNT_HOLDER_CASES {
         let outcome = client
             .account_holders()
             .retrieve(RetrieveAccountHolderParams::new(
@@ -1659,23 +1688,58 @@ async fn step_6_account_holders(client: &Client) -> anyhow::Result<()> {
             ))
             .await;
 
-        match outcome {
-            Ok(holder) => {
-                println!(
-                    "      {msisdn}  name={:<14} verified={}",
-                    holder.name.as_deref().unwrap_or("null"),
-                    holder.verified
-                );
+        // Checked, not merely printed. The refusal row is *supposed* to be
+        // an error, and that is exactly why an untyped "an error happened"
+        // cannot stand in for it: it would swallow the other two rows
+        // failing as well.
+        match (&outcome, expected) {
+            (Ok(holder), AccountHolderExpectation::Named(name)) => {
+                if holder.name.as_deref() != Some(name) || !holder.verified {
+                    bail!(
+                        "{STEP}: {msisdn} is registered to {name} in \
+                         wiremock/mtn/mappings/basicuserinfo.json — got name={:?} \
+                         verified={}",
+                        holder.name,
+                        holder.verified,
+                    );
+                }
             }
-            Err(error) => {
-                // Printed, not returned: the third case is *supposed* to
-                // fail, and a demo that treated the refusal as a crash would
-                // be asserting the opposite of what the route promises. A
-                // failure that is genuinely unexpected still shows up here,
-                // in full, which is the honest trade for a program whose job
-                // is to narrate.
-                println!("      {msisdn}  refused: {error}");
+            (Ok(holder), AccountHolderExpectation::NoRecord) => {
+                if holder.name.is_some() || holder.verified {
+                    bail!(
+                        "{STEP}: the rail has no record of {msisdn}, so `name` must be \
+                         null and `verified` false — got name={:?} verified={}",
+                        holder.name,
+                        holder.verified,
+                    );
+                }
             }
+            (Err(Error::Api { status, param, .. }), AccountHolderExpectation::Refused) => {
+                if *status != 400 || param.as_deref() != Some("msisdn") {
+                    bail!(
+                        "{STEP}: {msisdn} is not a Cameroon mobile number, so /v1 must \
+                         answer 400 naming `msisdn` — got HTTP {status} param={param:?}",
+                    );
+                }
+            }
+            (Ok(holder), AccountHolderExpectation::Refused) => bail!(
+                "{STEP}: {msisdn} carries a hex letter and is not a phone number; /v1 \
+                 answered 200 with name={:?} instead of refusing it",
+                holder.name,
+            ),
+            (Err(error), _) => bail!(
+                "{STEP}: {msisdn} was expected to be {expected:?} and the lookup failed \
+                 instead: {error}"
+            ),
+        }
+
+        match &outcome {
+            Ok(holder) => println!(
+                "      {msisdn}  name={:<14} verified={}",
+                holder.name.as_deref().unwrap_or("null"),
+                holder.verified
+            ),
+            Err(error) => println!("      {msisdn}  refused: {error}"),
         }
         println!("                    {what}");
     }
