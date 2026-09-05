@@ -356,6 +356,20 @@ verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-doc
 verify-no-mocks:
     cargo xtask verify-no-mocks
 
+# AGENTS.md rule 2: every `ProviderError::NotImplemented("…")` token in
+# shipping code is declared in docs/status.md, and every token declared there
+# is still carried by shipping code. Both directions fail the build —
+# `verify_status_reports_both_directions_from_the_gate_itself` in `xtask`
+# drives the check itself, not a reimplementation of it, through both.
+#
+# "In shipping code" is lexical, not textual: since 2026-09-05 the scanner
+# lexes rather than greps, so a token mentioned in a comment (`//`, `///`,
+# `//!`, `/* */` nested or not, leading or trailing), in a `#[doc = "…"]`
+# attribute, or inside a string, raw-string or character literal is prose and
+# counts for nothing in either direction. Before that, a trailing comment or a
+# raw string carrying the token forced a phantom bullet into docs/status.md —
+# and the cheapest way to clear one was to delete the honest sentence from
+# the adapter's doc comment that explained the gap.
 verify-status:
     cargo xtask verify-status
 
@@ -650,6 +664,17 @@ expected_suites := "42"
 # `postgres_smoke::the_confirm_paths_session_lookup_is_served_by_an_index`,
 # the guard for migration `0030`'s `checkout_sessions_intent_seq_idx`. Still
 # no new binary, and the floor still stays at 1080.
+#
+# Re-measured 2026-09-05 rebasing `claude/exp3-verify-status-opus` (the
+# `verify-status` lexer) onto that landed confirm refusal: `just
+# verify-ignored` reports **1166 total, 42 test binaries, 0 ignored** — 1159
+# plus seven cases, all in `xtask` (83 → 90): the characterising test for the
+# defect, five for the lexer's own edge cases, and one — added during this
+# branch's own review — that drives `verify_status` itself through both
+# directions of the check so neither can go missing unnoticed. Two more
+# shapes (a nested block comment and a comment carrying an odd `"`) went into
+# an existing case rather than a new one, so they move no counter. No new
+# test binary, so `expected_suites` stays 42 and the floor stays 1080.
 min_tests := "1080"
 
 verify-ignored:
