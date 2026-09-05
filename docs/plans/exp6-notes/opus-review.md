@@ -245,11 +245,13 @@ Run in this worktree, pinned toolchain, `CARGO_BUILD_JOBS=4`,
 | `just docs-check-citations` | ok — **39 unique ids** (24 runs, 14 PRs, 1 issue) over 115 files, all resolving against `vaam-apps/vpay` |
 | `cargo nextest run -p xtask` | **130 run, 130 passed, 0 skipped** (126 as delivered) |
 | `just test-rust` | **1206 run, 1206 passed, 0 skipped** (1202 as delivered, +4 here) |
-| `just test-doc` | see below |
-| `just verify-ignored` | see below |
-| `just lint-web`, `just test-web`, `just deny` | see below |
-| `actionlint` (`/home/selast/go/bin/actionlint`) | exit 0 |
-| `just ci` end to end | see below |
+| `just test-doc` | **86 passed, 0 failed, 1 ignored** — the ignored one is `sdks/rust`'s README block and is pre-existing |
+| `just verify-ignored` | `0 ignored (expected 0), 42 test binaries (expected 42), 1206 total (minimum 1080)` |
+| `just lint-web` | ok — `eslint . --max-warnings 0` across every package |
+| `just test-web` | ok — **723** tests in 8 packages (302 `@vpay/checkout`, 172 `@vpay/sdk`, 119 stripe-js, 63 config, 57 `examples/shop`, 4 api-client, 3 tokens, 3 ui) |
+| `just deny` | `advisories ok, bans ok, licenses ok, sources ok` |
+| `actionlint` (`/home/selast/go/bin/actionlint`) | exit 0 over all of `.github/workflows/` |
+| **`just ci` end to end** | **exit 0**, on the final tree, full log kept |
 
 Counts moved because this review's own notes are a tracked Markdown file: 114
 files / 672 links as delivered, 115 / 676 with this document in the index. The
