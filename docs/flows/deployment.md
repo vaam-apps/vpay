@@ -349,10 +349,21 @@ rather than at pull time.
   and is the one that is now true.
 * **Deploy the dashboard.** The chart templates no dashboard workload; see the
   chart README for why.
-* **Be pulled from anywhere.** §2 describes a workflow that has never run.
+* **Be pulled from anywhere.** ~~§2 describes a workflow that has never run.
   There is no image at `ghcr.io/vaam-apps/vpay-server`, none at `-worker`,
   none at `-dashboard`, and no signature to verify on any of them. Every
-  `images.*.digest` a values file could pin today would be invented.
+  `images.*.digest` a values file could pin today would be invented.~~
+  **Corrected 2026-09-05:** §2's workflow has run 13 times on `master`, 12
+  green, most recently `33929374661` (2026-09-04, head `33d6c25`), which
+  pushed a signed manifest list for all four images — `vpay-server`,
+  `vpay-worker`, `vpay-dashboard` and `vpay-checkout`. The bullet's *heading*
+  survives its body: the images exist and nothing has pulled one. GHCR package
+  visibility is unmeasured — `gh api "orgs/vaam-apps/packages"` needs a
+  `read:packages` scope the available token lacks, and an anonymous
+  `ghcr.io/token` request for `vaam-apps/vpay-server:pull` is refused — so
+  whether a cluster could pull these is still unknown, and no `cosign verify`
+  has read a certificate. A pinned digest is now measured rather than
+  invented; that it resolves for someone else is not.
 * **Prove any of the above in a cluster.** No cluster has run any of it.
 
 ---
@@ -431,7 +442,13 @@ What does not exist, stated plainly:
   has never observed an image at those names *from the outside*; and no
   `cosign verify` has been run, so no Fulcio certificate or Rekor entry has
   been read — see the "Image signing" row in
-  [../status.md](../status.md).
+  [../status.md](../status.md). **Updated 2026-09-05: the count is now 13 runs,
+  12 green** (latest `33929374661`, 2026-09-04, four images pushed and signed),
+  **and GHCR visibility was attempted and could not be measured** — the org
+  packages API needs a `read:packages` scope the token lacks and anonymous
+  pull is refused, which shows the packages are not public but leaves "private"
+  and "absent" indistinguishable from outside. The other two clauses — no `v*`
+  tag, no `cosign verify` — remain true as written.
 - [../runbooks/release.md](../runbooks/release.md) covers cutting a tag,
   verifying a signature and pinning a digest — written from the workflow file,
   never followed. **The deploy/rollback, key-rotation, rail-credential and
@@ -470,6 +487,14 @@ same listener and assert `vpay_webhook_deliveries_total{outcome="retry"} 3`,
 webhook step delivered. What that does **not** establish, and what keeps this
 page 🟡: no Prometheus has ever scraped a vpay process on a schedule, so no
 rate, no histogram quantile and no alert rule has been evaluated against real
-data; and `vpay_build_info{git_sha}` reads `unknown` on every build anyone has
-made, because `release.yml` — the only thing that passes a real one — has
-never run.
+data; and ~~`vpay_build_info{git_sha}` reads `unknown` on every build anyone
+has made, because `release.yml` — the only thing that passes a real one — has
+never run.~~ **Corrected 2026-09-05: `release.yml` has run, and it does pass a
+real one.** Run `33929374661`'s `build vpay-server (amd64)` step invokes
+`docker buildx build … --build-arg
+VPAY_GIT_SHA=33d6c253a232958604801518a08a2f34accb689c …`, so the published
+`vpay-server` and `vpay-worker` images carry
+`vpay_build_info{git_sha="33d6c25…"}` rather than `unknown`. `unknown` remains
+correct for every *local* build, which is what `just release-dry-run` and
+`compose` produce — and nobody has run a published image to read the series
+off it, so this is read from the build command rather than from a scrape.

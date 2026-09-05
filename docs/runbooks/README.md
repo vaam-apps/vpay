@@ -108,4 +108,7 @@ that page is evidence about MTN or Orange.
   cluster**, because no cluster has ever run vpay.
 - [release.md](release.md): at the time it was written no tag had been pushed,
   `.github/workflows/release.yml` had never run, and no image existed to
-  verify a signature on.
+  verify a signature on. **Updated 2026-09-05: the workflow has since run 13
+  times on `master`, 12 green, and the latest (`33929374661`) published and
+  cosign-signed all four images** — so only the *tag-cutting* half of that
+  runbook is still unfollowed; see its header for the digests.

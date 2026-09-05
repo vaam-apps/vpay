@@ -737,3 +737,20 @@ call `searchable`), and every gate's output on the real tree is
 byte-identical to `origin/master`'s. The record is
 `docs/plans/step9-notes/verify-status-lexer.md` and
 `verify-status-lexer-review.md`.
+
+**Follow-up, 2026-09-05: stale release-artefact claims retired against
+measured runs** — experiment sample 5, opus arm, docs-class review.
+Unrelated to hosted checkout — it retires the "`release.yml` has never run /
+no image exists / nothing has been signed" family of claims across
+`.github/workflows/release.yml`'s header comment and seven docs files, citing
+13 measured `release` runs on `master` (12 green, 1 failure already explained
+by the organisation-rename break), the four signed manifest lists and Rekor
+entries from the latest green run, and the GHCR-packages 403 that leaves
+package *visibility* unmeasured even though the run log establishes
+existence — but landed the same day through the same process, so it is
+recorded here rather than left to a commit message. The review found two
+accuracy defects (an under-counted `docs/status.md` edit, a misclassified
+`docs/status.md:1405` row) and, more substantively, that the change left the
+repository briefly contradicting itself about the merchant-auth CI-evidence
+family until two further status rows were corrected. The record is
+`docs/plans/step9-notes/release-claims.md` and `release-claims-review.md`.

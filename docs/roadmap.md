@@ -600,7 +600,11 @@ worker (Phase 5, needs charges to poll).
 
 **Done, with the test that would fail if it broke.** Everything below ran
 against a real `postgres:16-alpine` on the authoring machine on 2026-09-03
-(74 container-backed tests, 0 failures); it has not run in CI.
+(74 container-backed tests, 0 failures); ~~it has not run in CI.~~
+**Retired 2026-09-05: it runs in CI.** CI run `33929374663` (2026-09-04,
+`master`, head `33d6c25`) ran `cargo nextest run --workspace` on
+`ubuntu-latest` to 1159 tests run, 1159 passed, **0 skipped** — 163 of them
+`vpay-tests-integration` and 86 `vpay-db`, the container-backed crates.
 
 - **`POST /v1/payment_intents`** — form-encoded, validated, merchant-scoped,
   idempotent, writing a real row

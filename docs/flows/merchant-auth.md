@@ -483,7 +483,17 @@ testcontainers could not start on the authoring machine. That is no longer
 the state: on 2026-09-03 all seven ran under testcontainers on this machine
 as part of `cargo nextest run -p vpay-db -p vpay-tests-integration`
 (**74 passed, 0 failed, 0 skipped**), against a real `postgres:16-alpine`
-container. **They have still never run in CI**, and no vpay outside a test
+container. ~~**They have still never run in CI**~~ — **retired 2026-09-05:
+they run in CI now.** CI run `33929374663` (2026-09-04, `master`, head
+`33d6c25`) ran `cargo nextest run --workspace` on `ubuntu-latest` to
+**1159 tests run: 1159 passed, 0 skipped** in 941 s, of which **163 are
+`vpay-tests-integration`** — among them
+`vpay-tests-integration::merchant_token_flow
+the_jwks_and_discovery_documents_describe_this_process` and
+`…::the_same_client_assertion_cannot_be_spent_twice`, both `PASS` in that
+log. These are testcontainers suites and `ci.yml` notes they "fail loudly"
+without a daemon rather than skipping, so a green run is evidence they
+executed. **Still true:** no vpay outside a test
 process has ever completed this handshake for a real merchant.
 [`docs/status.md`](../status.md) records the state of that evidence and is
 the page to check.
