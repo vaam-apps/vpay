@@ -534,6 +534,7 @@ async fn create_refund_sends_the_documented_body_and_decodes_the_object() {
             "reason": "requested_by_customer",
             "metadata": {},
             "created": 1_753_401_600,
+            "fee": null,
         })))
         .expect(1)
         .mount(&server)
@@ -557,6 +558,9 @@ async fn create_refund_sends_the_documented_body_and_decodes_the_object() {
 
     assert_eq!(refund.id, "re_1");
     assert_eq!(refund.status, RefundStatus::Pending);
+    // vpay renders `fee` on every refund and `null` on every refund it can
+    // currently produce; the key must decode, not merely be tolerated.
+    assert_eq!(refund.fee, None);
 
     let request = only_request(&server, "/v1/refunds").await;
     assert_eq!(
@@ -601,6 +605,66 @@ async fn a_full_refund_omits_the_amount_entirely() {
     assert_eq!(body_string(&request), "payment_intent=pi_1");
 }
 
+/// Issue #46's field, decoded through the real client path rather than out of
+/// a literal: the four answers a `fee` key can carry must stay four answers,
+/// and in particular **`null` must not become `0`**.
+///
+/// A merchant's settlement statement is built from this. `Some(0)` says "the
+/// rail told us the movement was free" and belongs on the statement as a zero
+/// line; `None` says "nobody asked, or nobody answered" and must appear as
+/// nothing at all. The integrator who filed the issue had no way to say the
+/// second and shipped a hardcoded `0` for it.
+#[tokio::test]
+async fn a_refund_fee_decodes_as_unknown_free_or_a_real_cost() {
+    for (wire, expected) in [
+        (Some(json!(null)), None),
+        (Some(json!(0)), Some(0)),
+        (Some(json!(250)), Some(250)),
+        // A vpay older than the field omits the key entirely. `serde(default)`
+        // is what keeps that decodable, and "absent" means the same thing
+        // `null` does: unknown.
+        (None, None),
+    ] {
+        let (server, client) = fixture().await;
+        let mut body = json!({
+            "id": "re_1",
+            "object": "refund",
+            "amount": 2500,
+            "currency": "xaf",
+            "payment_intent": "pi_1",
+            "status": "succeeded",
+            "reason": null,
+            "metadata": {},
+            "created": 1_753_401_600,
+        });
+        if let Some(fee) = wire.clone() {
+            body["fee"] = fee;
+        }
+        Mock::given(method("POST"))
+            .and(path("/v1/refunds"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let refund = client
+            .refunds()
+            .create(
+                CreateRefundParams {
+                    payment_intent: "pi_1".to_string(),
+                    ..Default::default()
+                },
+                RequestOptions::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            refund.fee, expected,
+            "a `fee` of {wire:?} must decode as {expected:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn retrieve_refund_is_a_get_with_no_body_and_decodes_the_object() {
     // `GET /v1/refunds/{id}` — served since 2026-09-05 (issue #45), and the
@@ -620,6 +684,7 @@ async fn retrieve_refund_is_a_get_with_no_body_and_decodes_the_object() {
             "reason": "requested_by_customer",
             "metadata": { "case": "77" },
             "created": 1_753_401_600,
+            "fee": null,
         })))
         .expect(1)
         .mount(&server)
@@ -632,6 +697,12 @@ async fn retrieve_refund_is_a_get_with_no_body_and_decodes_the_object() {
     assert_eq!(refund.status, RefundStatus::Pending);
     assert_eq!(refund.reason.as_deref(), Some("requested_by_customer"));
     assert_eq!(refund.metadata.get("case").map(String::as_str), Some("77"));
+    // The tenth key (issue #46), which the served route renders on every
+    // refund: `null` here because no rail reports a refund fee, and `null`
+    // must not decode as `Some(0)` —
+    // `a_refund_fee_decodes_as_unknown_free_or_a_real_cost` is where all four
+    // answers are pinned.
+    assert_eq!(refund.fee, None);
 
     let request = only_request(&server, "/v1/refunds/re_1").await;
     assert_eq!(request.method.as_str(), "GET");
@@ -675,6 +746,8 @@ async fn a_refund_id_with_url_metacharacters_is_percent_encoded_into_the_path() 
         .filter(|p| p != "/v1/oauth/token")
         .collect();
     assert_eq!(paths, vec!["/v1/refunds/..%2F..%2Fadmin"]);
+}
+
 }
 
 /// `checkout.session.expired` is in this SDK's event vocabulary, and its

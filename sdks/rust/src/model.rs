@@ -435,6 +435,35 @@ pub struct Refund {
     pub metadata: BTreeMap<String, String>,
     /// Unix seconds.
     pub created: i64,
+    /// What the rail charged to execute this refund, in minor units of
+    /// [`currency`](Refund::currency) — never a second currency, never a
+    /// float.
+    ///
+    /// # `None` is not `Some(0)`
+    ///
+    /// `None` means the rail did not report a fee; `Some(0)` means it
+    /// reported the movement was free. A settlement statement built from
+    /// this must show the second and *say nothing* for the first — an
+    /// integrator that substitutes `0` for `None` is presenting a number
+    /// nobody measured, which is what this field was added (issue #46) to
+    /// stop.
+    ///
+    /// # `#[serde(default)]`, and what it does and does not preserve
+    ///
+    /// An **absent** key and an explicit `null` both decode to `None`, and
+    /// that collapse is deliberate: vpay always emits every documented key
+    /// (`vpay_api::model`), so on its own wire the two cannot differ, and
+    /// `Option<Option<i64>>` would push a distinction with no producer into
+    /// every match a merchant writes. The distinction that carries meaning —
+    /// unknown versus free — is `None` versus `Some(0)`, and that one is
+    /// preserved. The default also means this SDK still decodes a `refund`
+    /// from a vpay older than the field.
+    ///
+    /// **It is `None` from every vpay deployment today.** Neither rail
+    /// reports a refund fee: Orange has no refund API and MTN refunds are the
+    /// Disbursements product vpay has never called. See `docs/status.md`.
+    #[serde(default)]
+    pub fee: Option<i64>,
 }
 
 /// The payload carried by an [`Event`] — kept as raw JSON with typed
