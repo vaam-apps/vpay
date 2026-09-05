@@ -10,12 +10,19 @@ writing code.
 These are not style preferences. Both are machine-enforced by `just verify`, and
 CI runs it.
 
-`just verify` is three gates and one report. The gates (`verify-no-mocks`,
-`verify-status`, `verify-errors`) fail the build. The report (`verify-docs`)
-never does — it prints doc-comment volume per crate, the production functions
-of 80 lines or more, every ```` ```ignore ```` doctest fence and every
-`#[allow]`/`#[expect]`, and nothing more. Read it; it is not a gate you can
-pass or fail.
+`just verify` is **five** gates and one report. The gates
+(`verify-no-mocks`, `verify-status`, `verify-errors`, `verify-sdk-parity`,
+`verify-links`) fail the build. The report (`verify-docs`) never does — it
+prints doc-comment volume per crate, the production functions of 80 lines or
+more, every ```` ```ignore ```` doctest fence and every `#[allow]`/`#[expect]`,
+and nothing more. Read it; it is not a gate you can pass or fail.
+
+This paragraph said "three gates" until 2026-09-05, and had been wrong since
+`verify-sdk-parity` landed on 2026-09-03; `verify-links` made it wrong by two.
+There is a sixth check, `cargo xtask verify-citations` (`just
+docs-check-citations`), which is a gate but **not** part of `just verify` or
+`just ci`: it needs the network and a GitHub token. Run it when you add or
+edit a document that cites a CI run id, a pull request or an issue.
 
 ### 1. No test doubles in shipping processes
 
@@ -142,6 +149,15 @@ infrastructure layer, so the app under test is the app that ships.
 Every flow and process gets a document in `docs/flows/`, answering: what
 happens, in what order, what can go wrong, and what invariant holds throughout.
 Each ends with a **Status** section stating what is actually built.
+
+Two things about a document are machine-checked, since 2026-09-05. Every
+relative link in a tracked `*.md` must resolve to a **tracked** file or
+directory (`cargo xtask verify-links`, in `just verify`), so a link satisfied
+by an untracked scratch file fails rather than passing on your machine alone.
+And every CI run id, pull request and issue a document cites as evidence must
+exist (`cargo xtask verify-citations`, opt-in because it needs the network).
+A citation that does not resolve is a false claim: strike it through with a
+dated correction. Do not replace it with an id you have not checked.
 
 - A decision that has been made → an ADR (immutable; supersede, never edit).
 - A process → a flow doc, as above.
