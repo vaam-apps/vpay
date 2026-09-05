@@ -2012,12 +2012,19 @@ pin from 0.10.1 to 0.11.1 required no edit to `schemas/vpay.cstack`.**
 **0.11.1 still has no `@@check(expr)`, so the two GAP comments below stand.**
 Checked against the pinned crates' own sources rather than a changelog:
 `grep -rn '@@check' cratestack-parser-0.11.1/src cratestack-migrate-0.11.1/src`
-returns nothing, `KNOWN_ATTRIBUTE_NAMES` in
+returns nothing, and `cratestack-migrate-0.11.1/src/convert/checks.rs` still
+promotes CHECKs from `@db_enforce` on a **single field**
+(`field_has_db_enforce(field: &Field)`). Those two carry the conclusion.
+**A third argument was offered and is withdrawn (2026-09-05, review):**
+~~`KNOWN_ATTRIBUTE_NAMES` in
 `cratestack-parser-0.11.1/src/validate/misspelled_attributes.rs` — which that
 module documents as the union of every attribute name the language knows —
-lists no `check`, and `cratestack-migrate-0.11.1/src/convert/checks.rs` still
-promotes CHECKs from `@db_enforce` on a **single field**
-(`field_has_db_enforce(field: &Field)`). What was **not** done: enumerating
+lists no `check`.~~ That list also contains no `index`, `sql`, `paged`,
+`audit` or `soft_delete`, and `schemas/vpay.cstack` uses `@@index` on two
+models and passes — so absence from it does not show an attribute does not
+exist. It is a typo-suggestion table whose own module doc says a missing name
+is a hazard it tolerates; treating it as an inventory reads a promise into it
+that it does not make. What was **not** done: enumerating
 what 0.11 *added* over 0.10. The block attributes the schema's own header
 lists as unused are still unused, and no attempt was made to find new grammar
 this file could benefit from.
