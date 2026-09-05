@@ -66,9 +66,10 @@ verify-errors` printed on the merged gate branch on 2026-09-04.)*
 report** — four gates since `verify-sdk-parity`, **five since
 `verify-links` (2026-09-05)**, **six since `verify-npm-scope` (2026-09-05)**,
 **seven since `check-schema` (2026-09-05, the CrateStack schema gate —
-see "CrateStack" below)** and **nine since `verify-serde` and
-`verify-repositories` (2026-09-05, [ADR-0016](adr/0016-engineering-standards.md))**,
-all six below. `cargo xtask
+see "CrateStack" below)**, **nine since `verify-serde` and
+`verify-repositories` (2026-09-05, [ADR-0016](adr/0016-engineering-standards.md))**
+and **ten since `verify-toolchain` (2026-09-05, the pin-drift gate — see
+"Toolchain pin" below)**, all seven below. `cargo xtask
 verify-docs` prints, per crate, doc-comment lines
 against code lines, **in-file comment lines against code lines, the number of
 `#[doc = include_str!]` modules**, every production function of 80 lines or
@@ -223,7 +224,11 @@ that `dist/` exists (gitignored) and the registry (needs the network).
 
 **New 2026-09-05: `cargo xtask verify-links` is the fifth gate,
 `cargo xtask verify-npm-scope` the sixth, `just check-schema` the seventh,
-and `cargo xtask verify-citations` an eighth that is opt-in.** Until this
+`cargo xtask verify-serde` the eighth and `cargo xtask verify-repositories`
+the ninth (both [ADR-0016](adr/0016-engineering-standards.md)),
+`cargo xtask verify-toolchain` the tenth (added later the same day, in the
+review of the toolchain bump), and `cargo xtask verify-citations` an eleventh
+that is opt-in and in no CI job.** Until this
 landed, `just docs-check` ran `verify-status` and printed `note: link
 checking is not implemented yet`; the one class of claim this repository
 makes about itself most often — *the document you are reading points at the
@@ -288,6 +293,24 @@ correction.
   floor of 12 `model`/`enum` declarations before it believes the result. See
   "CrateStack" below for the version, the six mutations that prove the gate
   fires, and what a green run does *not* prove.
+- **`verify-toolchain` — a gate, in `just verify`, `just ci` and CI's
+  `self-checks` job. New 2026-09-05, in the review of the toolchain bump.**
+  `backends/Dockerfile`'s `FROM rust:<version>-alpine…` must name the version
+  `rust-toolchain.toml`'s `channel` pins. That `FROM` line is the only place
+  in the repository that names a compiler and cannot read the toolchain file
+  (CI's five Rust jobs `sed` the channel out of it), so it is the only place
+  the pin can drift — and drift was measured to be free: with `channel` on
+  1.98.0 and the `FROM` line left on 1.95.0, `just verify` and `just fmt-check`
+  both exited **0**, and no other `just ci` recipe reads either file, because
+  nothing here compiles the Dockerfile. Ten `xtask` tests drive it, four of
+  them written from mutations of the gate itself — including one that caught a
+  test of this review's own passing on the wrong error. It checks the compiler
+  version only: the Alpine suffix moves on its own evidence, and a test pins
+  that it may. What it does **not** check: that the tag exists upstream (needs
+  the network; the image build proves it), Dockerfile comments (the header
+  deliberately names a tag it did not take), or `Cargo.toml`'s `rust-version`,
+  which is a graph-derived floor rather than a copy of this number. See
+  "Toolchain pin" below.
 - **`verify-citations` — a gate that needs the network, so it is opt-in
   (`just docs-check-citations`) and is in no CI job.** It resolves every
   workflow-run id, pull request and issue a tracked `*.md` cites as evidence
@@ -2084,11 +2107,30 @@ had rewritten. Both are corrected. Nothing in the tree now names 1.95.0 as
 current; the remaining `1.95.0` strings are dated `docs/plans/*-notes/` records
 and explicitly historical sentences, where they are correct.
 
+**"Bump both together" became a gate, because the mismatch was measured to be
+invisible.** `just verify-toolchain` (`cargo xtask verify-toolchain`) is the
+**tenth** check in `just verify` and a step in CI's `self-checks` job since
+2026-09-05: it fails when the version in `backends/Dockerfile`'s
+`FROM rust:<version>-alpine…` and `rust-toolchain.toml`'s `channel` disagree.
+It exists because the review pass ran that exact mutation on this branch —
+`channel = "1.98.0"` with the `FROM` line left at `rust:1.95.0-alpine3.22` —
+and `just verify` and `just fmt-check` both exited **0**, with no other `just
+ci` recipe reading either file. The first symptom would have been a release
+image built by a compiler no local run and no CI job had ever used. With the
+gate, that same mutation fails `just verify` naming the file, the line and
+both versions. See the "self-verification" section above for what it does and
+does not cover.
+
 **What was NOT verified by this bump:** nothing has compiled this workspace
 on `aarch64`, no CI run of this change exists, and the 1.88 MSRV remains
 metadata-derived and uncompiled, exactly as before. See
 [plans/exp11-notes/opus.md](plans/exp11-notes/opus.md) for every command and
-its output.
+its output, and
+[plans/exp11-notes/opus-review.md](plans/exp11-notes/opus-review.md) for the
+sabotage review that re-ran all of it, its mutation table, and the two test
+counts that settle whether the suite shrank (it did not: `046892a` and this
+branch both list **1220 tests in 42 binaries**, each measured under its own
+pin).
 
 ### CrateStack
 

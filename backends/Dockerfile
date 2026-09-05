@@ -33,6 +33,13 @@
 # `planner` and `builder` are both `FROM chef`, so the three stages cannot
 # drift apart by construction. Do not turn that into three literals.
 #
+# "Bump both together" is enforced since 2026-09-05 rather than merely asked
+# for: `cargo xtask verify-toolchain` (the eighth gate in `just verify`, and a
+# step in CI's `self-checks` job) fails if the version in the `FROM` line below
+# disagrees with `rust-toolchain.toml`'s `channel`. It checks the compiler
+# version only — the Alpine suffix is deliberately outside its subject, for
+# the reason the next paragraph gives.
+#
 # Moved 1.95.0 -> 1.98.0 on 2026-09-05, together with rust-toolchain.toml,
 # for the reason recorded there: CrateStack 0.11.1 — whose CLI is the seventh
 # gate in `just verify` — declares `rust-version = "1.98.0"` throughout, and

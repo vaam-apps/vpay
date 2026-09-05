@@ -1,10 +1,10 @@
 //! Repository automation. Run via `cargo xtask <cmd>` or `just`.
 //!
-//! `just verify` runs nine gates, because a promise nothing checks is a
-//! promise that decays. Eight of them are commands here; the ninth,
-//! `check-schema` (2026-09-05), is a justfile recipe rather than an xtask
-//! command because it shells out to the CrateStack CLI, a binary this
-//! workspace does not build — see the `justfile` for it. The eight here:
+//! `just verify` runs ten gates, because a promise nothing checks is a
+//! promise that decays. Nine of them are commands here; `check-schema`
+//! (2026-09-05) is a justfile recipe rather than an xtask command because it
+//! shells out to the CrateStack CLI, a binary this workspace does not build —
+//! see the `justfile` for it. The nine here:
 //!
 //! * `verify-no-mocks`  — no test double is reachable from a shipping binary.
 //! * `verify-status`    — every `NotImplemented` is declared in `docs/status.md`.
@@ -31,8 +31,13 @@
 //!   repository implementation. New 2026-09-05 (ADR-0016, standard 5); the
 //!   set of concrete types is derived from `vpay-db`'s own source rather than
 //!   listed, so a store nobody has written yet is covered.
+//! * `verify-toolchain` — `backends/Dockerfile`'s `FROM rust:<version>` names
+//!   the compiler `rust-toolchain.toml` pins. New 2026-09-05, in the review of
+//!   the 1.95.0 -> 1.98.0 bump: before it, a `FROM` line left a compiler
+//!   behind passed the whole of `just ci`, because nothing here compiles the
+//!   Dockerfile.
 //!
-//! A tenth gate needs the network, so it is opt-in
+//! An eleventh gate needs the network, so it is opt-in
 //! (`just docs-check-citations`) and is **not** part of `just ci`:
 //!
 //! * `verify-citations` — every workflow-run id, pull request and issue a
@@ -96,6 +101,7 @@ fn main() -> ExitCode {
         "verify-npm-scope" => verify_npm_scope(&root),
         "verify-serde" => verify_serde(&root),
         "verify-repositories" => verify_repositories(&root),
+        "verify-toolchain" => verify_toolchain(&root),
         "verify-citations" => verify_citations(&root),
         // `verify-citations` is deliberately absent from `verify-all`: it
         // needs the network, and `verify-all` is what an offline gate list
@@ -107,7 +113,8 @@ fn main() -> ExitCode {
             .and_then(|()| verify_links(&root))
             .and_then(|()| verify_npm_scope(&root))
             .and_then(|()| verify_serde(&root))
-            .and_then(|()| verify_repositories(&root)),
+            .and_then(|()| verify_repositories(&root))
+            .and_then(|()| verify_toolchain(&root)),
         // Not `Result`-shaped like the three gates above, and that is the
         // point: there is nothing here for a caller to fail on. See
         // `verify_docs`.
@@ -120,7 +127,8 @@ fn main() -> ExitCode {
             println!(
                 "usage: cargo xtask \
                  <verify-no-mocks|verify-status|verify-errors|verify-sdk-parity|verify-links\
-                 |verify-npm-scope|verify-serde|verify-repositories|verify-all>\n\
+                 |verify-npm-scope|verify-serde|verify-repositories\
+                 |verify-toolchain|verify-all>\n\
                  \x20      cargo xtask verify-citations   (a gate; needs `gh` and the network)\n\
                  \x20      cargo xtask verify-docs        (a report; never fails)\n\
                  \x20      cargo xtask gen-signing-key --out <dir>"
@@ -3743,6 +3751,158 @@ fn verify_npm_scope(root: &Path) -> Result<(), String> {
         publishable.join(", ")
     );
     Ok(())
+}
+
+/// The file that holds the compiler version, and the file CI reads it out of.
+///
+/// `.github/workflows/ci.yml` and `docs.yml` extract `channel` from here with
+/// `sed -n 's/^channel = "\(.*\)"/\1/p'`; [`toolchain_channel`] reads it the
+/// same way on purpose, so this gate cannot pass on a spelling CI would parse
+/// as empty.
+const TOOLCHAIN_FILE: &str = "rust-toolchain.toml";
+
+/// The one file in this repository that names a compiler version and *cannot*
+/// read [`TOOLCHAIN_FILE`]: a `FROM` line is resolved before anything in the
+/// build context exists.
+const TOOLCHAIN_IMAGE_FILE: &str = "backends/Dockerfile";
+
+/// `backends/Dockerfile`'s builder image is the compiler `rust-toolchain.toml`
+/// pins, and nothing else.
+///
+/// # Why this is a gate and not a comment
+///
+/// `rust-toolchain.toml`'s header has said "bump both together" since
+/// 2026-09-02, and until this gate existed that sentence *was* the mechanism:
+/// nothing in `just ci` reads the Dockerfile, and nothing in the image build
+/// reads the toolchain file. Measured on 2026-09-05, on the branch that moved
+/// the pin 1.95.0 -> 1.98.0: with `channel = "1.98.0"` and the `FROM` line
+/// left at `rust:1.95.0-alpine3.22`, `just verify` and `just fmt-check` both
+/// exited 0 and no other recipe in `just ci` reads either file. The two
+/// compilers would have differed for as long as nobody built the image, and
+/// the first symptom would be a release binary built by a compiler no local
+/// run and no CI job had ever used.
+///
+/// That is the failure `ci.yml` already names for a different pin — "a pin
+/// written in two files is a pin that drifts, and the drift is silent". This
+/// makes this one loud.
+///
+/// # What it checks
+///
+/// Every `FROM <image>` **instruction** in [`TOOLCHAIN_IMAGE_FILE`] whose
+/// image is `rust:<tag>` must carry the channel as the version part of that
+/// tag: `rust:1.98.0-alpine3.22` against `channel = "1.98.0"`. The rest of
+/// the tag — the Alpine base — is deliberately not this gate's business; it
+/// moves for its own reasons and with its own evidence, which is exactly what
+/// the Dockerfile header records about `alpine3.23`.
+///
+/// There is one such line today (`chef`; `planner` and `builder` are both
+/// `FROM chef`, so one literal covers all three stages). The loop is over all
+/// of them anyway: the point of the check is the day someone writes a second.
+///
+/// **A Dockerfile with no `FROM rust:` line at all fails.** A gate that
+/// silently checks nothing is the shape `check-schema`'s own comment warns
+/// about — an emptied schema type-checks vacuously. If the builder stops
+/// being a `rust:` image, this check has to be rewritten rather than quietly
+/// satisfied.
+///
+/// # What it does not check
+///
+/// * **Comments.** The Dockerfile header names `rust:1.98.0-alpine3.23`
+///   precisely to record a tag that exists and was deliberately *not* taken;
+///   reading prose would fail on the sentence explaining the decision.
+/// * **That the tag exists upstream.** That needs the network —
+///   `verify-citations`' exception, not this one's — and the image build
+///   proves it for real.
+/// * **`Cargo.toml`'s `rust-version`.** It is a floor derived from the
+///   dependency graph, not a second copy of this number, and both
+///   `rust-toolchain.toml` and `Cargo.toml` explain at length why the two are
+///   different things.
+fn verify_toolchain(root: &Path) -> Result<(), String> {
+    let toolchain = fs::read_to_string(root.join(TOOLCHAIN_FILE))
+        .map_err(|e| format!("{TOOLCHAIN_FILE}: {e}"))?;
+    let channel = toolchain_channel(&toolchain).ok_or_else(|| {
+        format!(
+            "{TOOLCHAIN_FILE}: no line of the form `channel = \"...\"`. CI reads this file with `sed -n 's/^channel = \"\\(.*\\)\"/\\1/p'` and would hand `dtolnay/rust-toolchain` an empty version"
+        )
+    })?;
+
+    let dockerfile = fs::read_to_string(root.join(TOOLCHAIN_IMAGE_FILE))
+        .map_err(|e| format!("{TOOLCHAIN_IMAGE_FILE}: {e}"))?;
+    let images = rust_from_instructions(&dockerfile);
+    if images.is_empty() {
+        return Err(format!(
+            "{TOOLCHAIN_IMAGE_FILE}: no `FROM rust:<version>-...` instruction. This check exists to keep that line and {TOOLCHAIN_FILE}'s `channel` identical; with no such line it checks nothing, which is worse than not existing. If the builder image is no longer a `rust:` image, rewrite this check for whatever names the compiler now"
+        ));
+    }
+
+    let mut problems = Vec::new();
+    let mut agreed = Vec::new();
+    for (line_no, tag) in &images {
+        let version = tag.split('-').next().unwrap_or(tag);
+        if version == channel {
+            agreed.push(format!("rust:{tag}"));
+        } else {
+            problems.push(format!(
+                "{TOOLCHAIN_IMAGE_FILE}:{line_no}: `FROM rust:{tag}` builds with {version}, but {TOOLCHAIN_FILE} pins `channel = \"{channel}\"` — every Rust job in CI reads that file, so this image would be the one thing in the repository compiled by a different compiler"
+            ));
+        }
+    }
+    if !problems.is_empty() {
+        return Err(format!(
+            "{} toolchain pin(s) out of step:\n  - {}",
+            problems.len(),
+            problems.join("\n  - ")
+        ));
+    }
+
+    println!(
+        "verify-toolchain: ok — {TOOLCHAIN_FILE} pins {channel} and all {} `FROM rust:` instruction(s) in {TOOLCHAIN_IMAGE_FILE} name it ({})",
+        agreed.len(),
+        agreed.join(", ")
+    );
+    Ok(())
+}
+
+/// The `channel` value, read the way `.github/workflows/ci.yml` reads it.
+///
+/// Anchored at the start of the line because the workflow's `sed` is: a value
+/// only this function could see is precisely the drift it exists to catch.
+fn toolchain_channel(text: &str) -> Option<&str> {
+    text.lines().find_map(|line| {
+        line.strip_prefix("channel = \"")
+            .and_then(|rest| rest.strip_suffix('"'))
+    })
+}
+
+/// `(1-based line number, tag)` for every `FROM rust:<tag>` instruction,
+/// comments excluded.
+///
+/// The keyword is matched case-insensitively because the daemon does: a
+/// `from rust:1.0` would build, so a gate that only knew `FROM` would be one
+/// a typo could walk past.
+///
+/// The comment filter is belt-and-braces and says so rather than pretending
+/// otherwise: a `#` displaces the keyword by one character, so no comment can
+/// be read as an instruction with or without it (measured — deleting it
+/// leaves every test in `toolchain_tests` green). It stays because it states
+/// the intent at the point a looser keyword match would need it.
+fn rust_from_instructions(dockerfile: &str) -> Vec<(usize, &str)> {
+    dockerfile
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let line = line.trim_start();
+            if line.starts_with('#') {
+                return None;
+            }
+            let (keyword, rest) = line.split_at_checked(4)?;
+            if !keyword.eq_ignore_ascii_case("FROM") {
+                return None;
+            }
+            let tag = rest.split_whitespace().next()?.strip_prefix("rust:")?;
+            Some((index + 1, tag))
+        })
+        .collect()
 }
 
 /// Each line of `text`, paired with the nesting depth it *starts* at.
@@ -9074,5 +9234,174 @@ impl Jobs for Delegating {}
     #[test]
     fn the_repositorys_own_tree_passes() {
         verify_repositories(&repo_root()).expect("the workspace complies with ADR-0016 standard 5");
+    }
+}
+
+#[cfg(test)]
+mod toolchain_tests {
+    use super::*;
+    use crate::signing_key_tests::TempDir;
+
+    /// The two files this gate reads, written into a throwaway tree.
+    ///
+    /// A real directory rather than two `&str`s passed to a helper: the check
+    /// resolves both paths under `root`, and a fixture that skipped that
+    /// would prove nothing about the gate CI runs.
+    fn tree(channel_line: &str, dockerfile: &str) -> TempDir {
+        let dir = TempDir::new("verify-toolchain");
+        fs::create_dir_all(dir.path().join("backends")).expect("backends/ is creatable");
+        fs::write(
+            dir.path().join(TOOLCHAIN_FILE),
+            format!("[toolchain]\n{channel_line}\ncomponents = [\"rustfmt\", \"clippy\"]\n"),
+        )
+        .expect("the toolchain file is writable");
+        fs::write(dir.path().join(TOOLCHAIN_IMAGE_FILE), dockerfile)
+            .expect("the Dockerfile is writable");
+        dir
+    }
+
+    /// The shape `backends/Dockerfile` actually has: one `FROM rust:` naming
+    /// the compiler, and two stages built `FROM chef`.
+    const FOUR_STAGES: &str = "\
+# Version pin: authored and verified against rustc 1.98.0.
+FROM rust:1.98.0-alpine3.22 AS chef
+FROM chef AS planner
+FROM chef AS builder
+FROM scratch AS server
+";
+
+    #[test]
+    fn a_dockerfile_naming_the_pinned_compiler_passes() {
+        let dir = tree("channel = \"1.98.0\"", FOUR_STAGES);
+        verify_toolchain(dir.path()).expect("the pin and the image agree");
+    }
+
+    /// **The decisive case, and it is the mutation that motivated this gate.**
+    /// Measured on 2026-09-05 with the real files: `channel = "1.98.0"` and a
+    /// `FROM rust:1.95.0-alpine3.22` left behind passed `just verify` and
+    /// `just fmt-check`, and no other `just ci` recipe reads either file.
+    /// Delete the comparison in [`verify_toolchain`] and this test fails.
+    #[test]
+    fn a_dockerfile_left_on_the_old_compiler_fails() {
+        let dir = tree(
+            "channel = \"1.98.0\"",
+            &FOUR_STAGES.replace("rust:1.98.0", "rust:1.95.0"),
+        );
+        let error = verify_toolchain(dir.path()).expect_err("the image is a compiler behind");
+        assert!(
+            error.contains("backends/Dockerfile:2")
+                && error.contains("1.95.0")
+                && error.contains("1.98.0"),
+            "the message must name the line and both versions: {error}"
+        );
+    }
+
+    /// The other direction: the Dockerfile moves and the pin does not. Same
+    /// defect, and a gate that only caught one order would be half a gate.
+    #[test]
+    fn a_toolchain_file_left_behind_the_dockerfile_fails() {
+        let dir = tree("channel = \"1.95.0\"", FOUR_STAGES);
+        let error = verify_toolchain(dir.path()).expect_err("the pin is a compiler behind");
+        assert!(
+            error.contains("1.98.0") && error.contains("1.95.0"),
+            "{error}"
+        );
+    }
+
+    /// The Alpine base is deliberately outside this gate's subject: it moves
+    /// on its own evidence, and a gate that refused an Alpine bump would be
+    /// making a decision that is not its own.
+    #[test]
+    fn the_alpine_base_may_move_without_the_compiler() {
+        let dir = tree(
+            "channel = \"1.98.0\"",
+            &FOUR_STAGES.replace("alpine3.22", "alpine3.23"),
+        );
+        verify_toolchain(dir.path()).expect("only the compiler is this gate's business");
+    }
+
+    /// A second `FROM rust:` line is the drift the one-literal design exists
+    /// to prevent; if someone writes one anyway, it is checked too.
+    #[test]
+    fn every_from_rust_line_is_checked_not_only_the_first() {
+        let dir = tree(
+            "channel = \"1.98.0\"",
+            &format!("{FOUR_STAGES}FROM rust:1.95.0-alpine3.22 AS second\n"),
+        );
+        let error = verify_toolchain(dir.path()).expect_err("the second line disagrees");
+        assert!(error.contains("backends/Dockerfile:6"), "{error}");
+    }
+
+    /// The real header names `rust:1.98.0-alpine3.23` to record a tag that
+    /// exists and was deliberately *not* taken, and `docs/` is full of the old
+    /// pin in dated sentences; a gate that read prose would fail on the
+    /// explanation of its own subject.
+    ///
+    /// Honest about its strength: this passes with the `#` filter in
+    /// [`rust_from_instructions`] **and without it**, because a comment's `#`
+    /// already displaces the keyword — measured by deleting the filter, which
+    /// leaves all ten of these tests green. It pins the property rather than
+    /// the mechanism, so a future parser that looked past a `#` would fail
+    /// here.
+    #[test]
+    fn a_comment_naming_another_tag_is_not_an_instruction() {
+        let dir = tree(
+            "channel = \"1.98.0\"",
+            &format!(
+                "# `rust:1.98.0-alpine3.23` also exists and was NOT taken.\n# FROM rust:1.95.0-alpine3.22 AS old\n{FOUR_STAGES}"
+            ),
+        );
+        verify_toolchain(dir.path()).expect("comments are prose, not instructions");
+    }
+
+    /// Dockerfile keywords are case-insensitive to the daemon, so they are
+    /// here: a lower-case `from` would build and must not walk past the gate.
+    ///
+    /// The assertion is on the *message*, not merely on `is_err()`. Written as
+    /// `expect_err` alone this test passed with the match made case-sensitive
+    /// — the line stopped being an instruction, the "checks nothing" vacuity
+    /// guard fired instead, and a red mutation read green. Found by running
+    /// that mutation; the fix is that the error has to be the mismatch.
+    #[test]
+    fn a_lower_case_from_is_still_an_instruction() {
+        let dir = tree(
+            "channel = \"1.98.0\"",
+            "from rust:1.95.0-alpine3.22 AS chef\n",
+        );
+        let error = verify_toolchain(dir.path()).expect_err("`from` builds exactly like `FROM`");
+        assert!(
+            error.contains("builds with 1.95.0"),
+            "a lower-case `from` must be read as the instruction it is, not skipped into the empty-file failure: {error}"
+        );
+    }
+
+    /// **Not vacuous.** A Dockerfile with no `rust:` image at all is a
+    /// failure: a gate that passes because it found nothing to check reports
+    /// success for a run in which nothing was checked.
+    #[test]
+    fn a_dockerfile_with_no_rust_image_fails_rather_than_passing_vacuously() {
+        let dir = tree("channel = \"1.98.0\"", "FROM scratch AS server\n");
+        let error = verify_toolchain(dir.path()).expect_err("nothing was checked");
+        assert!(
+            error.contains("checks nothing"),
+            "the message must say why an empty check is a failure: {error}"
+        );
+    }
+
+    /// An indented `channel` is invisible to the workflow's anchored `sed`,
+    /// so it is invisible here: this gate must not pass on a file CI would
+    /// read as empty.
+    #[test]
+    fn a_channel_line_ci_could_not_parse_fails() {
+        let dir = tree("  channel = \"1.98.0\"", FOUR_STAGES);
+        let error = verify_toolchain(dir.path()).expect_err("CI's sed is anchored");
+        assert!(error.contains("sed"), "{error}");
+    }
+
+    /// The repository's own two files, not a fixture — the gate is only worth
+    /// having if it reads what `just verify` reads.
+    #[test]
+    fn the_repository_itself_passes() {
+        verify_toolchain(&repo_root()).expect("this repository's own pin and image agree");
     }
 }

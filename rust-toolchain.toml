@@ -12,6 +12,13 @@
 # Until 2026-09-02 this said `channel = "stable"`, so a developer, CI and the
 # image could all be on different compilers with nothing noticing.
 #
+# "Must move together" is a GATE since 2026-09-05, not only a sentence here:
+# `just verify-toolchain` (`cargo xtask verify-toolchain`, the eighth check in
+# `just verify` and a step in CI's `self-checks` job) fails if the Dockerfile's
+# `FROM rust:` version and `channel` below disagree. It was added because the
+# mismatch was measured to pass everything else: with `channel` moved to
+# 1.98.0 and the `FROM` line left at 1.95.0, the whole of `just ci` was green.
+#
 # WHY 1.98.0 (moved 1.95.0 -> 1.98.0 on 2026-09-05). CrateStack 0.11.1 is
 # what this repository has adopted: `cratestack check` is the seventh gate in
 # `just verify` (`just check-schema`), and every crate of that release —
