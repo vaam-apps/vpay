@@ -2257,6 +2257,36 @@ still checked only by `just check-schema`; this bump makes CrateStack
 that it resolves, and asking authkestra upstream to move
 `authkestra-store-sqlx` to sqlx 0.9 (see the section below).
 
+**The gate, on the whole branch.** `just ci` **exit 0**, end to end, on this
+machine on 2026-09-05:
+
+```
+verify: ok — the ten gates above passed; the verify-docs report is advisory
+    Starting 1277 tests across 41 binaries
+     Summary [1029.968s] 1277 tests run: 1277 passed, 0 skipped
+verify-ignored: 0 ignored (expected 0), 41 test binaries (expected 41), 1277 total (minimum 1080)
+advisories ok, bans ok, licenses ok, sources ok
+```
+
+1277 is 1272 (the section below) plus `vpay_db::sql_audit`'s five.
+`just test-doc`: **90 passed, 0 failed, 1 ignored** (the ignored one is
+`sdks/rust`'s README block, pre-existing). Web: vitest across 8 packages, all
+passing. **An earlier attempt at this same gate failed** and is recorded
+rather than dropped: `vpay-db::postgres
+an_abandoned_transaction_survives_a_rollback_it_cannot_send` hit
+`failed to create a container: Timeout error` after 120 s, with 35 containers
+up and a load average of 28 on this shared host — a bare `docker run
+postgres:16-alpine` took 19.5 s to create at that moment. Nothing else ran
+(nextest cancels on the first failure), so that run is evidence about the
+host, not about the code; `cargo nextest run -p vpay-db` afterwards is
+**91 tests run: 91 passed, 0 skipped**, that case included.
+
+**The image builds and runs.**
+`docker buildx build -f backends/Dockerfile --target server .` on a private
+builder (`vpay-exp12b-opus`, removed afterwards; the shared default builder
+was never touched or pruned): **exit 0**, `docker run --rm … --version` prints
+`vpay-server 0.1.0`, image **16 MB** (`FROM scratch`, musl static, ADR-0004).
+
 ---
 
 ### The three OP stores that pinned sqlx 0.8 (2026-09-05)

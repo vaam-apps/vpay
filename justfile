@@ -952,6 +952,14 @@ verify-docs:
 # margin 1270 did, which is precisely why the *suite count* and not the floor
 # is what makes this a deliberate edit. `just test-doc` measures **90 passed,
 # 1 ignored** (86 + the four examples on `refusing_stores`).
+#
+# Re-measured the same day after the sqlx 0.8 -> 0.9 bump that change unblocked:
+# **1277 total, 41 test binaries, 0 ignored** — 1272 plus `vpay_db::sql_audit`'s
+# five, the test-only module that enforces the `AssertSqlSafe` injection audit
+# sqlx 0.9 demands. No new binary (it is a `#[cfg(test)] mod` inside the
+# `vpay-db` lib target), so `expected_suites` stays 41 and the floor stays
+# 1080. `just test-doc` is unchanged at **90 passed, 1 ignored**: the audit
+# module is `#[cfg(test)]` and rustdoc does not reach it.
 expected_ignored := "0"
 expected_suites := "41"
 # A floor, not a target — set a little under the measured 1059
