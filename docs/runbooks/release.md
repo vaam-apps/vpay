@@ -232,3 +232,62 @@ Everything above. Specifically:
   documented identity format, not from a certificate anyone has read.
 * `just release-dry-run` exercises the Dockerfiles and the chart. It exercises
   neither the registry, nor the attestations, nor the signature.
+* **No GitHub Actions cache-hit rate has ever been read for either
+  Dockerfile**, before or after the 2026-09-05 cargo-chef change (§7). What
+  §7 reports was measured on an authoring host with a local
+  `docker-container` builder. `type=gha` behaves differently — it is a
+  network-backed store with an eviction policy and a per-repository budget —
+  and nobody has looked at a `build-push-action` log to see which layers it
+  actually restored.
+
+## 7. What a release run recompiles (the build cache)
+
+Added 2026-09-05, when `backends/Dockerfile` gained
+[cargo-chef](https://github.com/LukeMathWalker/cargo-chef). Read this before
+changing that file, because the *order* of its instructions is now part of
+its behaviour.
+
+The Rust image is built in four stages:
+
+| Stage | What it does | When it re-runs |
+|---|---|---|
+| `chef` | `rust:1.95.0-alpine3.22`, `apk add musl-dev pkgconfig`, `cargo install cargo-chef --locked --version 0.1.78` | the base image tag or the cargo-chef pin changes |
+| `planner` | copies the workspace, runs `cargo chef prepare` → `recipe.json` (manifests + `Cargo.lock`, **no source**) | every build; it compiles nothing and takes ~0.1 s |
+| `builder` (cook) | `cargo chef cook --profile dist --target <host triple> -p vpay-server -p vpay-worker-bin` — compiles the ~317-package dependency graph into `target/` | `recipe.json` changes (a manifest or the lockfile moved), or `.cargo/config.toml` changes |
+| `builder` (build) | `ARG VPAY_GIT_SHA`, copy the real source, `cargo build`, `cp` to `/out` | any source edit, or a different `VPAY_GIT_SHA` |
+
+Three properties this shape depends on, each of which a plausible-looking
+edit destroys silently — the build stays *correct*, it just stops caching:
+
+1. **The cook's flags must match the build's.** Same `--profile dist`, same
+   `--target` (read from `rustc -vV`, never hardcoded — see the Dockerfile's
+   header and [ADR-0014](../adr/0014-builder-host-musl-triple.md)), same
+   `-p` selection, and `.cargo/` copied in first so `+crt-static` applies. A
+   cook under different rustflags writes fingerprints the real build rejects.
+2. **`ARG VPAY_GIT_SHA` must stay below the cook.** `release.yml` passes a
+   different `github.sha` on every push; an `ARG`/`ENV` pair above the cook
+   invalidates the dependency layer on every release build.
+3. **`planner` and `builder` must copy the same directories.** The recipe has
+   to describe the workspace the next stage compiles.
+
+Measured on the authoring host on 2026-09-05, `linux/amd64`, on a dedicated
+`docker-container` buildx builder pruned before the cold run — see
+[../plans/exp8-notes/opus.md](../plans/exp8-notes/opus.md) for the logs:
+
+| Build | Before (one-stage) | After (cargo-chef) |
+|---|---|---|
+| cold, empty builder cache | 254 s | 238 s |
+| one comment line added to `vpay-server/src/main.rs` | 260 s | **125 s** (cook `CACHED`) |
+| `--build-arg VPAY_GIT_SHA` changed, nothing else | — | **116 s** (cook `CACHED`) |
+| the same, with rule 2 violated (`ARG` moved above the cook) | — | 251 s (cook re-ran) |
+
+The runtime images are unchanged: `vpay-server` is 15.9 MB before and after,
+two layers both times, and `docker export` of it lists exactly `config/` and
+`/vpay-server`. cargo-chef is in the builder only.
+
+**The saving is bounded by `[profile.dist]`, and the number above is the
+honest one.** `dist` inherits `release`: `lto = "fat"`, `codegen-units = 1`.
+A fat-LTO link re-consumes every dependency's LLVM IR, so the final
+`cargo build` costs about two minutes however much of the graph is already
+compiled. Halving an incremental build is what cargo-chef buys here — not the
+near-instant rebuild it buys a project without fat LTO.
