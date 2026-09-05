@@ -31,6 +31,7 @@ import type {
   KnownEventType,
   ListEventsParams,
   ListParams,
+  Refund,
   RequestOptions,
 } from "./types.js";
 
@@ -192,5 +193,44 @@ describe("checkout.session.expired", () => {
     const future: Event = { ...sessionExpired, type: "checkout.session.completed" };
     expect(isCheckoutSessionEvent(future)).toBe(true);
     expect(future.type).toBe("checkout.session.completed");
+  });
+});
+
+
+/**
+ * `true` only when `A` and `B` are the *same* type, not merely mutually
+ * assignable — the deferred-conditional trick, which compares the two
+ * structurally rather than by assignability. Assignability is not enough
+ * here: `number | undefined` is assignable to `number | null | undefined`,
+ * so a widening or narrowing of a union member would slip past a plain
+ * annotation.
+ */
+type Exactly<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+
+/**
+ * **Issue #46: `Refund.fee` has three read states and they must stay three.**
+ *
+ * `0` is a measured "the movement was free"; `null` is "the rail reported
+ * nothing"; `undefined` — the key absent — is "this vpay predates the
+ * field". Only the first belongs on a merchant's settlement statement as a
+ * zero.
+ *
+ * This is the assertion, and it is a *type-level* one checked by
+ * `pnpm --filter @vaam-apps/vpay-sdk typecheck`, because the runtime test in
+ * `client.test.ts` cannot make it: types are erased before vitest runs, and
+ * `expect(x).toBe(null)` takes `any`. Measured on 2026-09-05 — with only that
+ * runtime test, narrowing the declaration to `fee?: number` left both
+ * `just lint-web` and the whole SDK suite green.
+ *
+ * Drop the `| null` and this stops compiling; drop the `?` and it stops
+ * compiling too.
+ */
+const refundFeeIsAbsentNullOrANumber: Exactly<Refund["fee"], number | null | undefined> = true;
+
+describe("the refund fee's three states", () => {
+  it("types fee so that absent, null and a measured zero stay three different answers", () => {
+    // If this file compiles, the assertion above has already been made.
+    expect(refundFeeIsAbsentNullOrANumber).toBe(true);
   });
 });
