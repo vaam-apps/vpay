@@ -34,6 +34,22 @@ use uuid::Uuid;
 /// `vpay_testkit::containers::start_postgres_with_retry`, which is where the
 /// pinned tag and the host-port-collision retry are documented.
 async fn migrated_postgres() -> anyhow::Result<(ContainerAsync<PostgresImage>, PgPool)> {
+    let (container, pool, _url) = migrated_postgres_with_url().await?;
+    Ok((container, pool))
+}
+
+/// The same container, additionally handing back the connection string it is
+/// reachable on.
+///
+/// This exists because one test in this file drives a tool that is not linked
+/// into the process — `cratestack migrate baseline` is a separate binary and
+/// takes a `--database-url` — and building a second URL from the container
+/// guard at that call site would be a second spelling of the credentials this
+/// helper already chose. `migrated_postgres` delegates here rather than the
+/// other way round so there is exactly one place that starts a container and
+/// runs `backends/migrations` against it.
+async fn migrated_postgres_with_url()
+-> anyhow::Result<(ContainerAsync<PostgresImage>, PgPool, String)> {
     let container = vpay_testkit::containers::start_postgres_with_retry()
         .await
         .context("postgres:16-alpine container starts (it is cached locally on this machine)")?;
@@ -54,7 +70,7 @@ async fn migrated_postgres() -> anyhow::Result<(ContainerAsync<PostgresImage>, P
         .await
         .context("every migration under backends/migrations applies cleanly")?;
 
-    Ok((container, pool))
+    Ok((container, pool, url))
 }
 
 /// Inserts the two reference currencies vpay_core::Currency models (XAF, EUR)
@@ -706,5 +722,412 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
          filter, which is the defect this migration exists for: {plan}"
     );
 
+    Ok(())
+}
+
+// -------------------------------------------- schemas/vpay.cstack drift ----
+//
+// Everything below measures one thing: how far `schemas/vpay.cstack` is from
+// the database `backends/migrations/*.sql` actually builds. Until this test
+// landed, that distance was a paragraph in `docs/status.md` written from
+// reading both files — "content remains a design sketch" — and nothing ran
+// that could have contradicted it.
+//
+// The tool is `cratestack migrate baseline --strict`
+// (https://cratestack.dev/tooling/migrate-baseline). Its normal job is
+// adoption: introspect a live database, report how it differs from the
+// schema, write a snapshot from what it found. `--strict` inverts the exit
+// condition — "Fail (non-zero exit, no writes) if any drift is found … For
+// teams that want baselining to double as a 'prove the schema already
+// matches' CI gate" — which is what makes it usable as a measurement here.
+// vpay is not adopting anything: `backends/migrations/*.sql` is the
+// authoritative schema and the `.cstack` file is excluded from the build
+// graph (`docs/status.md`, "CrateStack"). What this test wants is the
+// report, and `--strict`'s promise that producing it changed nothing.
+
+/// Pending drift changes between `schemas/vpay.cstack` and a freshly migrated
+/// vpay database, as counted by `cratestack migrate baseline --strict`.
+///
+/// **Measured on 2026-09-05, not chosen**, against `cratestack-cli 0.11.1` and
+/// `postgres:16-alpine` — `docs/plans/exp13-notes/opus.md` has the full
+/// transcript. **This number must move when the schema grows.** It is the
+/// size of the gap between a design sketch and the migrations that outran it,
+/// so a commit that closes part of that gap and leaves this constant alone
+/// has changed the schema without measuring the change; the test failing is
+/// the intended way to find that out.
+///
+/// It is deliberately not, and must never become, `0`. A zero here would not
+/// mean the schema had caught up — it would mean the report stopped finding
+/// things, which is the failure mode `--strict` is easiest to misread as
+/// success in.
+const EXPECTED_DRIFT_CHANGES: u32 = 86;
+
+/// Tables and views the drift above is spread across. Reported on the same
+/// header line as the change count and pinned for the same reason: 86 changes
+/// concentrated in three relations and 86 spread over seventeen are different
+/// facts about the schema, and only one of them is true.
+const EXPECTED_DRIFTED_RELATIONS: u32 = 17;
+
+/// Live columns `cratestack` declines to compare because it cannot map their
+/// Postgres type onto a `.cstack` scalar, which it reports as a trailing
+/// "review manually" block.
+///
+/// Pinned because it is a *blind spot in the measurement itself*, not part of
+/// it: these columns are excluded from the 86 above, so the drift on them —
+/// whatever it is — is unmeasured. Every one is a `jsonb`, an `int2`/`int4`
+/// or a `bytea`. If this number grows, the report is comparing less than it
+/// was, and `EXPECTED_DRIFT_CHANGES` can fall for a reason that has nothing
+/// to do with the schema improving.
+const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 18;
+
+/// Absolute path to the repository root, derived from this test crate's own
+/// manifest directory (`backends/tests/integration`) rather than from the
+/// process's working directory, which `cargo nextest` does not promise.
+fn repo_root() -> anyhow::Result<std::path::PathBuf> {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .context("resolving the repository root from CARGO_MANIFEST_DIR")
+}
+
+/// The `cratestack` version string on `PATH`, e.g. `"0.11.1"`.
+///
+/// # Errors
+///
+/// Fails if the binary is absent. That is deliberate and matches
+/// `just check-schema`, whose own comment gives the reason: a check that
+/// downgrades itself to a skip "reports success for a run in which nothing
+/// was checked, in a log indistinguishable from one in which everything
+/// passed". There is no `#[ignore]` and no early `return Ok(())` below.
+fn cratestack_version() -> anyhow::Result<String> {
+    let output = std::process::Command::new("cratestack")
+        .arg("--version")
+        .output()
+        .context(
+            "the `cratestack` CLI must be on PATH for this test — it is a red failure, not a \
+             skip, exactly as `just check-schema` treats the same absence. Install the pinned \
+             release with `cargo install cratestack-cli --locked --version 0.11.1` (the version \
+             pin lives in `justfile` as `cratestack_version`)",
+        )?;
+    anyhow::ensure!(
+        output.status.success(),
+        "`cratestack --version` exited {}",
+        output.status
+    );
+    // "cratestack <semver>"
+    let stdout = String::from_utf8(output.stdout).context("`cratestack --version` prints UTF-8")?;
+    let version = stdout
+        .split_whitespace()
+        .nth(1)
+        .context("`cratestack --version` should print `cratestack <semver>`")?;
+    Ok(version.to_owned())
+}
+
+/// Parses `migrate baseline`'s header — `drift detected in 17
+/// table(s)/view(s) (86 change(s) total):` — into `(relations, changes)`.
+///
+/// Tokenised rather than split on `(`, because `table(s)/view(s)` and
+/// `change(s)` both contain parentheses and the first draft of this function
+/// read `86 change` out of the wrong one.
+fn parse_drift_header(stdout: &str) -> anyhow::Result<(u32, u32)> {
+    let line = stdout
+        .lines()
+        .find(|line| line.starts_with("drift detected in "))
+        .context(
+            "`migrate baseline --strict` printed no `drift detected in …` header. Either the \
+             report format changed or the run found no drift at all — and no drift would mean \
+             the schema now matches the migrations, which is a claim for a human to check \
+             rather than for this test to accept",
+        )?;
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    let relations = tokens
+        .iter()
+        .skip_while(|token| **token != "in")
+        .nth(1)
+        .context("no relation count after `in` in the drift header")?
+        .parse()
+        .context("the relation count in the drift header is not a number")?;
+    let changes = tokens
+        .iter()
+        .find_map(|token| token.strip_prefix('('))
+        .context("no `(N change(s) total)` group in the drift header")?
+        .parse()
+        .context("the change count in the drift header is not a number")?;
+    Ok((relations, changes))
+}
+
+/// Every table the report names as present in the live database and absent
+/// from `schemas/vpay.cstack`, in the report's own words.
+fn tables_missing_from_the_schema(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("[lossy] table `")?;
+            let (name, tail) = rest.split_once('`')?;
+            tail.starts_with(" exists in the live database but is not declared in the schema")
+                .then(|| name.to_owned())
+        })
+        .collect()
+}
+
+/// `schemas/vpay.cstack` measured against the database it claims to mirror.
+///
+/// The schema's own header lists what it "deliberately does NOT invent shapes
+/// for". This test does not take that list on trust — it measures, and the
+/// measured set is **larger** than the header's: `disabled_clients`,
+/// `oauth_signing_keys` and `oauth_client_assertion_jtis` are lumped under
+/// "the authkestra tables" in that prose, but they live in `public` rather
+/// than in the `authkestra` schema, so they are three more tables the file
+/// omits and not a category it already accounted for.
+///
+/// See `docs/plans/exp13-notes/opus.md` for the full CLI transcript and
+/// `docs/status.md`, "CrateStack", for what this number means.
+#[tokio::test]
+async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> anyhow::Result<()> {
+    // Printed unconditionally: the grammar that answered is part of the
+    // measurement, and `justfile`'s `cratestack_version` pin is reported
+    // rather than enforced locally for the reason `check-schema` gives.
+    let version = cratestack_version()?;
+    eprintln!("cratestack CLI under test: {version} (justfile pins 0.11.1)");
+
+    let root = repo_root()?;
+    let schema = root.join("schemas/vpay.cstack");
+    let schema_before = std::fs::read(&schema).context("reading schemas/vpay.cstack")?;
+
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+
+    // `--out-dir` is outside the checkout, so a `--strict` run that wrote
+    // anything despite its documented "no writes" would land here and not in
+    // the repository. It is created empty first, so "nothing was written" is
+    // an assertion about a directory that exists rather than about one that
+    // may simply never have been reached.
+    let out_dir = std::env::temp_dir().join(format!("vpay-cstack-baseline-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&out_dir).context("creating the out-dir for migrate baseline")?;
+
+    let output = std::process::Command::new("cratestack")
+        .current_dir(&root)
+        .args(["migrate", "baseline"])
+        .arg("--schema")
+        .arg(&schema)
+        .arg("--database-url")
+        .arg(&url)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .arg("--strict")
+        .output()
+        .context("running `cratestack migrate baseline --strict`")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    eprintln!("--- migrate baseline --strict stdout ---\n{stdout}");
+    eprintln!("--- migrate baseline --strict stderr ---\n{stderr}");
+
+    // `--strict` exits non-zero when it finds drift. A zero exit would mean
+    // the schema and the migrations agree, which is the one outcome this test
+    // must not silently accept — see EXPECTED_DRIFT_CHANGES.
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "`migrate baseline --strict` must exit 1 on a drifted database"
+    );
+
+    let (relations, changes) = parse_drift_header(&stdout)?;
+    assert_eq!(
+        changes, EXPECTED_DRIFT_CHANGES,
+        "the drift between schemas/vpay.cstack and backends/migrations changed: the report \
+         counts {changes} pending change(s), this test pins {EXPECTED_DRIFT_CHANGES}. If the \
+         schema grew, move the constant and docs/status.md's CrateStack section in the same \
+         commit and say what closed. If it shrank without an edit to the schema, find out what \
+         the report stopped seeing before moving anything"
+    );
+    assert_eq!(
+        relations, EXPECTED_DRIFTED_RELATIONS,
+        "the drift is spread over {relations} table(s)/view(s), this test pins \
+         {EXPECTED_DRIFTED_RELATIONS}"
+    );
+
+    // The exact set, sorted, because the count above is not sufficient on its
+    // own and that was measured rather than assumed: adding a `DisabledClient`
+    // model for the existing `disabled_clients` table swaps one change for
+    // another — the "table … is not declared" line goes away and a "column
+    // `disabled_at` default value differs" line takes its place — and the
+    // total stays at exactly 86. A whole table entering the schema was
+    // invisible to `EXPECTED_DRIFT_CHANGES`. This assertion is what caught
+    // it. (`docs/plans/exp13-notes/opus.md`, mutation 2.)
+    let mut missing = tables_missing_from_the_schema(&stdout);
+    missing.sort();
+    assert_eq!(
+        missing,
+        [
+            // sqlx's own bookkeeping table. Not a vpay design object and not
+            // something `schemas/vpay.cstack` should ever declare — but it is
+            // genuinely in the database `sqlx::migrate!` produces, so it is
+            // honestly part of the drift rather than something to filter out.
+            "_sqlx_migrations",
+            "checkout_sessions",
+            "disabled_clients",
+            "events",
+            "idempotency_keys",
+            "jobs",
+            // These three are `public` tables, not `authkestra` ones. The
+            // schema header's "and the authkestra tables" does not cover
+            // them; the `authkestra.*` tables really are invisible here,
+            // because baseline introspects the connection's own schema.
+            "oauth_client_assertion_jtis",
+            "oauth_signing_keys",
+            "provider_requests",
+            "refunds",
+            "webhook_deliveries",
+        ],
+        "the set of tables the migrations build and the schema does not declare"
+    );
+
+    // ---- the cross-column CHECKs, and what the report does with them ----
+    //
+    // This is the evidence for the `@@check(expr)` ask recorded in
+    // `schemas/vpay.cstack`'s header and in docs/status.md, and the finding is
+    // sharper than "the report names them as things the schema cannot
+    // express": **it does not name them at all.** Every CHECK the report
+    // lists is a single-column one. Every multi-column CHECK in the database
+    // is invisible to it, in both directions.
+    //
+    // The claim being made here is "the report cannot see these", not "these
+    // strings do not appear in the report" — and those come apart the moment
+    // somebody deletes a constraint, which is the case that matters most.
+    // So the live database is read first, from `pg_constraint`, and the
+    // absence below is asserted only about constraints that demonstrably
+    // exist. Measured 2026-09-05: ten multi-column CHECKs, zero of them
+    // reported.
+    let multi_column_checks: Vec<(String, String)> = sqlx::query(
+        "SELECT conrelid::regclass::text AS tbl, conname AS name \
+         FROM pg_constraint \
+         WHERE contype = 'c' AND connamespace = 'public'::regnamespace \
+           AND cardinality(conkey) > 1 \
+         ORDER BY tbl, name",
+    )
+    .fetch_all(&pool)
+    .await
+    .context("reading the live database's multi-column CHECK constraints")?
+    .iter()
+    .map(|row| (row.get("tbl"), row.get("name")))
+    .collect();
+    let observed: Vec<(&str, &str)> = multi_column_checks
+        .iter()
+        .map(|(table, name)| (table.as_str(), name.as_str()))
+        .collect();
+    assert_eq!(
+        observed,
+        [
+            ("checkout_sessions", "urls_match_ui_mode"),
+            ("idempotency_keys", "complete_has_a_response"),
+            ("jobs", "lock_is_paired"),
+            ("oauth_signing_keys", "active_key_has_no_expiry"),
+            ("oauth_signing_keys", "expiry_after_creation"),
+            ("payment_intents", "lpe_paired"),
+            // The over-refund guard.
+            ("payment_intents", "no_over_refund"),
+            ("provider_requests", "response_is_paired"),
+            // The refund-capability coherence rule.
+            ("providers", "partial_refunds_imply_refunds"),
+            ("refunds", "failure_paired"),
+        ],
+        "the multi-column CHECK constraints backends/migrations builds. This list is read from \
+         the live database rather than from the report precisely because the report cannot see \
+         it — so if a constraint is deleted from a migration, this assertion is what notices, \
+         and the drift count below cannot"
+    );
+
+    // None of the ten reaches the report.
+    for (table, name) in &observed {
+        assert!(
+            !stdout.contains(name),
+            "`{table}.{name}` is a multi-column CHECK that `migrate baseline` did not mention on \
+             2026-09-05, at cratestack 0.11.1. It does now. That is a change in what the tool \
+             can see — very likely the cross-column CHECK support this repository has been \
+             asking for — and it wants recording in docs/status.md and schemas/vpay.cstack's \
+             header rather than a constant bump: {stdout}"
+        );
+    }
+
+    // Two of the ten sit on tables the schema *does* model, so their absence
+    // is not the table being skipped: a single-column CHECK on each of those
+    // very tables is reported, and pinning both lines is what separates "the
+    // tool cannot see cross-column CHECKs" from "the tool said nothing about
+    // `providers` or `payment_intents` at all".
+    //
+    // Why this matters beyond the `@@check` ask: a future `--strict` run that
+    // exits 0 would say nothing whatever about the over-refund guard or the
+    // refund-capability rule — the two constraints the migrations added
+    // *because* the grammar could not express them are exactly the two a
+    // green drift report cannot vouch for. Deleting `CONSTRAINT
+    // no_over_refund` from migration 0003 leaves the count below at 86,
+    // measured; `over_refund_is_rejected_by_the_database` above is what
+    // catches that, and the `pg_constraint` assertion here is what catches it
+    // in this test.
+    for reported in [
+        // providers, alongside the invisible partial_refunds_imply_refunds
+        "CHECK `code_length` exists in the live database but is not declared in the schema",
+        // payment_intents, alongside the invisible no_over_refund
+        "CHECK `amount_refunded_non_negative` exists in the live database but is not declared in \
+         the schema",
+    ] {
+        assert!(
+            stdout.contains(reported),
+            "expected the report to carry `{reported}` — a single-column CHECK on the same table \
+             as one of the invisible cross-column ones: {stdout}"
+        );
+    }
+
+    // The report's own account of what it declined to compare.
+    let unmappable: u32 = stdout
+        .lines()
+        .find_map(|line| {
+            line.split_whitespace()
+                .next()
+                .filter(|_| line.contains("could not confidently map"))
+                .and_then(|count| count.parse().ok())
+        })
+        .context("the report should carry a `N column(s) … could not confidently map` line")?;
+    assert_eq!(
+        unmappable, EXPECTED_UNMAPPABLE_COLUMNS,
+        "the number of columns excluded from the comparison changed; see \
+         EXPECTED_UNMAPPABLE_COLUMNS for why that invalidates the count above rather than \
+         merely accompanying it"
+    );
+
+    // `--strict` documents "no snapshot was written and no baseline row was
+    // recorded". Both halves are checked: the out-dir, and the repository.
+    assert_eq!(
+        stderr.trim(),
+        format!(
+            "Error: migrate baseline: --strict refuses to baseline with {EXPECTED_DRIFT_CHANGES} \
+             pending drift change(s); resolve the drift above (or drop --strict) and try again. \
+             No snapshot was written and no baseline row was recorded."
+        ),
+        "the strict refusal should name the same count the report did"
+    );
+    let written: Vec<_> = std::fs::read_dir(&out_dir)
+        .context("listing the out-dir after the run")?
+        .collect::<Result<Vec<_>, _>>()
+        .context("listing the out-dir after the run")?
+        .iter()
+        .map(|entry| entry.file_name())
+        .collect();
+    assert!(
+        written.is_empty(),
+        "`--strict` promises no writes when it finds drift, and wrote {written:?}"
+    );
+    assert!(
+        !root.join("migrations").exists(),
+        "`--out-dir` was pointed outside the checkout; a `migrations/` directory at the \
+         repository root means the flag was ignored and the default was used"
+    );
+    assert_eq!(
+        std::fs::read(&schema).context("re-reading schemas/vpay.cstack")?,
+        schema_before,
+        "measuring the schema must not edit it"
+    );
+
+    std::fs::remove_dir_all(&out_dir).context("removing the out-dir")?;
     Ok(())
 }

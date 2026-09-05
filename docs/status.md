@@ -2271,11 +2271,15 @@ What this does and does not prove:
   against the real CrateStack 0.11.1 grammar.
 - **It does not prove a working migration or a running server.** The file is
   still **excluded from the build graph** — no crate depends on it, no macro
-  consumes it, and `cratestack migrate diff` has never been run against a real
-  vpay Postgres. `just check-schema` does not change that: it parses and
-  type-checks the file and stops there. Nothing generates code from it,
-  nothing diffs it against `backends/migrations/*.sql`, and this row stays 🟡
-  for exactly that reason.
+  consumes it, and it **drives no migration**: nothing generates code or DDL
+  from it, and `cratestack migrate diff` has still never been run against a
+  real vpay Postgres. `just check-schema` does not change that: it parses and
+  type-checks the file and stops there, and this row stays 🟡 for exactly that
+  reason.
+  ~~Nothing diffs it against `backends/migrations/*.sql`.~~ **Corrected
+  2026-09-05: something does now, and it found 86 changes — see "The measured
+  drift" below.** Comparing the two is not the same as either of them driving
+  the other, so the sentences above are unaffected.
 - **`docs/flows/*.md` Status sections did not change, and that is checked
   rather than assumed.** The only two flow documents that mention this file —
   `docs/flows/ledger.md` and `docs/flows/configuration.md` — cite it for what
@@ -2318,6 +2322,60 @@ What this does and does not prove:
   cannot be computed from the modelled data, because nothing says *which*
   merchant a `merchant_payable` posting belongs to. That is a real gap in the
   Rust type this schema mirrors, not something to paper over in the schema.
+
+#### The measured drift (2026-09-05)
+
+**`schemas/vpay.cstack` differs from the database `backends/migrations/*.sql`
+builds by 86 pending drift changes across 17 tables/views.** Measured, not
+estimated: `cratestack migrate baseline --strict` at the pinned CLI 0.11.1,
+against a `postgres:16-alpine` testcontainer with all 30 migrations applied by
+`sqlx::migrate!`. It is asserted by
+`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` in
+`backends/tests/integration/tests/postgres_smoke.rs` — the exact count, the
+exact seventeen relations, and the exact eleven tables the report names as
+present in the database and absent from the schema. The full transcript is in
+[docs/plans/exp13-notes/opus.md](plans/exp13-notes/opus.md).
+
+Until this test, "content remains a design sketch" was a sentence written from
+reading both files, and nothing ran that could have contradicted it. **The
+number must move when the schema grows**, and it must never be asserted as 0:
+this file is still excluded from the build graph and still drives no migration,
+so a 0 would mean the report stopped finding things rather than that the gap
+closed. `--strict` writes nothing — the out-dir is outside the checkout and is
+asserted empty, no `cratestack_migrations` row is recorded, and the schema file
+is byte-identical afterwards.
+
+**The two cross-column CHECKs do not appear in the drift report at all.** This
+is the finding, and it strengthens the `@@check(expr)` ask above rather than
+merely illustrating it. Every CHECK `migrate baseline` reports is a
+single-column one; read out of `pg_constraint`, the live database has **ten**
+multi-column CHECKs — including `providers.partial_refunds_imply_refunds` and
+`payment_intents.no_over_refund` — and **none of the ten reaches the report**,
+in either direction. Both of those two sit on tables the schema *does* model,
+and single-column CHECKs on those same tables are reported one line away, so
+the absence is not the tables being skipped. The consequence worth writing
+down: `--strict`'s documented purpose is proving in CI that a database already
+matches the schema, and **on this database a green `--strict` run would say
+nothing whatever about the over-refund guard or the refund-capability rule** —
+the two constraints raw SQL added *because* the grammar could not express them
+are exactly the two the drift tool cannot vouch for. Deleting `CONSTRAINT
+no_over_refund` from migration 0003 leaves the count at 86, measured; the test
+catches it by reading `pg_constraint` directly, and
+`over_refund_is_rejected_by_the_database` catches it behaviourally.
+
+Two further blind spots, both pinned by the same test so they cannot move
+unnoticed: **18 columns are excluded from the comparison entirely** (`jsonb`,
+`int2`/`int4`, `bytea` — the report says so itself and asks for a manual
+review), and the `authkestra.*` tables are never introspected, because baseline
+reads the connection's own schema. `disabled_clients`, `oauth_signing_keys` and
+`oauth_client_assertion_jtis` are **not** in that second category — they are
+`public` tables, so the schema header's "and the authkestra tables" does not
+account for them, and the measured set of undeclared tables is larger than the
+header claims. Measuring rather than copying that list is what surfaced it.
+
+What was **not** done: `cratestack migrate diff` was still never run, no
+snapshot was ever written, nothing was reconciled, and none of the 86 changes
+was closed. This is a measurement, not a step toward wiring the file in.
 
 ---
 
