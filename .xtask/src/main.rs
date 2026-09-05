@@ -2615,6 +2615,32 @@ fn reference_definitions(masked: &str) -> Vec<DocLink> {
 /// 3. **HTML comments**, and only when terminated, for the same reason: an
 ///    unclosed `<!--` is left as ordinary text rather than swallowing the
 ///    file.
+///
+/// # Three regions this does *not* mask, and the measurement behind that
+///
+/// [`fence_marker`]'s four-backtick clause exists because a mask that is
+/// wrong in the too-much direction makes the gate pass by finding nothing.
+/// Its siblings are wrong in the other direction — they leave code exposed as
+/// prose, so a `[a](b)` inside one is checked and reported as broken when it
+/// is not a link at all:
+///
+/// * **A fence inside a blockquote** (`> ```). [`fence_marker`] trims spaces
+///   only, so the `>` stops it opening a block.
+/// * **An indented code block** (four spaces, no fence). Deliberate as far as
+///   it goes — `fence_marker` refuses more than three spaces of indent, so an
+///   indented block cannot *open* one — but its contents are not masked.
+/// * **HTML `<pre>`/`<code>` blocks**, which only [`mask_html_comments`] would
+///   see and it looks for `<!--`.
+///
+/// None of the three is in the tree. Measured 2026-09-05, and these are the
+/// commands to re-measure with, because "no false positives today" is a fact
+/// with a date on it and not a property:
+///
+/// ```text
+/// git grep -nE '^ {0,3}> *(```|~~~)' -- '*.md'   # blockquoted fences
+/// git grep -nE '^ {4,}.*\]\('      -- '*.md'   # indented block with a link
+/// git grep -n  '<pre'               -- '*.md'   # HTML code blocks
+/// ```
 fn mask_non_links(text: &str) -> String {
     mask_html_comments(&mask_code_spans(&mask_fenced_blocks(text)))
 }
