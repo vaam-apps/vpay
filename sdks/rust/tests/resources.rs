@@ -620,9 +620,11 @@ async fn a_refund_fee_decodes_as_unknown_free_or_a_real_cost() {
         (Some(json!(null)), None),
         (Some(json!(0)), Some(0)),
         (Some(json!(250)), Some(250)),
-        // A vpay older than the field omits the key entirely. `serde(default)`
-        // is what keeps that decodable, and "absent" means the same thing
-        // `null` does: unknown.
+        // A vpay older than the field omits the key entirely, and "absent"
+        // means the same thing `null` does: unknown. It is `Option` and not
+        // the `#[serde(default)]` beside it that makes this decodable —
+        // measured 2026-09-05, deleting the attribute leaves this case
+        // passing.
         (None, None),
     ] {
         let (server, client) = fixture().await;

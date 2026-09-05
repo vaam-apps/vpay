@@ -80,8 +80,9 @@ later server version accepts.
 
 The `refund.fee` row is at parity on the *capability* and not on the shape,
 for the same reason the note below records about `KnownEventType`: Rust models
-the field as `Option<i64>` with `#[serde(default)]`, which collapses an absent
-key and an explicit `null` into `None`, while TypeScript models it as
+the field as `Option<i64>` (carrying an explicit but redundant
+`#[serde(default)]`), which collapses an absent key and an explicit `null`
+into `None`, while TypeScript models it as
 `fee?: number | null`, whose read type is exactly `number | null | undefined`,
 which keeps the two apart. **It is the `?` that does that, not this repo's
 `exactOptionalPropertyTypes`** — measured 2026-09-05 with the workspace's own

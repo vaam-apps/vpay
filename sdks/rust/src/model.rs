@@ -448,16 +448,24 @@ pub struct Refund {
     /// nobody measured, which is what this field was added (issue #46) to
     /// stop.
     ///
-    /// # `#[serde(default)]`, and what it does and does not preserve
+    /// # An absent key and a `null` are both `None`, deliberately
     ///
-    /// An **absent** key and an explicit `null` both decode to `None`, and
-    /// that collapse is deliberate: vpay always emits every documented key
-    /// (`vpay_api::model`), so on its own wire the two cannot differ, and
-    /// `Option<Option<i64>>` would push a distinction with no producer into
-    /// every match a merchant writes. The distinction that carries meaning —
-    /// unknown versus free — is `None` versus `Some(0)`, and that one is
-    /// preserved. The default also means this SDK still decodes a `refund`
-    /// from a vpay older than the field.
+    /// vpay always emits every documented key (`vpay_api::model`), so on its
+    /// own wire the two cannot differ, and `Option<Option<i64>>` would push a
+    /// distinction with no producer into every match a merchant writes. The
+    /// distinction that carries meaning — unknown versus free — is `None`
+    /// versus `Some(0)`, and that one is preserved. A `refund` from a vpay
+    /// older than the field still decodes.
+    ///
+    /// `#[serde(default)]` is **explicit rather than load-bearing**, and an
+    /// earlier version of this comment claimed otherwise. `serde` already
+    /// yields `None` for a missing `Option<T>` field — which is why the
+    /// sibling [`reason`](Refund::reason) carries no `default` — and,
+    /// measured 2026-09-05, deleting the attribute leaves
+    /// `a_refund_fee_decodes_as_unknown_free_or_a_real_cost` (whose fourth
+    /// case omits the key entirely) passing. It stays because the issue that
+    /// specified this field asked for it and because saying so in the
+    /// declaration costs nothing; it is not what protects the absent case.
     ///
     /// **It is `None` from every vpay deployment today.** Neither rail
     /// reports a refund fee: Orange has no refund API and MTN refunds are the
