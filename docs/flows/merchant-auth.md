@@ -300,9 +300,31 @@ deployment grows `idempotency_keys` monotonically between restarts.
 
 ### Resources
 
-**Served** marks what a running `vpay-server` actually answers as of
-2026-09-05. Everything else in this table is implemented by both SDKs and by
-neither server route: an authenticated call gets the honest `404`.
+**Served** marks what a running `vpay-server` actually answers, re-measured
+against `vpay_api::V1_ROUTES` on **2026-09-06** (issue #45 rebased onto issue
+#47; the table below carries both rows). Everything marked `⛔ 404` is
+implemented by both SDKs and by no server route: an authenticated call gets
+the honest `404`.
+
+`GET /v1/refunds/{id}` is served and `POST /v1/refunds` is not, which is an
+unusual pair and a deliberate one (issue #45). Creating a refund needs
+`ProviderAdapter::refund`, which is `NotImplemented` on MTN (refunds are the
+Disbursements product) and `Unsupported` on Orange; **reading** one is the
+authoritative read `docs/flows/provider-port.md` requires of every money
+movement, and without it a merchant holding a `re_…` has neither a call nor
+an event — `charge.refunded` and `charge.refund.updated` are emitted by
+nothing ([../status.md](../status.md)) and webhook delivery is at-least-once
+and unordered in any case ([webhooks.md](webhooks.md)).
+
+Two corrections this re-measurement produced, both of documents rather than
+of code. The `/v1/events` row read `⛔ 404` and had been wrong since Step 5
+served that resource on 2026-09-03; it and `GET /v1/events/{id}` are now
+listed as what `V1_ROUTES` mounts. And **this table does not list the
+Checkout Session routes at all** — `POST`/`GET /v1/checkout/sessions`,
+`GET /v1/checkout/sessions/{id}` and
+`POST /v1/checkout/sessions/{id}/expire` are served, and are documented with
+their refusals in [hosted-checkout.md](hosted-checkout.md); they are not
+repeated here rather than being restated in a second place that can drift.
 
 | Method | Path | Request fields | Returns | Served |
 |---|---|---|---|---|
@@ -312,7 +334,9 @@ neither server route: an authenticated call gets the honest `404`.
 | `POST` | `/v1/payment_intents/{id}/cancel` | | `payment_intent` | ✅ |
 | `GET` | `/v1/payment_intents` | `limit`, `starting_after`, `ending_before` | `list` of `payment_intent` | ✅ |
 | `POST` | `/v1/refunds` | `payment_intent`, `amount` (omit for full), `reason`, `metadata[…]` | `refund` | ⛔ 404 |
-| `GET` | `/v1/events` | `limit`, `starting_after`, `ending_before`, `type` | `list` of `event` | ⛔ 404 |
+| `GET` | `/v1/refunds/{id}` | | `refund` | ✅ |
+| `GET` | `/v1/events` | `limit`, `starting_after`, `ending_before`, `type` | `list` of `event` | ✅ — `type` is accepted and **ignored**, not implemented ([../api/README.md](../api/README.md)) |
+| `GET` | `/v1/events/{id}` | | `event` | ✅ |
 | `GET` | `/v1/balance` | | `balance` | ⛔ 404 |
 | `GET` | `/v1/account_holders` | `msisdn`, `payment_method_type` | `account_holder` | ✅ **New 2026-09-05 (issue #47).** Reaches the rail over HTTP; 🟡 in the sense every rail claim here is 🟡 — that rail has only ever been a WireMock stub. `payments:read` is enough. Nothing is persisted, and the response carries a name and nothing else ([account-holder-lookup.md](account-holder-lookup.md)) |
 
@@ -430,9 +454,27 @@ answers `200` with the intent in `processing` or `requires_action`, or `409
 charge_declined` / `502` — not the `501 not_implemented` this paragraph
 recorded on the day it was written. The rail behind it has only ever been a
 WireMock host, and nothing polls the resulting charge, so no intent has
-reached `succeeded`. `/v1/refunds`, `/v1/events` and `/v1/balance` are
-still the honest 404, and that is the intended answer rather than a
-placeholder.
+reached `succeeded`. ~~`/v1/refunds`, `/v1/events` and `/v1/balance` are
+still the honest 404~~ **— corrected 2026-09-05: `/v1/events` and
+`/v1/events/{id}` have been served since Step 5 (2026-09-03), and this
+sentence had been stale for two days.** `POST /v1/refunds` and
+`GET /v1/balance` are still the honest 404, and that is the intended answer
+rather than a placeholder.
+
+**Updated 2026-09-05 (issue #45): `GET /v1/refunds/{id}` is served.**
+Merchant-scoped by a join onto the owning intent — `refunds` has no
+`merchant_id` column, and migration `0017` was deliberately not altered to
+give it one — rendering `vpay_api::model::RefundObject`, the same renderer an
+eventual `charge.refund.updated` will have to put in `data.object`. A foreign
+merchant's refund and an id that never existed are the byte-identical
+`resource_missing` 404. Proven by four container-backed cases in
+`backends/tests/integration/tests/refunds.rs`
+(`a_stored_refund_reads_back_through_the_sdk`,
+`merchant_b_cannot_read_merchant_as_refund`,
+`the_api_response_and_an_events_payload_for_one_refund_are_byte_identical`,
+`creating_a_refund_is_still_the_honest_404`). **Nothing creates a refund**:
+the rows those cases read are `INSERT`ed by the suite, because
+`vpay_db::Refunds` exposes one read and no write.
 
 **Evidence for the Step 2 half, run on this machine on 2026-09-03 with a
 working rootless Docker daemon:** `cargo nextest run -p vpay-db -p

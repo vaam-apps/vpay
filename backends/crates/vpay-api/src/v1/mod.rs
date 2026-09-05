@@ -75,6 +75,13 @@ pub mod events;
 // cannot be called from one. Nothing here reaches a database or a rail.
 pub mod paging;
 pub mod payment_intents;
+/// The Refund resource — one route, `GET /v1/refunds/{id}` (issue #45).
+///
+/// Its own module for [`payment_intents`]'s reason: one resource, one file,
+/// and the routes below name it. `POST /v1/refunds` is **not** here and is
+/// still unrouted — see the module's own docs for why a read exists before a
+/// create does.
+pub mod refunds;
 /// Which URL a redirect rail is told to send the payer back to.
 ///
 /// `pub(crate)` for the same reason [`paging`] is not: nothing outside this
@@ -157,6 +164,12 @@ pub struct V1Route {
 /// fallback rather than a route that would have to invent a body. See
 /// `docs/status.md`.
 ///
+/// `/v1/refunds` is on that list only for its **`POST`**: `GET
+/// /v1/refunds/{id}` is mounted below (2026-09-05, issue #45) because a
+/// refund must have an authoritative read, while creating one needs a rail
+/// refund neither adapter implements. A resource with a read and no create
+/// is unusual and deliberate; see [`refunds`].
+///
 /// `/v1/events` **was** on that list until 2026-09-03 and is now served
 /// (Step 5): the same renderer the webhook deliverer signs is what it
 /// returns, because a merchant who missed a webhook is told to re-read the
@@ -227,6 +240,18 @@ pub const V1_ROUTES: &[V1Route] = &[
         path: "/checkout/sessions/{id}/expire",
         methods: &["POST"],
         mount: || post(checkout_sessions::expire),
+    },
+    // `GET` only. `POST /v1/refunds` is declared in
+    // `docs/flows/merchant-auth.md` and deliberately absent here: creating a
+    // refund needs a rail refund, and `mtn_momo::refund` is `NotImplemented`
+    // while Orange Money answers `Unsupported`. Mounting a create that could
+    // only ever answer `501` would put a route in this table that takes no
+    // money back — the read is what issue #45 decided was part of the
+    // contract, and it is the whole of what is mounted.
+    V1Route {
+        path: "/refunds/{id}",
+        methods: &["GET"],
+        mount: || get(refunds::retrieve),
     },
 ];
 
@@ -1136,5 +1161,32 @@ mod tests {
         // A currency `vpay_core::Currency` knows, that this deployment did
         // not list. Both gates have to pass — see `admits_currency`.
         assert!(!resource_config.admits_currency("EUR"));
+    }
+
+    /// The Refund resource is mounted for exactly one method, and it is a
+    /// read (issue #45).
+    ///
+    /// Decisive in both directions. Delete the `/refunds/{id}` entry from
+    /// [`V1_ROUTES`] and this fails naming it — which is the same mutation
+    /// that turns `backends/tests/integration/tests/refunds.rs` from a
+    /// `resource_missing` `404` into an `unknown_route` one, a difference no
+    /// status code alone would show. Add a `POST /refunds` and it fails too:
+    /// creating a refund needs `ProviderAdapter::refund`, which is
+    /// `NotImplemented` on MTN and `Unsupported` on Orange, so a mounted
+    /// create could only ever invent an answer.
+    #[test]
+    fn the_refund_resource_is_mounted_for_a_read_and_for_nothing_else() {
+        let refund_routes: Vec<(&str, &[&str])> = V1_ROUTES
+            .iter()
+            .filter(|route| route.path.starts_with("/refunds"))
+            .map(|route| (route.path, route.methods))
+            .collect();
+
+        assert_eq!(
+            refund_routes,
+            vec![("/refunds/{id}", &["GET"][..])],
+            "GET /v1/refunds/{{id}} is served and POST /v1/refunds is not; see \
+             docs/api/README.md's \"Not served\" table"
+        );
     }
 }

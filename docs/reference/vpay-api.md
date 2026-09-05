@@ -84,9 +84,14 @@ have been sending it to their rails ever since, so this is the route that
 address was always pointing at.
 
 The `/v1` nest mounts `v1::V1_ROUTES` and a 404 fallback for everything else,
-which is the production behaviour and not a placeholder: `/v1/payment_intents`
-and `/v1/events` are real, and `/v1/refunds` and `/v1/balance` are not
-implemented and are therefore not routed ([status.md](../status.md)). The
+which is the production behaviour and not a placeholder: `/v1/payment_intents`,
+`/v1/events`, `/v1/checkout/sessions` and — since 2026-09-05, issue #45 —
+`GET /v1/refunds/{id}` are real, and `POST /v1/refunds` and `/v1/balance` are
+not implemented and are therefore not routed ([status.md](../status.md)).
+The refund pair is the one place a *read* is mounted without its create, and
+`v1::refunds`' own module doc carries the argument: creating a refund needs
+`ProviderAdapter::refund`, which no adapter implements, while reading one is
+the authoritative read every other money movement on this surface has. The
 boundary is observable in three answers —
 
 - `GET /v1/payment_intents/pi_x` with no bearer token → **401**, the

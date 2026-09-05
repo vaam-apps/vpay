@@ -1007,6 +1007,23 @@ verify-docs:
 # `cargo test --doc --workspace`, not computed. It is not a gate — no recipe
 # asserts a doctest count — which is exactly why the number has to be true
 # in the prose or it is true nowhere.
+#
+# **41 -> 42 on 2026-09-05 (issue #45), and it is a new file rather than an
+# accounting change.** `GET /v1/refunds/{id}` became a served route, and
+# `backends/tests/integration/tests/refunds.rs` is its proof: four
+# container-backed cases (the read through the shipping SDK, the
+# byte-identical `resource_missing` 404 across a tenancy boundary, the
+# API-response-versus-event-payload byte identity, and `POST /v1/refunds`
+# still answering the honest 404). A file, not cases added to
+# `payment_intents.rs`, because none of the four is about a payment intent
+# and the suite has its own harness fixture — a `refunds` row this repository
+# has no code to create. `cargo nextest list --workspace` lists **1293 total,
+# 42 test binaries, 0 ignored** on this branch: 1279 plus those 4, plus 2
+# `sdks/rust/tests/resources.rs` cases for the SDK's new
+# `refunds().retrieve()`, plus 5 `vpay_api::model` cases for `RefundObject`,
+# plus 2 `vpay_api::v1::refunds` units and 1 in `vpay_api::v1`. The 1080 floor
+# stands untouched. `just test-doc` is unchanged at **90 passed, 1 ignored**:
+# nothing added carries a doctest.
 expected_ignored := "0"
 expected_suites := "42"
 # A floor, not a target — set a little under the measured 1059

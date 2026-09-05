@@ -25,9 +25,11 @@ them directly, `checkout-browser` additionally by
 [`frontends/tests/e2e/cypress/e2e/checkout.cy.ts`](../frontends/tests/e2e/cypress/e2e/checkout.cy.ts).
 `merchant-curl` and `merchant-node` still describe the *intended* API as
 pinned down by [`docs/flows/merchant-auth.md`](../docs/flows/merchant-auth.md),
-and their refund, event and balance calls still reach a `404 unknown_route`,
-because those routes are deliberately not mounted — `/v1/events`, though, **is**
-served as of Step 5. `webhook-receiver` describes a delivery vpay now really
+and their balance call and their *refund creation* still reach a
+`404 unknown_route`, because those routes are deliberately not mounted.
+`/v1/events` **is** served as of Step 5, and `GET /v1/refunds/{id}` as of
+2026-09-05 (issue #45) — creating a refund is what has no route, because no
+rail can refund. `webhook-receiver` describes a delivery vpay now really
 sends: the worker signs and POSTs it, and a delivered one has been verified
 both with `@vaam-apps/vpay-sdk` and with the official `stripe` package's
 `constructEvent`. An intent reaches `succeeded` too — `vpay-worker` polls the
