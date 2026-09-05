@@ -77,5 +77,5 @@ comment at the top of `mint.mjs`.
 | `index.html`      | The page: an error region, a status summary (`dl#summary`, `data-status` on `dd#status`), an MSISDN form.                                                   |
 | `checkout.js`     | All the logic — `loadStripe`, `retrievePaymentIntent`, `confirmMobileMoneyPayment`, `waitForPaymentIntent`. Plain ESM, imports `./dist/stripe-js/index.js`. |
 | `serve.mjs`       | Zero-dependency static file server for this directory (see its own header comment for why not the dashboard container or an npm package).                   |
-| `mint.mjs`        | The "merchant server" half — mints an intent with `@vaam-apps/vpay-sdk` and prints a checkout URL.                                                                    |
+| `mint.mjs`        | The "merchant server" half — mints an intent with `@vaam-apps/vpay-sdk` and prints a checkout URL.                                                          |
 | `dist/stripe-js/` | **Generated, gitignored.** `just build-checkout-browser`'s output; a copy of `sdks/stripe-js/dist/`.                                                        |

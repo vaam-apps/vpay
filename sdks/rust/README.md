@@ -311,7 +311,7 @@ Two types, deliberately:
   who want one `?`-able type.
 - **`Error`** — everything that happens on, or instead of, the wire:
 
-| Variant                     | When                                                                                                           | Carries                                                              | `@vaam-apps/vpay-sdk` equivalent                         |
+| Variant                     | When                                                                                                           | Carries                                                              | `@vaam-apps/vpay-sdk` equivalent               |
 | --------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------- |
 | `Error::Api`                | A non-2xx `/v1` response shaped like `vpay_api::error_envelope`.                                               | `status`, `kind` (the envelope's `type`), `code`, `message`, `param` | `VpayApiError`                                 |
 | `Error::TokenEndpoint`      | The token endpoint refused (`invalid_client`, …). **Never retried.**                                           | `error`, `description`                                               | `VpayAuthError` (`error` / `errorDescription`) |
