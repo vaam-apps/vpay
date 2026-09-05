@@ -26,10 +26,22 @@ edition = "2024"
 # Floor of the whole resolved dependency graph's own declared `rust-version`
 # fields (`cargo metadata` → max over every package's `rust_version`, incl.
 # dev-dependencies since `cargo test`/`--all-targets` must build too).
-# Currently driven by `time` 0.3.47 and `testcontainers`/`testcontainers-modules`
-# 0.27/0.15, all of which declare 1.88. This is metadata-derived only — it has
-# not been verified by actually compiling with a 1.88 toolchain; see the note
-# in rust-toolchain.toml.
+#
+# Re-derived on 2026-09-05 when `rust-toolchain.toml` moved 1.95.0 -> 1.98.0,
+# because a toolchain bump is exactly the moment this number stops being
+# re-checked. It did NOT move: the max over the graph is still 1.88. The
+# *drivers* did — this comment used to name `time` 0.3.47 and
+# `testcontainers`/`testcontainers-modules` 0.27/0.15 alone, and the set is
+# now `darling` 0.23.0, `jsonwebtoken` 11.0.0, `serde_with` 3.21.0, `time`
+# 0.3.47 with `time-core` 0.1.8 / `time-macros` 0.2.27, and
+# `testcontainers` 0.27.3 / `testcontainers-modules` 0.15.0. Nothing in the
+# graph declares anything above 1.88.
+#
+# The toolchain pin is deliberately NOT this number and never was: this is a
+# metadata floor, that is the compiler this workspace is actually built and
+# tested with. This one has not been verified by compiling with a 1.88
+# toolchain, and 135 of 477 packages declare no `rust_version` at all, so it
+# is a lower bound on a lower bound; see the note in rust-toolchain.toml.
 rust-version = "1.88"
 license = "Apache-2.0"
 # `vaam-apps`, not `vymalo`: the organisation was renamed `vaam-store` ->
@@ -83,7 +95,10 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "request-id", "timeout", "limit", "cors"] }
 hyper = "1"
 # `vpay_provider::ProviderAdapter` is an async trait, and a trait with async
-# methods is not dyn-safe in Rust 1.95 — the port is held as
+# methods is still not dyn-compatible under the pinned 1.98.0 — re-checked on
+# 2026-09-05 during the 1.95.0 -> 1.98.0 bump, by compiling a two-line trait
+# with `async fn` behind a `Box<dyn _>`, which fails with E0038 "...because
+# method `call` is `async`" exactly as it did on 1.95.0 — the port is held as
 # `Box<dyn ProviderAdapter>` by both binaries and by `RouterDeps`, so the
 # `async-trait` desugaring (each method returns a boxed future) is what makes
 # the port a *port* rather than a generic parameter threaded through every

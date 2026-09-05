@@ -129,9 +129,13 @@ process and a database.
 **Risks and open questions carried by this phase.**
 - MSRV `1.88` (`Cargo.toml`) is derived only from dependency metadata
   (`cargo metadata`'s max declared `rust_version`), never actually compiled
-  against — only stable 1.95.0 was available when set. 63 of 317 graph
-  packages declare no `rust_version` at all, so the true floor could be
-  higher (`rust-toolchain.toml`'s own header comment).
+  against — the only compiler that has ever built this workspace is whatever
+  `rust-toolchain.toml` pinned at the time (1.95.0 until 2026-09-05, 1.98.0
+  since). Re-derived on 2026-09-05 during that bump and unchanged at 1.88;
+  **135 of 477** graph packages declare no `rust_version` at all (the numbers
+  here read "63 of 317" until then, which was the graph as it stood on
+  2026-09-02), so the true floor could be higher
+  (`rust-toolchain.toml`'s own header comment).
 - `.config/nextest.toml` sets `max-threads = 1` for every Postgres-backed
   integration test, tuned against a 4-vCPU Docker Desktop VM allocation on
   the authoring machine, not the host's own CPU count. Whether this should

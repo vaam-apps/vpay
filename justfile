@@ -624,15 +624,17 @@ check-schema:
         echo "check-schema: FAIL — needs the 'cratestack' CLI on PATH, and it is not there." >&2
         echo "check-schema: this is a failure, not a skip: nothing checked $schema in this run." >&2
         echo >&2
-        echo "  Install the pinned release, from a directory OUTSIDE this checkout:" >&2
+        echo "  Install the pinned release:" >&2
         echo >&2
-        echo "      (cd ~ && cargo +stable install cratestack-cli --locked --version $pinned)" >&2
+        echo "      cargo install cratestack-cli --locked --version $pinned" >&2
         echo >&2
-        echo "  Outside the checkout on purpose: cratestack-cli $pinned declares" >&2
-        echo "  rust-version = 1.98.0 and rust-toolchain.toml here pins 1.95.0, so cargo" >&2
-        echo "  run from inside the worktree refuses with an msrv error. There is also a" >&2
-        echo "  prebuilt binary for five target triples (x86_64/aarch64 linux-gnu and" >&2
-        echo "  apple-darwin, x86_64-pc-windows-msvc) at" >&2
+        echo "  This works from inside the checkout as of 2026-09-05, and did not" >&2
+        echo "  before: cratestack-cli $pinned declares rust-version = 1.98.0, and" >&2
+        echo "  rust-toolchain.toml pinned 1.95.0 until that date, so cargo run from" >&2
+        echo "  inside the worktree refused with an msrv error and the instruction" >&2
+        echo "  here was to cd out of the tree first. The pin is 1.98.0 now — that" >&2
+        echo "  bump is why. There is also a prebuilt binary for five target triples" >&2
+        echo "  (x86_64/aarch64 linux-gnu and apple-darwin, x86_64-pc-windows-msvc) at" >&2
         echo "  https://github.com/cratestack/cratestack/releases/tag/v$pinned —" >&2
         echo "  linux MUSL has none, per https://cratestack.dev/tooling/cli-install" >&2
         exit 1

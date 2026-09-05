@@ -137,10 +137,16 @@ jobs:
       # releases and verifies it against the published `.sha256` sidecar
       # before putting it on PATH, which is why this job does not do the
       # `curl | sha256sum -c` dance the `deploy` job does for kubeconform.
-      # No Rust toolchain is involved: `cratestack-cli` declares
-      # `rust-version = "1.98.0"` and this job's toolchain is whatever
-      # `rust-toolchain.toml` pins (1.95.0), so `cargo install` here would
-      # fail with "requires rustc 1.98.0 or newer" — verified by running it.
+      # No Rust toolchain is involved, and since 2026-09-05 that is a choice
+      # rather than a necessity. `cratestack-cli` declares
+      # `rust-version = "1.98.0"`; this job's toolchain is whatever
+      # `rust-toolchain.toml` pins, which was 1.95.0 until that date, so
+      # `cargo install` here USED to fail outright with "requires rustc
+      # 1.98.0 or newer" (verified by running it). The pin is 1.98.0 now, so
+      # it would succeed — the action stays because downloading a
+      # checksum-verified prebuilt binary is seconds against compiling the
+      # CLI and its graph on every `self-checks` run, not because the
+      # compiler cannot do it.
       - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@6b3053fa77924f5162915d594d457d3eda51afaa # v0.11.1
         with:
           version: ${{ steps.cratestack.outputs.version }}
