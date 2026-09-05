@@ -2070,16 +2070,19 @@ b'u']` → `*b"ilou"`, the same `[u8; 4]`, loop body untouched — **not** by an
 diagnostic in the whole workspace; `cargo fmt --all -- --check` was clean
 under 1.98.0's rustfmt with no reformatting.
 
-**One stale claim is knowingly left behind.** `CLAUDE.md`'s "Things that will
-waste your time" section still says *"`rust-toolchain.toml` pins `1.95.0` (the
-same version `backends/Dockerfile` builds with; CI reads the pin from the
-file)"*. The parenthetical stays true — one pin, one `FROM`, CI reads the file
-— but the number does not, and it should read `1.98.0`. The pass that made
-this bump was not authorised to edit `CLAUDE.md`, so it is recorded here
-rather than silently fixed or silently dropped. **It is the one place in the
-tree that still names the old pin as current** (the remaining `1.95.0` strings
-are in dated `docs/plans/*-notes/` records and in explicitly historical
-sentences, where they are correct).
+**Two stale claims were left behind by the bump itself; both are fixed** (its
+sabotage review, the same day). `CLAUDE.md`'s "Things that will waste your
+time" section said *"`rust-toolchain.toml` pins `1.95.0`"*; the bump had no
+authorisation to edit that file and recorded it here instead, and the review —
+which did — corrected the number. The bump also claimed CLAUDE.md was **"the
+one place in the tree that still names the old pin as current"**, and it was
+not: `justfile`'s `check-schema` rationale still said `just install-rust`
+leaves the CrateStack CLI out because *"installing it needs a newer compiler
+than `rust-toolchain.toml` pins"* — false since the bump, and contradicted by
+the same recipe's failure message fifty lines below it, which that very commit
+had rewritten. Both are corrected. Nothing in the tree now names 1.95.0 as
+current; the remaining `1.95.0` strings are dated `docs/plans/*-notes/` records
+and explicitly historical sentences, where they are correct.
 
 **What was NOT verified by this bump:** nothing has compiled this workspace
 on `aarch64`, no CI run of this change exists, and the 1.88 MSRV remains
