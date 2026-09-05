@@ -446,7 +446,7 @@ stack, and CI runs it.
 
 | Method | Path | Why |
 |---|---|---|
-| POST | `/v1/refunds` | no rail can refund: `mtn_momo::refund` is `NotImplemented` (refunds are MTN's Disbursements product) and Orange Money answers `Unsupported`. Nothing writes a `refunds` row, and `vpay_db::Refunds` exposes one read and no write |
+| POST | `/v1/refunds` | no rail can refund: `mtn_momo::refund` is `NotImplemented` (refunds are MTN's Disbursements product) and Orange Money answers `Unsupported`. Nothing writes a `refunds` row, and `vpay_db::Refunds` exposes one read and no write. `GET /v1/refunds/{id}` **is** served, and renders the ten-key object — issue #46's `fee` included, `null` on every refund this deployment can produce |
 | GET | `/v1/balance` | no ledger read path |
 
 Both SDKs can call both. Each returns the `404` envelope to an

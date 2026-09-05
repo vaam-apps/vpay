@@ -361,7 +361,40 @@ repeated here rather than being restated in a second place that can drift.
 
 `refund`: `id` (`re_…`), `object: "refund"`, `amount`, `currency`,
 `payment_intent`, `status` (`pending` \| `succeeded` \| `failed` \| `canceled`),
-`reason` (string or null), `metadata`, `created`.
+`reason` (string or null), `metadata`, `created`, `fee` (integer or null).
+
+Ten fields since 2026-09-05 ([issue #46](https://github.com/vaam-apps/vpay/issues/46)).
+`fee` is **what the movement cost us**, in integer minor units of the refund's
+own `currency` — [money.md](money.md)'s rule, so there is no second currency
+field and no float. It is **not** deducted from `amount`: `amount` is the
+payer's money and a buyer's refund never nets a fee.
+
+Its nullability is the point of the field, not a detail of it:
+
+| `fee` | means |
+|---|---|
+| `null` | the rail reported no fee. **Not zero.** |
+| `0` | the rail reported that the movement was free |
+| *n* | the rail charged *n* minor units of `currency` |
+
+A merchant building a settlement statement shows a line for `0` and shows
+nothing for `null`. Substituting one for the other — `fee ?? 0` in TypeScript,
+`fee.unwrap_or(0)` in Rust — puts a number nobody measured in front of a
+merchant, which is the reason the field was asked for: the integrator who
+filed the issue had no way to say "unknown" and was sending a hardcoded `0`.
+
+The key is always present on the wire, `null` and all, like every other
+documented key on every object here. Both SDKs model it as optional anyway so
+that a vpay older than the field still decodes; see
+[../sdks/parity.md](../sdks/parity.md) for how each spells it and which test
+proves it.
+
+**Every `refund` this deployment could produce carries `fee: null`**, and will
+until a rail reports one. Orange's Web Payment product documents no refund API
+and MTN refunds are the Disbursements product vpay has never been issued a
+credential for — see [../status.md](../status.md), which names what has to
+exist before that changes. The same value appears on `charge.refunded` and
+`charge.refund.updated`, because `data.object` is this object.
 
 `event`: `id` (`evt_…`), `object: "event"`, `type` (one of the real Stripe
 event types [webhooks.md](webhooks.md) commits to), `created`, `livemode`,
@@ -598,7 +631,12 @@ work does not close them.
   `vpay_db::Refunds`. **Nothing writes either table from `/v1`**, and that is
   the part that is still true: `POST /v1/refunds` is unrouted, `GET
   /v1/balance` is unrouted, and events are written only by the settlement
-  and expiry transactions inside `vpay-db`.
+  and expiry transactions inside `vpay-db`. The `refund` object's `fee` —
+  migration `0031`, `vpay_api::model::RefundObject::fee` — is **read but
+  never written**: the column is in the repository's projection and the key
+  is on every refund this API renders, and because nothing writes a refund at
+  all — and no adapter can supply a fee — the value is `null` on every object
+  this repository can produce.
 - **No scheduled idempotency sweep.** See the Idempotency section above.
 - **No rate limit on `/token`.** [ADR-0009](../adr/0009-dashboard-oidc-provider.md)
   leaves it to Kubernetes ingress. The endpoint is public and

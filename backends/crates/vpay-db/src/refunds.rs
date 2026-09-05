@@ -1,5 +1,5 @@
-//! The `refunds` repository (`backends/migrations/0017_create-refunds.sql`) —
-//! one read, and nothing else.
+//! The `refunds` repository (`backends/migrations/0017_create-refunds.sql`,
+//! plus `0031_refunds-fee.sql`) — one read, and nothing else.
 //!
 //! **This module does not create refunds, and there is no write here at all.**
 //! Creating one needs a rail refund, and neither rail has one:
@@ -50,6 +50,13 @@ use crate::error::DbError;
 /// refuses to decode a user-defined type into `String` at runtime — a failure
 /// this crate would only discover against a real database.
 ///
+/// `r.fee` is here because it *is* on the wire object — the tenth key, added
+/// by migration `0031` for issue #46. It is `NULL` on every row this
+/// repository can currently return, because nothing writes it (no rail
+/// reports a refund fee to us; `docs/status.md`), and selecting it anyway is
+/// what makes the difference between "the rail said nothing" and "the rail
+/// said it was free" a column rather than a renderer's guess.
+///
 /// **Not every column of the table**, and that is the choice
 /// [`crate::events::EventRow`] makes for `fanout_attempts`: `charge_id`,
 /// `failure_code`, `failure_raw`, `provider_reference_id` and `updated_at`
@@ -60,7 +67,8 @@ use crate::error::DbError;
 /// does not exist yet, so guessing at its shape now would be a claim about
 /// code nobody has written.
 const COLUMNS: &str = "r.id, r.payment_intent_id, r.amount, r.currency_code, \
-                       r.status::TEXT AS status, r.reason, r.metadata, r.created_at";
+                       r.status::TEXT AS status, r.reason, r.metadata, r.fee, \
+                       r.created_at";
 
 /// One `refunds` row, as the merchant read needs it.
 ///
@@ -97,6 +105,16 @@ pub struct RefundRow {
     /// The merchant's key/value pairs. The `metadata_is_object` CHECK
     /// guarantees it is a JSON object.
     pub metadata: serde_json::Value,
+    /// What the rail charged **us** to execute this refund, in minor units of
+    /// [`currency_code`](Self::currency_code) (migration `0031`).
+    ///
+    /// `None` means the rail reported no fee; `Some(0)` means it reported the
+    /// movement was free. Those are different answers, the column has no
+    /// `DEFAULT` so that they stay different, and a renderer that mapped
+    /// `None` to `0` would reintroduce the hardcoded zero issue #46 was filed
+    /// about. **Nothing writes it yet**, so every row this repository returns
+    /// today carries `None`.
+    pub fee: Option<i64>,
     /// When the refund was requested.
     pub created_at: OffsetDateTime,
 }

@@ -24,6 +24,18 @@ below); `checkout.session.expired` comes from the housekeeping sweep, since
 2026-09-04. The other five are documented shapes nothing emits — events are
 written for terminal transitions only.
 
+**`charge.refunded` and `charge.refund.updated` carry a `refund`**, which
+since 2026-09-05 ([issue #46](https://github.com/vaam-apps/vpay/issues/46)) is
+ten keys rather than nine: the tenth is `fee`, what the rail charged to move
+the money back. `data.object` is the wire object — the same
+`vpay_api::model::RefundObject` a `/v1` response would render — so a webhook
+body and an API response cannot disagree about it. The key is always present
+and, on every refund this deployment could produce, always `null`; **`null` is
+not `0`** and a receiver must not treat it as one
+(`a_refund_delivered_as_charge_refunded_carries_fee_present_and_null`;
+[merchant-auth.md](merchant-auth.md) has the table). Neither type has ever been
+emitted, as the paragraph above says.
+
 **`checkout.session.expired` is the only one whose `data.object` is not a
 `payment_intent` or a `refund`.** It carries a `checkout.session`: the thirteen
 keys `docs/flows/hosted-checkout.md` documents, with `status` already
