@@ -406,5 +406,23 @@ a browser:** the checkout app already paints an expired screen from the
 session read's 404, so the refusal sits behind a page that should never reach
 it, and no Cypress spec drives a confirm on a dead session.
 
+**Updated 2026-09-06: a hosted session can be rendered in a popup, and it is
+the same session.** `@vaam-apps/vpay-stripe-js`'s `openCheckoutPopup` opens
+`session.url` in a top-level window the merchant's page owns rather than
+navigating the payer's tab. Nothing on this side of the contract changes: the
+session is created `ui_mode: 'hosted'` with the same `success_url` and
+`cancel_url`, so `examples/shop` sends an identical
+`POST /v1/checkout/sessions` for its `hosted` and `popup` modes and gives them
+the same `Idempotency-Key` — a payer whose popup is blocked falls back to a
+redirect and gets the session they already had rather than a second one.
+
+The completion signal does **not** come from vpay: a popup has no framer, so
+the child channel in `frontends/apps/checkout` returns `null` and the page
+says nothing. It comes from the merchant's own `success_url`, running inside
+the popup. The design and its limits are in
+[browser-checkout.md](browser-checkout.md)'s Status; the short version is that
+34 unit cases drive it against stub windows and **no test opens a real
+popup**.
+
 See [../status.md](../status.md) for the per-feature ledger and the reasons
 several of those rows are 🟡 where this document says "built".

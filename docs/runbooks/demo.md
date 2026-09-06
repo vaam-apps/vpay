@@ -651,10 +651,58 @@ Two things about it that will otherwise surprise you:
   $ DEMO_COMPOSE="-f compose.yml -f compose.e2e.yml -f compose.demo.yml"
   $ docker compose $DEMO_COMPOSE logs vpay-shop | head -4
   vpay-shop-1  | vpay-shop: applying migrations
-  vpay-shop-1  | 2 migrations found in prisma/migrations
+  vpay-shop-1  | 3 migrations found in prisma/migrations
   vpay-shop-1  | Applying migration `20260904091557_init`
   vpay-shop-1  | Applying migration `20260904091600_seed_catalogue`
+  vpay-shop-1  | Applying migration `20260906120000_optional_email_and_failure_columns`
   ```
+
+  The transcript above is from before the ZenStack 3 upgrade of 2026-09-06
+  (three migrations, not two, since the same day). It is `zen migrate deploy`
+  now, and the "prisma/migrations" in the second line is **Prisma Migrate's
+  own wording**, not a path that still exists — v3 drives Prisma Migrate from
+  a schema it derives from the zmodel, and the files are in
+  `examples/shop/zenstack/migrations/`.
+
+### Three ways to pay, and the numbers that make a payment fail
+
+Since 2026-09-06 the shop's `/checkout` page offers all three integration
+surfaces and a panel of the demo's **test numbers**. Both are worth a minute,
+because between them they are most of what a merchant actually has to build.
+
+- **The surface switch** (Redirect / Popup / Embedded) starts on whatever
+  `SHOP_CHECKOUT_MODE` names — `hosted` by default, and the demo stack does
+  not set it. A real merchant picks one in configuration and ships no switch;
+  this one exists so a reader can see each. Redirect and Popup are the *same*
+  hosted session: the popup opens `session.url` in a window the shop owns, and
+  the shop's own return page — running inside that window — tells the opener
+  and closes it.
+- **The test numbers** are documentation MSISDNs the rail stubs are configured
+  to answer particular things for. `237600000000` (or anything unlisted) pays;
+  `237600000101` is insufficient funds on MTN; `237600000102` is a timeout on
+  either rail; `237600000400` is a refusal on either; `237600000503` is an
+  unavailable rail on MTN. The full table, including the three outcomes Orange
+  **cannot** express, is on the page itself and in
+  [../../examples/shop/README.md](../../examples/shop/README.md).
+
+Two things to know before you drive them:
+
+- **MTN's number goes on vpay's page** (it is a push rail); **Orange's goes on
+  the rail stub's own hosted page**, in the "Or pay with one of the demo's
+  test numbers" form beside the Pay link — Orange is a redirect rail and vpay
+  never sees a number.
+- **Orange's form has about ten seconds.** vpay's first status query is
+  `poll_delay(0)` = 10 s after the submit commits; if you have not submitted
+  the form by then the stub's catch-all answers `SUCCESS` and the order is
+  **paid**, whatever number you were about to type. Check the order page's
+  `failure_code`, not the walk appearing to work. The three ways to close that
+  window, and why none was taken, are in
+  [../plans/exp22-shop-demo-notes/opus.md](../plans/exp22-shop-demo-notes/opus.md).
+
+The one outcome no number reaches is `cancelled`: clicking "cancel" on the
+rail's page is a navigation and leaves the order open, and the order becomes
+`cancelled` only when the shop cancels its PaymentIntent (the button on the
+order page) and vpay delivers `payment_intent.canceled`.
 
 ### One currency, and what it is not saying
 
