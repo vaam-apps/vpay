@@ -560,7 +560,7 @@ verify-npm-scope:
 # jobs there already use to read the compiler channel out of
 # `rust-toolchain.toml`. Bump it here and CI follows; there is no second copy
 # to forget.
-cratestack_version := "0.11.1"
+cratestack_version := "0.12.0"
 
 # The floor for `check-schema`'s "is there anything here?" assertion: the
 # number of top-level `model`/`enum` declarations schemas/vpay.cstack must

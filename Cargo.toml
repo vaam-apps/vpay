@@ -271,7 +271,7 @@ rust_decimal = "1"
 # of `cratestack-pg` with no feature gating them, and both depend on
 # `minicbor` unconditionally. There is no feature combination that yields a
 # data layer without them — see `docs/reference/vpay-db.md` § CrateStack.
-cratestack = { package = "cratestack-pg", version = "=0.11.1", default-features = false, features = ["postgres"] }
+cratestack = { package = "cratestack-pg", version = "=0.12.0", default-features = false, features = ["postgres"] }
 # Not part of vpay's own `time`-crate convention (docs above/ADR none yet) —
 # pulled in because `authkestra-op`'s own API is chrono-typed: every
 # `DateTime<Utc>` in `code.rs`, `refresh.rs`, `device.rs` and, the one that

@@ -147,7 +147,7 @@ jobs:
       # checksum-verified prebuilt binary is seconds against compiling the
       # CLI and its graph on every `self-checks` run, not because the
       # compiler cannot do it.
-      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@6b3053fa77924f5162915d594d457d3eda51afaa # v0.11.1
+      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@0823bab382425e1fe4d04c42b9657b7e7bb7b286 # v0.12.0
         with:
           version: ${{ steps.cratestack.outputs.version }}
       # `just check-schema`, not a copy of the command it runs: the recipe is
@@ -261,7 +261,7 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@6b3053fa77924f5162915d594d457d3eda51afaa # v0.11.1
+      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@0823bab382425e1fe4d04c42b9657b7e7bb7b286 # v0.12.0
         with:
           version: ${{ steps.cratestack.outputs.version }}
       - run: cargo fmt --all -- --check
