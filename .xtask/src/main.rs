@@ -3580,6 +3580,19 @@ fn ts_method_name(line: &str) -> Option<String> {
     // A member is a method only if its name is followed by a parameter list;
     // `readonly sessions: CheckoutSessionsResource;` is a field.
     let after = rest.get(name.len()..)?.trim_start();
+    // …and a type parameter list may sit between the two: `async list<T>(…)`.
+    // Skipping it was added 2026-09-06 after a mutation measured the gap —
+    // before it, `async listAll<T>()` was read as a field and the gate stayed
+    // green at `13 SDK method(s)` with an unrecorded method shipped. It is the
+    // TypeScript-only half of a hole Rust never had, because `declared_after`
+    // stops at the identifier and never looks for the paren at all.
+    let after = match after.starts_with('<') {
+        true => {
+            let inside = balanced_delimited(after, 0, '<', '>')?;
+            after.get(inside.len() + 2..)?.trim_start()
+        }
+        false => after,
+    };
     if !after.starts_with('(') {
         return None;
     }
@@ -8689,6 +8702,25 @@ export class HolderResource {
             vec!["widgets.create@12", "widgets.list@17", "holder.retrieve@29"],
             "{found:?}"
         );
+    }
+
+    /// A generic method is still a method. Measured 2026-09-06: before the
+    /// type-parameter list was skipped, `async listAll<T>()` was read as a
+    /// field — the gate stayed green at `13 SDK method(s)` with an unrecorded
+    /// method shipped in `sdks/nodejs`. The field case is asserted alongside
+    /// it, because the fix must not turn `readonly x: Y<Z>;` into a method.
+    #[test]
+    fn a_method_with_a_type_parameter_is_still_a_method_and_a_field_is_not() {
+        assert_eq!(
+            ts_method_name("  async listAll<T>(params: T): Promise<T[]> {"),
+            Some("listAll".to_owned())
+        );
+        assert_eq!(
+            ts_method_name("  expire<T extends Session>(id: string): Promise<T> {"),
+            Some("expire".to_owned())
+        );
+        assert_eq!(ts_method_name("  readonly sessions: Resource<Http>;"), None);
+        assert_eq!(ts_method_name("  readonly limit: number;"), None);
     }
 
     #[test]
