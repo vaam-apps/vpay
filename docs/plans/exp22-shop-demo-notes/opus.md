@@ -166,3 +166,73 @@ example deciding a settled status from its own request rather than from a
 signed event, and the shop's entire argument is that a merchant must not.
 The button, the procedure and the copy are all still there, and all three now
 say what actually happens.
+
+## The demo run, 2026-09-06
+
+One stack, brought up once and torn down: `just demo_project=exp22-demo
+demo_port=18180 demo_receiver_port=18181 demo_orange_port=18184
+demo_checkout_port=18182 demo_shop_port=18183 demo-up`, on its own project so
+it shared nothing with the `vpay-demo` stack already on the machine. The first
+`up` failed in buildkit on `Could not resolve host: index.crates.io` while
+building `vpay-worker`; a plain `docker run alpine` resolved the same host, so
+it was transient and the retry built cleanly.
+
+**No PNG screenshots were captured**, and that is a limitation of this
+environment rather than a choice: the browser available here renders into a
+pane and returns images into the transcript, and nothing in the toolchain
+writes an image file (Cypress's binary is not installed —
+`CYPRESS_INSTALL_BINARY=0`, and its CDN is unreachable from here). What is
+recorded instead is what each page actually said, which is the thing a
+screenshot would have been evidence *of*.
+
+### `vpay-shop`'s first log lines — ZenStack 3 in a read-only container
+
+```
+vpay-shop: applying migrations
+Prisma schema loaded from ../tmp/zenstack/~schema.prisma
+Datasource "db": PostgreSQL database "shop", schema "public" at "postgres:5432"
+3 migrations found in prisma/migrations
+Applying migration `20260904091557_init`
+Applying migration `20260904091600_seed_catalogue`
+Applying migration `20260906120000_optional_email_and_failure_columns`
+```
+
+The `../tmp/` in the second line is the entrypoint's copy doing its job: the
+CLI derives that Prisma schema beside the zmodel, and `/app` is read-only.
+
+### What was driven, and what each page said
+
+| # | Path | Result |
+|---|---|---|
+| 1 | `/checkout` | Surface switch renders all three (`hosted` marked as the configured one); test-number panel renders both rails, the five MTN rows, the three Orange rows and all four "no number produces X" notes |
+| 2 | Redirect + MTN `237600000101` | vpay: "There was not enough money in the account." Order → `failed`, `failure_code = insufficient_funds`, buyer's sentence "Not enough money in the wallet", **"Try again" offered** |
+| 3 | Redirect + MTN `237600000000` | vpay: "Payment received." Order → `paid` |
+| 4 | Redirect + MTN `237600000503` (**new**) | vpay: "The payment provider could not be reached." Order → `failed`, `failure_code = provider_unavailable` |
+| 5 | Redirect + Orange `237600000400` | Order → **`paid`**. The race in D1 above; this is where it was measured |
+| 6 | "Try again" on #4 | New order, new session (`cs_mw9ms8…` against the failed order's `cs_zj8zf2…`), payer sent to vpay's page |
+| 7 | Embedded | Frame `src` = `…/e/{cs_id}?key=pk_…#cs_…_secret_…`, `sandbox="allow-scripts allow-same-origin allow-forms"` (no `allow-top-navigation`), height grown to `179px` — so `vpay:resize` crossed the boundary. The payment **inside** the frame was not driven: vpay's `/e/` route correctly refuses to render top-level (`refused_embed`), and this browser cannot script a cross-origin frame. That is `shop-embedded.cy.ts`'s job |
+| 8 | Popup | The synthetic click carries no user activation, so `window.open` returned `null`, `CheckoutPopupBlockedError` was raised and **the fallback ran**: the order was created in `hosted` mode and the tab navigated to vpay. Which is worth having — it is the path a merchant most needs to work — but it means **the popup itself was still not opened by anything, here or in any test** |
+| 9 | "Cancel this payment" on an unpaid order | The call succeeded and the intent read `canceled` in vpay's database. No event, order still `unpaid`. D5 above |
+
+Three orders were placed with **no e-mail at all**; every one stored `NULL`
+and every page rendered "not given — optional, see the checkout page".
+
+### The orders left behind
+
+```
+cmtpyhj6o000001o4cnfd1tg3|failed|insufficient_funds|(null)
+cmtpyk48b000201o40y0ebkx3|paid|-|(null)
+cmtpyuahc000001mhd0730va9|paid|-|(null)
+cmtpyvsrb000201mh0cum53dl|unpaid|-|(null)
+cmtpywqpf000401mh6gak72fy|failed|provider_unavailable|(null)
+cmtpyxm34000601mhgrtr0mt6|unpaid|-|(null)
+```
+
+### `wiremock-orange`'s journal for the Orange run
+
+```
+…15285  POST /orange-money-webpay/dev/v1/webpayment
+…15329  GET  /stub-hosted-page/pay-ba7bc37a-…?return=…&cancel=…
+…15734  POST /orange-money-webpay/dev/v1/transactionstatus     <- 449 ms after the submit
+…27241  GET  /stub-hosted-page/pay-ba7bc37a-…/pay?…&msisdn=237600000400
+```
