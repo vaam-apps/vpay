@@ -3798,6 +3798,10 @@ database too.
 in files that already existed), so `expected_suites` and the `min_tests` floor
 are untouched.
 
+Full transcript, including the two mutations that were re-measured rather than
+accepted and the exp18 merge check, in
+[plans/exp20-provider-defaults-notes/opus-review.md](plans/exp20-provider-defaults-notes/opus-review.md).
+
 
 ---
 
