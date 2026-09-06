@@ -412,7 +412,7 @@ app and is written up as a request in
 [../plans/exp22-shop-demo-notes/opus.md](../plans/exp22-shop-demo-notes/opus.md),
 not taken here.
 
-Proven by `sdks/stripe-js/src/popup.test.ts` — 26 cases, all against **stub
+Proven by `sdks/stripe-js/src/popup.test.ts` — 27 cases, all against **stub
 windows**, because jsdom implements neither `window.open` nor cross-window
 `postMessage`. **No test in this repository opens a real popup**: no Cypress
 spec covers it, and `examples/shop`'s popup mode has been read and run by

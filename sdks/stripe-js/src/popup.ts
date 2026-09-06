@@ -179,9 +179,9 @@ function windowFeatures(win: Window, width: number, height: number): string {
     `height=${height}`,
     `left=${left}`,
     `top=${top}`,
-    // Withheld deliberately: `location=yes` keeps the address bar visible,
-    // which is the payer's only way to see whose page is asking for their
-    // money. A popup checkout that hides it is a phishing lesson.
+    // Asked for deliberately, and there is no option to turn it off: the
+    // address bar is the payer's only way to see whose page is asking for
+    // their money, and a popup checkout that hides it is a phishing lesson.
     "location=yes",
     "resizable=yes",
     "scrollbars=yes",
@@ -312,14 +312,26 @@ export async function openCheckoutPopup(
     }, CLOSE_POLL_INTERVAL_MS);
   }
 
-  // `assign`, and only because the window is still on the `about:blank` this
-  // side opened — which inherits the opener's origin, so the whole `Location`
-  // object is reachable. Once it has navigated to vpay, the only members of
-  // it a cross-origin opener may touch are the `href` setter and `replace()`;
-  // `assign` would throw. Nothing below reaches for `location` again, and
-  // `closed`, `close()` and `focus()` — the three that are used after the
-  // navigation — are all on the cross-origin allowlist.
-  popup.location.assign(url);
+  // The `href` **setter**, deliberately, and not `assign()`.
+  //
+  // On a window that is still on the `about:blank` this side opened the two
+  // are the same thing: that document inherits the opener's origin, so the
+  // whole `Location` object is reachable. They stop being the same the moment
+  // the window has already been used — which is exactly what
+  // `options.windowName` makes happen, since `win.open('', name, …)` with an
+  // EMPTY url returns an existing window of that name **without navigating
+  // it**. A second `openCheckoutPopup` for a second order therefore reaches
+  // this line holding a window sitting on vpay's origin, and the only members
+  // of a cross-origin `Location` an opener may touch are the `href` setter and
+  // `replace()` — `assign()` throws a `SecurityError`. Using it here made the
+  // documented "reusing a name reuses the window" path throw, *after*
+  // `fetchCheckoutUrl` had already created an order, and leaked this call's
+  // `message` listener and close poll with it (review finding, 2026-09-06).
+  //
+  // `closed`, `close()` and `focus()` — the three members used after the
+  // navigation — are on that same cross-origin allowlist, so nothing else
+  // here has the problem.
+  popup.location.href = url;
 
   return {
     get closed(): boolean {

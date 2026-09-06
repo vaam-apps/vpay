@@ -316,6 +316,23 @@ is a consequence of a popup not being a frame:
    by an ordinary redirect. One return page serves both integrations
    without branching on a query parameter.
 
+Two limits of that third property, stated because they are easy to meet and
+neither is visible from the call site (review finding, 2026-09-06):
+
+- **"Has an opener" is not the same as "is a vpay popup."** A tab your shop
+  was opened into by someone else's `window.open` also has one, and a payer
+  who then checks out by an ordinary **redirect** reaches the same return
+  page. The message itself is harmless there — it is pinned to
+  `targetOrigin`, so a third-party opener never receives it — but the default
+  `close: true` will close that payer's tab. Pass `close: false` on a return
+  page that also serves the redirect integration, or gate the call on
+  something only your popup path sets.
+- **A `success_url` on a different origin from the page that opened the popup
+  is a silent no-op.** `targetOrigin` defaults to the return page's own
+  origin and `completionOrigin` to the opener's, so the browser drops the
+  message and `notifyCheckoutOpener` still answers `true` — it posted; nobody
+  could receive it. Name both explicitly when the two origins differ.
+
 The window is opened **before** `fetchCheckoutUrl` is awaited, because
 `window.open` succeeds only inside the user gesture that triggered it;
 awaiting first is the usual way a popup integration gets blocked. A window
@@ -323,6 +340,13 @@ the browser refused is a `CheckoutPopupBlockedError` — the one failure here
 that a correct integration can still hit, and the one you are expected to
 fall back from. `location=yes` is in the window features on purpose: a
 payment window that hides the address bar is a phishing lesson.
+
+`windowName` defaults to `vpay-checkout`, and reusing the name reuses the
+window — a second call navigates the window the first one opened rather than
+opening a second checkout. That navigation is a `location.href` assignment
+and not `location.assign()`, deliberately: the reused window is already on
+vpay's origin, where the `href` setter and `replace()` are the only members
+of `Location` an opener may touch.
 
 `onCancel` is opt-in, and passing it is what starts a `closed` poll — a
 closed window fires no event at its opener in any browser. It fires when the

@@ -33,13 +33,26 @@ interface StubPopup {
   focusCalls: number;
   close(): void;
   focus(): void;
-  location: { assign(url: string): void };
+  location: { href: string; assign(url: string): void };
 }
 
+/**
+ * A popup window whose `Location` behaves like a **cross-origin** one.
+ *
+ * That is not a detail of the stub, it is the case that matters: `win.open('',
+ * name, …)` returns an existing window of that name *without navigating it*,
+ * so the second `openCheckoutPopup` of a session is handed a window already
+ * sitting on vpay's origin. On such a window an opener may set `location.href`
+ * and call `location.replace()`, and `location.assign()` throws — so `assign`
+ * here throws too, and every navigation assertion in this file reads the
+ * `href` setter. Point `src/popup.ts` back at `assign` and the whole suite
+ * fails rather than one case.
+ */
 function stubPopup(): StubPopup {
+  const assigned: string[] = [];
   const popup: StubPopup = {
     closed: false,
-    assigned: [],
+    assigned,
     closeCalls: 0,
     focusCalls: 0,
     close() {
@@ -50,8 +63,16 @@ function stubPopup(): StubPopup {
       popup.focusCalls += 1;
     },
     location: {
-      assign(url: string) {
-        popup.assigned.push(url);
+      get href(): string {
+        return assigned[assigned.length - 1] ?? "about:blank";
+      },
+      set href(url: string) {
+        assigned.push(url);
+      },
+      assign(): void {
+        throw new Error(
+          "SecurityError: Location.assign is not accessible cross-origin",
+        );
       },
     },
   };
@@ -131,6 +152,30 @@ describe("openCheckoutPopup", () => {
       options: { fetchCheckoutUrl: () => Promise.resolve(HOSTED_URL) },
     });
     expect(opener.popup?.assigned).toEqual([HOSTED_URL]);
+  });
+
+  it("navigates a window it is REUSING, which a cross-origin assign() could not", async () => {
+    // The second click of a session. `win.open('', name, …)` hands back the
+    // window the first call opened, still on vpay's origin and untouched by
+    // the empty url — so this navigation crosses an origin boundary, and the
+    // stub's `assign` throws exactly as a real one would.
+    const popup = stubPopup();
+    const opener = stubWindow(popup);
+    await openCheckoutPopup({
+      win: opener.win,
+      options: { fetchCheckoutUrl: () => Promise.resolve(HOSTED_URL) },
+    });
+    const second = "https://checkout.vpay.example/c/cs_456#secret";
+    await openCheckoutPopup({
+      win: opener.win,
+      options: { fetchCheckoutUrl: () => Promise.resolve(second) },
+    });
+    expect(popup.assigned).toEqual([HOSTED_URL, second]);
+    expect(popup.closed).toBe(false);
+    expect(opener.openCalls.map((call) => call.name)).toEqual([
+      "vpay-checkout",
+      "vpay-checkout",
+    ]);
   });
 
   it("keeps the address bar, so a payer can see whose page is asking", async () => {
