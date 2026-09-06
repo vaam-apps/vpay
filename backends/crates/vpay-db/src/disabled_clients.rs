@@ -182,6 +182,18 @@ impl DisabledClients for crate::repository::PgRepositories {
         // path (unlike `is_client_disabled`, which is on the token path and
         // stayed a single `find_unique`).
         //
+        // On the CONFLICT branch it is also two pooled connections at once,
+        // which is the part worth knowing before this method gains a caller:
+        // `upsert_resolve.rs::gate_update_policy` runs its policy probe on
+        // `runtime.pool()` — the same pool — while this call's own
+        // transaction still holds one. Two of `pool.rs`'s
+        // `MAX_CONNECTIONS = 10` per concurrent second-disable, and ten at
+        // once would all wait out `ACQUIRE_TIMEOUT` and fail as
+        // `Category::Storage`. The insert branch takes one connection, not
+        // two, because `auth().isSystem()` is not a relation predicate and
+        // `evaluate_create_policies` issues no query for it. See
+        // docs/reference/vpay-db.md § CrateStack.
+        //
         // Unlike the read, a policy mistake here is LOUD. `upsert_exec.rs`
         // evaluates `create_allow_policies` before any SQL runs and returns
         // `CratestackError::Forbidden` when the list is empty, and

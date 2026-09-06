@@ -1331,6 +1331,28 @@ is CrateStack's fixed shape for `upsert` and it is accepted rather than worked
 around: an operator disabling a client is not a hot path. `is_client_disabled`
 is — it is on the token-issuance path — and it stayed a single `find_unique`.
 
+**On the conflict branch the cost is a round trip on a *second* pooled
+connection**, which is a different kind of cost and was not written down until
+the review of 2026-09-06 measured it out of the source.
+`UpsertRecord::run` begins its transaction on `runtime.pool()` and holds that
+connection for the whole call; `upsert_resolve.rs::gate_update_policy` then
+calls `row_passes_update_policy(runtime.pool(), …)`, which `fetch_optional`s
+on the **same pool** while the transaction's connection is still checked out.
+So a second disable of an already-disabled client needs two of
+`pool.rs`'s `MAX_CONNECTIONS = 10` at once. Ten concurrent ones would each
+hold the first and wait `ACQUIRE_TIMEOUT` (5 s) for the second, and all ten
+would then fail as `PersistenceError::Backend` → `Category::Storage`.
+
+Not reachable today and recorded rather than worked around: `disable_client`
+has no shipping caller at all yet (see [roadmap.md](../roadmap.md)), and the
+*insert* branch takes only one connection, because `auth().isSystem()` is not
+a relation predicate and `evaluate_create_policies` therefore issues no query
+for it. It is the first thing to re-check if a route or an admin surface ever
+calls this method concurrently, and it is on the list of things worth sending
+upstream ([docs/plans/exp16-notes/opus-review.md](../plans/exp16-notes/opus-review.md) § 6):
+the probe could run on the transaction's own connection, which already holds
+the row lock.
+
 #### `enable_client`: why `delete_many` and not `delete`
 
 `.delete(pk)` is the builder the primary key invites, and it is wrong here.
