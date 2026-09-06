@@ -3116,6 +3116,24 @@ async fn a_provider_written_through_cratestack_is_rolled_back_with_the_rest_of_t
          it failed earlier, `alpha_rail` was never written and this test proves nothing"
     );
 
+    // The category, pinned because it MOVED when this statement became a
+    // CrateStack upsert and nothing said so. `error::classify_write` leaves a
+    // `23514` in the unclassified `DbError::Query` bucket -> `Storage` ->
+    // exit 69; `persistence::classify_cratestack` gives it
+    // `PersistenceError::Check` -> `Internal` -> exit 1. So a boot against an
+    // adapter whose declared `Capabilities` are incoherent told a supervisor
+    // "wait for Postgres" until 2026-09-06 and pages someone now. Whether
+    // `Configuration` (78) would be better still is a maintainer's call
+    // (docs/status.md); this assertion is what makes the next move
+    // deliberate instead of accidental.
+    assert_eq!(
+        vpay_core::Classify::category(&error),
+        vpay_core::Category::Internal,
+        "a CHECK the application was supposed to satisfy is vpay's own bug, not a storage \
+         outage. If this is `Storage` again, the provider pass has gone back to raw sqlx"
+    );
+    assert_eq!(vpay_core::Classify::category(&error).exit_code(), 1);
+
     let providers_written: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM providers")
         .fetch_one(&pool)
         .await

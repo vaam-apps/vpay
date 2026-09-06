@@ -352,10 +352,14 @@ model Provider {
   // What now renders, and what pins it:
   // `the_provider_upsert_carries_all_eight_columns` in
   // backends/crates/vpay-db/src/config_reconcile.rs. Put a `@default(...)`
-  // back on any of the five and that test goes red before the drift report
-  // does — and `reconcile` stops compiling, because the field disappears from
-  // `CreateProviderInput` and its struct literal loses a field
-  // (`error[E0063]`).
+  // back on any of the five and NEITHER that test nor the drift report is
+  // what stops you: the field disappears from `CreateProviderInput` and
+  // `reconcile`'s struct literal names one that no longer exists, so the
+  // crate does not compile and no test runs at all —
+  // `error[E0560]: struct \`inputs::CreateProviderInput\` has no field named
+  // \`supports_refunds\``, measured 2026-09-06. (`E0063`, "missing field", is
+  // the error going the other way, and this comment named it until the
+  // review pass corrected it.)
 }
 
 // --- payments --------------------------------------------------------------

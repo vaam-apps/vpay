@@ -3747,6 +3747,34 @@ commits, so the conflict probe cannot see the row it must update. Measured
 `config_reconcile.rs`'s comment on that loop and in
 [reference/vpay-db.md](reference/vpay-db.md#cratestack).
 
+**A second classification moved, and this page and the module doc both said it
+had not.** `config_reconcile`'s "`# Errors` moved" paragraph claimed *the
+classification is unchanged — a `23514` is still `Category::Internal` …
+because `persistence::classify_cratestack` and `error::classify_write` are
+asserted against each other*. Both halves are wrong. The two functions are
+asserted against each other for `23505` and `23503` only
+(`a_duplicate_key_classifies_the_same_through_cratestack_as_through_sqlx`),
+and on `23514` they **disagree by design**: `classify_write` deliberately
+leaves a CHECK violation in the unclassified `DbError::Query` bucket →
+`Category::Storage` → exit **69**, while `classify_cratestack` gives it
+`PersistenceError::Check` → `Category::Internal` → exit **1**.
+
+`partial_refunds_imply_refunds` is the only `23514` boot step 4 can raise, and
+until the provider pass moved onto CrateStack it reached a supervisor as `69`,
+"wait for Postgres", for an adapter whose declared `Capabilities` are
+incoherent. It is `1` now. Measured 2026-09-06 and pinned by a new assertion
+in `a_provider_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`.
+
+**Maintainer decision, surfaced not taken:** `Internal`/`1` is defensible —
+the database is healthy, and `Capabilities::is_coherent` exists but is checked
+only in `vpay-server`'s `#[cfg(test)]` assertion and the conformance suite,
+never at boot — but `Category::Configuration`/`78` ("fix the deploy") is what
+the flow label got for the same class of mistake one paragraph earlier, and
+the two now disagree. Either answer is better than the `69` this replaced.
+Deciding between them, and whether boot should check
+`Capabilities::is_coherent` before it reconciles at all, is not the review's
+call.
+
 
 ---
 

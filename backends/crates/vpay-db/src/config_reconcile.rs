@@ -64,16 +64,37 @@
 //! # `# Errors` moved, and callers should notice
 //!
 //! The currency and provider statements now fail as [`DbError::Persistence`]
-//! rather than [`DbError::Query`]. The *classification* is unchanged — a
-//! `23514` is still `Category::Internal`, a pool timeout still
-//! `Category::Storage`, because `persistence::classify_cratestack` and
-//! `error::classify_write` are asserted against each other — so a caller
-//! branching on `Classify::category` sees nothing; a caller matching the
-//! variant would have silently stopped matching. Boot only ever reads the
-//! category.
+//! rather than [`DbError::Query`], so a caller matching the *variant* would
+//! have silently stopped matching. Boot only ever reads the category — and
+//! **two categories moved with the variant**, which this paragraph said they
+//! did not until the review pass of 2026-09-06 checked it.
 //!
-//! One classification *did* change, deliberately, and it is the flow label:
-//! see [`DbError::ProviderFlowUnknown`].
+//! An integrity violation `vpay-db` had already given its own variant is
+//! genuinely unchanged: `23505` and `23503` classify identically on both
+//! paths, asserted against each other by
+//! `persistence::tests::a_duplicate_key_classifies_the_same_through_cratestack_as_through_sqlx`,
+//! and a pool timeout is `Category::Storage` either way. A `23514` is **not**
+//! in that set and never was. `error::classify_write` deliberately leaves it
+//! in the unclassified [`DbError::Query`] bucket → `Category::Storage` → exit
+//! `69`; `persistence::classify_cratestack` gives it
+//! `PersistenceError::Check` → `Category::Internal` → exit `1`. Nothing
+//! asserts those two against each other, because they disagree.
+//!
+//! What that means here, concretely: the `partial_refunds_imply_refunds`
+//! CHECK is the only `23514` boot step 4 can raise, and until the provider
+//! pass moved it reached a supervisor as `69` ("wait for Postgres") for an
+//! adapter whose declared `Capabilities` are incoherent. It is `1`
+//! ("page someone") now. That is arguably the better answer — nothing about
+//! the database is wrong and `Capabilities::is_coherent` is not checked at
+//! boot, so it is vpay's own bug — but it is a change, it was not asked for,
+//! and whether boot should instead refuse an incoherent adapter as
+//! `Category::Configuration` (exit `78`, like the flow label below) is a
+//! maintainer's call, recorded in docs/status.md rather than taken here.
+//! `a_provider_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`
+//! pins the category so the next move is deliberate.
+//!
+//! One classification changed on purpose rather than as a consequence, and it
+//! is the flow label: see [`DbError::ProviderFlowUnknown`].
 //!
 //! That transaction opens by taking [`lock_keys::CONFIG_RECONCILE`], because
 //! boot step 4 runs in *both* binaries and in every replica of each: a
@@ -578,12 +599,17 @@ mod tests {
     /// to move together or the drift report grows five lines, so a future
     /// editor who restores one half is stopped by the drift test. But an
     /// editor who restores a `@default(...)` in `schemas/vpay.cstack` alone
-    /// is stopped *earlier* and more clearly: `reconcile`'s
-    /// `CreateProviderInput` literal loses a field and the crate stops
-    /// compiling (`error[E0063]`, measured in exp17's review pass in the
-    /// opposite direction). This test is what makes the *statement* — as
-    /// opposed to the struct — a checked claim, so the assertions below are
-    /// about which columns reach SQL rather than about which fields exist.
+    /// is stopped *earlier* and more clearly: the field leaves
+    /// `CreateProviderInput` and `reconcile`'s struct literal stops
+    /// compiling, with `error[E0560]: struct \`inputs::CreateProviderInput\`
+    /// has no field named \`supports_refunds\`` — measured in this
+    /// direction. (exp17's review measured `E0063`, "missing field", going
+    /// the *other* way, when the fields appeared and the literal did not yet
+    /// name them; the two are not interchangeable and naming the wrong one
+    /// sends a reader looking for the wrong mistake.) This test is what makes
+    /// the *statement* — as opposed to the struct — a checked claim, so the
+    /// assertions below are about which columns reach SQL rather than about
+    /// which fields exist.
     ///
     /// The `starts_with` is the brittle assertion of the two and deliberately
     /// kept: a harmless upstream change (different identifier quoting, a
