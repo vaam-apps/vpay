@@ -1340,14 +1340,14 @@ impl TryFrom<&vpay_db::PaymentIntentRow> for PaymentIntentObject {
 /// A `customer` (S4a): the merchant-owned record of a payer they expect to
 /// see again.
 ///
-/// # The seven keys, and the one field of the row that is deliberately not
+/// # The eight keys, and the one field of the row that is deliberately not
 /// among them
 ///
 /// `customers.last_used_at` is **not** on the wire. It is the retention
 /// sweep's clock — vpay moves it whenever an intent or a session names the
 /// customer — and a merchant who could read it would build on a value whose
 /// motion is vpay's business and whose meaning may widen the day invoices
-/// exist. `the_customer_object_is_the_documented_seven_keys` below is the
+/// exist. `the_customer_object_is_the_documented_eight_keys` below is the
 /// tripwire: adding it here would put it in every `customer.*` webhook body,
 /// signed and stored in `events` forever, before anybody wrote it down.
 ///
@@ -1905,6 +1905,137 @@ mod tests {
             created_at: time::OffsetDateTime::from_unix_timestamp(1_753_401_600)
                 .expect("a fixed, valid timestamp"),
         }
+    }
+
+    /// A customer row with every field populated, including the two
+    /// `docs/flows/customers.md` promises are **not** on the wire.
+    ///
+    /// `seq`, `last_used_at` and `updated_at` carry distinctive values on
+    /// purpose: a render that leaked one would put a recognisable number in
+    /// the assertion below rather than something that could be mistaken for
+    /// `created`.
+    fn customer_row() -> vpay_db::CustomerRow {
+        vpay_db::CustomerRow {
+            id: "cus_1".to_owned(),
+            seq: 4_242,
+            merchant_id: "acme-cameroon-tenant".to_owned(),
+            livemode: false,
+            name: Some("Ada Ngo".to_owned()),
+            email: Some("ada@example.cm".to_owned()),
+            phone: Some("237600000200".to_owned()),
+            metadata: json!({ "order_id": "1234" }),
+            last_used_at: time::OffsetDateTime::from_unix_timestamp(1_784_937_600)
+                .expect("a fixed, valid timestamp"),
+            created_at: time::OffsetDateTime::from_unix_timestamp(1_753_401_600)
+                .expect("a fixed, valid timestamp"),
+            updated_at: time::OffsetDateTime::from_unix_timestamp(1_784_937_600)
+                .expect("a fixed, valid timestamp"),
+        }
+    }
+
+    /// The object `docs/flows/customers.md` documents, key for key.
+    ///
+    /// # This test is named by three places and did not exist
+    ///
+    /// `CustomerObject`'s own doc comment and `docs/flows/customers.md` both
+    /// cited `the_customer_object_is_the_documented_seven_keys` as the
+    /// tripwire that keeps `customers.last_used_at` off the wire. Until
+    /// 2026-09-07 nothing of that name existed, and the claim was measured:
+    /// adding `last_used_at` to [`CustomerObject`] and rendering it left
+    /// `vpay-api` 422/422 green, `vpay-sdk` green, the fourteen
+    /// container-backed cases in
+    /// `backends/tests/integration/tests/customers.rs` green, and the Node
+    /// SDK's 190 green. Nothing in the repository objected.
+    ///
+    /// **And the count those three places gave was wrong.** The object is
+    /// `id`, `object`, `name`, `email`, `phone`, `metadata`, `created`,
+    /// `livemode` — *eight* keys, which is also exactly what
+    /// `docs/flows/customers.md`'s own table lists row for row while its
+    /// prose said seven. The name below is the measured count, and the two
+    /// documents were corrected to match rather than the other way round.
+    ///
+    /// # Why the count is the assertion and not only the key list
+    ///
+    /// `last_used_at` is the retention sweep's clock. A leak of it is not a
+    /// cosmetic extra key: this object is `customer.deleted`'s `data.object`,
+    /// so an eighth key is signed, delivered at-least-once and stored in
+    /// `events` **forever** — the one place vpay cannot retract a field it
+    /// published. `the_refund_object_is_the_documented_ten_keys`' device,
+    /// applied to the object where the cost of being wrong is highest.
+    ///
+    /// The whole-value comparison at the end is what makes this a statement
+    /// about the *rendering* as well as the key set: `phone` canonical,
+    /// `created` in unix **seconds**, and `metadata` a map rather than a
+    /// string.
+    #[test]
+    fn the_customer_object_is_the_documented_eight_keys() {
+        let rendered = serde_json::to_value(
+            CustomerObject::try_from(&customer_row()).expect("a well-formed row renders"),
+        )
+        .expect("serialises");
+        let object = rendered.as_object().expect("an object");
+
+        for key in [
+            "id", "object", "name", "email", "phone", "metadata", "created", "livemode",
+        ] {
+            assert!(object.contains_key(key), "`{key}` is missing");
+        }
+
+        for internal in ["last_used_at", "updated_at", "seq", "merchant_id"] {
+            assert!(
+                !object.contains_key(internal),
+                "`{internal}` is internal and must never reach the wire — it would be signed \
+                 into every `customer.deleted` body and stored in `events` forever: {object:?}"
+            );
+        }
+
+        assert_eq!(
+            object.len(),
+            8,
+            "an undocumented key was added to the customer object: {object:?}"
+        );
+
+        assert_eq!(
+            rendered,
+            json!({
+                "id": "cus_1",
+                "object": "customer",
+                "name": "Ada Ngo",
+                "email": "ada@example.cm",
+                "phone": "237600000200",
+                "metadata": { "order_id": "1234" },
+                "created": 1_753_401_600,
+                "livemode": false,
+            })
+        );
+    }
+
+    /// A phone-only customer renders `null` for the two absent identifiers
+    /// rather than omitting the keys.
+    ///
+    /// The maintainer's decision of 2026-09-05 is that a phone number alone
+    /// is a complete customer, and both SDKs decode `name`/`email` as
+    /// nullable. Omitting the keys instead of nulling them would still
+    /// deserialise in both — and would silently change the shape of a
+    /// `customer.deleted` body for exactly the population vpay exists for.
+    #[test]
+    fn a_phone_only_customer_renders_the_absent_identifiers_as_null() {
+        let mut row = customer_row();
+        row.name = None;
+        row.email = None;
+
+        let rendered =
+            serde_json::to_value(CustomerObject::try_from(&row).expect("a phone-only row renders"))
+                .expect("serialises");
+        let object = rendered.as_object().expect("an object");
+
+        assert_eq!(object.len(), 8, "still eight keys: {object:?}");
+        assert_eq!(object.get("name"), Some(&Value::Null));
+        assert_eq!(object.get("email"), Some(&Value::Null));
+        assert_eq!(
+            object.get("phone").and_then(Value::as_str),
+            Some("237600000200")
+        );
     }
 
     /// The object `docs/flows/merchant-auth.md` documents, key for key.

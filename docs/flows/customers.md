@@ -23,7 +23,7 @@ three paragraphs; the rules around it are the rest of the document.
 | `created` | unix **seconds** | |
 | `livemode` | boolean | |
 
-Seven keys and no more. **At least one of `name`, `email` and `phone` is
+Eight keys and no more. **At least one of `name`, `email` and `phone` is
 always present**: a customer with none of them names nobody, can never be
 matched to a payer, and is the shape an integration creates by accident from a
 form with every field blank.
@@ -39,9 +39,17 @@ sweep's clock, vpay moves it whenever an intent or a session names the
 customer, and a merchant who could read it would be building on a value whose
 motion is vpay's business and whose meaning widens the day invoices exist.
 `vpay_api::model`'s
-`the_customer_object_is_the_documented_seven_keys` is the tripwire that keeps
+`the_customer_object_is_the_documented_eight_keys` is the tripwire that keeps
 it off: adding it would put it in every `customer.*` webhook body, signed and
 stored in `events` forever, before anybody wrote it down.
+
+That tripwire **did not exist until 2026-09-07**, and this paragraph named it
+anyway. Rendering `last_used_at` on the object was measured against the whole
+repository on 2026-09-06 and nothing objected — `vpay-api`, `vpay-sdk`, the
+container-backed cases in `backends/tests/integration/tests/customers.rs` and
+the Node SDK were all green with the retention clock on the wire. The same
+review found the count in this section was wrong: the table above lists eight
+rows and the prose said seven.
 
 ---
 
