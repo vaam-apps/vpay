@@ -3320,10 +3320,12 @@ toolchain.** `just ci` end to end, exit 0, with containers and with
 **0 ignored (expected 0), 43 test binaries (expected 43), 1389 total** —
 master's 1382 plus this change's seven, every one in a file that already
 existed, so `expected_suites` stays 43 and the 1080 floor is untouched.
-`just test-rust` 21 m 25 s, **1389 passed, 0 skipped**. `just test-doc`,
-`just lint-web`, `just test-web` and `just deny` (`advisories ok, bans ok,
-licenses ok, sources ok`) all exit 0; `just fmt-check` and `just clippy`
-clean.
+Recipe by recipe on the final head, each run on its own so a failure could be
+attributed: `fmt-check` 0, `clippy` 0 (19 s), `verify` 0 (8 s), `test-rust` 0
+(**941 s — 1389 tests run, 1389 passed, 0 skipped**), `test-doc` 0 (**96
+passed, 1 ignored** — the ignored one is `sdks/rust`'s README block and is
+pre-existing), `verify-ignored` 0, `lint-web` 0 (19 s), `test-web` 0 (9 s),
+`deny` 0 (`advisories ok, bans ok, licenses ok, sources ok`).
 
 The seven: two `vpay-db` unit tests in `webhook_deliveries` (the `preview_sql`
 pin on both outbox statements, and the policy-slot assertion), one in `events`
