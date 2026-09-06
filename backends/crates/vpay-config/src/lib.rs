@@ -263,7 +263,8 @@ pub enum ConfigError {
     /// ADR-0003 keeps merchants in YAML and there is no `merchants` table
     /// (migration `0003`'s comment).
     #[error(
-        "dashboard client {client_id} is bound to merchant_id `{merchant_id}`, which no          merchant_clients entry registers; /dash/v1 would read a tenant that does not exist"
+        "dashboard client {client_id} is bound to merchant_id `{merchant_id}`, which no \
+         merchant_clients entry registers; /dash/v1 would read a tenant that does not exist"
     )]
     DashboardUnknownMerchant {
         /// The dashboard registration naming the unknown tenant.
@@ -293,7 +294,8 @@ pub enum ConfigError {
     /// Merchant-only: the dashboard client has no `allowed_audiences` field
     /// at all, because it is not the party that requests one.
     #[error(
-        "merchant client {client_id} lists `{}` in allowed_audiences; that is the dashboard          surface's audience and a merchant credential must never be able to mint one (ADR-0008)",
+        "merchant client {client_id} lists `{}` in allowed_audiences; that is the dashboard \
+         surface's audience and a merchant credential must never be able to mint one (ADR-0008)",
         oauth::DASHBOARD_AUDIENCE
     )]
     MerchantClaimsDashboardAudience {
