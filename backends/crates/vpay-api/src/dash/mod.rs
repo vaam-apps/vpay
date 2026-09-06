@@ -148,8 +148,15 @@ pub(crate) fn routes() -> Router<crate::AppState> {
 /// encoding of that is `None`.
 ///
 /// Returning `None` means **refuse**, not "no scope needed". The caller
-/// ([`crate::require_dashboard_token`]) answers `405` for it, because the
-/// request named a method this surface does not serve.
+/// ([`crate::require_dashboard_token`]) answers `403` for it — *not* `405`,
+/// and that doc comment's "Why a method it does not serve is refused here"
+/// section is where the choice is argued: `405` is the route table's answer
+/// ("wrong method for this path"), and this surface's answer is the
+/// boundary's ("you may not write here at all"). This paragraph said `405`
+/// until the 2026-09-06 review, contradicting the function it names in the
+/// same commit; the code has always answered `403`, and
+/// `a_write_method_is_refused_by_the_boundary_not_by_the_route_table` now
+/// pins which of the two it is.
 #[must_use]
 pub(crate) fn required_scope<'a>(
     method: &Method,
