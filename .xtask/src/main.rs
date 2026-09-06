@@ -8945,8 +8945,27 @@ export class HolderResource {
     /// that finds nothing, so the count this repository's own SDKs yield is
     /// asserted rather than merely printed — and asserted by name, because
     /// "13" would survive the list changing under it.
+    ///
+    /// It asserts **two** different things, and a reader hitting the failure
+    /// needs to know which one broke, because only one of them is a defect:
+    ///
+    /// 1. neither enumerator has gone quiet (the vacuity half), and
+    /// 2. the two SDKs happen to declare the *same* 13 methods today.
+    ///
+    /// (2) is a fact about this tree, **not** a rule — ADR-0015 decision 2
+    /// expressly lets a capability land in one SDK with a dated ⛔ row for the
+    /// other, and the day that happens this test fails while nothing is wrong.
+    /// The list is still asserted rather than relaxed to "non-empty", because
+    /// a guard that only counts is a guard that survives the list changing
+    /// under it; the message below is what carries the distinction.
     #[test]
     fn the_repositorys_own_sdks_enumerate_exactly_the_capabilities_the_matrix_records() {
+        /// What to do about a failure, since two unlike causes reach it.
+        const WHEN_THIS_FAILS: &str = "\nIf an enumerator went quiet (an empty or short list), that \
+             is the defect this guard exists for: both new parity directions pass vacuously when \
+             nothing is enumerated. If instead a capability was deliberately added to one SDK \
+             only, nothing is broken — ADR-0015 allows it with a dated ⛔ row — and this list is \
+             what you update, in the same commit as the row.";
         let root = repo_root();
         let expected = [
             "account_holders.retrieve",
@@ -8969,7 +8988,12 @@ export class HolderResource {
                 .map(|m| m.capability)
                 .collect();
             let found: Vec<&str> = found.iter().map(String::as_str).collect();
-            assert_eq!(found, expected, "{column}");
+            assert!(
+                !found.is_empty(),
+                "{column} enumerated NOTHING, which passes both new parity directions \
+                 vacuously{WHEN_THIS_FAILS}"
+            );
+            assert_eq!(found, expected, "{column}{WHEN_THIS_FAILS}");
         }
     }
 
