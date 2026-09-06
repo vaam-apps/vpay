@@ -189,17 +189,14 @@ export class ZenStackShopStore implements ShopStore {
       if (decision.writeStatus !== null && order !== null) {
         await tx.order.update({
           where: { id: order.id },
+          // The failure columns are written in the same statement as the
+          // status they explain, and only here — so there is no window in
+          // which an order is `failed` with no code, and an order whose
+          // status this delivery does not move cannot be stamped with one.
           data: {
             status: decision.writeStatus,
-            // Written in the same statement as the status they explain, so
-            // there is no window in which an order is `failed` with no code
-            // and none in which a code outlives the status it belongs to.
-            ...(decision.writeFailure
-              ? {
-                  failureCode: application.failureCode,
-                  failureMessage: application.failureMessage,
-                }
-              : {}),
+            failureCode: application.failureCode,
+            failureMessage: application.failureMessage,
           },
         });
       }

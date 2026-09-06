@@ -159,10 +159,10 @@ export class MemoryShopStore implements ShopStore {
     }
     if (decision.writeStatus !== null && order !== undefined) {
       order.status = decision.writeStatus;
-      if (decision.writeFailure) {
-        order.failureCode = application.failureCode;
-        order.failureMessage = application.failureMessage;
-      }
+      // Together with the status, never on their own — the same statement
+      // `ZenStackShopStore` writes them in.
+      order.failureCode = application.failureCode;
+      order.failureMessage = application.failureMessage;
     }
     return decision.outcome;
   }

@@ -21,18 +21,19 @@ export interface WebhookDecision {
   outcome: WebhookOutcome;
   /** Whether to insert the `webhook_events` row. */
   recordEvent: boolean;
-  /** The status to write, or `null` to leave the order alone. */
-  writeStatus: OrderStatus | null;
   /**
-   * Whether the failure columns move with the status.
+   * The status to write, or `null` to leave the order alone.
    *
-   * They move on **exactly** the writes that move the status, which is what
-   * keeps `failure_code` from outliving the failure it described: an order
-   * that goes `failed` and is then retried is a *different* order, so there
-   * is no path here that clears them — but an `already_settled` delivery
-   * must not stamp a code onto an order that is already `paid`.
+   * It is also what decides the **failure columns**: a store writes
+   * `failure_code` and `failure_message` in the same statement as the status
+   * and never on its own. There is deliberately no second flag for them —
+   * one was written, and it could not vary independently of this field, so
+   * it was a knob that looked like it did something. What it was there to
+   * protect is real, and this shape protects it by construction: an
+   * `already_settled` delivery writes no status, and therefore cannot stamp
+   * a code onto an order that is already `paid`.
    */
-  writeFailure: boolean;
+  writeStatus: OrderStatus | null;
 }
 
 /**
@@ -52,7 +53,6 @@ export function decideWebhook(input: WebhookDecisionInput): WebhookDecision {
       outcome: "duplicate",
       recordEvent: false,
       writeStatus: null,
-      writeFailure: false,
     };
   }
   if (input.orderStatus === null) {
@@ -60,7 +60,6 @@ export function decideWebhook(input: WebhookDecisionInput): WebhookDecision {
       outcome: "unknown_intent",
       recordEvent: false,
       writeStatus: null,
-      writeFailure: false,
     };
   }
   if (input.orderStatus !== "unpaid") {
@@ -68,13 +67,11 @@ export function decideWebhook(input: WebhookDecisionInput): WebhookDecision {
       outcome: "already_settled",
       recordEvent: true,
       writeStatus: null,
-      writeFailure: false,
     };
   }
   return {
     outcome: "applied",
     recordEvent: true,
     writeStatus: input.nextStatus,
-    writeFailure: true,
   };
 }
