@@ -1279,6 +1279,14 @@ sqlx write and then reads the same key through the CrateStack path and through
 two spellings of a direct `SELECT`, for a key that exists and one that does
 not, and requires all of them to agree.
 
+**That test has never been executed.** It compiles and `cargo nextest list`
+names it, and no machine has run it: the host that wrote it had no working
+Docker daemon, and neither did the host that reviewed it. Until CI runs it,
+everything this section says about the CrateStack read returning what the
+sqlx read returns is read out of `cratestack-sqlx`'s query builder rather
+than measured. [docs/status.md](../status.md) § "The first CrateStack read"
+names it and the two other container-backed cases owed to CI.
+
 ### Why the generated module is private, and what keeps it that way
 
 `include_server_schema!` expands to `pub mod cratestack_schema { … }` **at the
