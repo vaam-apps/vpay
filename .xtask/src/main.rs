@@ -3321,10 +3321,18 @@ const PARITY_NESTED_RESOURCES: [(&str, &str); 1] = [("checkout_sessions", "check
 /// can call.
 const PARITY_METHOD_SKIPPED_DIRS: [&str; 5] = ["tests", "test", "testing", "examples", "benches"];
 
-/// Rust's string delimiter. `'` is absent on purpose: in Rust it opens a
-/// lifetime far more often than a char literal, and treating it as a quote
-/// would swallow every `impl Foo<'a>` header.
-const RUST_QUOTES: &[char] = &['"'];
+/// Which language's literal rules [`code_only`] applies.
+///
+/// A two-variant enum rather than the list of quote characters it replaced on
+/// 2026-09-06: Rust's literals are not describable as a set of delimiters —
+/// `r#"…"#` ends on a delimiter that depends on how it opened, and a bare `'`
+/// opens a lifetime far more often than a character literal — so the Rust arm
+/// hands the question to [`end_of_literal`] instead of answering it again.
+#[derive(Clone, Copy)]
+enum SdkLanguage {
+    Rust,
+    TypeScript,
+}
 
 /// TypeScript's three string delimiters, the backtick included because a
 /// template literal is the one that may cross a line break.
@@ -3418,7 +3426,7 @@ fn rust_resource_methods(text: &str, file: &str, out: &mut Vec<SdkMethod>) {
     // round: both passes preserve offsets, and a doc comment *quoting*
     // `#[cfg(test)]` would otherwise blank the live code beneath it and hide
     // every method that followed.
-    let code = blank_cfg_test_items(&code_only(text, RUST_QUOTES));
+    let code = blank_cfg_test_items(&code_only(text, SdkLanguage::Rust));
     for (header_at, resource) in rust_resource_impls(&code) {
         let Some((body_start, body_end)) = code_block_span(&code, header_at) else {
             continue;
@@ -3508,7 +3516,7 @@ fn impl_self_type(header: &str) -> Option<String> {
 /// which of a module's objects is a resource — the judgement
 /// [`RESOURCE_TYPE_SUFFIX`] exists to avoid making.
 fn ts_resource_methods(text: &str, file: &str, out: &mut Vec<SdkMethod>) {
-    let code = code_only(text, TS_QUOTES);
+    let code = code_only(text, SdkLanguage::TypeScript);
     let mut search = 0usize;
     while let Some(found) = code.get(search..).and_then(|rest| rest.find("class ")) {
         let at = search + found;
@@ -3598,19 +3606,44 @@ fn declared_after(line: &str, keyword: &str) -> Option<String> {
 /// enumerated nothing from that resource, which is the failure mode this
 /// whole gate exists to make impossible.
 ///
-/// `quotes` is the language's string delimiters. Rust passes `"` only,
-/// because `'` there opens a lifetime; TypeScript passes `"`, `'` and the
-/// template-literal backtick, the one that survives a line break. A Rust
-/// char literal holding a lone brace would still unbalance the count —
-/// neither SDK contains one, and the limitation is written down here rather
-/// than discovered later.
-fn code_only(text: &str, quotes: &[char]) -> String {
+/// `language` decides how a literal is recognised, because the two are not
+/// the same problem:
+///
+/// * **Rust** defers to [`end_of_literal`], the lexer `verify-status`,
+///   `verify-serde` and `verify-docs` already share — it knows `r#"…"#`,
+///   `b"…"`, `c"…"`, `b'…'`, and the one ambiguity that matters here, a
+///   character literal versus a lifetime. It is used rather than reimplemented
+///   because a second, weaker Rust lexer beside a correct one is ADR-0016
+///   standard 4, and because the weaker one **was** wrong: until 2026-09-06
+///   this function treated `'` as never opening anything, so the `b'}'` that
+///   `sdks/rust/src/webhooks.rs:321` has shipped since it was written left its
+///   brace in the code stream. A single such literal inside an
+///   `impl …Resource` truncates the body and silently drops every method after
+///   it — measured that day: with the literal, adding an unrecorded
+///   `pub async fn` to `PaymentIntentsResource` left the gate green at
+///   `13 SDK method(s)`; without it, the same addition failed with exit 1. The
+///   comment that used to sit here said "neither SDK contains one", which was
+///   false when it was written.
+/// * **TypeScript** keeps the character-by-character scan below: its
+///   delimiters are `"`, `'` and the template-literal backtick, the one that
+///   survives a line break, and none of them has Rust's prefix or lifetime
+///   ambiguity.
+fn code_only(text: &str, language: SdkLanguage) -> String {
     /// Where the scan is, between characters.
     enum State {
         Code,
         Str(char),
         LineComment,
-        BlockComment,
+        /// Inside `/* … */`, carrying how many are open.
+        ///
+        /// A count and not a flag because **Rust block comments nest** and
+        /// TypeScript's do not. Measured 2026-09-06, before the count existed:
+        /// a commented-out `pub async fn` sitting after an inner `/* … */`
+        /// inside an outer one was enumerated as shipped, and the gate
+        /// *demanded a parity row for a method that does not exist*. That is
+        /// the false positive `verify-status`'s own history warns about — the
+        /// cheapest way to clear one is to delete the honest comment.
+        BlockComment(usize),
     }
 
     let chars: Vec<char> = text.chars().collect();
@@ -3630,12 +3663,28 @@ fn code_only(text: &str, quotes: &[char]) -> String {
                     continue;
                 }
                 if c == '/' && next == Some('*') {
-                    state = State::BlockComment;
+                    state = State::BlockComment(1);
                     out.push_str("  ");
                     i += 2;
                     continue;
                 }
-                if quotes.contains(&c) {
+                if matches!(language, SdkLanguage::Rust) {
+                    if let Some(end) = end_of_literal(&chars, i) {
+                        for j in i..end {
+                            out.push(if chars.get(j) == Some(&'\n') {
+                                '\n'
+                            } else {
+                                ' '
+                            });
+                        }
+                        i = end;
+                        continue;
+                    }
+                    out.push(c);
+                    i += 1;
+                    continue;
+                }
+                if TS_QUOTES.contains(&c) {
                     state = State::Str(c);
                     out.push(' ');
                     i += 1;
@@ -3664,9 +3713,18 @@ fn code_only(text: &str, quotes: &[char]) -> String {
                 }
                 out.push(if c == '\n' { '\n' } else { ' ' });
             }
-            State::BlockComment => {
+            State::BlockComment(depth) => {
+                if matches!(language, SdkLanguage::Rust) && c == '/' && next == Some('*') {
+                    state = State::BlockComment(depth.saturating_add(1));
+                    out.push_str("  ");
+                    i += 2;
+                    continue;
+                }
                 if c == '*' && next == Some('/') {
-                    state = State::Code;
+                    state = match depth.saturating_sub(1) {
+                        0 => State::Code,
+                        still_open => State::BlockComment(still_open),
+                    };
                     out.push_str("  ");
                     i += 2;
                     continue;
@@ -8528,6 +8586,91 @@ export class HolderResource {
   }
 }
 "#;
+
+    /// A resource whose first method's body carries every Rust literal shape
+    /// that holds a brace or a quote without opening a block.
+    ///
+    /// `b'}'` is not invented for this fixture: `sdks/rust/src/webhooks.rs:321`
+    /// has shipped `altered.push(if last == b'}' { b')' } else { b'}' });`
+    /// since it was written, which is two unbalanced closing braces to a lexer
+    /// that does not read character literals.
+    const RUST_LITERAL_FIXTURE: &str = r##"impl WidgetsResource<'_> {
+    pub async fn create(&self) -> Result<Widget, Error> {
+        let mut altered = self.body();
+        let last = altered.pop().unwrap_or(b'0');
+        altered.push(if last == b'}' { b')' } else { b'}' });
+        let _lifetime: &'static str = "{";
+        let _brace = '{';
+        let _raw = r#"{"id":"w_1","nested":{"a":"b"}}"#;
+        Ok(Widget)
+    }
+
+    pub async fn list(&self) -> Result<List<Widget>, Error> {
+        Ok(List)
+    }
+}
+"##;
+
+    /// A resource carrying a **nested** Rust block comment, the shape a parked
+    /// method is written in.
+    const RUST_NESTED_COMMENT_FIXTURE: &str = r#"impl WidgetsResource<'_> {
+    /* parked while the rail is decided:
+       /* the shape it had before */
+       pub async fn teleport(&self) -> Result<(), Error> { Ok(()) }
+    */
+    pub async fn list(&self) -> Result<List<Widget>, Error> {
+        Ok(List)
+    }
+}
+"#;
+
+    /// Rust block comments nest; TypeScript's do not.
+    ///
+    /// Measured 2026-09-06 before the depth count existed: the inner `*/`
+    /// ended the comment, `teleport` was enumerated as shipped, and the gate
+    /// **demanded a parity row for a method that does not exist** (exit 1 on
+    /// this repository's own `resources.rs` with the fixture's shape pasted
+    /// in). A false positive, and the cheapest way to clear one is to delete
+    /// the honest comment — the exact trade `verify-status`'s own history in
+    /// the `justfile` warns about.
+    #[test]
+    fn a_nested_block_comment_hides_the_method_it_parked() {
+        let mut out = Vec::new();
+        rust_resource_methods(
+            RUST_NESTED_COMMENT_FIXTURE,
+            "sdks/rust/src/resources.rs",
+            &mut out,
+        );
+        let names: Vec<&str> = out.iter().map(|m| m.capability.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["widgets.list"],
+            "a commented-out method is not shipped surface, {names:?}"
+        );
+    }
+
+    /// The regression this review's decisive mutation measured on 2026-09-06.
+    ///
+    /// With the byte literals present and `code_only` blind to them, the
+    /// `impl` body closed early, `list` was never enumerated, and the gate
+    /// stayed green — silently, because the *other* SDK still backed the
+    /// `widgets.list` row and the printed method count did not move. `list`
+    /// is therefore the assertion that matters here: it is the method *after*
+    /// the literals.
+    #[test]
+    fn a_character_literal_holding_a_brace_does_not_truncate_the_impl() {
+        let mut out = Vec::new();
+        rust_resource_methods(RUST_LITERAL_FIXTURE, "sdks/rust/src/resources.rs", &mut out);
+        let found: Vec<String> = out
+            .iter()
+            .map(|m| format!("{}@{}", m.capability, m.line))
+            .collect();
+        assert_eq!(
+            found,
+            vec!["widgets.create@2", "widgets.list@12"],
+            "every method after a brace-holding literal must still be seen, {found:?}"
+        );
+    }
 
     #[test]
     fn a_node_resource_classes_methods_are_enumerated_with_their_lines() {
