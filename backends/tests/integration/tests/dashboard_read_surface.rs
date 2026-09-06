@@ -389,6 +389,19 @@ async fn the_dashboard_lists_only_the_merchant_it_is_bound_to() -> anyhow::Resul
         "the dashboard is bound to {MERCHANT_A} and must not see {MERCHANT_B}'s rows: {body}"
     );
     assert_eq!(at(&body, "/url"), "/dash/v1/payment_intents", "{body}");
+
+    // Over the serialised body, for the reason
+    // `the_detail_read_carries_the_charge_and_never_the_client_secret` gives:
+    // `PaymentIntentObject` has no such field, but rendering
+    // `PaymentIntentWithSecret` here instead is one word that still compiles,
+    // and the *list* had no assertion against it until 2026-09-06. Both
+    // seeded intents carry `SECRET_MARKER` in their suffix, so there is
+    // something to leak.
+    let rendered = body.to_string();
+    assert!(
+        !rendered.contains("client_secret") && !rendered.contains(SECRET_MARKER),
+        "the staff payments list must not render the payer credential: {rendered}"
+    );
     Ok(())
 }
 
