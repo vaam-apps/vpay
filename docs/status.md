@@ -3417,12 +3417,14 @@ before one can. CrateStack's generated row decoders read an enum column with
 `try_get::<String>()`, so a native enum column fails to decode on **every**
 read through that layer.
 
-**Not done, named, and the reason is measured rather than pending.**
-`reconcile`'s **provider** pass is still a hand-written `INSERT ... ON
-CONFLICT`, and it cannot move at 0.11.1. `cratestack-macros` drops every
+**Not done in this change, named, and the reason was measured rather than
+pending — SUPERSEDED the same day by migration 0033; see "`providers` through
+CrateStack" below.** `reconcile`'s **provider** pass was still a hand-written
+`INSERT ... ON CONFLICT` when this section was written, and could not move
+while the defaults were there. `cratestack-macros` drops every
 `@default(...)` field from both `Create{Model}Input` and
-`upsert_update_columns`, and `model Provider` carries one on all five
-capability booleans because the live table does. The generated statement is
+`upsert_update_columns`, and `model Provider` carried one on all five
+capability booleans because the live table did. The generated statement was
 
 ```text
 INSERT INTO providers (code, display_name, flow) VALUES ($1, $2, $3)
@@ -3435,26 +3437,32 @@ insert every rail with the column defaults regardless of what the deployment
 configured, and would never carry a capability change to an existing row: a
 rail an operator had just disabled would come back enabled. That is a
 plausible-looking success storing the wrong value, so it was not shipped.
-`the_provider_upsert_cannot_carry_the_capability_columns` pins the rendered
-statement so an upstream fix turns it red.
+`the_provider_upsert_cannot_carry_the_capability_columns` pinned the rendered
+statement so that a fix would turn it red; it is
+`the_provider_upsert_carries_all_eight_columns` now, asserting the inverse.
 
-**A maintainer's decision, surfaced rather than taken.** Unblocking it on
-vpay's side means removing the five `@default(...)`s from `model Provider`
-*and* `ALTER TABLE providers ALTER COLUMN ... DROP DEFAULT` on all five —
-letting a code generator's input-shaping rule decide vpay's DDL, and removing
-a defaulting behaviour any future writer of that table would expect. The
-alternative is upstream growing a way to include a defaulted column in an
-upsert input. Neither was chosen here.
-[docs/reference/vpay-db.md § CrateStack](reference/vpay-db.md#cratestack) has
-both options written out.
+**A maintainer's decision, surfaced rather than taken — and taken the same
+day.** Unblocking it on vpay's side meant removing the five `@default(...)`s
+from `model Provider` *and* `ALTER TABLE providers ALTER COLUMN ... DROP
+DEFAULT` on all five — letting a code generator's input-shaping rule decide
+vpay's DDL, and removing a defaulting behaviour any future writer of that
+table would expect. The alternative was upstream growing a way to include a
+defaulted column in an upsert input. The maintainer's decision (**D7**,
+2026-09-06) was the first, on the ground that `reconcile` is the only writer
+of those columns and always writes all five, so the default could only ever
+invent a capability for a writer that had forgotten one. Migration 0033 is
+that decision; see "`providers` through CrateStack" below.
 
-**Also not done:** no other table moved; `reconcile` still owns its own
-transaction and that did not change; the provider *disable* pass
+**Also not done in *this* change:** no other table moved; `reconcile` still
+owns its own transaction and that did not change; the provider *disable* pass
 (`UPDATE providers SET enabled = false WHERE code <> ALL($1)`) is still raw
-sqlx; `providers.code_length` and `providers.display_name_length` are still
+sqlx **and still is** after 0033, because it addresses rows by their absence
+from a list and no generated builder expresses that;
+`providers.code_length` and `providers.display_name_length` are still
 hand-named (the rename would have bought zero drift and `display_name` has no
-`@db_enforce` to converge on); and no production path reads `providers`
-through CrateStack — `model Provider`'s `read` policy exists for one test.
+`@db_enforce` to converge on); and no production path *reads* `providers`
+through CrateStack — `model Provider`'s `read` policy still exists for one
+test, and 0033 changed the write, not the read.
 
 **Public API changed.** `CurrencySeed::exponent` and
 `DbError::CurrencyExponentConflict`'s `stored`/`seeded` are `i64` rather than
@@ -3534,6 +3542,146 @@ transcript and
 | Delete `@@allow("create", …)` from `model Currency` | LOUD, on every boot: `Currency: a model policy denied a system upsert: forbidden: create policy denied this upsert` → `PersistenceError::Denied` → `Category::Internal`. `every_action_this_module_calls_has_an_allow_arm` catches it in 5 ms with no container |
 | Delete `@@allow("read", …)` from `model Currency` | SILENT at runtime and the dangerous direction. Three container tests go red — the two exponent-conflict cases and the row-lock case — because the read answers `None` for a row that exists and the upsert overwrites the stored exponent instead of refusing to. The no-container policy-slot test also catches it |
 | Delete `CONSTRAINT partial_refunds_imply_refunds` from 0002 | `partial_refunds_without_refunds_is_rejected_by_the_database` FAILS, **and the drift count does not move**: the report still says `drift detected in 16 table(s)/view(s) (84 change(s) total)`. The drift test fails only on its own `pg_constraint` read. Re-confirms the multi-column blind spot on this branch's numbers |
+
+#### `providers` through CrateStack: migration 0033 and the D7 decision (2026-09-06)
+
+`ConfigReconcile::reconcile`'s **provider** pass is
+`upsert(CreateProviderInput).run_in_tx(tx, ctx)`, inside the same transaction
+and after the same `pg_advisory_xact_lock` as the currency pass. The section
+above records why it could not be, and this one records the decision that
+changed that and exactly what the decision costs.
+
+**The decision (D7, taken by the maintainer's delegate).** `cratestack-macros`
+drops every `@default(...)` field from both `Create{Model}Input` and
+`upsert_update_columns`, and `model Provider` carried one on all five
+capability booleans because migration 0002's table did. The two ways out were
+(1) drop the five `@default(...)` *and* the five column `DEFAULT`s, or (2)
+wait for upstream to grow a way to include a defaulted column in an upsert
+input. **Option 1**, on the ground that `reconcile` is the *only* writer of
+those five columns and always writes all five from configuration — so a column
+default can never help that writer and can only invent a capability for some
+other writer that forgot one. A rail silently recorded as "does not refund",
+or silently recorded as enabled, is worse than an `INSERT` that refuses.
+
+**Migration 0033** (`0033_providers-drop-capability-defaults.sql`, count
+32 → 33) is five `ALTER TABLE providers ALTER COLUMN … DROP DEFAULT` and one
+`COMMENT ON TABLE`. It rewrites no rows (`DROP DEFAULT` touches `pg_attrdef`
+only) and, unlike 0032, **is** backward compatible with the previous
+release's binary: the pre-0033 `reconcile` names all eight columns in its
+hand-written insert, and nothing else in the tree writes this table.
+
+**What it costs, stated as a refusal rather than a difference.** All five
+columns are `NOT NULL` and now have no default, so
+`INSERT INTO providers (code, display_name, flow) VALUES (…)` typed at a psql
+prompt fails with `23502` where it used to succeed and invent four `false`s
+and a `true`.
+`a_hand_written_provider_insert_must_now_name_every_capability_column`
+(`postgres_smoke.rs`) asserts both halves — the refusal, and that an `INSERT`
+naming all eight still succeeds — and reads `pg_attrdef` so that a migration
+which dropped four defaults and missed one fails here rather than in
+production. Three fixtures in that same file had to grow the columns in the
+same commit; that is the whole blast radius in this repository.
+
+**The drift did not move, and that is the measurement, not the expectation.**
+84 changes / 16 relations / 17 unmappable before and after, and the
+`providers` block is byte-identical. While the five `@default(...)` and the
+five `DEFAULT`s were both there they agreed; with both gone they still agree.
+What creates drift is doing *one* half: with the five `@default(...)` removed
+from the schema and 0033 absent, the report is **89 changes**, exactly five
+`column … default value differs` lines on `providers` (measured here on
+2026-09-06, reproducing exp17's review pass from the opposite side). That is
+why the migration and the schema edit are one commit.
+
+**A public API addition, and one classification deliberately changed.**
+`CreateProviderInput::flow` is the schema's `ProviderFlow` enum rather than a
+`String`, so `reconcile` parses `ProviderSeed::flow` before it builds a
+statement. `ProviderSeed::flow` stays a `String` (Step 2's D4 is untouched),
+and an unparseable label is the new `DbError::ProviderFlowUnknown` —
+`Category::Configuration`, **exit 78**, where the `providers_flow_enum_check`
+CHECK it replaces produced `DbError::Query` → `Category::Storage` → **exit
+69**, i.e. "wait for Postgres" for a typo in a deployment. The CHECK is still
+in the database and still fires for a writer that is not `reconcile`
+(`an_unknown_provider_flow_is_refused_by_the_check_that_replaced_the_enum_type`
+is unchanged). The parse is a `match`, not `unwrap_or_default()`, because
+`cratestack-macros` derives `Default` on every generated enum with the *first*
+variant as the default — so `unwrap_or_default()` here would store a typo'd
+rail as a push rail and return `Ok`.
+
+**`model Provider` gained `@@allow("create", …)` and `@@allow("update", …)`**,
+in the commit that moved the write and not before it, and still has no
+`delete` arm: `reconcile` disables a dropped rail rather than removing one.
+
+**No `find_unique(...).for_update()` ahead of the provider upsert, and that is
+deliberate.** The currency pass needs its read because the upsert renders
+`SET exponent = EXCLUDED.exponent` and a stored exponent must never be
+overwritten — the read *is* the guard. A provider has no such value: all eight
+columns are owned by configuration and overwriting them is the point, so the
+read would return a row nothing compares. The row lock it would take is taken
+anyway, in the same transaction, by `upsert`'s own conflict probe
+(`upsert_exec.rs::run_upsert_in_tx` → `select_for_update_by_conflict_target`
+on `tx`). A measured consequence worth recording: because no `providers` row
+lock is held when the upsert runs, swapping `run_in_tx` for `run` **fails in
+1.2 s instead of hanging**, which is the opposite of what the same mutation
+does to the currency pass.
+
+**Tests: +3 net in `vpay-db`, +1 in `postgres_smoke.rs`, one replaced.**
+`the_provider_upsert_cannot_carry_the_capability_columns` became
+`the_provider_upsert_carries_all_eight_columns` (same file, inverted claim).
+New: `an_unnameable_flow_is_a_deploy_problem_and_never_reaches_a_statement`
+(no container),
+`a_rail_the_configuration_disables_is_not_re_enabled_by_reconcile` and
+`a_provider_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`
+(`vpay-db/tests/repositories.rs`), and
+`a_hand_written_provider_insert_must_now_name_every_capability_column`
+(`postgres_smoke.rs`).
+`a_currency_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`
+had to change its expected variant from `DbError::Query` to
+`DbError::Persistence(PersistenceError::Check { … })`, because the statement
+that raises the `23514` is a CrateStack upsert now — the exact "a caller
+matching the variant would have silently stopped matching" the module doc
+warns about, caught by a test rather than in production.
+
+**Gate, run on this branch on 2026-09-06 against the pinned 1.98.0 toolchain
+and Node 22.23.2 from `.nvmrc`.** `just ci` end to end, **exit 0**, containers
+included and `node_modules` installed with `pnpm install --frozen-lockfile`.
+All **ten** `just verify` gates green, `check-schema` at cratestack 0.11.1
+still 13 model/enum declarations (this change adds policies and removes
+defaults, not declarations). `just test-rust`: **1386 tests run, 1386 passed,
+0 skipped** (973 s). `just verify-ignored`: **0 ignored (expected 0), 43 test
+binaries (expected 43), 1386 total** — 1382 plus this change's four, all in
+files that already existed, so `expected_suites` and the 1080 floor are
+untouched. `just test-doc`: 96 passed, 1 ignored (the `sdks/rust` README
+block, pre-existing). `just deny`: `advisories ok, bans ok, licenses ok,
+sources ok`. `lint-web` and `test-web` green.
+
+Two earlier `just ci` runs on the same tree failed for reasons that were not
+this change and are recorded rather than hidden: one on a
+`failed to create a container: Timeout error` starting the MTN stub while
+other suites were saturating the machine, and one on
+`the_delivered_signature_verifies_with_the_shipping_node_sdk` with
+`sh: 1: tsc: not found` — a worktree whose `node_modules` had not been
+installed yet. Neither reproduced once the machine was quieter and the
+lockfile install had run.
+
+**`fn reconcile` is now 237 lines** (203 before), still the longest production
+function on `verify-docs`' advisory list and still almost all comment. exp17's
+review flagged the same thing at 203 and left it for a maintainer; this change
+condensed the provider loop's comments once (the long-form argument lives in
+migration 0033's header and in
+[reference/vpay-db.md](reference/vpay-db.md#cratestack)) and did not split the
+function, because the split would separate the advisory lock from the
+statements it protects.
+
+**Mutations run on 2026-09-06**, transcripts in
+[docs/plans/exp20-provider-defaults-notes/opus.md](plans/exp20-provider-defaults-notes/opus.md):
+
+| Mutation | Result |
+|---|---|
+| Provider upsert `.run_in_tx(&mut tx, &ctx)` → `.run(&ctx)` | `a_provider_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction` **FAILS in 1.226 s**, `left: 1, right: 0`, with the message naming `run_in_tx`. **Nothing hung** — the whole reconcile set finished, longest case 5.1 s. That is the difference from the currency pass, where the same mutation deadlocks against `find_unique(...).for_update()` |
+| Delete `@@allow("update", …)` from `model Provider` | LOUD, and **only on the second boot**: `every_action_this_module_calls_has_an_allow_arm` fails in 3 ms with no container, and two container cases fail with `Provider: a model policy denied a system upsert: forbidden: update policy denied this upsert` — `reconcile_is_idempotent_…` at "a second, identical reconcile must succeed" and `a_rail_the_configuration_disables_…` at "reconciling a disabled rail must succeed". A fresh database's first boot succeeds, which is why the no-container slot test exists |
+| Delete migration 0033, keep the schema edit | **Test-time**, three ways: `the_cstack_schema_drifts_…` fails at **89 vs 84** with five `column … default value differs` lines on `providers`; `a_hand_written_provider_insert_must_now_name_every_capability_column` fails because the three-column INSERT succeeds again; `schema_migrates_cleanly_on_an_empty_database` fails at 32 vs 33 |
+| Restore one `@default(false)` in `model Provider`, keep 0033 | **Compile-time**: `error[E0560]: struct `inputs::CreateProviderInput` has no field named `supports_refunds``. The schema half cannot regress silently — the crate stops building before any test runs |
+
 
 ---
 

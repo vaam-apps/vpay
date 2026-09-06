@@ -15,17 +15,19 @@
 // │ verify-repositories` fails if that changes).                             │
 // │                                                                          │
 // │ Compiled is not the same as used, and the difference matters more        │
-// │ than usual here. Exactly ONE model — `DisabledClient` — has queries      │
-// │ running through it, and since 2026-09-06 it has all three of them:       │
-// │ `is_client_disabled` is `find_unique(...).run(ctx)`, `disable_client`    │
-// │ is `upsert(...).run(ctx)` and `enable_client` is                         │
-// │ `delete_many().where_(...).run(ctx)`. This box said "the two             │
-// │ `disabled_clients` WRITES are still raw sqlx" until then; no raw sqlx    │
-// │ statement against that table is left in `vpay-db`. Every other model     │
-// │ below is still a design sketch that happens to be type-checked by a      │
-// │ compiler as well as by the CLI; no code reads or writes through any of   │
-// │ them, and several do not match the live table at all (see the drift      │
-// │ list). docs/status.md is the authoritative done/not-done list.           │
+// │ than usual here. THREE models have queries running through them, all     │
+// │ of them since 2026-09-06: `DisabledClient` (all three methods —          │
+// │ `find_unique(...).run(ctx)`, `upsert(...).run(ctx)` and                  │
+// │ `delete_many().where_(...).run(ctx)`), `Currency`                        │
+// │ (`find_unique(...).for_update()` then `upsert(...)`, both `run_in_tx`    │
+// │ on boot step 4's transaction) and `Provider` (`upsert(...).run_in_tx`,   │
+// │ which migration 0033 is what made possible — see the note on that        │
+// │ model). This box said "exactly ONE model" until the currencies and       │
+// │ providers passes moved. Every other model below is still a design        │
+// │ sketch that happens to be type-checked by a compiler as well as by the   │
+// │ CLI; no code reads or writes through any of them, and several do not     │
+// │ match the live table at all (see the drift list). docs/status.md is      │
+// │ the authoritative done/not-done list.                                    │
 // │                                                                          │
 // │ The content was rewritten against the real grammar in 2026-09, field     │
 // │ by field against cratestack-parser's own test suite rather than          │
@@ -62,9 +64,13 @@
 // │ schema_drifts_from_the_migrations_by_a_measured_amount, which pins the   │
 // │ count, the number of relations it is spread over, and the exact set of   │
 // │ tables the database has and this file does not. 86 changes over 17       │
-// │ relations on 2026-09-05; **85 over 16 since 2026-09-06**, when           │
-// │ `DisabledClient` landed and `disabled_clients` left the report           │
-// │ entirely. That is a comparison, not a migration source: nothing          │
+// │ relations on 2026-09-05; 85 over 16 when `DisabledClient` landed on      │
+// │ 2026-09-06 and `disabled_clients` left the report entirely; **84 over    │
+// │ 16 since migration 0032** widened `currencies.exponent`. Migration       │
+// │ 0033 moved it by ZERO and had to: a column default costs drift only      │
+// │ when the two sides disagree, so dropping the five `@default(...)`        │
+// │ here WITHOUT that migration would have made it 89. That is a             │
+// │ comparison, not a migration source: nothing                              │
 // │ generates DDL from this file and it drives no migration —                │
 // │ `backends/migrations/*.sql` remains the authoritative schema.            │
 // │                                                                          │
@@ -251,28 +257,37 @@ model Currency {
 // in config_reconcile.rs is, and reverting the migration's `ALTER COLUMN
 // flow TYPE TEXT` is what makes it fail.
 //
-// `@@allow("read", ...)` and NOTHING ELSE, deliberately, and this is the one
-// asymmetry with `Currency` above. `config_reconcile`'s provider pass is
-// still a hand-written `INSERT ... ON CONFLICT`, because CrateStack's upsert
-// input cannot carry a `@default(...)` column and the five capability
-// booleans below all have one — see the GAP note at the end of this model.
-// Granting `create`/`update` here would be granting a permission no call
-// site uses, which is a permission nothing can measure; `DisabledClient`'s
-// comment argues the same rule from the other direction. Add them in the
-// commit that moves the write, not before it.
+// `read`, `create` and `update`, and NO `delete`, exactly like `Currency`
+// above. The three write arms landed on 2026-09-06 in the commit that moved
+// `config_reconcile`'s provider pass onto `upsert(...).run_in_tx(...)` — not
+// before it, which is the rule the comment here used to state in its
+// unsatisfied form ("add them in the commit that moves the write"). `delete`
+// stays absent for `Currency`'s reason: every `charges` and
+// `provider_requests` row references this table, and a rail that has ever
+// taken money must stay nameable forever, so `reconcile` disables a dropped
+// rail rather than removing it.
+//
+// The five capability booleans below carried `@default(...)` until the same
+// day, and that is what had kept the provider pass on hand-written SQL:
+// `cratestack-macros` drops every `@default(...)` field from both
+// `Create{Model}Input` and `upsert_update_columns`, so the generated upsert
+// could write only `code`, `display_name` and `flow`. See the note at the
+// end of this model for what was decided and what it cost.
 model Provider {
   code String @id @length(min: 1, max: 64) @db_enforce // 'mtn_momo' | 'orange_money'
   display_name String @length(min: 1, max: 128)
   flow ProviderFlow
-  supports_refunds Boolean @default(false)
-  supports_partial_refunds Boolean @default(false)
-  delivers_callbacks Boolean @default(false)
-  requires_ip_allowlist Boolean @default(false)
-  enabled Boolean @default(true)
+  supports_refunds Boolean
+  supports_partial_refunds Boolean
+  delivers_callbacks Boolean
+  requires_ip_allowlist Boolean
+  enabled Boolean
 
   charges Charge[] @relation(fields: [code], references: [provider_code])
 
   @@allow("read", auth().isSystem())
+  @@allow("create", auth().isSystem())
+  @@allow("update", auth().isSystem())
 
   // GAP — no DB-level coherence CHECK expressible in THIS GRAMMAR.
   // backends/crates/vpay-provider/src/lib.rs:28-34 (Capabilities::is_coherent)
@@ -299,41 +314,48 @@ model Provider {
   // is about what THIS grammar can express, not about what the database
   // enforces.
 
-  // GAP — the five `@default(...)` booleans above make this model
-  // UNWRITEABLE through CrateStack's upsert, and the fix is a maintainer's
-  // decision rather than a code change.
+  // WHY THE FIVE CAPABILITY BOOLEANS CARRY NO `@default(...)`, when migration
+  // 0002 gave the live columns one — resolved 2026-09-06 (maintainer decision
+  // D7), and this note is the reason it must stay resolved in BOTH files.
   //
   // `cratestack-macros`' `model/inputs.rs::create_input_fields` and
   // `model/descriptor/columns.rs`'s `upsert_update_columns` both filter out
   // every field carrying `@default(...)` ("server-owned identity bindings
   // ... clobbering these on update would turn upsert into 'take ownership of
-  // any row I name'"). Measured with `preview_sql` on 2026-09-06 and pinned
-  // by `the_provider_upsert_cannot_carry_the_capability_columns` in
-  // backends/crates/vpay-db/src/config_reconcile.rs:
+  // any row I name'"). While the five were here, `preview_sql` rendered
   //
   //   INSERT INTO providers (code, display_name, flow) VALUES ($1, $2, $3)
   //   ON CONFLICT (code) DO UPDATE SET display_name = EXCLUDED.display_name,
   //                                    flow = EXCLUDED.flow
   //
-  // `supports_refunds`, `supports_partial_refunds`, `delivers_callbacks`,
-  // `requires_ip_allowlist` and `enabled` are in neither list. Boot step 4
-  // would write the column defaults instead of the deployment's
-  // configuration and would never carry a capability change to an existing
-  // row — a rail an operator had just disabled would come back enabled.
+  // — `supports_refunds`, `supports_partial_refunds`, `delivers_callbacks`,
+  // `requires_ip_allowlist` and `enabled` in neither list. Boot step 4 would
+  // have written the column defaults instead of the deployment's
+  // configuration and would never have carried a capability change to an
+  // existing row: a rail an operator had just disabled would come back
+  // enabled. That is why the provider pass stayed hand-written SQL until the
+  // defaults went (docs/plans/exp17-notes/opus.md § 3).
   //
-  // All five defaults are here because the live table has them (migration
-  // 0002: `DEFAULT FALSE` x4, `DEFAULT TRUE`), and while they are here they
-  // cost zero drift. Measured 2026-09-06 in the review pass: remove them from
-  // this model alone and the drift report goes 84 -> 89, exactly five
-  // `column ... default value differs` lines on `providers`, which is what
-  // the next sentence is about. Removing them from this model to unblock the upsert
-  // means `ALTER TABLE providers ALTER COLUMN ... DROP DEFAULT` on all five
-  // in a migration — letting a code generator's input-shaping rule decide
-  // vpay's DDL — or the drift report grows five `default value differs`
-  // lines. That trade is not this file's to make. Recorded in
-  // docs/status.md; the alternative is upstream growing a way to include a
-  // defaulted column in an upsert input, which is what the pinned
-  // `preview_sql` test will notice.
+  // THE TWO HALVES ARE ONE CHANGE. Removing the five `@default(...)` from
+  // this file WITHOUT `ALTER TABLE providers ALTER COLUMN ... DROP DEFAULT`
+  // takes the drift report from 84 changes to 89 — five
+  // `column ... default value differs` lines on `providers`, measured
+  // 2026-09-06. `backends/migrations/0033_providers-drop-capability-defaults.sql`
+  // is the other half, and it argues the DDL side of the trade: the only
+  // writer of these columns is `reconcile`, which always writes all five, so
+  // a column default cannot help that writer — it can only invent a
+  // capability for a writer that forgot one. What the drop costs is that a
+  // hand-written `INSERT` must now name all eight columns; that is a refusal
+  // rather than a silent difference, and it is pinned by
+  // `a_hand_written_provider_insert_must_now_name_every_capability_column`.
+  //
+  // What now renders, and what pins it:
+  // `the_provider_upsert_carries_all_eight_columns` in
+  // backends/crates/vpay-db/src/config_reconcile.rs. Put a `@default(...)`
+  // back on any of the five and that test goes red before the drift report
+  // does — and `reconcile` stops compiling, because the field disappears from
+  // `CreateProviderInput` and its struct literal loses a field
+  // (`error[E0063]`).
 }
 
 // --- payments --------------------------------------------------------------

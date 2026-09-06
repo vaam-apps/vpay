@@ -2773,9 +2773,14 @@ async fn a_hand_seeded_currency_exponent_is_read_back_and_refused_not_overwritte
 /// with every currency before every provider, and this rail sets
 /// `supports_partial_refunds` without `supports_refunds`, which migration
 /// 0002's `partial_refunds_imply_refunds` CHECK refuses. So `EUR` is written
-/// through CrateStack, then the provider insert raises `23514`, then `tx`
+/// through CrateStack, then the provider upsert raises `23514`, then `tx`
 /// drops. If `EUR` is still there afterwards, the write was never in this
 /// transaction at all.
+///
+/// The provider half has an assertion of its own since 2026-09-06 —
+/// `a_provider_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`
+/// — because that statement is a CrateStack upsert now too and needs the same
+/// question asked of it.
 #[tokio::test]
 async fn a_currency_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction()
 -> anyhow::Result<()> {
@@ -2805,15 +2810,25 @@ async fn a_currency_written_through_cratestack_is_rolled_back_with_the_rest_of_t
     // Named, so this test cannot pass on some *other* failure that happened
     // to occur before the currency was written — which would make the
     // assertion below vacuous.
-    let vpay_db::DbError::Query(sqlx_error) = &error else {
-        panic!("expected the constraint violation to surface as DbError::Query, got {error:?}");
+    //
+    // `Persistence(Check { .. })` rather than the `Query(sqlx_error)` this
+    // read until 2026-09-06: the provider pass is a CrateStack upsert now, so
+    // the `23514` arrives as a `CratestackError` and
+    // `persistence::classify_cratestack` turns it into the twin of what
+    // `error::classify_write` produced. Same constraint name, same
+    // `Category::Internal`; a different variant, which is exactly the
+    // "a caller matching the variant would have silently stopped matching"
+    // the module doc warns about, caught here rather than in production.
+    let vpay_db::DbError::Persistence(vpay_db::PersistenceError::Check { constraint, .. }) = &error
+    else {
+        panic!(
+            "expected the constraint violation to surface as \
+             DbError::Persistence(PersistenceError::Check), got {error:?}"
+        );
     };
     assert_eq!(
-        sqlx_error
-            .as_database_error()
-            .and_then(sqlx::error::DatabaseError::constraint),
-        Some("partial_refunds_imply_refunds"),
-        "the transaction must have got as far as the provider insert and failed THERE; if it \
+        constraint, "partial_refunds_imply_refunds",
+        "the transaction must have got as far as the provider upsert and failed THERE; if it \
          failed earlier, the currency was never written and this test proves nothing"
     );
 
@@ -2826,6 +2841,249 @@ async fn a_currency_written_through_cratestack_is_rolled_back_with_the_rest_of_t
         "the CrateStack currency upsert must have been rolled back with everything else. A 1 \
          here means it ran on its own connection instead of joining this transaction — check \
          that `reconcile`'s upsert still says `run_in_tx(&mut tx, &ctx)` and not `run(&ctx)`"
+    );
+
+    Ok(())
+}
+
+/// Every column of one `providers` row, in declaration order, so an
+/// assertion can be about the whole row rather than about the two fields
+/// `provider_snapshot` happens to select.
+///
+/// It exists for `a_rail_the_configuration_disables_is_not_re_enabled_by_reconcile`
+/// below, whose whole subject is the five columns migration 0033 made
+/// writable: reading only some of them would leave exactly the fields that
+/// used to be silently wrong unchecked.
+async fn full_provider_row(
+    pool: &PgPool,
+    code: &str,
+) -> anyhow::Result<(String, String, String, bool, bool, bool, bool, bool)> {
+    sqlx::query_as(
+        "SELECT code, display_name, flow, supports_refunds, supports_partial_refunds, \
+         delivers_callbacks, requires_ip_allowlist, enabled FROM providers WHERE code = $1",
+    )
+    .bind(code)
+    .fetch_one(pool)
+    .await
+    .with_context(|| format!("reading the whole {code} row must succeed"))
+}
+
+/// A rail the deployment turns **off** stays off, and every other capability
+/// it declares is carried to the stored row — the decisive test for migration
+/// 0033 and for the provider pass moving onto CrateStack's `upsert`.
+///
+/// This is the case that was impossible to pass until 2026-09-06, and the
+/// reason is worth stating as a fact about the *previous* code rather than as
+/// a description of this one. `cratestack-macros` drops every `@default(...)`
+/// field from `Create{Model}Input` **and** from `upsert_update_columns`, and
+/// `model Provider` carried a `@default(...)` on all five capability booleans
+/// because migration 0002's table did. So a CrateStack upsert would have
+/// rendered
+///
+/// ```text
+/// INSERT INTO providers (code, display_name, flow) VALUES ($1, $2, $3)
+/// ON CONFLICT (code) DO UPDATE SET display_name = EXCLUDED.display_name, flow = EXCLUDED.flow
+/// ```
+///
+/// and this test would have failed twice over: the first reconcile would have
+/// stored `delivers_callbacks = false` where the seed says `true` (the column
+/// default winning over the configuration), and the second — the one that
+/// matters — would have left `enabled = true` on a rail the deployment had
+/// just turned off, because `enabled` is in neither the insert list nor the
+/// update list. A rail taking money after an operator disabled it is the
+/// worst shape of `AGENTS.md`'s second rule: a plausible-looking success
+/// storing the wrong value.
+///
+/// The third reconcile is not decoration. `enabled = false` is also what the
+/// *disable pass* writes for a rail that has left the configuration
+/// altogether, so a run that flipped the rail off and then flipped it back on
+/// the next boot would be a genuinely different bug with the same first-boot
+/// symptom; asserting the row again after an identical repeat is what tells
+/// "reconcile wrote what it was told" apart from "reconcile happened to agree
+/// once".
+#[tokio::test]
+async fn a_rail_the_configuration_disables_is_not_re_enabled_by_reconcile() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+
+    let currencies = vec![vpay_db::CurrencySeed {
+        code: "XAF".to_owned(),
+        exponent: 0,
+    }];
+
+    // Deliberately not the column defaults: `delivers_callbacks` is the one
+    // that disagrees with `DEFAULT FALSE` on the very first insert, so this
+    // seed catches the insert half without needing a second reconcile.
+    let live = vpay_db::ProviderSeed {
+        code: "mtn_momo".to_owned(),
+        display_name: "MTN MoMo".to_owned(),
+        flow: "push".to_owned(),
+        supports_refunds: false,
+        supports_partial_refunds: false,
+        delivers_callbacks: true,
+        requires_ip_allowlist: false,
+        enabled: true,
+    };
+    repositories
+        .reconcile(&currencies, std::slice::from_ref(&live))
+        .await
+        .context("the first reconcile must succeed")?;
+    assert_eq!(
+        full_provider_row(&pool, "mtn_momo").await?,
+        (
+            "mtn_momo".to_owned(),
+            "MTN MoMo".to_owned(),
+            "push".to_owned(),
+            false,
+            false,
+            true,
+            false,
+            true,
+        ),
+        "the INSERT branch must store the deployment's capabilities. A `delivers_callbacks` of \
+         `false` here is the column default winning over the configuration, which is what a \
+         `@default(...)` on `model Provider` used to cause"
+    );
+
+    // The deployment turns the rail off and, in the same edit, changes every
+    // other capability. Same rail, still configured — so the disable pass
+    // (`WHERE code <> ALL($1)`) does not touch it and the UPDATE branch of
+    // the upsert is the only thing that can produce the row below.
+    let disabled = vpay_db::ProviderSeed {
+        code: "mtn_momo".to_owned(),
+        display_name: "MTN MoMo (paused)".to_owned(),
+        flow: "push".to_owned(),
+        supports_refunds: true,
+        supports_partial_refunds: true,
+        delivers_callbacks: false,
+        requires_ip_allowlist: true,
+        enabled: false,
+    };
+    repositories
+        .reconcile(&currencies, std::slice::from_ref(&disabled))
+        .await
+        .context("reconciling a disabled rail must succeed")?;
+    let expected = (
+        "mtn_momo".to_owned(),
+        "MTN MoMo (paused)".to_owned(),
+        "push".to_owned(),
+        true,
+        true,
+        false,
+        true,
+        false,
+    );
+    assert_eq!(
+        full_provider_row(&pool, "mtn_momo").await?,
+        expected,
+        "a capability change must reach an EXISTING row. `enabled = true` here means the rail \
+         the deployment disabled is still open for new charges; any other field wrong means the \
+         upsert's `DO UPDATE SET` list lost a column — check `model Provider` in \
+         schemas/vpay.cstack for a returned `@default(...)`, and \
+         `the_provider_upsert_carries_all_eight_columns`"
+    );
+
+    // And a repeat is observably a no-op, so the row above is what reconcile
+    // *writes* rather than a state it passes through.
+    repositories
+        .reconcile(&currencies, std::slice::from_ref(&disabled))
+        .await
+        .context("a second, identical reconcile must succeed")?;
+    assert_eq!(
+        full_provider_row(&pool, "mtn_momo").await?,
+        expected,
+        "every replica runs boot step 4; a disabled rail must not come back on the next one"
+    );
+
+    Ok(())
+}
+
+/// The provider write goes into **vpay's** transaction — the same assertion
+/// `a_currency_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`
+/// makes for the currency half, made for the half that moved on 2026-09-06.
+///
+/// `run_in_tx` versus `run` is the only difference between joining this
+/// transaction and quietly opening a private one, and a `.run(&ctx)` here
+/// would still compile, still return `Ok`, and still write the right row.
+/// The row would then survive the rollback that a later failure triggers, and
+/// boot step 4 would report a failure having left a rail behind that nothing
+/// in this deployment believes it created.
+///
+/// Arranged so a valid rail lands *first* and an invalid one fails after it:
+/// seeds are iterated in sorted `code` order, `alpha_rail` sorts before
+/// `zulu_rail`, and `zulu_rail` sets `supports_partial_refunds` without
+/// `supports_refunds`, which migration 0002's `partial_refunds_imply_refunds`
+/// CHECK refuses. So `alpha_rail` is written through CrateStack, then the
+/// second upsert raises `23514`, then `tx` drops. If `alpha_rail` is still
+/// there afterwards, the write was never in this transaction at all.
+///
+/// **Why this fails fast rather than hanging**, which is the property that
+/// makes it useful: exp17's review measured that swapping the *currency*
+/// upsert to `.run(&ctx)` made `reconcile_is_idempotent_and_disables_a_
+/// dropped_provider_code` hang rather than fail — `upsert`'s own conflict
+/// probe is `SELECT … FOR UPDATE`, and off the transaction it waits on the
+/// row lock `find_unique(...).for_update()` is holding. The provider pass has
+/// no such read (see `config_reconcile`'s comment on that loop for why it
+/// needs none), so nothing in this transaction holds a `providers` row lock
+/// when the mutated call runs, and both rails here are INSERTs whose conflict
+/// probe finds and locks nothing. Measured 2026-09-06: under `.run(&ctx)`
+/// this test fails on the assertion below in about a second, and no test in
+/// the crate hangs.
+#[tokio::test]
+async fn a_provider_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+
+    let valid = vpay_db::ProviderSeed {
+        code: "alpha_rail".to_owned(),
+        display_name: "Alpha Rail".to_owned(),
+        flow: "push".to_owned(),
+        supports_refunds: true,
+        supports_partial_refunds: true,
+        delivers_callbacks: true,
+        requires_ip_allowlist: false,
+        enabled: true,
+    };
+    let incoherent = vpay_db::ProviderSeed {
+        code: "zulu_rail".to_owned(),
+        display_name: "Zulu Rail".to_owned(),
+        flow: "push".to_owned(),
+        supports_refunds: false,
+        supports_partial_refunds: true,
+        delivers_callbacks: false,
+        requires_ip_allowlist: false,
+        enabled: true,
+    };
+
+    let error = repositories
+        .reconcile(&[], &[valid.clone(), incoherent.clone()])
+        .await
+        .expect_err("a rail that refunds partially but not at all must be refused by the CHECK");
+
+    // Named, so the assertion below cannot be satisfied by a run that failed
+    // before `alpha_rail` was ever written.
+    let vpay_db::DbError::Persistence(vpay_db::PersistenceError::Check { constraint, .. }) = &error
+    else {
+        panic!(
+            "expected the constraint violation to surface as \
+             DbError::Persistence(PersistenceError::Check), got {error:?}"
+        );
+    };
+    assert_eq!(
+        constraint, "partial_refunds_imply_refunds",
+        "the transaction must have got as far as the SECOND provider upsert and failed there; if \
+         it failed earlier, `alpha_rail` was never written and this test proves nothing"
+    );
+
+    let providers_written: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM providers")
+        .fetch_one(&pool)
+        .await
+        .context("counting providers must succeed")?;
+    assert_eq!(
+        providers_written, 0,
+        "the CrateStack provider upsert must have been rolled back with everything else. A 1 \
+         here is `alpha_rail`, written on its own connection instead of joining this transaction \
+         — check that `reconcile`'s provider upsert still says `run_in_tx(&mut tx, &ctx)` and \
+         not `run(&ctx)`"
     );
 
     Ok(())
