@@ -25,6 +25,47 @@ export const statusTone: Record<PaymentStatus, 'neutral' | 'info' | 'warning' | 
 };
 
 /**
+ * The three ends a payer's checkout can reach, as the checkout page names
+ * them.
+ *
+ * A **separate** vocabulary from {@link PAYMENT_STATUS} on purpose. That one
+ * is the operator's: it is a PaymentIntent's own status, read on a dashboard
+ * by someone watching a payment move, and `requires_payment_method` there
+ * means "awaiting a payment method" rather than "this failed". These three
+ * are what one payer is told at the end of one attempt.
+ */
+export const CHECKOUT_OUTCOME = ['succeeded', 'failed', 'canceled'] as const;
+
+export type CheckoutOutcome = (typeof CHECKOUT_OUTCOME)[number];
+
+/**
+ * daisyUI semantic colour per outcome, for the payer-facing screen.
+ *
+ * **Added 2026-09-07 because the screen was wrong.** The checkout page took
+ * its outcome colour from `statusTone` through the intent status each outcome
+ * implies, which mapped `failed` onto `requires_payment_method` and therefore
+ * onto `neutral` — so a payer whose payment FAILED read a grey box while a
+ * payer who CANCELED read a red one. That inversion was on the committed
+ * screenshots (`docs/plans/exp21-checkout-page-notes/outcomes-hosted.png`).
+ * Routing an operator's status palette through a payer's screen was the
+ * defect; `statusTone` itself is right for what it is for and is unchanged,
+ * so the dashboard is untouched.
+ *
+ * `canceled` stays `error` rather than becoming a softer amber. Making a
+ * payer's own cancellation less alarming than a failure is defensible and is
+ * NOT taken here: it is a design call for the maintainer, and the narrow fix
+ * — a failure is not neutral — is the one the evidence forces.
+ */
+export const checkoutOutcomeTone: Record<
+  CheckoutOutcome,
+  'neutral' | 'info' | 'warning' | 'success' | 'error'
+> = {
+  succeeded: 'success',
+  failed: 'error',
+  canceled: 'error',
+};
+
+/**
  * Copy shown to an operator.
  *
  * `processing` deliberately does not say "pending" — the whole point of that

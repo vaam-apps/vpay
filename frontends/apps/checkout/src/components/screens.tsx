@@ -41,7 +41,7 @@
 import { Checkbox } from '@base-ui-components/react/checkbox';
 import { Field } from '@base-ui-components/react/field';
 import { useEffect, useRef } from 'react';
-import { statusTone, type PaymentStatus } from '@vpay/tokens';
+import { checkoutOutcomeTone } from '@vpay/tokens';
 
 import type { MessageKey, Translate } from '../i18n/index';
 import type { Branding } from '../config/settings';
@@ -525,15 +525,17 @@ export function StatusPanel({
 
 /**
  * Outcome tone comes from `@vpay/tokens`, never from a colour written here
- * (AGENTS.md). The mapping is the honest one: a failed payment leaves the
- * intent at `requires_payment_method`, which is the status that tone
- * belongs to.
+ * (AGENTS.md) — and from `checkoutOutcomeTone` rather than from `statusTone`.
+ *
+ * This read `statusTone[OUTCOME_STATUS[kind]]` until 2026-09-07, where
+ * `OUTCOME_STATUS` mapped `failed` onto the intent status a failed attempt
+ * leaves behind, `requires_payment_method`. That mapping is *accurate* and it
+ * produced the wrong screen: `requires_payment_method` is `neutral`, because
+ * on a dashboard it means "awaiting a payment method", so a payer whose
+ * payment had failed read a GREY box while a payer who cancelled read a red
+ * one. It is on the committed screenshot. The operator's status palette is
+ * not the payer's outcome palette, and `@vpay/tokens` now says both.
  */
-const OUTCOME_STATUS: Record<OutcomeKind, PaymentStatus> = {
-  succeeded: 'succeeded',
-  canceled: 'canceled',
-  failed: 'requires_payment_method',
-};
 
 const TONE_CLASS: Record<string, string> = {
   success: 'alert-success',
@@ -594,7 +596,7 @@ export function OutcomePanel({
       : kind === 'canceled'
         ? t('outcome.canceled_body')
         : t(failure ?? 'failure.unknown');
-  const tone = TONE_CLASS[statusTone[OUTCOME_STATUS[kind]]] ?? '';
+  const tone = TONE_CLASS[checkoutOutcomeTone[kind]] ?? '';
   return (
     <section data-outcome={kind}>
       <ScreenHeading screen="outcome">{title}</ScreenHeading>

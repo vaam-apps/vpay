@@ -432,6 +432,31 @@ describe('the controls do what the screen says', () => {
     unmount();
   });
 
+  it('does NOT render a failed payment in the neutral tone a cancelled one beats', () => {
+    // The defect this replaced: the screen took its colour from the operator's
+    // `statusTone` through the intent status a failure leaves behind
+    // (`requires_payment_method`, which is legitimately NEUTRAL on a
+    // dashboard), so a payer whose payment FAILED read a grey box while a
+    // payer who cancelled read a red one. Asserted on the rendered class,
+    // because that is what a payer sees.
+    const failed = renderState(CHECKOUT_SCREENS['outcome_failed'] as CheckoutState, 'en');
+    const failedAlert = failed.container.querySelector('[data-outcome="failed"] .alert');
+    expect(failedAlert?.className, 'a failure must carry a tone').toContain('alert-error');
+    failed.unmount();
+
+    const succeeded = renderState(CHECKOUT_SCREENS['outcome_succeeded'] as CheckoutState, 'en');
+    expect(
+      succeeded.container.querySelector('[data-outcome="succeeded"] .alert')?.className,
+    ).toContain('alert-success');
+    succeeded.unmount();
+
+    const canceled = renderState(CHECKOUT_SCREENS['outcome_canceled'] as CheckoutState, 'en');
+    expect(
+      canceled.container.querySelector('[data-outcome="canceled"] .alert')?.className,
+    ).toContain('alert-error');
+    canceled.unmount();
+  });
+
   it('says so plainly when the session names nowhere to return to', () => {
     const { container, unmount } = renderState(
       CHECKOUT_SCREENS['outcome_succeeded'] as CheckoutState,
