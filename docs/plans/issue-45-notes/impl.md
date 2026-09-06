@@ -123,3 +123,75 @@ silently rewritten:
 failed once in five consecutive `cargo nextest run -p vpay-sdk` runs on a
 loaded host on 2026-09-05, and passed the other four. Nothing in this change
 touches that file. Recorded in `status.md`'s Rust SDK row.
+
+## Rebased onto `1bd2183` (2026-09-06)
+
+This branch was rewritten onto master at `1bd2183` — PR #49, issue #47's
+account-holder lookup (`ProviderAdapter::account_holder_name`, the MTN
+adapter, `GET /v1/account_holders`, both SDKs' `accountHolders` resource).
+The merge base was `65a5952`, so #47 is the single commit this branch had not
+seen. Every conflict was resolved by **keeping both sides**; nothing from
+either change was dropped.
+
+Four files conflicted and one auto-merged in a way worth recording:
+
+- **`backends/crates/vpay-api/src/model.rs`** — both changes added a
+  different `object_tag!` invocation at the same point, and git fragmented
+  them across one shared `object_tag!(` and one shared `);`, so the marked-up
+  hunk was neither definition. Reconstructed as two complete invocations,
+  `AccountHolderTag` and `RefundTag`.
+- **`docs/api/README.md`** — the route-count sentence. The word "Twelve" sat
+  *outside* the conflict markers, on a line both sides shared, because #47 and
+  #45 each independently moved the count 11 → 12 for a different route. Both
+  are in the table now, so the true figure is **thirteen methods across eleven
+  paths**, re-counted from `V1_ROUTES` rather than carried from either side.
+- **`docs/flows/merchant-auth.md`** — #47 bumped a date, #45 rewrote the same
+  paragraph. The rewrite was kept and #47's fact folded into it; the Resources
+  table carries both new rows.
+- **`justfile`** — the one that would have shipped broken. **Both branches
+  moved `expected_suites` 41 → 42**, each for its own new test binary
+  (`account_holders.rs` and `refunds.rs`). The line is identical on both
+  sides, so git took one "42" and reported **no conflict at all** — and the
+  merged tree has 43 binaries, which `verify-ignored` would have failed on.
+  Re-measured the way that recipe measures it: **1334 total, 43 test
+  binaries, 0 ignored**. Both prose blocks kept, plus a dated note for the
+  rebase.
+- **`backends/crates/vpay-api/src/v1/mod.rs`** auto-merged cleanly and was
+  checked by hand rather than trusted: both `pub mod` declarations and both
+  `V1_ROUTES` entries are present, and `cargo build` confirms no brace was
+  dropped.
+
+**Counts re-measured, not carried.** The "thirteen resource methods, two
+unrouted" figure this branch measured on 2026-09-05 was taken on a tree
+without issue #47's SDK resource. Both SDKs now expose **fourteen** resource
+methods, **twelve** of them routed; the unrouted two are unchanged
+(`refunds.create`, `balance.retrieve`). Item 2 of "Documentation corrections
+this change forced" above says "thirteen" and is superseded by this
+paragraph. Corrected in `docs/api/README.md`, `docs/status.md` (three places)
+and `README.md`.
+
+**The refund object's field list was not touched.** It is still the nine keys
+`flows/merchant-auth.md` documents. Issue #46 adds `fee` to the same object on
+another branch, and that is still its change to make.
+
+**Both decisive mutations were re-run on the rebased tree** (2026-09-06,
+containers live), each reverted afterwards:
+
+| Mutation | Expected | Observed |
+|---|---|---|
+| Drop `p.merchant_id = $1` from the join in `vpay_db::refunds` | the tenancy case fails | `merchant_b_cannot_read_merchant_as_refund` **FAILED**, `200` where `404` is owed |
+| Delete the `re_` short-circuit in `vpay_api::v1::refunds::lookup` | the prefix case fails | `a_refund_id_without_the_re_prefix_is_never_looked_up` **FAILED**, `200` where `404` is owed — and it failed **alone**, the other four passing, which is the property that case was added for |
+
+**What the gate did and did not cover, stated plainly.** `fmt-check`,
+`clippy` and `verify` (ten gates) passed on the rebased tree. The five
+`refunds.rs` integration cases, the route-table unit test and all four Node /
+Rust SDK refund cases were run against live containers and passed, and both
+mutations above behaved as required. **`just ci` did not complete end to
+end**: this host's rootless Docker daemon was SIGKILLed mid-run and wedged in
+`deactivating (final-sigkill)` behind an unreapable zombie `dockerd`, so
+`test-rust` failed twice on `failed to create a container: Timeout error` at
+`vpay-db::postgres`'s `an_abandoned_transaction_survives_a_rollback_it_cannot_send`
+— a test neither this branch nor #47 touches. That is an environment fault,
+not a result about this code, and it is recorded here rather than described
+as a flake or left out. The container-backed portion of `just ci` needs a
+re-run on a host with a healthy daemon before this merges.
