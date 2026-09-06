@@ -52,8 +52,12 @@
 use crate::error::DbError;
 use crate::persistence::{classify_cratestack, system_context};
 
-/// The `.cstack` model `is_client_disabled` reads, named once so the error a
-/// denial produces and the query that produced it cannot drift apart.
+/// The `.cstack` model all three of this module's statements go through,
+/// named once so the error a denial produces and the query that produced it
+/// cannot drift apart.
+///
+/// It said "the model `is_client_disabled` reads" until 2026-09-06, which was
+/// true for the day the read was the only CrateStack call here.
 const MODEL: &str = "DisabledClient";
 
 #[async_trait::async_trait]

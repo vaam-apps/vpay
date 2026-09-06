@@ -3250,9 +3250,10 @@ So: **`create` and `update` fail loudly, `read` and `delete` fail silently.**
 `upsert_exec.rs` evaluates the create policy in Rust before it builds any SQL
 and `upsert_resolve.rs` does the same for the conflict branch, so an empty
 allow list is a real error there; the read and `delete_many` paths compile the
-policy into a `WHERE` clause where an empty allow list renders `FALSE`. Both
-silent directions are fail-safe or not: a missing `read` policy leaves every
-client **admitted**, a missing `delete` policy leaves a client **revoked**.
+policy into a `WHERE` clause where an empty allow list renders `FALSE`. The
+two silent holes fail in opposite directions, and only one of them is safe: a
+missing `read` policy leaves every revoked client **admitted**, a missing
+`delete` policy leaves a client **revoked**.
 Neither is visible to `just check-schema`, `cargo build`, `just clippy` or any
 of the ten `just verify` gates — re-measured for the three new arms.
 

@@ -180,7 +180,10 @@ read policy afterwards.
 - **The release image.** Not rebuilt. This change adds no dependency and no
   file the Dockerfile would have to copy, so the `COPY schemas` fix from the
   read change still covers it — read, not measured.
-- **`just fmt`'s prettier half.** Fails on this host with
-  `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL Command "prettier" not found`; no node
-  modules are installed in this worktree. `just fmt-check` (the Rust gate, and
-  the one `just ci` runs) passes. No markdown was reformatted.
+- **`just fmt`'s prettier half.** Failed on this host with
+  `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL Command "prettier" not found`, because
+  no node modules were installed in this worktree *at that point*. They were
+  installed later in the same session — the `tsc: not found` failure recorded
+  in `docs/status.md` forced it — so `just ci`'s `lint-web` and `test-web`
+  legs did run. `just fmt-check` (the Rust gate, and the one `just ci` runs)
+  passes either way. No markdown was reformatted.
