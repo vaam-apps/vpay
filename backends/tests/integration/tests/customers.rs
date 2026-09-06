@@ -48,7 +48,9 @@ use sqlx::PgPool;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_api::op::keys::LoadedSigningKey;
-use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost};
+use vpay_config::{
+    CheckoutConfig, Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost,
+};
 use vpay_db::Repositories;
 use vpay_sdk::customers::{CreateCustomerParams, ListCustomersParams, UpdateCustomerParams};
 use vpay_sdk::{CreatePaymentIntentParams, Credentials, PaymentMethodType, RequestOptions};
@@ -56,7 +58,8 @@ use vpay_sdk::{CreatePaymentIntentParams, Credentials, PaymentMethodType, Reques
 mod support;
 
 use support::{
-    ensure_crypto_provider_installed, generate_key, merchant_client, migrated_postgres, serve,
+    ensure_crypto_provider_installed, generate_key, merchant_client,
+    merchant_client_with_publishable_keys, migrated_postgres, serve,
 };
 
 /// The merchant every test acts as, and the tenant it acts for. Never the
@@ -80,6 +83,19 @@ const CANONICAL_PHONE: &str = "237600000200";
 /// An id of exactly the shape `vpay_core::ids::customer_id` mints, that no
 /// merchant has ever had.
 const MISSING_CUSTOMER_ID: &str = "cus_00000000000000000000000x";
+
+/// Merchant A's publishable key, and the checkout page's origin.
+///
+/// Registered here only so this suite can create **checkout sessions**: the
+/// `customer` rules for a session are not the intent's rules (a session can
+/// contradict the intent it drives, and an intent has nothing to contradict),
+/// and `checkout_sessions.customer_id` is one of the two columns the
+/// retention sweep's `NOT EXISTS` guard reads. Neither could be exercised
+/// from a harness that cannot mint a session.
+const PK_A: &str = "pk_test_acmecameroonsandbox01";
+const CHECKOUT_BASE: &str = "https://checkout.vpay.test";
+const SUCCESS_URL: &str = "https://shop.acme.example/ok";
+const CANCEL_URL: &str = "https://shop.acme.example/cancel";
 
 // ------------------------------------------------------------------ harness
 
@@ -182,11 +198,15 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
             exponent: 0,
         }],
         merchant_clients: vec![
-            merchant_client(CLIENT_A, MERCHANT_A, jwks_a),
+            // Only merchant A has a publishable key and therefore only A can
+            // create a session; B exists to be failed to read.
+            merchant_client_with_publishable_keys(CLIENT_A, MERCHANT_A, jwks_a, &[PK_A]),
             merchant_client(CLIENT_B, MERCHANT_B, jwks_b),
         ],
         webhooks: vpay_config::WebhookPolicy::default(),
-        checkout: vpay_config::CheckoutConfig::default(),
+        checkout: CheckoutConfig {
+            public_base_url: Some(CHECKOUT_BASE.to_owned()),
+        },
         dashboard_client: None,
     }
 }
@@ -1508,6 +1528,232 @@ async fn a_replayed_create_answers_the_stored_customer_and_a_reused_key_is_refus
         .await
         .context("counting merchant A's customers after the refusal")?;
     assert_eq!(rows, 1, "the refused request must not have created a row");
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// `POST /v1/checkout/sessions` as a raw form, because **neither SDK can send
+/// `customer` on a session** — see this case's own findings note in
+/// `docs/sdks/parity.md`.
+async fn create_session(
+    h: &Harness,
+    client_id: &str,
+    fields: &[(&str, &str)],
+) -> anyhow::Result<(u16, Value)> {
+    let response = raw_client()
+        .post(h.url("/v1/checkout/sessions"))
+        .bearer_auth(h.bearer(client_id))
+        .header("Idempotency-Key", uuid::Uuid::new_v4().to_string())
+        .form(fields)
+        .send()
+        .await
+        .context("creating a checkout session")?;
+    let status = response.status().as_u16();
+    let body: Value = response.json().await.context("the session body")?;
+    Ok((status, body))
+}
+
+/// A checkout session's `customer`: inherited, supplied, or a refused
+/// contradiction — and a customer a **session alone** references is pinned
+/// against deletion.
+///
+/// # Four documented behaviours that no case exercised
+///
+/// `docs/flows/customers.md` ("`customer` on a payment intent and a checkout
+/// session") states that a session accepts `customer`, stores it, renders it,
+/// inherits its intent's when the request omits one, and refuses one that
+/// disagrees with the intent's. S4a delivered all of that and tested none of
+/// it: `checkout_sessions.rs` gained only a `customer_id: None` field filler
+/// and a key-count bump on the *nested intent*.
+///
+/// The session path is not the intent path and cannot be assumed from it. An
+/// intent has nothing to contradict; a session is the only object in vpay
+/// where two rows can name two different payers, and
+/// `checkout_sessions::validate`'s three-armed match is the only code that
+/// decides what happens then.
+///
+/// # And the sweep's second table
+///
+/// `Customers::idle_since` and `delete_idle` guard on `NOT EXISTS` over
+/// **two** tables. `the_sweep_deletes_an_idle_unreferenced_customer_and_keeps_the_other_two`
+/// exercises the `payment_intents` half only. The last assertion here is the
+/// `checkout_sessions` half: a customer that no intent names but a session
+/// does must be undeletable, or the sweep would erase a payer mid-checkout.
+#[tokio::test]
+async fn a_sessions_customer_is_inherited_supplied_or_a_refused_contradiction() -> anyhow::Result<()>
+{
+    let h = harness().await?;
+    let sdk = h.a();
+
+    let x = sdk
+        .customers()
+        .create(phone_only(), RequestOptions::new())
+        .await
+        .expect("customer X")
+        .id;
+    let y = sdk
+        .customers()
+        .create(
+            CreateCustomerParams {
+                name: Some("Yvonne".to_owned()),
+                ..Default::default()
+            },
+            RequestOptions::new(),
+        )
+        .await
+        .expect("customer Y")
+        .id;
+
+    /// One intent per session: an intent may have only one open session, so
+    /// every case below needs its own.
+    async fn intent(sdk: &vpay_sdk::Client, customer: Option<&str>) -> String {
+        sdk.payment_intents()
+            .create(create_intent_params(customer), RequestOptions::new())
+            .await
+            .expect("an intent")
+            .id
+    }
+
+    // 1. INHERITED. The request omits `customer`; the intent has one.
+    let with_x = intent(&sdk, Some(&x)).await;
+    let (status, body) = create_session(
+        &h,
+        CLIENT_A,
+        &[
+            ("payment_intent", with_x.as_str()),
+            ("success_url", SUCCESS_URL),
+            ("cancel_url", CANCEL_URL),
+        ],
+    )
+    .await?;
+    assert_eq!(status, 201, "the session is created: {body:#}");
+    assert_eq!(
+        body.get("customer").and_then(Value::as_str),
+        Some(x.as_str()),
+        "a session with no `customer` inherits its intent's, so the two rows always agree: \
+         {body:#}"
+    );
+
+    // 2. SUPPLIED. The intent has none; the request names one.
+    let bare = intent(&sdk, None).await;
+    let (status, body) = create_session(
+        &h,
+        CLIENT_A,
+        &[
+            ("payment_intent", bare.as_str()),
+            ("customer", y.as_str()),
+            ("success_url", SUCCESS_URL),
+            ("cancel_url", CANCEL_URL),
+        ],
+    )
+    .await?;
+    assert_eq!(status, 201, "the session is created: {body:#}");
+    assert_eq!(
+        body.get("customer").and_then(Value::as_str),
+        Some(y.as_str()),
+        "a session's own `customer` is stored and rendered: {body:#}"
+    );
+
+    // It really reached the column the sweep reads, not just the response.
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT customer_id FROM checkout_sessions WHERE id = $1")
+            .bind(
+                body.get("id")
+                    .and_then(Value::as_str)
+                    .expect("a session id"),
+            )
+            .fetch_one(&h.pool)
+            .await
+            .context("reading the session's customer_id")?;
+    assert_eq!(stored.as_deref(), Some(y.as_str()));
+
+    // 3. A CONTRADICTION. The intent says X, the request says Y.
+    let also_x = intent(&sdk, Some(&x)).await;
+    let (status, body) = create_session(
+        &h,
+        CLIENT_A,
+        &[
+            ("payment_intent", also_x.as_str()),
+            ("customer", y.as_str()),
+            ("success_url", SUCCESS_URL),
+            ("cancel_url", CANCEL_URL),
+        ],
+    )
+    .await?;
+    assert_eq!(
+        status, 400,
+        "a session and the intent it drives naming two different payers is a contradiction, \
+         not a preference between two answers: {body:#}"
+    );
+    assert_eq!(
+        body.pointer("/error/param").and_then(Value::as_str),
+        Some("customer"),
+        "and the refusal names the parameter the merchant sent: {body:#}"
+    );
+
+    // 4. ANOTHER MERCHANT'S CUSTOMER is the *same* refusal a missing one gets
+    //    — a session create must not be an existence oracle either.
+    let theirs = h
+        .b()
+        .customers()
+        .create(phone_only(), RequestOptions::new())
+        .await
+        .expect("merchant B's customer")
+        .id;
+    let bare_two = intent(&sdk, None).await;
+    let mut refusals = Vec::new();
+    for candidate in [theirs.as_str(), MISSING_CUSTOMER_ID] {
+        let (status, body) = create_session(
+            &h,
+            CLIENT_A,
+            &[
+                ("payment_intent", bare_two.as_str()),
+                ("customer", candidate),
+                ("success_url", SUCCESS_URL),
+                ("cancel_url", CANCEL_URL),
+            ],
+        )
+        .await?;
+        assert_eq!(status, 400, "{candidate} must be a 400: {body:#}");
+        refusals.push(body.to_string());
+    }
+    let [foreign, missing] =
+        <[String; 2]>::try_from(refusals).expect("exactly two requests were made above");
+    assert_eq!(
+        foreign, missing,
+        "another merchant's `cus_…` and one that never existed must be the identical refusal, \
+         or `POST /v1/checkout/sessions` is an oracle for which customers exist under some \
+         other tenant"
+    );
+
+    // 5. THE SWEEP'S SECOND TABLE. Y is named by a session and by no intent
+    //    at all, and that alone must pin it.
+    let referencing_intents: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM payment_intents WHERE customer_id = $1")
+            .bind(&y)
+            .fetch_one(&h.pool)
+            .await
+            .context("counting intents naming Y")?;
+    assert_eq!(
+        referencing_intents, 0,
+        "this assertion is only about `checkout_sessions` if no intent names Y"
+    );
+
+    let refused = raw_client()
+        .delete(h.url(&format!("/v1/customers/{y}")))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .header("Idempotency-Key", "delete-a-session-customer")
+        .send()
+        .await
+        .context("deleting a customer a session references")?;
+    assert_eq!(
+        refused.status().as_u16(),
+        409,
+        "a customer a checkout session references cannot be deleted — the foreign key is \
+         `NO ACTION` on both tables, and a sweep that read only `payment_intents` would \
+         erase a payer mid-checkout"
+    );
 
     h.shutdown().await;
     Ok(())

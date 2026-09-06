@@ -310,6 +310,19 @@ The id is rendered, never the expanded object. `expand` is not implemented,
 and rendering the customer unasked would put a payer's name, email and phone
 number into every `payment_intent.*` webhook body.
 
+All four of those session rules are proved by
+`a_sessions_customer_is_inherited_supplied_or_a_refused_contradiction`, added
+by the sabotage review on 2026-09-07 — S4a shipped them untested, and removing
+the contradiction check left the whole thirty-one-case
+`checkout_sessions.rs` suite green.
+
+**Neither SDK can send or read a session's `customer`.**
+`CreateCheckoutSessionParams` has no such field in either language and neither
+`CheckoutSession` type carries the key the server returns, so this paragraph
+describes the HTTP API and not what a merchant using `@vaam-apps/vpay-sdk` or
+`vpay-sdk` can reach. The intent's `customer` *is* in both. Dated ⛔/⛔ rows in
+[../sdks/parity.md](../sdks/parity.md), owned by the SDK maintainers.
+
 ---
 
 ## Where it lives
