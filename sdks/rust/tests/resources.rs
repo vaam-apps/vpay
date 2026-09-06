@@ -750,8 +750,6 @@ async fn a_refund_id_with_url_metacharacters_is_percent_encoded_into_the_path() 
     assert_eq!(paths, vec!["/v1/refunds/..%2F..%2Fadmin"]);
 }
 
-}
-
 /// `checkout.session.expired` is in this SDK's event vocabulary, and its
 /// payload decodes as a Checkout Session through the whole `events.list`
 /// path — the object a merchant actually receives, not a hand-built one.

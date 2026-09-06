@@ -1901,8 +1901,8 @@ mod tests {
         // not as one of vpay's: the vocabulary is theirs and is not closed.
         let mut row = refund_row(Some(250));
         row.reason = Some("requested_by_customer".to_owned());
-        let with_reason =
-            serde_json::to_string(&RefundObject::try_from(&row).expect("renders")).expect("serialises");
+        let with_reason = serde_json::to_string(&RefundObject::try_from(&row).expect("renders"))
+            .expect("serialises");
         let decoded: vpay_sdk::Refund =
             serde_json::from_str(&with_reason).expect("the SDK decodes it");
         assert_eq!(decoded.reason.as_deref(), Some("requested_by_customer"));
