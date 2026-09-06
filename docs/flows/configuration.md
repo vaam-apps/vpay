@@ -336,7 +336,12 @@ between binaries. The config guard rules (stub-host detection, literal
 secrets, `partial-refunds ⇒ refunds`) are implemented and tested in Rust;
 `partial-refunds ⇒ refunds` is additionally enforced by a database CHECK
 constraint (`backends/migrations/0002_create-providers.sql`), tested against
-a real Postgres — see the correction above.
+a real Postgres — see the correction above. That CHECK is multi-column, which
+means `cratestack migrate baseline` cannot see it in either direction:
+deleting it from migration 0002 leaves the drift count unmoved (measured
+2026-09-06) and only
+`partial_refunds_without_refunds_is_rejected_by_the_database` notices.
+Migration 0032 deliberately leaves it alone for that reason.
 
 `--shutdown-grace-seconds` bounds `vpay-server`'s shutdown drain; it is
 accepted but inert on `vpay-worker-bin`.
@@ -380,6 +385,38 @@ proven against a real Postgres by
 `two_concurrent_reconciles_with_the_seeds_in_opposite_orders_both_succeed_and_converge`
 in `backends/crates/vpay-db/tests/repositories.rs` — 74 container-backed
 tests passed on this machine that day.
+
+**Updated 2026-09-06: half of boot step 4 runs through CrateStack, and the
+other half cannot.** `reconcile`'s **currency** pass is now
+`find_unique(code).for_update().run_in_tx(tx, ctx)` followed by
+`upsert(CreateCurrencyInput).run_in_tx(tx, ctx)` — inside the same
+transaction, after the same `pg_advisory_xact_lock`, in the same sorted
+order. The read is not a prefetch: CrateStack's `upsert` renders
+`DO UPDATE SET exponent = EXCLUDED.exponent`, which is precisely the
+overwrite `DbError::CurrencyExponentConflict` exists to refuse, so reading
+under a row lock first *is* the guard.
+`reconcile_reads_the_exponent_under_a_row_lock_and_cannot_clobber_a_concurrent_writer`
+is what fails if the `.for_update()` goes; the boot-lock test above passes
+without it, because those are two different guards against two different
+writers.
+
+The **provider** pass is still a hand-written `INSERT ... ON CONFLICT`, and
+that is a measured blocker rather than unfinished work: CrateStack's
+generated upsert input drops every `@default(...)` column, and `providers`
+has one on all five capability booleans, so a CrateStack upsert would write
+the column defaults instead of the deployment's configuration — a rail an
+operator had just disabled would come back enabled. See
+[../status.md](../status.md) and
+[../reference/vpay-db.md](../reference/vpay-db.md); what it would take to
+unblock is a schema decision left to a maintainer.
+
+Migration 0032 is what made the currency half possible (`exponent` `INT` ->
+`BIGINT`, the two hand-named CHECKs renamed to CrateStack's own spelling) and
+also converted `providers.flow` from the native `provider_flow` enum to
+`TEXT` + `providers_flow_enum_check`. Nothing about what boot refuses changed:
+an unknown flow is still a `DbError::Query`, from a CHECK constraint rather
+than from a type cast, proven by
+`an_unknown_provider_flow_is_refused_by_the_check_that_replaced_the_enum_type`.
 
 **Still not started:** the **config hash** half of step 4 — nothing records
 or compares one, so nothing detects a replica booted from a different config
