@@ -98,7 +98,15 @@ Ask these **during commercial negotiation**, not after signing.
    still possible — but since migration 0033 it must name **all eight**
    columns: the five capability booleans have no column default, so an
    omitted one is a `23502` rather than an invented capability.
-3. `INSERT INTO provider_hosts` for sandbox, production and stub hosts.
+3. ~~`INSERT INTO provider_hosts` for sandbox, production and stub hosts.~~
+   **Corrected 2026-09-06: there is no `provider_hosts` table and there never
+   has been** — no migration under `backends/migrations` creates one, and the
+   only other mention in the tree is a `vpay-testkit` doc comment that
+   inherited the error from here. A rail's hosts are *configuration*:
+   `providers[].host.{url,label}` in the deployment's YAML
+   (`vpay_config::ProviderHost`), one entry per deployment, which is what
+   makes a sandbox, a production and a WireMock stub three profiles rather
+   than three rows. See [configuration.md](configuration.md).
 4. New `backends/crates/vpay-adapter-<rail>/` implementing the trait.
 5. A mapping table into the [failure taxonomy](failures.md).
 6. WireMock mappings under `backends/tests/conformance/wiremock/<rail>/mappings/`,
@@ -119,6 +127,15 @@ means making this pass — not writing a new suite.** That is the real test of
 whether this is a port or just a folder.
 
 ## Status
+
+**Updated 2026-09-06 (review of exp20): "Adding a rail" steps 2 and 3 above
+were both wrong about where a rail is written down.** Step 2 said `INSERT INTO
+providers`; `ConfigReconcile::reconcile` is the only writer of that table and
+takes its rows from `config.yaml` at boot step 4, and since migration 0033 a
+hand-written `INSERT` must name all eight columns. Step 3 named a
+`provider_hosts` table that does not exist and never has — hosts are
+`providers[].host` in the YAML. Both are corrected in place rather than
+deleted, because the wrong version is what a reader of an older checkout has.
 
 **Updated 2026-09-03 (Step 3). The port is implemented, and two rails now
 speak over it to a real HTTP host.**
