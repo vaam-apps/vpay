@@ -175,6 +175,11 @@ All on this tree, this branch:
   code→doc direction.** A hypothetical `sdks/kotlin` column would contribute
   no methods and the direction would be silent for it. The doc→code direction
   still covers its rows. Stated in the function's doc comment.
+- **A resource type not named `…Resource`, or declared as an object literal
+  rather than a class, is invisible to the code→doc direction.** Both SDKs
+  name every resource `<X>Resource` and declare each as a Rust `impl` or a TS
+  `class`; the alternative was a scanner that guessed which of a module's
+  types is a capability, which fails quietly. Recorded in the code.
 - **A Rust char literal holding a lone brace would unbalance the lexer.**
   Neither SDK contains one; the limitation is the same one
   `balanced_delimited` has carried since it was written, and it is written
