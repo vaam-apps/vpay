@@ -161,8 +161,26 @@ half-emitted.
 
 ### `just ci`, on `ce88aae` and on the final head
 
-Recipe by recipe, with counts, in the report accompanying this branch. The
-one thing worth recording here is the failure that is **not** this change:
+Green end to end on the review's final head, 2026-09-06, 19:01:49 → 19:16:39,
+exit 0. Recipe by recipe:
+
+| Recipe | Result |
+|---|---|
+| `fmt-check` | ok (`cargo fmt --all -- --check`) |
+| `clippy` | ok |
+| `verify` | the ten gates. `verify-sdk-parity`: 385 named proving tests all exist, 29 dated gaps, 14 SDK methods over 17 rows. `verify-links`: 811 links in 147 markdown files resolve. `verify-status`: 1 unimplemented item, declared. `verify-toolchain`: 1.98.0 in both places |
+| `test-rust` | **1386 run, 1386 passed, 0 skipped** (838 s) |
+| `test-doc` | **96 passed, 1 ignored** — the ignored one is `sdks/rust/src/lib.rs - ReadmeDoctests (line 464)` and predates this branch |
+| `verify-ignored` | 0 ignored (expected 0), 43 test binaries (expected 43), 1386 total |
+| `lint-web` | ok, every package |
+| `test-web` | **797 passed, 0 skipped** over 8 packages: `frontends/apps/checkout` 302, `sdks/nodejs` 180, `sdks/stripe-js` 146, **`examples/shop` 96**, `frontends/packages/config` 63, `tokens` 3, `ui` 3, `api-client` 4 |
+| `deny` | advisories ok, bans ok, licenses ok, sources ok |
+
+The shop's 96 is 93 plus the three cases this review added; `sdks/stripe-js`'s
+146 is 145 plus one.
+
+The one thing else worth recording is the failure that is **not** this
+change:
 `just test-rust` failed twice on `ce88aae` with
 `failed to create a container: Timeout error` and
 `Client(CreateContainer(RequestTimeoutError))` — a 120 s bollard timeout, on
