@@ -489,8 +489,10 @@ would make this lookup answer "not disabled" for **every** client — the
 kill-switch silently off — without erroring.
 `a_disabled_client_reads_the_same_through_both_paths` in
 `backends/crates/vpay-db/tests/repositories.rs` exists to make that failure
-red, and `docs/status.md` § "The first CrateStack read" records the mutation
-that proves it does.
+red — **and it has not been run yet**: the authoring host's Docker daemon was
+unrecoverable on the day, so that test and its decisive mutation are owed to
+CI. `docs/status.md` § "The first CrateStack read" names all three unexecuted
+cases.
 
 **Updated 2026-09-03 (Step 2): the journey now has a far end.**
 `vpay-server` serves `POST /v1/oauth/token`,

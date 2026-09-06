@@ -3106,6 +3106,35 @@ error. The SQLSTATE and `Denied` arms are unit-tested, not exercised.
 **Stays `NotImplemented`: nothing.** No function gained a stub, no test was
 weakened, and every method touched already worked and still works.
 
+**Three container-backed cases on this branch have NEVER been executed, and
+are owed to CI.** The authoring host's rootless Docker daemon wedged twice on
+2026-09-06 (two `dockerd` processes became kernel-stuck zombies under disk
+saturation) and was unrecoverable without a reboot. Every gate that needs no
+container is green — `cargo build --workspace --all-targets` with zero
+warnings, `just fmt-check`, `just clippy`, all ten `just verify` gates,
+`cargo nextest run -p vpay-db --lib` (24/24, including all five
+`persistence::tests`), `cargo nextest run -p xtask` (197/197), `just test-doc`
+(90 passed, 1 ignored), `just verify-ignored` (0 ignored, 41 binaries, 1288
+total — master's 1279 plus this branch's nine), `just deny`, `just docs-check`,
+`just lint-web`, `just test-web`. The three that are not, named rather than
+counted:
+
+1. `vpay-db::repositories a_disabled_client_reads_the_same_through_both_paths`
+   — the parity test. It compiles and is listed; it has not run. **Until it
+   does, "the CrateStack read returns what the sqlx read returns" is read out
+   of the generated query builder, not measured.**
+2. The decisive mutation on it (delete `@@allow("read", auth().isSystem())`
+   and confirm it fails), which needs (1) to run first.
+3. `just test-rust` itself — the workspace was *listed*, not run, so every
+   container-backed suite is unexecuted here, including the pre-existing
+   `disabled_client_lookup_reflects_disable_and_enable` that exercises the
+   changed method.
+
+The drift test *was* observed PASS on this branch with its final constants,
+before the outage. The server image was not built, so **the size cost of
+CrateStack's graph on the static musl link is unmeasured**.
+`docs/plans/exp14-notes/opus.md` § 7 has the full list.
+
 ---
 
 ## Merchant SDKs

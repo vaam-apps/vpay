@@ -295,3 +295,77 @@ therefore unit-tested rather than exercised, and say so.
 
 ---
 
+## 7. Gates run on this branch, and the ones this host could not run
+
+The rootless Docker daemon on the authoring machine wedged twice on
+2026-09-06 (two `dockerd` processes became kernel-stuck zombies under disk
+saturation, load above 150) and was declared unrecoverable until a reboot.
+Everything that needs a container is therefore **written, compiled and
+listed, but not executed here**. That is stated as a gap rather than papered
+over, and each unexecuted case is named below.
+
+### Run, green
+
+| Gate | Result |
+|---|---|
+| `cargo build --workspace --all-targets` | clean, **zero warnings** — including the whole generated schema under `unreachable_pub`, `missing_debug_implementations` and the `unwrap`/`expect`/`panic` clippy denies |
+| `just fmt-check` (`cargo fmt --all -- --check`) | exit 0 |
+| `just clippy` (`--workspace --all-targets -- -D warnings`) | exit 0 |
+| `just verify` — the **ten** gates | all ok; `verify-repositories` now also prints "and no generated schema module is exported" |
+| `just check-schema` | `cratestack 0.11.1`, 13 model/enum declarations, `schema OK` |
+| `cargo nextest run -p vpay-db --lib` | **24 passed, 0 skipped** — including all five `persistence::tests` |
+| `cargo nextest run -p xtask` | **197 passed, 0 skipped** (194 on master) |
+| `just test-doc` | **90 passed, 0 failed, 1 ignored**. This branch adds **no** doctest fence (`git diff origin/master..HEAD -- '*.rs' \| grep -c '^+.*```'` = 0), so the count is master's. |
+| `just verify-ignored` | `0 ignored (expected 0), 41 test binaries (expected 41), 1288 total (minimum 1080)` — master was 1279, and +9 is exactly this branch's 1 parity + 5 persistence + 3 xtask tests. No new test binary, so `expected_suites` and `min_tests` do not move. |
+| `just deny` | `advisories ok, bans ok, licenses ok, sources ok` |
+| `just docs-check` | ok (`verify-status`, `verify-links`) |
+| `just lint-web` | exit 0 |
+| `just test-web` | exit 0 |
+
+### Run before the outage, on this branch
+
+`cargo nextest run -p vpay-tests-integration --test postgres_smoke
+the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` —
+**PASS**, with the final constants (85 / 16) and the final asserted table
+set, against a `postgres:16-alpine` testcontainer. The only thing that has
+touched that file since is `cargo fmt --all`, and the tree is rustfmt-clean.
+The failing runs quoted in §3 are from the same session.
+
+### NOT executed on this host — owed to CI
+
+Each of these compiles and is listed by `cargo nextest list` (they are part
+of the 1288 above); none has been run:
+
+1. **`vpay-db::repositories a_disabled_client_reads_the_same_through_both_paths`**
+   — the parity test, and the single most important case on this branch. It
+   has **never been executed**. Until it runs green, "the CrateStack read
+   returns what sqlx returns" is a claim supported by reading the generated
+   SQL builder, not by a measurement.
+2. **Decisive test 2** — delete `@@allow("read", auth().isSystem())` from
+   `model DisabledClient` and confirm the parity test **FAILS**. Not run,
+   because it needs test 1 to run first. The mechanism is read out of
+   `cratestack-sqlx-0.11.1/src/query/support/conditions.rs`
+   (`push_action_policy_query`) and `cratestack-core`'s
+   `context/system.rs`, and the schema's own comment records it — but it is
+   an argument, not evidence, until the mutation has been run.
+3. **`just test-rust`** (`cargo nextest run --workspace`) — the workspace was
+   *listed* (1288 tests, 41 binaries, 0 ignored) but not run. Every
+   container-backed suite in `vpay-db`, `vpay-tests-integration`,
+   `vpay-server` and `vpay-worker-bin` is therefore unexecuted on this
+   branch, including the ones this change could plausibly disturb:
+   `vpay-db::repositories disabled_client_lookup_reflects_disable_and_enable`
+   (the pre-existing kill-switch test, which exercises the changed method)
+   and the `client_store` / `merchant_token_flow` integration suites that
+   reach `is_client_disabled` through the token path.
+4. **The re-run of the drift test on the final tree** — see above; it passed
+   on the same content before the outage, but not after the last
+   `cargo fmt --all`.
+5. **The server image build and its size delta.** Not attempted. The musl
+   static link now has to carry CrateStack's twelve crates plus `minicbor`,
+   `chumsky`, `ariadne` and the rest, and **the size cost of this change is
+   unmeasured**. No buildx builder was created, so there is nothing to clean
+   up.
+
+Nothing in this branch was weakened, skipped or `#[ignore]`d to accommodate
+the outage: the tests exist, compile and are listed, and the list above is
+the honest account of which of them a machine has actually run.
