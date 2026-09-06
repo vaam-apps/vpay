@@ -823,6 +823,16 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 /// number moved (`docs/plans/exp14-notes/opus.md`). The set assertion below
 /// is what caught the first spelling; keep both.
 ///
+/// **Unmoved by migration 0031 on 2026-09-06**, re-measured with this test on
+/// the tree rebased onto issue #46. A stationary number here can mean either
+/// "the schema did not change" or "the report stopped looking", so the reason
+/// is recorded rather than assumed: `0031_refunds-fee.sql` adds `refunds.fee`
+/// to a table `schemas/vpay.cstack` does not declare at all, and an undeclared
+/// table contributes exactly one `table ... is not declared in the schema`
+/// line whatever its column count. The schema therefore grew by a column and
+/// this total did not move. `refunds.fee` is `numeric`, which cratestack maps,
+/// so it did not enter the unmappable block either.
+///
 /// It is deliberately not, and must never become, `0`. A zero here would not
 /// mean the schema had caught up — it would mean the report stopped finding
 /// things, which is the failure mode `--strict` is easiest to misread as
@@ -837,6 +847,10 @@ const EXPECTED_DRIFT_CHANGES: u32 = 85;
 /// **17 -> 16 on 2026-09-06**: `disabled_clients` is now modelled exactly and
 /// contributes no change at all, so it is not merely a table whose drift
 /// shrank — it is off the list.
+///
+/// **Still 16 after migration 0031 (2026-09-06):** the column 0031 adds
+/// lands on `refunds`, which was already on this list as an undeclared table
+/// and stays exactly one entry on it.
 const EXPECTED_DRIFTED_RELATIONS: u32 = 16;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
@@ -849,6 +863,10 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 16;
 /// or a `bytea`. If this number grows, the report is comparing less than it
 /// was, and `EXPECTED_DRIFT_CHANGES` can fall for a reason that has nothing
 /// to do with the schema improving.
+///
+/// **Still 18 after migration 0031 (2026-09-06):** `refunds.fee` is `numeric`,
+/// which cratestack maps onto a `.cstack` scalar, so it is compared rather
+/// than excluded. The 18 still include `refunds.metadata` (`jsonb`).
 const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 18;
 
 /// The `--out-dir` handed to `migrate baseline`, removed when it goes out of

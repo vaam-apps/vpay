@@ -209,6 +209,11 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock clippy.toml ./
 COPY .xtask ./.xtask
 COPY backends ./backends
+# `vpay-db` compiles `schemas/vpay.cstack` (`include_server_schema!`), whose
+# path is resolved against CARGO_MANIFEST_DIR and therefore climbs out of
+# `backends/`. Without this the builder below dies at macro expansion with
+# "failed to read schema file .../schemas/vpay.cstack" — see the builder stage.
+COPY schemas ./schemas
 COPY sdks/rust ./sdks/rust
 COPY examples/merchant-demo ./examples/merchant-demo
 RUN cargo chef prepare --recipe-path recipe.json
@@ -271,6 +276,16 @@ COPY Cargo.toml Cargo.lock clippy.toml ./
 # (header rule 3).
 COPY .xtask ./.xtask
 COPY backends ./backends
+# `schemas/` is a build input, not documentation, as of 2026-09-06: `vpay-db`
+# expands `include_server_schema!("../../../schemas/vpay.cstack", db = Postgres)`,
+# and the macro resolves that path against CARGO_MANIFEST_DIR, so it reads a
+# file two levels above `backends/`. Omitting it fails this stage's `cargo
+# build` with `error: failed to read schema file
+# /build/backends/crates/vpay-db/../../../schemas/vpay.cstack: No such file or
+# directory` — measured on 2026-09-06, which is the first time this image was
+# built after the CrateStack read landed. The cook above does not need it
+# (cargo-chef stubs workspace members, so the macro never expands there).
+COPY schemas ./schemas
 COPY sdks/rust ./sdks/rust
 # `examples/merchant-demo` is a member for the same reason and with the same
 # consequence: without it here the build fails at manifest load with "failed

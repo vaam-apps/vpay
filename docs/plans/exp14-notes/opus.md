@@ -441,34 +441,138 @@ schema;` fails `verify-repositories`; and
 `pub type X = crate::schema::cratestack_schema::Cratestack;` fails it too, on
 the alias/`pub fn` arm the review added.
 
-### Still owed to CI — the five, by name, unchanged by the rebase
+### Rebased again onto `6978901` (2026-09-06)
 
-The rebase changed none of this. The authoring host's rootless Docker is still
-down, so every one of these remains **written, compiled and listed, but never
-executed on any machine**:
+Rebased a second time, from `c456f24` onto master at **`6978901`**, which
+merged #50 (`refunds.fee`: migration `0031_refunds-fee.sql`, the column in
+`vpay_db::Refunds`' `COLUMNS` and `RefundRow`, a ten-key `RefundObject` with a
+typed `vpay_core::RefundStatus`, the port's `Refunded { fee }`, both merchant
+SDKs' `fee` fields, the parity rows and the docs).
 
-1. **`vpay-db::repositories a_disabled_client_reads_the_same_through_both_paths`**
-   — the parity test, and the single most important case on this branch. Until
-   it runs green, "the CrateStack read returns what the sqlx read returns" is
-   read out of the generated query builder, not measured.
-2. **The decisive read-policy mutation** — delete `@@allow("read",
-   auth().isSystem())` from `model DisabledClient` in `schemas/vpay.cstack` and
-   confirm the parity test **FAILS**. It needs (1) to run first, so it has
-   never run either.
-3. **`just test-rust`** (`cargo nextest run --workspace`) — the workspace is
-   listed (1361 tests, 43 binaries, 0 ignored) but not run, so every
-   container-backed suite in `vpay-db`, `vpay-tests-integration`, `vpay-server`
-   and `vpay-worker-bin` is unexecuted here — including the pre-existing
-   `disabled_client_lookup_reflects_disable_and_enable`, which exercises the
-   method this branch changed, and the `client_store` / `merchant_token_flow`
-   suites that reach `is_client_disabled` through the token path.
-4. **The re-run of the drift test on the final tree** —
-   `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`. It
-   passed with the final constants (85 / 16) before the Docker outage, on the
-   same content; it has not been re-run since, and now also not since the
-   rebase.
-5. **The server image build and its size delta.** Not attempted, before or
-   after the rebase. The musl static link has to carry CrateStack's twelve
-   crates plus `minicbor`, `chumsky` and `ariadne`, and the size cost of this
-   change is still **unmeasured**. No buildx builder was created, so there is
-   nothing to clean up.
+**Sixteen commits replayed with zero conflicts — checked by hand rather than
+trusted, for the second time.** The overlaps:
+`backends/tests/integration/tests/postgres_smoke.rs`, where master's
+migration-count assertion moved 30 → **31** and gained #46's sentence about
+`0031 refunds.fee` while this branch's drift block below it is untouched —
+both sides survived; and `docs/status.md`, `docs/reference/vpay-db.md` and
+`docs/flows/merchant-auth.md`, where #50's rows and this branch's CrateStack
+corrections are independent paragraphs. `vpay-db/src/lib.rs` did not conflict
+at all this time: #50 changed `refunds.rs`, not the export list.
+`cargo build --workspace --all-targets` is clean, which is the only thing that
+proves a conflict-free rebase did not silently drop a delimiter.
+
+**The drift constants do not move: still 85 changes over 16 relations, and 18
+unmappable columns.** Re-measured with the drift test itself on the rebased
+tree rather than reasoned about, because #50 *did* add a column.
+`0031_refunds-fee.sql` puts `fee` on `refunds`, a table `schemas/vpay.cstack`
+does not declare at all, and an undeclared table contributes exactly one
+`table ... is not declared in the schema` line whatever its column count — so
+the schema grew by a column and this total did not move. `refunds.fee` is
+`numeric`, which cratestack maps, so it did not join the 18 unmappable
+columns either. All three constants now carry that reasoning, dated, in their
+own doc comments.
+
+### The five formerly-owed items, measured 2026-09-06
+
+The authoring host's Docker daemon came back (the original daemon, cached
+images). Every item §7 and the section above listed as *written, compiled and
+listed but never executed* has now been executed on a machine. `just ci` ran
+**end to end, exit 0**.
+
+| # | Owed | Measured 2026-09-06 |
+|---|---|---|
+| 1 | `vpay-db::repositories a_disabled_client_reads_the_same_through_both_paths` | **PASS — first execution ever.** 6.371 s standalone, and 1.627 s as case 1042/1369 inside the full `just ci` run. "The CrateStack read returns what the sqlx read returns" is now a measurement, not a reading of the generated query builder |
+| 2 | The decisive read-policy mutation | **FAILS as designed** — transcript below |
+| 3 | `just test-rust` (`cargo nextest run --workspace`) | **1369 tests run, 1369 passed, 0 skipped**, 722.977 s. Master is 1359 (this branch adds exactly ten test attributes and removes none), so 1359 + 10 = 1369 |
+| 4 | The drift test on the final tree | **PASS**, 13.919 s, `drift detected in 16 table(s)/view(s) (85 change(s) total)` |
+| 5 | The server image and its size delta | **Built, ran, and it found a defect** — see below. `vpay-server 0.1.0`, **16.9 MB** against master's **16.1 MB**: **+0.8 MB (+5.0%)** |
+
+Item 3's three named suites, which §7 called out specifically because this
+change could plausibly disturb them, all pass:
+`vpay-db::repositories disabled_client_lookup_reflects_disable_and_enable`
+(1.274 s), `vpay-tests-integration::client_store` including
+`find_client_reflects_the_disabled_clients_kill_switch` (1.138 s), and all ten
+`vpay-tests-integration::merchant_token_flow` cases including
+`a_disabled_client_is_refused_with_invalid_client_and_401` (2.417 s).
+
+**Item 2, the decisive mutation, in full.** Deleting `@@allow("read",
+auth().isSystem())` from `model DisabledClient` in `schemas/vpay.cstack` and
+re-running the parity test:
+
+```
+thread 'a_disabled_client_reads_the_same_through_both_paths' panicked at
+backends/crates/vpay-db/tests/repositories.rs:471:5:
+assertion `left == right` failed: a row written by the sqlx path must be
+visible to the CrateStack read: CrateStack says false, sqlx says true. If
+CrateStack says false and sqlx says true, the model's `@@allow("read",
+auth().isSystem())` clause is missing or the context this crate reads under
+stopped being a SystemContext — the read is compiled into the WHERE clause,
+so a denied row is indistinguishable from an absent one and the kill-switch
+is silently OFF
+  left: false
+ right: true
+test result: FAILED. 0 passed; 1 failed
+```
+
+That is the argument in §4 turned into evidence: the policy is load-bearing,
+its absence is silent, and only this test catches it. `just check-schema`
+stays green through the mutation. The schema was restored and the tree is
+clean.
+
+### What the image build found — a defect this branch introduced
+
+**Item 5 failed on its first attempt, and the failure was real rather than
+environmental.** `docker buildx build -f backends/Dockerfile --target server`
+on a dedicated `vpay-exp14-land2` builder:
+
+```
+error: failed to read schema file
+/build/backends/crates/vpay-db/../../../schemas/vpay.cstack:
+No such file or directory (os error 2)
+error: could not compile `vpay-db` (lib) due to 1 previous error
+```
+
+`backends/Dockerfile` copies `.xtask`, `backends`, `sdks/rust` and
+`examples/merchant-demo` into the build context and **never copied
+`schemas/`**, because until this branch that directory was documentation.
+`include_server_schema!` resolves its path against `CARGO_MANIFEST_DIR`, so it
+climbs two levels out of `backends/` to a file that was not in the image at
+all. **This branch, as reviewed and as rebased, made the release image
+unbuildable, and nothing in `just ci` would ever have caught it** — the gate
+builds on the host, where the file is present.
+
+Fixed here by adding `COPY schemas ./schemas` to **both** the `planner` and
+`builder` stages, the two the Dockerfile's own header rule 3 requires to stay
+identical, each with a comment naming the macro and the error. The `chef`
+cook stage does not need it: cargo-chef stubs workspace members, so the macro
+never expands there. After the fix the image builds, and the binary runs:
+`docker run --rm … --version` → `vpay-server 0.1.0`.
+
+**The size delta, measured paired rather than quoted.** The 15.7 MB figure in
+`docs/plans/exp11-notes/opus-review.md` is from a different tree and a
+different toolchain, so master was rebuilt from a `git archive` of `6978901`
+on the same host, the same builder and the same day rather than compared
+against it:
+
+| Image | Size |
+|---|---|
+| master `6978901`, `--target server` | **16.1 MB** |
+| this branch, `--target server` | **16.9 MB** |
+| delta | **+0.8 MB, +5.0%** |
+
+So CrateStack's twelve crates plus `minicbor`, `chumsky` and `ariadne` cost
+**0.8 MB** on the static musl link, for one read. That is the number §7 said
+was unmeasured. Both images run and both print `vpay-server 0.1.0`. The
+`vpay-exp14-land2` builder was removed afterwards.
+
+### What is still owed
+
+Nothing on the list above. What remains is that **all of it was measured on
+one host, once** — a single sample per number, on the authoring machine's
+rootless Docker, and CI is the second measurement. In particular the image
+fix is exercised by no gate in this repository: `just ci` never builds a
+container, so the `COPY schemas` line is protected only by CI's `e2e
+(compose)` and `release` jobs actually building the Dockerfile. That is a
+real gap and it is named rather than closed here, because closing it means
+adding a Docker build to a gate, which is a scope and a runtime decision for
+the maintainer rather than something to slip into this branch.
