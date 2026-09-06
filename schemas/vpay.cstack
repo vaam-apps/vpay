@@ -44,7 +44,7 @@
 // │   $ cratestack check --schema schemas/vpay.cstack                        │
 // │   schema OK: schemas/vpay.cstack                                         │
 // │ as the seventh gate in `just verify`, at the CLI version pinned as       │
-// │ `cratestack_version` in the justfile — 0.11.1 today, the same version    │
+// │ `cratestack_version` in the justfile — 0.12.0 today, the same version    │
 // │ `Cargo.toml` pins the LIBRARY to, which is why the two cannot answer     │
 // │ about different grammars. `cargo build` is the other: the macro          │
 // │ parses this file with `cratestack-parser` and fails the build on         │
@@ -53,9 +53,9 @@
 // │                                                                          │
 // │ The 0.10 grammar added block attributes this file does not use (@@sql,   │
 // │ @@embedded_sql, @@server_sql for views; @@paged, @@subscribe, @@audit,   │
-// │ @@soft_delete). 0.11.1 still has no @@check(expr) — no hit for           │
-// │ '@@check' anywhere in cratestack-parser 0.11.1 or cratestack-migrate     │
-// │ 0.11.1, and the latter's convert/checks.rs still promotes a CHECK only   │
+// │ @@soft_delete). 0.12.0 still has no @@check(expr) — no hit for           │
+// │ '@@check' anywhere in cratestack-parser 0.12.0 or cratestack-migrate     │
+// │ 0.12.0, and the latter's convert/checks.rs still promotes a CHECK only   │
 // │ from @db_enforce on a single field — so the GAP notes on cross-column    │
 // │ CHECKs below remain accurate. (KNOWN_ATTRIBUTE_NAMES was cited here      │
 // │ too until 2026-09-05; it is a typo-suggestion table and lists no         │
@@ -82,7 +82,7 @@
 // │ INVISIBLE to `migrate baseline` — all ten multi-column CHECKs in the     │
 // │ database are — so a clean --strict run would say nothing about either    │
 // │ of them. That is CrateStack's own documented gap: cratestack-migrate     │
-// │ 0.11.1's src/introspect/postgres/mod.rs lists "Multi-column and          │
+// │ 0.12.0's src/introspect/postgres/mod.rs lists "Multi-column and          │
 // │ zero-column CHECK constraints are skipped" because AddCheck ties to      │
 // │ exactly one column. So the ask below is not only @@check(expr) in the    │
 // │ grammar — it needs an IR op that is not single-column and                │
@@ -252,7 +252,7 @@ model Currency {
 // native enum and a TEXT column onto the same `Scalar("String")` — so the
 // report said exactly the same four things about `providers` before and
 // after. The one line it keeps saying, `column flow type differs (live:
-// Scalar("String"), schema: Enum("ProviderFlow"))`, is permanent at 0.11.1
+// Scalar("String"), schema: Enum("ProviderFlow"))`, is permanent at 0.12.0
 // and not a defect in this file: the enum's NAME has no catalog
 // representation to recover it from, which `enums.rs`'s own doc comment
 // calls out as documented lossiness. A drift report is not what proves this
@@ -625,7 +625,7 @@ model DisabledClient {
 // not-null constraint` — pinned by
 // `the_events_insert_cannot_move_until_a_json_column_can_be_modelled` in
 // `backends/crates/vpay-db/src/events.rs`. Declaring `data Json` is the only
-// other option at 0.11.1 and it is NOT taken here; see the GAP note at the
+// other option at 0.12.0 and it is NOT taken here; see the GAP note at the
 // end of `model Event` for the two measured reasons.
 //
 // WHY NO `@db_enforce` ANYWHERE BELOW, unlike `model Currency`.
@@ -670,7 +670,7 @@ model Event {
   livemode Boolean
   // The closed event vocabulary stays a hand-named database CHECK
   // (`type_is_a_documented_event`, migrations 0018 and 0029), and this field
-  // carries no validator at all, because 0.11.1 has none that expresses
+  // carries no validator at all, because 0.12.0 has none that expresses
   // "one of these eight strings" on a `String` column. The two candidates
   // were both measured and both rejected:
   //
@@ -730,7 +730,7 @@ model Event {
   // GAP — `data JSONB NOT NULL` is not declared, and that is what keeps
   // `insert_in_tx` on raw sqlx.
   //
-  // 0.11.1 HAS a `Json` scalar (`emit/postgres/columns.rs`: `"Json" =>
+  // 0.12.0 HAS a `Json` scalar (`emit/postgres/columns.rs`: `"Json" =>
   // "JSONB"`, `shared/types.rs`: `Json` -> `::cratestack::Json<::cratestack::Value>`),
   // so "cratestack cannot model a JSONB column" would be false. Two measured
   // costs are why it is still not declared here:

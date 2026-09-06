@@ -103,7 +103,7 @@ confidence-threshold = 0.93
 # `default-features = false, features = ["postgres"]` — the smallest set that
 # still yields a data layer — `cargo deny check licenses` still rejects both
 # crates, and `cargo tree -i minicbor` shows the two edges above. There is no
-# feature combination at 0.11.1 that produces CrateStack's data layer without
+# feature combination at 0.12.0 that produces CrateStack's data layer without
 # its HTTP transport; taking `cratestack-sqlx` + `cratestack-macros` directly
 # does not help either, because `include_server_schema!` emits
 # `pub mod axum { use ::cratestack::HttpTransport; … }` unconditionally.
@@ -111,7 +111,7 @@ confidence-threshold = 0.93
 #
 # Why scoped by name rather than allowed globally. Two crates, one author,
 # one purpose (CBOR codec), reached through one dependency this repository
-# pins exactly (`cratestack = "=0.11.1"`). A third crate arriving under Blue
+# pins exactly (`cratestack = "=0.12.0"`). A third crate arriving under Blue
 # Oak is a new fact that should fail this gate and be argued on its own
 # merits, which an entry on the `allow` list above would silently prevent.
 # The generated CBOR transport is compiled and never called — vpay serves its
@@ -124,6 +124,18 @@ confidence-threshold = 0.93
 # `docs/plans/exp14-notes/opus.md`. Revisit if CrateStack ever gates its
 # transport behind a Cargo feature, at which point both crates should leave
 # the graph and this exception should be deleted rather than left to rot.
+#
+# **Re-checked at 0.12.0 on 2026-09-07** — the release to ask about, since
+# "revisit when the transport is gated" is the whole exit condition here.
+# `cratestack-pg-0.12.0/Cargo.toml` still declares `cratestack-axum` and
+# `cratestack-client-rust` as plain dependencies with no `optional = true`
+# and no feature gating either (the release adds one feature, `middleware`,
+# which forwards to `cratestack-client-rust/middleware` and is not taken).
+# The bump changed twelve versions and added no package at all: the set of
+# package names in `Cargo.lock` is identical before and after it, so these
+# two remain the only Blue Oak crates in the graph and `cargo deny check`
+# needs no other entry. Green on the bumped tree: `advisories ok, bans ok,
+# licenses ok, sources ok`.
 exceptions = [
   { name = "minicbor", allow = ["BlueOak-1.0.0"] },
   { name = "minicbor-serde", allow = ["BlueOak-1.0.0"] },

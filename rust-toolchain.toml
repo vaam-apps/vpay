@@ -19,12 +19,16 @@
 # mismatch was measured to pass everything else: with `channel` moved to
 # 1.98.0 and the `FROM` line left at 1.95.0, the whole of `just ci` was green.
 #
-# WHY 1.98.0 (moved 1.95.0 -> 1.98.0 on 2026-09-05). CrateStack 0.11.1 is
-# what this repository has adopted: `cratestack check` is the seventh gate in
-# `just verify` (`just check-schema`), and every crate of that release —
-# library crates and `cratestack-cli` alike — declares
-# `rust-version = "1.98.0"`. Under the old 1.95.0 pin, `cargo install
-# cratestack-cli --locked --version 0.11.1` run anywhere inside this worktree
+# WHY 1.98.0 (moved 1.95.0 -> 1.98.0 on 2026-09-05). CrateStack is what this
+# repository has adopted: `cratestack check` is the seventh gate in
+# `just verify` (`just check-schema`), and every crate of the pinned release
+# — library crates and `cratestack-cli` alike — declares
+# `rust-version = "1.98.0"`. That was 0.11.1 when this pin moved and is
+# **0.12.0 since 2026-09-07**; the floor was re-read from the 0.12.0
+# manifests rather than assumed to have stayed put, and it had. A CrateStack
+# release that raises it moves this line too, which is the reason the
+# sentence names the mechanism and not just the number. Under the old 1.95.0
+# pin, `cargo install cratestack-cli --locked --version 0.11.1` run inside
 # refused outright ("requires rustc 1.98.0 or newer, while the currently
 # active rustc version is 1.95.0"), so the only way to obtain the tool a gate
 # depends on was to step outside the checkout or take a prebuilt binary — for
@@ -34,10 +38,16 @@
 # fails under `+1.95.0` and succeeds under `+1.98.0` (see
 # docs/plans/exp11-notes/opus.md).
 #
-# No CrateStack *library* crate is in this workspace's dependency graph today
-# — `schemas/vpay.cstack` is checked by an external binary, and this pass
-# deliberately added none — so the bump is what makes the tooling installable
-# here, not what makes the workspace compile.
+# ~~No CrateStack *library* crate is in this workspace's dependency graph
+# today — `schemas/vpay.cstack` is checked by an external binary, and this
+# pass deliberately added none — so the bump is what makes the tooling
+# installable here, not what makes the workspace compile.~~ **Wrong since
+# 2026-09-06 and struck on 2026-09-07** (noticed while moving this comment
+# to 0.12.0, not by the bump itself): `vpay-db` takes `cratestack` =
+# `cratestack-pg` and twelve `cratestack-*` packages are in the graph, so
+# 1.98.0 is now what makes the workspace compile as well as what makes the
+# CLI installable. `Cargo.toml`'s MSRV block already said so; this one had
+# not been re-read since.
 #
 # NOTE: this repo is authored and verified against 1.98.0. The MSRV declared
 # in Cargo.toml (`rust-version = "1.94"`) is derived *only* from `cargo
