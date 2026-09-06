@@ -6807,8 +6807,8 @@ async fn a_generated_events_insert_is_refused_by_the_not_null_on_data() -> anyho
 /// non-key `UPDATE` wants. So both mutations fail loudly in about a second
 /// rather than deadlocking, and this test is a red assertion either way.
 #[tokio::test]
-async fn an_abandoned_fan_out_leaves_no_delivery_and_the_event_still_pending()
--> anyhow::Result<()> {
+async fn an_abandoned_fan_out_leaves_no_delivery_and_the_event_still_pending() -> anyhow::Result<()>
+{
     let (_container, repositories, pool) = migrated_postgres().await?;
     let event = insert_event(
         repositories.as_ref(),
@@ -6915,15 +6915,18 @@ async fn a_committed_fan_out_keeps_both_cratestack_writes() -> anyhow::Result<()
 
     let rows = repositories.for_event(&event.id).await?;
     assert_eq!(rows.len(), 1, "exactly one delivery survives the commit");
-    assert_eq!(rows[0].endpoint_id, "ep_one");
+    let delivery = rows
+        .first()
+        .context("the delivery just asserted to exist")?;
+    assert_eq!(delivery.endpoint_id, "ep_one");
     // The columns `CreateWebhookDeliveryInput` does NOT carry, because
     // `@default(...)` filters them out of the generated input: they must
     // still arrive at their column defaults rather than at NULL or zero by
     // accident.
-    assert_eq!(rows[0].state, "pending");
-    assert_eq!(rows[0].attempt, 0);
-    assert!(rows[0].next_attempt_at.is_none());
-    assert!(rows[0].status_code.is_none());
+    assert_eq!(delivery.state, "pending");
+    assert_eq!(delivery.attempt, 0);
+    assert!(delivery.next_attempt_at.is_none());
+    assert!(delivery.status_code.is_none());
 
     let state: String = sqlx::query_scalar("SELECT fanout_state FROM events WHERE id = $1")
         .bind(&event.id)
@@ -6938,7 +6941,7 @@ async fn a_committed_fan_out_keeps_both_cratestack_writes() -> anyhow::Result<()
     let created_at_is_recent: bool = sqlx::query_scalar(
         "SELECT created_at > now() - INTERVAL '1 minute' FROM webhook_deliveries WHERE id = $1",
     )
-    .bind(rows[0].id)
+    .bind(delivery.id)
     .fetch_one(&pool)
     .await
     .context("reading created_at back must succeed")?;

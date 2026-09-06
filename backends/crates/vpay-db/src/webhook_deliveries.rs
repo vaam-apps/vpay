@@ -275,8 +275,7 @@ pub(crate) async fn mark_fanned_out_in_tx(
         .update_many()
         .where_(crate::schema::cratestack_schema::event::id().eq(event_id.to_owned()))
         .where_(
-            crate::schema::cratestack_schema::event::fanout_state()
-                .eq(FANOUT_PENDING.to_owned()),
+            crate::schema::cratestack_schema::event::fanout_state().eq(FANOUT_PENDING.to_owned()),
         )
         .set(UpdateEventInput {
             fanout_state: Some(FANOUT_DONE.to_owned()),
@@ -756,7 +755,6 @@ mod tests {
             );
         }
     }
-
 
     /// The bound is characters, not bytes, and it must hold for a body made
     /// entirely of multi-byte characters — the case where a byte-wise
