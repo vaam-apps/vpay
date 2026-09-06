@@ -12,7 +12,15 @@
  */
 export { loadStripe } from "./client.js";
 
+export { CheckoutPopupBlockedError, notifyCheckoutOpener } from "./popup.js";
+
 export type { StripeError } from "./errors.js";
+
+export type {
+  CheckoutPopup,
+  NotifyCheckoutOpenerOptions,
+  OpenCheckoutPopupOptions,
+} from "./popup.js";
 
 export type {
   Stripe,

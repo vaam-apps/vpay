@@ -24,6 +24,11 @@ import {
   type StripeError,
 } from "./errors.js";
 import { createEmbeddedCheckout } from "./embedded.js";
+import {
+  openCheckoutPopup,
+  type CheckoutPopup,
+  type OpenCheckoutPopupOptions,
+} from "./popup.js";
 import { encodeForm, FormEncodingError, type FormValue } from "./form.js";
 import type {
   CheckoutSession,
@@ -464,6 +469,23 @@ export class VpayStripe implements Stripe {
       clientSecret,
       onComplete: options.onComplete,
     });
+  }
+
+  async openCheckoutPopup(
+    options: OpenCheckoutPopupOptions,
+  ): Promise<CheckoutPopup> {
+    const win = browserWindow();
+    if (win === undefined) {
+      throw new TypeError(
+        "openCheckoutPopup: there is no browser window to open one from",
+      );
+    }
+    // No `checkoutBaseUrl` is consulted, and that is not an oversight: a
+    // popup loads the **hosted** session's own `url`, which vpay minted and
+    // the merchant's server just handed back. `checkoutBaseUrl` exists to
+    // build an embedded frame `src` and to pin the origin a framed page
+    // posts from; neither applies here (see `popup.ts`).
+    return openCheckoutPopup({ win, options });
   }
 
   /** A safe, redacted representation. This object holds no secret to redact. */

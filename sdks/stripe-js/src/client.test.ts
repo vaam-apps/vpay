@@ -532,6 +532,7 @@ describe("no logging", () => {
       "errors.ts",
       "form.ts",
       "index.ts",
+      "popup.ts",
       "types.ts",
     ]);
     for (const name of shipping) {

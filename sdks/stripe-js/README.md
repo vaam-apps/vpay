@@ -46,6 +46,8 @@ push (mobile-money) or redirect rail.
 | —                                                                  | `stripe.waitForPaymentIntent(clientSecret, { timeoutMs, intervalMs })`                                                     |
 | `stripe.createEmbeddedCheckoutPage({ fetchClientSecret })`         | `stripe.initEmbeddedCheckout({ fetchClientSecret, onComplete })` — **vpay's own page**, not Stripe's; see "Checkout" below |
 | —                                                                  | `stripe.retrieveCheckoutSession(clientSecret)`                                                                             |
+| —                                                                  | `stripe.openCheckoutPopup({ fetchCheckoutUrl, onComplete, onCancel })` — vpay's hosted page in a window your page owns   |
+| —                                                                  | `notifyCheckoutOpener({ session, status })` — the popup half, called on your own `success_url`                            |
 
 **Not compatible, ever** — absent by construction, not stubbed, because each
 depends on card data or on an iframe served from `js.stripe.com`:
@@ -262,6 +264,71 @@ was designed to preclude). The frame is sandboxed
 `allow-top-navigation`, which is why the redirect rail's hand-off is a
 message your page acts on rather than something the frame does itself.
 
+### The popup, and why its message comes from *your* page
+
+`openCheckoutPopup` is the third surface: vpay's **hosted** page in a
+top-level window your page opened, rather than in an iframe or in the
+payer's own tab.
+
+```ts
+// browser, inside a click handler
+try {
+  const popup = await stripe.openCheckoutPopup({
+    // Your own server's `POST /v1/checkout/sessions` with ui_mode: 'hosted'.
+    fetchCheckoutUrl: async () =>
+      (await fetch("/checkout-url", { method: "POST" }).then((r) => r.json()))
+        .url,
+    onComplete: ({ session, status }) => {
+      // A message, not proof of payment: re-read the order from your own
+      // server, which your webhook is what writes.
+      refresh(session, status);
+    },
+    onCancel: () => show("The payment window was closed."),
+  });
+} catch (err) {
+  if (err instanceof CheckoutPopupBlockedError) {
+    window.location.assign(await checkoutUrl()); // no browser blocks this
+  }
+}
+```
+
+```ts
+// browser, on the success_url page — which loads *inside* the popup
+import { notifyCheckoutOpener } from "@vaam-apps/vpay-stripe-js";
+
+notifyCheckoutOpener({ session: sessionIdFromTheUrl, status: "complete" });
+```
+
+Three things about this differ from the embedded surface, and each of them
+is a consequence of a popup not being a frame:
+
+1. **The completion message is sent by your return page, not by vpay's.**
+   Inside a popup `window.parent === window`, so vpay's checkout page has no
+   framer to post to and deliberately says nothing. What closes the loop is
+   `success_url` — your page, running in the popup, calling
+   `notifyCheckoutOpener`, which posts `{type:'vpay:complete', session,
+   status}` to `window.opener` and closes the window.
+2. **`completionOrigin` therefore defaults to your own origin**, not to
+   `checkoutBaseUrl`. Pinning vpay's checkout origin here would accept
+   nothing at all. `checkoutBaseUrl` is not consulted by this method.
+3. **`notifyCheckoutOpener` answers `false` and does nothing when there is
+   no opener**, which is exactly what happens when the same page is reached
+   by an ordinary redirect. One return page serves both integrations
+   without branching on a query parameter.
+
+The window is opened **before** `fetchCheckoutUrl` is awaited, because
+`window.open` succeeds only inside the user gesture that triggered it;
+awaiting first is the usual way a popup integration gets blocked. A window
+the browser refused is a `CheckoutPopupBlockedError` — the one failure here
+that a correct integration can still hit, and the one you are expected to
+fall back from. `location=yes` is in the window features on purpose: a
+payment window that hides the address bar is a phishing lesson.
+
+`onCancel` is opt-in, and passing it is what starts a `closed` poll — a
+closed window fires no event at its opener in any browser. It fires when the
+payer dismissed the window without completing; it is **not** a cancellation
+of the charge, which is untouched and may still settle.
+
 `retrieveCheckoutSession(clientSecret)` reads
 `GET /v1/browser/checkout/sessions/{id}` and, like everything else on the
 `Stripe` object, never rejects.
@@ -368,6 +435,15 @@ a shipping process in ADR-0006's sense.
   payment inside it — **green from nothing in the `vpay-ci` VM on
   2026-09-04**. What that spec cannot see is recorded on its own
   `docs/status.md` row.
+- **The popup surface (`openCheckoutPopup` / `notifyCheckoutOpener`) is
+  unit-tested and has not been driven by a real browser.** `src/popup.test.ts`
+  (34 tests) drives it against stub windows, because jsdom implements
+  neither `window.open` nor cross-window `postMessage` — so what is proven
+  is the origin check, the source check, the open-before-await ordering, the
+  blocked-window error, the cancel poll and the round trip between the two
+  halves. What is **not** proven anywhere yet is a real browser opening a
+  real window: no Cypress spec covers it, and `examples/shop`'s popup mode
+  was exercised by hand only. Recorded on `docs/status.md`.
 - The `vpay:complete` payload is read strictly: `session` and `status` must
   both be strings. If vpay's checkout page ever sends the session as an
   object, `onComplete` stops firing rather than firing with fields it cannot

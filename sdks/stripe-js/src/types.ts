@@ -9,6 +9,7 @@
  * across the two packages and which are not.
  */
 import type { StripeError } from "./errors.js";
+import type { CheckoutPopup, OpenCheckoutPopupOptions } from "./popup.js";
 
 /**
  * The five-value state machine `vpay_core::state::IntentStatus` defines
@@ -220,6 +221,19 @@ export interface Stripe {
   initEmbeddedCheckout(
     options: InitEmbeddedCheckoutOptions,
   ): Promise<EmbeddedCheckout>;
+  /**
+   * Opens vpay's **hosted** checkout page in a popup window the merchant's
+   * page owns, and reports completion through `window.opener` (see
+   * `src/popup.ts` for why the message comes from the merchant's own return
+   * page and not from vpay's).
+   *
+   * **This one rejects**, like {@link initEmbeddedCheckout}: with
+   * `CheckoutPopupBlockedError` when the browser refused the window — the
+   * one failure here a correct integration can still hit, and the one a
+   * merchant must fall back from — and with a `TypeError` for an
+   * integration mistake.
+   */
+  openCheckoutPopup(options: OpenCheckoutPopupOptions): Promise<CheckoutPopup>;
 }
 
 /**
