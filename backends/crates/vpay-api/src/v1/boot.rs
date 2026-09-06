@@ -343,7 +343,7 @@ mod tests {
     use vpay_core::Money;
     use vpay_provider::{
         CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderConfig, ProviderError,
-        Submitted,
+        Refunded, Submitted,
     };
 
     use super::*;
@@ -410,7 +410,7 @@ mod tests {
             _charge: &ChargeRef,
             _amount: Money,
             _config: &ProviderConfig,
-        ) -> Result<Submitted, ProviderError> {
+        ) -> Result<Refunded, ProviderError> {
             Err(ProviderError::Unsupported)
         }
     }

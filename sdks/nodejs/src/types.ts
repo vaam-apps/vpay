@@ -86,6 +86,11 @@ export type RefundStatus = "pending" | "succeeded" | "failed" | "canceled";
 export interface Refund {
   id: string;
   object: "refund";
+  /**
+   * Integer minor units of {@link Refund.currency}. **The payer's money** —
+   * never net of {@link Refund.fee}, which is a separate cost with a
+   * different owner.
+   */
   amount: number;
   currency: string;
   payment_intent: string;
@@ -93,6 +98,41 @@ export interface Refund {
   reason: string | null;
   metadata: Record<string, string>;
   created: number;
+  /**
+   * What the rail charged to execute this refund, in minor units of
+   * {@link Refund.currency} — never a second currency, never a float.
+   *
+   * **Three answers, and they are not interchangeable.** `0` means the rail
+   * reported the movement was free. `null` means it reported no fee at all.
+   * `undefined` — the key absent — means the vpay that answered predates the
+   * field (added by issue #46). The last two are both *unknown*; only `0` is
+   * a measured zero, and substituting it for either is how an invented number
+   * reaches a merchant's settlement statement.
+   *
+   * Optional **and** `| null` on purpose: it is the `?` that puts
+   * `undefined` in the read type, so `Refund["fee"]` is exactly
+   * `number | null | undefined` and all three answers survive. That is
+   * pinned by a type-level assertion — see `types fee so that absent, null
+   * and a measured zero stay three different answers` in `types.test.ts`,
+   * which fails if either the `?` or the `| null` is dropped.
+   *
+   * This package's `exactOptionalPropertyTypes` is **not** what creates the
+   * distinction, although an earlier version of this comment said it was.
+   * Measured 2026-09-05 with the repo's own `tsc`: the read type is
+   * `number | null | undefined` with the flag and without it, and an absent
+   * property never reads as `null` in either. What the flag actually adds is
+   * narrower — `{ fee: undefined }` stops being a legal way to spell
+   * "absent".
+   *
+   * Narrow with `typeof refund.fee === "number"`; `refund.fee ?? 0` and
+   * `refund.fee || 0` are both the bug.
+   *
+   * **It is `null` from every vpay deployment today.** Neither rail reports a
+   * refund fee — Orange has no refund API and MTN refunds are the
+   * Disbursements product vpay has never called — so nothing populates it.
+   * See `docs/status.md`.
+   */
+  fee?: number | null;
 }
 
 /**

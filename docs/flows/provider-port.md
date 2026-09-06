@@ -15,7 +15,7 @@ wire.
 | `async submit` | Idempotent on `reference_id`. A duplicate submission MUST report `Submitted`, never an error. Redirect rails also return `redirect_url` and `ref_extra` — **in the same value**, so a caller physically cannot hold a URL without the key material it will need to query the charge |
 | `async query_status` | The authoritative read. Takes the whole charge, because some rails need the amount and their own token. Must work indefinitely |
 | `parse_callback` | Identifiers **only** — never a status. **Stays synchronous on purpose:** it parses bytes that already arrived and must not be able to make a network call, so an adapter cannot smuggle a status out of an unauthenticated request |
-| `async refund` | Optional; gated by `supports_refunds`. The trait's **default** is `ProviderError::Unsupported` — a permanent capability answer. An adapter whose rail *does* refund but whose refund is unbuilt overrides it with its own `NotImplemented` token so `verify-status` can see it |
+| `async refund` | Optional; gated by `supports_refunds`. Answers `Refunded`, **not** `Submitted`: a refund has no payer's browser, so `redirect_url` was a question no adapter could ever answer, and `Refunded` carries instead the one thing a refund has that a charge does not — `fee: Option<Money>`, what the rail charged us to move the money. The trait's **default** is `ProviderError::Unsupported` — a permanent capability answer. An adapter whose rail *does* refund but whose refund is unbuilt overrides it with its own `NotImplemented` token so `verify-status` can see it |
 | `capabilities` | Static declaration the core reads instead of special-casing |
 
 The three network methods are `async`, via `#[async_trait]` rather than a
@@ -118,6 +118,14 @@ speak over it to a real HTTP host.**
   `async`, `parse_callback` is not. `ProviderConfig` gained
   `connect_timeout`/`request_timeout` (`DEFAULT_CONNECT_TIMEOUT` 5 s,
   `DEFAULT_REQUEST_TIMEOUT` 20 s).
+- **Updated 2026-09-05 (issue #46): `refund` answers `Refunded`, not
+  `Submitted`.** The new type carries `ref_extra` exactly as before plus
+  `fee: Option<Money>` — what the rail charged us to move the money, in the
+  refund's own currency. **No adapter populates it**, and none can: Orange
+  has no refund API and `mtn_momo::refund` is still `NotImplemented`. `None`
+  means "the rail did not report a fee" and `Some(zero)` means "the movement
+  was free"; an adapter that collapsed the two would put an invented number
+  in a merchant's settlement statement. See [../status.md](../status.md).
 - The outbound HTTP client moved here from `vpay-api` as
   `vpay_provider::http` — vendored Mozilla roots, redirects refused, proxies
   ignored, and `bounded_body` capping any rail response at

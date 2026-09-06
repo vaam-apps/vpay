@@ -60,11 +60,11 @@ naming a method, because there is no such method and there must not be one.
 
 **Measured by reading both SDKs, 2026-09-03**, again for the Checkout Session
 rows on **2026-09-04** (Step 9), again on **2026-09-04** for the
-assertion-audience row (Step 9, lane 5b), and again on **2026-09-04** for the
+assertion-audience row (Step 9, lane 5b), again on **2026-09-04** for the
 two `checkout.session.expired` rows, and again on **2026-09-05** for the
 `refunds.retrieve` row (issue #45, the change that made
-`GET /v1/refunds/{id}` a served route). Nothing here is inferred from a file
-name or a doc comment.
+`GET /v1/refunds/{id}` a served route) and the `refund.fee` row (issue #46).
+Nothing here is inferred from a file name or a doc comment.
 
 Again on **2026-09-05** for the five `account_holders` rows (issue #47). Two
 things about those are worth stating rather than leaving to be discovered:
@@ -78,8 +78,27 @@ locally, deliberately and identically: a phone-number rule is a *market*
 rule vpay owns and may widen, so an SDK copy would refuse offline a number a
 later server version accepts.
 
-A note on the first of those two, because the two SDKs are at parity on the
-*capability* and not on the shape: `@vaam-apps/vpay-sdk` has always carried a
+The `refund.fee` row is at parity on the *capability* and not on the shape,
+for the same reason the note below records about `KnownEventType`: Rust models
+the field as `Option<i64>` (carrying an explicit but redundant
+`#[serde(default)]`), which collapses an absent key and an explicit `null`
+into `None`, while TypeScript models it as
+`fee?: number | null`, whose read type is exactly `number | null | undefined`,
+which keeps the two apart. **It is the `?` that does that, not this repo's
+`exactOptionalPropertyTypes`** — measured 2026-09-05 with the workspace's own
+`tsc`, the read type is identical with the flag and without it; what the flag
+adds is that `{ fee: undefined }` stops being a legal way to write "absent".
+Both preserve the distinction that carries meaning and that the field
+exists for — **unknown versus a measured zero** — and each cell's tests assert
+exactly that. The asymmetry is deliberate: `Option<Option<i64>>` would push a
+state with no producer (vpay always emits every documented key) into every
+match a Rust merchant writes, and dropping `?` in TypeScript would declare
+the key always present — which an older vpay's response makes a lie, since
+nothing type-checks a decoded body at runtime.
+
+A note on the two `checkout.session.expired` rows, because there too the SDKs
+are at parity on the *capability* and not on the shape:
+`@vaam-apps/vpay-sdk` has always carried a
 `KnownEventType` string union, and `sdks/rust` had no event-type vocabulary at
 all until 2026-09-04. Adding the type meant adding
 `vpay_sdk::KnownEventType` — a `#[non_exhaustive]` enum with `as_wire_str` /
@@ -160,6 +179,7 @@ method name).
 | `payment_intents.list`, with `limit` and both cursors | ✅ `list_payment_intents_encodes_its_pagination_into_the_query_string`, `a_list_call_with_no_parameters_sends_no_query_string_at_all` | ✅ `payment_intents.list: exact query string` |
 | `refunds.create`, and a full refund omitting `amount` | ✅ `create_refund_sends_the_documented_body_and_decodes_the_object`, `a_full_refund_omits_the_amount_entirely` | ✅ `refunds.create: exact path and body, amount omitted for a full refund` |
 | `refunds.retrieve` — `GET /v1/refunds/{id}`, no body, no `Idempotency-Key` | ✅ `retrieve_refund_is_a_get_with_no_body_and_decodes_the_object`, `a_refund_id_with_url_metacharacters_is_percent_encoded_into_the_path` | ✅ `refunds.retrieve: exact GET path, no body, no Idempotency-Key`, `refunds percent-encodes a hostile id so it cannot escape /v1` |
+| The `refund` object's `fee`, and the absent / `null` / `0` distinction it exists for | ✅ `a_refund_fee_decodes_as_unknown_free_or_a_real_cost`, `create_refund_sends_the_documented_body_and_decodes_the_object` | ✅ `types fee so that absent, null and a measured zero stay three different answers`, `refunds.create keeps a fee of 0, null and absent as three different answers`, `refunds.create: exact path and body, amount omitted for a full refund` |
 | The `checkout.session.expired` event type is in this SDK's vocabulary, and its payload decodes as a session | ✅ `a_checkout_session_expired_event_is_a_known_type_and_decodes_as_a_session`, `an_unknown_event_type_is_none_rather_than_a_failure_and_the_wrong_accessor_errs` | ✅ `is a member of KnownEventType and narrows with isCheckoutSessionEvent`, `is not narrowed by the payment-intent or refund guards`, `leaves an unknown checkout.session.* type deliverable rather than a failure` |
 | A delivered `checkout.session.expired` carries no `client_secret` and a null `url`, and a null `url` is still distinguishable from an embedded session | ✅ `a_checkout_session_expired_event_is_a_known_type_and_decodes_as_a_session` | ✅ `carries no client_secret and a null url, so a webhook body holds no payer credential` |
 | `events.list`, with cursors and the `type` filter | ✅ `list_events_filters_by_type_and_keeps_data_object_as_raw_json` | ✅ `events.list: exact query string including type` |

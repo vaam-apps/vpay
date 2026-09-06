@@ -43,6 +43,34 @@ pub enum IntentStatus {
     Canceled,
 }
 
+/// Where a refund is in its own lifecycle — the status a merchant reads on
+/// the `refund` object.
+///
+/// Deliberately **not** [`IntentStatus`], and deliberately carrying a
+/// `Failed` the intent has none of: a refund that the rail refuses *is*
+/// failed and stays that way, whereas an intent whose charge is declined
+/// falls back to `requires_payment_method` so the merchant can try another
+/// rail (`docs/flows/payment-lifecycle.md`). Refunds also do not change
+/// their intent's status at all, so sharing one type would invite exactly
+/// the assignment the flow doc forbids.
+///
+/// The four labels are the `refund_status` Postgres enum
+/// (`backends/migrations/0017_create-refunds.sql`) and both merchant SDKs'
+/// own `RefundStatus`, which is why they are written out beside the `serde`
+/// rename — see [`IntentStatus::as_wire_str`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefundStatus {
+    /// Submitted to the rail; the money has not come back yet.
+    Pending,
+    /// The rail returned the funds.
+    Succeeded,
+    /// The rail refused the refund. Terminal.
+    Failed,
+    /// Withdrawn before the rail acted on it.
+    Canceled,
+}
+
 /// Where a charge is in its life on the rail — an operator-facing state, not
 /// a merchant-facing one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,6 +215,53 @@ impl IntentStatus {
     /// // Stripe has `requires_confirmation`; this API deliberately does not.
     /// assert_eq!(IntentStatus::from_wire("requires_confirmation"), None);
     /// assert_eq!(IntentStatus::from_wire("PROCESSING"), None);
+    /// ```
+    #[must_use]
+    pub fn from_wire(label: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|status| status.as_wire_str() == label)
+    }
+}
+
+impl RefundStatus {
+    /// Every refund status, in lifecycle order. Read by
+    /// [`RefundStatus::from_wire`] so the parse side is written once.
+    pub const ALL: [Self; 4] = [Self::Pending, Self::Succeeded, Self::Failed, Self::Canceled];
+
+    /// The exact label this status carries on the wire *and* in Postgres —
+    /// see [`IntentStatus::as_wire_str`] for why it is written out beside
+    /// the `serde` rename.
+    ///
+    /// ```
+    /// use vpay_core::RefundStatus;
+    ///
+    /// assert_eq!(RefundStatus::Canceled.as_wire_str(), "canceled");
+    /// for status in RefundStatus::ALL {
+    ///     assert_eq!(RefundStatus::from_wire(status.as_wire_str()), Some(status));
+    /// }
+    /// ```
+    #[must_use]
+    pub const fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Canceled => "canceled",
+        }
+    }
+
+    /// Parses a label produced by [`Self::as_wire_str`], or `None` — see
+    /// [`IntentStatus::from_wire`] for why this is not a `FromStr`.
+    ///
+    /// ```
+    /// use vpay_core::RefundStatus;
+    ///
+    /// assert_eq!(RefundStatus::from_wire("failed"), Some(RefundStatus::Failed));
+    /// // Stripe spells it with two `l`s in British English nowhere; the
+    /// // Postgres enum is the single spelling, and anything else is a
+    /// // schema/code mismatch rather than a value to guess at.
+    /// assert_eq!(RefundStatus::from_wire("cancelled"), None);
     /// ```
     #[must_use]
     pub fn from_wire(label: &str) -> Option<Self> {
@@ -601,6 +676,27 @@ mod tests {
             assert_eq!(IntentStatus::from_wire(label), None, "{label:?}");
         }
         assert_eq!(ChargeState::from_wire("submitting "), None);
+    }
+
+    /// The four labels `refund_status` (migration 0017) allows, and nothing
+    /// else. `from_wire` is the only reader of a Postgres enum on this path,
+    /// so a label it silently accepted would be a status vpay does not model
+    /// reaching a merchant's SDK.
+    #[test]
+    fn a_refund_status_round_trips_and_an_unmodelled_label_does_not_parse() {
+        for status in RefundStatus::ALL {
+            assert_eq!(RefundStatus::from_wire(status.as_wire_str()), Some(status));
+        }
+        assert_eq!(RefundStatus::ALL.len(), 4);
+        for label in [
+            "cancelled",       // the other spelling
+            "requires_action", // an intent status, not a refund one
+            "PENDING",
+            "",
+            " succeeded",
+        ] {
+            assert_eq!(RefundStatus::from_wire(label), None, "{label:?}");
+        }
     }
 
     #[test]

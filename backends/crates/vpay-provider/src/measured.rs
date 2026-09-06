@@ -55,7 +55,7 @@ use vpay_core::metrics::{
 
 use crate::{
     AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter,
-    ProviderConfig, ProviderError, Submitted,
+    ProviderConfig, ProviderError, Refunded, Submitted,
 };
 
 /// A [`ProviderAdapter`] that counts and times every call it forwards.
@@ -173,7 +173,7 @@ impl ProviderAdapter for Measured {
         charge: &ChargeRef,
         amount: Money,
         config: &ProviderConfig,
-    ) -> Result<Submitted, ProviderError> {
+    ) -> Result<Refunded, ProviderError> {
         self.measure(
             provider_operation::REFUND,
             self.inner.refund(charge, amount, config),

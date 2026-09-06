@@ -670,6 +670,7 @@ describe("resource methods", () => {
           reason: null,
           metadata: {},
           created: 1_700_000_000,
+          fee: null,
         },
       }),
     });
@@ -684,6 +685,56 @@ describe("resource methods", () => {
     expect(req.method).toBe("POST");
     expect(req.body).toBe("payment_intent=pi_123&reason=requested_by_customer");
     expect(result.object).toBe("refund");
+    // vpay renders `fee` on every refund and `null` on every refund it can
+    // currently produce; the key must survive the decode, not be dropped.
+    expect(result.fee).toBeNull();
+  });
+
+  // Issue #46. `fee` carries three distinguishable answers and the SDK must
+  // not flatten them: `0` is a measured "the movement was free", `null` is
+  // "the rail reported nothing", and an absent key is "this vpay predates the
+  // field". Only the first belongs on a merchant's settlement statement as a
+  // zero; the other two belong there as nothing at all.
+  //
+  // `refund.fee ?? 0` — the idiom a TypeScript author reaches for — turns all
+  // three into the same line. That is the bug the issue reports one layer up,
+  // where an integrator shipped a hardcoded `provider_fee_minor: 0`.
+  it("refunds.create keeps a fee of 0, null and absent as three different answers", async () => {
+    const cases: Array<[string, Record<string, unknown>, number | null | undefined]> = [
+      ["a measured zero", { fee: 0 }, 0],
+      ["nothing reported", { fee: null }, null],
+      ["a real cost", { fee: 250 }, 250],
+      ["a vpay older than the field", {}, undefined],
+    ];
+
+    for (const [label, extra, expected] of cases) {
+      const server = await withServer({
+        resource: () => ({
+          status: 200,
+          body: {
+            id: "re_1",
+            object: "refund",
+            amount: 5000,
+            currency: "xaf",
+            payment_intent: "pi_123",
+            status: "succeeded",
+            reason: null,
+            metadata: {},
+            created: 1_700_000_000,
+            ...extra,
+          },
+        }),
+      });
+      const client = makeClient(server);
+
+      const result = await client.refunds.create({ payment_intent: "pi_123" });
+
+      expect(result.fee, label).toBe(expected);
+      // The distinction is only useful if it is *checkable*: `typeof` is the
+      // narrowing the doc comment tells a caller to use, and it must be the
+      // one that separates a measured zero from both flavours of unknown.
+      expect(typeof result.fee === "number", label).toBe(typeof expected === "number");
+    }
   });
 
   it("refunds.retrieve: exact GET path, no body, no Idempotency-Key", async () => {

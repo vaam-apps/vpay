@@ -76,6 +76,41 @@ A refund is asynchronous, so:
   entry is needed** — which is why the reservation column exists rather than
   posting optimistically and unwinding.
 
+## A rail-charged refund fee is reported, not posted
+
+**Decided 2026-09-05 ([issue #46](https://github.com/vaam-apps/vpay/issues/46)),
+and stated here because "it does not post" is a decision, not an omission.**
+
+The `refund` object carries a `fee` — what the rail charged *us* to move the
+money back ([merchant-auth.md](merchant-auth.md)). It is **reported to the
+merchant and posted nowhere.** None of the three postings above gains an
+entry, `platform_fee_revenue` is untouched, and the refund posting stays the
+two lines it is today.
+
+Why not post it. A posting rule has to answer *who pays*, and that answer is
+not vpay's: the integrator whose report opened the issue needs the fee to
+follow fault (their platform eats it on a platform error, the merchant on
+theirs), which is a marketplace judgement about a specific order, not
+something a rail's response contains. Writing a rule now would mean choosing
+one of those answers for every deployment. And there is a plainer reason:
+**no rail reports a refund fee to this repository today**, so any posting rule
+would be written against a number that has never existed and tested against a
+fixture — see [../status.md](../status.md).
+
+**The invariant that changes when it does post** is invariant 2 below,
+`balance(merchant_payable) = Σ captures − Σ fees − Σ refunds`. `Σ fees` is
+capture-time `platform_fee_revenue` today. A merchant-borne refund fee adds a
+second kind of term to it, and the invariant would have to say which — at
+which point invariant 2 also finally needs the per-merchant dimension
+`AccountKind` still does not have (see below). Nothing in this repository may
+start posting a refund fee without changing that line and the `AccountKind`
+gap in the same commit; a fee that debits `merchant_payable` while invariant 2
+still reads only capture fees is an invariant that quietly stops holding.
+
+**What is deliberately not on the object either**, and belongs to the
+integrator rather than to vpay: `fee_borne_by` and `fee_settlement_ref`. vpay
+reports what the movement cost; who eats it is a marketplace decision.
+
 ## Invariants (asserted nightly)
 
 1. Per transaction: `SUM(debit) = SUM(credit)`, per currency.
@@ -109,6 +144,11 @@ mirroring the same three-variant `AccountKind`, so the gap is now present in
 real SQL too, not just the design sketch.
 
 ## Status
+
+**The refund `fee` posts nothing, and nothing posts it** — see the section
+above. The column (`refunds.fee`, migration `0031`) and the wire field
+(`vpay_api::model::RefundObject::fee`) exist and are asserted; no application
+code writes a `refunds` row at all, and no adapter can produce a fee to write.
 
 Invariant 1 is implemented and tested in `vpay-ledger`
 (`a_capture_with_a_fee_balances`, `an_unbalanced_transaction_is_rejected`),

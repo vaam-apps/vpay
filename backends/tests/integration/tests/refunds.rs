@@ -11,8 +11,10 @@
 //!
 //! The five claims only this file can make:
 //!
-//! 1. a stored refund reads back through the shipping SDK as the nine keys
-//!    `docs/flows/merchant-auth.md` documents;
+//! 1. a stored refund reads back through the shipping SDK as the ten keys
+//!    `docs/flows/merchant-auth.md` documents — nine since issue #45 and
+//!    **ten since issue #46's `fee`**, which is `null` here because no rail
+//!    reports a refund fee and nothing in this repository writes the column;
 //! 2. another merchant's refund and an id that never existed are the **byte
 //!    for byte** identical `404`, and it is the `resource_missing` envelope —
 //!    not the `unknown_route` one an unmounted route would answer, which is
@@ -307,7 +309,7 @@ async fn seed_intent(client: &vpay_sdk::Client) -> anyhow::Result<String> {
 
 // ------------------------------------------------------------------ test 1
 
-/// A stored refund reads back through the shipping SDK, as the nine keys the
+/// A stored refund reads back through the shipping SDK, as the ten keys the
 /// wire contract documents.
 ///
 /// Driven by `vpay_sdk::RefundsResource::retrieve` — the method a merchant
@@ -343,8 +345,16 @@ async fn a_stored_refund_reads_back_through_the_sdk() -> anyhow::Result<()> {
     assert_eq!(refund.reason.as_deref(), Some("requested_by_customer"));
     assert_eq!(refund.metadata.get("case").map(String::as_str), Some("45"));
     assert!(refund.created > 0, "created is unix seconds, not zero");
+    // Issue #46's tenth key. `seed_refund` writes no `fee`, and migration
+    // `0031` gives the column no `DEFAULT`, so the honest answer for this row
+    // is "the rail reported nothing" — which the SDK models as `None` and
+    // must never render as `Some(0)`.
+    assert_eq!(
+        refund.fee, None,
+        "a row seeded without a fee reads back as unknown, not as free"
+    );
 
-    // The raw body carries exactly nine keys and no tenth: the SDK's typed
+    // The raw body carries exactly ten keys and no eleventh: the SDK's typed
     // struct would silently ignore one it does not model.
     let response = raw_client()
         .get(harness.url(&format!("/v1/refunds/{refund_id}")))
@@ -363,6 +373,7 @@ async fn a_stored_refund_reads_back_through_the_sdk() -> anyhow::Result<()> {
             "amount",
             "created",
             "currency",
+            "fee",
             "id",
             "metadata",
             "object",
@@ -370,6 +381,15 @@ async fn a_stored_refund_reads_back_through_the_sdk() -> anyhow::Result<()> {
             "reason",
             "status",
         ]
+    );
+    // Present **and** null, which is the distinction the whole of issue #46
+    // is about: an absent key would have passed a `get("fee").is_none()`
+    // check and would be indistinguishable, in either SDK, from a field the
+    // merchant never learns exists.
+    assert_eq!(
+        object.get("fee"),
+        Some(&Value::Null),
+        "`fee` is present and null for a row written without one: {body:#}"
     );
 
     harness.shutdown().await;
@@ -609,6 +629,17 @@ async fn a_refund_id_without_the_re_prefix_is_never_looked_up() -> anyhow::Resul
 /// and pinning it now is what stops the two surfaces drifting before it
 /// exists.
 ///
+/// **Both** documented refund event types are driven, not one: the two are
+/// the same object in `data.object`, both are claimed to carry it in
+/// `docs/flows/webhooks.md`, `docs/flows/merchant-auth.md` and
+/// `docs/status.md`, and a writer that rendered `charge.refunded` by hand
+/// would pass a case that only ever wrote `charge.refund.updated`.
+///
+/// The payload's key set is asserted here too, and `fee` in particular is
+/// asserted **present and `null`** (issue #46): a webhook body is signed,
+/// stored and delivered at-least-once, so a key that went missing on this
+/// surface would reach merchants who never re-read the object.
+///
 /// The comparison is on the **serialised bytes**, not on parsed values: a
 /// handler that hand-built a map for its response — different key set,
 /// `created` in milliseconds, `payment_intent_id` instead of
@@ -635,29 +666,6 @@ async fn the_api_response_and_an_events_payload_for_one_refund_are_byte_identica
     )
     .context("serialising the rendered refund")?;
 
-    let event = harness
-        .repositories
-        .transaction(|tx| {
-            let rendered = rendered.clone();
-            let refund_id = refund_id.clone();
-            Box::pin(async move {
-                let row = tx
-                    .insert_in_tx(&NewEvent {
-                        id: vpay_db::events::event_id(),
-                        merchant_id: MERCHANT_A.to_owned(),
-                        livemode: false,
-                        event_type: "charge.refund.updated".to_owned(),
-                        object_id: refund_id,
-                        data: rendered,
-                    })
-                    .await?;
-                Ok::<_, anyhow::Error>(TxOutcome::Commit(row))
-            })
-        })
-        .await
-        .context("writing the event this suite renders into")?
-        .into_inner();
-
     let http = raw_client();
     let bearer = harness.bearer(CLIENT_A);
 
@@ -671,27 +679,70 @@ async fn the_api_response_and_an_events_payload_for_one_refund_are_byte_identica
         .await
         .context("the body is readable")?;
 
-    let event_bytes = http
-        .get(harness.url(&format!("/v1/events/{}", event.id)))
-        .bearer_auth(&bearer)
-        .send()
-        .await
-        .context("the event read")?
-        .bytes()
-        .await
-        .context("the body is readable")?;
+    for event_type in ["charge.refunded", "charge.refund.updated"] {
+        let event = harness
+            .repositories
+            .transaction(|tx| {
+                let rendered = rendered.clone();
+                let refund_id = refund_id.clone();
+                Box::pin(async move {
+                    let row = tx
+                        .insert_in_tx(&NewEvent {
+                            id: vpay_db::events::event_id(),
+                            merchant_id: MERCHANT_A.to_owned(),
+                            livemode: false,
+                            event_type: event_type.to_owned(),
+                            object_id: refund_id,
+                            data: rendered,
+                        })
+                        .await?;
+                    Ok::<_, anyhow::Error>(TxOutcome::Commit(row))
+                })
+            })
+            .await
+            .context("writing the event this suite renders into")?
+            .into_inner();
 
-    let event_body: Value = serde_json::from_slice(&event_bytes).context("a JSON body")?;
-    let payload = event_body
-        .pointer("/data/object")
-        .expect("an event carries data.object");
-    let payload_bytes = serde_json::to_vec(payload).context("re-serialising data.object")?;
+        let event_bytes = http
+            .get(harness.url(&format!("/v1/events/{}", event.id)))
+            .bearer_auth(&bearer)
+            .send()
+            .await
+            .context("the event read")?
+            .bytes()
+            .await
+            .context("the body is readable")?;
 
-    assert_eq!(
-        String::from_utf8_lossy(&refund_bytes),
-        String::from_utf8_lossy(&payload_bytes),
-        "the API response and the event payload for one refund row must be byte-identical"
-    );
+        let event_body: Value = serde_json::from_slice(&event_bytes).context("a JSON body")?;
+        assert_eq!(
+            event_body.pointer("/type").and_then(Value::as_str),
+            Some(event_type),
+            "the event this leg reads back is the one it wrote: {event_body:#}"
+        );
+        let payload = event_body
+            .pointer("/data/object")
+            .expect("an event carries data.object");
+        let payload_bytes = serde_json::to_vec(payload).context("re-serialising data.object")?;
+
+        assert_eq!(
+            String::from_utf8_lossy(&refund_bytes),
+            String::from_utf8_lossy(&payload_bytes),
+            "the API response and the {event_type} payload for one refund row must be \
+             byte-identical"
+        );
+
+        let object = payload.as_object().expect("data.object is a JSON object");
+        assert_eq!(
+            object.len(),
+            10,
+            "a delivered {event_type} body is the same ten keys the API renders: {payload:#}"
+        );
+        assert_eq!(
+            object.get("fee"),
+            Some(&Value::Null),
+            "`fee` is present and null in a delivered {event_type} body, not absent"
+        );
+    }
 
     harness.shutdown().await;
     Ok(())

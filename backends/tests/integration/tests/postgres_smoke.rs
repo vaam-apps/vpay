@@ -164,8 +164,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 30,
-        "all thirty migrations under backends/migrations should be recorded as applied \
+        applied, 31,
+        "all thirty-one migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -185,9 +185,12 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          object with its two payer credentials and the partial unique index \
          that is what actually enforces one open session per intent, \
          0029 the checkout.session.expired event type, \
-         and 0030 checkout_sessions_intent_seq_idx, which keeps the confirm \
+         0030 checkout_sessions_intent_seq_idx, which keeps the confirm \
          path's find_latest_by_intent off a sequential scan for the same \
-         reason 0027 keeps the rail callback off one)"
+         reason 0027 keeps the rail callback off one, \
+         and issue #46's 0031 refunds.fee, the nullable column behind the \
+         refund object's tenth field — nullable so that 'the rail reported \
+         no fee' stays distinguishable from 'the movement was free')"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -1299,6 +1302,124 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         "`--strict` promises no baseline row was recorded, and a `cratestack_migrations` table \
          exists. Nothing else in this test could see that: the drift report never lists that \
          table"
+    );
+
+    Ok(())
+}
+
+// --- migration 0031 (refunds.fee) ------------------------------------------
+
+/// Inserts a `refunds` row (migration `0017`) with a given `fee` (migration
+/// `0031`).
+///
+/// `Option<i64>` and not `i64`, because the distinction between `NULL` and `0`
+/// is the entire subject of the two tests below. Written as raw SQL for the
+/// reason the header gives for every other insert in this file: `vpay_db`'s
+/// refunds repository has a read and no write, so there is nothing to route an
+/// insert through, and the subject here is what *the database* enforces.
+async fn insert_refund(
+    pool: &PgPool,
+    id: &str,
+    payment_intent_id: &str,
+    fee: Option<i64>,
+) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO refunds \
+            (id, payment_intent_id, amount, currency_code, status, fee) \
+         VALUES ($1, $2, 1000, 'XAF', 'pending'::refund_status, $3)",
+    )
+    .bind(id)
+    .bind(payment_intent_id)
+    .bind(fee)
+    .execute(pool)
+    .await
+}
+
+/// Issue #46's whole point, at the layer that would otherwise quietly lose it:
+/// an unknown fee and a zero fee must be two different rows, and neither may
+/// become the other on the way in or out.
+///
+/// A `DEFAULT 0` on the column, or a writer that mapped `None` to `0`, would
+/// still let every other assertion about `refunds.fee` pass — the column would
+/// exist, be `BIGINT`, and round-trip a number. This is the case that fails.
+#[tokio::test]
+async fn an_unreported_refund_fee_stays_null_and_never_becomes_zero() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_currencies(&pool).await?;
+    insert_payment_intent(&pool, "pi_fee", 5_000, 0, 0).await?;
+
+    insert_refund(&pool, "re_unknown", "pi_fee", None).await?;
+    insert_refund(&pool, "re_free", "pi_fee", Some(0)).await?;
+    insert_refund(&pool, "re_charged", "pi_fee", Some(250)).await?;
+
+    // And the case a `DEFAULT 0` would quietly rewrite: a writer that does
+    // not mention the column at all. This is the shape a refunds repository
+    // written before it knew about `fee` would have, and binding NULL
+    // explicitly above does not exercise it — measured 2026-09-05, adding
+    // `DEFAULT 0` to migration 0031 left every other assertion here green.
+    sqlx::query(
+        "INSERT INTO refunds (id, payment_intent_id, amount, currency_code, status) \
+         VALUES ('re_omitted', 'pi_fee', 1000, 'XAF', 'pending'::refund_status)",
+    )
+    .execute(&pool)
+    .await
+    .context("inserting a refund whose INSERT does not mention `fee` at all")?;
+
+    let read = |id: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Option<i64>>("SELECT fee FROM refunds WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+        }
+    };
+
+    assert_eq!(
+        read("re_unknown").await?,
+        None,
+        "a refund written without a fee must read back as unknown, not as free — the column has \
+         no DEFAULT for exactly this reason"
+    );
+    assert_eq!(
+        read("re_free").await?,
+        Some(0),
+        "a rail that reported the movement cost nothing must stay distinguishable from one that \
+         reported nothing at all"
+    );
+    assert_eq!(read("re_charged").await?, Some(250));
+    assert_eq!(
+        read("re_omitted").await?,
+        None,
+        "an INSERT that never mentions `fee` must leave it unknown — the column must have no \
+         DEFAULT, or every refund vpay ever writes claims to have been free"
+    );
+
+    Ok(())
+}
+
+/// `fee_non_negative` (migration `0031`) fires.
+///
+/// A negative fee would be a rebate, which vpay has no concept of; rendered
+/// onto the `refund` object it would show a merchant a cost that credits them.
+/// The CHECK is what stops it, and this proves the CHECK rather than the SQL
+/// merely parsing.
+#[tokio::test]
+async fn a_negative_refund_fee_is_rejected_by_the_database() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_currencies(&pool).await?;
+    insert_payment_intent(&pool, "pi_fee_negative", 5_000, 0, 0).await?;
+
+    let err = insert_refund(&pool, "re_negative", "pi_fee_negative", Some(-1))
+        .await
+        .expect_err("a negative fee must be rejected");
+
+    let db_err = err.as_database_error().expect("a database-level error");
+    eprintln!("observed rejection: {db_err}");
+    assert_eq!(
+        db_err.constraint(),
+        Some("fee_non_negative"),
+        "the rejection must come from 0031's CHECK specifically"
     );
 
     Ok(())

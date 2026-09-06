@@ -863,7 +863,13 @@ notice the choice rather than a reason to make it.
 `RefundRow` is a **projection**, not the whole table: `charge_id`,
 `failure_code`, `failure_raw`, `provider_reference_id` and `updated_at` are on
 the row in Postgres and on no wire object, and the writer that would fill them
-does not exist. That is `events::EventRow`'s rule for `fanout_attempts`, not
+does not exist. `fee` (migration `0031`, issue #46, 2026-09-06) **is** in the
+projection, for the mirror-image reason: it is on the wire object as the tenth
+key, so leaving it out would make the renderer invent a value. It is
+`Option<i64>` all the way through — the column has no `DEFAULT`, `NULL` means
+"the rail reported no fee" and `0` means "the movement was free" — and, since
+nothing writes a `refunds` row at all, every value this repository can read
+today is `NULL`. That is `events::EventRow`'s rule for `fanout_attempts`, not
 `checkout_sessions::CheckoutSessionRow`'s one-to-one rule, and it is the right
 one here precisely because guessing at the shape of code nobody has written is
 what this repository calls claiming a feature.

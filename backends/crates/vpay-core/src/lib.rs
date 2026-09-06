@@ -21,4 +21,4 @@ pub use error::{Category, Classify, Retry, Severity};
 pub use failure::FailureCode;
 pub use money::{Currency, Money, MoneyError};
 pub use settlement::{Settlement, StatusKind, contradiction, settle};
-pub use state::{ChargeState, IntentStatus, ProviderFlow, Transition, next_status};
+pub use state::{ChargeState, IntentStatus, ProviderFlow, RefundStatus, Transition, next_status};
