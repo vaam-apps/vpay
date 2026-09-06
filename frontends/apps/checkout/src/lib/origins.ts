@@ -78,22 +78,6 @@ export function normalizeOrigins(raw: readonly string[]): readonly string[] {
 }
 
 /**
- * The single origin that framed this page, or `null` when there is not
- * exactly one that is allowed.
- *
- * `document.referrer` is the only thing a framed page can learn about its
- * embedder without asking it — and asking it is not an option, because a
- * hostile embedder would answer whatever it liked. The referrer is not
- * trusted either: it is only ever *matched against* the allow-list the
- * server produced, never used to extend it. So the worst a lying embedder
- * can do is name an origin the merchant already registered, which is an
- * origin it would have been allowed to frame from anyway.
- *
- * An empty referrer (a `Referrer-Policy` on the embedder that strips it, a
- * direct navigation) yields `null`: this page refuses rather than guessing,
- * because the alternative is a `postMessage` with no target it can name.
- */
-/**
  * The merchant's origin when it has registered **exactly one**, else `null`.
  *
  * The return page's rule, and only its rule (2026-09-06, the maintainer's
@@ -117,6 +101,26 @@ export function soleOrigin(allowed: readonly string[]): string | null {
   return normalized.length === 1 ? (normalized[0] as string) : null;
 }
 
+/**
+ * The single origin that framed this page, or `null` when there is not
+ * exactly one that is allowed.
+ *
+ * `document.referrer` is the only thing a framed page can learn about its
+ * embedder without asking it — and asking it is not an option, because a
+ * hostile embedder would answer whatever it liked. The referrer is not
+ * trusted either: it is only ever *matched against* the allow-list the
+ * server produced, never used to extend it. So the worst a lying embedder
+ * can do is name an origin the merchant already registered, which is an
+ * origin it would have been allowed to frame from anyway.
+ *
+ * An empty referrer (a `Referrer-Policy` on the embedder that strips it, a
+ * direct navigation) yields `null`: this page refuses rather than guessing,
+ * because the alternative is a `postMessage` with no target it can name.
+ *
+ * Also the rule a POPUP's opener is resolved by (2026-09-06) — same referrer,
+ * same list, same refusal. The return page is the one caller that cannot use
+ * it, and {@link soleOrigin} says why.
+ */
 export function resolveParentOrigin(
   referrer: string | null | undefined,
   allowed: readonly string[],

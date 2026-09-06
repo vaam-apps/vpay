@@ -79,7 +79,19 @@ support_contact: "   "
   });
 
   it('refuses a logo URL that is not absolute http or https', () => {
-    for (const url of ['/logo.svg', 'data:image/svg+xml;base64,AAA', 'ftp://x/y.png', '//cdn/x.png']) {
+    // `javascript:` is named explicitly, and not because the rule is
+    // different for it: `logo_url` becomes an `<img src>`, and a mounted file
+    // is written by whoever can write to the operator's config volume. The
+    // two schemes that turn an image into a document this page did not write
+    // belong in the case that refuses them.
+    for (const url of [
+      '/logo.svg',
+      'data:image/svg+xml;base64,AAA',
+      'javascript:alert(1)',
+      'JavaScript:alert(1)',
+      'ftp://x/y.png',
+      '//cdn/x.png',
+    ]) {
       const { value, problems } = parseBranding(`logo_url: ${JSON.stringify(url)}\n`);
       expect(value.logoUrl, url).toBeNull();
       expect(problems.length, url).toBe(1);

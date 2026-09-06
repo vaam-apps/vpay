@@ -318,6 +318,52 @@ reconciliation on 2026-09-03 — see the boot sequence above. The
 itself: a seed setting `supports_partial_refunds` without `supports_refunds`
 is a `DbError::Query` that rolls the whole reconcile back.*
 
+## The checkout page reads its own two files, and they are not these
+
+Everything above is `vpay-server` and `vpay-worker`: one document
+(`config/application.yml` plus a profile overlay), loaded by
+`vpay_config::Config::load`, validated hard enough to refuse the boot.
+
+`frontends/apps/checkout` — the container that serves the payment page — reads
+**two different files, with different rules** (2026-09-06):
+
+| | file | default path | override |
+|---|---|---|---|
+| brand | `branding.yaml` | `/etc/vpay/checkout/branding.yaml` | `VPAY_CHECKOUT_BRANDING_FILE` |
+| settings | `config.yaml` | `/etc/vpay/checkout/config.yaml` | `VPAY_CHECKOUT_CONFIG_FILE` |
+
+Shipped examples, both fully commented, are
+[`config/checkout/branding.example.yaml`](../../config/checkout/branding.example.yaml)
+and
+[`config/checkout/config.example.yaml`](../../config/checkout/config.example.yaml);
+what each key means is in
+[hosted-checkout.md](hosted-checkout.md)'s "Runtime configuration".
+
+Three differences from the Rust side are worth stating out loud, because
+someone reading this page will otherwise assume the rules above apply:
+
+- **A bad file does not refuse the boot.** Absent, unreadable, malformed, a
+  key of the wrong type, a value that fails its rule — each costs *exactly
+  that key*, prints one `WARN` naming the file, and the page renders. A
+  payment page that would not load because a logo URL had a typo is a worse
+  failure than a page with no logo. `vpay-server` makes the opposite trade
+  deliberately, and both are right for what they serve.
+- **Nothing merges them.** `checkout.public_base_url` appears in both
+  documents and in two different processes; they are not reconciled and
+  neither validates the other. What the page does with its copy is report it
+  on `GET /config/v1` and log one line in the payer's browser when the origin
+  it was loaded from disagrees — a diagnostic for a proxy the API was never
+  told about, and nothing else.
+- **Read once, at container start**, exactly as ADR-0003 has it for the Rust
+  binaries: editing a mounted file under a live container changes nothing
+  until the container is replaced.
+
+`compose.demo.yml` mounts the two examples into `vpay-checkout`, and that is
+the arrangement `just test-e2e` and CI's `e2e` job run under.
+**`deploy/helm/vpay` templates no ConfigMap for either file**, so a Kubernetes
+deployment has no supported way to supply them yet — a real gap, named here
+rather than in a chart nothing in `just ci` renders.
+
 ## Config changes and in-flight payments
 
 **Safe to mutate:** credentials (rotation works on in-flight transactions),
@@ -524,3 +570,11 @@ than a feature it added:**
   (one fixture per rule), `a_merchant_with_no_webhooks_configured_is_valid`,
   `a_livemode_webhook_secret_written_as_a_placeholder_loads_and_carries_the_resolved_value`
   and `a_webhook_endpoints_debug_output_never_contains_a_secret`.
+
+*Updated 2026-09-07: the checkout container's own `branding.yaml`/`config.yaml`
+are documented above. Nothing in `vpay-config` changed and the 77 tests are
+still 77 — those two files are read by TypeScript in a different process, with
+24 unit cases in `frontends/apps/checkout/src/config/settings.test.ts` and 8
+filesystem cases in `runtime.test.ts` (real temporary files, including an
+absent mount and a `chmod 000` one). No container has been started with the
+Helm chart supplying them, because the chart cannot yet.*

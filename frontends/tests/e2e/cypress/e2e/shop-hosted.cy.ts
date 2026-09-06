@@ -92,9 +92,10 @@ describe("the shop, paid on vpay's hosted page", () => {
           "be.visible",
         );
         // The forward is the merchant's `success_url` with
-        // `{CHECKOUT_SESSION_ID}` substituted (D5). Clicking rather than
-        // waiting out the five-second countdown, so the navigation is this
-        // spec's and not a race with it.
+        // `{CHECKOUT_SESSION_ID}` substituted (D5). The click is the ONLY way
+        // off this screen: the five-second auto-forward this comment used to
+        // describe was removed on 2026-09-06 and nothing replaced it, so a
+        // spec that merely waited here would wait forever.
         cy.get('[data-outcome="succeeded"] button').click();
       },
     );
