@@ -26,6 +26,8 @@ import {
 import type {
   CheckoutSession,
   CreatePaymentIntentParams,
+  Customer,
+  DeletedCustomer,
   CreateRefundParams,
   Event,
   KnownEventType,
@@ -232,5 +234,67 @@ describe("the refund fee's three states", () => {
   it("types fee so that absent, null and a measured zero stay three different answers", () => {
     // If this file compiles, the assertion above has already been made.
     expect(refundFeeIsAbsentNullOrANumber).toBe(true);
+  });
+});
+
+/**
+ * **S4a: `customer.deleted` is a known event type, and its payload is a
+ * `Customer`.**
+ *
+ * The type-level half is the one that matters and it is what the `Exactly`
+ * assertions below make: a `Customer`'s three identifiers are each
+ * `string | null` — **not** optional — because the server emits every
+ * documented key, and a merchant handling a `customer.deleted` has nothing
+ * else to read. The row is gone by the time the webhook arrives, so unlike
+ * every other event type here, `data.object` cannot be re-fetched: if it does
+ * not decode, the payer who was erased is unidentifiable.
+ *
+ * `phone` in particular must stay `string | null` and never `string`: a
+ * customer with only a name is legal, and a non-nullable `phone` would make
+ * `customer.phone.slice(…)` compile and throw at runtime on one.
+ */
+const customerNameIsNullableAndNotOptional: Exactly<
+  Customer["name"],
+  string | null
+> = true;
+const customerPhoneIsNullableAndNotOptional: Exactly<
+  Customer["phone"],
+  string | null
+> = true;
+/** A deleted customer's `deleted` is the literal `true`, never `boolean`. */
+const deletedIsAlwaysTrue: Exactly<DeletedCustomer["deleted"], true> = true;
+/** `customer.deleted` is in the union; a type this SDK predates is not. */
+const customerDeletedIsKnown: KnownEventType = "customer.deleted";
+
+describe("the customer object", () => {
+  it("customer.deleted is a known event type and its payload is a customer", () => {
+    // If this file compiles, the four assertions above have been made.
+    expect(customerNameIsNullableAndNotOptional).toBe(true);
+    expect(customerPhoneIsNullableAndNotOptional).toBe(true);
+    expect(deletedIsAlwaysTrue).toBe(true);
+    expect(customerDeletedIsKnown).toBe("customer.deleted");
+
+    // And the payload really decodes as one: the shape a merchant's handler
+    // reads out of `data.object`, phone-only because that is a legal
+    // customer and the shape most likely to be got wrong.
+    const payload: Customer = {
+      id: "cus_123",
+      object: "customer",
+      name: null,
+      email: null,
+      phone: "237600000200",
+      metadata: { order_id: "1234" },
+      created: 1_700_000_000,
+      livemode: false,
+    };
+    const event: Event = {
+      id: "evt_1",
+      object: "event",
+      type: "customer.deleted",
+      created: 1_700_000_000,
+      livemode: false,
+      data: { object: payload },
+    };
+    expect((event.data.object as Customer).phone).toBe("237600000200");
   });
 });

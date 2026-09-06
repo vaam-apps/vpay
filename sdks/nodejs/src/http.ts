@@ -22,7 +22,22 @@ export interface HttpClientOptions {
   userAgent: string;
 }
 
-type HttpMethod = "GET" | "POST";
+/**
+ * `DELETE` since 2026-09-06 (S4a) — `DELETE /v1/customers/{id}` is the one
+ * this API has. It is handled as a write below, not as a read: it carries an
+ * `Idempotency-Key` and, deliberately, **no body**.
+ *
+ * The header is the server's contract (`docs/flows/merchant-auth.md`: every
+ * write under `/v1` carries one) and it is the verb where a replay is most
+ * confusing without it — the second call would otherwise answer `404` for a
+ * deletion that succeeded, which a merchant retrying a timed-out request
+ * cannot tell from "somebody else deleted it".
+ *
+ * No body, because an empty `application/x-www-form-urlencoded` body and no
+ * body are different requests to some proxies, and the request hash the
+ * server stores against the idempotency key is taken over the bytes.
+ */
+type HttpMethod = "GET" | "POST" | "DELETE";
 
 function isErrorEnvelope(value: unknown): value is {
   error: { type: string; code?: string; message: string; param?: string };
@@ -68,6 +83,11 @@ export class HttpClient {
           url += `?${query}`;
         }
       }
+    } else if (method === "DELETE") {
+      // Keyed like every other write, and `body` is left `undefined` — see
+      // the `HttpMethod` comment for why both halves are deliberate.
+      headers["Idempotency-Key"] =
+        requestOptions?.idempotencyKey ?? randomUUID();
     } else {
       body = params ? encodeForm(params) : "";
       headers["Content-Type"] = "application/x-www-form-urlencoded";

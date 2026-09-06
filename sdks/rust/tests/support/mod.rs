@@ -169,6 +169,31 @@ pub(crate) fn payment_intent_json(id: &str) -> Value {
         "last_payment_error": null,
         "metadata": { "order_id": "1234" },
         "description": null,
+        // `customer` since 2026-09-06 (S4a). Present and null, like every
+        // other nullable key: the server emits every documented key, and a
+        // fixture that omitted it would stop this file being the wire shape.
+        "customer": null,
+        "created": 1_753_401_600,
+        "livemode": false,
+    })
+}
+
+/// A `customer` object with every field the wire contract lists (S4a).
+///
+/// **Phone-only**, deliberately: it is the maintainer's decision of
+/// 2026-09-05 made visible in the fixture every customer test decodes, so a
+/// change that made `name` or `email` required would fail here rather than in
+/// a container.
+pub(crate) fn customer_json(id: &str) -> Value {
+    json!({
+        "id": id,
+        "object": "customer",
+        "name": null,
+        "email": null,
+        // Canonical, as the server stores and renders it — not the `+237 6 …`
+        // a merchant would have typed.
+        "phone": "237600000200",
+        "metadata": { "order_id": "1234" },
         "created": 1_753_401_600,
         "livemode": false,
     })
@@ -190,6 +215,7 @@ pub(crate) fn checkout_session_json(id: &str, client_secret: Option<&str>) -> Va
         "cancel_url": "https://shop.example/cancel",
         "return_url": null,
         "url": format!("https://checkout.example/c/{id}#{id}_secret_abc123"),
+        "customer": null,
         "expires_at": 1_700_086_400,
         "created": 1_700_000_000,
     });

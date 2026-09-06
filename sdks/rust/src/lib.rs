@@ -65,16 +65,17 @@ pub use client::{Client, ClientBuilder, DEFAULT_AUDIENCE};
 pub use error::{ConfigError, Error, WebhookError};
 pub use model::{
     AccountHolder, Balance, BalanceEntry, CheckoutPaymentStatus, CheckoutSession,
-    CheckoutSessionStatus, CheckoutUiMode, Event, EventData, IntentStatus, KnownEventType,
-    LastPaymentError, List, NextAction, PaymentIntent, PaymentMethodType, RedirectToUrl, Refund,
-    RefundStatus,
+    CheckoutSessionStatus, CheckoutUiMode, Customer, DeletedCustomer, Event, EventData,
+    IntentStatus, KnownEventType, LastPaymentError, List, NextAction, PaymentIntent,
+    PaymentMethodType, RedirectToUrl, Refund, RefundStatus,
 };
 pub use resources::{
     AccountHoldersResource, BalanceResource, CheckoutResource, CheckoutSessionsResource,
-    ConfirmPaymentIntentParams, CreateCheckoutSessionParams, CreatePaymentIntentParams,
-    CreateRefundParams, EventsResource, ListCheckoutSessionsParams, ListEventsParams,
-    ListPaymentIntentsParams, PaymentIntentsResource, RefundsResource, RequestOptions,
-    RetrieveAccountHolderParams,
+    ConfirmPaymentIntentParams, CreateCheckoutSessionParams, CreateCustomerParams,
+    CreatePaymentIntentParams, CreateRefundParams, CustomersResource, EventsResource,
+    ListCheckoutSessionsParams, ListCustomersParams, ListEventsParams, ListPaymentIntentsParams,
+    PaymentIntentsResource, RefundsResource, RequestOptions, RetrieveAccountHolderParams,
+    UpdateCustomerParams,
 };
 
 /// See [`payment_intents`]. The account-holder lookup (issue #47): a
@@ -107,6 +108,16 @@ pub mod checkout {
     pub use crate::resources::{
         CheckoutResource, CheckoutSessionsResource, CreateCheckoutSessionParams,
         ListCheckoutSessionsParams,
+    };
+}
+
+/// See [`payment_intents`]. The Customer resource (S4a) — the merchant-owned
+/// record of a payer, and the one object on this surface that is *personal
+/// data*: `docs/flows/customers.md` is the policy around it.
+pub mod customers {
+    pub use crate::model::{Customer, DeletedCustomer};
+    pub use crate::resources::{
+        CreateCustomerParams, CustomersResource, ListCustomersParams, UpdateCustomerParams,
     };
 }
 

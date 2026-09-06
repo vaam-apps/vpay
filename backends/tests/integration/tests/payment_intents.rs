@@ -370,6 +370,7 @@ fn create_params() -> CreatePaymentIntentParams {
         payment_method_types: vec![PaymentMethodType::MtnMomo],
         metadata: BTreeMap::from([("order_id".to_owned(), "1234".to_owned())]),
         description: Some("Order #42 (rush)".to_owned()),
+        customer: None,
     }
 }
 

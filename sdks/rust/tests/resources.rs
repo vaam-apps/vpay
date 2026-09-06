@@ -23,6 +23,7 @@ use std::sync::LazyLock;
 
 use serde_json::{Value, json};
 use vpay_sdk::account_holders::RetrieveAccountHolderParams;
+use vpay_sdk::customers::{CreateCustomerParams, ListCustomersParams, UpdateCustomerParams};
 use vpay_sdk::checkout::{
     CheckoutPaymentStatus, CheckoutSessionStatus, CheckoutUiMode, CreateCheckoutSessionParams,
     ListCheckoutSessionsParams,
@@ -118,6 +119,7 @@ async fn create_payment_intent_sends_the_documented_body_and_decodes_the_object(
                 ],
                 metadata,
                 description: Some("Order #42".to_string()),
+                customer: None,
             },
             RequestOptions::new().with_idempotency_key("idem_abc"),
         )
@@ -1634,4 +1636,313 @@ async fn a_409_on_expiring_a_session_with_a_live_charge_maps_to_an_api_error() {
         }
         other => panic!("expected Error::Api, got {other:?}"),
     }
+}
+
+// ------------------------------------------------------------- customers
+//
+// S4a. The five methods, plus the two properties that are this resource and
+// not the others: a phone number alone is a complete customer, and an update
+// can *clear* a field — which is a different request from leaving it alone
+// and the one a two-state `Option` silently loses.
+
+#[tokio::test]
+async fn create_customer_sends_the_documented_body_and_decodes_the_object() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/customers"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(support::customer_json("cus_1")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let customer = client
+        .customers()
+        .create(
+            CreateCustomerParams {
+                name: Some("Ada Ngo".to_string()),
+                email: Some("ada@example.com".to_string()),
+                phone: Some("+237 6 00 00 02 00".to_string()),
+                metadata: BTreeMap::from([("order_id".to_string(), "1234".to_string())]),
+            },
+            RequestOptions::new().with_idempotency_key("idem_cus"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(customer.id, "cus_1");
+    assert_eq!(customer.object, "customer");
+    assert_eq!(
+        customer.metadata.get("order_id").map(String::as_str),
+        Some("1234")
+    );
+
+    let request = only_request(&server, "/v1/customers").await;
+    assert_eq!(
+        header_value(&request, "idempotency-key").as_deref(),
+        Some("idem_cus")
+    );
+    // The phone number is sent **as the merchant typed it**, spaces, `+` and
+    // all: canonicalising is the server's job and a client-side copy of a
+    // market rule would refuse offline a number a later vpay accepts. `+` is
+    // `%2B` because a bare `+` is a space in a form body — the rule
+    // `crate::form`'s module doc is about.
+    assert_eq!(
+        body_string(&request),
+        "name=Ada%20Ngo&email=ada%40example.com&phone=%2B237%206%2000%2000%2002%2000\
+         &metadata[order_id]=1234"
+    );
+}
+
+/// The maintainer's decision of 2026-09-05, at the SDK boundary: a phone
+/// number alone is a complete customer, and this SDK must not require a name
+/// or an email to send one.
+///
+/// The decisive half is the **body**: every unset field is omitted entirely
+/// rather than sent empty, because `name=` means "clear it" on the update
+/// path and would mean an empty name here.
+#[tokio::test]
+async fn a_phone_number_alone_is_a_complete_customer_and_the_rest_is_omitted() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/customers"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(support::customer_json("cus_1")))
+        .mount(&server)
+        .await;
+
+    let customer = client
+        .customers()
+        .create(
+            CreateCustomerParams {
+                phone: Some("237600000200".to_string()),
+                ..Default::default()
+            },
+            RequestOptions::new(),
+        )
+        .await
+        .unwrap();
+
+    // The fixture is phone-only too, so the decode proves the object is
+    // representable with two of its three identifiers null.
+    assert_eq!(customer.phone.as_deref(), Some("237600000200"));
+    assert_eq!(customer.name, None);
+    assert_eq!(customer.email, None);
+
+    let request = only_request(&server, "/v1/customers").await;
+    assert_eq!(body_string(&request), "phone=237600000200");
+}
+
+#[tokio::test]
+async fn retrieve_customer_is_a_get_with_no_body() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/customers/cus_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(support::customer_json("cus_1")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let customer = client.customers().retrieve("cus_1").await.unwrap();
+    assert_eq!(customer.id, "cus_1");
+
+    let request = only_request(&server, "/v1/customers/cus_1").await;
+    assert_eq!(request.method.as_str(), "GET");
+    assert!(request.body.is_empty());
+    assert_eq!(
+        header_value(&request, "idempotency-key"),
+        None,
+        "a read carries no idempotency key"
+    );
+}
+
+/// **The three states of an update field**, which is the whole reason
+/// `UpdateCustomerParams`' fields are `Option<Option<String>>`.
+///
+/// Decisive, and the mutation is one word: collapse the type to
+/// `Option<String>` and `email` becomes unclearable — the body loses
+/// `email=` entirely and a payer who asked for their address to be removed
+/// keeps it. Nothing else in this SDK would notice.
+#[tokio::test]
+async fn an_update_tells_leave_alone_set_and_clear_apart_on_the_wire() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/customers/cus_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(support::customer_json("cus_1")))
+        .mount(&server)
+        .await;
+
+    client
+        .customers()
+        .update(
+            "cus_1",
+            UpdateCustomerParams {
+                // set
+                name: Some(Some("Ada Ngo".to_string())),
+                // clear
+                email: Some(None),
+                // leave alone
+                phone: None,
+                // merge one key, remove another (the empty value)
+                metadata: BTreeMap::from([
+                    ("order_id".to_string(), "5678".to_string()),
+                    ("tier".to_string(), String::new()),
+                ]),
+            },
+            RequestOptions::new().with_idempotency_key("idem_upd"),
+        )
+        .await
+        .unwrap();
+
+    let request = only_request(&server, "/v1/customers/cus_1").await;
+    assert_eq!(request.method.as_str(), "POST");
+    assert_eq!(
+        body_string(&request),
+        "name=Ada%20Ngo&email=&metadata[order_id]=5678&metadata[tier]=",
+        "`email=` is `clear it`, and `phone` is absent because the patch did not mention it"
+    );
+    assert_eq!(
+        header_value(&request, "idempotency-key").as_deref(),
+        Some("idem_upd"),
+        "an update is a write and carries a key like every other write"
+    );
+}
+
+#[tokio::test]
+async fn list_customers_encodes_its_pagination_into_the_query_string() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/customers"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list",
+            "data": [support::customer_json("cus_1")],
+            "has_more": true,
+            "url": "/v1/customers",
+        })))
+        .mount(&server)
+        .await;
+
+    let page = client
+        .customers()
+        .list(ListCustomersParams {
+            limit: Some(2),
+            starting_after: Some("cus_0".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert!(page.has_more);
+    assert_eq!(page.data.len(), 1);
+
+    let request = only_request(&server, "/v1/customers").await;
+    assert_eq!(request.url.query(), Some("limit=2&starting_after=cus_0"));
+}
+
+/// `del` is a `DELETE` with an `Idempotency-Key` and no body, and it decodes
+/// the deleted-object shape rather than a customer.
+///
+/// The key on a `DELETE` is the property worth pinning: without it a retried
+/// delete answers `404` for a deletion that succeeded, which a merchant
+/// cannot tell from "somebody else deleted it".
+#[tokio::test]
+async fn del_customer_is_a_delete_that_still_carries_an_idempotency_key() {
+    let (server, client) = fixture().await;
+    Mock::given(method("DELETE"))
+        .and(path("/v1/customers/cus_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "cus_1",
+            "object": "customer",
+            "deleted": true,
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let deleted = client
+        .customers()
+        .del("cus_1", RequestOptions::new().with_idempotency_key("idem_del"))
+        .await
+        .unwrap();
+
+    assert_eq!(deleted.id, "cus_1");
+    assert_eq!(deleted.object, "customer");
+    assert!(deleted.deleted);
+
+    let request = only_request(&server, "/v1/customers/cus_1").await;
+    assert_eq!(request.method.as_str(), "DELETE");
+    assert!(
+        request.body.is_empty(),
+        "a DELETE sends no body: an empty form body and no body are different requests, and \
+         the server hashes the bytes against the idempotency key"
+    );
+    assert_eq!(
+        header_value(&request, "idempotency-key").as_deref(),
+        Some("idem_del")
+    );
+}
+
+/// An intent's `customer` decodes, and is absent-tolerant.
+///
+/// Both halves matter. The first is S4a's own contract; the second is that a
+/// vpay predating 2026-09-06 omits the key entirely, and `#[serde(default)]`
+/// is what makes that decode to `None` rather than fail — the same trap
+/// `Refund::fee` documents.
+#[tokio::test]
+async fn a_payment_intents_customer_decodes_and_survives_a_server_that_omits_it() {
+    let (server, client) = fixture().await;
+
+    let mut with_customer = support::payment_intent_json("pi_1");
+    with_customer["customer"] = json!("cus_1");
+    let mut without = support::payment_intent_json("pi_2");
+    without
+        .as_object_mut()
+        .expect("an object")
+        .remove("customer");
+
+    Mock::given(method("GET"))
+        .and(path("/v1/payment_intents/pi_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(with_customer))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/payment_intents/pi_2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(without))
+        .mount(&server)
+        .await;
+
+    let attached = client.payment_intents().retrieve("pi_1").await.unwrap();
+    assert_eq!(attached.customer.as_deref(), Some("cus_1"));
+
+    let older = client.payment_intents().retrieve("pi_2").await.unwrap();
+    assert_eq!(
+        older.customer, None,
+        "an older vpay omits the key; that must decode, not fail"
+    );
+}
+
+/// `customer.deleted` is a known event type and its payload decodes as a
+/// customer.
+///
+/// It is the only event whose `data.object` cannot be re-read from the API:
+/// the row is gone by the time the webhook arrives, so a merchant that
+/// cannot decode this body has no way at all to learn which payer was
+/// erased.
+#[test]
+fn the_customer_deleted_event_type_is_known_and_its_payload_decodes() {
+    assert_eq!(
+        KnownEventType::from_wire("customer.deleted"),
+        Some(KnownEventType::CustomerDeleted)
+    );
+    assert_eq!(
+        KnownEventType::CustomerDeleted.as_wire_str(),
+        "customer.deleted"
+    );
+    // A type this SDK version predates is still `None` rather than an error —
+    // the property `KnownEventType` exists for, restated for the new variant.
+    assert_eq!(KnownEventType::from_wire("customer.created"), None);
+
+    let payload: Value = support::customer_json("cus_1");
+    let customer: vpay_sdk::Customer =
+        serde_json::from_value(payload).expect("the event payload is a customer");
+    assert_eq!(customer.id, "cus_1");
+    assert_eq!(customer.phone.as_deref(), Some("237600000200"));
 }

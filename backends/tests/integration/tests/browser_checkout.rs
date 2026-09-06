@@ -330,6 +330,7 @@ fn create_params() -> CreatePaymentIntentParams {
         payment_method_types: vec![PaymentMethodType::MtnMomo],
         metadata: BTreeMap::new(),
         description: None,
+        customer: None,
     }
 }
 

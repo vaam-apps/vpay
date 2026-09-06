@@ -66,6 +66,24 @@ two `checkout.session.expired` rows, and again on **2026-09-05** for the
 `GET /v1/refunds/{id}` a served route) and the `refund.fee` row (issue #46).
 Nothing here is inferred from a file name or a doc comment.
 
+Again on **2026-09-06** for the eleven `customers` rows (S4a). Three things
+about those are worth stating rather than leaving to be discovered. The Node
+accessor is `client.customers` and the method is `del`, not `delete` —
+`delete` is a reserved word in older JavaScript object literals, which is why
+Stripe's own SDKs spell it that way, and `sdks/rust` matches with
+`CustomersResource::del` even though `delete` is perfectly legal in Rust: the
+*name* is what a merchant looks up when they read one SDK's docs and write
+against the other. Neither SDK validates the phone number locally,
+deliberately and identically, for the reason the `account_holders` note below
+gives. And the **update** capability is the one where the two languages had to
+be checked against each other rather than assumed at parity: a patch field has
+three states (leave alone / set / clear), Rust spells them
+`Option<Option<String>>` and TypeScript spells them
+`string | null | undefined`, and each column's proving test asserts the
+resulting *body* — `email=` for a clear, the key absent for a leave-alone —
+rather than the type. Collapsing the two in either language makes a payer's
+email unclearable and nothing else notices.
+
 Again on **2026-09-05** for the five `account_holders` rows (issue #47). Two
 things about those are worth stating rather than leaving to be discovered:
 the Node accessor is `client.accountHolders` (camelCase, like
@@ -198,6 +216,17 @@ method name).
 | A hostile checkout-session id is percent-encoded and cannot escape `/v1` | ✅ `a_checkout_session_id_with_url_metacharacters_is_percent_encoded_into_the_path` | ✅ `checkout.sessions percent-encodes a hostile id so it cannot escape /v1` |
 | The session `404` and the expire `409` map to this SDK's own API error | ✅ `a_404_for_an_unknown_checkout_session_maps_to_an_api_error`, `a_409_on_expiring_a_session_with_a_live_charge_maps_to_an_api_error` | ✅ `checkout.sessions maps the 404 envelope for an unknown session`, `checkout.sessions maps a 409 on expiring a session with a live charge` |
 | Checkout Sessions exercised against a running vpay | ⛔ 2026-09-04 — every server in these cases is `wiremock`. `/v1/checkout/sessions` is built by lane 1 of the same step and `backends/tests/integration/tests/checkout_sessions.rs` is its proof; until that is green, "the stub answers the way this SDK expects" is the whole of the evidence. Recorded ⛔/⛔ because both SDKs are equally short of the server, which is a different statement from "done". Owner: SDK maintainers | ⛔ 2026-09-04 — same: every server in these cases is `src/testing/test-server.ts`. Owner: SDK maintainers |
+| `customers.create` — path, body, and every unset field omitted rather than sent empty (S4a) | ✅ `create_customer_sends_the_documented_body_and_decodes_the_object`, `a_phone_number_alone_is_a_complete_customer_and_the_rest_is_omitted` | ✅ `customers.create: exact path, method, Idempotency-Key, and body`, `a phone number alone is a complete customer, and every other field is omitted` |
+| A **phone-only** customer is legal, and neither SDK refuses one locally (the maintainer's decision of 2026-09-05) | ✅ `a_phone_number_alone_is_a_complete_customer_and_the_rest_is_omitted` | ✅ `a phone number alone is a complete customer, and every other field is omitted` |
+| `customers.retrieve` — `GET /v1/customers/{id}`, no body, no `Idempotency-Key` | ✅ `retrieve_customer_is_a_get_with_no_body` | ✅ `customers.retrieve: exact GET path, no body, no Idempotency-Key` |
+| `customers.update`, and the three states of a patch field: leave alone, set, **clear** | ✅ `an_update_tells_leave_alone_set_and_clear_apart_on_the_wire` | ✅ `customers.update tells leave-alone, set and clear apart on the wire` |
+| `customers.list`, with cursors | ✅ `list_customers_encodes_its_pagination_into_the_query_string` | ✅ `customers.list: exact query string` |
+| `customers.del` — the API's only `DELETE`, with an `Idempotency-Key` and **no** body | ✅ `del_customer_is_a_delete_that_still_carries_an_idempotency_key` | ✅ `customers.del: a DELETE with an Idempotency-Key and no body`, `customers.del generates an Idempotency-Key when the caller supplies none` |
+| A `payment_intent`'s `customer` decodes, and a server that omits the key still decodes | ✅ `a_payment_intents_customer_decodes_and_survives_a_server_that_omits_it` | ✅ `a payment intent's customer decodes, and survives a server that omits it` |
+| `customer` is sent on `payment_intents.create` when given and omitted when not | ✅ `create_payment_intent_sends_the_documented_body_and_decodes_the_object`, `create_omits_absent_optional_fields_rather_than_sending_them_empty` | ✅ `paymentIntents.create sends a customer when given one, and omits it otherwise` |
+| The `customer.deleted` event type, and its payload decoding as a customer | ✅ `the_customer_deleted_event_type_is_known_and_its_payload_decodes` | ✅ `customer.deleted is a known event type and its payload is a customer` |
+| `customer.created` and `customer.updated` in the event union | ⛔ 2026-09-06 — **the server does not emit them**, so a union entry would be a claim about vpay that is false. `POST /v1/customers` and `POST /v1/customers/{id}` are single statements on the pool; emitting an event means putting the write and the event in one transaction, which migration 0034 deliberately did not do (see its own comment, and `docs/flows/customers.md` "What is not built"). Recorded ⛔/⛔ because both SDKs are equally short of Stripe, which is a different statement from being short of vpay. Owner: vpay maintainers, not SDK maintainers | ⛔ 2026-09-06 — same, and the union is `sdks/nodejs/src/types.ts`'s `KnownEventType`. Owner: vpay maintainers |
+| Customers exercised against a running vpay | ⛔ 2026-09-06 — every server in these cases is `wiremock`. `/v1/customers` is real and `backends/tests/integration/tests/customers.rs` drives it over a socket, but **not through either SDK**, so "the stub answers the way this SDK expects" is the whole of the evidence here. Recorded ⛔/⛔ because both SDKs are equally short of the server. Owner: SDK maintainers | ⛔ 2026-09-06 — same: every server in these cases is `src/testing/test-server.ts`. Owner: SDK maintainers |
 | An `Idempotency-Key` on every POST, caller-supplied or a generated UUIDv4 | ✅ `a_post_without_a_caller_supplied_key_generates_a_uuid_v4_idempotency_key`, `cancel_posts_an_empty_body_and_still_carries_an_idempotency_key` | ✅ `payment_intents.create: exact path, method, Idempotency-Key, and body`, `payment_intents.create generates an Idempotency-Key when the caller supplies none` |
 
 ## Request validation
@@ -330,6 +359,8 @@ Every ⛔ above, in one list. The cells are authoritative; this is an index.
 | The popup surface has never been driven by a real browser | `sdks/stripe-js` | 2026-09-06 | SDK maintainers |
 | Checkout Sessions have never run against a live stack | both | 2026-09-04 | SDK maintainers |
 | `account_holders.retrieve` has never run against a live stack | both | 2026-09-05 | SDK maintainers |
+| `customer.created`/`customer.updated` are in neither event union, because the server emits neither | both | 2026-09-06 | vpay maintainers |
+| Customers have never run against a live stack | both | 2026-09-06 | SDK maintainers |
 
 ## What this matrix does not claim
 

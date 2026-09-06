@@ -411,6 +411,7 @@ fn create_params(rail: PaymentMethodType) -> CreatePaymentIntentParams {
         payment_method_types: vec![rail],
         metadata: BTreeMap::new(),
         description: None,
+        customer: None,
     }
 }
 

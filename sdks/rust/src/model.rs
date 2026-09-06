@@ -156,6 +156,19 @@ pub struct PaymentIntent {
     pub metadata: BTreeMap<String, String>,
     /// The merchant's own description, or `None`.
     pub description: Option<String>,
+    /// The `cus_…` this intent is for, or `None` (S4a).
+    ///
+    /// The **id**, never the expanded object: vpay does not implement
+    /// `expand`, and rendering the customer unasked would put a payer's
+    /// name, email and phone number into every `payment_intent.*` webhook
+    /// body. Read it with [`crate::CustomersResource::retrieve`].
+    ///
+    /// `#[serde(default)]` because a vpay predating 2026-09-06 omits the key
+    /// entirely — the same reason [`Refund::fee`] carries one, and the same
+    /// consequence: absent and `null` both decode to `None` here, which is
+    /// lossless because "no customer" is the only meaning either can have.
+    #[serde(default)]
+    pub customer: Option<String>,
     /// Unix seconds.
     pub created: i64,
     /// `false` for a sandbox deployment's objects.
@@ -332,6 +345,13 @@ pub struct CheckoutSession {
     /// the value to redirect a payer's browser to, and it is not a value to
     /// log — see this type's hand-written `impl Debug`.
     pub url: Option<String>,
+    /// The `cus_…` this session is for, or `None` (S4a). Copied from the
+    /// session's intent at create when the intent has one.
+    ///
+    /// The id, never the expanded object —
+    /// [`PaymentIntent::customer`]'s reason, unchanged.
+    #[serde(default)]
+    pub customer: Option<String>,
     /// Unix seconds. 24 h from create (D10).
     pub expires_at: i64,
     /// Unix seconds.
@@ -394,6 +414,74 @@ impl std::fmt::Debug for CheckoutSession {
             )
             .finish()
     }
+}
+
+/// A `customer` — the merchant-owned record of a payer they expect to see
+/// again (S4a).
+///
+/// Seven keys and no more. `last_used_at` — the clock vpay's twelve-month
+/// retention sweep reads — is deliberately **not** on the wire: vpay moves it
+/// whenever an intent or a session names the customer, and a merchant
+/// building on it would be building on a value whose motion is vpay's
+/// business.
+///
+/// `Debug` is derived, unlike [`PaymentIntent`]'s and
+/// [`CheckoutSession`]'s, and that is a decision rather than an omission.
+/// Those two carry a *credential*: printing one is a compromise, and the
+/// merchant who logged it can do nothing about it afterwards. This carries a
+/// payer's own **name, email and phone number**, which the merchant collected,
+/// already holds, and is responsible for — redacting it here would hide their
+/// own data from them while doing nothing about the copy in their database.
+/// The place that judgement is made *for* them is the server: vpay's
+/// `CustomerRow` redacts all three, because vpay's logs are not the
+/// merchant's. See `docs/flows/customers.md`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Customer {
+    /// `cus_…`.
+    pub id: String,
+    /// Always `"customer"`.
+    pub object: String,
+    /// The payer's name, or `None`.
+    pub name: Option<String>,
+    /// The payer's email, or `None`.
+    pub email: Option<String>,
+    /// The payer's phone number, or `None`.
+    ///
+    /// Echoed back **canonicalised** (`2376XXXXXXXX`, no `+`) rather than as
+    /// it was sent, which is a wire contract and not a quirk: it is the value
+    /// a rail is given, so a merchant comparing this against a charge's payer
+    /// reference is comparing the same string.
+    ///
+    /// At least one of [`Self::name`], [`Self::email`] and this is always
+    /// present — a phone number alone is a complete customer, which is what
+    /// the object is for on a mobile money rail.
+    pub phone: Option<String>,
+    /// The merchant's own key/value pairs, echoed back.
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+    /// Unix seconds.
+    pub created: i64,
+    /// `false` for a sandbox deployment's objects.
+    pub livemode: bool,
+}
+
+/// What `DELETE /v1/customers/{id}` answers with.
+///
+/// Stripe's deleted-object shape, and deliberately **not** the customer that
+/// was removed: a merchant confirming an erasure is the caller most likely to
+/// log the whole response, and returning the payer's details in it would
+/// write them into a log *because* they were deleted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeletedCustomer {
+    /// The `cus_…` that was deleted.
+    pub id: String,
+    /// Always `"customer"`.
+    pub object: String,
+    /// Always `true`. A plain `bool` rather than a unit type because this is
+    /// a **decoded** response: the server is what guarantees the value, and a
+    /// type that could not represent `false` would fail to decode a
+    /// hypothetical `false` rather than letting a merchant see it.
+    pub deleted: bool,
 }
 
 /// A refund's lifecycle state. Independent of [`IntentStatus`] — a refund
@@ -552,6 +640,15 @@ pub enum KnownEventType {
     /// settlement moves a session — that transition already sends a
     /// `payment_intent.*` event for the same thing happening.
     CheckoutSessionExpired,
+    /// A Customer was deleted — by `DELETE /v1/customers/{id}` or by vpay's
+    /// twelve-month retention sweep (S4a).
+    ///
+    /// `data.object` is the [`Customer`] as it stood immediately before the
+    /// delete, which is the **only** way to learn its `name`, `email` and
+    /// `phone`: the row is gone, and a `GET` afterwards is byte-identical to
+    /// one for an id that never existed. That is also why polling cannot
+    /// substitute for this event, unlike every other type here.
+    CustomerDeleted,
 }
 
 impl KnownEventType {
@@ -572,6 +669,7 @@ impl KnownEventType {
             KnownEventType::ChargeRefunded => "charge.refunded",
             KnownEventType::ChargeRefundUpdated => "charge.refund.updated",
             KnownEventType::CheckoutSessionExpired => "checkout.session.expired",
+            KnownEventType::CustomerDeleted => "customer.deleted",
         }
     }
 
@@ -597,6 +695,7 @@ impl KnownEventType {
             "charge.refunded" => Some(KnownEventType::ChargeRefunded),
             "charge.refund.updated" => Some(KnownEventType::ChargeRefundUpdated),
             "checkout.session.expired" => Some(KnownEventType::CheckoutSessionExpired),
+            "customer.deleted" => Some(KnownEventType::CustomerDeleted),
             _ => None,
         }
     }

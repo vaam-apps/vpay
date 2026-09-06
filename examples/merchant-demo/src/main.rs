@@ -865,6 +865,10 @@ async fn create_and_retrieve(
         payment_method_types: vec![outcome.rail],
         metadata: BTreeMap::from([("order_id".to_owned(), format!("demo-{key}"))]),
         description: Some(format!("merchant-demo · {}", outcome.label)),
+        // The demo takes payments without a stored payer. S4a's customer
+        // object is a separate demo to write and this one deliberately does
+        // not fake it — see docs/status.md.
+        customer: None,
     };
 
     let created = client
@@ -1780,6 +1784,7 @@ async fn create_session(
                 payment_method_types: SESSION_RAILS.to_vec(),
                 metadata: BTreeMap::from([("order_id".to_owned(), key.clone())]),
                 description: Some(format!("merchant-demo · {label} checkout session")),
+                customer: None,
             },
             RequestOptions::new().with_idempotency_key(format!("{key}-intent")),
         )
