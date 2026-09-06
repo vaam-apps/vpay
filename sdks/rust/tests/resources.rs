@@ -272,7 +272,7 @@ async fn retrieve_payment_intent_is_a_get_with_no_body_and_decodes_next_action()
 #[tokio::test]
 async fn create_surfaces_client_secret_when_the_server_sends_it() {
     // `POST /v1/payment_intents` renders `PaymentIntentWithSecret` (Step 5c's
-    // D2) — the twelve documented keys plus `client_secret`.
+    // D2) — the thirteen documented keys plus `client_secret`.
     let (server, client) = fixture().await;
     let mut body = support::payment_intent_json("pi_1");
     body["client_secret"] = json!("pi_1_secret_abc123");

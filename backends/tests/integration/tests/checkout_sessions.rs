@@ -1271,7 +1271,12 @@ async fn the_session_read_carries_the_intents_secret_and_the_return_read_does_no
         !intent.contains_key("client_secret"),
         "the return read must not render the intent's credential: {body:#}"
     );
-    assert_eq!(intent.len(), 12, "the twelve documented keys: {body:#}");
+    assert_eq!(
+        intent.len(),
+        13,
+        "the thirteen documented keys — twelve until 2026-09-06, when S4a added `customer`: \
+         {body:#}"
+    );
     // The outcome the return page renders is there.
     assert_eq!(intent.get("status"), Some(&Value::from("processing")));
 

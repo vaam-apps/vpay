@@ -2236,7 +2236,7 @@ async fn a_decline_past_the_horizon_settles_an_unresolved_charge_and_clears_the_
     Ok(())
 }
 
-/// Parks the four singleton jobs so nothing but the loop's own reaper can
+/// Parks the five singleton jobs so nothing but the loop's own reaper can
 /// free a lease.
 ///
 /// `seed_singletons` is `ON CONFLICT (dedupe_key) DO NOTHING`, so seeding them
@@ -2250,6 +2250,17 @@ async fn a_decline_past_the_horizon_settles_an_unresolved_charge_and_clears_the_
 /// singleton added to `seed_singletons` without being parked here fails this
 /// helper instead of silently running inside a test whose subject is
 /// something else.
+///
+/// **That claim was not true until 2026-09-06 and now is.** S4a added a fifth
+/// singleton (`sweep:customers`), and this helper reported success: the
+/// `UPDATE` matched exactly the four keys it named, so `parked == 4` held
+/// while a fifth job sat claimable. What actually failed was
+/// `a_lease_stranded_by_a_crash_is_freed_at_boot_before_any_sweep_runs`'s own
+/// "the fixture must leave the job genuinely unclaimable" assertion — one of
+/// this helper's three call sites, by luck rather than by design. The second
+/// `ensure` below closes it: it counts the rows that are *still claimable*
+/// rather than the rows this statement moved, so an unparked singleton fails
+/// here, in the helper whose doc promises it.
 async fn park_the_housekeeping_jobs(
     repositories: &dyn Repositories,
     pool: &PgPool,
@@ -2259,15 +2270,33 @@ async fn park_the_housekeeping_jobs(
         .context("seeding the singletons")?;
     let parked = sqlx::query(
         "UPDATE jobs SET run_at = 'infinity'::TIMESTAMPTZ \
-         WHERE dedupe_key IN ('sweep:expired', 'scan:live', 'fanout:events', 'scan:deliveries')",
+         WHERE dedupe_key IN ('sweep:expired', 'scan:live', 'fanout:events', 'scan:deliveries', \
+                              'sweep:customers')",
     )
     .execute(pool)
     .await
     .context("parking the singletons")?
     .rows_affected();
     anyhow::ensure!(
-        parked == 4,
-        "expected four singletons to park, parked {parked}"
+        parked == 5,
+        "expected five singletons to park, parked {parked}"
+    );
+
+    // Counted from the table rather than from the statement above, which is
+    // the whole difference between this helper keeping its promise and only
+    // appearing to. `seed_singletons` has just run and nothing else in these
+    // tests has enqueued anything yet, so every claimable row here is a
+    // singleton this list failed to name.
+    let unparked: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE run_at <> 'infinity'::TIMESTAMPTZ")
+            .fetch_one(pool)
+            .await
+            .context("counting the singletons this helper did not park")?;
+    anyhow::ensure!(
+        unparked == 0,
+        "seed_singletons seeded a job this helper does not name; {unparked} row(s) are still \
+         claimable, so whichever test called this is about to race a housekeeping job it did \
+         not intend to run"
     );
     Ok(())
 }
@@ -2647,9 +2676,17 @@ async fn a_poisoned_job_is_parked_with_its_lease_cleared_and_its_reason_recorded
     Ok(())
 }
 
-/// The four singletons — the sweep, the charge backstop, the outbox drain and
-/// the delivery backstop — seeded once whatever the concurrency, and
-/// rescheduled rather than deleted.
+/// The five singletons — the housekeeping sweep, the charge backstop, the
+/// outbox drain, the delivery backstop and the twelve-month customer
+/// retention sweep — seeded once whatever the concurrency, and rescheduled
+/// rather than deleted.
+///
+/// Four until 2026-09-06, when S4a added `sweep:customers`. That one is worth
+/// naming separately in both assertions below rather than being folded into a
+/// count, because its absence is the one that is **invisible**: a deployment
+/// that dropped this seed keeps every customer for ever, which looks exactly
+/// like a healthy deployment and is a promise to a payer that vpay has
+/// stopped keeping.
 ///
 /// `ON CONFLICT (dedupe_key) DO NOTHING` is what makes N workers booting
 /// against one database produce one row each rather than N, and it is a
@@ -2674,16 +2711,17 @@ async fn the_housekeeping_jobs_are_seeded_once_and_reschedule_themselves() -> an
             "fanout:events",
             "scan:deliveries",
             "scan:live",
+            "sweep:customers",
             "sweep:expired"
         ],
-        "three boots must leave exactly four rows"
+        "three boots must leave exactly five rows"
     );
 
     // Both run, and both go back on the clock. A sweep that finished would be
     // a deployment that swept once and never again — which is the bug
     // `vpay-server`'s boot-time sweep actually was.
     let mut seen: Vec<String> = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..5 {
         let settled = h.step(&policy).await?;
         assert!(
             matches!(settled.disposition, Disposition::Rescheduled(_)),
@@ -2700,12 +2738,14 @@ async fn the_housekeeping_jobs_are_seeded_once_and_reschedule_themselves() -> an
             "fan_out_events",
             "scan_deliveries",
             "scan_live_charges",
-            "sweep_expired"
+            "sweep_expired",
+            "sweep_idle_customers"
         ],
-        "all four singletons must go back on the clock; a fan-out that finished \
-         instead is a deployment that drains its outbox once and never again, and a \
+        "all five singletons must go back on the clock; a fan-out that finished \
+         instead is a deployment that drains its outbox once and never again, a \
          delivery backstop that finished is one whose lost delivery jobs are lost for \
-         good"
+         good, and a customer sweep that finished is one that keeps a payer's personal \
+         data for ever while every log line says it ran"
     );
     Ok(())
 }

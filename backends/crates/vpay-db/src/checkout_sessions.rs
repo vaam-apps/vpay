@@ -210,6 +210,7 @@ impl CheckoutSessionRow {
     /// #     success_url: None,
     /// #     cancel_url: None,
     /// #     return_url: None,
+    /// #     customer_id: None,
     /// #     publishable_key: "pk_test_acmecameroonsandbox01".to_owned(),
     /// #     client_secret_suffix: "0".repeat(32),
     /// #     return_token: "wxyz0123456789abcdefghjkmnpqrstv".to_owned(),

@@ -917,7 +917,7 @@ mod tests {
         // The shape `POST /v1/payment_intents` and `GET
         // /v1/payment_intents/{id}` actually send
         // (`vpay_api::model::PaymentIntentWithSecret`, Step 5c's D2):
-        // the twelve documented keys, flattened, plus `client_secret`.
+        // the thirteen documented keys, flattened, plus `client_secret`.
         let intent: PaymentIntent = serde_json::from_str(
             r#"{"id":"pi_1","object":"payment_intent","amount":5000,"currency":"xaf",
                 "status":"requires_payment_method","payment_method_types":["mtn_momo"],
