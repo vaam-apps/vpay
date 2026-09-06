@@ -710,10 +710,11 @@ model Event {
   // channel and catastrophic in behaviour: the compare-and-swap matches zero
   // rows, returns `false`, and `fan_out_one` abandons EVERY transaction, so
   // no merchant is ever delivered anything while every log line says the
-  // drain ran. `an_event_flip_denied_by_policy_abandons_the_fan_out` is the
-  // container test that catches it; the no-container
-  // `every_action_this_module_calls_has_an_allow_arm` catches it in
-  // milliseconds.
+  // drain ran. Because the failure is silent rather than raised, the tests
+  // that catch it catch it by its effect:
+  // `a_committed_fan_out_keeps_both_cratestack_writes` is the container one,
+  // and the no-container `every_action_this_module_calls_has_an_allow_arm`
+  // catches it in milliseconds.
   //
   // No `read` arm: nothing reads `events` through CrateStack — every read in
   // `vpay_db::events` is still `sqlx`, because `EventRow` carries `data` and
@@ -822,7 +823,8 @@ model WebhookDelivery {
   // either — `@relation` needs a `WebhookDelivery[]` back-reference on
   // `model Event`, which would make `Event` name a model whose only purpose
   // is a write path `Event` is not part of. The FK is real in the database
-  // and `a_delivery_for_an_unknown_event_is_refused_by_the_foreign_key`
+  // and the dangling-delivery half of
+  // `migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states`
   // proves it fires; introspection does not report a live-only foreign key,
   // so leaving it undeclared costs zero drift (measured).
   event_id String

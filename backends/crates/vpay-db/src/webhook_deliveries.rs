@@ -238,7 +238,7 @@ pub(crate) async fn create_in_tx(
         // `runtime.pool()`, which would commit a delivery the caller's own
         // rollback could no longer take back — and the fan-out's
         // `TxOutcome::Abandon` path exists precisely to take it back.
-        // `a_delivery_written_through_cratestack_is_rolled_back_with_the_fan_out`
+        // `an_abandoned_fan_out_leaves_no_delivery_and_the_event_still_pending`
         // is the test that fails when this word changes.
         .run_in_tx(&mut *tx, &system_context())
         .await
@@ -289,9 +289,12 @@ pub(crate) async fn mark_fanned_out_in_tx(
     // `update_allow_policies`), which makes a missing
     // `@@allow("update", ...)` on `model Event` SILENT in the error channel
     // and total in effect: zero rows match, this returns `false`, and
-    // `fan_out_one` abandons every transaction it ever opens. That is the
-    // mutation `an_event_flip_denied_by_policy_abandons_the_fan_out` exists
-    // for.
+    // `fan_out_one` abandons every transaction it ever opens. Nothing
+    // observes that as an *error*, so the tests that catch it catch it by
+    // its effect: `every_action_this_module_calls_has_an_allow_arm` below
+    // fails with no container in milliseconds, and
+    // `a_committed_fan_out_keeps_both_cratestack_writes` fails against a
+    // real database. Both measured under the deletion on 2026-09-06.
     let summary = cs
         .event()
         .update_many()
@@ -666,8 +669,8 @@ mod tests {
         // literal placeholders `<filters>` and `<update_policy>` rather than
         // expanding them, so this test cannot assert the guard's *contents*
         // — `an_abandoned_fan_out_leaves_no_delivery_and_the_event_still_pending`
-        // and `a_pending_event_is_flipped_once_and_a_second_flip_reports_false`
-        // are what prove those against a real database. What it CAN assert is
+        // and `a_committed_fan_out_keeps_both_cratestack_writes` are what
+        // prove those against a real database. What it CAN assert is
         // the thing no container test can show: that a policy clause is
         // compiled into this statement's own WHERE at all.
         assert!(
