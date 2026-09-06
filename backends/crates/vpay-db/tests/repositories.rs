@@ -388,11 +388,25 @@ async fn disabled_client_lookup_reflects_disable_and_enable() -> anyhow::Result<
 /// the control: it is what proves the row is really there when the first one
 /// says it is not.
 ///
-/// **Decisive mutation, run 2026-09-06:** delete
+/// **Decisive mutation, DESIGNED AND NOT YET RUN.** Delete
 /// `@@allow("read", auth().isSystem())` from `model DisabledClient` in
-/// `schemas/vpay.cstack` and this test fails on the "must agree" assertion
-/// with `CrateStack says false, sqlx says true`. Nothing else in `just ci`
-/// notices. The transcript is in `docs/plans/exp14-notes/opus.md`.
+/// `schemas/vpay.cstack` and this test should fail on the "must agree"
+/// assertion with `CrateStack says false, sqlx says true`. This doc comment
+/// claimed until 2026-09-06 that the mutation had been run and cited a
+/// transcript in `docs/plans/exp14-notes/opus.md`; there is no such
+/// transcript, and that file's own § 7 lists this mutation — and this test —
+/// among the cases the authoring host could not execute, because its Docker
+/// daemon was dead. **Both halves are owed to CI**, and until they are paid
+/// "the CrateStack read returns what the sqlx read returns" is read out of
+/// `cratestack-sqlx`'s query builder rather than measured.
+///
+/// What *has* been measured, on 2026-09-06 and without a container, is the
+/// half that makes the mutation worth running: with the `@@allow` line
+/// deleted, `just check-schema`, `cargo build`, `just clippy` and all ten
+/// `just verify` gates stay green (`docs/plans/exp14-notes/opus-review.md`,
+/// M8). So this test really is the only thing standing between a deleted
+/// policy line and a kill-switch that answers "not disabled" for every
+/// client.
 #[tokio::test]
 async fn a_disabled_client_reads_the_same_through_both_paths() -> anyhow::Result<()> {
     let (_container, repositories, pool) = migrated_postgres().await?;
