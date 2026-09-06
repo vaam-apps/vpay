@@ -691,18 +691,31 @@ Two things to know before you drive them:
   the rail stub's own hosted page**, in the "Or pay with one of the demo's
   test numbers" form beside the Pay link — Orange is a redirect rail and vpay
   never sees a number.
-- **Orange's form has about ten seconds.** vpay's first status query is
-  `poll_delay(0)` = 10 s after the submit commits; if you have not submitted
-  the form by then the stub's catch-all answers `SUCCESS` and the order is
-  **paid**, whatever number you were about to type. Check the order page's
-  `failure_code`, not the walk appearing to work. The three ways to close that
-  window, and why none was taken, are in
+- **Orange's numbers do not work from a browser today.** vpay's confirm
+  handler enqueues the first status query at `now()` — `poll_delay(0)` is the
+  delay before the *second* attempt — and the worker's idle sleep is a
+  second, so the stub's catch-all answers `SUCCESS` and the order is **paid**
+  before you can reach the form, whatever number you were about to type.
+  Measured on 2026-09-06 from the stub's own journal: submit at T, first
+  `transactionstatus` at T+449 ms, the form at T+12 s, order `paid` for
+  `237600000400`. Check the order page's `failure_code`; do not read the walk
+  as working. The mappings are right and are proven at the adapter level; what
+  is missing, and why it was not added, is in
   [../plans/exp22-shop-demo-notes/opus.md](../plans/exp22-shop-demo-notes/opus.md).
+  MTN's numbers are unaffected — a push rail carries the number in the
+  merchant's own submit, so there is no window to lose.
 
-The one outcome no number reaches is `cancelled`: clicking "cancel" on the
-rail's page is a navigation and leaves the order open, and the order becomes
-`cancelled` only when the shop cancels its PaymentIntent (the button on the
-order page) and vpay delivers `payment_intent.canceled`.
+The one outcome no number reaches is `cancelled` — and on today's vpay
+nothing else reaches it either. Clicking "cancel" on the rail's page is a
+navigation and leaves the order open. The order page's "Cancel this payment"
+button *does* reach `POST /v1/payment_intents/{id}/cancel` and the intent
+really does become `canceled` at vpay; **vpay then emits nothing**, because
+the worker writes three event types and `payment_intent.canceled` is not one
+of them. Measured 2026-09-06, with the intent's row read out of vpay's own
+database and the `events` table unchanged. The shop's `cancelled` status is
+therefore unreachable, and the shop says so on the button rather than writing
+the status from its own request. Written up in
+[../plans/exp22-shop-demo-notes/opus.md](../plans/exp22-shop-demo-notes/opus.md).
 
 ### One currency, and what it is not saying
 

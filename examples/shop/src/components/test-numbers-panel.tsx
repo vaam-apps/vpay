@@ -36,6 +36,15 @@ export function TestNumbersPanel({ rails }: { rails: readonly string[] }) {
           <p style={{ color: "var(--muted)", fontSize: "0.9rem" }}>
             Type it {entry.where}.
           </p>
+          {entry.caveat === undefined ? null : (
+            <p
+              className="error"
+              role="alert"
+              data-testid={`test-numbers-caveat-${entry.rail}`}
+            >
+              <strong>Read this before you try them.</strong> {entry.caveat}
+            </p>
+          )}
           <table>
             <thead>
               <tr>

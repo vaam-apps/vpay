@@ -109,7 +109,25 @@ a documented fake number — and what the shop does about each is the point:
 | A sentence written for the outcome        | `failed`          | `payment_intent.payment_failed`, and `last_payment_error.code` on it |
 | "Try again" — for a payer-actionable code | a **new** order   | `orders.retry`: one charge per intent, forever                       |
 | Nothing, and the order stays open         | `unpaid`          | The payer clicked "cancel" on the rail's page — a navigation         |
-| "Cancel this payment"                     | `cancelled`       | `orders.cancel` → `payment_intent.canceled` → the webhook            |
+| "Cancel this payment"                     | `unpaid` — below  | `orders.cancel` → the intent is `canceled` at vpay → **no event**    |
+
+> **`cancelled` is unreachable on today's vpay, and this shop does not pretend
+> otherwise.** Measured on the demo stack on 2026-09-06: "Cancel this payment"
+> reaches `POST /v1/payment_intents/{id}/cancel`, the intent really does become
+> `canceled` — read out of vpay's own `payment_intents` row — and **vpay emits
+> no event for that transition**. It writes three types and only three
+> (`payment_intent.succeeded`, `payment_intent.payment_failed`,
+> `checkout.session.expired`; `docs/status.md`'s "Events written by the worker"
+> row says so, and the `events` table gained nothing during the run). So the
+> order stays `unpaid`.
+>
+> The button and the procedure are left exactly as they are, because they are
+> what a merchant's code should look like. What this shop will **not** do is
+> write `cancelled` locally from its own request — that would be it deciding a
+> settled status from something other than a signed event, which is the one
+> thing the whole example exists to argue against. The gap is vpay's; it is in
+> [`../../docs/plans/exp22-shop-demo-notes/opus.md`](../../docs/plans/exp22-shop-demo-notes/opus.md)
+> and in `docs/status.md`.
 
 The buyer-facing sentences live in `src/lib/failures.ts`, keyed on **vpay's**
 closed `FailureCode` vocabulary (`docs/flows/failures.md`) rather than on
@@ -164,6 +182,28 @@ core defines and nothing emits.
 Typed on **the rail's own** payment page, after vpay redirects you: Orange is
 a redirect rail, so vpay never sees the number.
 
+> **These do not work from a browser today.** The table below is what the stub
+> would answer, not what you will see. Measured on the demo stack on
+> 2026-09-06: vpay's confirm handler enqueues the first status query at
+> `now()` — `poll_delay(0)` is the delay before the **second** attempt, not
+> the first — and the worker's idle sleep is one second, so the stub's
+> catch-all `SUCCESS` settles the charge long before a payer can reach this
+> form. A run that typed `237600000400` came back **paid**: the submit was at
+> T, the first `transactionstatus` at T+449 ms, and the form submission at
+> T+12 s.
+>
+> The mappings themselves are right, and are proven at the adapter level by
+> `a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_outcome`
+> in `backends/tests/conformance`, which drives the same page and the same
+> form against a real WireMock container and does not race a worker. What is
+> missing is a way for the stub to answer `PENDING` while a payer is on the
+> page — a change to a stub four suites share, one of which (Cypress) cannot
+> be run from this branch's environment. The options are written up in
+> [`../../docs/plans/exp22-shop-demo-notes/opus.md`](../../docs/plans/exp22-shop-demo-notes/opus.md).
+>
+> MTN's numbers are unaffected: a push rail takes the number in the
+> merchant's own submit, so there is no window to lose.
+
 | Number         | What happens                                     | Order    | vpay code        | The rail said |
 | -------------- | ------------------------------------------------ | -------- | ---------------- | ------------- |
 | `237600000000` | Pays. Any number not listed below does the same. | `paid`   | —                | `SUCCESS`     |
@@ -183,11 +223,12 @@ Three outcomes this rail **cannot** express, stated rather than faked:
   than failing the charge. Right, and not something a demo can show in a
   minute.
 
-**`cancelled` is reachable from no number at all.** Clicking "cancel" on the
-rail's page is a navigation: the order stays `unpaid` and the charge may
-still settle. The order becomes `cancelled` when the shop cancels its
-PaymentIntent (the button on the order page) and vpay delivers
-`payment_intent.canceled`.
+**`cancelled` is reachable from no number at all — and on today's vpay from
+nothing else either.** Clicking "cancel" on the rail's page is a navigation:
+the order stays `unpaid` and the charge may still settle. The order _would_
+become `cancelled` when the shop cancels its PaymentIntent (the button on the
+order page) and vpay delivered `payment_intent.canceled` — which it does not.
+See the note under "Failure outcomes" above.
 
 ### Which rail can pay for what
 

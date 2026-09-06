@@ -33,36 +33,70 @@ directory to exp21.
 
 ## Maintainer decisions surfaced, not taken
 
-### D1. Orange's ten-second window on the demo's test numbers
+### D1. Orange's test numbers lose a race to the worker, and do not work from a browser
 
 Orange is a redirect rail: the number never reaches vpay, so the demo steers
 its outcome from a form on the **stub's** hosted page, which arms a WireMock
 scenario the later `transactionstatus` query reads.
 
-vpay's first status query is `vpay_worker::poll_delay(0)` — ten seconds —
-after the submit commits. A payer who has not submitted that form by then is
-answered by `transactionstatus.json`'s priority-10 catch-all, `SUCCESS`, the
-charge settles, vpay stops polling, and **the demo shows a paid order for a
-number the operator chose to make fail**. That is the false green this
-repository is written against, and it is not closed here.
+That mechanism is right and is proven —
+`a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_outcome`
+drives the real page and the real form against a real container and gets the
+documented outcome. **It nonetheless does not work from a browser**, and the
+first draft of this document got the reason's size wrong.
 
-Three ways to close it, each a decision rather than a defensible default:
+The first draft said "about ten seconds", reading `poll_delay(0)` = 10 s as
+the delay before the first status query. It is not.
+`vpay_api::v1::payment_intents`'s confirm handler enqueues the `poll_charge`
+job with `run_at = OffsetDateTime::now_utc()`, and `vpay_worker`'s idle sleep
+is one second; the ladder governs the delay before the **second** attempt. So
+the first `transactionstatus` lands about a second after the submit commits,
+`transactionstatus.json`'s priority-10 catch-all answers `SUCCESS`, the charge
+settles, and vpay stops asking.
 
-1. **Answer `PENDING` while a payer is on the page.** Arm on the hosted
-   page's `GET` and disarm on the way out. It requires the `#pay` link to
-   disarm, which means changing an href that
-   `the_stub_hosted_page_links_to_the_return_url_the_submit_carried`
-   (`backends/tests/integration`) and `shop-hosted.cy.ts` both assert on
-   byte for byte — and if the disarm ever fails to fire, the failure mode is
-   a charge that polls `PENDING` for ever, which is worse than the race.
-2. **Lengthen the first rung of the poll ladder for a demo profile.**
-   `poll_delay` is a pure function in `vpay-worker`, not configuration, so
-   this is a code change to make a demo comfortable — the class of change
-   ADR-0003 exists to refuse.
-3. **Leave it, and document it.** What this branch did. The window is stated
-   in `demo-outcomes.json`, in `examples/shop/README.md`'s Orange table and
-   in `docs/status.md`; the operator's check is the order's `failure_code`,
-   not the walk appearing to work.
+**Measured on the running demo stack on 2026-09-06**, from `wiremock-orange`'s
+own request journal:
+
+| Event | Offset |
+|---|---|
+| `POST …/v1/webpayment` (the submit) | T |
+| `GET /stub-hosted-page/{token}` (the payer lands) | T + 44 ms |
+| `POST …/v1/transactionstatus` (the first poll) | **T + 449 ms** |
+| `GET /stub-hosted-page/{token}/pay?msisdn=237600000400` (the payer chooses) | T + 11.96 s |
+
+The order came back **paid**. That is the false green this repository is
+written against, so it is on the shop's own checkout panel, in the README, in
+the runbook, in `docs/status.md` and in the mapping's own metadata — none of
+which now claims these numbers work.
+
+Three ways to close it, each a maintainer's call:
+
+1. **Answer `PENDING` while a payer is on the page.** Arm on the hosted page's
+   `GET` — which the journal above shows arrives 405 ms *before* the first
+   poll, so it would win — and disarm on the way out. The catch is the way
+   out: a payer who leaves by the `#pay` **link** never touches the stub
+   again, so nothing disarms and that charge polls `PENDING` for ever. A
+   bounded chain of scenario states (`PENDING` a fixed number of times, then
+   fall through) fixes that and costs the Orange happy path a rung or three of
+   the ladder — roughly a minute — which `shop-hosted.cy.ts` and
+   `shop-embedded.cy.ts` would absorb inside their 120 s outcome timeout, or
+   would not. **Cypress cannot be run from this branch's environment**
+   (`CYPRESS_INSTALL_BINARY=0`; the binary needs a CDN this network does not
+   reach), and changing the timing of a stub that `compose.yml`, CI's e2e job
+   and both Rust suites share, without being able to run one of them, is not
+   a change to make on a guess.
+2. **Enqueue the first poll with a delay.** One line in the confirm handler,
+   and the wrong place for it: the immediate first poll is a deliberate
+   property (`docs/flows/crash-safety.md` — a charge is asked about as soon as
+   it exists), and slowing it to make a demo comfortable is the class of
+   change ADR-0003 exists to refuse.
+3. **Leave it, and say so everywhere a reader could be misled.** What this
+   branch did.
+
+MTN is unaffected and needs none of this: a push rail carries the MSISDN in
+the merchant's own submit, so the steering happens before the charge exists
+and there is no window to lose. Those five numbers were driven end to end
+through the browser on the demo stack and behave as the table says.
 
 ### D2. `payer_declined` is a code no adapter emits
 
@@ -91,3 +125,44 @@ out of this document — is not something this branch decided.
 ### D4. A popup that frames vpay's page rather than loading the hosted one
 
 See the request to `frontends/apps/checkout` above. Nothing depends on it.
+
+### D5. `payment_intent.canceled` is a documented event type nothing emits, so the shop's `cancelled` status is unreachable
+
+**Measured on the running demo stack, 2026-09-06.** `examples/shop`'s
+"Cancel this payment" button calls `POST /v1/payment_intents/{id}/cancel`
+through `@vaam-apps/vpay-sdk`. It works: the intent's row in vpay's own
+database read `canceled` immediately afterwards. **No event was written** —
+the `events` table gained nothing, and the shop's order stayed `unpaid`.
+
+That is not a defect in the call. `docs/status.md`'s "Events written by the
+worker" row says outright that three types are written and only three:
+`payment_intent.succeeded`, `payment_intent.payment_failed` and
+`checkout.session.expired`. `payment_intent.canceled` is in migration `0018`'s
+enum, in `docs/flows/webhooks.md`'s list, in both merchant SDKs'
+`KnownEventType` vocabularies and in this shop's `SETTLING_EVENTS` — and is
+produced by nothing.
+
+The consequence for a merchant is concrete and is the reason this is written
+down rather than left to be discovered: **there is no way for a merchant to
+learn that an intent it cancelled was cancelled**, short of polling
+`GET /v1/payment_intents/{id}`. A shop that shows a settled status only from
+a signed event — which is the discipline this whole example exists to
+demonstrate — therefore cannot show `cancelled` at all.
+
+Three ways out, and the choice is not this branch's to make:
+
+1. **Emit it.** A cancel is a terminal transition, which is exactly the rule
+   the Step 4 plan's decision 4 gives for writing an event, and the two the
+   settlement path writes are written inside the same transaction as the
+   status. This looks like the intended shape and is a `vpay-api` change.
+2. **Say it is not coming**, and strike `payment_intent.canceled` from
+   `docs/flows/webhooks.md`'s list and from both SDKs' vocabularies — at
+   which point a merchant knows to poll.
+3. **Leave it**, and let every integrator find this the way this branch did.
+
+What this branch did **not** do, deliberately: make the shop write
+`cancelled` locally when its own cancel call returns. That would be the
+example deciding a settled status from its own request rather than from a
+signed event, and the shop's entire argument is that a merchant must not.
+The button, the procedure and the copy are all still there, and all three now
+say what actually happens.

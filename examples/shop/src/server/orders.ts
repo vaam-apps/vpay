@@ -356,15 +356,32 @@ export async function retryOrder(
  *
  * This is the one failure outcome a payer cannot reach by paying badly, and
  * the shop cannot write it either: `POST /v1/payment_intents/{id}/cancel`
- * moves the intent, vpay emits `payment_intent.canceled`, and the **webhook**
- * is what makes the order `cancelled`. The same rule as everywhere else here
- * — the order page shows a settled status only from a signed event — applied
- * to a state the shop itself asked for.
+ * moves the intent, and the **webhook** is what would make the order
+ * `cancelled`. The same rule as everywhere else here — the order page shows a
+ * settled status only from a signed event — applied to a state the shop
+ * itself asked for.
  *
- * A payer who clicked "cancel" on vpay's page has not done this: that is a
- * navigation to `cancel_url`, the order stays `unpaid`, and the charge may
- * still settle. Which is exactly why the cancelled page offers this as a
- * separate, explicit action.
+ * **And it does not complete today, measured on the demo stack on
+ * 2026-09-06.** The cancel reaches vpay and the intent really does become
+ * `canceled` — the row was read out of vpay's own database — but **vpay
+ * emits no `payment_intent.canceled` event**. It writes three types and only
+ * three (`payment_intent.succeeded`, `payment_intent.payment_failed` and
+ * `checkout.session.expired`; `docs/status.md`'s "Events written by the
+ * worker" row says so, and the run confirmed it: the `events` table gained
+ * nothing). So the order sits at `unpaid` for ever and the shop's
+ * `cancelled` status is, in practice, unreachable.
+ *
+ * This function is nonetheless what a merchant's code should look like, and
+ * it is left as it is rather than made to write a status locally — which
+ * would be this shop deciding an outcome from its own request instead of
+ * from a signed event, the one thing the whole example exists to demonstrate
+ * against. The gap is vpay's, it is written up in
+ * `docs/plans/exp22-shop-demo-notes/opus.md`, and every piece of copy the
+ * shop shows about cancelling says so.
+ *
+ * A payer who clicked "cancel" on vpay's page has not done this either: that
+ * is a navigation to `cancel_url`, the order stays `unpaid`, and the charge
+ * may still settle.
  */
 export async function cancelOrder(
   deps: OrderDeps,

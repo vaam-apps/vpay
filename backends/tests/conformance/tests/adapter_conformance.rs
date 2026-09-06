@@ -1882,12 +1882,18 @@ async fn a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin(
 ///   arms the scenario and answers a 302 to the URL *this* submit carried,
 ///   and the next `query_status` maps to the code the shop's README
 ///   advertises. Delete any one of them and this fails.
-/// * **Does not prove** anything about timing. vpay's first status query is
-///   ten seconds after the submit commits (`vpay_worker::poll_delay(0)`), and
-///   a payer who has not submitted the form by then is answered by the
-///   catch-all `SUCCESS` instead. Nothing here has a worker in it, so the
-///   window this case skips over is real and is written up in
-///   `demo-outcomes.json` and in `docs/plans/exp22-shop-demo-notes/opus.md`.
+/// * **Does not prove** anything about timing, and that is the whole of what
+///   this case cannot see. There is no worker here, so nothing is racing the
+///   payer. In the demo stack something is: the confirm handler enqueues the
+///   `poll_charge` job with `run_at = now()` — `poll_delay(0)` is the delay
+///   before the *second* attempt, not the first — so the first
+///   `transactionstatus` lands about a second after the submit and the
+///   catch-all `SUCCESS` settles the charge before a payer can reach the
+///   form. Measured 2026-09-06: T+449 ms against T+11.96 s. **So these
+///   numbers do not work from a browser today**, which is written up in
+///   `demo-outcomes.json`, in `examples/shop/README.md` and in
+///   `docs/plans/exp22-shop-demo-notes/opus.md`. What this case proves is
+///   that the mappings themselves are wired to each other correctly.
 ///
 /// Orange only, for the mirror of the reason its MTN counterpart is MTN only:
 /// there is no hosted page on a push rail for a payer to type into.

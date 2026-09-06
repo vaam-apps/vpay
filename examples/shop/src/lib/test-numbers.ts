@@ -52,6 +52,13 @@ export interface RailTestNumbers {
   label: string;
   /** Where the payer types the number — the two rails differ, because their flows do. */
   where: string;
+  /**
+   * A measured reason this rail's numbers may not do what the table says, or
+   * `undefined` when there is none. Rendered above the table, not below it:
+   * a caveat a reader meets after the table is a caveat they have already
+   * acted against.
+   */
+  caveat?: string;
   numbers: TestNumber[];
   /** Outcomes this rail's documented vocabulary cannot express, and why. */
   cannotExpress: { outcome: string; why: string }[];
@@ -121,6 +128,8 @@ export const TEST_NUMBERS: readonly RailTestNumbers[] = [
     label: "Orange Money",
     where:
       "on the rail's own payment page, after vpay redirects you — Orange is a redirect rail, so vpay never sees the number",
+    caveat:
+      "These do not work from a browser today, and the table below is what the stub would answer rather than what you will see. Measured on the demo stack on 2026-09-06: vpay's confirm handler enqueues the first status query at `now()` (not at `poll_delay(0)`, which is the delay before the SECOND attempt), the worker picks it up within about a second, and the stub's catch-all answers SUCCESS long before a payer can reach this form — a run that typed 237600000400 came back `paid`, 449 ms after the submit against 12 s to type. What the mappings do is proven at the adapter level by `a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_outcome`, which does not race. Closing it means changing a stub four suites share; the options are in docs/plans/exp22-shop-demo-notes/opus.md.",
     numbers: [
       {
         msisdn: "237600000000",
