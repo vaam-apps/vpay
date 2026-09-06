@@ -201,9 +201,30 @@ mutation:
 
 ## 6. The gate
 
-`just ci`, recipe by recipe, is recorded at the end of the branch's final
-commit message and in the report. The numbers that moved:
+`just ci` on the final tree, **exit 0**, read from a file rather than from a
+banner. Recipe by recipe:
 
-- `just test-web` — `@vpay/checkout` **302 → 442 vitest cases in 22 files, 0
-  skipped**.
-- Nothing under `backends/` was touched, so the Rust numbers are `master`'s.
+| Recipe | Result |
+|---|---|
+| `fmt-check` | ok (Rust only — `just fmt` also runs prettier over ~222 unrelated files and was deliberately NOT run) |
+| `clippy` | ok, `-D warnings` |
+| `verify` (ten gates) | all ok — `verify-links` over **806 links in 146 tracked files**, `verify-status` 1 declared unimplemented item, `verify-toolchain` 1.98.0 |
+| `test-rust` | **1382 run, 1382 passed, 0 skipped**, 1084 s, 43 binaries, real Postgres + real WireMock rails |
+| `test-doc` | **91 passed, 1 ignored** |
+| `verify-ignored` | **0 ignored (expected 0), 43 binaries (expected 43), 1382 total (floor 1080)** |
+| `lint-web` | ok — `pnpm -r typecheck` and `pnpm -r lint --max-warnings 0` over 15 packages |
+| `test-web` | ok — `@vpay/checkout` **442 cases in 22 files, 0 skipped** (was 302 in 17) |
+| `deny` | advisories ok, bans ok, licenses ok, sources ok |
+
+**Nothing under `backends/` was touched**, so every Rust number is `master`'s.
+
+One honest caveat about *what* was gated: the run above was started on the
+tree at `19274df` and finished on a tree that differed by four
+comment-and-prose edits made while it compiled — three source comments
+corrected (one of which had overstated what `secrets.test.ts` covers) and two
+documentation paragraphs. All four were re-checked with `tsc --noEmit` and
+`eslint --max-warnings 0` before the web steps ran, so `lint-web` and
+`test-web` saw the final text. The `Last verified` block added to
+`docs/status.md` afterwards is prose only; `verify-status` lexes for
+`NotImplemented` tokens and `verify-links` for relative links, and it adds
+neither.

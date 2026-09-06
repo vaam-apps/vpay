@@ -474,6 +474,18 @@ two uses of the list are separate expressions so that widening one cannot
 widen the other. `the hosted page > NEVER lets that list reach its CSP` is the
 test, and it was measured failing with the guard removed.
 
+**That lookup is a new cost on the hosted page, and it is worth naming.**
+Before this, `/c/{cs_id}` reached vpay's API from the server not at all: it
+rendered, and the browser did the rest. It now makes the same one call the
+embedded page makes, on every hosted page load that carries a `key`, whether
+or not the page turns out to be in a popup — the server cannot know, because
+`window.opener` is a fact only the browser has. `fetchCheckoutOrigins` catches
+every failure and answers an empty list, so a vpay API that is down or
+refusing costs the hosted page **no channel** and nothing else; what it has
+no bound on is a *slow* one, because there is no timeout on that fetch, and a
+hanging API would hold the hosted page's first byte. That was already true of
+the embedded page and is now true of one more route.
+
 **The popup's return trip is wired by a different rule** (the maintainer's
 decision, 2026-09-06). After a redirect rail sends the payer back to
 `/c/{id}/return`, that page's referrer is the *rail's* origin, so

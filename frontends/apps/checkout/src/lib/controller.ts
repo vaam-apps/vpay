@@ -64,7 +64,14 @@ export interface CheckoutControllerOptions {
    * has already moved on.
    */
   closeWindow?: (() => void) | undefined;
-  /** Non-null only when this page is framed by an origin the merchant registered. */
+  /**
+   * The peer to talk to, or `null`.
+   *
+   * Non-null in exactly two shapes: an embedded page framed by an origin the
+   * merchant registered (`peer: 'parent'`), and a hosted page in a popup
+   * whose opener resolved to one (`peer: 'opener'`). The peer is not
+   * cosmetic — `forward` and `navigateTopLevel` both branch on it.
+   */
   channel: FrameChannel | null;
   /**
    * The deployment's `checkout.allowed_methods` (`config.yaml`), or `null`

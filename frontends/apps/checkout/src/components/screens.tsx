@@ -299,12 +299,18 @@ export function MemoryOptIn({
     <div className="mt-1 flex flex-col gap-2">
       {/*
         `aria-labelledby`/`aria-describedby` rather than a wrapping `<label>`
-        alone. Base UI's checkbox is a `<button role="checkbox">` with a
-        hidden native input beside it for form value; a `<label>` names a
-        native checkbox reliably and a button only by argument, so the
-        association is written down. The `<label>` stays for the pointer
-        behaviour — tapping the sentence toggles the box, which on a
-        phone-sized page is most of the target.
+        alone. Base UI 1.0.0-rc.0's checkbox renders a `<span
+        role="checkbox" tabindex="0">` with a visually hidden native input
+        beside it for the form value — measured, not assumed — and a
+        `<label>` names a native checkbox reliably and a `span` not at all,
+        so the association is written down. The `<label>` stays for the
+        pointer behaviour: tapping the sentence toggles the box, which on a
+        phone-sized page is most of the target, and that too was measured.
+
+        The two ids are constants rather than `useId` values because exactly
+        one entry screen is on the page at a time — `collect_msisdn` and
+        `ready_redirect` are different states of one machine. Two of these
+        rendered together would be two elements sharing an id.
       */}
       <label className="flex cursor-pointer items-start gap-3">
         <Checkbox.Root

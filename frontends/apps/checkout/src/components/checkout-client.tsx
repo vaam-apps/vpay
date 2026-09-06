@@ -96,7 +96,17 @@ export function CheckoutClient(props: CheckoutClientProps) {
       return;
     }
     if (expected !== window.location.origin) {
-      // eslint-disable-next-line no-console -- a deployment diagnostic naming two origins. Both are public by construction; neither is a session, a payer or a credential, and `secrets.test.ts`' console trace covers this page.
+      // A deployment diagnostic naming two origins. Both are public by
+      // construction: one comes from a mounted config file and the other is
+      // `window.location.origin`, and neither is a session, a payer or a
+      // credential.
+      //
+      // NOTE that `secrets.test.ts`' console trace does NOT cover this line.
+      // That trace spies on `console` around the two CONTROLLERS, which is
+      // where every value that could be a secret lives; this component is not
+      // driven by it. What keeps this call safe is the two values it names,
+      // not a test.
+      // eslint-disable-next-line no-console -- see the paragraph above.
       console.warn(
         `[vpay-checkout] configured public_base_url origin ${expected} is not the origin this page was loaded from (${window.location.origin})`,
       );

@@ -2,8 +2,9 @@
  * The client half of `/c/{id}/return`.
  *
  * Top-level in both modes: the payer got here by a full-page redirect from
- * the rail, so there is no parent to talk to and `window.location.assign`
- * is the forward.
+ * the rail, so there is no *parent* to talk to and `window.location.assign`
+ * is the forward — unless this window is a popup, which is the one case
+ * where there is still an **opener**. See the last paragraph.
  *
  * **No timer navigates**, for the same reason as the payment page: the
  * outcome screen has a button and nothing else. This page carried the same
