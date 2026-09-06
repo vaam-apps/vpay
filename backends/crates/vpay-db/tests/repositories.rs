@@ -6405,6 +6405,14 @@ async fn migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states() -
 
     // A delivery for an event that does not exist is refused by the foreign
     // key, so a fan-out bug cannot leave a delivery pointing at nothing.
+    //
+    // The variant is `PersistenceError::ForeignKey` rather than
+    // `DbError::ForeignKeyViolation` since 2026-09-06, because `create_in_tx`
+    // runs through CrateStack — the constraint is the same one, reported by
+    // the same SQLSTATE, through the other of vpay's two persistence paths.
+    // `schemas/vpay.cstack` deliberately does not declare this foreign key
+    // (`model WebhookDelivery`, `event_id`), which is exactly why the
+    // database still has to be the thing that refuses.
     let dangling = one_tx::create_in_tx(
         repositories.as_ref(),
         "evt_nonexistent",
@@ -6412,10 +6420,33 @@ async fn migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states() -
         "https://example.test/hook",
     )
     .await;
+    let Err(dangling) = dangling else {
+        panic!("event_id is a real foreign key: {dangling:?}");
+    };
     assert!(
-        matches!(dangling, Err(vpay_db::DbError::ForeignKeyViolation { .. })),
-        "event_id is a real foreign key: {dangling:?}"
+        matches!(
+            &dangling,
+            vpay_db::DbError::Persistence(vpay_db::PersistenceError::ForeignKey {
+                constraint,
+                ..
+            }) if constraint == "webhook_deliveries_event_id_fkey"
+        ),
+        "the operator log has to name the constraint that fired: {dangling:?}"
     );
+    // And it must reach a caller as the same thing the sqlx path produced
+    // before the move — asserted against that path's own answer rather than
+    // a literal, so changing one and not the other fails here. This is the
+    // property that makes the swap invisible above `vpay-db`.
+    {
+        use vpay_core::Classify as _;
+        let via_sqlx = vpay_db::DbError::ForeignKeyViolation {
+            constraint: "webhook_deliveries_event_id_fkey".to_owned(),
+            source: sqlx::Error::RowNotFound,
+        };
+        assert_eq!(dangling.category(), via_sqlx.category(), "{dangling:?}");
+        assert_eq!(dangling.code(), via_sqlx.code(), "{dangling:?}");
+        assert_eq!(dangling.retry(), via_sqlx.retry(), "{dangling:?}");
+    }
 
     Ok(())
 }
@@ -6481,21 +6512,40 @@ async fn migration_0023_opens_scan_deliveries_and_keeps_the_vocabulary_closed() 
 }
 
 /// `endpoint_id_length` and `url_length` really do refuse an out-of-bounds
-/// value, inside the fan-out's own transaction.
+/// value — and since 2026-09-06 so does the generated input validator, one
+/// layer earlier.
 ///
 /// This is the failure `vpay_config`'s boot bounds exist to move to boot, and
 /// it is also the mechanism the fan-out isolation test uses to make exactly
-/// one event fail. Both claims rest on this CHECK firing, so it is asserted
+/// one event fail. Both claims rest on the bound firing, so it is asserted
 /// rather than assumed from the migration's text.
+///
+/// # Why this asserts BOTH layers
+///
+/// `create_in_tx` moved to `WebhookDelivery.upsert(..).do_nothing()`, and
+/// `schemas/vpay.cstack` declares `@length` on both columns without
+/// `@db_enforce`. `run_upsert_do_nothing_in_tx` calls `input.validate()`
+/// before any SQL runs, so the refusal now arrives as
+/// `PersistenceError::Invalid` and the CHECK is never reached on this path.
+///
+/// Asserting only the new answer would quietly stop testing the CHECK, and
+/// the CHECK is the half that still binds every writer that is not this
+/// function — `psql`, a runbook, a future repository method. So the raw
+/// inserts below go around CrateStack entirely and prove the constraint is
+/// still live in the database. Deleting `CONSTRAINT endpoint_id_length` from
+/// migration 0022 must fail this test, and it does: measured 2026-09-06.
 #[tokio::test]
 async fn a_delivery_outside_the_length_checks_is_refused_by_the_database() -> anyhow::Result<()> {
-    let (_container, repositories, _pool) = migrated_postgres().await?;
+    use vpay_core::{Category, Classify as _, Retry};
+
+    let (_container, repositories, pool) = migrated_postgres().await?;
     let event = insert_event(
         repositories.as_ref(),
         &fixture_event("evt_bounds", "merchant_a"),
     )
     .await?;
 
+    // ---- layer 1: the generated validator, before the transaction writes ----
     let too_long_id = one_tx::create_in_tx(
         repositories.as_ref(),
         &event.id,
@@ -6503,10 +6553,24 @@ async fn a_delivery_outside_the_length_checks_is_refused_by_the_database() -> an
         "https://example.test/hook",
     )
     .await;
+    let Err(error) = too_long_id else {
+        panic!("endpoint_id_length caps endpoint_id at 64 characters: {too_long_id:?}");
+    };
     assert!(
-        matches!(too_long_id, Err(vpay_db::DbError::Query(_))),
-        "endpoint_id_length caps endpoint_id at 64 characters: {too_long_id:?}"
+        matches!(
+            &error,
+            vpay_db::DbError::Persistence(vpay_db::PersistenceError::Invalid { model, .. })
+                if *model == "WebhookDelivery"
+        ),
+        "the input validator refuses this before any SQL runs, and the error must name the \
+         model that refused: {error:?}"
     );
+    // The assertion that earns the variant. `Backend` — the wildcard arm
+    // this would otherwise have landed on — is `Category::Storage`, which is
+    // retryable, and a 65-character endpoint id is exactly as long on every
+    // retry. A worker that retried this would retry it forever.
+    assert_eq!(error.category(), Category::Internal, "{error:?}");
+    assert_eq!(error.retry(), Retry::Never, "{error:?}");
 
     let too_long_url = one_tx::create_in_tx(
         repositories.as_ref(),
@@ -6516,8 +6580,43 @@ async fn a_delivery_outside_the_length_checks_is_refused_by_the_database() -> an
     )
     .await;
     assert!(
-        matches!(too_long_url, Err(vpay_db::DbError::Query(_))),
+        matches!(
+            too_long_url,
+            Err(vpay_db::DbError::Persistence(
+                vpay_db::PersistenceError::Invalid { .. }
+            ))
+        ),
         "url_length caps url at 2048 characters: {too_long_url:?}"
+    );
+
+    // ---- layer 2: the CHECKs themselves, reached by going around the layer ----
+    //
+    // Raw sqlx, so the generated validator has no chance to answer first.
+    // This is what still binds `psql` and every future writer.
+    let raw_id = sqlx::query(
+        "INSERT INTO webhook_deliveries (event_id, endpoint_id, url) VALUES ($1, $2, $3)",
+    )
+    .bind(&event.id)
+    .bind("p".repeat(65))
+    .bind("https://example.test/hook")
+    .execute(&pool)
+    .await;
+    assert!(
+        raw_id.is_err(),
+        "endpoint_id_length must still refuse a 65-character id in the database itself"
+    );
+
+    let raw_url = sqlx::query(
+        "INSERT INTO webhook_deliveries (event_id, endpoint_id, url) VALUES ($1, $2, $3)",
+    )
+    .bind(&event.id)
+    .bind("ep_bounds")
+    .bind(format!("https://example.test/{}", "p".repeat(2049)))
+    .execute(&pool)
+    .await;
+    assert!(
+        raw_url.is_err(),
+        "url_length must still refuse an over-long url in the database itself"
     );
 
     Ok(())
@@ -6585,6 +6684,267 @@ async fn a_second_delivery_for_one_event_and_endpoint_is_not_created() -> anyhow
         rows.iter()
             .all(|row| row.state == "pending" && row.attempt == 0 && row.next_attempt_at.is_none()),
         "a freshly created delivery is owed an attempt and has never had one: {rows:?}"
+    );
+
+    Ok(())
+}
+
+/// The other half of `the_events_insert_cannot_move_until_a_json_column_can_be_modelled`:
+/// the statement CrateStack would generate for `Event.create(..)` really is
+/// refused by the database, and refused for the reason claimed.
+///
+/// That unit test pins the *shape* with no database — `data` is absent from
+/// the rendered INSERT. This one runs exactly that rendered statement and
+/// observes what Postgres does with it, because "a five-column INSERT into a
+/// table with a sixth `NOT NULL` column would fail" is a claim about the
+/// database, and this repository does not accept those from reading.
+///
+/// It is deliberately raw `sqlx` rather than a call through CrateStack: the
+/// generated delegate is private to `vpay-db` (`mod schema` is not `pub`,
+/// ADR-0016 standard 5), and the interesting thing is the statement, not the
+/// path that would have issued it. The column list below is copied from that
+/// unit test's own assertion, so the two cannot drift silently — if the
+/// generator starts emitting a different list, the unit test goes red first.
+#[tokio::test]
+async fn a_generated_events_insert_is_refused_by_the_not_null_on_data() -> anyhow::Result<()> {
+    let (_container, _repositories, pool) = migrated_postgres().await?;
+
+    let err = sqlx::query(
+        "INSERT INTO events (id, merchant_id, livemode, type, object_id) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind("evt_no_data")
+    .bind("merchant_a")
+    .bind(false)
+    .bind("payment_intent.succeeded")
+    .bind("pi_1")
+    .execute(&pool)
+    .await
+    .expect_err("events.data is NOT NULL with no DEFAULT, so this statement cannot succeed");
+
+    let db_err = err.as_database_error().expect("a database-level error");
+    eprintln!("observed rejection: {db_err}");
+    assert_eq!(
+        db_err.code().as_deref(),
+        Some("23502"),
+        "the refusal must be the NOT NULL specifically. A `23514` here would mean a CHECK \
+         fired first and this test is not measuring what it claims; a success would mean \
+         `data` acquired a DEFAULT, in which case `insert_in_tx` can move to CrateStack and \
+         `the_events_insert_cannot_move_until_a_json_column_can_be_modelled` should be deleted \
+         with it: {db_err}"
+    );
+
+    // Named, so a future `NOT NULL` added to some other column cannot make
+    // this pass for the wrong reason.
+    assert!(
+        db_err.message().contains("data"),
+        "the column the NOT NULL names must be `data`: {db_err}"
+    );
+
+    // And the same INSERT with `data` supplied succeeds — which is what says
+    // the five columns above are otherwise complete and correct, rather than
+    // the statement being malformed in some way that would mask the point.
+    sqlx::query(
+        "INSERT INTO events (id, merchant_id, livemode, type, object_id, data) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind("evt_with_data")
+    .bind("merchant_a")
+    .bind(false)
+    .bind("payment_intent.succeeded")
+    .bind("pi_1")
+    .bind(serde_json::json!({}))
+    .execute(&pool)
+    .await
+    .context("the same insert with data must succeed")?;
+
+    Ok(())
+}
+
+/// **The transaction-seam test.** Both CrateStack writes in the fan-out's
+/// transaction are undone by vpay's own rollback, together, and with nothing
+/// left behind.
+///
+/// # What this is for
+///
+/// `create_in_tx` and `mark_fanned_out_in_tx` moved to CrateStack on
+/// 2026-09-06 (`WebhookDelivery.upsert(..).do_nothing()` and
+/// `Event.update_many(..)`), and they are the first vpay writes to run
+/// through `run_in_tx` on a transaction **`vpay-db` did not open for
+/// CrateStack's benefit** — `UnitOfWork::transaction` opened it,
+/// `vpay_worker::webhooks::fan_out_one` fills it, and `TxOutcome` decides its
+/// fate. `run_in_tx`'s own signature cannot tell whose transaction it has
+/// been handed, which is precisely what makes the seam possible and precisely
+/// what makes it unprovable by reading the code.
+///
+/// `docs/flows/webhooks.md`'s two-step outbox rests on this and on nothing
+/// else: the drain is at-least-once, so a pass that loses the race to another
+/// drain must leave **no** delivery row and **no** `deliver_webhook` job
+/// behind. `mark_fanned_out_in_tx` returning `false` is how it finds out, and
+/// `TxOutcome::Abandon` is how it acts on it. If either write were committing
+/// on its own connection, the abandon would be a no-op and the merchant would
+/// get a second copy of every event that ever lost that race.
+///
+/// # The mutations this exists for, both measured 2026-09-06
+///
+///   * `create_in_tx`: `.run_in_tx(&mut *tx, &ctx)` -> `.run(&ctx)`. The
+///     delivery row **survives the abandoned transaction** and the first
+///     assertion below fails, naming the cause.
+///   * `mark_fanned_out_in_tx`: the same swap. `fanout_state` is `done` on an
+///     event whose deliveries were rolled back — the worst of the three
+///     states, because `Events::pending_page` will never return it again and
+///     the merchant is never told, with nothing anywhere recording that.
+///     The second assertion fails.
+///
+/// Neither mutation hangs, and that is worth recording because the currency
+/// upsert's equivalent mutation *did*
+/// (`a_currency_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`).
+/// The reason is the lock shape: this transaction takes no `FOR UPDATE` on a
+/// row it then asks a second connection to probe. `upsert(..).do_nothing()`'s
+/// conflict probe finds no existing delivery, so it locks nothing; the
+/// `events` row is held only by the `FOR KEY SHARE` the delivery's foreign
+/// key takes, which does not conflict with the `FOR NO KEY UPDATE` a
+/// non-key `UPDATE` wants. So both mutations fail loudly in about a second
+/// rather than deadlocking, and this test is a red assertion either way.
+#[tokio::test]
+async fn an_abandoned_fan_out_leaves_no_delivery_and_the_event_still_pending()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let event = insert_event(
+        repositories.as_ref(),
+        &fixture_event("evt_abandoned", "merchant_a"),
+    )
+    .await?;
+
+    // Exactly `fan_out_one`'s shape, up to and including the `Abandon`: both
+    // CrateStack writes succeed, and the transaction is thrown away anyway.
+    let outcome = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let created = tx
+                    .create_in_tx("evt_abandoned", "ep_one", "https://example.test/one")
+                    .await?;
+                // Asserted inside the closure: if the write had silently done
+                // nothing, the assertions after the rollback would pass for
+                // the wrong reason and this test would be vacuous.
+                assert!(
+                    created.is_some(),
+                    "the delivery must actually be created before it is rolled back, or this \
+                     test proves nothing"
+                );
+                let flipped = tx.mark_fanned_out_in_tx("evt_abandoned").await?;
+                assert!(
+                    flipped,
+                    "the compare-and-swap must actually match the pending event before it is \
+                     rolled back"
+                );
+                Ok::<_, vpay_db::DbError>(TxOutcome::Abandon(created))
+            })
+        })
+        .await?;
+    assert!(
+        matches!(outcome, TxOutcome::Abandon(Some(_))),
+        "the value must come back out of an abandoned transaction: {outcome:?}"
+    );
+
+    let deliveries: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM webhook_deliveries WHERE event_id = $1")
+            .bind(&event.id)
+            .fetch_one(&pool)
+            .await
+            .context("counting deliveries must succeed")?;
+    assert_eq!(
+        deliveries, 0,
+        "the CrateStack delivery insert must have been rolled back with the transaction. A 1 \
+         here means it ran on its own connection — check that `create_in_tx` still says \
+         `run_in_tx(&mut *tx, ...)` and not `run(...)`"
+    );
+
+    let state: String = sqlx::query_scalar("SELECT fanout_state FROM events WHERE id = $1")
+        .bind(&event.id)
+        .fetch_one(&pool)
+        .await
+        .context("reading the event back must succeed")?;
+    assert_eq!(
+        state, "pending",
+        "the CrateStack fanout flip must have been rolled back too. A `done` here is an event \
+         no drain will ever pick up again and no merchant will ever be told about — check that \
+         `mark_fanned_out_in_tx` still says `run_in_tx(&mut *tx, ...)`"
+    );
+
+    // And the event is genuinely still drainable, not merely still labelled
+    // `pending` — the label is only worth something if `pending_page` agrees.
+    let backlog = repositories.pending_page(10).await?;
+    assert!(
+        backlog.iter().any(|row| row.id == event.id),
+        "an abandoned fan-out leaves the event in the backlog for the next pass: {backlog:?}"
+    );
+
+    Ok(())
+}
+
+/// The second half of the same seam: a fan-out that **commits** really does
+/// commit both CrateStack writes, so the test above cannot pass by the writes
+/// simply never happening.
+///
+/// Cheap, and it is the control the rollback test needs. Without it, deleting
+/// the bodies of both `create_in_tx` and `mark_fanned_out_in_tx` would leave
+/// `an_abandoned_fan_out_leaves_no_delivery_and_the_event_still_pending`
+/// green — the inner assertions guard against that, but only for as long as
+/// somebody keeps them there.
+#[tokio::test]
+async fn a_committed_fan_out_keeps_both_cratestack_writes() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let event = insert_event(
+        repositories.as_ref(),
+        &fixture_event("evt_committed", "merchant_a"),
+    )
+    .await?;
+
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let created = tx
+                    .create_in_tx("evt_committed", "ep_one", "https://example.test/one")
+                    .await?;
+                let flipped = tx.mark_fanned_out_in_tx("evt_committed").await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit((created, flipped)))
+            })
+        })
+        .await?;
+
+    let rows = repositories.for_event(&event.id).await?;
+    assert_eq!(rows.len(), 1, "exactly one delivery survives the commit");
+    assert_eq!(rows[0].endpoint_id, "ep_one");
+    // The columns `CreateWebhookDeliveryInput` does NOT carry, because
+    // `@default(...)` filters them out of the generated input: they must
+    // still arrive at their column defaults rather than at NULL or zero by
+    // accident.
+    assert_eq!(rows[0].state, "pending");
+    assert_eq!(rows[0].attempt, 0);
+    assert!(rows[0].next_attempt_at.is_none());
+    assert!(rows[0].status_code.is_none());
+
+    let state: String = sqlx::query_scalar("SELECT fanout_state FROM events WHERE id = $1")
+        .bind(&event.id)
+        .fetch_one(&pool)
+        .await
+        .context("reading the event back must succeed")?;
+    assert_eq!(state, "done");
+
+    // `created_at` is the other `@default(...)`-filtered column, and a NULL
+    // would violate the column's own NOT NULL rather than reaching here — so
+    // this asserts the value is the database's clock, not merely present.
+    let created_at_is_recent: bool = sqlx::query_scalar(
+        "SELECT created_at > now() - INTERVAL '1 minute' FROM webhook_deliveries WHERE id = $1",
+    )
+    .bind(rows[0].id)
+    .fetch_one(&pool)
+    .await
+    .context("reading created_at back must succeed")?;
+    assert!(
+        created_at_is_recent,
+        "created_at must come from the column default the generated input omits"
     );
 
     Ok(())

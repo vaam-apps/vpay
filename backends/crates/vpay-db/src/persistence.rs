@@ -94,6 +94,33 @@ pub enum PersistenceError {
         detail: String,
     },
 
+    /// The generated `input.validate()` refused the values vpay handed it
+    /// (`CratestackError::Validation`), before any SQL ran.
+    ///
+    /// **`Internal`, not `InvalidRequest`**, and the distinction is not
+    /// cosmetic. The validators that produce this are the `@length`/`@range`
+    /// bounds on `schemas/vpay.cstack`'s models, and every one of them
+    /// mirrors a bound something upstream has already enforced: a merchant
+    /// endpoint's `url` and `id` are configuration `vpay_config` refuses at
+    /// boot, an `evt_…` is minted by `vpay_core::ids`. So a refusal here
+    /// means vpay built a row its own schema forbids — nobody outside can
+    /// cause it, and no retry fixes it.
+    ///
+    /// It has its own variant rather than falling into [`Self::Backend`]
+    /// because that arm is `Category::Storage`, which is **retryable**: a
+    /// permanently-invalid delivery would be re-attempted by the worker
+    /// forever, which is precisely the shape
+    /// `Events::record_fanout_failure`'s ceiling exists to end.
+    #[error("{model}: a generated input validator refused a system {action}: {detail}")]
+    Invalid {
+        /// The `.cstack` model whose input refused the values.
+        model: &'static str,
+        /// `create`, `upsert`, `update`, … — the call that was building it.
+        action: &'static str,
+        /// CrateStack's own message, naming the field and the bound.
+        detail: String,
+    },
+
     /// `CratestackError::NotFound`, which the data layer raises for
     /// `sqlx::Error::RowNotFound` on the paths that demand a row.
     ///
@@ -130,7 +157,10 @@ impl vpay_core::Classify for PersistenceError {
             // a policy that refused a caller that cannot be a merchant, and
             // a demanded row that was not there: all three are vpay's own
             // mistake, and none is fixed by retrying.
-            Self::Check { .. } | Self::Denied { .. } | Self::NotFound { .. } => Category::Internal,
+            Self::Check { .. }
+            | Self::Denied { .. }
+            | Self::Invalid { .. }
+            | Self::NotFound { .. } => Category::Internal,
             Self::Backend(_) => Category::Storage,
         }
     }
@@ -144,6 +174,11 @@ impl vpay_core::Classify for PersistenceError {
             Self::ForeignKey { .. } => "invalid_reference",
             Self::Check { .. } => "check_violation",
             Self::Denied { .. } => "policy_denied",
+            // Deliberately the same code a CHECK violation publishes: both
+            // say "a bound vpay should have satisfied was not satisfied",
+            // and which of the two layers noticed is an implementation
+            // detail a merchant must not be able to branch on.
+            Self::Invalid { .. } => "check_violation",
             Self::NotFound { .. } => "row_not_found",
             Self::Backend(_) => "database_query_failed",
         }
@@ -218,6 +253,16 @@ pub(crate) fn classify_cratestack(
 
     match error {
         CratestackError::Forbidden(_) => PersistenceError::Denied {
+            model,
+            action,
+            detail,
+        },
+        // Before the wildcard, and before any SQL ran: every write path in
+        // `cratestack-sqlx` calls `input.validate()` first, so this is the
+        // one CrateStack error that can arrive without the database having
+        // been touched at all. See `PersistenceError::Invalid` for why it
+        // must not land on the retryable `Backend` arm.
+        CratestackError::Validation(_) => PersistenceError::Invalid {
             model,
             action,
             detail,

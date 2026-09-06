@@ -22,11 +22,30 @@ use std::time::Duration;
 // constants and nothing else — never a caller's value — which is the audit the
 // wrapper's name demands, written down in `docs/reference/vpay-db.md` § dynamic
 // SQL strings and sqlx 0.9 and enforced by `crate::sql_audit`.
-use sqlx::{AssertSqlSafe, PgConnection};
+use sqlx::{AssertSqlSafe, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::error::{DbError, classify_write};
+use crate::persistence::{classify_cratestack, system_context};
+use crate::schema::cratestack_schema::{Cratestack, CreateWebhookDeliveryInput, UpdateEventInput};
+
+/// The `.cstack` model behind `webhook_deliveries`, named once so a policy
+/// denial says which model refused rather than which table.
+const DELIVERY_MODEL: &str = "WebhookDelivery";
+
+/// The `.cstack` model behind `events`. Named here, not in
+/// [`crate::events`], because the only CrateStack call against it is
+/// [`mark_fanned_out_in_tx`] below — the fan-out's closing write lives in
+/// this module for the same reason the rest of the two-step outbox does.
+const EVENT_MODEL: &str = "Event";
+
+/// The `fanout_state` a freshly emitted event carries, and the only value
+/// [`mark_fanned_out_in_tx`]'s compare-and-swap will move.
+const FANOUT_PENDING: &str = "pending";
+
+/// The `fanout_state` of an event whose deliveries have all been created.
+const FANOUT_DONE: &str = "done";
 
 /// The `response_excerpt` ceiling from the `excerpt_length` CHECK
 /// (migration 0022), in characters.
@@ -136,23 +155,83 @@ pub struct DeliveryRow {
 /// `url` outside the length CHECKs, which is a configuration value that
 /// should have been refused at boot.
 pub(crate) async fn create_in_tx(
-    tx: &mut PgConnection,
+    cs: &Cratestack,
+    tx: &mut Transaction<'_, Postgres>,
     event_id: &str,
     endpoint_id: &str,
     url: &str,
 ) -> Result<Option<Uuid>, DbError> {
-    sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO webhook_deliveries (event_id, endpoint_id, url) \
-         VALUES ($1, $2, $3) \
-         ON CONFLICT (event_id, endpoint_id) DO NOTHING \
-         RETURNING id",
-    )
-    .bind(event_id)
-    .bind(endpoint_id)
-    .bind(url)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(classify_write)
+    // `.upsert(..).do_nothing()`, not `.create(..)`, and the difference is
+    // the whole contract of this function. A bare INSERT raises `23505`
+    // against `webhook_deliveries_event_endpoint` for a pair that already
+    // exists — and a failed statement aborts the enclosing Postgres
+    // transaction, so the caller could not turn that back into the `Ok(None)`
+    // its at-least-once drain depends on. `ON CONFLICT DO NOTHING` is what
+    // keeps a re-run of a crashed fan-out pass silent instead of fatal.
+    //
+    // `on_conflict` names the pair rather than the primary key because the
+    // primary key is a fresh `Uuid` that has never collided with anything.
+    // `ConflictTarget::columns` needs no `@@unique` in the model: it is a
+    // caller-supplied tuple, validated only against the "a predicate needs
+    // columns" rule (`cratestack-sql`'s `conflict.rs::validate`). The index
+    // that makes it legal is `webhook_deliveries_event_endpoint`, and it is
+    // migration 0022's, not this schema's.
+    //
+    // The id is minted here rather than by `DEFAULT gen_random_uuid()`,
+    // because a `@default(...)` on the primary key is exactly what makes
+    // `CreateWebhookDeliveryInput` carry no `id` and `UpsertModelInput` not
+    // exist — `schemas/vpay.cstack`'s `model WebhookDelivery` carries the
+    // measurement and the one drift line it costs.
+    let input = CreateWebhookDeliveryInput {
+        id: Uuid::new_v4(),
+        event_id: event_id.to_owned(),
+        endpoint_id: endpoint_id.to_owned(),
+        url: url.to_owned(),
+        // Explicitly `None` rather than absent, and not the same thing as
+        // the columns that are missing from this literal. `state` and
+        // `created_at` carry `@default(...)` and are therefore filtered out
+        // of `CreateWebhookDeliveryInput` altogether by
+        // `inputs.rs::create_input_fields` — they take their column
+        // defaults, which is what the hand-written INSERT relied on too.
+        // These five have no default; the input requires them, and binding
+        // `NULL` is exactly what omitting them from the old three-column
+        // INSERT did. A delivery is born owing an attempt and knowing
+        // nothing about one.
+        payload_sha256: None,
+        response_excerpt: None,
+        sent_at: None,
+        responded_at: None,
+        next_attempt_at: None,
+    };
+
+    let outcome = cs
+        .webhook_delivery()
+        .upsert(input)
+        .do_nothing()
+        .on_conflict(cratestack::ConflictTarget::columns(&[
+            "event_id",
+            "endpoint_id",
+        ]))
+        // `run_in_tx`, not `run`. `run` opens its own transaction off
+        // `runtime.pool()`, which would commit a delivery the caller's own
+        // rollback could no longer take back — and the fan-out's
+        // `TxOutcome::Abandon` path exists precisely to take it back.
+        // `a_delivery_written_through_cratestack_is_rolled_back_with_the_fan_out`
+        // is the test that fails when this word changes.
+        .run_in_tx(&mut *tx, &system_context())
+        .await
+        .map_err(|error| DbError::from(classify_cratestack(DELIVERY_MODEL, "upsert", error)))?;
+
+    // `Inserted` and `Existing` are why `.do_nothing()` returns an enum at
+    // all: Postgres RETURNs nothing for a row `DO NOTHING` skipped, so the
+    // framework resolves it under the conflict probe's row lock. Mapping
+    // `Existing` to `None` is what the previous `fetch_optional` on
+    // `RETURNING id` did, and the caller's meaning is unchanged — "somebody
+    // else already owns this delivery, enqueue nothing".
+    Ok(match outcome.value {
+        cratestack::UpsertOutcome::Inserted(row) => Some(row.id),
+        cratestack::UpsertOutcome::Existing(_) => None,
+    })
 }
 
 /// Marks an event fanned out **inside the caller's transaction**, and only
@@ -174,20 +253,48 @@ pub(crate) async fn create_in_tx(
 ///
 /// Returns [`DbError::Query`] if the write fails.
 pub(crate) async fn mark_fanned_out_in_tx(
-    tx: &mut PgConnection,
+    cs: &Cratestack,
+    tx: &mut Transaction<'_, Postgres>,
     event_id: &str,
 ) -> Result<bool, DbError> {
-    let updated = sqlx::query(
-        "UPDATE events SET fanout_state = 'done' \
-         WHERE id = $1 AND fanout_state = 'pending'",
-    )
-    .bind(event_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(classify_write)?
-    .rows_affected();
+    // `update_many` and not `update(pk)`, because the guard is the point:
+    // `update` by primary key has nowhere to put `AND fanout_state =
+    // 'pending'`, and without that half two drains racing on one page both
+    // "succeed" and both commit.
+    //
+    // The policy is compiled into this statement's own `WHERE`
+    // (`update_many_exec.rs` calls `push_action_policy_query` with
+    // `update_allow_policies`), which makes a missing
+    // `@@allow("update", ...)` on `model Event` SILENT in the error channel
+    // and total in effect: zero rows match, this returns `false`, and
+    // `fan_out_one` abandons every transaction it ever opens. That is the
+    // mutation `an_event_flip_denied_by_policy_abandons_the_fan_out` exists
+    // for.
+    let summary = cs
+        .event()
+        .update_many()
+        .where_(crate::schema::cratestack_schema::event::id().eq(event_id.to_owned()))
+        .where_(
+            crate::schema::cratestack_schema::event::fanout_state()
+                .eq(FANOUT_PENDING.to_owned()),
+        )
+        .set(UpdateEventInput {
+            fanout_state: Some(FANOUT_DONE.to_owned()),
+            ..UpdateEventInput::default()
+        })
+        .run_in_tx(&mut *tx, &system_context())
+        .await
+        .map_err(|error| DbError::from(classify_cratestack(EVENT_MODEL, "update", error)))?;
 
-    Ok(updated == 1)
+    // `BatchSummary::ok` is `updated.len()` — `update_many_exec.rs` builds
+    // the summary from the rows its `RETURNING` actually handed back, so it
+    // is the same number `rows_affected()` gave the statement this replaced.
+    //
+    // Exactly one, or none. `id` is the primary key, so the two filters can
+    // never match a second row; `== 1` rather than `> 0` so a future filter
+    // change that widened the match would read as "not fanned out" instead
+    // of silently claiming several events at once.
+    Ok(summary.value.ok == 1)
 }
 
 /// The excerpt as the column will accept it: at most `EXCERPT_MAX_CHARS`
@@ -430,7 +537,226 @@ impl WebhookDeliveries for crate::repository::PgRepositories {
 
 #[cfg(test)]
 mod tests {
-    use super::{EXCERPT_MAX_CHARS, bounded_excerpt};
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::{DELIVERY_MODEL, EVENT_MODEL, EXCERPT_MAX_CHARS, bounded_excerpt};
+    use crate::schema::cratestack_schema;
+
+    /// A pool that has never opened a connection, and cannot: the port is
+    /// unroutable. `connect_lazy` does no I/O and neither does
+    /// `preview_sql`. Same shape and same reason as `config_reconcile.rs`'s
+    /// and `disabled_clients.rs`'s helpers of the same name.
+    fn lazy_cratestack() -> cratestack_schema::Cratestack {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+            .expect("a lazy pool parses its URL and connects to nothing");
+        cratestack_schema::Cratestack::builder(pool).build()
+    }
+
+    /// The two statements the outbox now runs through CrateStack, pinned as
+    /// rendered text, with no database.
+    ///
+    /// `docs/flows/webhooks.md`'s duplicate-delivery guard is a property of
+    /// these two statements' *shapes* rather than of any value in them:
+    /// `ON CONFLICT (event_id, endpoint_id) DO NOTHING` is what makes a
+    /// re-run of a crashed drain silent, and `AND fanout_state = 'pending'`
+    /// is what makes a lost race detectable. A generator change that dropped
+    /// either would leave every container test green until two drains
+    /// actually raced.
+    #[tokio::test]
+    async fn the_outbox_statements_keep_their_conflict_target_and_their_guard() {
+        let cs = lazy_cratestack();
+
+        let create = cs
+            .webhook_delivery()
+            .upsert(super::CreateWebhookDeliveryInput {
+                id: uuid::Uuid::nil(),
+                event_id: "evt_1".to_owned(),
+                endpoint_id: "ep_1".to_owned(),
+                url: "https://example.test/hook".to_owned(),
+                payload_sha256: None,
+                response_excerpt: None,
+                sent_at: None,
+                responded_at: None,
+                next_attempt_at: None,
+            })
+            .do_nothing()
+            .on_conflict(cratestack::ConflictTarget::columns(&[
+                "event_id",
+                "endpoint_id",
+            ]))
+            .preview_sql();
+
+        assert!(
+            create.contains("ON CONFLICT (event_id, endpoint_id) DO NOTHING"),
+            "the conflict target is the (event, endpoint) pair, not the primary key — a fresh \
+             UUID conflicts with nothing and every re-run would insert a duplicate: {create}"
+        );
+        assert!(
+            create.starts_with("INSERT INTO webhook_deliveries (id,"),
+            "the id must be in the INSERT list: it is minted by this crate precisely so that \
+             `.upsert(..)` exists at all (schemas/vpay.cstack, model WebhookDelivery): {create}"
+        );
+        // The columns migration 0022 defaults (`state`, `created_at`,
+        // `attempt`) plus the one the model does not declare at all
+        // (`status_code`, `int4`). If one of these appears, a fresh delivery
+        // has started being born with an explicit value instead of the
+        // column default — `state` in particular would then be whatever this
+        // crate last thought it was.
+        //
+        // Sliced rather than matched with a `format!` over the loop
+        // variable, because `crate::sql_audit` refuses an interpolation next
+        // to statement-shaped text and is right to.
+        // Tokenised rather than substring-matched: `next_attempt_at`
+        // contains `attempt`, and a `contains` check silently passed on the
+        // wrong column until this test was run.
+        let columns: Vec<&str> = create
+            .split_once(") VALUES")
+            .map_or(create.as_str(), |(head, _)| head)
+            .rsplit_once('(')
+            .map_or("", |(_, tail)| tail)
+            .split(", ")
+            .collect();
+        for defaulted in ["state", "created_at", "attempt", "status_code"] {
+            assert!(
+                !columns.contains(&defaulted),
+                "`{defaulted}` must not be in the generated INSERT column list: {create}"
+            );
+        }
+
+        let flip = cs
+            .event()
+            .update_many()
+            .where_(cratestack_schema::event::id().eq("evt_1".to_owned()))
+            .where_(cratestack_schema::event::fanout_state().eq(super::FANOUT_PENDING.to_owned()))
+            .set(super::UpdateEventInput {
+                fanout_state: Some(super::FANOUT_DONE.to_owned()),
+                ..super::UpdateEventInput::default()
+            })
+            .preview_sql();
+
+        assert!(
+            flip.starts_with("UPDATE events SET fanout_state = $1"),
+            "the flip must set exactly one column — a second one here would mean \
+             `UpdateEventInput` picked up a field the compare-and-swap never meant to write: \
+             {flip}"
+        );
+        // `preview_sql` renders the filter list and the policy clause as the
+        // literal placeholders `<filters>` and `<update_policy>` rather than
+        // expanding them, so this test cannot assert the guard's *contents*
+        // — `an_abandoned_fan_out_leaves_no_delivery_and_the_event_still_pending`
+        // and `a_pending_event_is_flipped_once_and_a_second_flip_reports_false`
+        // are what prove those against a real database. What it CAN assert is
+        // the thing no container test can show: that a policy clause is
+        // compiled into this statement's own WHERE at all.
+        assert!(
+            flip.contains("<update_policy>"),
+            "the update policy is part of the statement's WHERE, which is exactly why a \
+             missing `@@allow(\"update\", …)` on `model Event` matches zero rows instead of \
+             raising — the claim `every_action_this_module_calls_has_an_allow_arm` rests on: \
+             {flip}"
+        );
+        assert!(
+            flip.contains("<filters>"),
+            "the id and fanout_state guards reach the statement as filters: {flip}"
+        );
+        // `data` is not a column of `model Event`, so the generated
+        // `RETURNING` projection cannot select it — which is what keeps the
+        // JSONB column away from `cratestack::Value` entirely, on the read
+        // side as well as the write side. This is the assertion that notices
+        // the day somebody adds it; see `crate::events`' pinned blocker test
+        // for why it is not there.
+        assert!(
+            !flip.contains("data"),
+            "the generated projection must not touch events.data: {flip}"
+        );
+        assert!(
+            flip.contains("RETURNING") && flip.contains("seq AS"),
+            "update_many RETURNs the model projection — that is where the row count comes \
+             from (`BatchSummary::ok` is `updated.len()`): {flip}"
+        );
+    }
+
+    /// Every action this module calls on `Event` and `WebhookDelivery` has an
+    /// `@@allow` arm, asserted against the **compiled descriptor** and with
+    /// no database.
+    ///
+    /// The same test `config_reconcile.rs` and `disabled_clients.rs` carry,
+    /// for the same measured reason: an `@@allow` line can be deleted from
+    /// `schemas/vpay.cstack` and every gate stays green. The three arms below
+    /// fail in three different ways, and only one of them is loud:
+    ///
+    ///   `WebhookDelivery` `create` -> LOUD, on every fan-out.
+    ///       `run_upsert_do_nothing_in_tx` calls `evaluate_create_policies`
+    ///       before any SQL runs.
+    ///   `WebhookDelivery` `update` -> LOUD, but **only on a re-run**.
+    ///       `upsert_do_nothing_authorize.rs` re-checks the update policy
+    ///       solely on the already-exists branch, so a first fan-out
+    ///       succeeds and only crash recovery fails. That is the arm most
+    ///       likely to be deleted and least likely to be noticed.
+    ///   `Event` `update` -> SILENT, and the catastrophic one.
+    ///       `update_many_exec.rs` compiles the policy into the statement's
+    ///       own `WHERE`, so the compare-and-swap matches zero rows,
+    ///       `mark_fanned_out_in_tx` answers `false`, and `fan_out_one`
+    ///       abandons every transaction it opens. Every log line says the
+    ///       drain ran; no merchant ever receives anything.
+    #[test]
+    fn every_action_this_module_calls_has_an_allow_arm() {
+        use cratestack_schema::models::{EVENT_MODEL as event, WEBHOOK_DELIVERY_MODEL as delivery};
+
+        assert!(
+            !delivery.create_allow_policies.is_empty(),
+            "`@@allow(\"create\", …)` is missing from `model WebhookDelivery`: every fan-out \
+             would fail with `Forbidden` -> `PersistenceError::Denied` -> `Category::Internal`"
+        );
+        assert!(
+            !delivery.update_allow_policies.is_empty(),
+            "`@@allow(\"update\", …)` is missing from `model WebhookDelivery`: the first \
+             fan-out of an event would succeed and only a RE-RUN would fail, because \
+             `upsert_do_nothing_authorize.rs` consults this slot on the already-exists branch \
+             alone. That is the crash-recovery path"
+        );
+        assert!(
+            !event.update_allow_policies.is_empty(),
+            "`@@allow(\"update\", …)` is missing from `model Event`: the fanout \
+             compare-and-swap compiles the policy into its own WHERE, matches zero rows, and \
+             every fan-out transaction is abandoned — silently, and no merchant is ever \
+             delivered anything"
+        );
+
+        // No arm this module does not use. `model Provider`'s rule, applied
+        // here: a permission no call site exercises is a permission nothing
+        // can measure, and both of these models are one write path each.
+        assert!(
+            event.create_allow_policies.is_empty() && event.delete_allow_policies.is_empty(),
+            "`model Event` grew a create/delete arm. The events INSERT is still raw sqlx (see \
+             `crate::events`) and nothing deletes an event; grant one in the commit that moves \
+             the write, not before it"
+        );
+        assert!(
+            delivery.delete_allow_policies.is_empty(),
+            "`model WebhookDelivery` grew a `@@allow(\"delete\", …)`; nothing deletes a \
+             delivery, and the row is the durable record of what vpay owes a merchant"
+        );
+
+        // A `@@deny` wins over every arm above (`push_action_policy_query`
+        // wraps the allow list in `NOT (<deny>) AND (…)`), so an accidental
+        // one is worth failing on here rather than in a container.
+        for (model, slot, denies) in [
+            (EVENT_MODEL, "update", event.update_deny_policies),
+            (EVENT_MODEL, "read", event.read_deny_policies),
+            (DELIVERY_MODEL, "create", delivery.create_deny_policies),
+            (DELIVERY_MODEL, "update", delivery.update_deny_policies),
+            (DELIVERY_MODEL, "read", delivery.read_deny_policies),
+        ] {
+            assert!(
+                denies.is_empty(),
+                "`model {model}` grew a `@@deny(\"{slot}\", …)`; it overrides every `@@allow` \
+                 for that action and no call site expects one"
+            );
+        }
+    }
+
 
     /// The bound is characters, not bytes, and it must hold for a body made
     /// entirely of multi-byte characters — the case where a byte-wise
