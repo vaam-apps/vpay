@@ -321,9 +321,12 @@ model Provider {
   // configuration and would never carry a capability change to an existing
   // row — a rail an operator had just disabled would come back enabled.
   //
-  // The four defaults are here because the live table has them (migration
+  // All five defaults are here because the live table has them (migration
   // 0002: `DEFAULT FALSE` x4, `DEFAULT TRUE`), and while they are here they
-  // cost zero drift. Removing them from this model to unblock the upsert
+  // cost zero drift. Measured 2026-09-06 in the review pass: remove them from
+  // this model alone and the drift report goes 84 -> 89, exactly five
+  // `column ... default value differs` lines on `providers`, which is what
+  // the next sentence is about. Removing them from this model to unblock the upsert
   // means `ALTER TABLE providers ALTER COLUMN ... DROP DEFAULT` on all five
   // in a migration — letting a code generator's input-shaping rule decide
   // vpay's DDL — or the drift report grows five `default value differs`

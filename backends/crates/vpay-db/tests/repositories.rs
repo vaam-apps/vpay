@@ -2935,7 +2935,8 @@ async fn reconcile_reads_the_exponent_under_a_row_lock_and_cannot_clobber_a_conc
         .is_ok();
     assert!(
         !finished_while_locked,
-        "reconcile finished while another transaction held the `currencies` row's write lock;          it cannot have read the row under `FOR UPDATE`"
+        "reconcile finished while another transaction held the `currencies` row's write lock; \
+         it cannot have read the row under `FOR UPDATE`"
     );
 
     blocker
@@ -2947,7 +2948,8 @@ async fn reconcile_reads_the_exponent_under_a_row_lock_and_cannot_clobber_a_conc
         .await
         .context("the reconcile task must not panic")?;
     let error = outcome.expect_err(
-        "the read must see the committed 3 and refuse a seed of 0. If this returned `Ok`, the          read did not block on the row and boot has just overwritten another writer's value",
+        "the read must see the committed 3 and refuse a seed of 0. If this returned `Ok`, the \
+         read did not block on the row and boot has just overwritten another writer's value",
     );
     match &error {
         vpay_db::DbError::CurrencyExponentConflict {
@@ -2958,7 +2960,8 @@ async fn reconcile_reads_the_exponent_under_a_row_lock_and_cannot_clobber_a_conc
             assert_eq!(code, "XAF");
             assert_eq!(
                 *stored, 3,
-                "the refusal must name the value the OTHER writer committed, which is only                  visible to a read that waited for it"
+                "the refusal must name the value the OTHER writer committed, which is only \
+                 visible to a read that waited for it"
             );
             assert_eq!(*seeded, 0);
         }
@@ -2972,7 +2975,9 @@ async fn reconcile_reads_the_exponent_under_a_row_lock_and_cannot_clobber_a_conc
             .context("re-reading the exponent must succeed")?;
     assert_eq!(
         stored_exponent, 3,
-        "the other writer's value must survive. A 0 here is the exact silent clobber this row          lock exists to prevent: boot read a stale 0, agreed with itself, and wrote it back over          a committed 3"
+        "the other writer's value must survive. A 0 here is the exact silent clobber this row \
+         lock exists to prevent: boot read a stale 0, agreed with itself, and wrote it back over \
+         a committed 3"
     );
 
     Ok(())
