@@ -173,7 +173,13 @@ CREATE TABLE customers (
     -- for a reason no merchant could act on. The rule it would express —
     -- "nothing sets last_used_at backwards" — is worth having and is
     -- enforced where it can be enforced without a clock comparison:
-    -- `touch_last_used` is `SET last_used_at = GREATEST(last_used_at, $2)`.
+    -- `touch_last_used` filters on `last_used_at < $2`, so a stamp that would
+    -- move the clock backwards matches zero rows. (This comment claimed
+    -- `SET last_used_at = GREATEST(last_used_at, $2)` until 2026-09-07. That
+    -- statement is never rendered: `touch_last_used` goes through CrateStack,
+    -- whose generated `SET` is a plain assignment. `Customers::update` — the
+    -- hand-written one — really does use `GREATEST`, which is where the
+    -- confusion came from.)
 );
 
 -- An identity column is not implicitly unique, and every cursor below assumes

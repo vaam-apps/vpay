@@ -408,9 +408,8 @@ pub trait Customers: Send + Sync {
     /// `a_customer_used_by_a_recent_intent_survives_the_sweep` exercises the
     /// confirm path rather than calling this method directly.
     ///
-    /// # `GREATEST`, so a use can never move the clock backwards
+    /// # Monotonic, so a use can never move the clock backwards
     ///
-    /// The statement is `SET last_used_at = GREATEST(last_used_at, $2)`.
     /// `now` is the *calling process's* instant and two vpay processes do not
     /// share a clock, so a plain assignment would let a server whose clock is
     /// a second behind rewind a customer's retention clock — and the sweep's
@@ -418,6 +417,22 @@ pub trait Customers: Send + Sync {
     /// the difference between a customer surviving a pass and not. This is
     /// also the reason migration `0034` carries no
     /// `CHECK (last_used_at >= created_at)`; see that migration.
+    ///
+    /// **The guard is the `WHERE`, not a `GREATEST`, and the distinction is
+    /// worth stating here rather than only in the implementation.** This doc
+    /// claimed `SET last_used_at = GREATEST(last_used_at, $2)` until
+    /// 2026-09-07 and no such statement is ever rendered:
+    /// `UpdateCustomerInput` renders a plain assignment and `cratestack`
+    /// 0.11.1 has no way to express `GREATEST` in a `SET`. The monotonicity
+    /// is enforced by `where_(last_used_at.lt(now))` instead — a stamp that
+    /// would move the clock backwards matches zero rows. Observably the same,
+    /// with one difference a caller can see: this returns `Ok(false)` for a
+    /// backwards stamp, where a `GREATEST` assignment would return
+    /// `Ok(true)`. That is why `Ok(false)` has three normal meanings below
+    /// and not two. `a_retention_stamp_never_moves_a_customers_clock_backwards`
+    /// proves the behaviour against a real Postgres; no unit test can, because
+    /// `UpdateManySet::preview_sql` renders the predicate as the literal
+    /// `<filters> AND <update_policy>`.
     ///
     /// # Unscoped, and named for it
     ///

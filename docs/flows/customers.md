@@ -95,6 +95,33 @@ country code, a second mobile prefix) moves both surfaces at once. Neither SDK
 validates it locally, deliberately and identically — a client-side copy of a
 market rule refuses offline a number a later server accepts.
 
+### …but the phone number is **not** a key, and does not deduplicate
+
+"Phone is the customer identity" (decision 1) is a statement about what a
+`cus_…` *means*, not about uniqueness, and the difference is worth spelling
+out because the natural reading is the wrong one. Two `POST /v1/customers`
+with the same phone number, under the same merchant, create **two customers**
+with two ids. vpay does not look for an existing row and does not answer with
+one.
+
+That is Stripe's behaviour and it is deliberate here for the reason the next
+section gives: the index that would make a phone number unique is the index
+that would make cross-merchant identity possible, and there is no way to have
+the first without either the second or a per-merchant partial index nobody has
+asked for. The merchant owns the mapping from their user to a `cus_…` and is
+the only party that can — vpay has no view of which of two rows is the "real"
+payer.
+
+What canonicalisation buys, then, is narrower than deduplication and is still
+worth having: `+237 6 00 00 02 00` and `600000200` sent as *one* customer's
+phone across a create and a later update do not leave two spellings in the
+column, and a merchant comparing a customer's `phone` against a charge's payer
+reference is comparing the same string. It does not stop a merchant creating
+the same payer twice. The `Idempotency-Key` on `POST /v1/customers` is what
+stops a *retry* doing so
+(`a_replayed_create_answers_the_stored_customer_and_a_reused_key_is_refused`);
+two deliberate creates are two customers.
+
 ---
 
 ## Privacy
