@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { TRPCError } from "@trpc/server";
-import { OrderSummary } from "@/components/order-summary";
+import { OrderActions } from "@/components/order-actions";
+import { OrderFailureNotice, OrderSummary } from "@/components/order-summary";
+import { failureCopy } from "@/lib/failures";
 import { serverCaller } from "@/server/context";
 
 export const dynamic = "force-dynamic";
@@ -30,6 +32,7 @@ export default async function OrderPage({
         <em>paid</em> only once vpay's webhook has been received, verified and
         written — not because a payer came back through a redirect.
       </p>
+      <OrderFailureNotice order={order} />
       <OrderSummary order={order} />
       {order.status === "unpaid" && order.paymentIntentId !== null ? (
         <p>
@@ -41,6 +44,12 @@ export default async function OrderPage({
           </Link>
         </p>
       ) : null}
+      <OrderActions
+        order={order}
+        retryable={
+          order.status === "failed" && failureCopy(order.failureCode).retryable
+        }
+      />
     </>
   );
 }

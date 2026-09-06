@@ -44,7 +44,7 @@ export class MemoryShopStore implements ShopStore {
     return this.#orders;
   }
 
-  // implements `ShopStore`'s async contract; `PrismaShopStore` awaits, this
+  // implements `ShopStore`'s async contract; `ZenStackShopStore` awaits, this
   // in-memory double has nothing to await.
   // eslint-disable-next-line @typescript-eslint/require-await
   async listProducts(): Promise<Product[]> {
@@ -53,7 +53,7 @@ export class MemoryShopStore implements ShopStore {
     );
   }
 
-  // implements `ShopStore`'s async contract; `PrismaShopStore` awaits, this
+  // implements `ShopStore`'s async contract; `ZenStackShopStore` awaits, this
   // in-memory double has nothing to await.
   // eslint-disable-next-line @typescript-eslint/require-await
   async findProducts(ids: readonly string[]): Promise<Product[]> {
@@ -67,7 +67,7 @@ export class MemoryShopStore implements ShopStore {
     return found;
   }
 
-  // implements `ShopStore`'s async contract; `PrismaShopStore` awaits, this
+  // implements `ShopStore`'s async contract; `ZenStackShopStore` awaits, this
   // in-memory double has nothing to await.
   // eslint-disable-next-line @typescript-eslint/require-await
   async createOrder(input: NewOrder): Promise<Order> {
@@ -81,6 +81,8 @@ export class MemoryShopStore implements ShopStore {
       currency: input.currency,
       paymentIntentId: null,
       checkoutSessionId: null,
+      failureCode: null,
+      failureMessage: null,
       items: input.items.map((item) => ({ ...item })),
       createdAt: new Date(0),
     };
@@ -88,7 +90,7 @@ export class MemoryShopStore implements ShopStore {
     return { ...order, items: order.items.map((item) => ({ ...item })) };
   }
 
-  // implements `ShopStore`'s async contract; `PrismaShopStore` awaits, this
+  // implements `ShopStore`'s async contract; `ZenStackShopStore` awaits, this
   // in-memory double has nothing to await.
   // eslint-disable-next-line @typescript-eslint/require-await
   async getOrder(id: string): Promise<Order | null> {
@@ -98,7 +100,7 @@ export class MemoryShopStore implements ShopStore {
       : { ...order, items: order.items.map((item) => ({ ...item })) };
   }
 
-  // implements `ShopStore`'s async contract; `PrismaShopStore` awaits, this
+  // implements `ShopStore`'s async contract; `ZenStackShopStore` awaits, this
   // in-memory double has nothing to await.
   // eslint-disable-next-line @typescript-eslint/require-await
   async setPaymentIntentId(
@@ -123,7 +125,7 @@ export class MemoryShopStore implements ShopStore {
     return { ...order, items: order.items.map((item) => ({ ...item })) };
   }
 
-  // implements `ShopStore`'s async contract; `PrismaShopStore` awaits, this
+  // implements `ShopStore`'s async contract; `ZenStackShopStore` awaits, this
   // in-memory double has nothing to await.
   // eslint-disable-next-line @typescript-eslint/require-await
   async setCheckoutSessionId(
@@ -135,7 +137,7 @@ export class MemoryShopStore implements ShopStore {
     return { ...order, items: order.items.map((item) => ({ ...item })) };
   }
 
-  // implements `ShopStore`'s async contract; `PrismaShopStore` awaits, this
+  // implements `ShopStore`'s async contract; `ZenStackShopStore` awaits, this
   // in-memory double has nothing to await.
   // eslint-disable-next-line @typescript-eslint/require-await
   async applyWebhookEvent(
@@ -157,6 +159,10 @@ export class MemoryShopStore implements ShopStore {
     }
     if (decision.writeStatus !== null && order !== undefined) {
       order.status = decision.writeStatus;
+      // Together with the status, never on their own — the same statement
+      // `ZenStackShopStore` writes them in.
+      order.failureCode = application.failureCode;
+      order.failureMessage = application.failureMessage;
     }
     return decision.outcome;
   }

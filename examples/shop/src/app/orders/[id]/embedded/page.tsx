@@ -3,8 +3,9 @@ import { notFound } from "next/navigation";
 import { TRPCError } from "@trpc/server";
 import { EmbeddedCheckoutPanel } from "@/components/embedded-checkout";
 import { OrderStatusBadge } from "@/components/order-summary";
+import { TestNumbersPanel } from "@/components/test-numbers-panel";
 import { formatMinor } from "@/money";
-import { shopConfig } from "@/server/config";
+import { allSelectedRails, shopConfig } from "@/server/config";
 import { serverCaller } from "@/server/context";
 
 export const dynamic = "force-dynamic";
@@ -69,6 +70,7 @@ export default async function OrderEmbeddedPage({
       <p style={{ marginTop: "1rem" }}>
         <Link href={`/orders/${order.id}`}>The order page</Link>
       </p>
+      <TestNumbersPanel rails={allSelectedRails(config.rails)} />
     </>
   );
 }

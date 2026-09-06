@@ -7,7 +7,7 @@
     "node": ">=22.11.0"
   },
   "scripts": {
-    "generate": "DO_NOT_TRACK=1 zenstack generate --no-version-check && prisma generate",
+    "generate": "DO_NOT_TRACK=1 zen generate",
     "postinstall": "pnpm run generate",
     "build:deps": "pnpm --filter @vaam-apps/vpay-sdk --filter @vaam-apps/vpay-stripe-js build",
     "dev": "next dev -p 3000",
@@ -18,29 +18,31 @@
     "lint": "pnpm run build:deps && eslint . --max-warnings 0 && prettier --check \"**/*.{ts,tsx,css,json,md,mjs}\""
   },
   "dependencies": {
-    "@prisma/client": "6.19.3",
     "@tanstack/react-query": "5.102.8",
     "@trpc/client": "11.18.0",
     "@trpc/react-query": "11.18.0",
     "@trpc/server": "11.18.0",
     "@vaam-apps/vpay-sdk": "workspace:*",
     "@vaam-apps/vpay-stripe-js": "workspace:*",
-    "@zenstackhq/runtime": "2.22.3",
+    "@zenstackhq/orm": "3.9.3",
+    "@zenstackhq/plugin-policy": "3.9.3",
+    "@zenstackhq/schema": "3.9.3",
     "next": "16.3.4",
+    "pg": "^8.13.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "zod": "4.5.4"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.7",
     "@vpay/config": "workspace:*",
+    "@zenstackhq/cli": "3.9.3",
     "eslint": "9.39.5",
     "prettier": "^3.4.0",
-    "prisma": "6.19.3",
     "typescript": "^5.7.0",
-    "vitest": "^3.2.7",
-    "zenstack": "2.22.3"
+    "vitest": "^3.2.7"
   }
 }

@@ -1,8 +1,8 @@
 /**
  * The one place that decides what a webhook delivery does to an order.
  *
- * Both `ShopStore` implementations — Prisma and the in-memory one the tests
- * use — call this, so the rule the tests prove is the rule production runs.
+ * Both `ShopStore` implementations — `ZenStackShopStore` and the in-memory
+ * one the tests use — call this, so the rule the tests prove is the rule production runs.
  * Without it the two implementations would each carry their own copy of the
  * dedupe-then-settle logic and only one of them would ever be tested.
  */
@@ -21,7 +21,18 @@ export interface WebhookDecision {
   outcome: WebhookOutcome;
   /** Whether to insert the `webhook_events` row. */
   recordEvent: boolean;
-  /** The status to write, or `null` to leave the order alone. */
+  /**
+   * The status to write, or `null` to leave the order alone.
+   *
+   * It is also what decides the **failure columns**: a store writes
+   * `failure_code` and `failure_message` in the same statement as the status
+   * and never on its own. There is deliberately no second flag for them —
+   * one was written, and it could not vary independently of this field, so
+   * it was a knob that looked like it did something. What it was there to
+   * protect is real, and this shape protects it by construction: an
+   * `already_settled` delivery writes no status, and therefore cannot stamp
+   * a code onto an order that is already `paid`.
+   */
   writeStatus: OrderStatus | null;
 }
 
@@ -38,13 +49,25 @@ export interface WebhookDecision {
  */
 export function decideWebhook(input: WebhookDecisionInput): WebhookDecision {
   if (input.alreadySeen) {
-    return { outcome: "duplicate", recordEvent: false, writeStatus: null };
+    return {
+      outcome: "duplicate",
+      recordEvent: false,
+      writeStatus: null,
+    };
   }
   if (input.orderStatus === null) {
-    return { outcome: "unknown_intent", recordEvent: false, writeStatus: null };
+    return {
+      outcome: "unknown_intent",
+      recordEvent: false,
+      writeStatus: null,
+    };
   }
   if (input.orderStatus !== "unpaid") {
-    return { outcome: "already_settled", recordEvent: true, writeStatus: null };
+    return {
+      outcome: "already_settled",
+      recordEvent: true,
+      writeStatus: null,
+    };
   }
   return {
     outcome: "applied",

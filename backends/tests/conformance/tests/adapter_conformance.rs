@@ -1759,10 +1759,20 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
 /// redirect rail whose submit body carries no MSISDN at all (`order_id`
 /// selects everything), so there is nothing on that rail for a payer's typed
 /// phone number to steer.
+/// `237600000503` (2026-09-06, exp22) has no hex twin and never will: it was
+/// added for `examples/shop`'s test-number panel, after the checkout page's
+/// validator existed, so the only spelling it has ever had is the one a payer
+/// can type. It arms `mtn-demo-unavailable`, whose status mapping answers a
+/// **200 with a `FAILED` body carrying MTN's documented `SERVICE_UNAVAILABLE`
+/// reason** — not an HTTP 503, which would be a transport failure the poll
+/// ladder retries for hours rather than an outcome. That distinction is the
+/// reason this case names `ProviderUnavailable` rather than expecting an
+/// `Err`.
 #[rstest]
 #[case::settles("237600000100", None)]
 #[case::insufficient_funds("237600000101", Some(FailureCode::InsufficientFunds))]
 #[case::payer_timeout("237600000102", Some(FailureCode::PayerTimeout))]
+#[case::provider_unavailable("237600000503", Some(FailureCode::ProviderUnavailable))]
 #[tokio::test]
 async fn a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin(
     #[case] msisdn: &str,
@@ -1845,6 +1855,167 @@ async fn a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin(
                 }
                 other => panic!("msisdn {msisdn}: expected a decline, got {other:?}"),
             }
+        }
+    }
+}
+
+/// The **redirect** rail's answer to the same question: a payer typing a
+/// documented test number on the rail's own page, and the charge failing the
+/// way that number says it should.
+///
+/// It exists because the mechanism is genuinely different from MTN's and the
+/// difference is the interesting part. MTN is a push rail, so the MSISDN is a
+/// field of the merchant's own submit and
+/// [`a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin`] steers on
+/// `$.payer.partyId`. Orange never sees a number at all: `webpayment` carries
+/// `order_id`, `amount` and three URLs, the payer types their number on
+/// Orange's page after the charge is already submitted, and vpay learns the
+/// outcome only from `transactionstatus`. So the demo steers Orange from the
+/// stub's **hosted page** — a form that arms a scenario and redirects — and
+/// this case drives exactly that path: submit, follow the `payment_url`, post
+/// the form, then ask the adapter.
+///
+/// What it proves, and what it deliberately does not:
+///
+/// * **Proves** that the four mappings added for the shop's Orange test
+///   numbers are wired to each other — the page renders the form, `/pay`
+///   arms the scenario and answers a 302 to the URL *this* submit carried,
+///   and the next `query_status` maps to the code the shop's README
+///   advertises. Delete any one of them and this fails.
+/// * **Does not prove** anything about timing, and that is the whole of what
+///   this case cannot see. There is no worker here, so nothing is racing the
+///   payer. In the demo stack something is: the confirm handler enqueues the
+///   `poll_charge` job with `run_at = now()` — `poll_delay(0)` is the delay
+///   before the *second* attempt, not the first — so the first
+///   `transactionstatus` lands about a second after the submit and the
+///   catch-all `SUCCESS` settles the charge before a payer can reach the
+///   form. Measured 2026-09-06: T+449 ms against T+11.96 s. **So these
+///   numbers do not work from a browser today**, which is written up in
+///   `demo-outcomes.json`, in `examples/shop/README.md` and in
+///   `docs/plans/exp22-shop-demo-notes/opus.md`. What this case proves is
+///   that the mappings themselves are wired to each other correctly.
+///
+/// Orange only, for the mirror of the reason its MTN counterpart is MTN only:
+/// there is no hosted page on a push rail for a payer to type into.
+#[rstest]
+#[case::settles("237600000000", None)]
+#[case::payer_timeout("237600000102", Some(FailureCode::PayerTimeout))]
+#[case::refused("237600000400", Some(FailureCode::ProviderError))]
+#[tokio::test]
+async fn a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_outcome(
+    #[case] msisdn: &str,
+    #[case] expected_decline: Option<FailureCode>,
+) {
+    let rail = start(
+        RailUnderTest::OrangeMoney,
+        Credentials::Valid,
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let mut charge = ChargeRef {
+        reference_id: Uuid::new_v4(),
+        amount: Money::new(5_000, rail.config.currency).expect("non-negative"),
+        payer_ref: None,
+        ref_extra: BTreeMap::new(),
+        return_url: Some(RETURN_URL.to_owned()),
+    };
+
+    let submitted = rail
+        .adapter
+        .submit(&charge, &rail.config)
+        .await
+        .unwrap_or_else(|error| panic!("msisdn {msisdn}: the submit is accepted, got {error:?}"));
+    // What `vpay_api`'s confirm handler commits before it answers: a redirect
+    // rail's status read is addressed by the `pay_token` the rail handed back,
+    // not by the reference we generated, and a charge that has not stored it
+    // cannot be asked about at all (`crash-safety.md`). Taken from the submit
+    // rather than manufactured, because that is the value under test.
+    charge.ref_extra = submitted.ref_extra.clone();
+    let redirect = submitted
+        .redirect_url
+        .as_deref()
+        .unwrap_or_else(|| panic!("msisdn {msisdn}: a redirect rail's submit carries a URL"));
+
+    // The rail's own URL, on the container actually serving it — the same
+    // substitution `the_stub_hosted_page_links_to_the_return_url_the_submit_carried`
+    // makes, and for the same reason: `payment_url` names the fixed
+    // `localhost:8082` that `compose.yml` publishes, which a container on a
+    // random mapped port is not. The path and query carry the meaning.
+    let (_, path_and_query) = redirect
+        .split_once("/stub-hosted-page/")
+        .unwrap_or_else(|| panic!("msisdn {msisdn}: the payment_url must be the stub's page"));
+    let http = vpay_provider::http::client().expect("the vendored-roots client builds");
+
+    let page = http
+        .get(format!(
+            "{}/stub-hosted-page/{path_and_query}",
+            rail.stub_origin
+        ))
+        .send()
+        .await
+        .expect("the stub's hosted page answers")
+        .text()
+        .await
+        .expect("the page body is readable");
+    assert!(
+        page.contains(r#"<button id="pay-with-number" type="submit">"#),
+        "msisdn {msisdn}: the page must carry the form a payer types a test number into: {page}"
+    );
+    assert!(
+        page.contains(&format!(r#"name="return" value="{RETURN_URL}""#)),
+        "msisdn {msisdn}: the form must carry THIS charge's return URL, not a constant: {page}"
+    );
+
+    let (token, query) = path_and_query
+        .split_once('?')
+        .unwrap_or_else(|| panic!("msisdn {msisdn}: the payment_url carries its two URLs"));
+    // The same client, and no special policy: `vpay_provider::http::client`
+    // does not follow redirects — a *removal* of a reqwest default it makes
+    // on purpose, because a followed redirect replays every header reqwest
+    // does not consider sensitive. Which is exactly what this assertion
+    // needs: the 302's `Location` is the merchant's own return URL, and
+    // nothing in this suite serves it.
+    let submitted_form = http
+        .get(format!(
+            "{}/stub-hosted-page/{token}/pay?{query}&msisdn={msisdn}",
+            rail.stub_origin
+        ))
+        .send()
+        .await
+        .expect("the stub answers the form submission");
+    assert_eq!(
+        submitted_form.status().as_u16(),
+        302,
+        "msisdn {msisdn}: paying on the rail's page sends the payer back"
+    );
+    assert_eq!(
+        submitted_form
+            .headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok()),
+        Some(RETURN_URL),
+        "msisdn {msisdn}: back to the URL THIS submit carried, not a constant"
+    );
+
+    let status = rail
+        .adapter
+        .query_status(&charge, &rail.config)
+        .await
+        .unwrap_or_else(|error| {
+            panic!("msisdn {msisdn}: a documented outcome is an answer, not a transport failure: {error:?}")
+        });
+    match (expected_decline, status) {
+        (None, ChargeStatus::Succeeded { .. }) => {}
+        (Some(expected), ChargeStatus::Failed { code, raw }) => {
+            assert_eq!(code, expected, "msisdn {msisdn} mapped to {code}");
+            assert!(
+                !raw.is_empty(),
+                "msisdn {msisdn}: the rail's own status must be carried through for an operator"
+            );
+        }
+        (expected, other) => {
+            panic!("msisdn {msisdn}: expected {expected:?}, got {other:?}")
         }
     }
 }

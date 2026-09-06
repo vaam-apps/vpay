@@ -1,9 +1,16 @@
 // The shop's data model, in ZenStack's schema language.
 //
-// `zenstack generate` compiles this into `prisma/schema.prisma` (committed,
-// because `prisma migrate deploy` in the container's entrypoint reads it) and
-// into the `@zenstackhq/runtime` metadata that `enhance()` consults. The
-// zmodel is the source of truth; never edit `prisma/schema.prisma` by hand.
+// `zen generate` compiles this into the TypeScript ZenStack 3's ORM reads —
+// `zenstack/schema.ts`, `zenstack/models.ts`, `zenstack/input.ts` — and
+// `zen migrate` derives a Prisma schema from it on the fly for Prisma
+// Migrate, which is still what applies the SQL. The zmodel is the source of
+// truth; nothing generated from it is edited by hand.
+//
+// **There is no committed `prisma/schema.prisma` any more.** In v2 there had
+// to be: `prisma migrate deploy` in the container's entrypoint read one. v3's
+// `zen migrate deploy` reads this file instead and generates the Prisma
+// schema itself, so a committed copy would be a second source of truth that
+// nothing checks.
 //
 // # About the access policies below
 //
@@ -36,8 +43,11 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-generator client {
-  provider = "prisma-client-js"
+/// ZenStack 3's access-control plugin. The `@@allow` rules below do nothing
+/// without it — in v2 `enhance()` carried them, in v3 they are a plugin the
+/// client opts into with `$use(new PolicyPlugin())` (`src/server/db.ts`).
+plugin policy {
+  provider = '@zenstackhq/plugin-policy'
 }
 
 /// What the shop knows about an order's money.
@@ -83,7 +93,14 @@ model Product {
 model Order {
   id String @id @default(cuid())
 
-  email String
+  /// **Optional**, and that is a decision rather than a slack constraint:
+  /// the shop asks for an e-mail so it can send a receipt, and a receipt is
+  /// not a condition of paying. The identity on a mobile-money payment is
+  /// the payer's phone number, which the rail holds and the shop never sees
+  /// (the customers decision of 2026-09-05: phone-only customers are
+  /// allowed). A shop that made the e-mail mandatory would be collecting a
+  /// second identifier it has no use for.
+  email String?
 
   status OrderStatus @default(unpaid)
 
@@ -102,6 +119,18 @@ model Order {
   /// order page can name it and so a repeated `orders.embeddedSecret` call
   /// retrieves the session it already created instead of minting a second one.
   checkoutSessionId String? @map("checkout_session_id")
+
+  /// vpay's `last_payment_error.code` — one of the eleven in
+  /// `vpay_core::failure::FailureCode` — written by the webhook handler and
+  /// by nothing else, and only when an order becomes `failed`. Stored
+  /// because the delivered event is the only place it ever appears: this
+  /// shop never calls vpay to read an intent.
+  failureCode String? @map("failure_code")
+
+  /// The message that came with it. The rail's own words, kept for an
+  /// operator; a buyer reads the shop's copy for the code instead
+  /// (`src/lib/failures.ts`).
+  failureMessage String? @map("failure_message")
 
   items         OrderItem[]
   webhookEvents WebhookEvent[]

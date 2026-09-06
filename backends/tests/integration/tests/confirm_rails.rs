@@ -540,6 +540,20 @@ async fn stored_payment_error(
     .context("reading the payment error a decline stamped on the intent")
 }
 
+/// Every `events` row about one payment intent, newest last.
+///
+/// Exists for the assertion in
+/// [`a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read`]:
+/// a decline at submit is a terminal transition that emits **nothing**, and
+/// "nothing" is only a fact if something counts it.
+async fn event_types_for(pool: &PgPool, object_id: &str) -> anyhow::Result<Vec<String>> {
+    sqlx::query_scalar::<_, String>("SELECT type FROM events WHERE object_id = $1 ORDER BY seq")
+        .bind(object_id)
+        .fetch_all(pool)
+        .await
+        .context("reading the events a decline did or did not write")
+}
+
 async fn charge_count(pool: &PgPool, payment_intent_id: &str) -> anyhow::Result<i64> {
     sqlx::query_scalar::<_, i64>("SELECT count(*) FROM charges WHERE payment_intent_id = $1")
         .bind(payment_intent_id)
@@ -1737,6 +1751,33 @@ async fn a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read() -> 
          {message}"
     );
     assert_eq!(charge_count(&harness.pool, &intent.id).await?, 1);
+
+    // NOTHING WAS EMITTED, and that is a gap rather than a design.
+    //
+    // The charge is terminal and the intent carries `last_payment_error` —
+    // but `persist_decline` writes both of those and no event, and
+    // `payment_intent.payment_failed` is written by
+    // `vpay_db::settlement::apply_failed`, which only the worker's poll path
+    // calls. So a decline the rail made *at submit* is the one terminal
+    // outcome a merchant cannot learn from a signed event; it can be seen
+    // only in this call's own `409`, or by polling
+    // `GET /v1/payment_intents/{id}`.
+    //
+    // It matters beyond this test: `examples/shop` advertises MTN
+    // `237600000400` as a test number and used to promise it made an order
+    // `failed`, which a shop that settles only from webhooks cannot do
+    // (corrected 2026-09-06). This assertion is what will fail on the day
+    // vpay starts emitting for this transition, so the shop's table and
+    // docs/status.md get corrected with it rather than staying stale in the
+    // other direction.
+    assert_eq!(
+        event_types_for(&harness.pool, &intent.id).await?,
+        Vec::<String>::new(),
+        "a decline at submit emits no event today (docs/status.md, 'Events written by the \
+         worker'). If this now fails, vpay has grown the event and every claim that it does \
+         not — this comment, examples/shop's test-number table and README, docs/status.md — \
+         must be corrected in the same change"
+    );
 
     harness.shutdown().await;
     Ok(())

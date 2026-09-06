@@ -2,9 +2,11 @@ import { z } from "zod";
 import {
   MAX_LINES,
   MAX_QUANTITY_PER_LINE,
+  cancelOrder,
   embeddedClientSecret,
   placeOrder,
   requireOrder,
+  retryOrder,
 } from "../orders";
 import type { OrderDeps } from "../orders";
 import type { OrderView } from "../../lib/order-view";
@@ -21,6 +23,8 @@ export function toOrderView(order: Order): OrderView {
     currency: order.currency,
     paymentIntentId: order.paymentIntentId,
     checkoutSessionId: order.checkoutSessionId,
+    failureCode: order.failureCode,
+    failureMessage: order.failureMessage,
     createdAt: order.createdAt.getTime(),
     items: order.items,
   };
@@ -31,7 +35,7 @@ function deps(ctx: ShopContext): OrderDeps {
     store: ctx.store,
     vpay: ctx.vpay,
     shopPublicUrl: ctx.shopPublicUrl,
-    paymentMethodTypes: ctx.paymentMethodTypes,
+    rails: ctx.rails,
   };
 }
 
@@ -39,6 +43,29 @@ const cartLine = z.object({
   productId: z.string().min(1).max(64),
   quantity: z.int().min(1).max(MAX_QUANTITY_PER_LINE),
 });
+
+/**
+ * The three surfaces, on the wire.
+ *
+ * `popup` is accepted here even though it produces exactly the session
+ * `hosted` does, because the *shop* wants to know which one a buyer chose —
+ * and because a client that sent `hosted` and then opened a popup would be
+ * relying on the two staying the same forever.
+ */
+const checkoutMode = z.enum(["hosted", "embedded", "popup"]);
+
+/**
+ * `null` and an absent value both mean "no e-mail", and an empty string does
+ * too: an HTML form posts `""` for a field the buyer left blank, and
+ * refusing that with "not a valid e-mail" would be the shop failing an
+ * optional field for being unfilled.
+ */
+const optionalEmail = z
+  .union([z.email().max(320), z.literal(""), z.null()])
+  .optional()
+  .transform((value) =>
+    value === undefined || value === null || value === "" ? null : value,
+  );
 
 export const ordersRouter = router({
   /**
@@ -52,9 +79,9 @@ export const ordersRouter = router({
   create: publicProcedure
     .input(
       z.object({
-        email: z.email().max(320),
+        email: optionalEmail,
         lines: z.array(cartLine).min(1).max(MAX_LINES),
-        mode: z.enum(["hosted", "embedded"]).default("hosted"),
+        mode: checkoutMode.default("hosted"),
       }),
     )
     .mutation(async ({ ctx, input }) =>
@@ -85,4 +112,29 @@ export const ordersRouter = router({
     .mutation(async ({ ctx, input }) =>
       embeddedClientSecret(deps(ctx), input.orderId),
     ),
+
+  /**
+   * A **new** order carrying the failed one's lines. One charge per intent,
+   * forever — so a retry is a new order, a new intent and a new session, and
+   * the prices are re-read from the catalogue rather than copied.
+   */
+  retry: publicProcedure
+    .input(
+      z.object({
+        orderId: z.string().min(1).max(64),
+        mode: checkoutMode.default("hosted"),
+      }),
+    )
+    .mutation(async ({ ctx, input }) =>
+      retryOrder(deps(ctx), input.orderId, input.mode),
+    ),
+
+  /**
+   * Cancels the order's PaymentIntent at vpay. Writes nothing: the
+   * `cancelled` status arrives as a `payment_intent.canceled` event, like
+   * every other settled status this shop shows.
+   */
+  cancel: publicProcedure
+    .input(z.object({ orderId: z.string().min(1).max(64) }))
+    .mutation(async ({ ctx, input }) => cancelOrder(deps(ctx), input.orderId)),
 });

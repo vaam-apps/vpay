@@ -639,11 +639,11 @@ Two things about it that will otherwise surprise you:
   `deploy/dev/postgres-init/10-shop-database.sql` runs from Postgres's
   entrypoint, which executes that directory exactly once on an empty data
   directory. A `pgdata` volume from before Step 9 has no `shop` database and
-  `vpay-shop` dies in `prisma migrate deploy`. **`just demo-down` removes
+  `vpay-shop` dies in `zen migrate deploy`. **`just demo-down` removes
   volumes** (`down -v`), so tearing the stack down is the fix; nothing here
   creates the database defensively on every boot, because that would hide a
   stale volume rather than report one.
-- **Its tables and its catalogue come from `prisma migrate deploy`**, run by the
+- **Its tables and its catalogue come from `zen migrate deploy`**, run by the
   container's entrypoint before the server starts. Idempotent, so a restart is a
   no-op:
 
@@ -651,10 +651,71 @@ Two things about it that will otherwise surprise you:
   $ DEMO_COMPOSE="-f compose.yml -f compose.e2e.yml -f compose.demo.yml"
   $ docker compose $DEMO_COMPOSE logs vpay-shop | head -4
   vpay-shop-1  | vpay-shop: applying migrations
-  vpay-shop-1  | 2 migrations found in prisma/migrations
+  vpay-shop-1  | 3 migrations found in prisma/migrations
   vpay-shop-1  | Applying migration `20260904091557_init`
   vpay-shop-1  | Applying migration `20260904091600_seed_catalogue`
+  vpay-shop-1  | Applying migration `20260906120000_optional_email_and_failure_columns`
   ```
+
+  The transcript above is from before the ZenStack 3 upgrade of 2026-09-06
+  (three migrations, not two, since the same day). It is `zen migrate deploy`
+  now, and the "prisma/migrations" in the second line is **Prisma Migrate's
+  own wording**, not a path that still exists — v3 drives Prisma Migrate from
+  a schema it derives from the zmodel, and the files are in
+  `examples/shop/zenstack/migrations/`.
+
+### Three ways to pay, and the numbers that make a payment fail
+
+Since 2026-09-06 the shop's `/checkout` page offers all three integration
+surfaces and a panel of the demo's **test numbers**. Both are worth a minute,
+because between them they are most of what a merchant actually has to build.
+
+- **The surface switch** (Redirect / Popup / Embedded) starts on whatever
+  `SHOP_CHECKOUT_MODE` names — `hosted` by default, and the demo stack does
+  not set it. A real merchant picks one in configuration and ships no switch;
+  this one exists so a reader can see each. Redirect and Popup are the *same*
+  hosted session: the popup opens `session.url` in a window the shop owns, and
+  the shop's own return page — running inside that window — tells the opener
+  and closes it.
+- **The test numbers** are documentation MSISDNs the rail stubs are configured
+  to answer particular things for. `237600000000` (or anything unlisted) pays;
+  `237600000101` is insufficient funds on MTN; `237600000102` is a timeout on
+  either rail; `237600000400` is a refusal on either; `237600000503` is an
+  unavailable rail on MTN. The full table, including the three outcomes Orange
+  **cannot** express, is on the page itself and in
+  [../../examples/shop/README.md](../../examples/shop/README.md).
+
+Two things to know before you drive them:
+
+- **MTN's number goes on vpay's page** (it is a push rail); **Orange's goes on
+  the rail stub's own hosted page**, in the "Or pay with one of the demo's
+  test numbers" form beside the Pay link — Orange is a redirect rail and vpay
+  never sees a number.
+- **Orange's numbers do not work from a browser today.** vpay's confirm
+  handler enqueues the first status query at `now()` — `poll_delay(0)` is the
+  delay before the *second* attempt — and the worker's idle sleep is a
+  second, so the stub's catch-all answers `SUCCESS` and the order is **paid**
+  before you can reach the form, whatever number you were about to type.
+  Measured on 2026-09-06 from the stub's own journal: submit at T, first
+  `transactionstatus` at T+449 ms, the form at T+12 s, order `paid` for
+  `237600000400`. Check the order page's `failure_code`; do not read the walk
+  as working. The mappings are right and are proven at the adapter level; what
+  is missing, and why it was not added, is in
+  [../plans/exp22-shop-demo-notes/opus.md](../plans/exp22-shop-demo-notes/opus.md).
+  MTN's numbers are unaffected — a push rail carries the number in the
+  merchant's own submit, so there is no window to lose.
+
+The one outcome no number reaches is `cancelled` — and on today's vpay
+nothing else reaches it either. Clicking "cancel" on the rail's page is a
+navigation and leaves the order open. The order page's "Cancel this payment"
+button *does* reach `POST /v1/payment_intents/{id}/cancel` and the intent
+really does become `canceled` at vpay; **vpay then emits nothing**, because
+the worker writes three event types and `payment_intent.canceled` is not one
+of them. Measured 2026-09-06, with the intent's row read out of vpay's own
+database and the `events` table unchanged. The shop's `cancelled` status is
+therefore unreachable, and the shop says so on the button rather than writing
+the status from its own request. Written up in
+[../plans/exp22-shop-demo-notes/opus.md](../plans/exp22-shop-demo-notes/opus.md).
 
 ### One currency, and what it is not saying
 

@@ -16,7 +16,7 @@
  * walkthrough brings the shop container up, waits for its healthcheck and
  * prints its URL, and never places an order. Lane 6's Cypress specs have
  * merged and do click an order through in a real browser, but they assert on
- * the shop's pages and never on `PrismaShopStore` itself — so it still has no
+ * the shop's pages and never on `ZenStackShopStore` itself — so it still has no
  * unit or integration test of its own.
  *
  * `src/testing/` is never imported by anything under `src/app` or
@@ -47,19 +47,35 @@ export interface OrderLine {
 
 export interface Order {
   id: string;
-  email: string;
+  /**
+   * `null` when the buyer did not give one. The shop asks for an e-mail so
+   * it can send a receipt, and a receipt is not a condition of paying —
+   * the identity on a mobile-money payment is the **phone number**, which
+   * the payer gives the rail and never gives the shop (the customers
+   * decision of 2026-09-05: phone-only customers are allowed).
+   */
+  email: string | null;
   status: OrderStatus;
   /** Integer minor units, computed server-side from the catalogue. */
   totalMinor: number;
   currency: string;
   paymentIntentId: string | null;
   checkoutSessionId: string | null;
+  /**
+   * `last_payment_error.code` from the event that failed this order — one of
+   * `vpay_core::failure::FailureCode`'s eleven, and `null` on every other
+   * status. Stored rather than derived because the event is the only place
+   * it ever appears: the shop never calls vpay to read an intent.
+   */
+  failureCode: string | null;
+  /** The rail-facing sentence that came with it. Operator-facing, not buyer-facing. */
+  failureMessage: string | null;
   items: OrderLine[];
   createdAt: Date;
 }
 
 export interface NewOrder {
-  email: string;
+  email: string | null;
   currency: string;
   totalMinor: number;
   items: OrderLine[];
@@ -88,6 +104,10 @@ export interface WebhookApplication {
   paymentIntentId: string;
   /** What the order's status becomes when the event is applied. */
   nextStatus: OrderStatus;
+  /** `last_payment_error.code`, when the event carried one. */
+  failureCode: string | null;
+  /** `last_payment_error.message`, when the event carried one. */
+  failureMessage: string | null;
 }
 
 /** Thrown when an order already carries a different `pi_…`. */

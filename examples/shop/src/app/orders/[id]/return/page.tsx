@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { TRPCError } from "@trpc/server";
 import { OrderPoller } from "@/components/order-poller";
+import { PopupReturnNotifier } from "@/components/popup-return-notifier";
 import { serverCaller } from "@/server/context";
 
 export const dynamic = "force-dynamic";
@@ -9,10 +10,15 @@ export const dynamic = "force-dynamic";
  * `success_url` — where vpay sends a payer who finished on its page.
  *
  * `session_id` arrives in the query string because the shop asked for it
- * (`?session_id={CHECKOUT_SESSION_ID}`, D5). It is **displayed and nothing
- * else**: this page does not read it, does not look it up at vpay, and above
- * all does not use it to mark anything paid. Arriving here means a browser
- * followed a redirect; it does not mean money moved.
+ * (`?session_id={CHECKOUT_SESSION_ID}`, D5). It is **displayed, and passed to
+ * the popup notifier as a label** — this page does not look it up at vpay,
+ * and above all does not use it to mark anything paid. Arriving here means a
+ * browser followed a redirect; it does not mean money moved.
+ *
+ * The same page serves all three surfaces. In the popup integration it is
+ * loaded *inside the popup*, where {@link PopupReturnNotifier} tells the
+ * opener and closes the window; on every other path that component finds no
+ * opener and does nothing.
  */
 export default async function OrderReturnPage({
   params,
@@ -38,6 +44,10 @@ export default async function OrderReturnPage({
   return (
     <>
       <h1>Thank you</h1>
+      <PopupReturnNotifier
+        sessionId={typeof sessionId === "string" ? sessionId : null}
+        status="complete"
+      />
       <OrderPoller initial={order} />
       <p style={{ color: "var(--muted)", fontSize: "0.9rem" }}>
         vpay sent you back with{" "}
