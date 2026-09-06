@@ -269,12 +269,30 @@ second resolves one paragraph.
    `Category::Configuration` / `78` for the same class of mistake, and the two
    now disagree. Related: should boot check `Capabilities::is_coherent` before
    it reconciles at all, rather than letting the CHECK answer?
-2. **`fn reconcile` is 237 lines** and grew again in this review (the two new
-   comment blocks). exp17's review left the length to a maintainer at 203; it
-   is still almost all comment and still the longest production function on
-   `verify-docs`' advisory list.
+2. **`fn reconcile` is 249 lines** on the review head — 203 before exp20, 237
+   as delivered, and the review's two comment blocks (READ COMMITTED, the
+   `23514` classification) took it the rest of the way. exp17's review left the
+   length to a maintainer at 203; it is still almost all comment and still the
+   longest production function on `verify-docs`' advisory list.
 
-## 5. Not checked
+## 5. Gate
+
+`just ci` end to end on `137a75e`, **exit 0**, under rustc 1.98.0 and Node
+22.23.2 from `.nvmrc` with `pnpm install --frozen-lockfile`. Ten `verify`
+gates green; `test-rust` **1389/1389, 0 skipped** (932 s); `verify-ignored`
+**0 ignored, 43 binaries, 1389 total**; `test-doc` 96 passed / 1 ignored
+(pre-existing); `deny` `advisories ok, bans ok, licenses ok, sources ok`;
+`lint-web` and `test-web` green.
+
+The first full run, on the delivered head, failed at test 1319/1386 on
+`provider_callback::…::case_1_mtn_momo` with `failed to create a container:
+Timeout error` — an abandoned `vpay-demo` compose stack was crash-looping on
+this host and the load average was above 22. Every test it reached passed,
+including the drift test at 84. Several targeted runs during the review hit the
+same 120 s container-start timeout and passed on retry; none of them was an
+assertion failure. Recorded rather than hidden.
+
+## 6. Not checked
 
 - The `just fmt` prettier hazard (222 unrelated files) — untouched, as in the
   delivered change. `just ci` runs `fmt-check`, never `fmt`.

@@ -3802,6 +3802,30 @@ Full transcript, including the two mutations that were re-measured rather than
 accepted and the exp18 merge check, in
 [plans/exp20-provider-defaults-notes/opus-review.md](plans/exp20-provider-defaults-notes/opus-review.md).
 
+**Gate on the review head (`137a75e`), 2026-09-06, rustc 1.98.0 and Node
+22.23.2 from `.nvmrc` with `pnpm install --frozen-lockfile`:** `just ci` end to
+end, **exit 0**. All ten `just verify` gates green (`check-schema` still 13
+model/enum declarations at cratestack 0.11.1; `verify-links` 807 links in 147
+files). `just test-rust`: **1389 tests run, 1389 passed, 0 skipped** (932 s) —
+1386 plus the review's three. `just verify-ignored`: **0 ignored (expected 0),
+43 test binaries (expected 43), 1389 total** (floor 1080). `just test-doc`: 96
+passed, 1 ignored (the pre-existing `sdks/rust` README block). `just deny`:
+`advisories ok, bans ok, licenses ok, sources ok`. `lint-web` and `test-web`
+green.
+
+An earlier full run on the delivered head failed on `provider_callback ::
+case_1_mtn_momo` with `failed to create a container: Timeout error` at 120 s,
+while an abandoned `vpay-demo` compose stack was crash-looping on this host
+(`Restarting (69)`, its database gone) and the load average was above 22. Not
+this change: every test it did reach passed, including the drift test at 84,
+and the same suite is green above. Recorded rather than hidden.
+
+**`fn reconcile` is 249 lines** on this head (203 before exp20, 237 as
+delivered): the review added two comment blocks, one for the READ COMMITTED
+dependency and one for the `23514` classification. Still the longest production
+function on `verify-docs`' advisory list, still almost all comment, and still a
+maintainer's call.
+
 
 ---
 
