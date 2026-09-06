@@ -80,11 +80,17 @@ Three ways to close it, each a maintainer's call:
    fall through) fixes that and costs the Orange happy path a rung or three of
    the ladder — roughly a minute — which `shop-hosted.cy.ts` and
    `shop-embedded.cy.ts` would absorb inside their 120 s outcome timeout, or
-   would not. **Cypress cannot be run from this branch's environment**
+   would not. ~~**Cypress cannot be run from this branch's environment**
    (`CYPRESS_INSTALL_BINARY=0`; the binary needs a CDN this network does not
-   reach), and changing the timing of a stub that `compose.yml`, CI's e2e job
-   and both Rust suites share, without being able to run one of them, is not
-   a change to make on a guess.
+   reach)~~ — **wrong, corrected in review on 2026-09-06: the binary is
+   already on this machine.** `pnpm exec cypress install` answers "Cypress
+   15.21.1 is installed in ~/.cache/Cypress/15.21.1" and `cypress verify`
+   passes; `just … test-e2e` ran all four specs green against a stack of its
+   own (see "The review's Cypress run" at the end of this document). What
+   remains true is the second half of the sentence: changing the timing of a
+   stub that `compose.yml`, CI's e2e job and both Rust suites share is a
+   maintainer's decision and not one to take inside this task, and the
+   measurement below is unaffected either way.
 2. **Enqueue the first poll with a delay.** One line in the confirm handler,
    and the wrong place for it: the immediate first poll is a deliberate
    property (`docs/flows/crash-safety.md` — a charge is asked about as soon as
@@ -95,8 +101,14 @@ Three ways to close it, each a maintainer's call:
 
 MTN is unaffected and needs none of this: a push rail carries the MSISDN in
 the merchant's own submit, so the steering happens before the charge exists
-and there is no window to lose. Those five numbers were driven end to end
-through the browser on the demo stack and behave as the table says.
+and there is no window to lose. ~~Those five numbers were driven end to end
+through the browser on the demo stack and behave as the table says.~~
+**Corrected in review, 2026-09-06.** Three of the five were driven — the run
+table below records `…0101`, `…0000` and `…0503` and no others — and one of
+the remaining two did **not** behave as the table said: `…0400` is refused on
+the *submit*, which vpay commits through `persist_decline`, which emits no
+event, so the shop's order stays `unpaid` where the table promised `failed`.
+See R1 and D6 in [opus-review.md](opus-review.md).
 
 ### D2. `payer_declined` is a code no adapter emits
 
@@ -180,10 +192,14 @@ it was transient and the retry built cleanly.
 **No PNG screenshots were captured**, and that is a limitation of this
 environment rather than a choice: the browser available here renders into a
 pane and returns images into the transcript, and nothing in the toolchain
-writes an image file (Cypress's binary is not installed —
-`CYPRESS_INSTALL_BINARY=0`, and its CDN is unreachable from here). What is
+writes an image file ~~(Cypress's binary is not installed —
+`CYPRESS_INSTALL_BINARY=0`, and its CDN is unreachable from here)~~. What is
 recorded instead is what each page actually said, which is the thing a
-screenshot would have been evidence *of*.
+screenshot would have been evidence *of*. **The parenthesis is wrong and was
+corrected in review on 2026-09-06:** Cypress 15.21.1 is installed on this
+machine and runs. It writes screenshots only for *failing* tests, so a green
+run still produces none — but "the toolchain cannot run Cypress" was not the
+reason, and it was the reason given twice more in this document.
 
 ### `vpay-shop`'s first log lines — ZenStack 3 in a read-only container
 
@@ -236,3 +252,30 @@ cmtpyxm34000601mhgrtr0mt6|unpaid|-|(null)
 …15734  POST /orange-money-webpay/dev/v1/transactionstatus     <- 449 ms after the submit
 …27241  GET  /stub-hosted-page/pay-ba7bc37a-…/pay?…&msisdn=237600000400
 ```
+
+## The review's Cypress run, 2026-09-06
+
+Added by the sabotage review (`opus-review.md`, R6). `pnpm exec cypress
+install` found `Cypress 15.21.1` already in `~/.cache/Cypress`, `cypress
+verify` passed, and
+
+```
+just demo_project=exp22-review demo_port=18280 demo_receiver_port=18283 \
+     demo_orange_port=18282 demo_checkout_port=18285 demo_shop_port=18286 \
+     test-e2e
+```
+
+built the stack and ran every spec against it. **11 tests, 11 passing, 0
+failing, 0 pending, 0 skipped**, exit 0, stack torn down with `down -v`:
+
+| Spec | Tests |
+|---|---|
+| `checkout.cy.ts` | 1 — the MTN push through `@vaam-apps/vpay-stripe-js` settles to `succeeded` |
+| `dashboard.cy.ts` | 3 |
+| `shop-hosted.cy.ts` | 3 — MTN on vpay's page → `paid` via the webhook; **Orange redirect → `paid`** (64.6 s); a payment that does not succeed lands on `cancel_url` and never becomes `paid` |
+| `shop-embedded.cy.ts` | 4 — frame `src` and `frame-ancestors`, MTN inside the frame → `paid`, Orange breaking out to `return_url`, and a refusal to be framed by an unregistered origin |
+
+So the two specs this branch repaired without running are green against a
+real browser and a real stack, which is what `ce88aae`'s "**Neither spec was
+run**" could not say. **Nothing changed about the popup**: there is still no
+spec that opens one, so the ⛔ in `docs/sdks/parity.md` stands unaltered.
