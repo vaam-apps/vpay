@@ -133,7 +133,7 @@ afterwards each time; final `git rev-parse HEAD` re-checked.
 | 3 | Delete `@@allow("create", …)` from `model Currency` | `every_action_this_module_calls_has_an_allow_arm` **FAILS in 4 ms with no container**, naming the consequence; three container reconcile cases fail with `Currency: a model policy denied a system upsert: forbidden: create policy denied this upsert` |
 | 4 | Delete `CONSTRAINT partial_refunds_imply_refunds` from migration 0002 | `partial_refunds_without_refunds_is_rejected_by_the_database` **FAILS** (`rows_affected: 1`). `the_cstack_schema_drifts_…` also fails — **but at line 1403, its own `pg_constraint` exact-set assertion, and the header still reads `84 change(s) total`.** The drift count is unmoved, as claimed |
 | 5 | *(added by this review)* Remove the five `@default(...)` from `model Provider` | **The crate stops compiling** — `E0063: missing fields delivers_callbacks, enabled, requires_ip_allowlist and 2 other fields in initializer of CreateProviderInput` at `config_reconcile.rs:501`. With the literal completed, `the_provider_upsert_cannot_carry_the_capability_columns` **FAILS**, printing the eight-column statement the docs predict. See finding 6 |
-| 6 | *(added by this review)* Swap the currency `upsert(...).run_in_tx(&mut tx, &ctx)` for `.run(&ctx)` | Before this review, **nothing failed**. See finding 5 |
+| 6 | *(added by this review)* Swap the currency `upsert(...).run_in_tx(&mut tx, &ctx)` for `.run(&ctx)` | Before this review, nothing **failed** — `reconcile_is_idempotent_and_disables_a_dropped_provider_code` **hung** instead: `SLOW [>480.000s]` and still going when the run was killed, because `upsert`'s conflict probe is itself `SELECT … FOR UPDATE` and off the transaction it waits on the row the transaction holds. `a_hand_seeded_currency_…` passed (it never reaches the upsert). The new test is red in 1.2 s. See finding 5 |
 
 ---
 
@@ -202,9 +202,29 @@ the currency upsert has already landed.
 
 Reading `upsert.rs`/`upsert_exec.rs` says it must be (§ 2), but that is
 exactly the kind of "true by reading the code" claim this repository does not
-accept. Mutation 6 shows the gap was real: swapping `run_in_tx(&mut tx, &ctx)`
-for `run(&ctx)` — a one-word edit, and the *only* difference between joining
-vpay's transaction and opening a private one — failed nothing.
+accept. Mutation 6 shows the gap was real, and shows something the module
+comment did not say at all.
+
+Swapping `run_in_tx(&mut tx, &ctx)` for `run(&ctx)` — a one-word edit, and
+the only difference between joining vpay's transaction and opening a private
+one — **failed nothing. It hung.** `upsert`'s own conflict probe is
+`SELECT … FOR UPDATE`
+(`cratestack-sqlx/src/query/write/upsert_sql.rs:24-60`), executed on
+`&mut **tx` inside `run_upsert_in_tx`. Off the transaction it waits for the
+row lock `find_unique(...).for_update()` is holding, and that transaction is
+waiting for it: a self-deadlock. `reconcile_is_idempotent_and_disables_a_
+dropped_provider_code` reported `SLOW [>480.000s]` and was still reporting it
+when the run was killed. In a deployment that is a boot that never returns
+and never logs an error.
+
+So `.for_update()` and `run_in_tx` are **coupled**, and the module comment
+argued only about `gate_update_policy`'s policy probe (which is a *different*
+query, and genuinely has no `FOR UPDATE`). The two probes were being treated
+as one. A hang is also the worst available signal — worse than a red test —
+so the fix is both a comment that names the coupling and a test that converts
+the hang into a 1.2-second assertion failure. The new case stays fast under
+the mutation because its currency is an INSERT: the conflict probe finds no
+row, locks nothing, and blocks on nothing.
 
 ### 5 — nit: the decisive assertion messages are damaged
 

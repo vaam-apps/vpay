@@ -279,16 +279,33 @@ impl ConfigReconcile for crate::repository::PgRepositories {
             // was, and `CurrencyExponentConflict` above is the only path that
             // can see a disagreement.
             //
+            // `run_in_tx`, and NOT `run`. The difference is not only
+            // atomicity — it is the second half of the row lock above.
+            // `upsert`'s own conflict probe is `SELECT ... FOR UPDATE`
+            // (`upsert_sql.rs::select_for_update_by_conflict_target`), so on
+            // this transaction it re-takes a lock this transaction already
+            // holds (free), and on any other connection it would wait for a
+            // transaction that is itself waiting for it. Measured on
+            // 2026-09-06 by swapping this one call to `.run(&ctx)`:
+            // `reconcile_is_idempotent_and_disables_a_dropped_provider_code`
+            // did not fail, it **hung** — `SLOW [>480.000s]` and still going
+            // when the run was killed, which in a deployment is a boot that
+            // never returns.
+            // `a_currency_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`
+            // in `tests/repositories.rs` is what turns that into a 1.2-second
+            // red with a message; see docs/plans/exp17-notes/opus-review.md.
+            //
             // Two pooled connections on the conflict branch, not one:
             // `upsert_resolve.rs::gate_update_policy` runs its update-policy
             // probe on `runtime.pool()` while this transaction still holds a
-            // connection of its own. That probe is a plain `SELECT 1 ... AND
-            // (<policy>)` with no `FOR UPDATE`, so it does **not** block on
-            // the row this transaction just locked — Postgres's MVCC reads
-            // are not blocked by writers — and boot cannot deadlock against
-            // itself. It does mean two of `pool.rs`'s `MAX_CONNECTIONS = 10`
-            // per in-flight reconcile, which is comfortable for a boot step
-            // the advisory lock already admits one at a time.
+            // connection of its own. *That* probe is a plain `SELECT 1 ...
+            // AND (<policy>)` with no `FOR UPDATE` — a different query from
+            // the conflict probe above — so it does **not** block on the row
+            // this transaction just locked, Postgres's MVCC reads not being
+            // blocked by writers. It does mean two of `pool.rs`'s
+            // `MAX_CONNECTIONS = 10` per in-flight reconcile, which is
+            // comfortable for a boot step the advisory lock already admits
+            // one at a time.
             let input = crate::schema::cratestack_schema::CreateCurrencyInput {
                 code: currency.code.clone(),
                 exponent: currency.exponent,

@@ -2727,6 +2727,110 @@ async fn a_hand_seeded_currency_exponent_is_read_back_and_refused_not_overwritte
     Ok(())
 }
 
+/// The currency write goes into **vpay's** transaction, so vpay's rollback
+/// takes it back — asserted in the direction that was not covered.
+///
+/// `config_reconcile`'s module doc leads with "Every statement below runs in
+/// one transaction, so a failure part-way through leaves the tables exactly
+/// as they were". Since 2026-09-06 half of those statements belong to an
+/// external crate, and `run_in_tx` versus `run` is the *only* difference
+/// between joining this transaction and quietly opening a private one. A
+/// `.run(&ctx)` there would still compile, still return `Ok`, and still
+/// write the right row — and the row would survive a rollback that was
+/// supposed to erase it.
+///
+/// `a_hand_seeded_currency_exponent_is_read_back_and_refused_not_overwritten`
+/// above proves the other direction: a currency refusal leaves no provider
+/// behind. Nothing proved this one.
+///
+/// What the review of 2026-09-06 measured when it changed that `run_in_tx`
+/// to `.run(&ctx)` is worth stating exactly, because it is *not* "the suite
+/// stayed green" and it is not a plain rollback failure either:
+///
+///   * this test fails in **1.2 s**, on the assertion below;
+///   * `a_hand_seeded_currency_exponent_is_read_back_and_refused_not_overwritten`
+///     still passes — it never reaches the upsert;
+///   * `reconcile_is_idempotent_and_disables_a_dropped_provider_code`
+///     **hangs forever**. Not fails: hangs. `upsert`'s own conflict probe is
+///     `SELECT … FOR UPDATE` (`upsert_sql.rs::select_for_update_by_conflict_target`),
+///     so off the transaction it waits on the row lock the transaction
+///     itself is holding, and the transaction is waiting on it. nextest
+///     reported `SLOW [>480.000s]` and was still reporting it when the run
+///     was killed.
+///
+/// So `run_in_tx` is not only about atomicity here — with `.for_update()`
+/// above it, it is what keeps boot from deadlocking against itself. This
+/// test exists so that mistake reports as a red assertion naming the cause
+/// rather than as a boot that never returns, which is what the same mistake
+/// would do in production. See docs/plans/exp17-notes/opus-review.md.
+///
+/// It is *this* case rather than the idempotence one that stays fast under
+/// the mutation because the currency here is an INSERT: the conflict probe
+/// finds no row, so it locks nothing and blocks on nothing.
+///
+/// The failure is arranged so the currency lands *first* and something later
+/// in the same transaction fails: seeds are iterated in sorted `code` order
+/// with every currency before every provider, and this rail sets
+/// `supports_partial_refunds` without `supports_refunds`, which migration
+/// 0002's `partial_refunds_imply_refunds` CHECK refuses. So `EUR` is written
+/// through CrateStack, then the provider insert raises `23514`, then `tx`
+/// drops. If `EUR` is still there afterwards, the write was never in this
+/// transaction at all.
+#[tokio::test]
+async fn a_currency_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+
+    let incoherent = vpay_db::ProviderSeed {
+        code: "incoherent_rail".to_owned(),
+        display_name: "Incoherent Rail".to_owned(),
+        flow: "push".to_owned(),
+        supports_refunds: false,
+        supports_partial_refunds: true,
+        delivers_callbacks: false,
+        requires_ip_allowlist: false,
+        enabled: true,
+    };
+    let error = repositories
+        .reconcile(
+            &[vpay_db::CurrencySeed {
+                code: "EUR".to_owned(),
+                exponent: 2,
+            }],
+            std::slice::from_ref(&incoherent),
+        )
+        .await
+        .expect_err("a rail that refunds partially but not at all must be refused by the CHECK");
+
+    // Named, so this test cannot pass on some *other* failure that happened
+    // to occur before the currency was written — which would make the
+    // assertion below vacuous.
+    let vpay_db::DbError::Query(sqlx_error) = &error else {
+        panic!("expected the constraint violation to surface as DbError::Query, got {error:?}");
+    };
+    assert_eq!(
+        sqlx_error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::constraint),
+        Some("partial_refunds_imply_refunds"),
+        "the transaction must have got as far as the provider insert and failed THERE; if it \
+         failed earlier, the currency was never written and this test proves nothing"
+    );
+
+    let currencies_written: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM currencies")
+        .fetch_one(&pool)
+        .await
+        .context("counting currencies must succeed")?;
+    assert_eq!(
+        currencies_written, 0,
+        "the CrateStack currency upsert must have been rolled back with everything else. A 1 \
+         here means it ran on its own connection instead of joining this transaction — check \
+         that `reconcile`'s upsert still says `run_in_tx(&mut tx, &ctx)` and not `run(&ctx)`"
+    );
+
+    Ok(())
+}
+
 /// The two rails every reconcile test seeds, in the shape `boot_seeds`
 /// produces them. A free function rather than a `const` because
 /// `ProviderSeed` owns its `String`s.
