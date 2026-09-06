@@ -53,7 +53,12 @@ function buyWithoutLeavingTheShop(): void {
   cy.get(`[data-testid="add-${PRODUCT.coffee}"]`).click();
   cy.visit(`${shopUrl()}/checkout`);
   cy.get('[data-testid="email"]').type("framed@example.test");
-  cy.get('[data-testid="pay-embedded"]').click();
+  // One button and a surface selector since 2026-09-06 (exp22), where there
+  // used to be one button per surface. `check()` rather than `click()`: the
+  // input is the thing with the state, and a click on the label around it
+  // would pass whether or not the radio moved.
+  cy.get('[data-testid="mode-embedded"]').check();
+  cy.get('[data-testid="pay"]').click();
   cy.url({ timeout: 60_000 }).should("include", "/embedded");
 }
 

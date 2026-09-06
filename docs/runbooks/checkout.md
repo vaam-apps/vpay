@@ -213,14 +213,24 @@ With `just demo` green ([demo.md](demo.md)) and the default ports:
    cart.
 2. **`/cart`** — line totals and the cart total. The number here is for display;
    the price that counts is computed on the server.
-3. **"Checkout"** → any e-mail → **"Pay on vpay's page"**. Your browser is now
-   on `http://localhost:3080/c/cs_…`, and the shop has written an `unpaid`
-   order, an intent and a session in that order.
+3. **"Checkout"** → the e-mail is **optional** (2026-09-06) and the surface
+   selector below it starts on **Redirect** → **"Pay on vpay's page"**. Your
+   browser is now on `http://localhost:3080/c/cs_…`, and the shop has written
+   an `unpaid` order, an intent and a session in that order.
 4. **Pay.** MTN: type `237600000100`. Orange: follow the redirect to the stub's
    page and click "Pay". (The digits-only MSISDNs are the ones the page's E.164
    validator accepts — see
    [../flows/adapter-mtn-momo.md](../flows/adapter-mtn-momo.md)'s steering
    table.)
+
+   **To make it fail instead**, use one of the test numbers the checkout page
+   now lists: MTN `237600000101` (insufficient funds), `237600000102`
+   (timeout), `237600000400` (the rail has no such account), `237600000503`
+   (the rail is unavailable). The order then reaches `failed` with a
+   `failure_code`, the shop shows a sentence written for that code, and — for
+   a payer-actionable one — a "Try again" that places a **new** order.
+   Orange's own numbers are listed there too and **do not work from a
+   browser**; the panel says why, above the table.
 5. **You land on `/orders/{id}/return`.** It says "we are confirming your
    payment" and polls every two seconds — the **shop's** database, not vpay.
 6. **Within a few seconds it turns to "Paid"**, because vpay's worker delivered

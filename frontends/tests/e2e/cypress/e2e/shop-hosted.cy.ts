@@ -43,11 +43,21 @@ function buyOnVpaysPage(): void {
   cy.get('[data-testid="cart-table"]').should("be.visible");
 
   cy.get('[data-testid="to-checkout"]').click();
+  // Still typed, though the field became OPTIONAL on 2026-09-06 (exp22): a
+  // payer who gives one is the case worth driving here, and `checkout.cy.ts`
+  // is not the place to cover the empty one — `orders.test.ts` does, at the
+  // level where the stored value can actually be asserted.
   cy.get('[data-testid="email"]').type("payer@example.test");
+  // The surface is chosen explicitly rather than relied on. `hosted` is the
+  // default (`SHOP_CHECKOUT_MODE`, unset in the demo stack) and this radio
+  // starts selected; checking it anyway means this spec keeps driving the
+  // redirect the day that default changes, instead of quietly testing
+  // whatever the deployment happens to prefer.
+  cy.get('[data-testid="mode-hosted"]').check();
   // The shop's server now creates the PaymentIntent and the hosted Checkout
   // Session through `@vaam-apps/vpay-sdk` and answers with `session.url`; the browser
   // performs a top-level navigation to vpay's origin.
-  cy.get('[data-testid="pay-hosted"]').click();
+  cy.get('[data-testid="pay"]').click();
 }
 
 describe("the shop, paid on vpay's hosted page", () => {
