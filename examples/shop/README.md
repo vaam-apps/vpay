@@ -174,13 +174,13 @@ cannot drift.
 Typed on **vpay's** checkout page: MTN is a push rail, so vpay prompts the
 handset.
 
-| Number         | What happens                                     | Order    | vpay code              | The rail said                   |
-| -------------- | ------------------------------------------------ | -------- | ---------------------- | ------------------------------- |
-| `237600000000` | Pays. Any number not listed below does the same. | `paid`   | —                      | `SUCCESSFUL`                    |
-| `237600000101` | Declined — the wallet has too little money       | `failed` | `insufficient_funds`   | `NOT_ENOUGH_FUNDS`              |
-| `237600000102` | The prompt expires — nobody enters the PIN       | `failed` | `payer_timeout`        | `COULD_NOT_PERFORM_TRANSACTION` |
-| `237600000400` | Refused at submit — the rail has no such account. vpay's page says so; this shop never hears about it | `unpaid`   | `invalid_payer`        | `PAYER_NOT_FOUND (HTTP 400)`    |
-| `237600000503` | The rail is unavailable                          | `failed` | `provider_unavailable` | `SERVICE_UNAVAILABLE`           |
+| Number         | What happens                                                                                          | Order    | vpay code              | The rail said                   |
+| -------------- | ----------------------------------------------------------------------------------------------------- | -------- | ---------------------- | ------------------------------- |
+| `237600000000` | Pays. Any number not listed below does the same.                                                      | `paid`   | —                      | `SUCCESSFUL`                    |
+| `237600000101` | Declined — the wallet has too little money                                                            | `failed` | `insufficient_funds`   | `NOT_ENOUGH_FUNDS`              |
+| `237600000102` | The prompt expires — nobody enters the PIN                                                            | `failed` | `payer_timeout`        | `COULD_NOT_PERFORM_TRANSACTION` |
+| `237600000400` | Refused at submit — the rail has no such account. vpay's page says so; this shop never hears about it | `unpaid` | `invalid_payer`        | `PAYER_NOT_FOUND (HTTP 400)`    |
+| `237600000503` | The rail is unavailable                                                                               | `failed` | `provider_unavailable` | `SERVICE_UNAVAILABLE`           |
 
 > **`237600000400` leaves the order `unpaid`, and that is a second gap of
 > the same shape as `cancelled`.** MTN refuses this MSISDN on the **submit**,

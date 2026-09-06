@@ -98,8 +98,8 @@ export default async function OrderCancelledPage({
             The cancel really does move the intent at vpay — measured on the
             demo stack, 2026-09-06 — and this order will nevertheless stay{" "}
             <code>unpaid</code>, because moving it from anything other than a
-            signed event is the one thing this example exists to argue
-            against. See <code>examples/shop/README.md</code>.
+            signed event is the one thing this example exists to argue against.
+            See <code>examples/shop/README.md</code>.
           </p>
         </>
       ) : null}

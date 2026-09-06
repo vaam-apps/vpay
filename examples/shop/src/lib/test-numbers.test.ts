@@ -125,7 +125,9 @@ function steeringPatterns(rail: "mtn" | "orange"): string[] {
       Object.values(node).forEach(walk);
     }
   };
-  for (const file of readdirSync(dir).filter((name) => name.endsWith(".json"))) {
+  for (const file of readdirSync(dir).filter((name) =>
+    name.endsWith(".json"),
+  )) {
     const parsed: unknown = JSON.parse(readFileSync(dir + file, "utf8"));
     const mappings = (parsed as { mappings?: unknown[] }).mappings ?? [];
     for (const mapping of mappings) {
@@ -146,7 +148,10 @@ describe("the stubs that honour the numbers", () => {
   ] as const) {
     it(`keys a ${rail} mapping on every number that is meant to fail`, () => {
       const patterns = steeringPatterns(dir);
-      expect(patterns.length, `${dir} mappings name no MSISDN at all`).toBeGreaterThan(0);
+      expect(
+        patterns.length,
+        `${dir} mappings name no MSISDN at all`,
+      ).toBeGreaterThan(0);
       const entry = TEST_NUMBERS.find((candidate) => candidate.rail === rail);
       expect(entry, rail).toBeDefined();
       for (const number of entry?.numbers ?? []) {
@@ -161,7 +166,10 @@ describe("the stubs that honour the numbers", () => {
             pattern.includes(number.msisdn) ||
             new RegExp(`^(?:${pattern})$`, "u").test(number.msisdn),
         );
-        expect(steered, `${rail} ${number.msisdn} is in no mapping's request`).toBe(true);
+        expect(
+          steered,
+          `${rail} ${number.msisdn} is in no mapping's request`,
+        ).toBe(true);
       }
     });
   }

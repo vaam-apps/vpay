@@ -1,11 +1,12 @@
 import { testNumbersFor, type TestNumber } from "@/lib/test-numbers";
 
 /** One word per order status, so the table cannot render "Failed" for `unpaid`. */
-const ORDER_STATUS_LABEL: Readonly<Record<TestNumber["orderStatus"], string>> = {
-  paid: "Paid",
-  failed: "Failed",
-  unpaid: "Unpaid",
-};
+const ORDER_STATUS_LABEL: Readonly<Record<TestNumber["orderStatus"], string>> =
+  {
+    paid: "Paid",
+    failed: "Failed",
+    unpaid: "Unpaid",
+  };
 
 /**
  * The demo stack's fake numbers, on the screen where a buyer needs them.
@@ -117,17 +118,17 @@ export function TestNumbersPanel({ rails }: { rails: readonly string[] }) {
         </div>
       ))}
       <p style={{ color: "var(--muted)", fontSize: "0.9rem" }}>
-        <strong>Cancelled</strong> is the one outcome no number reaches — and
-        on today&rsquo;s vpay nothing else reaches it either. A payer who
-        clicks &ldquo;cancel&rdquo; on the rail&rsquo;s page has only
-        navigated: the order stays open and the charge may still settle. The
-        order <em>would</em> become <code>cancelled</code> when the shop
-        cancels its PaymentIntent — the button on the order page — and vpay
-        delivered <code>payment_intent.canceled</code>.{" "}
-        <strong>It does not.</strong> Measured on the demo stack on
-        2026-09-06: the cancel really does move the intent, and vpay writes no
-        event for that transition, so this shop — which moves an order only
-        from a signed event — leaves it <code>unpaid</code>. See the README.
+        <strong>Cancelled</strong> is the one outcome no number reaches — and on
+        today&rsquo;s vpay nothing else reaches it either. A payer who clicks
+        &ldquo;cancel&rdquo; on the rail&rsquo;s page has only navigated: the
+        order stays open and the charge may still settle. The order{" "}
+        <em>would</em> become <code>cancelled</code> when the shop cancels its
+        PaymentIntent — the button on the order page — and vpay delivered{" "}
+        <code>payment_intent.canceled</code>. <strong>It does not.</strong>{" "}
+        Measured on the demo stack on 2026-09-06: the cancel really does move
+        the intent, and vpay writes no event for that transition, so this shop —
+        which moves an order only from a signed event — leaves it{" "}
+        <code>unpaid</code>. See the README.
       </p>
     </section>
   );

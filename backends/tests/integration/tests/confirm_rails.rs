@@ -547,13 +547,11 @@ async fn stored_payment_error(
 /// a decline at submit is a terminal transition that emits **nothing**, and
 /// "nothing" is only a fact if something counts it.
 async fn event_types_for(pool: &PgPool, object_id: &str) -> anyhow::Result<Vec<String>> {
-    sqlx::query_scalar::<_, String>(
-        "SELECT type FROM events WHERE object_id = $1 ORDER BY seq",
-    )
-    .bind(object_id)
-    .fetch_all(pool)
-    .await
-    .context("reading the events a decline did or did not write")
+    sqlx::query_scalar::<_, String>("SELECT type FROM events WHERE object_id = $1 ORDER BY seq")
+        .bind(object_id)
+        .fetch_all(pool)
+        .await
+        .context("reading the events a decline did or did not write")
 }
 
 async fn charge_count(pool: &PgPool, payment_intent_id: &str) -> anyhow::Result<i64> {
