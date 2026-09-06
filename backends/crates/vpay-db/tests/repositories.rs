@@ -381,12 +381,25 @@ async fn disabled_client_lookup_reflects_disable_and_enable() -> anyhow::Result<
 /// disable_and_enable` above would still pass its "not disabled" half, and
 /// the kill-switch would be off with nothing red anywhere.
 ///
-/// So: write through the sqlx path that has not moved, then read the same
-/// key three ways — the repository method (CrateStack), a direct
-/// `SELECT EXISTS` (the statement this method used to be), and a direct
-/// `SELECT client_id` — and require all three to agree. The second read is
-/// the control: it is what proves the row is really there when the first one
-/// says it is not.
+/// So: seed the row with a statement CrateStack had nothing to do with, then
+/// read the same key three ways — the repository method (CrateStack), a
+/// direct `SELECT EXISTS` (the statement this method used to be), and a
+/// direct `SELECT client_id` — and require all three to agree. The second
+/// read is the control: it is what proves the row is really there when the
+/// first one says it is not.
+///
+/// **The seed changed on 2026-09-06 and the reason it had to is the point of
+/// this paragraph.** Until then this test wrote through
+/// `DisabledClients::disable_client`, and the sentence below the write said
+/// "the sqlx write that deliberately did NOT move to CrateStack in this
+/// change — so this asserts the two layers see one table, not that one layer
+/// is self-consistent". That write is now a CrateStack `upsert`, so calling
+/// it here would have made exactly the claim that sentence disclaimed: a
+/// generated write read back by a generated read, agreeing with itself. The
+/// `INSERT` and `DELETE` are inline in this test now, deliberately not
+/// factored into a helper — they exist to be *unlike* the code under test,
+/// and a helper shared with the CrateStack-write test below would be the
+/// first step back towards one path checking itself.
 ///
 /// **Decisive mutation, DESIGNED AND NOT YET RUN.** Delete
 /// `@@allow("read", auth().isSystem())` from `model DisabledClient` in
@@ -453,14 +466,16 @@ async fn a_disabled_client_reads_the_same_through_both_paths() -> anyhow::Result
         "an absent client_id must read the same through CrateStack and through sqlx"
     );
 
-    // Present, written through the sqlx write that deliberately did NOT
-    // move to CrateStack in this change — so this asserts the two layers
-    // see one table, not that one layer is self-consistent.
-    let present = "merchant_disabled_by_the_sqlx_write";
-    repositories
-        .disable_client(present, Some("key compromised, ticket INC-123"))
+    // Present, seeded with a hand-written statement — no generated code, no
+    // policy layer, nothing this test is testing. So this asserts the two
+    // layers see one table, not that one layer is self-consistent.
+    let present = "merchant_disabled_by_a_hand_written_insert";
+    sqlx::query("INSERT INTO disabled_clients (client_id, reason) VALUES ($1, $2)")
+        .bind(present)
+        .bind("key compromised, ticket INC-123")
+        .execute(&pool)
         .await
-        .context("the sqlx write must succeed")?;
+        .context("the control INSERT must succeed")?;
 
     let via_sqlx = sqlx_says_disabled(&pool, present).await?;
     let via_cratestack = repositories.is_client_disabled(present).await?;
@@ -478,18 +493,179 @@ async fn a_disabled_client_reads_the_same_through_both_paths() -> anyhow::Result
          silently OFF"
     );
 
-    // And back again: the delete must be visible to the CrateStack read too,
+    // And back again: the removal must be visible to the CrateStack read too,
     // so the agreement is not an artefact of a row that was never removed.
-    repositories
-        .enable_client(present)
+    // Hand-written for the same reason the INSERT above is.
+    sqlx::query("DELETE FROM disabled_clients WHERE client_id = $1")
+        .bind(present)
+        .execute(&pool)
         .await
-        .context("the sqlx delete must succeed")?;
+        .context("the control DELETE must succeed")?;
     assert_eq!(
         repositories.is_client_disabled(present).await?,
         sqlx_says_disabled(&pool, present).await?,
         "a row deleted by the sqlx path must be gone from the CrateStack read too"
     );
     assert!(!repositories.is_client_disabled(present).await?);
+
+    Ok(())
+}
+
+/// The twin of the test above, for the two writes — which moved to CrateStack
+/// on 2026-09-06, a day after the read.
+///
+/// Same shape and the same reason: write through the code under test, read
+/// back through a statement that shares nothing with it, and require the two
+/// to agree. What is asserted here beyond "it did not error" is everything
+/// the trait's doc comments promise and a generated builder could quietly
+/// stop doing:
+///
+/// - the row carries the `reason` that was passed, so `reason` really is in
+///   the insert list rather than left to a default;
+/// - a second `disable_client` **updates** the reason and does **not** move
+///   `disabled_at`, which is the `ON CONFLICT … DO UPDATE SET reason` half of
+///   the contract and the reason `upsert_update_columns` excluding
+///   `@default(...)` columns matters (`disabled_clients.rs`'s unit tests
+///   assert the rendered SQL; this asserts the row);
+/// - passing `None` clears the reason rather than preserving the old one,
+///   because the generated `SET` is `EXCLUDED.reason` and not a `COALESCE`;
+/// - `enable_client` removes the row, visibly to both paths;
+/// - `enable_client` on an id that was never disabled is `Ok`.
+///
+/// **Decisive mutations, all three run on 2026-09-06** (`docs/plans/exp16-notes/opus.md`):
+///
+/// 1. Delete `@@allow("create", auth().isSystem())` from `model
+///    DisabledClient` → this test FAILS at the *first* `disable_client`, with
+///    a `PersistenceError::Denied` classified `Category::Internal` — **an
+///    error, not a silently absent row.** That asymmetry with the read is the
+///    single most useful thing measured here: `upsert_exec.rs` evaluates the
+///    create policy in Rust before it builds any SQL, so an empty allow list
+///    is a `CratestackError::Forbidden` rather than a `WHERE FALSE`.
+/// 2. Delete `@@allow("update", …)` → this test FAILS at the *second*
+///    `disable_client` and not the first, because only the conflict branch
+///    consults the update policy (`upsert_resolve.rs::gate_update_policy`).
+///    A test that disabled a client once and stopped would have passed.
+/// 3. Delete `@@allow("delete", …)` → this test FAILS at the `enable_client`
+///    assertion, and it fails the way a *read* mutation does: the call
+///    returns `Ok` and the row is still there. `delete_many` puts its policy
+///    in the `WHERE`, so zero rows deleted is indistinguishable from nothing
+///    to delete. This is why `enable_client` is asserted by reading the table
+///    back rather than by trusting its return.
+#[tokio::test]
+async fn a_client_disabled_through_cratestack_is_visible_to_both_paths() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+
+    /// The whole row, read with no generated code and no policy layer in the
+    /// statement. `Option` because "no row" is an answer this test asserts.
+    async fn row(
+        pool: &PgPool,
+        client_id: &str,
+    ) -> anyhow::Result<Option<(chrono::DateTime<Utc>, Option<String>)>> {
+        sqlx::query_as::<_, (chrono::DateTime<Utc>, Option<String>)>(
+            "SELECT disabled_at, reason FROM disabled_clients WHERE client_id = $1",
+        )
+        .bind(client_id)
+        .fetch_optional(pool)
+        .await
+        .context("the control SELECT must run")
+    }
+
+    let client = "merchant_disabled_by_the_cratestack_write";
+
+    assert!(
+        row(&pool, client).await?.is_none(),
+        "the fixture must start with no row for `{client}`"
+    );
+
+    repositories
+        .disable_client(client, Some("key compromised, ticket INC-123"))
+        .await
+        .context(
+            "the CrateStack upsert must succeed. A `Denied`/`Internal` here means \
+             `@@allow(\"create\", auth().isSystem())` is missing from `model DisabledClient` in \
+             schemas/vpay.cstack — unlike the read, the write says so rather than doing nothing",
+        )?;
+
+    let (first_disabled_at, reason) = row(&pool, client)
+        .await?
+        .context("the row the CrateStack upsert wrote must be visible to a plain SELECT")?;
+    assert_eq!(
+        reason.as_deref(),
+        Some("key compromised, ticket INC-123"),
+        "the operator note must reach the column, not a default"
+    );
+    assert!(
+        repositories.is_client_disabled(client).await?,
+        "and the CrateStack read must see the row the CrateStack write made"
+    );
+
+    // Second disable: updates the reason, leaves `disabled_at` alone. Both
+    // halves are the trait's documented contract and both are properties of
+    // `upsert_update_columns` rather than of anything this crate writes.
+    repositories
+        .disable_client(client, Some("re-confirmed compromised"))
+        .await
+        .context(
+            "a second disable must not error. A `Denied` here and not on the first call means \
+             `@@allow(\"update\", auth().isSystem())` is missing: only the conflict branch \
+             consults the update policy",
+        )?;
+
+    let (second_disabled_at, reason) = row(&pool, client)
+        .await?
+        .context("the row must still exist after a second disable")?;
+    assert_eq!(
+        reason.as_deref(),
+        Some("re-confirmed compromised"),
+        "a second disable must overwrite the reason — `DO UPDATE SET reason = EXCLUDED.reason`"
+    );
+    assert_eq!(
+        second_disabled_at, first_disabled_at,
+        "a second disable must NOT move `disabled_at`: it records when the client was FIRST \
+         disabled, and an upsert that assigned it would silently rewrite that history"
+    );
+
+    // `None` clears the note. `EXCLUDED.reason`, not `COALESCE(EXCLUDED.reason, reason)`.
+    repositories
+        .disable_client(client, None)
+        .await
+        .context("disabling with no reason must succeed")?;
+    let (_, reason) = row(&pool, client)
+        .await?
+        .context("the row must still exist")?;
+    assert_eq!(
+        reason, None,
+        "passing no reason must clear the column, not preserve the previous note"
+    );
+
+    // Enable: the row goes, and both paths must see it go. Asserted by
+    // reading the table, never by trusting the return value — a missing
+    // `@@allow("delete", …)` makes `delete_many` remove zero rows and return
+    // `Ok`, which is the one silent failure mode this write has.
+    repositories
+        .enable_client(client)
+        .await
+        .context("the CrateStack delete must succeed")?;
+    assert!(
+        row(&pool, client).await?.is_none(),
+        "`enable_client` returned Ok and the row is still there. That is what a missing \
+         `@@allow(\"delete\", auth().isSystem())` looks like: `delete_many` compiles the policy \
+         into the WHERE, so a denied delete removes nothing and reports success"
+    );
+    assert!(
+        !repositories.is_client_disabled(client).await?,
+        "and the CrateStack read must agree the row is gone"
+    );
+
+    // Idempotent in the other direction too: enabling something that was
+    // never disabled is a no-op, not an error. This is the contract that
+    // forced `delete_many` over `delete` — `DeleteRecord` reports a row it
+    // did not match as `Forbidden`, and cannot tell that from a policy
+    // refusal.
+    repositories
+        .enable_client("merchant_that_was_never_disabled")
+        .await
+        .context("enabling a client with no row must be a no-op, not an error")?;
 
     Ok(())
 }
