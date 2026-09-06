@@ -1007,8 +1007,45 @@ verify-docs:
 # `cargo test --doc --workspace`, not computed. It is not a gate — no recipe
 # asserts a doctest count — which is exactly why the number has to be true
 # in the prose or it is true nowhere.
+#
+# **41 -> 42 on 2026-09-05 (issue #45), and it is a new file rather than an
+# accounting change.** `GET /v1/refunds/{id}` became a served route, and
+# `backends/tests/integration/tests/refunds.rs` is its proof: five
+# container-backed cases (the read through the shipping SDK, the
+# byte-identical `resource_missing` 404 across a tenancy boundary, the
+# API-response-versus-event-payload byte identity, the `re_` short-circuit
+# refusing a row that really exists, and `POST /v1/refunds` still answering
+# the honest 404). A file, not cases added to
+# `payment_intents.rs`, because none of the five is about a payment intent
+# and the suite has its own harness fixture — a `refunds` row this repository
+# has no code to create. `cargo nextest list --workspace` lists **1294 total,
+# 42 test binaries, 0 ignored** on this branch: 1279 plus those 5, plus 2
+# `sdks/rust/tests/resources.rs` cases for the SDK's new
+# `refunds().retrieve()`, plus 5 `vpay_api::model` cases for `RefundObject`,
+# plus 2 `vpay_api::v1::refunds` units and 1 in `vpay_api::v1`. The 1080 floor
+# stands untouched. (**1293 -> 1294 on review the same day**: the fifth
+# integration case was added because deleting the `re_` short-circuit left
+# the other four, and every unit test, green.) `just test-doc` is unchanged at **90 passed, 1 ignored**:
+# nothing added carries a doctest.
+#
+# **42 -> 43, and 1319/1294 -> 1334, on 2026-09-06 — the rebase of issue #45
+# onto issue #47, and the number neither branch could have known.** The two
+# entries directly above were each measured on a tree without the other, and
+# **both moved `expected_suites` 41 -> 42**: #47 for the new binary
+# `backends/tests/integration/tests/account_holders.rs`, #45 for the new
+# binary `backends/tests/integration/tests/refunds.rs`. Two different new
+# binaries, the same edited line — so git took one "42" and reported no
+# conflict, and the merged tree would have failed `verify-ignored` with 43
+# listed against 42 expected. Re-measured on the rebased tree the way
+# `verify-ignored` measures it (`cargo nextest list --workspace
+# --message-format json`, `."rust-suites" | length`): **1334 total, 43 test
+# binaries, 0 ignored**. 1334 is #47's 1319 plus #45's own 15 (the 1293 ->
+# 1294 review case included); 43 is 41 plus one binary each. The 1080 floor
+# stands untouched. The lesson worth keeping: when two branches each bump a
+# count by one, the merged count is not either branch's number, and only
+# re-running the measurement finds that.
 expected_ignored := "0"
-expected_suites := "42"
+expected_suites := "43"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

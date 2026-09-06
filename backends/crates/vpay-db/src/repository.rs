@@ -35,6 +35,7 @@ use crate::jobs::Jobs;
 use crate::migrations::Migrations;
 use crate::payment_intents::PaymentIntents;
 use crate::provider_requests::ProviderRequests;
+use crate::refunds::Refunds;
 use crate::settlement::Settlement;
 use crate::signing_keys::SigningKeys;
 use crate::webhook_deliveries::WebhookDeliveries;
@@ -502,6 +503,7 @@ pub trait Repositories:
     + Migrations
     + PaymentIntents
     + ProviderRequests
+    + Refunds
     + Settlement
     + SigningKeys
     + TransactionSource

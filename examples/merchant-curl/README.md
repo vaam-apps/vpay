@@ -9,8 +9,11 @@
 > step — see ../../docs/status.md and
 > [ADR-0010](../../docs/adr/0010-merchant-auth-private-key-jwt.md).
 >
-> `/v1/refunds`, `/v1/balance` and `/v1/events` are not routed at all and
-> answer the honest `404 unknown_route`.
+> `POST /v1/refunds` and `GET /v1/balance` are not routed at all and answer
+> the honest `404 unknown_route`. `GET /v1/events`, `GET /v1/events/{id}` and
+> — since 2026-09-05 (issue #45) — `GET /v1/refunds/{id}` **are** served. This
+> line said all three of `/v1/refunds`, `/v1/balance` and `/v1/events` were
+> unrouted; it had been wrong about `/v1/events` since Step 5 (2026-09-03).
 >
 > **Every `POST` under `/v1` requires an `Idempotency-Key` header.** The
 > *server* never defaults one: a `POST` without the header is refused with a

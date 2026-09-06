@@ -601,6 +601,82 @@ async fn a_full_refund_omits_the_amount_entirely() {
     assert_eq!(body_string(&request), "payment_intent=pi_1");
 }
 
+#[tokio::test]
+async fn retrieve_refund_is_a_get_with_no_body_and_decodes_the_object() {
+    // `GET /v1/refunds/{id}` — served since 2026-09-05 (issue #45), and the
+    // only observation of a refund that exists: `charge.refund.updated` is
+    // documented and emitted by nothing, and webhook delivery is
+    // at-least-once and unordered in any case.
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/refunds/re_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "re_1",
+            "object": "refund",
+            "amount": 2500,
+            "currency": "xaf",
+            "payment_intent": "pi_1",
+            "status": "pending",
+            "reason": "requested_by_customer",
+            "metadata": { "case": "77" },
+            "created": 1_753_401_600,
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let refund = client.refunds().retrieve("re_1").await.unwrap();
+
+    assert_eq!(refund.id, "re_1");
+    assert_eq!(refund.payment_intent, "pi_1");
+    assert_eq!(refund.status, RefundStatus::Pending);
+    assert_eq!(refund.reason.as_deref(), Some("requested_by_customer"));
+    assert_eq!(refund.metadata.get("case").map(String::as_str), Some("77"));
+
+    let request = only_request(&server, "/v1/refunds/re_1").await;
+    assert_eq!(request.method.as_str(), "GET");
+    assert!(request.body.is_empty());
+    // A `GET` spends no idempotency key: the header belongs to writes, and
+    // sending one here would claim this call changes something.
+    assert!(header_value(&request, "idempotency-key").is_none());
+    assert_eq!(request.url.query(), None);
+}
+
+/// A hostile refund id cannot escape `/v1`, exactly as a hostile intent or
+/// session id cannot.
+///
+/// The mirror of `a_checkout_session_id_with_url_metacharacters_is_percent_encoded_into_the_path`;
+/// `path_segment` is the one encoder and this is what pins that the new
+/// method reached for it rather than interpolating the caller's string.
+#[tokio::test]
+async fn a_refund_id_with_url_metacharacters_is_percent_encoded_into_the_path() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "re_1",
+            "object": "refund",
+            "amount": 2500,
+            "currency": "xaf",
+            "payment_intent": "pi_1",
+            "status": "pending",
+            "reason": null,
+            "metadata": {},
+            "created": 1_753_401_600,
+        })))
+        .mount(&server)
+        .await;
+
+    let _ = client.refunds().retrieve("../../admin").await;
+
+    let requests = server.received_requests().await.unwrap();
+    let paths: Vec<String> = requests
+        .iter()
+        .map(|r| r.url.path().to_string())
+        .filter(|p| p != "/v1/oauth/token")
+        .collect();
+    assert_eq!(paths, vec!["/v1/refunds/..%2F..%2Fadmin"]);
+}
+
 /// `checkout.session.expired` is in this SDK's event vocabulary, and its
 /// payload decodes as a Checkout Session through the whole `events.list`
 /// path — the object a merchant actually receives, not a hand-built one.

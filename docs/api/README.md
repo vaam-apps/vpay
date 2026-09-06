@@ -70,8 +70,13 @@ else `403` `forbidden`
 
 ### Served today
 
-`vpay_api::v1::V1_ROUTES` is the router's source, not a copy of it. Twelve
-methods across ten paths since issue #47 (eleven across nine after Step 9):
+`vpay_api::v1::V1_ROUTES` is the router's source, not a copy of it.
+**Thirteen methods across eleven paths**, re-counted from `V1_ROUTES` on
+2026-09-06 after `GET /v1/refunds/{id}` (issue #45) landed on top of
+`GET /v1/account_holders` (issue #47): eleven across nine after Step 9,
+twelve across ten with issue #47, thirteen across eleven now. Each of the two
+changes was written against a tree without the other, and each said "twelve
+across ten"; neither number survives them both.
 
 | Method | Path | Request params | Answer |
 |---|---|---|---|
@@ -82,6 +87,7 @@ methods across ten paths since issue #47 (eleven across nine after Step 9):
 | POST | `/v1/payment_intents/{id}/cancel` | | `200` + `payment_intent` in `canceled`, or `409 invalid_state` (`cancel_is_legal_only_from_requires_payment_method`, `a_confirmed_intent_cannot_be_canceled`) |
 | GET | `/v1/events` | `limit` (default 10, capped at 100), `starting_after`, `ending_before` (`evt_…` ids; not both) | `200` + `list` envelope of `event` objects, newest first, scoped to your merchant (`events_are_listed_newest_first_scoped_to_the_merchant`) |
 | GET | `/v1/events/{id}` | | `200` + `event`, or `404 resource_missing` — **including for another merchant's id**, byte for byte (same test) |
+| GET | `/v1/refunds/{id}` | | `200` + `refund`, or `404 resource_missing` — **including for another merchant's id**, byte for byte (`merchant_b_cannot_read_merchant_as_refund`). The scope is a join onto the owning intent: `refunds` has no `merchant_id`. **There is no `POST /v1/refunds`** — see "Not served" below |
 | POST | `/v1/checkout/sessions` | `payment_intent` (**required**, a `pi_…` of yours in `requires_payment_method` with no charge and no other open session), `ui_mode` (`hosted` \| `embedded`, default `hosted`), `success_url` + `cancel_url` (**required** for `hosted`, refused for `embedded`), `return_url` (**required** for `embedded`, refused for `hosted`) — all http(s), ≤ 2048 chars, `https` only under livemode, and each may carry the literal `{CHECKOUT_SESSION_ID}` | `201` + `checkout.session` **with `client_secret`**, and `url` when hosted; `400` naming the field; `500 checkout_not_configured` when this deployment serves no checkout page (Step 9) |
 | GET | `/v1/checkout/sessions/{id}` | | `200` + `checkout.session` **with `client_secret`**, or the uniform `404` (Step 9) |
 | GET | `/v1/checkout/sessions` | `limit`, `starting_after`, `ending_before`, `payment_intent` | `200` + `list` envelope, **no secrets** (Step 9) |
@@ -440,7 +446,7 @@ stack, and CI runs it.
 
 | Method | Path | Why |
 |---|---|---|
-| POST | `/v1/refunds` | no refunds repository, no handler; migration `0017` is the schema only |
+| POST | `/v1/refunds` | no rail can refund: `mtn_momo::refund` is `NotImplemented` (refunds are MTN's Disbursements product) and Orange Money answers `Unsupported`. Nothing writes a `refunds` row, and `vpay_db::Refunds` exposes one read and no write |
 | GET | `/v1/balance` | no ledger read path |
 
 Both SDKs can call both. Each returns the `404` envelope to an
@@ -448,6 +454,15 @@ authenticated caller, because a `200` would mean someone invented a resource.
 
 `GET /v1/events` was on this list until 2026-09-03 and is now served — see
 "Served today" above.
+
+**`GET /v1/refunds/{id}` was never on this list**, because until 2026-09-05
+it was not in the contract at all: issue #45 asked the maintainer to decide
+whether it should be, and the decision was that it is part of `/v1` **and is
+served**. Reading a refund and creating one are separate questions — a refund
+is asynchronous and non-terminal (`pending`), `charge.refunded` and
+`charge.refund.updated` are emitted by nothing, and delivery is at-least-once
+and unordered, so a merchant holding a `re_…` had no authoritative read of
+any kind. It has one now; it still cannot make one.
 
 See [../status.md](../status.md) for the tests behind each claim above and
 for the state of the evidence.
@@ -464,11 +479,28 @@ handshake against a real `vpay_api::router` in
 `backends/tests/integration/tests/merchant_token_flow.rs`, and since
 2026-09-03 it also drives the five served payment-intent methods above
 against a real router and a real Postgres in
-`backends/tests/integration/tests/payment_intents.rs`, and its
+`backends/tests/integration/tests/payment_intents.rs`, its
 `client.events().list()` against the same in
-`backends/tests/integration/tests/webhooks.rs`. Two of its eight resource
-methods still have no route to call (`refunds().create()`,
-`balance().retrieve()`).
+`backends/tests/integration/tests/webhooks.rs`, and — since 2026-09-05 —
+`client.refunds().retrieve()` in
+`backends/tests/integration/tests/refunds.rs`.
+
+~~Two of its eight resource methods still have no route to call~~
+**— corrected 2026-09-05 by counting them, and re-counted 2026-09-06 on the
+rebased tree.** `vpay_sdk` exposes **fourteen** resource methods, not eight:
+the figure predated `checkout.sessions.{create,retrieve,list,expire}` (Step
+9, 2026-09-04), `refunds.retrieve` (issue #45) and
+`account_holders.retrieve` (issue #47). **Two of the fourteen have no route
+to call**, and they are the same two the old sentence named:
+`refunds().create()` and `balance().retrieve()` — so **twelve of the fourteen
+are routed**. The count is
+`payment_intents.{create,retrieve,confirm,cancel,list}` (5) +
+`checkout.sessions.{create,retrieve,list,expire}` (4) +
+`refunds.{create,retrieve}` (2) + `events.list` (1) +
+`account_holders.retrieve` (1) + `balance.retrieve` (1);
+`@vaam-apps/vpay-sdk` is at parity on all fourteen
+([../sdks/parity.md](../sdks/parity.md)). The "thirteen" this paragraph read
+until the rebase was measured on a tree without issue #47's resource.
 
 **The Node SDK has now spoken to a vpay, in exactly one respect.** Its
 `verifyWebhook` verifies a `Vpay-Signature` this server emitted, in a

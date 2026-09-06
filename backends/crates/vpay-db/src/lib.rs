@@ -36,6 +36,13 @@ pub mod jobs;
 pub mod lock_keys;
 pub mod payment_intents;
 pub mod provider_requests;
+// The merchant's authoritative read of a refund (issue #45). Its own module
+// rather than functions on `payment_intents`, although a refund has no
+// `merchant_id` of its own and is scoped by joining one: the join is the
+// reason it needs a home where that argument can be written down once,
+// instead of a `payment_intents` function whose name would not say it reads
+// another table.
+pub mod refunds;
 // The settlement transaction is its own module rather than a function on
 // `charges` or on `payment_intents`, because it is the one write that
 // belongs to *neither* table on its own: it moves both and emits the event
@@ -81,6 +88,7 @@ pub use migrations::Migrations;
 pub use payment_intents::{ListPage, NewPaymentIntent, PaymentIntentRow, PaymentIntents};
 pub use pool::{connect, connect_lazy};
 pub use provider_requests::ProviderRequests;
+pub use refunds::{RefundRow, Refunds};
 pub use repository::{
     PendingTransaction, Repositories, TransactionSource, TxFuture, TxOutcome, TxRepositories,
     UnitOfWork,

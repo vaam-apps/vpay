@@ -217,8 +217,13 @@ predictable consequence of the header, not because anything observed it.
   intent currency is not the rail's settlement currency is a 400.
 - **There is no `failed` status.** A refused charge returns the intent to
   `requires_payment_method` with `last_payment_error` set.
-- **`search`, `/v1/refunds` and `/v1/balance`** are not routed and answer the
-  honest `404 unknown_route`.
+- **`search`, `POST /v1/refunds` and `/v1/balance`** are not routed and answer
+  the honest `404 unknown_route`. **`GET /v1/refunds/{id}` *is* routed** since
+  2026-09-05 (issue #45) and answers a Stripe-shaped `refund` — but **nothing
+  here drives it through stripe-node's `refunds` resource**, so
+  `stripe.refunds.retrieve()` working is untested rather than known, exactly
+  as `stripe.events.list()` is below. `stripe.refunds.create()` remains a
+  `404`, and correctly so: no rail can refund.
 - **`/v1/events` and `/v1/events/{id}` *are* routed** (Step 5), and their
   bodies are Stripe's `event` shape — but **nothing here drives them through
   stripe-node's `events` resource**, so `stripe.events.list()` working is

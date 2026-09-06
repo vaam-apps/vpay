@@ -85,6 +85,11 @@ object_tag!(
     "account_holder"
 );
 object_tag!(
+    /// The `"refund"` discriminator.
+    RefundTag,
+    "refund"
+);
+object_tag!(
     /// The `"checkout.session"` discriminator.
     ///
     /// Stripe's own spelling, dot and all, so a merchant switching an
@@ -952,17 +957,23 @@ impl<T> ListObject<T> {
     }
 }
 
-/// Renders a row's `metadata`, which the `metadata_is_object` CHECK
-/// (migration 0014) guarantees is a JSON object.
+/// Renders a row's `metadata`, which a `metadata_is_object` CHECK
+/// (migrations `0014` and `0017`) guarantees is a JSON object.
 ///
 /// A non-object would mean that CHECK is gone or was bypassed, which is this
 /// layer's invariant failing rather than anything a merchant did — hence
 /// `Internal`, which pages, rather than an empty object that would quietly
 /// tell the merchant their metadata was lost.
-fn metadata_of(value: &Value) -> Result<Map<String, Value>, ApiError> {
+///
+/// `table` is a parameter, and it is the only thing that varies between
+/// callers: `Internal`'s payload is logged and never rendered, so its whole
+/// value is that it names the table and column an operator has to go and
+/// look at. A second copy of this function per table would be four lines
+/// duplicated to hold one string.
+fn metadata_of(value: &Value, table: &'static str) -> Result<Map<String, Value>, ApiError> {
     value.as_object().cloned().ok_or_else(|| {
         ApiError::Internal(format!(
-            "payment_intents.metadata is {} rather than an object",
+            "{table}.metadata is {} rather than an object",
             kind_of(value)
         ))
     })
@@ -1169,10 +1180,86 @@ impl TryFrom<&vpay_db::PaymentIntentRow> for PaymentIntentObject {
                 row.last_payment_error_code.as_ref(),
                 row.last_payment_error_message.as_ref(),
             )?,
-            metadata: metadata_of(&row.metadata)?,
+            metadata: metadata_of(&row.metadata, "payment_intents")?,
             description: row.description.clone(),
             created: row.created_at.unix_timestamp(),
             livemode: row.livemode,
+        })
+    }
+}
+
+/// A `refund`, as `GET /v1/refunds/{id}` serves it.
+///
+/// # One renderer, two surfaces, on purpose — the same argument [`EventObject`] makes
+///
+/// `docs/flows/webhooks.md` commits to `charge.refunded` and
+/// `charge.refund.updated`, whose `data.object` is a refund. **Neither is
+/// emitted by anything today** (`docs/status.md`), and this type is
+/// deliberately what the writer of those events will have to use, exactly as
+/// [`PaymentIntentObject`] is what the settlement transaction already uses
+/// for `payment_intent.*`: delivery is at-least-once and unordered
+/// (`docs/flows/webhooks.md`), a merchant who missed a delivery is told to
+/// re-read the object, and if the API and the event body rendered a refund
+/// differently the fallback would answer a different question from the one
+/// the webhook asked. A second hand-built map of these nine keys is how
+/// `created` ends up in milliseconds on one of them.
+///
+/// The wire shape is `docs/flows/merchant-auth.md`'s, and it is the shape
+/// both merchant SDKs already decode (`vpay_sdk::Refund`,
+/// `@vaam-apps/vpay-sdk`'s `Refund`) — they have carried it since before any
+/// route served one.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RefundObject {
+    /// `re_…`.
+    pub id: String,
+    /// Always `"refund"`.
+    pub object: RefundTag,
+    /// Minor units (`docs/flows/money.md`).
+    pub amount: i64,
+    /// Lowercase, like every other `currency` on this API.
+    pub currency: String,
+    /// The `pi_…` this refunds. Named `payment_intent` and not
+    /// `payment_intent_id`: Stripe's spelling, and the one both SDKs decode.
+    pub payment_intent: String,
+    /// `pending`, `succeeded`, `failed` or `canceled`.
+    ///
+    /// A `String` rather than a closed enum, for [`EventObject::kind`]'s
+    /// reason: the vocabulary is closed by the database where it is
+    /// *written* (`refund_status`, migration `0017`), and a value that failed
+    /// to parse on the read path would turn a merchant's
+    /// `GET /v1/refunds/{id}` into a `500` instead of showing them the
+    /// refund. Unlike an intent, a refund does have a terminal `failed`.
+    pub status: String,
+    /// The merchant's own reason text, or `null`. vpay has no opinion about
+    /// this vocabulary and does not close it.
+    pub reason: Option<String>,
+    /// The merchant's key/value pairs, echoed back.
+    pub metadata: Map<String, Value>,
+    /// Unix **seconds**, like every other `created` on this API.
+    pub created: i64,
+}
+
+impl TryFrom<&vpay_db::RefundRow> for RefundObject {
+    type Error = ApiError;
+
+    /// Renders a stored refund as the object a merchant reads.
+    ///
+    /// Fallible only for a state migration `0017`'s `metadata_is_object`
+    /// CHECK makes impossible — see this module's header. Nothing a *caller*
+    /// can send reaches an `Err` here, and `status` in particular is not
+    /// re-validated: see [`RefundObject::status`].
+    fn try_from(row: &vpay_db::RefundRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row.id.clone(),
+            object: RefundTag,
+            amount: row.amount,
+            currency: row.currency_code.to_lowercase(),
+            payment_intent: row.payment_intent_id.clone(),
+            status: row.status.clone(),
+            reason: row.reason.clone(),
+            metadata: metadata_of(&row.metadata, "refunds")?,
+            created: row.created_at.unix_timestamp(),
         })
     }
 }
@@ -1232,6 +1319,145 @@ mod tests {
             description: None,
             created: 1_753_401_600,
             livemode: false,
+        }
+    }
+
+    /// The `refunds` row `GET /v1/refunds/{id}` reads, with every column
+    /// [`vpay_db::RefundRow`] carries set to something distinguishable.
+    ///
+    /// Built here rather than read from Postgres because what these cases
+    /// are about is the *rendering*; `backends/tests/integration/tests/
+    /// refunds.rs` is where a real row goes through a real route.
+    fn refund_row(id: &str) -> vpay_db::RefundRow {
+        vpay_db::RefundRow {
+            id: id.to_owned(),
+            payment_intent_id: "pi_1".to_owned(),
+            amount: 2500,
+            // Upper case on the row, lower case on the wire — the one
+            // conversion this renderer performs, and the reason this fixture
+            // does not spell it the way the response does.
+            currency_code: "XAF".to_owned(),
+            status: "pending".to_owned(),
+            reason: Some("requested_by_customer".to_owned()),
+            metadata: json!({ "case": "77" }),
+            created_at: time::OffsetDateTime::from_unix_timestamp(1_753_401_600)
+                .expect("a fixed, valid unix timestamp"),
+        }
+    }
+
+    /// The nine keys `docs/flows/merchant-auth.md` documents for a `refund`,
+    /// and **exactly** those nine.
+    ///
+    /// A tenth key would be an undocumented field a merchant's SDK silently
+    /// drops; a missing one is a field their code reads as absent. Asserted
+    /// as a whole value rather than key by key, so both directions fail.
+    #[test]
+    fn a_refund_renders_the_nine_documented_keys_and_no_others() {
+        let rendered = serde_json::to_value(
+            RefundObject::try_from(&refund_row("re_1")).expect("the fixture row renders"),
+        )
+        .expect("serialises");
+
+        assert_eq!(
+            rendered,
+            json!({
+                "id": "re_1",
+                "object": "refund",
+                "amount": 2500,
+                "currency": "xaf",
+                "payment_intent": "pi_1",
+                "status": "pending",
+                "reason": "requested_by_customer",
+                "metadata": { "case": "77" },
+                "created": 1_753_401_600,
+            })
+        );
+    }
+
+    /// The contract's whole point, for this object: a merchant's own client
+    /// decodes what this renders. `vpay_sdk::Refund` is the shipping Rust
+    /// SDK's type — which has existed since before any route served one, so
+    /// this is the first case that checks the two agree.
+    #[test]
+    fn the_merchant_sdk_deserialises_the_refund_this_renders() {
+        let rendered = serde_json::to_string(
+            &RefundObject::try_from(&refund_row("re_abc")).expect("the fixture row renders"),
+        )
+        .expect("serialises");
+        let decoded: vpay_sdk::Refund =
+            serde_json::from_str(&rendered).expect("the SDK decodes the refund vpay renders");
+
+        assert_eq!(decoded.id, "re_abc");
+        assert_eq!(decoded.object, "refund");
+        assert_eq!(decoded.amount, 2500);
+        assert_eq!(decoded.currency, "xaf");
+        assert_eq!(decoded.payment_intent, "pi_1");
+        assert_eq!(decoded.status, vpay_sdk::RefundStatus::Pending);
+        assert_eq!(decoded.reason.as_deref(), Some("requested_by_customer"));
+        assert_eq!(decoded.created, 1_753_401_600);
+        assert_eq!(decoded.metadata.get("case").map(String::as_str), Some("77"));
+    }
+
+    /// Every value the `refund_status` enum (migration `0017`) can hold is a
+    /// value the merchant SDK's own closed enum accepts.
+    ///
+    /// [`RefundObject::status`] is a `String` on purpose — a value the SDK
+    /// did not know must not turn a read into a `500` — but the four the
+    /// database *can* produce are exactly the four the SDK models, and that
+    /// is a claim worth failing on. Adding a fifth value to the migration
+    /// without adding it to both SDKs fails here.
+    #[test]
+    fn every_stored_refund_status_decodes_in_the_merchant_sdk() {
+        for status in ["pending", "succeeded", "failed", "canceled"] {
+            let mut row = refund_row("re_1");
+            row.status = status.to_owned();
+            let rendered = serde_json::to_string(
+                &RefundObject::try_from(&row).expect("the fixture row renders"),
+            )
+            .expect("serialises");
+            let decoded: vpay_sdk::Refund = serde_json::from_str(&rendered)
+                .unwrap_or_else(|error| panic!("the SDK decodes `{status}`: {error}"));
+            assert_eq!(
+                serde_json::to_value(decoded.status).expect("serialises"),
+                json!(status)
+            );
+        }
+    }
+
+    /// A `null` `reason` is rendered as `null`, not dropped.
+    ///
+    /// `Option<String>` with no `skip_serializing_if`, deliberately: the SDKs
+    /// declare `reason` present-and-nullable, and an omitted key is a
+    /// different wire shape from a null one for anything that counts keys —
+    /// including `a_refund_renders_the_nine_documented_keys_and_no_others`.
+    #[test]
+    fn an_absent_reason_is_null_rather_than_a_missing_key() {
+        let mut row = refund_row("re_1");
+        row.reason = None;
+        let rendered =
+            serde_json::to_value(RefundObject::try_from(&row).expect("the fixture row renders"))
+                .expect("serialises");
+        let object = rendered.as_object().expect("an object");
+        assert_eq!(object.get("reason"), Some(&Value::Null));
+        assert_eq!(object.len(), 9);
+    }
+
+    /// `metadata` that is not a JSON object is this layer's invariant failing
+    /// — migration `0017`'s `metadata_is_object` CHECK makes it impossible —
+    /// so it is `Internal` (500, paged) and never an empty object quietly
+    /// telling the merchant their metadata was lost.
+    #[test]
+    fn a_refund_whose_metadata_is_not_an_object_is_internal_not_empty() {
+        let mut row = refund_row("re_1");
+        row.metadata = json!(["not", "an", "object"]);
+        match RefundObject::try_from(&row) {
+            Err(ApiError::Internal(message)) => {
+                assert!(
+                    message.contains("refunds.metadata"),
+                    "the operator-facing message names the column: {message}"
+                );
+            }
+            other => panic!("expected an Internal error, got {other:?}"),
         }
     }
 
@@ -1411,6 +1637,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ListTag).expect("serialises"),
             json!("list")
+        );
+        assert_eq!(
+            serde_json::to_value(RefundTag).expect("serialises"),
+            json!("refund")
         );
     }
 

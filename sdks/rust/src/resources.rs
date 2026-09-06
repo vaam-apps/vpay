@@ -712,6 +712,20 @@ impl RefundsResource<'_> {
         }
         post(self.client, "/refunds", params.to_form(), opts).await
     }
+
+    /// `GET /v1/refunds/{id}`.
+    ///
+    /// A refund is asynchronous on this rail — [`crate::RefundStatus`] has a
+    /// non-terminal `Pending` — and webhook delivery is at-least-once and
+    /// unordered, so this is the authoritative read a reconciliation job
+    /// falls back to when a `charge.refund.updated` was missed or arrived out
+    /// of order.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`].
+    pub async fn retrieve(&self, id: &str) -> Result<Refund, crate::Error> {
+        get(self.client, &format!("/refunds/{}", path_segment(id)), None).await
+    }
 }
 
 /// `client.events()` — see [`crate::Client::events`].
