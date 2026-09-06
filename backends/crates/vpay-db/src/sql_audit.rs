@@ -246,8 +246,14 @@ mod tests {
     /// possible to add one without saying so here. Measured 2026-09-05 on the
     /// sqlx 0.8 → 0.9 bump; 36 → 37 on 2026-09-05 with
     /// `refunds::Refunds::get_for_merchant`, the merchant read behind
-    /// `GET /v1/refunds/{id}` (issue #45).
-    const EXPECTED_ASSERT_SITES: usize = 37;
+    /// `GET /v1/refunds/{id}` (issue #45); **37 → 39 on 2026-09-06** with
+    /// `refunds::Refunds::list_for_intent` and
+    /// `events::Events::list_for_objects`, the two reads behind
+    /// `GET /dash/v1/payment_intents/{id}` (exp23). Neither adds an
+    /// interpolation: both are `SELECT {COLUMNS} …` with every caller value
+    /// bound, and `list_page_filtered` — the third new read — reuses the
+    /// existing `payment_intents::list_page` site rather than adding one.
+    const EXPECTED_ASSERT_SITES: usize = 39;
 
     /// **The gate.** No `format!` that becomes a statement interpolates
     /// anything but a crate constant.

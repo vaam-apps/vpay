@@ -22,7 +22,10 @@ pub mod oauth;
 pub mod signal;
 pub use cli::{CommonArgs, LogFormat, ServerArgs, WorkerArgs};
 pub use config::{CheckoutConfig, Config, CurrencyEntry, ProviderHost, WebhookPolicy};
-pub use oauth::{DashboardClient, GrantType, MERCHANT_AUDIENCE, MerchantClient, WebhookEndpoint};
+pub use oauth::{
+    DASHBOARD_AUDIENCE, DashboardClient, GrantType, MERCHANT_AUDIENCE, MerchantClient,
+    WebhookEndpoint,
+};
 pub use signal::ShutdownSignals;
 
 /// The `deployment:` block of a config file: who this deployment is, and
@@ -243,6 +246,62 @@ pub enum ConfigError {
     /// never complete a login.
     #[error("dashboard client {0} declares no redirect_uris")]
     DashboardMissingRedirectUri(String),
+    /// The dashboard client names a tenant no `merchant_clients` entry
+    /// registers.
+    ///
+    /// Fatal, and it is the whole reason
+    /// [`oauth::DashboardClient::merchant_id`] is checked rather than merely
+    /// stored. A `/dash/v1` bound to an unregistered tenant is not a broken
+    /// deployment that announces itself: every query filters by a
+    /// `merchant_id` no row carries, so the payments list is *empty* and the
+    /// detail read is a *404* — which is exactly what a real merchant with
+    /// no payments looks like. An operator who mistyped a tenant would be
+    /// told nothing at all, by a screen designed to say "no payments yet".
+    ///
+    /// Checked against the registered `merchant_clients[].merchant_id`
+    /// values because that is the only enumeration of tenants that exists —
+    /// ADR-0003 keeps merchants in YAML and there is no `merchants` table
+    /// (migration `0003`'s comment).
+    #[error(
+        "dashboard client {client_id} is bound to merchant_id `{merchant_id}`, which no \
+         merchant_clients entry registers; /dash/v1 would read a tenant that does not exist"
+    )]
+    DashboardUnknownMerchant {
+        /// The dashboard registration naming the unknown tenant.
+        client_id: String,
+        /// The `merchant_id` it named.
+        merchant_id: String,
+    },
+    /// A **merchant** registration lists the dashboard audience in
+    /// `allowed_audiences`.
+    ///
+    /// This is a privilege boundary, not tidiness. `handle_client_credentials`
+    /// honours a *requested* audience whenever `allowed_audiences` permits
+    /// it, so a merchant registration carrying
+    /// [`oauth::DASHBOARD_AUDIENCE`] lets that merchant post
+    /// `audience=vpay:dash/v1` to `/v1/oauth/token` and receive a token the
+    /// `/dash/v1` resource validator's audience check accepts. The two
+    /// surfaces exist to be different credentials (ADR-0008: the dashboard
+    /// never holds a merchant key), and one YAML line would have made them
+    /// the same one.
+    ///
+    /// `/dash/v1` refuses such a token a second time anyway — its middleware
+    /// requires the token's `client_id` to be the registered dashboard
+    /// client's, and a merchant's is not — but a boundary that depends on
+    /// one check is a boundary one edit removes. Refusing the registration
+    /// is the cheap half, and it is the half an operator can read.
+    ///
+    /// Merchant-only: the dashboard client has no `allowed_audiences` field
+    /// at all, because it is not the party that requests one.
+    #[error(
+        "merchant client {client_id} lists `{}` in allowed_audiences; that is the dashboard \
+         surface's audience and a merchant credential must never be able to mint one (ADR-0008)",
+        oauth::DASHBOARD_AUDIENCE
+    )]
+    MerchantClaimsDashboardAudience {
+        /// The merchant registration that claimed it.
+        client_id: String,
+    },
     /// ADR-0010 / `docs/flows/dashboard-auth.md`: vpay stores no client
     /// secret, in any form, for any client kind — a merchant authenticates
     /// only via a signed `private_key_jwt` assertion, and the dashboard is a

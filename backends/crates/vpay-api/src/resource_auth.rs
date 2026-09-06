@@ -1,11 +1,26 @@
 //! Resource-server JWT validation for vpay's two protected HTTP surfaces:
 //! `/v1` (merchant, ADR-0010) and `/dash/v1` (dashboard, ADR-0009).
 //!
-//! STATUS: the merchant half is live and guards real rows —
-//! [`crate::require_merchant_token`] validates through [`MerchantJwtValidator`]
-//! and is mounted in front of the whole `/v1` nest. The dashboard half is
-//! unmounted: [`AuthenticatedDashboard`] exists, no `/dash/v1/*` route does,
-//! and nothing constructs a [`DashboardJwtValidator`].
+//! STATUS, corrected 2026-09-06. The merchant half is live and guards real
+//! rows — [`crate::require_merchant_token`] validates through
+//! [`MerchantJwtValidator`] and is mounted in front of the whole `/v1` nest.
+//!
+//! This paragraph used to say the dashboard half was unmounted, that no
+//! `/dash/v1/*` route existed and that nothing constructed a
+//! [`DashboardJwtValidator`]. All three stopped being true on 2026-09-06:
+//! [`crate::require_dashboard_token`] validates through
+//! [`DashboardJwtValidator`] in front of two `GET` routes
+//! ([`crate::dash::DASH_ROUTES`]), and `vpay-server`'s `main` builds one
+//! whenever the deployment registers a `dashboard_client`.
+//!
+//! What is still true, and is the sentence that matters: **no grant this
+//! deployment serves can mint a token for that surface**, so it is a resource
+//! server with no issuer. See `crate::dash`'s module header and
+//! `docs/flows/dashboard.md`.
+//!
+//! [`AuthenticatedDashboard`], the *extractor*, is genuinely mounted on
+//! nothing and remains so — `/dash/v1` validates once in middleware, for
+//! [`crate::require_merchant_token`]'s reason.
 //!
 //! Validation is local — `crate::jwks_cache` (private) caches the JWKS and every check
 //! after the first verifies the signature from memory. The one input that can
@@ -101,14 +116,20 @@ impl Surface {
     /// refuses to boot a registration that cannot target it. (This used to
     /// be a local literal marked "provisional"; it is no longer either.)
     ///
-    /// `Dashboard` is still a local literal: nothing registers or validates
-    /// it yet — `/dash/v1` login is later work — so there is no second party
-    /// for it to drift from.
+    /// `Dashboard` returns [`vpay_config::DASHBOARD_AUDIENCE`] for the same
+    /// reason, as of 2026-09-06. It **was** a local literal, and the
+    /// paragraph here said so — correctly, at the time: nothing registered
+    /// or validated a dashboard token, so there was no second party to drift
+    /// from. There are two now. `vpay_config::ConfigError::MerchantClaimsDashboardAudience`
+    /// refuses to boot a *merchant* registration that lists this value —
+    /// without which a merchant credential could request it at
+    /// `/v1/oauth/token` and be minted a token this validator accepts — and
+    /// `crate::require_dashboard_token` is the check that consumes it.
     #[must_use]
     pub fn audience(self) -> &'static str {
         match self {
             Surface::Merchant => vpay_config::MERCHANT_AUDIENCE,
-            Surface::Dashboard => "vpay:dash/v1",
+            Surface::Dashboard => vpay_config::DASHBOARD_AUDIENCE,
         }
     }
 }

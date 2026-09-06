@@ -1,0 +1,23 @@
+# Fixture for `a_merchant_client_that_lists_the_dashboard_audience_is_rejected`
+# (backends/crates/vpay-config/src/config.rs). `allowed_audiences` is what
+# `handle_client_credentials` checks a REQUESTED audience against, so this one
+# YAML line would let a merchant credential mint a token the /dash/v1 resource
+# validator accepts — the two surfaces exist to be different credentials
+# (ADR-0008). See `ConfigError::MerchantClaimsDashboardAudience`.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme
+    merchant_id: acme-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: [vpay:v1, vpay:dash/v1]

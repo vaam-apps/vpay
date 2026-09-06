@@ -16,7 +16,7 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use mimalloc::MiMalloc;
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::{LoadedSigningKey, SigningKeyError};
-use vpay_api::resource_auth::{JwtValidator, MerchantJwtValidator, Surface};
+use vpay_api::resource_auth::{DashboardJwtValidator, JwtValidator, MerchantJwtValidator, Surface};
 use vpay_api::{ResourceConfig, RouterDeps};
 use vpay_config::{ConfigError, LogFormat, ServerArgs, ShutdownSignals};
 use vpay_core::error::{Category, Classify as _, find_in_chain};
@@ -170,6 +170,8 @@ async fn run() -> anyhow::Result<()> {
         .local_addr()
         .context("reading the bound address back off the listener")?;
     let merchant_validator = loopback_validator(bound, &booted.merchant_op)?;
+    let dashboard_validator =
+        loopback_dashboard_validator(bound, &booted.merchant_op, &booted.config)?;
 
     tracing::warn!(
         "vpay-server implements /healthz, /v1/oauth (token, discovery, jwks), the /v1 \
@@ -184,6 +186,7 @@ async fn run() -> anyhow::Result<()> {
         repositories: booted.repositories,
         merchant_op: booted.merchant_op,
         merchant_validator,
+        dashboard_validator,
         adapters: Arc::new(booted.adapters),
         // The projection, not the whole `Config` — see `ResourceConfig`, and
         // note this is the only way `deployment.livemode` reaches a handler.
@@ -449,6 +452,56 @@ fn loopback_validator(
         )
         .context("building the JWKS client the /v1 token validator fetches with")?,
     ))
+}
+
+/// The `/dash/v1` token validator, or `None` when this deployment registers
+/// no `dashboard_client`.
+///
+/// Same JWKS, same issuer, same loopback URL as [`loopback_validator`] —
+/// vpay runs one OP for both surfaces (ADR-0009), so there is one key set to
+/// fetch — and a **different `Surface`**, which is the only thing separating
+/// the two audiences. Deliberately a second `JwtValidator` rather than one
+/// configured with both audiences: `jsonwebtoken`'s `set_audience` takes a
+/// set and accepts a token matching *any* member, so one validator for both
+/// surfaces would let a `/v1` token through on `/dash/v1` and vice versa.
+///
+/// `None` propagates all the way to `vpay_api::router`, which then mounts no
+/// `/dash/v1` nest at all — see `RouterDeps::dashboard_validator`.
+///
+/// # Errors
+///
+/// Whatever building the JWKS client fails with, exactly as
+/// [`loopback_validator`].
+fn loopback_dashboard_validator(
+    bound: SocketAddr,
+    merchant_op: &MerchantOp,
+    config: &vpay_config::Config,
+) -> anyhow::Result<Option<DashboardJwtValidator>> {
+    let Some(dashboard) = config.dashboard_client.as_ref() else {
+        tracing::info!(
+            "no dashboard_client is registered; /dash/v1 is not mounted and every path under \
+             it answers 404"
+        );
+        return Ok(None);
+    };
+
+    tracing::warn!(
+        client_id = %dashboard.client_id,
+        merchant_id = %dashboard.merchant_id,
+        "/dash/v1 is mounted as a READ-ONLY resource server bound to one merchant. NO GRANT \
+         THIS DEPLOYMENT SERVES CAN MINT A TOKEN FOR IT: dashboard login (authorization code + \
+         PKCE) is not built. See docs/flows/dashboard-auth.md and docs/status.md"
+    );
+
+    Ok(Some(DashboardJwtValidator(
+        JwtValidator::new(
+            loopback_jwks_url(bound),
+            JWKS_REFRESH_INTERVAL,
+            merchant_op.issuer(),
+            Surface::Dashboard,
+        )
+        .context("building the JWKS client the /dash/v1 token validator fetches with")?,
+    )))
 }
 
 /// Binds `--observability-bind` and starts serving `/livez` and `/metrics` on

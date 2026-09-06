@@ -1065,8 +1065,28 @@ verify-docs:
 # ignored**. 1361 is the rebase's own number and neither branch's: master's
 # total had already moved past the 1334 recorded above when #52 landed
 # `verify-sdk-parity`'s SDK-reading tests. The 1080 floor stands untouched.
+#
+# **43 -> 44 on 2026-09-06 (exp23), the `/dash/v1` read surface.** One new
+# test binary, `backends/tests/integration/tests/dashboard_read_surface.rs`
+# — a suite that needs its own binary rather than cases in `payment_intents.rs`
+# because its configuration is different in the one way that matters (it
+# registers a `dashboard_client`, and every other suite must keep registering
+# none, so that `/dash/v1` stays a 404 in all of them). Measured the way
+# `verify-ignored` measures it, on this branch: **1421 total, 44 test
+# binaries, 0 ignored**. The 1080 floor stands untouched — thirteen new tests
+# is not a reason to move a floor whose job is catching a binary that
+# vanished.
+#
+# 1418 -> 1421 later the same day, in the sabotage review of that branch: the
+# suite went from ten cases to thirteen and nothing else moved, so the binary
+# count is unchanged and this line is the only number that had to. The three
+# are the ones that made three mutations observable — the detail timeline and
+# refunds actually rendering, a list cursor from another tenant positioning
+# nothing, and a write method refused by the boundary rather than by the
+# route table. `expected_suites` is deliberately NOT touched by any of them;
+# a new case is not a new binary.
 expected_ignored := "0"
-expected_suites := "43"
+expected_suites := "44"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.
@@ -2141,6 +2161,15 @@ gen-demo-keys: gen-e2e-signing-key
     # (ConfigError::PrivateWebhookTargetsInLivemode).
     webhooks:
       allow_private_targets: true
+
+    # The base file binds its dashboard client to \`acme-cameroon\`, a merchant
+    # this overlay replaces wholesale below. figment's dict merge keeps the
+    # base block's client_id, scope and redirect_uris and overlays this one
+    # field, so /dash/v1 reads the demo tenant and boot does not refuse with
+    # ConfigError::DashboardUnknownMerchant (it did, in PR #69's e2e job, when
+    # this line was missing).
+    dashboard_client:
+      merchant_id: demo-merchant-tenant
 
     merchant_clients:
       - client_id: demo-merchant

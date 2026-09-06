@@ -4836,6 +4836,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
+ "jsonwebtoken",
  "metrics",
  "metrics-exporter-prometheus",
  "rand 0.8.7",

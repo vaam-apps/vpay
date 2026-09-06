@@ -82,7 +82,10 @@ use serde::{Deserialize, Serialize};
 use vpay_core::Currency;
 use vpay_provider::ProviderConfig;
 
-use crate::oauth::{DashboardClient, MERCHANT_AUDIENCE, MerchantClient, jwks_has_at_least_one_key};
+use crate::oauth::{
+    DASHBOARD_AUDIENCE, DashboardClient, MERCHANT_AUDIENCE, MerchantClient,
+    jwks_has_at_least_one_key,
+};
 use crate::{
     ConfigError, Deployment, GrantType, HostEntry, validate_host, validate_secret,
     validate_webhook_url,
@@ -799,6 +802,12 @@ impl Config {
         }
         if let Some(dashboard) = &self.dashboard_client {
             validate_dashboard_client(dashboard, livemode)?;
+            // Passed the whole slice rather than checked inside
+            // `validate_dashboard_client`: this is the one dashboard rule
+            // that is a property of the *document*, not of the registration,
+            // and it is the same reason the duplicate-`client_id` check
+            // lives here.
+            validate_dashboard_binding(dashboard, &self.merchant_clients)?;
         }
 
         Ok(())
@@ -1095,6 +1104,20 @@ fn validate_merchant_client(merchant: &MerchantClient) -> Result<(), ConfigError
         .any(|audience| audience == MERCHANT_AUDIENCE)
     {
         return Err(ConfigError::MerchantMissingV1Audience {
+            client_id: merchant.client_id.clone(),
+        });
+    }
+    // Last, and about a *different* surface than the four rules above it: a
+    // merchant registration that lists the dashboard audience can mint a
+    // token `/dash/v1`'s validator accepts. See
+    // `ConfigError::MerchantClaimsDashboardAudience` for why one check in
+    // the middleware is not enough.
+    if merchant
+        .allowed_audiences
+        .iter()
+        .any(|audience| audience == DASHBOARD_AUDIENCE)
+    {
+        return Err(ConfigError::MerchantClaimsDashboardAudience {
             client_id: merchant.client_id.clone(),
         });
     }
@@ -1692,6 +1715,38 @@ fn validate_dashboard_client(
         validate_host(&synthetic_host, livemode)?;
     }
     Ok(())
+}
+
+/// The dashboard client names a tenant some merchant registration actually
+/// registers.
+///
+/// Separate from [`validate_dashboard_client`] because it cannot be answered
+/// from one registration: the set of tenants is whatever
+/// `merchant_clients[].merchant_id` enumerates, and there is no `merchants`
+/// table to ask instead (ADR-0003).
+///
+/// A linear scan rather than a set: the list is the deployment's merchants,
+/// this runs once at boot, and a `BTreeSet` built here would exist for the
+/// length of one comparison.
+///
+/// # Errors
+///
+/// [`ConfigError::DashboardUnknownMerchant`] — see that variant for why a
+/// mistyped tenant must not be allowed to boot.
+fn validate_dashboard_binding(
+    dashboard: &DashboardClient,
+    merchants: &[MerchantClient],
+) -> Result<(), ConfigError> {
+    if merchants
+        .iter()
+        .any(|merchant| merchant.merchant_id == dashboard.merchant_id)
+    {
+        return Ok(());
+    }
+    Err(ConfigError::DashboardUnknownMerchant {
+        client_id: dashboard.client_id.clone(),
+        merchant_id: dashboard.merchant_id.clone(),
+    })
 }
 
 /// See the module docs' "Locating the profile overlay" section.
@@ -3992,6 +4047,104 @@ providers:
             err,
             ConfigError::DashboardMissingRedirectUri("vpay-dashboard".to_owned())
         );
+    }
+
+    /// A dashboard client bound to a tenant nothing registers must not boot.
+    ///
+    /// The decisive part is that the failure has no *runtime* symptom to
+    /// find later: `/dash/v1` would filter every query by a `merchant_id` no
+    /// row carries, so the payments list is empty and the detail read is a
+    /// 404 — indistinguishable from a merchant who has taken no payments,
+    /// which is precisely the state the list page is designed to render
+    /// calmly. Deleting `validate_dashboard_binding`'s call makes this test
+    /// fail and makes that deployment bootable.
+    #[test]
+    fn a_dashboard_client_bound_to_an_unregistered_merchant_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/oauth-dashboard-unknown-merchant.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("a dashboard client naming an unregistered tenant must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::DashboardUnknownMerchant {
+                client_id: "vpay-dashboard".to_owned(),
+                merchant_id: "typo-tenant".to_owned(),
+            }
+        );
+    }
+
+    /// The dashboard client's own `merchant_id` may of course name a tenant
+    /// that *is* registered — asserted so the rule above is known to be a
+    /// rule and not a blanket refusal.
+    ///
+    /// `config/application.yml` is the fixture, because that is the file an
+    /// operator copies: if the shipped example could not satisfy its own
+    /// boot rule, every deployment would start by editing around it.
+    #[test]
+    fn the_example_config_binds_its_dashboard_client_to_a_registered_merchant() {
+        let env = example_env(BTreeMap::new());
+        let config = Config::load_with_env(Some(Path::new(EXAMPLE_BASE)), "does-not-exist", &env)
+            .expect("the example config loads");
+        let dashboard = config
+            .dashboard_client
+            .as_ref()
+            .expect("the example config registers a dashboard client");
+        assert!(
+            config
+                .merchant_clients
+                .iter()
+                .any(|merchant| merchant.merchant_id == dashboard.merchant_id),
+            "dashboard bound to {:?}, merchants are {:?}",
+            dashboard.merchant_id,
+            config
+                .merchant_clients
+                .iter()
+                .map(|merchant| merchant.merchant_id.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// A merchant registration must not be able to name the dashboard
+    /// audience.
+    ///
+    /// This is the boot half of a two-part boundary and the cheaper half to
+    /// read. `handle_client_credentials` mints a token for any *requested*
+    /// audience `allowed_audiences` permits, so this one YAML line hands a
+    /// merchant credential a token whose `aud` the `/dash/v1` resource
+    /// validator accepts. Deleting the check in `validate_merchant_client`
+    /// makes this test fail and makes that registration loadable.
+    #[test]
+    fn a_merchant_client_that_lists_the_dashboard_audience_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/oauth-merchant-claims-dashboard-audience.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("a merchant listing the dashboard audience must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::MerchantClaimsDashboardAudience {
+                client_id: "acme".to_owned(),
+            }
+        );
+    }
+
+    /// The two audience constants are different strings.
+    ///
+    /// Trivial to assert and not trivial to lose: every rule above is a
+    /// comparison against one of them, and the day they became equal, both
+    /// `MerchantMissingV1Audience` and `MerchantClaimsDashboardAudience`
+    /// would fire on every well-formed registration — the config crate would
+    /// refuse to boot anything, which is at least loud. What this pins is
+    /// the direction nobody would notice: one constant defined in terms of
+    /// the other.
+    #[test]
+    fn the_two_surface_audiences_are_not_the_same_string() {
+        assert_ne!(MERCHANT_AUDIENCE, DASHBOARD_AUDIENCE);
     }
 
     #[test]

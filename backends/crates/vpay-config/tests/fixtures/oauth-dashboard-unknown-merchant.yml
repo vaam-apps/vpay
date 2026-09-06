@@ -1,0 +1,31 @@
+# Fixture for `a_dashboard_client_bound_to_an_unregistered_merchant_is_rejected`
+# (backends/crates/vpay-config/src/config.rs). The dashboard client names
+# `typo-tenant`; the one registered merchant is `acme-tenant`. Nothing about
+# such a deployment is visibly broken at runtime — every /dash/v1 query would
+# filter by a merchant_id no row carries, so the list is empty and the detail
+# read is a 404, which is indistinguishable from a merchant with no payments.
+# See `ConfigError::DashboardUnknownMerchant`.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme
+    merchant_id: acme-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: [vpay:v1]
+
+dashboard_client:
+  client_id: vpay-dashboard
+  merchant_id: typo-tenant
+  redirect_uris:
+    - http://localhost:3000/dash/v1/callback
+  scope: dashboard:read

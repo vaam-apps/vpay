@@ -214,5 +214,11 @@ pub(crate) fn deps() -> RouterDeps {
             )
             .expect("the vendored-roots JWKS client builds"),
         ),
+        // `None`, matching `config()`'s `dashboard_client: None`: this
+        // crate's own tests are about `/v1`, and a fixture that mounted the
+        // dashboard nest would make every `/dash/v1` path in them answer
+        // `401` instead of the `404` an undashboarded deployment gives.
+        // `crate::dash`'s own tests build their own deps.
+        dashboard_validator: None,
     }
 }

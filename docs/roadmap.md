@@ -37,7 +37,7 @@ true.
 |---|---|---|
 | 1 | Foundations | ✅ Complete — seven commits through `932d8a4`; the **28** migrations in `backends/migrations/` apply cleanly and their constraints are proven to fire (`postgres_smoke.rs`; 26 when this row was written, 27 with Step 8's callback index and 28 with Step 9's `checkout_sessions`) |
 | 2 | Authentication — merchant (`/v1`) | ✅ Delivered 2026-09-02 (Step 1, PR #15) — the OP is mounted at `/v1/oauth` and `AuthenticatedMerchant` gates the whole `/v1` nest; 7 `merchant_token_flow` tests. *`docs/status.md`'s own "Merchant auth" row is still 🟡 and names its own trigger — "when the CI `rust` job runs them green" — which has since happened on `master` (run `33792230584`) without that row being re-measured* |
-| 2b | Authentication — dashboard login (`/dash/v1`) | ⛔ Not started, unchanged — no `/login`, no `/authorize`, no `SessionStore`, no `/dash/v1` route of any kind; split out of Phase 2 on 2026-09-02 |
+| 2b | Authentication — dashboard login (`/dash/v1`) | ⛔ **Still not started, and the goal below is unmet: no login has ever been performed.** ~~no `/dash/v1` route of any kind~~ — corrected 2026-09-06 (exp23): two `GET` *resource* routes are now mounted and tenant-bound, which is a resource server with **no issuer**, since no grant this deployment serves can mint a token for them. Still no `/login`, no `/authorize`, no `SessionStore`. **A second blocker, larger than item 3 below, was found and recorded that day**: `handle_authorize` takes an already-authenticated `Identity` as a parameter, and how a human staff member proves who they are has never been decided anywhere in this repository. Split out of Phase 2 on 2026-09-02 |
 | 3 | Payment API (`/v1`) | ✅ Delivered 2026-09-02→03 (Steps 2–3, PRs #16–#17) — create / retrieve / list / cancel / confirm, form-encoded, idempotent and merchant-scoped, with `confirm` moving the intent to `processing` or `requires_action`. **Against WireMock rails**, which is why the matching `docs/status.md` rows are 🟡 |
 | 4 | The rails | → **split 2026-09-03.** **4a** ✅ delivered (Step 3, PR #17) — both adapters pass the one shared conformance suite, 26 tests, 0 `#[ignore]`s, every one of them against a `wiremock/wiremock` container. **4b** (push-rail recovery) delivered inside Phase 5 (Step 4, PR #18). The two headings below are current; this row is the pre-split one |
 | 5 | The worker | 🟡 In progress — the job loop, the poll ladder, recovery and settlement landed 2026-09-03 (Step 4, PR #18) against WireMock rails, and a confirmed intent reaches `succeeded` unattended. **Updated 2026-09-04 (Step 8):** ~~the callback route (`POST /provider/{code}/callback`) … did not~~ — **it exists now** (lane C), and ~~the "crash tests" kill no process~~ — **`worker_kill9.rs` `SIGKILL`s the shipping worker and the shipping server** (lane D), so two of the three kill points are caused rather than written. Lane G additionally fixed a `500` on confirm that this step's demo found. **Still 🟡:** prompt expiry is unbuilt, kill point 1 is still written rather than caused, Orange is not in the kill test, no rail has ever called the callback route, and every rail here is a WireMock host |
@@ -478,8 +478,12 @@ works". Nothing below is new scope; it is Phase 2's dashboard scope, moved.
 against `/dash/v1` and a subsequent authenticated call accepts the token; a
 merchant-audience token is rejected on `/dash/v1`.
 
-**Status.** Not started. **No login has ever been performed and no
-`/dash/v1` route exists.** What Phase 2 left behind for it: the schema
+**Status.** Not started. **No login has ever been performed.** ~~and no
+`/dash/v1` route exists~~ — corrected 2026-09-06 (exp23): the `/dash/v1`
+*read* surface exists (two `GET` routes, tenant-bound, ten integration tests
+over a real server; see [flows/dashboard.md](flows/dashboard.md)), and no
+client of this deployment can obtain a token for it. Scope items 1, 2 and 3
+below are all untouched. What Phase 2 left behind for it: the schema
 (migrations `0006`/`0013`, proven compatible with the real
 `SqlxOpStore<Postgres>`), the dashboard client modelled and validated in
 config (`vpay_config::oauth::DashboardClient`), signing keys and a JWKS
@@ -498,6 +502,18 @@ None of that is login.
    use the authorization-code grant, and `authkestra-axum` is not a
    dependency (its bundled router would mount them and would publish a
    one-key JWKS instead of the rotation window vpay serves).
+
+   **This item has a prerequisite it never named, added 2026-09-06 (exp23):
+   decide how a staff member authenticates.**
+   `authkestra_op::handlers::authorize::handle_authorize` takes an
+   already-authenticated `authkestra_engine::auth::state::Identity` **as a
+   parameter** — it authenticates nobody — and vpay has no staff table, no
+   credential store, no password hashing and no `AuthenticationStrategy`
+   implementation to produce one. Choosing among a staff table with password
+   hashes, WebAuthn, TOTP, or federating the *human* step to an external IdP
+   in front of vpay's own OP is an ADR that touches ADR-0009's central claim.
+   It is a maintainer's call with the same standing as item 3, and it is the
+   larger of the two.
 3. **Resolve the audience problem first.** `authkestra-op`'s
    `default_handle_authorization_code` mints the access token with
    `Some(client_id)` as the audience and has **no requested-audience path at

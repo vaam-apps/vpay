@@ -340,6 +340,9 @@ async fn harness() -> anyhow::Result<Harness> {
         Arc::clone(&repositories),
         merchant_op,
         merchant_validator,
+        // No `dashboard_client` in either suite's configuration, so no
+        // `/dash/v1` nest is mounted at all — see `support::router_deps`.
+        None,
         &config,
     );
     let server = tokio::spawn(async move {

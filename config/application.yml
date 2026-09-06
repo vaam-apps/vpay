@@ -275,6 +275,13 @@ checkout:
 # administer (ADR-0008).
 dashboard_client:
   client_id: vpay-dashboard
+  # The ONE tenant this dashboard client may read. Every `/dash/v1` query is
+  # filtered by it, and boot refuses a value no `merchant_clients` entry
+  # registers (`ConfigError::DashboardUnknownMerchant`) — a typo here would
+  # otherwise be an empty payments table, which looks exactly like a merchant
+  # with no payments. A deployment whose staff must see a second tenant
+  # registers a second dashboard client; this field does not become a list.
+  merchant_id: acme-cameroon
   redirect_uris:
     - http://localhost:8080/dash/v1/callback
   scope: dashboard:read

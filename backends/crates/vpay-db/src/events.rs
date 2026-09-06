@@ -282,6 +282,39 @@ pub trait Events: Send + Sync {
     ///
     /// Returns [`DbError::Query`] if the read fails.
     async fn get_by_id(&self, merchant_id: &str, id: &str) -> Result<Option<EventRow>, DbError>;
+
+    /// Every event *this merchant* has about any of `object_ids`, oldest
+    /// first — the `/dash/v1` payment detail's timeline.
+    ///
+    /// Takes a slice rather than one id because one payment's history is
+    /// spread across two objects by design: `payment_intent.*` events carry
+    /// the intent's id and `charge.refunded` / `charge.refund.updated` carry
+    /// the *charge's* (migration `0018`'s `object_id` comment — the column
+    /// points into three tables depending on `type`). A caller that asked
+    /// only about the intent would render a timeline with the refunds
+    /// missing, which is the half an operator opened the page for.
+    ///
+    /// Merchant-scoped like [`Events::get_by_id`] and unlike
+    /// [`Events::get_unscoped`]: this is an API surface, and `object_ids`
+    /// arrives from a caller.
+    ///
+    /// Ascending by `seq`, for [`crate::Refunds::list_for_intent`]'s reason —
+    /// a timeline is read forwards — and by `seq` rather than `created_at`
+    /// because `seq` is the total order this table already guarantees
+    /// (`events_seq_key`).
+    ///
+    /// An empty `object_ids` is an empty result and not an error: a payment
+    /// intent with no charge yet has exactly one id to ask about, and the
+    /// caller should not have to special-case that.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if the read fails.
+    async fn list_for_objects(
+        &self,
+        merchant_id: &str,
+        object_ids: &[String],
+    ) -> Result<Vec<EventRow>, DbError>;
 }
 
 #[async_trait::async_trait]
@@ -360,6 +393,36 @@ impl Events for crate::repository::PgRepositories {
         }
 
         Ok((rows, has_more))
+    }
+
+    async fn list_for_objects(
+        &self,
+        merchant_id: &str,
+        object_ids: &[String],
+    ) -> Result<Vec<EventRow>, DbError> {
+        // `= ANY($2)` rather than a generated `IN (…)` list: the ids come
+        // from a caller-reachable read, and a statement whose *text* depends
+        // on the number of arguments is one refactor away from a statement
+        // whose text depends on their values. One bound array, one plan.
+        //
+        // No index on `(merchant_id, object_id)` exists — `events` is
+        // indexed on `(merchant_id, seq DESC)` (migration `0018`) — so this
+        // scans that index for the tenant and filters. That is the right
+        // trade for a detail page nobody loads in a loop, and it is stated
+        // here rather than discovered: the day this is on a hot path it
+        // needs a migration, not a rewrite.
+        let sql = format!(
+            "SELECT {COLUMNS} FROM events \
+             WHERE merchant_id = $1 AND object_id = ANY($2) \
+             ORDER BY seq ASC"
+        );
+
+        sqlx::query_as::<_, EventRow>(AssertSqlSafe(sql))
+            .bind(merchant_id)
+            .bind(object_ids)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(DbError::Query)
     }
 
     async fn get_unscoped(&self, id: &str) -> Result<Option<EventRow>, DbError> {

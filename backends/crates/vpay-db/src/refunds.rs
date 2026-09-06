@@ -147,6 +147,32 @@ pub trait Refunds: Send + Sync {
         merchant_id: &str,
         id: &str,
     ) -> Result<Option<RefundRow>, DbError>;
+
+    /// Every refund of one intent *for this merchant*, oldest first — the
+    /// `/dash/v1` payment detail's refunds section.
+    ///
+    /// Tenant-scoped through the same join [`Refunds::get_for_merchant`]
+    /// uses, and for the same reason: `refunds` carries no `merchant_id` of
+    /// its own, so the only honest way to ask "may this caller see it" is
+    /// through the intent. An empty `Vec` therefore means both "this intent
+    /// has no refunds" and "this intent is not yours" — which is correct,
+    /// because the caller reached this read by first retrieving the intent,
+    /// and that read already answered `404` in the second case.
+    ///
+    /// Ascending, unlike every cursor list in this crate: this is a
+    /// *timeline* an operator reads top to bottom, not a page. Unbounded for
+    /// the same reason — the number of refunds of one intent is bounded by
+    /// its amount, not by traffic. If that ever stops being true it needs a
+    /// cursor, not a `LIMIT` that silently truncates a money history.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Query`] if the read fails.
+    async fn list_for_intent(
+        &self,
+        merchant_id: &str,
+        payment_intent_id: &str,
+    ) -> Result<Vec<RefundRow>, DbError>;
 }
 
 #[async_trait::async_trait]
@@ -172,6 +198,33 @@ impl Refunds for crate::repository::PgRepositories {
             .bind(merchant_id)
             .bind(id)
             .fetch_optional(&self.pool)
+            .await
+            .map_err(DbError::Query)
+    }
+    async fn list_for_intent(
+        &self,
+        merchant_id: &str,
+        payment_intent_id: &str,
+    ) -> Result<Vec<RefundRow>, DbError> {
+        // The same join and the same tenant predicate as `get_for_merchant`
+        // above — see that method for why `refunds` has no `merchant_id` to
+        // filter on directly.
+        //
+        // `ORDER BY r.created_at, r.id`: the id breaks a tie, because two
+        // refunds of one intent written in the same transaction share a
+        // timestamp and an unstable order would make a reloaded timeline
+        // shuffle itself.
+        let sql = format!(
+            "SELECT {COLUMNS} FROM refunds r \
+             JOIN payment_intents p ON p.id = r.payment_intent_id \
+             WHERE p.merchant_id = $1 AND r.payment_intent_id = $2 \
+             ORDER BY r.created_at, r.id"
+        );
+
+        sqlx::query_as::<_, RefundRow>(AssertSqlSafe(sql))
+            .bind(merchant_id)
+            .bind(payment_intent_id)
+            .fetch_all(&self.pool)
             .await
             .map_err(DbError::Query)
     }
