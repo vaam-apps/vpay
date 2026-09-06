@@ -24,7 +24,15 @@ display_name: Vaam Payments
 # Absolute http/https only. Anything else — a relative path, a `data:` URI,
 # `javascript:` — is dropped with a WARN. Rendered at 32 px high beside the
 # name; an SVG or a 2x PNG is the right thing to serve.
-logo_url: https://cdn.vaam.example/vpay/logo.svg
+#
+# COMMENTED OUT ON PURPOSE, and the reason is worth two lines: this file is
+# not only an example, it is the file `compose.demo.yml` mounts into the demo
+# and into the stack `just test-e2e` drives. `cdn.vaam.example` does not
+# resolve and never will (RFC 2606), so a value here puts a BROKEN IMAGE at
+# the top of every screen of the demo payment page — measured on a rendered
+# screenshot, 2026-09-07, where it also pushed the operator's name onto two
+# lines. Uncomment it with your own URL.
+# logo_url: https://cdn.example.com/vpay/logo.svg
 
 # `#rrggbb`, six digits, nothing else. Converted at startup into a daisyUI
 # `--p`/`--pc` override on the `bumblebee` theme and emitted into <head>, so

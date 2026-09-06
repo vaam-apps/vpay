@@ -21,7 +21,14 @@ checkout:
   # browser when the origin the page was loaded from disagrees with it —
   # which is the first symptom of a proxy in front of this container that the
   # API was never told about.
-  public_base_url: https://checkout.vaam.example
+  #
+  # COMMENTED OUT for the same reason `branding.yaml`'s `logo_url` is: this
+  # file is mounted into the demo and into `just test-e2e`'s stack, where the
+  # page is served on `http://localhost:3080` — so a value here fires that
+  # console warning on every single page load of a deployment that is not
+  # misconfigured at all. A diagnostic that cries wolf in the one place people
+  # look at it is worse than no diagnostic. Set it to your own origin.
+  # public_base_url: https://checkout.example.com
 
   # The rail codes this deployment will show. Omit the key entirely for "no
   # opinion", which is the default and offers whatever the payment intent
