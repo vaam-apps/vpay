@@ -89,6 +89,15 @@ Ask these **during commercial negotiation**, not after signing.
 1. Answer the preconditions above. If either fails for a push rail, **stop and
    renegotiate** before writing code.
 2. `INSERT INTO providers` with capability flags. *No schema migration.*
+   **Corrected 2026-09-06:** in a running deployment nobody writes this table
+   by hand — `providers` is reconciled from `config.yaml` at boot step 4 by
+   `vpay_db::ConfigReconcile::reconcile`, which is the only writer, so the
+   real step 2 is a `providers[]` entry in the deployment's YAML plus the
+   adapter of step 4. The sentence still holds where it matters (adding a
+   rail needs no migration), and a hand-written `INSERT` at a psql prompt is
+   still possible — but since migration 0033 it must name **all eight**
+   columns: the five capability booleans have no column default, so an
+   omitted one is a `23502` rather than an invented capability.
 3. `INSERT INTO provider_hosts` for sandbox, production and stub hosts.
 4. New `backends/crates/vpay-adapter-<rail>/` implementing the trait.
 5. A mapping table into the [failure taxonomy](failures.md).
