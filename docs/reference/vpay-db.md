@@ -1396,16 +1396,32 @@ measured and both rejected:
 
 **The hazard, measured 2026-09-06.** Because the schema does not declare the
 constraint, a generated `cratestack migrate diff` would emit DDL dropping it.
-Worse, the drift report is structurally incapable of complaining: deleting
-`CONSTRAINT type_is_a_documented_event` takes the count from **101 to 100**
-and fails no drift assertion at all — losing a constraint *lowers* the number.
-The only thing that goes red is
-`an_undocumented_event_type_is_refused_by_the_database`, which is a test this
-change had to write, because the constraint was cited by four documents and
-asserted by nothing. Nothing runs `migrate diff` in this repository, so the
-hazard is latent rather than live — and it applies equally to every other
-`[safe] CHECK ... exists in the live database but is not declared` line in the
-report.
+Nothing runs `migrate diff` in this repository, so that half is latent rather
+than live — and it applies equally to every other `[safe] CHECK ... exists in
+the live database but is not declared` line in the report.
+
+**What notices, corrected on 2026-09-06 by the review.** This section said
+the drift report was "structurally incapable of complaining" and that deleting
+the constraint "fails no drift assertion at all". The first half of that is
+right and reproduces — a lost CHECK removes one `[safe] ... is not declared`
+line, so the count goes **down**, 101 to 100 — but the conclusion drawn from
+it was wrong. `EXPECTED_DRIFT_CHANGES` is an exact `assert_eq!`, not a floor,
+so `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` fails
+on a *lower* count exactly as loudly as on a higher one (`left: 100,
+right: 101`), and its own assertion message already names the diagnosis: "If
+it shrank without an edit to the schema, find out what the report stopped
+seeing before moving anything." That is the general defence for every
+undeclared-CHECK line above, and it was already there.
+
+Two signals, saying different things, which is why
+`an_undocumented_event_type_is_refused_by_the_database` is still worth having
+and is not a duplicate. The count says *a constraint the database had is
+gone*, without saying which or whether it mattered. The test says *the
+vocabulary is still closed*, which is the property four documents actually
+rest on — and it is the signal that survives someone re-pinning the constant,
+which is the cheapest way to make a red drift assertion go away. It was
+written here because the constraint was cited by four documents and asserted
+by nothing.
 
 Nothing about the trait changed for any of them — the signatures, the
 deliberate absence of a cache, and `enable_client`'s "a no-op, not an error"

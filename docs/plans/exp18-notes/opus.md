@@ -272,7 +272,7 @@ afterwards each time.
 | 3 | Delete `@@allow("create", …)` from `model WebhookDelivery` | `every_action_this_module_calls_has_an_allow_arm` **FAILS with no container, in milliseconds**. Runtime: **5 of 6** delivery-touching container tests red — LOUD on every path that creates a delivery |
 | 4 | Delete `@@allow("update", …)` from `model Event` | no-container test **FAILS**. Runtime: `a_committed_fan_out_keeps_both_cratestack_writes` and the abandon test fail; **`a_second_delivery_for_one_event_and_endpoint_is_not_created` still PASSES**, because it never reaches the flip. Silent in the error channel, total in effect |
 | 5 | Delete `@@allow("update", …)` from `model WebhookDelivery` | no-container test **FAILS**. Runtime: **exactly one** container test red — `a_second_delivery_for_one_event_and_endpoint_is_not_created`. The first fan-out of an event succeeds; only a **re-run** fails. That is the crash-recovery path |
-| 6 | Drop `CONSTRAINT type_is_a_documented_event` (migration 0029's re-add) | `an_undocumented_event_type_is_refused_by_the_database` **FAILS** (`PgQueryResult { rows_affected: 1 }` — the invented type was accepted). **The drift report goes 101 -> 100 and fails no drift assertion at all.** See §5b |
+| 6 | Drop `CONSTRAINT type_is_a_documented_event` (migration 0029's re-add) | `an_undocumented_event_type_is_refused_by_the_database` **FAILS** (`PgQueryResult { rows_affected: 1 }` — the invented type was accepted). The drift report goes 101 -> 100 — and **the drift assertion FAILS on that too**, which this row originally denied. See §5b, corrected by the review |
 
 ### 5a. Neither `run_in_tx` mutation hangs, and that is not luck
 
@@ -307,16 +307,37 @@ That matters more now, because `model Event` cannot declare it: 0.11.1 has no
 validator for "one of these eight strings" on a `String` column, and a
 `.cstack` enum would match only under the generated name
 `events_type_enum_check` while `diff/checks.rs` matches by name first.
-So the constraint stays undeclared — and the drift report is structurally
-incapable of complaining about its loss, because a dropped CHECK simply
-removes one `[safe] … not declared in the schema` line and **lowers** the
-count. Measured: 101 -> 100, every assertion in
-`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` still
-green.
+So the constraint stays undeclared, and a dropped CHECK simply removes one
+`[safe] … not declared in the schema` line and **lowers** the count:
+101 -> 100, measured.
 
-`an_undocumented_event_type_is_refused_by_the_database` is the only thing
-that fails. It also covers `fanout_state_is_known`, the other multi-value
-CHECK on the same table and the one the compare-and-swap depends on.
+**Corrected by the review (see [opus-review.md](opus-review.md) F1).** This
+section went on to claim that "every assertion in
+`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` [is]
+still green" and that the new test "is the only thing that fails". That was
+wrong, and it was the load-bearing sentence of this whole section.
+`EXPECTED_DRIFT_CHANGES` is an exact `assert_eq!`, not a floor, so the drift
+test fails on the *lower* count too:
+
+```
+assertion `left == right` failed: ... the report counts 100 pending change(s),
+this test pins 101. ... If it shrank without an edit to the schema, find out
+what the report stopped seeing before moving anything
+  left: 100
+ right: 101
+```
+
+The measurement recorded above (101 -> 100) was right; the inference drawn
+from it — that the report is *structurally incapable* of complaining — was
+not, and it understated a defence this repository already had.
+
+`an_undocumented_event_type_is_refused_by_the_database` is still worth having,
+for a reason that has to be stated differently: the count says *a constraint
+is gone*, and cannot say which or whether it mattered; the test says *the
+vocabulary is still closed*, which is what four documents rest on, and it is
+the signal that survives someone re-pinning the constant. It also covers
+`fanout_state_is_known`, the other multi-value CHECK on the same table and the
+one the compare-and-swap depends on.
 
 The hazard generalises: it applies to **every** `[safe] CHECK … exists in the
 live database but is not declared in the schema` line in the report, of which

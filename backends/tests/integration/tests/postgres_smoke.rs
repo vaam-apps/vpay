@@ -906,13 +906,33 @@ async fn an_out_of_range_currency_exponent_is_rejected_by_the_database() -> anyh
 /// `model Event` deliberately does **not** declare this CHECK (0.11.1 has no
 /// validator for "one of these eight strings" on a `String` column), so a
 /// generated `cratestack migrate diff` would emit DDL dropping it as
-/// undeclared. Nothing runs `migrate diff` today — but the drift report is
-/// structurally incapable of complaining about the loss, since a dropped
-/// CHECK simply removes one `[safe] ... exists in the live database but is
-/// not declared` line and *lowers* `EXPECTED_DRIFT_CHANGES`. Measured
-/// 2026-09-06: deleting `CONSTRAINT type_is_a_documented_event` from
-/// migration `0018` takes the drift count from 101 to 100 and fails no drift
-/// assertion at all. This test is the only thing that fails.
+/// undeclared. Nothing runs `migrate diff` today, so that half is latent.
+///
+/// # What each of the two signals actually says
+///
+/// This doc comment claimed until 2026-09-06 that dropping the constraint
+/// "fails no drift assertion at all" and that this test "is the only thing
+/// that fails". **Both halves were wrong, and the review measured it.**
+/// Deleting the constraint (migration `0029`'s re-add) really does take the
+/// count from 101 to 100 — a lost CHECK removes one `[safe] ... exists in the
+/// live database but is not declared` line, so drift goes *down* — but
+/// `EXPECTED_DRIFT_CHANGES` is an exact `assert_eq!`, not a floor, so
+/// `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` fails
+/// on it too, with `left: 100, right: 101` and a message that already names
+/// this exact diagnosis ("If it shrank without an edit to the schema, find
+/// out what the report stopped seeing before moving anything").
+///
+/// So there are two signals and they say different things, which is why this
+/// test earns its place rather than duplicating one:
+///
+///   * the drift count says **a constraint the database had is gone**. It
+///     notices the deletion and cannot say what was lost or whether it
+///     mattered — every `[safe]` line moves that number the same way.
+///   * this test says **the vocabulary is still closed**, which is the
+///     property `docs/flows/webhooks.md`, `docs/api/README.md` and migration
+///     `0018`'s own comment actually rest on. It is also the only signal that
+///     survives someone re-pinning the constant, which is the cheapest way to
+///     make a red drift assertion go away.
 #[tokio::test]
 async fn an_undocumented_event_type_is_refused_by_the_database() -> anyhow::Result<()> {
     let (_container, pool) = migrated_postgres().await?;

@@ -3298,10 +3298,22 @@ Rust doc comments — and **nothing asserted it fired.**
 `postgres_smoke.rs`. It matters more now: `model Event` cannot express a
 multi-value single-column CHECK at 0.11.1 (a `.cstack` enum would match only
 under the generated name `events_type_enum_check`, and `diff/checks.rs`
-matches by name first), so the constraint stays undeclared — and **deleting
-it takes the drift count from 101 to 100 and fails no drift assertion at
-all.** Measured. Losing a constraint lowers the number; only the new test
-notices.
+matches by name first), so the constraint stays undeclared.
+
+**Corrected 2026-09-06 by the review.** This paragraph first claimed that
+deleting the constraint "takes the drift count from 101 to 100 and fails no
+drift assertion at all", and that only the new test notices. The count half
+reproduces — losing a `[safe] ... is not declared` line lowers the number —
+but the conclusion was wrong: `EXPECTED_DRIFT_CHANGES` is an exact
+`assert_eq!`, so the drift test fails on 100 just as loudly as on 102, and
+says so ("If it shrank without an edit to the schema, find out what the report
+stopped seeing before moving anything"). Two signals, and they say different
+things: the count says *a constraint is gone*, the new test says *the
+vocabulary is still closed* — the property `docs/flows/webhooks.md` and
+`docs/api/README.md` actually rest on, and the one that survives someone
+re-pinning the constant. Measured both ways;
+[plans/exp18-notes/opus-review.md](plans/exp18-notes/opus-review.md) F1 has
+the transcript.
 
 **`PersistenceError::Invalid` is new.** The generated `input.validate()` runs
 before any SQL on every write path, and `CratestackError::Validation` was
