@@ -31,6 +31,13 @@ rather than chosen: `default = ["postgres", "decimal-rust-decimal",
 one version bump (`syn 3.0.3 → 3.0.5`). Cargo's own resolve line:
 `Locking 29 packages to latest Rust 1.94 compatible versions`.
 
+**Corrected 2026-09-06 by review:** those 28 are Cargo.lock *entries*, and
+only **25 are new crate names**. The other three — `const-oid` 0.9.6,
+`foldhash` 0.2.0 and `hashbrown` 0.15.5 — are additional *versions* of crates
+the graph already carried, which is why they appear both in the table below
+and in the duplicate-majors sentence after it. `comm -13` over the two
+lockfiles' unique name sets is the measurement.
+
 | Crate | Licence |
 |---|---|
 | `cratestack-{pg,axum,client-rust,codec-cbor,codec-json,core,exec,macros,parser,policy,sql,sqlx}` (12) | MIT |
@@ -46,9 +53,14 @@ not match any packages` (still empty). `cargo tree -i aws-lc-sys` the same.
 `sqlx-core` appears only at `0.9.0` (it was already listed twice at that same
 version *before* this change, i.e. two feature-resolved units, not two
 versions; measured by running the same command on the reverted tree). The
-genuinely new version duplicates are `const-oid` (0.9.6 / 0.10.2) and
-`foldhash` (0.1.5 / 0.2.0); `multiple-versions = "warn"`, and `cargo deny
-check bans` is green.
+genuinely new version duplicates are `const-oid` (0.9.6 / 0.10.2),
+`foldhash` (0.1.5 / 0.2.0) and — **added 2026-09-06 by review, the sentence
+missed it** — `hashbrown`, which goes from three versions to four
+(0.12.3 / 0.16.1 / 0.17.1, plus 0.15.5). Re-derived by listing every crate
+with more than one version in each lockfile and diffing the two lists, rather
+than by reading `cargo deny`'s warnings, which is how one of three came to be
+left out. `multiple-versions = "warn"`, and `cargo deny check bans` is green;
+`cargo deny check` reports 16 duplicate warnings in total.
 
 **MSRV floor 1.94 → 1.98.** `cargo metadata … | jq '[.packages[].rust_version
 | select(.!=null)] | max'` returns `1.98.0`; every `cratestack-*` package

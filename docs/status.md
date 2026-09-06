@@ -3023,10 +3023,14 @@ Twelve of the twenty-eight are `cratestack-*`, all MIT. The rest:
 `typeid`, `unicode-segmentation`, `unicode-width`, `wasm-streams` (MIT OR
 Apache-2.0), `foldhash` (Zlib) — and **`minicbor` + `minicbor-serde`
 (BlueOak-1.0.0)**, which is the whole reason for the licence exception below.
-`cargo tree -i aws-lc-rs` is still empty, `cargo tree -d` still shows exactly
-one `sqlx` (0.9.0), and the only *new* version duplicates are `const-oid`
-(0.9.6/0.10.2) and `foldhash` (0.1.5/0.2.0), both under
-`multiple-versions = "warn"`.
+`cargo tree -i aws-lc-rs` is still empty and `cargo tree -d` still shows
+exactly one `sqlx` (0.9.0). **Corrected 2026-09-06 by review:** +28 counts
+`Cargo.lock` *entries*, and only **25 are new crate names** — `const-oid`,
+`foldhash` and `hashbrown` are extra *versions* of crates already in the
+graph, which is also why the new version duplicates are three and not two:
+`const-oid` (0.9.6/0.10.2), `foldhash` (0.1.5/0.2.0) **and `hashbrown`**
+(three versions to four). All under `multiple-versions = "warn"`, and
+`cargo deny check bans` is green.
 
 **The MSRV floor moved 1.94 → 1.98** as a direct consequence: the twelve
 `cratestack-*` packages are now the sole maximum over the graph's declared
