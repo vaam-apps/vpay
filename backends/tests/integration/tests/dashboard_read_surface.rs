@@ -42,7 +42,11 @@
 //! 9. the `status` filter narrows the list, and an unknown status is a `400`
 //!    naming `status` rather than an empty page;
 //! 10. a deployment that registers no `dashboard_client` mounts no nest at
-//!     all: `/dash/v1/payment_intents` is the honest `404`, not a `401`.
+//!     all: `/dash/v1/payment_intents` is the honest `404`, not a `401`;
+//! 11. the detail read renders the events and refunds an intent *has*, both
+//!     objects' events oldest first, and no other tenant's event — added
+//!     2026-09-06 by the review, which measured that both repository reads
+//!     could return an empty `Vec` forever with every other case green.
 //!
 //! # Why raw `reqwest` and no SDK
 //!
@@ -747,5 +751,182 @@ async fn a_deployment_with_no_dashboard_client_mounts_no_dash_nest() -> anyhow::
         .get("/dash/v1/payment_intents", Some(&harness.dashboard_token()))
         .await?;
     assert_eq!(with_token, 404, "{with_token_body}");
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 11
+
+/// The detail read renders the events and the refunds an intent actually
+/// has — and renders **only this tenant's** events.
+///
+/// # Why this test exists
+///
+/// Every other assertion in this file about `refunds` and `events` is
+/// `== []`, over fixtures that have neither. Mutation testing on 2026-09-06
+/// measured the consequence: making **both** `Events::list_for_objects` and
+/// `Refunds::list_for_intent` `return Ok(Vec::new())` unconditionally left
+/// all ten tests green. Two repository methods whose only caller is the
+/// detail route could answer "nothing happened to this payment" forever, and
+/// `AGENTS.md` rule 2 names that shape by hand: unwritten code "never returns
+/// a plausible-looking success, an empty list, or a zero".
+///
+/// # The second half, and why it needs a row nothing writes
+///
+/// `events.object_id` is a plain `TEXT NOT NULL` with **no foreign key**
+/// (migration `0018`) that points into three different tables depending on
+/// `type`. So `list_for_objects`' `merchant_id = $1` predicate is the *only*
+/// thing keeping another tenant's event out of this tenant's timeline, and
+/// the only way to exercise it is a row no code path produces: an event owned
+/// by `MERCHANT_B` whose `object_id` is `MERCHANT_A`'s intent. It is written
+/// through the shipping `TxRepositories::insert_in_tx` — the row is real, its
+/// `merchant_id` is simply the other one.
+///
+/// `Refunds::list_for_intent`'s own `p.merchant_id = $1` cannot be mutated
+/// into a failure and is deliberately not asserted: `refunds.payment_intent_id`
+/// is a real foreign key onto `payment_intents(id)`, so a refund reachable
+/// from A's intent *is* A's. That predicate is defence in depth, and saying so
+/// is more honest than a test that would pass with it deleted.
+///
+/// The decisive mutations: `Ok(Vec::new())` from either repository method,
+/// or dropping `merchant_id = $1` from `Events::list_for_objects`.
+#[tokio::test]
+async fn the_detail_read_renders_the_timeline_and_the_refunds_it_has() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let repositories = harness.repositories.as_ref();
+
+    seed_intent(repositories, MERCHANT_A, "pi_dash_timeline").await?;
+    seed_intent(repositories, MERCHANT_B, "pi_dash_timeline_b").await?;
+
+    let charge_id = "ch_dash_timeline".to_owned();
+    repositories
+        .transaction(|tx| {
+            let charge_id = charge_id.clone();
+            Box::pin(async move {
+                tx.insert_for_intent(&vpay_db::NewCharge {
+                    id: charge_id.clone(),
+                    payment_intent_id: "pi_dash_timeline".to_owned(),
+                    provider_code: PUSH_RAIL.to_owned(),
+                    provider_reference_id: uuid::Uuid::new_v4(),
+                    provider_ref_extra: None,
+                    redirect_url: None,
+                    return_url: None,
+                    state: vpay_core::ChargeState::INITIAL.as_wire_str().to_owned(),
+                    amount: AMOUNT,
+                    currency_code: CURRENCY.to_owned(),
+                    payer_ref: None,
+                    payer_ref_masked: None,
+                })
+                .await
+                .context("seeding a charge")?;
+
+                // One event about the intent and one about the *charge* —
+                // the two-object case `Events::list_for_objects` takes a
+                // slice for. A timeline that asked only about the intent
+                // would render the first and silently drop the second.
+                for (id, event_type, object_id) in [
+                    (
+                        "evt_dash_timeline_created",
+                        "payment_intent.created",
+                        "pi_dash_timeline",
+                    ),
+                    (
+                        "evt_dash_timeline_refunded",
+                        "charge.refunded",
+                        charge_id.as_str(),
+                    ),
+                ] {
+                    tx.insert_in_tx(&vpay_db::NewEvent {
+                        id: id.to_owned(),
+                        merchant_id: MERCHANT_A.to_owned(),
+                        livemode: false,
+                        event_type: event_type.to_owned(),
+                        object_id: object_id.to_owned(),
+                        data: serde_json::json!({ "object": { "id": object_id } }),
+                    })
+                    .await
+                    .context("seeding an event")?;
+                }
+
+                // The row no code path produces: MERCHANT_B's event pointing
+                // at MERCHANT_A's intent. See this test's doc comment.
+                tx.insert_in_tx(&vpay_db::NewEvent {
+                    id: "evt_dash_timeline_foreign".to_owned(),
+                    merchant_id: MERCHANT_B.to_owned(),
+                    livemode: false,
+                    event_type: "payment_intent.canceled".to_owned(),
+                    object_id: "pi_dash_timeline".to_owned(),
+                    data: serde_json::json!({ "object": { "id": "pi_dash_timeline" } }),
+                })
+                .await
+                .context("seeding the foreign event")?;
+
+                Ok::<_, anyhow::Error>(vpay_db::TxOutcome::Commit(()))
+            })
+        })
+        .await?;
+
+    // `refunds` has no writer anywhere in this workspace — `vpay_db::refunds`
+    // is a read-only module and says why — so the row goes in the way
+    // `tests/refunds.rs` puts one in.
+    for (id, intent) in [
+        ("re_dash_timeline_one", "pi_dash_timeline"),
+        ("re_dash_timeline_two", "pi_dash_timeline"),
+        // The other tenant's refund, on the other tenant's intent: it must
+        // not appear, and it is what makes "two refunds" a count rather than
+        // "every refund in the table".
+        ("re_dash_timeline_b", "pi_dash_timeline_b"),
+    ] {
+        sqlx::query(
+            "INSERT INTO refunds (id, payment_intent_id, amount, currency_code, status, metadata) \
+             VALUES ($1, $2, $3, 'XAF', 'pending'::refund_status, '{}'::jsonb)",
+        )
+        .bind(id)
+        .bind(intent)
+        .bind(AMOUNT)
+        .execute(&harness.pool)
+        .await
+        .with_context(|| format!("seeding refund {id}"))?;
+    }
+
+    let (status, body) = harness
+        .dash_json("/dash/v1/payment_intents/pi_dash_timeline")
+        .await?;
+    assert_eq!(status, 200, "{body}");
+
+    let event_ids: Vec<&str> = at(&body, "/events")
+        .as_array()
+        .expect("the timeline is an array")
+        .iter()
+        .filter_map(|event| event.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        event_ids,
+        vec!["evt_dash_timeline_created", "evt_dash_timeline_refunded"],
+        "the timeline must carry both objects' events, oldest first, and \
+         nothing belonging to {MERCHANT_B}: {body}"
+    );
+    assert_eq!(
+        at(&body, "/events/1/type"),
+        "charge.refunded",
+        "the charge's event must be rendered with its own type: {body}"
+    );
+    assert_eq!(
+        at(&body, "/events/1/object_id"),
+        "ch_dash_timeline",
+        "{body}"
+    );
+
+    let refund_ids: Vec<&str> = at(&body, "/refunds")
+        .as_array()
+        .expect("the refunds are an array")
+        .iter()
+        .filter_map(|refund| refund.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        refund_ids,
+        vec!["re_dash_timeline_one", "re_dash_timeline_two"],
+        "{body}"
+    );
+
     Ok(())
 }

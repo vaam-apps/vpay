@@ -251,7 +251,7 @@ dashboard-audienced token over a real booted server
 
 ~~`AuthenticatedDashboard` is mounted on nothing.~~ **Corrected 2026-09-06.**
 The dashboard *validator* is now mounted, in front of the two `/dash/v1`
-read routes, and the ten cases in
+read routes, and the eleven cases in
 `backends/tests/integration/tests/dashboard_read_surface.rs` prove over a
 real booted server that: the bound merchant's rows come back and another's do
 not; another merchant's id is byte-for-byte the same 404 as one that never
@@ -259,7 +259,10 @@ existed; a merchant-audience token is refused; a dashboard-audience token for
 an *unregistered client* is refused; a token without the registered scope is
 refused; an expired token is a 401; no route answers without a token; the
 detail read carries no `client_secret` where `/v1`'s does; and a deployment
-with no `dashboard_client` mounts no nest. What none of them proves, and what
+with no `dashboard_client` mounts no nest; and — added by the review on the
+same day — the detail read renders the events and refunds an intent *has*,
+both objects' events oldest first, and no other tenant's event. What none of
+them proves, and what
 no test in this repository can prove today, is that a token could ever be
 *obtained*. (`AuthenticatedDashboard`, the extractor, is still mounted on
 nothing — `require_dashboard_token` validates once in middleware for

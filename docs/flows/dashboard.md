@@ -158,7 +158,7 @@ reasonably expect it there.
 refusals, and the `Surface::Dashboard` audience constant moved into
 `vpay-config` beside the merchant one.
 `backends/tests/integration/tests/dashboard_read_surface.rs` drives all of it
-over a real booted server on a real Postgres — 10 tests, 0 ignored — and its
+over a real booted server on a real Postgres — 11 tests, 0 ignored — and its
 own header states what it cannot claim.
 
 **Not built:** login, of any kind; the dashboard's server-side session; every
