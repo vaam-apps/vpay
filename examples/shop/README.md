@@ -102,7 +102,11 @@ one eagerly would leave an unpayable row behind every time the popup worked.
 
 A demo that can only show a payment working is showing the easy half. Every
 outcome below is reachable from this shop, on the demo stack, by paying with
-a documented fake number — and what the shop does about each is the point:
+a documented fake number — and what the shop does about each is the point.
+**Two of them are not reachable, and this document says which and why rather
+than leaving them to be discovered:** `cancelled` (no event exists for it)
+and MTN's `237600000400` (a decline at submit emits no event either). Both
+are called out below, in the panel on `/checkout`, and in `docs/status.md`.
 
 | The buyer sees                            | The order becomes | Where it comes from                                                  |
 | ----------------------------------------- | ----------------- | -------------------------------------------------------------------- |
@@ -168,8 +172,30 @@ handset.
 | `237600000000` | Pays. Any number not listed below does the same. | `paid`   | —                      | `SUCCESSFUL`                    |
 | `237600000101` | Declined — the wallet has too little money       | `failed` | `insufficient_funds`   | `NOT_ENOUGH_FUNDS`              |
 | `237600000102` | The prompt expires — nobody enters the PIN       | `failed` | `payer_timeout`        | `COULD_NOT_PERFORM_TRANSACTION` |
-| `237600000400` | Refused at submit — the rail has no such account | `failed` | `invalid_payer`        | `PAYER_NOT_FOUND (HTTP 400)`    |
+| `237600000400` | Refused at submit — the rail has no such account. vpay's page says so; this shop never hears about it | `unpaid`   | `invalid_payer`        | `PAYER_NOT_FOUND (HTTP 400)`    |
 | `237600000503` | The rail is unavailable                          | `failed` | `provider_unavailable` | `SERVICE_UNAVAILABLE`           |
+
+> **`237600000400` leaves the order `unpaid`, and that is a second gap of
+> the same shape as `cancelled`.** MTN refuses this MSISDN on the **submit**,
+> before any charge is polled, so vpay commits the failure through
+> `vpay_api::v1::payment_intents::persist_decline` — which writes the charge,
+> writes `last_payment_error` on the intent, and **emits no event**.
+> `payment_intent.payment_failed` is written by
+> `vpay_db::settlement::apply_failed` and by nothing else, and only the
+> worker's poll path calls it. So a decline **at submit** is a terminal
+> outcome no signed event reports: the payer sees the real reason on vpay's
+> page, the merchant can read it from `GET /v1/payment_intents/{id}`, and a
+> shop that settles only from webhooks — this one — never learns of it. The
+> order stays `unpaid` and "Try again" is not offered, because nothing told
+> this shop there was anything to retry.
+>
+> The other four MTN numbers are unaffected: they are decided by the **status
+> query**, which is the worker's path, which does emit. Pinned by
+> `a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read` in
+> `backends/tests/integration`, which asserts the `events` table stays empty
+> for such a decline and will fail on the day vpay starts emitting one.
+> Whether it should is a maintainer's call, written up in
+> [`../../docs/plans/exp22-shop-demo-notes/opus-review.md`](../../docs/plans/exp22-shop-demo-notes/opus-review.md).
 
 **No number produces `payer_declined` on this rail.** MTN documents no reason
 for a payer who answered the prompt and refused it — its nine-row table has

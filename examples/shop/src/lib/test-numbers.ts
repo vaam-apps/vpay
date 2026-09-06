@@ -38,12 +38,27 @@ export interface TestNumber {
   display: string;
   /** What the payer ends up seeing, in one phrase. */
   outcome: string;
-  /** What this shop's order becomes once the webhook lands. */
-  orderStatus: "paid" | "failed";
+  /**
+   * What this shop's order becomes.
+   *
+   * `unpaid` is not a typo and not an omission: it is what an outcome vpay
+   * emits **no event** for leaves the order as. A shop that settles only
+   * from signed events — which is the whole argument of this example —
+   * cannot move an order it was never told about, and a row that promised
+   * otherwise would be this demo claiming something the stack does not do.
+   * Every such row carries a {@link TestNumber.note} saying so.
+   */
+  orderStatus: "paid" | "failed" | "unpaid";
   /** vpay's `last_payment_error.code`, or `null` when the charge settles. */
   failureCode: FailureCode | null;
   /** The rail's own word for it, so this table can be diffed against the adapter docs. */
   railReason: string;
+  /**
+   * Why this row's `orderStatus` is not the one the `failureCode` would
+   * suggest. Required on every row that does not settle to `paid` or
+   * `failed`, and checked by `test-numbers.test.ts`.
+   */
+  note?: string;
 }
 
 export interface RailTestNumbers {
@@ -102,10 +117,12 @@ export const TEST_NUMBERS: readonly RailTestNumbers[] = [
       {
         msisdn: "237600000400",
         display: "+237 6 00 00 04 00",
-        outcome: "Refused at submit — the rail has no such account",
-        orderStatus: "failed",
+        outcome:
+          "Refused at submit — the rail has no such account. vpay's page says so; this shop never hears about it",
+        orderStatus: "unpaid",
         failureCode: "invalid_payer",
         railReason: "PAYER_NOT_FOUND (HTTP 400)",
+        note: "MTN refuses this one on the SUBMIT, before any charge is polled, so vpay commits the failure through `persist_decline` — which writes the charge, writes `last_payment_error` on the intent, and emits nothing. `payment_intent.payment_failed` is written only by the worker's settlement transaction, so there is no signed event for a decline at submit and this order stays `unpaid` for ever. The payer sees the real reason on vpay's page and the merchant can read it from `GET /v1/payment_intents/{id}`; a webhook-driven shop cannot. Measured 2026-09-06 and pinned by `a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read` in `backends/tests/integration`, which asserts the `events` table stays empty.",
       },
       {
         msisdn: "237600000503",

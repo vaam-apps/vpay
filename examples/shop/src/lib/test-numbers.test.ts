@@ -15,7 +15,7 @@
  * The decisive check is the last one in each direction: delete a row from
  * either file and this fails naming it.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { TEST_NUMBERS, testNumbersFor, type RailCode } from "./test-numbers";
@@ -92,6 +92,81 @@ describe("the README and the panel show the same numbers", () => {
   }
 });
 
+/**
+ * Every MSISDN a WireMock mapping for `rail` actually keys on.
+ *
+ * Read out of the stubs' own JSON rather than grepped, and only from each
+ * mapping's `request` — a number named in a `metadata.why` comment is
+ * documentation, not steering, and a table that matched against prose would
+ * pass for a mapping somebody had deleted. Leaves are filtered to the
+ * `23760…` block so that a catch-all pattern (`.*`) cannot make the
+ * assertion below vacuous.
+ */
+function steeringPatterns(rail: "mtn" | "orange"): string[] {
+  const dir = fileURLToPath(
+    new URL(
+      `../../../../backends/tests/conformance/wiremock/${rail}/mappings/`,
+      import.meta.url,
+    ),
+  );
+  const found: string[] = [];
+  const walk = (node: unknown): void => {
+    if (typeof node === "string") {
+      if (node.includes("23760")) {
+        found.push(node);
+      }
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    if (typeof node === "object" && node !== null) {
+      Object.values(node).forEach(walk);
+    }
+  };
+  for (const file of readdirSync(dir).filter((name) => name.endsWith(".json"))) {
+    const parsed: unknown = JSON.parse(readFileSync(dir + file, "utf8"));
+    const mappings = (parsed as { mappings?: unknown[] }).mappings ?? [];
+    for (const mapping of mappings) {
+      walk((mapping as { request?: unknown }).request);
+    }
+  }
+  return found;
+}
+
+describe("the stubs that honour the numbers", () => {
+  // The README-vs-module check above proves two copies of a table agree. It
+  // says nothing about the thing that actually produces the outcome, so a
+  // number whose mapping had been deleted or renumbered would leave both
+  // copies happily agreeing about a payment nobody can make.
+  for (const [rail, dir] of [
+    ["mtn_momo", "mtn"],
+    ["orange_money", "orange"],
+  ] as const) {
+    it(`keys a ${rail} mapping on every number that is meant to fail`, () => {
+      const patterns = steeringPatterns(dir);
+      expect(patterns.length, `${dir} mappings name no MSISDN at all`).toBeGreaterThan(0);
+      const entry = TEST_NUMBERS.find((candidate) => candidate.rail === rail);
+      expect(entry, rail).toBeDefined();
+      for (const number of entry?.numbers ?? []) {
+        if (number.failureCode === null) {
+          // The success row is deliberately NOT steered — "any number not
+          // listed below does the same" is the stubs' catch-all.
+          continue;
+        }
+        const steered = patterns.some(
+          (pattern) =>
+            pattern === number.msisdn ||
+            pattern.includes(number.msisdn) ||
+            new RegExp(`^(?:${pattern})$`, "u").test(number.msisdn),
+        );
+        expect(steered, `${rail} ${number.msisdn} is in no mapping's request`).toBe(true);
+      }
+    });
+  }
+});
+
 describe("the table itself", () => {
   it("names only failure codes the shop has copy for", () => {
     for (const entry of TEST_NUMBERS) {
@@ -116,6 +191,24 @@ describe("the table itself", () => {
       const codes = entry.numbers.map((number) => number.failureCode);
       expect(new Set(codes).size, entry.rail).toBe(codes.length);
       expect(codes, entry.rail).toContain(null);
+    }
+  });
+
+  it("makes every row that does not settle say why, in the panel and here", () => {
+    for (const entry of TEST_NUMBERS) {
+      for (const number of entry.numbers) {
+        const settles =
+          number.orderStatus === "paid" || number.orderStatus === "failed";
+        // A row promising anything other than a settled order is a row about
+        // a gap in vpay, and a gap with no sentence beside it is exactly the
+        // "looks more finished than it is" this example exists against. The
+        // converse is asserted too: a note on a row that settles normally
+        // would be an explanation of nothing.
+        expect(
+          number.note !== undefined,
+          `${entry.rail} ${number.msisdn} (${number.orderStatus})`,
+        ).toBe(!settles);
+      }
     }
   });
 

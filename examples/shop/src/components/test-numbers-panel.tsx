@@ -1,4 +1,11 @@
-import { testNumbersFor } from "@/lib/test-numbers";
+import { testNumbersFor, type TestNumber } from "@/lib/test-numbers";
+
+/** One word per order status, so the table cannot render "Failed" for `unpaid`. */
+const ORDER_STATUS_LABEL: Readonly<Record<TestNumber["orderStatus"], string>> = {
+  paid: "Paid",
+  failed: "Failed",
+  unpaid: "Unpaid",
+};
 
 /**
  * The demo stack's fake numbers, on the screen where a buyer needs them.
@@ -67,7 +74,7 @@ export function TestNumbersPanel({ rails }: { rails: readonly string[] }) {
                   <td>{number.outcome}</td>
                   <td>
                     <span className={`status status-${number.orderStatus}`}>
-                      {number.orderStatus === "paid" ? "Paid" : "Failed"}
+                      {ORDER_STATUS_LABEL[number.orderStatus]}
                     </span>
                   </td>
                   <td>
@@ -78,6 +85,21 @@ export function TestNumbersPanel({ rails }: { rails: readonly string[] }) {
                   </td>
                 </tr>
               ))}
+              {entry.numbers
+                .filter((number) => number.note !== undefined)
+                .map((number) => (
+                  <tr key={`${number.msisdn}-note`}>
+                    <td colSpan={5} style={{ fontSize: "0.9rem" }}>
+                      <strong>
+                        Why <code>{number.msisdn}</code> leaves the order{" "}
+                        <code>{number.orderStatus}</code>:
+                      </strong>{" "}
+                      <span data-testid={`test-number-note-${number.msisdn}`}>
+                        {number.note}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
             </tbody>
           </table>
           {entry.cannotExpress.length === 0 ? null : (
