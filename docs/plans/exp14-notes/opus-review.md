@@ -150,7 +150,7 @@ Nothing was weakened to make anything pass. The one gate that changed
 | `cargo nextest run -p vpay-db --lib` | 24 passed, 0 skipped |
 | `cargo nextest run -p xtask` | **198** passed, 0 skipped |
 | `just test-doc` | 90 passed, 1 ignored |
-| `just verify-ignored` | 0 ignored (expected 0), 41 binaries (expected 41), 1288 total |
+| `just verify-ignored` | 0 ignored (expected 0), 41 binaries (expected 41), **1289** total (the review's one new xtask test) |
 | `just deny` | advisories ok, bans ok, licenses ok, sources ok |
 | `just docs-check` | exit 0 |
 | `just lint-web`, `just test-web` | exit 0 |

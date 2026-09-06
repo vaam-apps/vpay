@@ -3129,11 +3129,12 @@ saturation) and was unrecoverable without a reboot. Every gate that needs no
 container is green — `cargo build --workspace --all-targets` with zero
 warnings, `just fmt-check`, `just clippy`, all ten `just verify` gates,
 `cargo nextest run -p vpay-db --lib` (24/24, including all five
-`persistence::tests`), `cargo nextest run -p xtask` (197/197), `just test-doc`
-(90 passed, 1 ignored), `just verify-ignored` (0 ignored, 41 binaries, 1288
-total — master's 1279 plus this branch's nine), `just deny`, `just docs-check`,
-`just lint-web`, `just test-web`. The three that are not, named rather than
-counted:
+`persistence::tests`), `cargo nextest run -p xtask` (198/198), `just test-doc`
+(90 passed, 1 ignored), `just verify-ignored` (0 ignored, 41 binaries, 1289
+total — master's 1279 plus this branch's ten), `just deny`, `just docs-check`,
+`just lint-web`, `just test-web`. (197/197 and 1288 until 2026-09-06, when
+the review added one more `verify-repositories` test; every one of these was
+re-run after it.) The three that are not, named rather than counted:
 
 1. `vpay-db::repositories a_disabled_client_reads_the_same_through_both_paths`
    — the parity test. It compiles and is listed; it has not run. **Until it
