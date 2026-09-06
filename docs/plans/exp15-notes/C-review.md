@@ -202,7 +202,7 @@ kept:
 | `just docs-check` | ok |
 | `just fmt-check` | exit 0 |
 | `just clippy` | exit 0 |
-| `just verify-ignored` | `0 ignored (expected 0), 42 test binaries (expected 42), 1333 total (minimum 1080)` |
+| `just verify-ignored` | `0 ignored (expected 0), 42 test binaries (expected 42), 1336 total (minimum 1080)` — 1333 as delivered, +3 for this review's new cases; no new test binary, so `expected_suites` is untouched |
 | `just lint-web` / `just test-web` | **not run**: no file under `sdks/` is touched by this branch, before or after the review |
 
 ## 6. What this review did NOT do
