@@ -108,8 +108,25 @@ Verified reverted with `git status --porcelain` after each.
 | 3 | add a `payments.teleport` row with two ✅ cells | **FAIL**, `docs/sdks/parity.md:116: row `payments.teleport` names a method no SDK declares` |
 | 4 | rename a named proving test | **FAIL** (the pre-existing direction, preserved) |
 | 5 | the same `payments.teleport` row rewritten ⛔/⛔ with a date | **PASS**, exit 0, 30 dated gaps |
+| 6 | rename `create` → `creat` on the **Rust** `RefundsResource` | **FAIL**, one problem: `refunds.creat` is shipped and has no row |
+| 7 | rename it on **both** SDKs | **FAIL**, two problems, one per direction |
 
-Exit code checked explicitly for mutation 1: `exit=1`.
+Every mutation was re-run against the committed tree, with the exit code
+printed each time: 1, 1, 1, 1, 1, 0 for mutations 1–5 and 6.
+
+Mutations 6 and 7 are the pair worth reading together, because 6 shows the
+rule's shape rather than only that it fires. Renaming a method in **one** SDK
+raises only the code→doc failure: the `refunds.create` row still names a
+method Node declares, and "a row names a method **at least one** SDK declares"
+is deliberately what ADR-0015 asks for — the ✅/⛔ cells are what say which SDK
+has it, and duplicating that in the row name would make a per-SDK divergence
+fail twice for one reason. Renaming it in **both** raises both failures:
+
+```
+xtask: sdk parity violations:
+  - docs/sdks/parity.md:159: row `refunds.create` names a method no SDK declares — …
+  - sdks/rust/src/resources.rs:705: `refunds.creat` is shipped and has no row in docs/sdks/parity.md — …
+```
 
 ## 4. Unit tests
 
@@ -190,5 +207,9 @@ All on this tree, this branch:
   answer — a real divergence surfaced — but it is a choice, not an accident.
 - **Per-column cell/method agreement is not checked.** If Rust declares a
   method and the row's `sdks/rust` cell is ⛔, that passes: the row exists and
-  the method exists. Catching "this SDK has it but its own cell says it does
-  not" is a further check this pass did not build.
+  the method exists. Mutation 6 above is the same hole seen from the other
+  side — one SDK renaming a method away leaves its row standing, because the
+  other still has it. Catching "this SDK has it but its own cell says it does
+  not", and its converse, is a further check this pass did not build; it is
+  the obvious next one, and it would need a rule for what a ⛔ cell means when
+  the method exists but is untested.
