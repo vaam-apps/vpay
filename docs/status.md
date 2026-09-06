@@ -508,7 +508,7 @@ of the sabotage review, rebased onto `origin/master` (PRs #55 #60 #62 #64) —
 over **854 links in 153 tracked files**, `verify-status` 1 declared
 unimplemented item, `verify-toolchain` 1.98.0); `test-rust` **1401 tests run,
 1401 passed, 0 skipped** in 1022.8 s across 43 binaries against a real Postgres
-and real WireMock rails; `test-doc` **91 passed, 1 ignored**; `verify-ignored`
+and real WireMock rails; `test-doc` **96 passed, 1 ignored**; `verify-ignored`
 **0 ignored (expected 0), 43 binaries (expected 43), 1401 total (floor 1080)**;
 `lint-web`; `test-web`, of which `@vpay/checkout` is **448 cases in 23 files, 0
 skipped** (was 302 in 17) and `@vpay/tokens` **7 in 1**; `deny` (advisories,

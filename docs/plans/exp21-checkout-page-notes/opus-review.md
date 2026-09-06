@@ -187,12 +187,24 @@ The implementer's own fourteen were not re-run; they are recorded in
 
 ## 4. The gates
 
-**`just ci` on the rebased head, before any fix** — every recipe exit 0:
-`fmt-check`, `clippy`, `verify` (ten gates), `test-rust` **1401 run, 1401
-passed, 0 skipped** in 1022.8 s across 43 binaries, `test-doc`, `verify-ignored`
-**0 ignored (expected 0), 43 binaries, 1401 total**, `lint-web`, `test-web`,
-`deny`. Nothing under `backends/` is touched by this branch or by this review,
-so every Rust number is master's.
+**`just ci` twice**, recipe by recipe, exit code read from a file. Once on the
+rebased head before any fix, and once on the final head. Both **every recipe
+exit 0**, with the same numbers:
+
+| recipe | result |
+|---|---|
+| `fmt-check` | ok (Rust; `just fmt` also runs prettier over ~222 unrelated files and was deliberately not run) |
+| `clippy` | ok, `-D warnings` |
+| `verify` | all ten gates — `verify-links` **854 links in 153 tracked files**, `verify-status` 1 declared unimplemented item, `verify-toolchain` 1.98.0 |
+| `test-rust` | **1401 run, 1401 passed, 0 skipped** — 1022.8 s then 962.0 s, 43 binaries, real Postgres and real WireMock rails |
+| `test-doc` | **96 passed, 1 ignored** |
+| `verify-ignored` | **0 ignored (expected 0), 43 binaries (expected 43), 1401 total (floor 1080)** |
+| `lint-web` | ok |
+| `test-web` | `@vpay/checkout` **448 in 23 files, 0 skipped** (was 442 in 22), `@vpay/tokens` **7 in 1** (was 3), `examples/shop` 96, `sdks/stripe-js` 146, `sdks/nodejs` 180 |
+| `deny` | advisories, bans, licenses, sources ok |
+
+Nothing under `backends/` is touched by this branch or by this review, so every
+Rust number is master's.
 
 **`just test-e2e` on the rebased head, before any fix** — `checkout.cy.ts` 1/1,
 `dashboard.cy.ts` 3/3, **`shop-hosted.cy.ts` 0/3**, and the framed run never
