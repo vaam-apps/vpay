@@ -119,3 +119,41 @@ Plus, from the same list and equally unexecuted here: the re-run of
 `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` on the
 final tree, and the server image build (so the musl size delta of
 CrateStack's graph is still unmeasured).
+
+---
+
+## 6. Phase 2 — what the review changed
+
+One commit per finding, each with its own measurement.
+
+| Finding | Commit | Proof |
+|---|---|---|
+| R2 | `docs(db): is_client_disabled no longer returns DbError::Query` | the method's only `map_err` is `classify_cratestack`, and `FindUnique::run`'s error arm is `CratestackError::Database(_)` — there is no path from it to `DbError::Query` |
+| R1 | `test(db): the parity test's decisive mutation was never run — say so` | `grep 'CrateStack says false'` finds nothing outside the assertion string; `opus.md` § 7 lists the mutation as unexecuted |
+| R3 | `feat(xtask): a pub type or pub fn hands out the generated schema too` | M4 and M5 go `ok` → exit 1 naming the item's own line; M2 and M3 still exit 1 with their own messages; the real tree still exits 0; `-p xtask` 197 → 198, 0 skipped |
+| R4 | `docs(reference): the parity test is the proof, and it has not run` | — |
+| R6 | `docs(reference): what compiling schemas/vpay.cstack does not prove` | M7 and M8, above |
+| R5 | `docs(plans): correct the graph-delta accounting` | `comm -13` over the two lockfiles' unique name sets (25, not 28) and a duplicate-version diff (three, not two) |
+
+Nothing was weakened to make anything pass. The one gate that changed
+(`verify-repositories`) gained a requirement and lost none, and its
+"the repository's own tree passes" test still passes without an exemption.
+
+### The gate re-run after the fixes
+
+| Command | Result |
+|---|---|
+| `cargo build --workspace --all-targets` | exit 0, 0 warnings |
+| `just fmt-check` | exit 0 |
+| `just clippy` | exit 0 |
+| `just verify` (ten gates) | exit 0 |
+| `cargo nextest run -p vpay-db --lib` | 24 passed, 0 skipped |
+| `cargo nextest run -p xtask` | **198** passed, 0 skipped |
+| `just test-doc` | 90 passed, 1 ignored |
+| `just verify-ignored` | 0 ignored (expected 0), 41 binaries (expected 41), 1288 total |
+| `just deny` | advisories ok, bans ok, licenses ok, sources ok |
+| `just docs-check` | exit 0 |
+| `just lint-web`, `just test-web` | exit 0 |
+
+The container-backed list in § 5 is unchanged: this review executed none of
+it either.

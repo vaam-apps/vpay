@@ -3093,6 +3093,18 @@ schema and still drives every migration.
   whole-identifier matching keeps `CratestackError` and `CratestackContext`
   out, asserted rather than assumed.
 
+  **Extended 2026-09-06 by review, after two more spellings were measured
+  past it.** `pub type CratestackHandle = crate::schema::cratestack_schema::Cratestack;`
+  and a `pub fn` returning the same type both compiled and both printed
+  `ok`: the check read `pub mod` and `pub use` and nothing else, and
+  `concrete_repository_types`' alias fixpoint cannot help, because it only
+  promotes an alias whose target is already in the set and `Cratestack` is
+  declared by no source file. The gate now also fails any unrestricted-`pub`
+  item *signature* naming the module, anywhere in the crate;
+  `PgRepositories`' real `pub(crate) cs` field and `boxed`'s body still pass,
+  which is asserted rather than hoped for. `cargo nextest run -p xtask`
+  197 → 198.
+
 **Errors.** `PersistenceError` (`vpay-db/src/persistence.rs`) is the leaf,
 `DbError::Persistence` `#[from]`s it and delegates, and `classify_cratestack`
 is the single place a `CratestackError` is read — the mirror of
