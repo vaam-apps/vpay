@@ -2162,6 +2162,15 @@ gen-demo-keys: gen-e2e-signing-key
     webhooks:
       allow_private_targets: true
 
+    # The base file binds its dashboard client to \`acme-cameroon\`, a merchant
+    # this overlay replaces wholesale below. figment's dict merge keeps the
+    # base block's client_id, scope and redirect_uris and overlays this one
+    # field, so /dash/v1 reads the demo tenant and boot does not refuse with
+    # ConfigError::DashboardUnknownMerchant (it did, in PR #69's e2e job, when
+    # this line was missing).
+    dashboard_client:
+      merchant_id: demo-merchant-tenant
+
     merchant_clients:
       - client_id: demo-merchant
         # The tenant, separate from the credential: every payment intent the
