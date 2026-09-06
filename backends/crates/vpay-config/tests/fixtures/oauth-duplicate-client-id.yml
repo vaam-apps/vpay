@@ -21,6 +21,7 @@ merchant_clients:
 
 dashboard_client:
   client_id: shared-id
+  merchant_id: shared-tenant
   redirect_uris:
     - http://localhost:3000/callback
   scope: dashboard:read

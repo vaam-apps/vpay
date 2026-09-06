@@ -37,6 +37,19 @@ use serde_json::Value as JsonValue;
 /// shapes that failure takes and why it is fatal at boot instead.
 pub const MERCHANT_AUDIENCE: &str = "vpay:v1";
 
+/// The `aud` value every `/dash/v1` access token must carry.
+///
+/// Here beside [`MERCHANT_AUDIENCE`] and for the same reason: it has to be
+/// one string in one place. `vpay_api::resource_auth::Surface::Dashboard`
+/// returned this as a **local literal** until 2026-09-06, with a doc comment
+/// saying so — nothing registered or validated a dashboard token, so there
+/// was no second party to disagree with. There is now:
+/// [`DashboardClient::merchant_id`] binds the dashboard client to a tenant,
+/// [`crate::ConfigError::MerchantClaimsDashboardAudience`] refuses a merchant
+/// registration that lists this value, and `/dash/v1`'s resource validator
+/// requires it. Three parties, one constant.
+pub const DASHBOARD_AUDIENCE: &str = "vpay:dash/v1";
+
 /// OAuth2 grant types this workspace's clients can be registered for.
 ///
 /// Deliberately a closed set of exactly the two grants ADR-0010 and
@@ -461,6 +474,25 @@ pub struct DashboardClient {
     #[garde(skip)]
     #[serde(default)]
     pub redirect_uris: Vec<String>,
+    /// The one tenant this dashboard client may read
+    /// (`payment_intents.merchant_id`, and the value every `/dash/v1` query
+    /// is filtered by).
+    ///
+    /// **Required, and deliberately singular.** ADR-0008's dashboard
+    /// observes records; a staff surface that could name any tenant would be
+    /// an authorisation decision taken per request against a list nothing
+    /// validates. One client, one tenant, fixed in YAML and checked at boot
+    /// against the registered merchants
+    /// ([`crate::ConfigError::DashboardUnknownMerchant`]) — so a typo is a
+    /// refused deployment rather than a dashboard that renders an empty
+    /// table and looks like a merchant with no payments.
+    ///
+    /// A deployment whose staff must see several tenants registers several
+    /// dashboard clients; it does not widen this field. That is not a
+    /// limitation this type invents — it is the same rule
+    /// [`MerchantClient::merchant_id`] states, applied to the other surface.
+    #[garde(length(min = 1))]
+    pub merchant_id: String,
     /// The dashboard's single scope. A plain `String`, not a `Vec<String>`
     /// with a length-1 rule — the maintainer's decision
     /// (`docs/flows/dashboard-auth.md`'s "Scope" section: the dashboard is
@@ -481,6 +513,7 @@ impl fmt::Debug for DashboardClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DashboardClient")
             .field("client_id", &self.client_id)
+            .field("merchant_id", &self.merchant_id)
             .field("redirect_uris", &self.redirect_uris)
             .field("scope", &self.scope)
             .field(
@@ -631,6 +664,7 @@ mod tests {
     fn dashboard_client_debug_output_never_contains_a_client_secret_value() {
         let client = DashboardClient {
             client_id: "vpay-dashboard".to_owned(),
+            merchant_id: "acme-tenant".to_owned(),
             redirect_uris: vec!["https://dashboard.example/callback".to_owned()],
             scope: "dashboard:read".to_owned(),
             client_secret: Some("this-should-never-be-here".to_owned()),

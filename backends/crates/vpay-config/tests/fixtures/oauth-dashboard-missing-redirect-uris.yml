@@ -10,5 +10,6 @@ deployment:
 
 dashboard_client:
   client_id: vpay-dashboard
+  merchant_id: no-such-tenant-checked-later
   redirect_uris: []
   scope: dashboard:read
