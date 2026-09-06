@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { loadShopConfig, type EnvRecord } from "./config";
+import {
+  allSelectedRails,
+  loadShopConfig,
+  railsForCurrency,
+  type EnvRecord,
+} from "./config";
 
 const COMPLETE: EnvRecord = {
   VPAY_API_URL: "http://vpay-server:8080",
@@ -31,14 +36,14 @@ describe("loadShopConfig", () => {
   });
 
   it("offers both rails by default and takes a narrower list", () => {
-    expect(loadShopConfig(COMPLETE).paymentMethodTypes).toEqual([
-      "mtn_momo",
-      "orange_money",
-    ]);
+    expect(loadShopConfig(COMPLETE).rails).toEqual({
+      kind: "all",
+      rails: ["mtn_momo", "orange_money"],
+    });
     expect(
       loadShopConfig({ ...COMPLETE, SHOP_PAYMENT_METHOD_TYPES: "orange_money" })
-        .paymentMethodTypes,
-    ).toEqual(["orange_money"]);
+        .rails,
+    ).toEqual({ kind: "all", rails: ["orange_money"] });
   });
 
   it("refuses a rail it does not know rather than passing it to vpay", () => {
@@ -70,6 +75,21 @@ describe("loadShopConfig", () => {
     ).toThrow(/must be http\(s\)/);
   });
 
+  it("defaults the checkout surface to the redirect, and takes all three", () => {
+    expect(loadShopConfig(COMPLETE).checkoutMode).toBe("hosted");
+    for (const mode of ["hosted", "embedded", "popup"]) {
+      expect(
+        loadShopConfig({ ...COMPLETE, SHOP_CHECKOUT_MODE: mode }).checkoutMode,
+      ).toBe(mode);
+    }
+  });
+
+  it("refuses a checkout surface it does not have", () => {
+    expect(() =>
+      loadShopConfig({ ...COMPLETE, SHOP_CHECKOUT_MODE: "lightbox" }),
+    ).toThrow(/SHOP_CHECKOUT_MODE must be one of/);
+  });
+
   it("never puts a secret in the message when a value is missing", () => {
     const partial = { ...COMPLETE };
     delete partial["VPAY_API_URL"];
@@ -82,5 +102,71 @@ describe("loadShopConfig", () => {
     expect(message).toContain("VPAY_API_URL");
     expect(message).not.toContain("whsec_shop");
     expect(message).not.toContain("/secrets/shop-merchant.pem");
+  });
+});
+
+describe("SHOP_PAYMENT_METHOD_TYPES, per currency", () => {
+  it("reads a per-currency map and answers per currency", () => {
+    const config = loadShopConfig({
+      ...COMPLETE,
+      SHOP_PAYMENT_METHOD_TYPES: "xaf:orange_money;eur:mtn_momo",
+    });
+    expect(config.rails).toEqual({
+      kind: "by_currency",
+      byCurrency: { xaf: ["orange_money"], eur: ["mtn_momo"] },
+    });
+    expect(railsForCurrency(config.rails, "xaf")).toEqual(["orange_money"]);
+    expect(railsForCurrency(config.rails, "EUR")).toEqual(["mtn_momo"]);
+    // A currency the map does not name gets nothing, which `placeOrder`
+    // turns into a refusal naming the currency — never a silent fallback to
+    // "all rails", which is how a payer ends up on a rail that refuses them.
+    expect(railsForCurrency(config.rails, "ngn")).toEqual([]);
+  });
+
+  it("applies a plain list to every currency", () => {
+    const config = loadShopConfig({
+      ...COMPLETE,
+      SHOP_PAYMENT_METHOD_TYPES: "orange_money",
+    });
+    expect(railsForCurrency(config.rails, "xaf")).toEqual(["orange_money"]);
+    expect(railsForCurrency(config.rails, "eur")).toEqual(["orange_money"]);
+  });
+
+  it("does not read an inherited property for an exotic currency code", () => {
+    const config = loadShopConfig({
+      ...COMPLETE,
+      SHOP_PAYMENT_METHOD_TYPES: "xaf:orange_money",
+    });
+    expect(railsForCurrency(config.rails, "constructor")).toEqual([]);
+    expect(railsForCurrency(config.rails, "toString")).toEqual([]);
+  });
+
+  it("refuses a group that names a currency twice", () => {
+    expect(() =>
+      loadShopConfig({
+        ...COMPLETE,
+        SHOP_PAYMENT_METHOD_TYPES: "xaf:orange_money;xaf:mtn_momo",
+      }),
+    ).toThrow(/names xaf twice/);
+  });
+
+  it("refuses an unknown rail inside a per-currency group", () => {
+    expect(() =>
+      loadShopConfig({
+        ...COMPLETE,
+        SHOP_PAYMENT_METHOD_TYPES: "xaf:bitcoin",
+      }),
+    ).toThrow(/does not know for xaf: bitcoin/);
+  });
+
+  it("enumerates every rail named anywhere, for the test-numbers panel", () => {
+    const config = loadShopConfig({
+      ...COMPLETE,
+      SHOP_PAYMENT_METHOD_TYPES: "xaf:orange_money;eur:mtn_momo",
+    });
+    expect(allSelectedRails(config.rails).sort()).toEqual([
+      "mtn_momo",
+      "orange_money",
+    ]);
   });
 });

@@ -221,3 +221,65 @@ dl.facts dd {
   min-height: 22rem;
   padding: 0.5rem;
 }
+
+/* The checkout's surface selector and the demo's test-number panel.
+ *
+ * Both are demo affordances rather than things a merchant would ship — a
+ * real shop picks one integration mode in its configuration and never shows
+ * a switch, and it certainly ships no table of fake numbers. They are styled
+ * enough to be readable and no further. */
+
+fieldset {
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  padding: 0.75rem 1rem 1rem;
+  margin: 1.5rem 0;
+}
+
+fieldset legend {
+  font-weight: 600;
+  padding-inline: 0.35rem;
+}
+
+.mode-option {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.4rem 0;
+  font-weight: 400;
+}
+
+.mode-option input {
+  width: auto;
+  margin: 0;
+  flex: none;
+}
+
+.test-numbers {
+  margin-top: 3rem;
+  border-top: 1px solid var(--line);
+  padding-top: 1rem;
+}
+
+.test-numbers h3 {
+  margin-bottom: 0.2rem;
+}
+
+.test-numbers table {
+  font-size: 0.92rem;
+}
+
+.test-numbers code {
+  white-space: nowrap;
+}
+
+section.error {
+  border: 1px solid var(--bad);
+  border-radius: 0.4rem;
+  padding: 0.25rem 1rem 1rem;
+  margin: 1.5rem 0;
+}
+
+section.error h2 {
+  color: var(--bad);
+}

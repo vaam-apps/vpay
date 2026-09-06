@@ -26,7 +26,8 @@ export function shopContext(): ShopContext {
       return vpay();
     },
     shopPublicUrl: config.shopPublicUrl,
-    paymentMethodTypes: config.paymentMethodTypes,
+    rails: config.rails,
+    checkoutMode: config.checkoutMode,
   };
 }
 

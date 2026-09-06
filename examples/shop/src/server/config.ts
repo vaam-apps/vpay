@@ -15,6 +15,72 @@ export type PaymentMethodType = "mtn_momo" | "orange_money";
 
 const KNOWN_RAILS: readonly PaymentMethodType[] = ["mtn_momo", "orange_money"];
 
+/** The three surfaces a merchant can put vpay's Checkout on. */
+export type CheckoutMode = "hosted" | "embedded" | "popup";
+
+const CHECKOUT_MODES: readonly CheckoutMode[] = ["hosted", "embedded", "popup"];
+
+/**
+ * Which rails the shop offers, as configuration.
+ *
+ * Two shapes, because a deployment can legitimately want either. A plain
+ * list — `mtn_momo,orange_money` — offers the same rails whatever the order
+ * is denominated in. A per-currency map — `xaf:orange_money;eur:mtn_momo` —
+ * offers different ones per currency, which is what the demo stack needs and
+ * why this shape exists at all: `config/application.yml` gives `mtn_momo` a
+ * **EUR** profile (MTN's sandbox refuses XAF) and `orange_money` an XAF one,
+ * and `POST /v1/payment_intents/{id}/confirm` refuses a rail whose profile
+ * currency is not the intent's — a `400` on `payment_method_data[type]`,
+ * `vpay_api::v1::payment_intents::currencies_agree`.
+ *
+ * Offering a payer a rail that will refuse them at the last step is a
+ * failure the shop can prevent without knowing anything about rails: it is
+ * one line of its own configuration, not a code path (ADR-0003), and not a
+ * table of rail currencies this shop would then have to keep in step with
+ * vpay's.
+ */
+export type RailSelection =
+  | { kind: "all"; rails: PaymentMethodType[] }
+  | { kind: "by_currency"; byCurrency: Record<string, PaymentMethodType[]> };
+
+/**
+ * The rails to offer on an order in `currency`.
+ *
+ * An empty answer is a real configuration outcome, not an error here: the
+ * caller — `placeOrder` — is the one that knows an order is being refused
+ * and can say so with the currency in the message.
+ */
+export function railsForCurrency(
+  selection: RailSelection,
+  currency: string,
+): PaymentMethodType[] {
+  if (selection.kind === "all") {
+    return [...selection.rails];
+  }
+  const code = currency.toLowerCase();
+  // `Object.hasOwn`, not a bare index: `currency` reaches here from a
+  // catalogue row, and `byCurrency["constructor"]` is a function.
+  return Object.hasOwn(selection.byCurrency, code)
+    ? [...(selection.byCurrency[code] ?? [])]
+    : [];
+}
+
+/** Every rail named anywhere in a selection, for the test-numbers panel. */
+export function allSelectedRails(
+  selection: RailSelection,
+): PaymentMethodType[] {
+  if (selection.kind === "all") {
+    return [...selection.rails];
+  }
+  const seen = new Set<PaymentMethodType>();
+  for (const rails of Object.values(selection.byCurrency)) {
+    for (const rail of rails) {
+      seen.add(rail);
+    }
+  }
+  return [...seen];
+}
+
 export interface ShopConfig {
   /** vpay's API origin as **this server** reaches it, e.g. `http://vpay-server:8080`. */
   vpayApiUrl: string;
@@ -59,12 +125,17 @@ export interface ShopConfig {
   /** The shop's own externally reachable origin, used to build return URLs. */
   shopPublicUrl: string;
   /**
-   * Which rails the shop offers. Configuration, not a code path (ADR-0003):
-   * the demo stack's `mtn_momo` profile settles in EUR while this catalogue
-   * is priced in XAF, so a deployment that wants only the XAF rail sets this
-   * rather than editing anything. See `docs/plans/step9-notes/lane-7.md`.
+   * Which rails the shop offers, per currency or across the board. See
+   * {@link RailSelection}; `SHOP_PAYMENT_METHOD_TYPES` carries either shape.
    */
-  paymentMethodTypes: PaymentMethodType[];
+  rails: RailSelection;
+  /**
+   * Which surface the shop puts vpay's Checkout on by default —
+   * `SHOP_CHECKOUT_MODE`. The checkout page offers all three regardless, so
+   * a reader of the demo can see each one; this is the one the page opens
+   * on, and it is what a real merchant would set and leave alone.
+   */
+  checkoutMode: CheckoutMode;
 }
 
 /**
@@ -114,8 +185,8 @@ function origin(value: string, name: string): string {
   return trimmed;
 }
 
-function parseRails(raw: string | undefined): PaymentMethodType[] {
-  const list = (raw ?? "mtn_momo,orange_money")
+function parseRailList(raw: string, where: string): PaymentMethodType[] {
+  const list = raw
     .split(",")
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
@@ -124,14 +195,76 @@ function parseRails(raw: string | undefined): PaymentMethodType[] {
   );
   if (unknown.length > 0) {
     throw new Error(
-      `examples/shop: SHOP_PAYMENT_METHOD_TYPES names rails this shop does not know: ` +
-        `${unknown.join(", ")}. Known: ${KNOWN_RAILS.join(", ")}.`,
+      `examples/shop: SHOP_PAYMENT_METHOD_TYPES names rails this shop does ` +
+        `not know${where}: ${unknown.join(", ")}. ` +
+        `Known: ${KNOWN_RAILS.join(", ")}.`,
     );
   }
   if (list.length === 0) {
-    throw new Error("examples/shop: SHOP_PAYMENT_METHOD_TYPES is empty");
+    throw new Error(
+      `examples/shop: SHOP_PAYMENT_METHOD_TYPES is empty${where}`,
+    );
   }
   return list as PaymentMethodType[];
+}
+
+/**
+ * Reads `SHOP_PAYMENT_METHOD_TYPES` in either of its two shapes.
+ *
+ * A `:` anywhere in the value selects the per-currency shape, because a rail
+ * code never contains one. Groups are separated by `;` so that the rail list
+ * inside a group can keep using `,` — `xaf:orange_money;eur:mtn_momo`.
+ */
+function parseRailSelection(raw: string | undefined): RailSelection {
+  const value = (raw ?? "mtn_momo,orange_money").trim();
+  if (value.length === 0) {
+    throw new Error("examples/shop: SHOP_PAYMENT_METHOD_TYPES is empty");
+  }
+  if (!value.includes(":")) {
+    return { kind: "all", rails: parseRailList(value, "") };
+  }
+  const byCurrency: Record<string, PaymentMethodType[]> = {};
+  for (const group of value.split(";")) {
+    const trimmed = group.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    const separator = trimmed.indexOf(":");
+    const currency = trimmed.slice(0, separator).trim().toLowerCase();
+    if (separator === -1 || currency.length === 0) {
+      throw new Error(
+        `examples/shop: SHOP_PAYMENT_METHOD_TYPES group "${trimmed}" is not ` +
+          `"<currency>:<rail>[,<rail>]"`,
+      );
+    }
+    if (Object.hasOwn(byCurrency, currency)) {
+      // Two groups for one currency would make the answer depend on which
+      // one was written last, which is exactly the kind of thing that is
+      // true until someone appends a group.
+      throw new Error(
+        `examples/shop: SHOP_PAYMENT_METHOD_TYPES names ${currency} twice`,
+      );
+    }
+    byCurrency[currency] = parseRailList(
+      trimmed.slice(separator + 1),
+      ` for ${currency}`,
+    );
+  }
+  if (Object.keys(byCurrency).length === 0) {
+    throw new Error("examples/shop: SHOP_PAYMENT_METHOD_TYPES is empty");
+  }
+  return { kind: "by_currency", byCurrency };
+}
+
+function parseCheckoutMode(raw: string | undefined): CheckoutMode {
+  const value = (raw ?? "hosted").trim().toLowerCase();
+  if (!CHECKOUT_MODES.includes(value as CheckoutMode)) {
+    throw new Error(
+      `examples/shop: SHOP_CHECKOUT_MODE must be one of ` +
+        `${CHECKOUT_MODES.join(", ")}, got ${value}`,
+    );
+  }
+  return value as CheckoutMode;
 }
 
 /**
@@ -159,7 +292,8 @@ export function loadShopConfig(env: EnvRecord = process.env): ShopConfig {
     ),
     vpayWebhookSecret: required(env, "VPAY_WEBHOOK_SECRET"),
     shopPublicUrl: origin(required(env, "SHOP_PUBLIC_URL"), "SHOP_PUBLIC_URL"),
-    paymentMethodTypes: parseRails(env["SHOP_PAYMENT_METHOD_TYPES"]),
+    rails: parseRailSelection(env["SHOP_PAYMENT_METHOD_TYPES"]),
+    checkoutMode: parseCheckoutMode(env["SHOP_CHECKOUT_MODE"]),
   };
 }
 

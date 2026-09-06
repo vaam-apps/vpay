@@ -31,12 +31,14 @@ interface OrderItemRow {
 
 interface OrderRow {
   id: string;
-  email: string;
+  email: string | null;
   status: string;
   totalMinor: number;
   currency: string;
   paymentIntentId: string | null;
   checkoutSessionId: string | null;
+  failureCode: string | null;
+  failureMessage: string | null;
   createdAt: Date;
   items: OrderItemRow[];
 }
@@ -57,6 +59,8 @@ function toOrder(row: OrderRow): Order {
     currency: row.currency,
     paymentIntentId: row.paymentIntentId,
     checkoutSessionId: row.checkoutSessionId,
+    failureCode: row.failureCode,
+    failureMessage: row.failureMessage,
     createdAt: row.createdAt,
     items: row.items.map((item) => ({
       productId: item.productId,
@@ -178,7 +182,18 @@ export class PrismaShopStore implements ShopStore {
       if (decision.writeStatus !== null && order !== null) {
         await tx.order.update({
           where: { id: order.id },
-          data: { status: decision.writeStatus },
+          data: {
+            status: decision.writeStatus,
+            // Written in the same statement as the status they explain, so
+            // there is no window in which an order is `failed` with no code
+            // and none in which a code outlives the status it belongs to.
+            ...(decision.writeFailure
+              ? {
+                  failureCode: application.failureCode,
+                  failureMessage: application.failureMessage,
+                }
+              : {}),
+          },
         });
       }
       return decision.outcome;

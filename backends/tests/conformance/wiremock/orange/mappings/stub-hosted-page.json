@@ -67,7 +67,23 @@
           "Proven by the_stub_hosted_page_links_to_the_return_url_the_submit_carried",
           "in backends/tests/integration/tests/confirm_rails.rs, which confirms a",
           "real intent, follows the payment_url the rail answered with, and asserts",
-          "both hrefs are the merchant's own return URL."
+          "both hrefs are the merchant's own return URL.",
+          "",
+          "THE TEST-NUMBER FORM, added 2026-09-06 (exp22). The two links above are",
+          "unchanged, deliberately: `the_stub_hosted_page_links_to_the_return_url_the_",
+          "submit_carried` asserts their exact hrefs, and `shop-hosted.cy.ts` clicks",
+          "`#pay`. The form is ADDITIVE and submits to",
+          "/stub-hosted-page/{pay_token}/pay, which demo-outcomes.json serves: it arms",
+          "a scenario from the MSISDN and 302s to the same return URL the links carry,",
+          "so the success path through `#pay` and the success path through the form",
+          "end in the same place.",
+          "",
+          "The hidden inputs use the DOUBLE stache, unlike the hrefs above. An",
+          "attribute value is not an href: `&` inside one has to be written `&amp;` to",
+          "be read back as `&`, which is exactly what the escaping stache produces and",
+          "what the browser then submits. The triple stache would put a bare `&` in an",
+          "attribute -- which browsers do parse, but which is the wrong tool for the",
+          "job and would break the day a URL carried a quote."
         ]
       },
       "request": {
@@ -80,7 +96,7 @@
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store"
         },
-        "body": "<!doctype html>\n<html lang=\"fr\">\n<head>\n<meta charset=\"utf-8\">\n<title>Orange Money (stub) &mdash; paiement</title>\n</head>\n<body>\n<h1>Orange Money &mdash; page de paiement (stub)</h1>\n<p>This page is a WireMock stub of the rail's hosted page. It is not Orange, it moves no money, and it decides nothing: the outcome of this charge comes from vpay's authenticated status query.</p>\n<p>Reference: <code>{{request.pathSegments.[1]}}</code></p>\n<p>\n<a id=\"pay\" href=\"{{{request.query.return}}}\">Pay</a>\n<a id=\"cancel\" href=\"{{{request.query.cancel}}}\">Cancel</a>\n</p>\n</body>\n</html>\n"
+        "body": "<!doctype html>\n<html lang=\"fr\">\n<head>\n<meta charset=\"utf-8\">\n<title>Orange Money (stub) &mdash; paiement</title>\n</head>\n<body>\n<h1>Orange Money &mdash; page de paiement (stub)</h1>\n<p>This page is a WireMock stub of the rail's hosted page. It is not Orange, it moves no money, and it decides nothing: the outcome of this charge comes from vpay's authenticated status query.</p>\n<p>Reference: <code>{{request.pathSegments.[1]}}</code></p>\n<p>\n<a id=\"pay\" href=\"{{{request.query.return}}}\">Pay</a>\n<a id=\"cancel\" href=\"{{{request.query.cancel}}}\">Cancel</a>\n</p>\n<h2>Or pay with one of the demo's test numbers</h2>\n<p>Orange is a <strong>redirect</strong> rail: the number is typed here, on the rail's own page, and vpay never sees it. That is why the demo steers this rail's outcome from this form rather than from anything the merchant sent. The numbers are documented in <code>examples/shop/README.md</code>; anything not listed there pays.</p>\n<form id=\"test-number-form\" method=\"get\" action=\"/stub-hosted-page/{{request.pathSegments.[1]}}/pay\">\n<input type=\"hidden\" name=\"return\" value=\"{{request.query.return}}\">\n<input type=\"hidden\" name=\"cancel\" value=\"{{request.query.cancel}}\">\n<label for=\"msisdn\">Orange Money number</label>\n<input id=\"msisdn\" name=\"msisdn\" value=\"237600000000\" size=\"20\">\n<button id=\"pay-with-number\" type=\"submit\">Pay with this number</button>\n</form>\n</body>\n</html>\n"
       }
     }
   ]

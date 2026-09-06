@@ -76,6 +76,45 @@ function paymentIntentIdOf(event: Event): string | undefined {
   return typeof id === "string" && id.length > 0 ? id : undefined;
 }
 
+/**
+ * Reads `last_payment_error` off the intent the event carries.
+ *
+ * There is no `failed` status on a PaymentIntent (`docs/flows/failures.md`,
+ * and `vpay_core::state::IntentStatus`): a rail failure returns the intent
+ * to `requires_payment_method` with this field populated, so the *code* is
+ * the only thing that says which of the eleven outcomes happened. It is
+ * carried onto the order because the delivered event is the only place this
+ * shop ever sees it — it never calls vpay to read an intent.
+ *
+ * Both members are read as strings and neither is coerced. An event whose
+ * `last_payment_error` is absent, null, or shaped differently yields
+ * `{ code: null, message: null }` and the order still becomes `failed` —
+ * "the payment failed and we cannot say why" is a true thing to tell a
+ * buyer, and a guess at which code it might have been is not.
+ */
+function lastPaymentErrorOf(event: Event): {
+  code: string | null;
+  message: string | null;
+} {
+  const object: unknown = event.data.object;
+  if (typeof object !== "object" || object === null) {
+    return { code: null, message: null };
+  }
+  const error: unknown = (object as Record<string, unknown>)[
+    "last_payment_error"
+  ];
+  if (typeof error !== "object" || error === null) {
+    return { code: null, message: null };
+  }
+  const record = error as Record<string, unknown>;
+  const code = record["code"];
+  const message = record["message"];
+  return {
+    code: typeof code === "string" && code.length > 0 ? code : null,
+    message: typeof message === "string" && message.length > 0 ? message : null,
+  };
+}
+
 export async function handleWebhook(
   deps: WebhookDeps,
   request: WebhookRequest,
@@ -130,11 +169,14 @@ export async function handleWebhook(
     };
   }
 
+  const failure = lastPaymentErrorOf(event);
   const outcome = await deps.store.applyWebhookEvent({
     eventId: event.id,
     type: event.type,
     paymentIntentId,
     nextStatus,
+    failureCode: failure.code,
+    failureMessage: failure.message,
   });
 
   return {

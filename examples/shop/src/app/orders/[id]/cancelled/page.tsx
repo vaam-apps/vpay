@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { TRPCError } from "@trpc/server";
+import { OrderActions } from "@/components/order-actions";
 import { OrderStatusBadge } from "@/components/order-summary";
 import { serverCaller } from "@/server/context";
 
@@ -49,6 +50,16 @@ export default async function OrderCancelledPage({
           Back to the catalogue
         </Link>
       </p>
+      <h2>Or close the order properly</h2>
+      <p style={{ color: "var(--muted)" }}>
+        Coming back here is a <em>navigation</em>, not a cancellation: this
+        order is still <code>unpaid</code>, its PaymentIntent is still live at
+        vpay, and a charge already submitted to a rail could still settle. The
+        button below asks vpay to cancel the intent. Even then this shop writes
+        nothing — the order becomes <code>cancelled</code> when the signed{" "}
+        <code>payment_intent.canceled</code> event arrives.
+      </p>
+      <OrderActions order={order} retryable={false} />
     </>
   );
 }

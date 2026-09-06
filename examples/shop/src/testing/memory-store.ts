@@ -81,6 +81,8 @@ export class MemoryShopStore implements ShopStore {
       currency: input.currency,
       paymentIntentId: null,
       checkoutSessionId: null,
+      failureCode: null,
+      failureMessage: null,
       items: input.items.map((item) => ({ ...item })),
       createdAt: new Date(0),
     };
@@ -157,6 +159,10 @@ export class MemoryShopStore implements ShopStore {
     }
     if (decision.writeStatus !== null && order !== undefined) {
       order.status = decision.writeStatus;
+      if (decision.writeFailure) {
+        order.failureCode = application.failureCode;
+        order.failureMessage = application.failureMessage;
+      }
     }
     return decision.outcome;
   }

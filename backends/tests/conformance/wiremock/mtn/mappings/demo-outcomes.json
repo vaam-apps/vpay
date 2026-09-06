@@ -207,6 +207,92 @@
           "apply here unchanged, and so does the strictly-sequential coupling."
         ]
       }
+    },
+    {
+      "name": "demo: a confirm the RAIL WILL NOT ANSWER FOR, armed by MSISDN",
+      "scenarioName": "mtn-demo-unavailable",
+      "newScenarioState": "unavailable-armed",
+      "priority": 4,
+      "request": {
+        "method": "POST",
+        "urlPath": "/collection/v1_0/requesttopay",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.payer.partyId",
+              "matches": "237600000503"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 202
+      },
+      "metadata": {
+        "why": [
+          "Added 2026-09-06 (exp22) so examples/shop's test-number panel can reach",
+          "`provider_unavailable` -- the 'the rail is unavailable' outcome the demo",
+          "is required to show, and the one outcome above that neither of the two",
+          "existing pairs produces.",
+          "",
+          "DIGITS ONLY, and no hex twin. The two pairs above carry both a",
+          "`237600000f0x` family and a digits-only `2376000001xx` one, because the",
+          "hex spellings predate the checkout page's MSISDN validator and had to be",
+          "kept working. This number is new, so it is only ever the digits-only",
+          "form a payer can actually type",
+          "(frontends/apps/checkout/src/lib/msisdn.ts refuses letters). `503` names",
+          "the HTTP status the outcome reads as, which is a mnemonic and nothing",
+          "more: the mapping below answers 200 with a FAILED body, because that is",
+          "what MTN documents.",
+          "",
+          "202, the ordinary accepted submit, for the reason the pairs above give:",
+          "this mapping exists to MOVE THE SCENARIO, and the confirm must be",
+          "indistinguishable from a settling one right up to the point the worker",
+          "polls.",
+          "",
+          "No requiredScenarioState, and the same strictly-sequential coupling: see",
+          "the decline pair's comment above, which explains all four properties in",
+          "full."
+        ]
+      }
+    },
+    {
+      "name": "demo: the armed unavailable answers SERVICE_UNAVAILABLE once, then disarms",
+      "scenarioName": "mtn-demo-unavailable",
+      "requiredScenarioState": "unavailable-armed",
+      "newScenarioState": "Started",
+      "priority": 4,
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/collection/v1_0/requesttopay/.*"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": "SERVICE_UNAVAILABLE"
+        }
+      },
+      "metadata": {
+        "why": [
+          "-> provider_unavailable (vpay_adapter_mtn_momo::mapping::FAILURE_REASONS,",
+          "docs/flows/adapter-mtn-momo.md). MTN's own word for it, taken from the",
+          "nine-row table the adapter transcribes -- not invented here.",
+          "",
+          "IT IS A 200 WITH A FAILED BODY, NOT A 503, AND THAT DISTINCTION IS THE",
+          "POINT. An HTTP 5xx from the status query is a TRANSPORT failure: the poll",
+          "ladder retries it, for hours, and the charge stays pending -- which is",
+          "right, and which is not an outcome a demo can show in a minute. A",
+          "documented `SERVICE_UNAVAILABLE` reason on a FAILED status is the rail",
+          "SAYING it could not serve this charge, which is terminal and is what a",
+          "merchant integrates against.",
+          "",
+          "The four properties that keep the decline mapping above from swallowing",
+          "anything else apply here unchanged: priority 4 is below the",
+          "reference-keyed status mappings and above the catch-all, the scenario",
+          "starts in `Started` in every container, and one answer disarms it."
+        ]
+      }
     }
   ]
 }

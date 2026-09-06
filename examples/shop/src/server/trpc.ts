@@ -8,14 +8,16 @@
  */
 import { initTRPC } from "@trpc/server";
 import type { VpayClient } from "@vaam-apps/vpay-sdk";
-import type { PaymentMethodType } from "./config";
+import type { CheckoutMode, RailSelection } from "./config";
 import type { ShopStore } from "./store/types";
 
 export interface ShopContext {
   store: ShopStore;
   vpay: VpayClient;
   shopPublicUrl: string;
-  paymentMethodTypes: PaymentMethodType[];
+  rails: RailSelection;
+  /** The surface the checkout page opens on. Configuration, not a code path. */
+  checkoutMode: CheckoutMode;
 }
 
 const t = initTRPC.context<ShopContext>().create();

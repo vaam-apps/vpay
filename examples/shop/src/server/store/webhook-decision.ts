@@ -23,6 +23,16 @@ export interface WebhookDecision {
   recordEvent: boolean;
   /** The status to write, or `null` to leave the order alone. */
   writeStatus: OrderStatus | null;
+  /**
+   * Whether the failure columns move with the status.
+   *
+   * They move on **exactly** the writes that move the status, which is what
+   * keeps `failure_code` from outliving the failure it described: an order
+   * that goes `failed` and is then retried is a *different* order, so there
+   * is no path here that clears them — but an `already_settled` delivery
+   * must not stamp a code onto an order that is already `paid`.
+   */
+  writeFailure: boolean;
 }
 
 /**
@@ -38,17 +48,33 @@ export interface WebhookDecision {
  */
 export function decideWebhook(input: WebhookDecisionInput): WebhookDecision {
   if (input.alreadySeen) {
-    return { outcome: "duplicate", recordEvent: false, writeStatus: null };
+    return {
+      outcome: "duplicate",
+      recordEvent: false,
+      writeStatus: null,
+      writeFailure: false,
+    };
   }
   if (input.orderStatus === null) {
-    return { outcome: "unknown_intent", recordEvent: false, writeStatus: null };
+    return {
+      outcome: "unknown_intent",
+      recordEvent: false,
+      writeStatus: null,
+      writeFailure: false,
+    };
   }
   if (input.orderStatus !== "unpaid") {
-    return { outcome: "already_settled", recordEvent: true, writeStatus: null };
+    return {
+      outcome: "already_settled",
+      recordEvent: true,
+      writeStatus: null,
+      writeFailure: false,
+    };
   }
   return {
     outcome: "applied",
     recordEvent: true,
     writeStatus: input.nextStatus,
+    writeFailure: true,
   };
 }

@@ -51,6 +51,7 @@ function eventBody(
   id: string,
   type: string,
   intentId: string = INTENT,
+  object: Record<string, unknown> = {},
 ): string {
   return JSON.stringify({
     id,
@@ -58,7 +59,26 @@ function eventBody(
     type,
     created: NOW,
     livemode: false,
-    data: { object: { id: intentId, object: "payment_intent" } },
+    data: { object: { id: intentId, object: "payment_intent", ...object } },
+  });
+}
+
+/**
+ * A `payment_intent.payment_failed` body carrying the field that says which
+ * of the eleven outcomes happened.
+ *
+ * There is no `failed` status on a PaymentIntent: a rail failure returns it
+ * to `requires_payment_method` with `last_payment_error` populated
+ * (`docs/flows/failures.md`), which is exactly the shape written here.
+ */
+function failedEventBody(
+  id: string,
+  error: unknown,
+  intentId: string = INTENT,
+): string {
+  return eventBody(id, "payment_intent.payment_failed", intentId, {
+    status: "requires_payment_method",
+    last_payment_error: error,
   });
 }
 
@@ -247,5 +267,82 @@ describe("a settling event whose object has no id", () => {
     expect(result.status).toBe(400);
     expect(store.recordedEvents.size).toBe(0);
     expect((await store.getOrder(orderId))?.status).toBe("unpaid");
+  });
+});
+
+describe("last_payment_error, carried onto the order", () => {
+  it("stores the code and the message from the event that failed the order", async () => {
+    const result = await deliver(
+      failedEventBody("evt_lpe", {
+        code: "insufficient_funds",
+        message: "NOT_ENOUGH_FUNDS",
+      }),
+    );
+    expect(result.status).toBe(200);
+    const order = await store.getOrder(orderId);
+    expect(order?.status).toBe("failed");
+    expect(order?.failureCode).toBe("insufficient_funds");
+    expect(order?.failureMessage).toBe("NOT_ENOUGH_FUNDS");
+  });
+
+  it("still fails the order when the event carries no last_payment_error", async () => {
+    // "The payment failed and we cannot say why" is a true thing to tell a
+    // buyer. Guessing at which of the eleven codes it might have been is not.
+    for (const shape of [undefined, null, "insufficient_funds", 7, []]) {
+      store = new MemoryShopStore(CATALOGUE);
+      const order = await store.createOrder({
+        email: null,
+        currency: "xaf",
+        totalMinor: 12000,
+        items: [],
+      });
+      await store.setPaymentIntentId(order.id, INTENT);
+      await deliver(failedEventBody("evt_none", shape));
+      const settled = await store.getOrder(order.id);
+      expect(settled?.status).toBe("failed");
+      expect(settled?.failureCode).toBeNull();
+      expect(settled?.failureMessage).toBeNull();
+    }
+  });
+
+  it("reads neither member unless it is a non-empty string", async () => {
+    await deliver(failedEventBody("evt_odd", { code: "", message: 42 }));
+    const order = await store.getOrder(orderId);
+    expect(order?.failureCode).toBeNull();
+    expect(order?.failureMessage).toBeNull();
+  });
+
+  it("never stamps a failure onto an order that has already settled", async () => {
+    await deliver(eventBody("evt_ok", "payment_intent.succeeded"));
+    const late = await deliver(
+      failedEventBody("evt_late", {
+        code: "provider_error",
+        message: "too late",
+      }),
+    );
+    // The delivery is recorded and the order is untouched: `paid` is
+    // terminal here, and a later failure must not un-pay a shipped order —
+    // nor leave a failure code on one.
+    expect(late.body).toEqual({ received: true, outcome: "already_settled" });
+    const order = await store.getOrder(orderId);
+    expect(order?.status).toBe("paid");
+    expect(order?.failureCode).toBeNull();
+    expect(order?.failureMessage).toBeNull();
+  });
+
+  it("writes nothing at all for a replay of the same event id", async () => {
+    await deliver(
+      failedEventBody("evt_dup", {
+        code: "payer_timeout",
+        message: "COULD_NOT_PERFORM_TRANSACTION",
+      }),
+    );
+    const replay = await deliver(
+      failedEventBody("evt_dup", { code: "provider_error", message: "other" }),
+    );
+    expect(replay.body).toEqual({ received: true, outcome: "duplicate" });
+    const order = await store.getOrder(orderId);
+    expect(order?.failureCode).toBe("payer_timeout");
+    expect(order?.failureMessage).toBe("COULD_NOT_PERFORM_TRANSACTION");
   });
 });

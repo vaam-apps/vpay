@@ -49,7 +49,14 @@ model Product {
 /// sends nothing.
 model Order {
   id                String         @id() @default(cuid())
-  email             String
+  /// **Optional**, and that is a decision rather than a slack constraint:
+  /// the shop asks for an e-mail so it can send a receipt, and a receipt is
+  /// not a condition of paying. The identity on a mobile-money payment is
+  /// the payer's phone number, which the rail holds and the shop never sees
+  /// (the customers decision of 2026-09-05: phone-only customers are
+  /// allowed). A shop that made the e-mail mandatory would be collecting a
+  /// second identifier it has no use for.
+  email             String?
   status            OrderStatus    @default(unpaid)
   /// The server-computed sum of `priceMinor * quantity` over `items`, in the
   /// same minor units. Never read from the browser's cart.
@@ -63,6 +70,16 @@ model Order {
   /// order page can name it and so a repeated `orders.embeddedSecret` call
   /// retrieves the session it already created instead of minting a second one.
   checkoutSessionId String?        @map("checkout_session_id")
+  /// vpay's `last_payment_error.code` — one of the eleven in
+  /// `vpay_core::failure::FailureCode` — written by the webhook handler and
+  /// by nothing else, and only when an order becomes `failed`. Stored
+  /// because the delivered event is the only place it ever appears: this
+  /// shop never calls vpay to read an intent.
+  failureCode       String?        @map("failure_code")
+  /// The message that came with it. The rail's own words, kept for an
+  /// operator; a buyer reads the shop's copy for the code instead
+  /// (`src/lib/failures.ts`).
+  failureMessage    String?        @map("failure_message")
   items             OrderItem[]
   webhookEvents     WebhookEvent[]
   createdAt         DateTime       @default(now()) @map("created_at")

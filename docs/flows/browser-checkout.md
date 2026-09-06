@@ -393,6 +393,32 @@ and what is *not* proven about it (nothing in a browser) are in
 session is that document's subject and this one's payer routes only inherit
 it.
 
+**Updated 2026-09-06: a third integration surface, and a limit on the second.**
+`@vaam-apps/vpay-stripe-js` grew `openCheckoutPopup` / `notifyCheckoutOpener`
+— vpay's **hosted** page in a top-level window the merchant's page opens.
+It is not this document's `/v1/browser` surface and it introduces no route:
+the popup loads `session.url` exactly as a redirect integration does, and the
+completion message crosses from the merchant's own `success_url` page to
+`window.opener`. It is here rather than in
+[hosted-checkout.md](hosted-checkout.md)'s status only because the code lives
+in the browser SDK.
+
+**It is deliberately not an embedded session in a popup.** Inside a popup
+`window.parent === window`, so `frontends/apps/checkout`'s
+`createFrameChannel` returns `null` and vpay's page says nothing at all —
+which is correct for a frame protocol and is why the popup uses the hosted
+page. Making the checkout page able to talk to an opener is a change to that
+app and is written up as a request in
+[../plans/exp22-shop-demo-notes/opus.md](../plans/exp22-shop-demo-notes/opus.md),
+not taken here.
+
+Proven by `sdks/stripe-js/src/popup.test.ts` — 34 cases, all against **stub
+windows**, because jsdom implements neither `window.open` nor cross-window
+`postMessage`. **No test in this repository opens a real popup**: no Cypress
+spec covers it, and `examples/shop`'s popup mode has been read and run by
+hand and by nothing else. Recorded as a dated ⛔ in
+[../sdks/parity.md](../sdks/parity.md).
+
 See `docs/status.md`'s Backend/Frontend/Merchant SDK tables for the
 machine-checked picture (route count, migration count, test counts). This
 document is the design and the proof map; that one is the ledger of what was
