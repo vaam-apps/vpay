@@ -2829,7 +2829,9 @@ behaviour for the CLI (a client-only schema is a real thing) and there is no
 flag that asks for more, so `check-schema` asserts the shape of what it
 checked before reporting green: a `datasource` block must be present, and the
 file must still declare at least `cratestack_min_declarations` (15 since
-2026-09-06: seven models, six enums; 12 before that) top-level
+2026-09-06: nine models, six enums — the sub-count still read "seven models"
+after the floor moved 13 -> 15, which is the 13 it used to explain; 12 before
+that) top-level
 `model`/`enum`s. A floor rather than an exact
 count, so adding a model does not fail the gate — `verify-ignored`'s
 `min_tests` in miniature.
