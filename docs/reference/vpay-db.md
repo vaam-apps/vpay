@@ -1393,7 +1393,7 @@ work, and each binary installs the provider at boot
 
 `vpay-db` compiles `schemas/vpay.cstack` with
 [CrateStack](https://cratestack.dev)'s `include_server_schema!` macro
-(`cratestack = { package = "cratestack-pg", version = "=0.11.1" }`) and runs
+(`cratestack = { package = "cratestack-pg", version = "=0.12.0" }`) and runs
 **eight** queries through the generated data layer, spread over five tables.
 This section says which eight, what deliberately did not move, and which of
 CrateStack's behaviours vpay has had to work around rather than adopt. It is
@@ -1411,6 +1411,38 @@ when S4a's `customers` added `touch_last_used` and `delete`.
 Everything here was measured against the 0.11.1 sources on 2026-09-06;
 `docs/plans/exp14-notes/opus.md`, `docs/plans/exp16-notes/opus.md` and
 `docs/plans/exp17-notes/opus.md` have the transcripts.
+
+### Re-checked at 0.12.0 (2026-09-07), and nothing below changed
+
+The pin moved `=0.11.1` → `=0.12.0` (CLI and library together, as they must
+be). The version numbers in this section moved with it, and they were
+re-derived rather than substituted, because "we upgraded and the prose still
+says what it said" is the failure this section is otherwise wide open to.
+
+Four measured upstream gaps are named below, and **all four are still open at
+0.12.0**. The cheapest honest proof is file identity: each file the claim
+rests on is byte-identical between the two releases (`md5sum`), and the
+whole of `cratestack-core`, `cratestack-sqlx`, `cratestack-sql`,
+`cratestack-pg` and `cratestack-policy` is unchanged at the source level.
+
+| Gap | Where it lives at 0.12.0 | State |
+|---|---|---|
+| `@default(...)` fields are in neither `Create{Model}Input` nor `upsert_update_columns` | `cratestack-macros-0.12.0/src/model/inputs.rs:20-23` (`create_input_fields` filters `is_generated_on_create`), which is `has_default` at `src/shared/attrs.rs:91-93`; `model/descriptor/columns.rs:85-91` | **open** — both files md5-identical to 0.11.1 |
+| `upsert(..)` gates the update policy on a *second* pooled connection | `cratestack-sqlx-0.12.0/src/query/write/upsert_exec.rs:45` and `upsert_resolve.rs:161-169` (`row_passes_update_policy(runtime.pool(), …)`) | **open** — whole crate's `src/` unchanged |
+| `Value::from_plain_json` demotes any non-`i64` number to `f64` | `cratestack-core-0.12.0/src/value.rs:95-106` | **open** — whole crate's `src/` unchanged |
+| `jsonb`, `bytea`, `int2`/`int4` have no read-back mapping, so introspection excludes those columns | `cratestack-migrate-0.12.0/src/introspect/postgres/types.rs:16-36`, with the tool's own test asserting `map_scalar("int4", …) == None` at line 57 | **open** — file md5-identical |
+
+What 0.12.0 *did* change, and why none of it reaches this document: the
+breaking change gives `SchemaError` file identity, so `render()` takes no
+arguments (`cratestack-macros-0.12.0/src/include/parse.rs:30-36`,
+`cratestack-cli-0.12.0/src/migrate/baseline_cmd.rs:56-60`) — internal to the
+macro and the CLI, and `just check-schema` reads an exit code rather than the
+diagnostic. `cratestack-macros` also grew enum-typed query filters on
+generated list routes (`src/shared/enum_query_parser.rs`, new), which vpay
+compiles and does not call, and `cratestack-migrate` gained one doc comment
+about `@computed` fields. The drift measurement was re-derived against a
+fresh `postgres:16-alpine` at 0.12.0 and is unchanged at **101 changes / 16
+relations / 17 unmappable columns**.
 
 ### What runs through it today
 
@@ -1554,7 +1586,7 @@ inside the same transaction as everything else. It is the honest, ugly,
 reversible half of this change and it is worth being precise about, because
 "CrateStack cannot model a JSONB column" would be **false**.
 
-0.11.1 has a `Json` scalar: `emit/postgres/columns.rs` maps it to `JSONB` and
+0.12.0 has a `Json` scalar: `emit/postgres/columns.rs` maps it to `JSONB` and
 `shared/types.rs` maps it to `::cratestack::Json<::cratestack::Value>`. Two
 measured costs are why `model Event` still does not declare `data`:
 
@@ -1590,7 +1622,7 @@ FROM events WHERE id = $2 AND merchant_id = $1)`) that no delegate expresses.
 #### The event vocabulary stays a hand-named CHECK, and that is a live hazard
 
 `events.type_is_a_documented_event` and `events.fanout_state_is_known` are
-multi-value single-column CHECKs, and 0.11.1 has no validator that expresses
+multi-value single-column CHECKs, and 0.12.0 has no validator that expresses
 "one of these eight strings" on a `String` column. Both candidates were
 measured and both rejected:
 
@@ -1713,12 +1745,12 @@ for it. It is the first thing to re-check if a route or an admin surface ever
 calls this method concurrently, and it is on the list of things worth sending
 upstream ([docs/plans/exp16-notes/opus-review.md](../plans/exp16-notes/opus-review.md) § 6):
 the probe could run on the transaction's own connection, which already holds
-the row lock.
+the row lock. Still `runtime.pool()` at 0.12.0 (2026-09-07).
 
 #### `enable_client`: why `delete_many` and not `delete`
 
 `.delete(pk)` is the builder the primary key invites, and it is wrong here.
-`cratestack-sqlx` 0.11.1's `query/write/delete_exec.rs` runs
+`cratestack-sqlx` 0.12.0's `query/write/delete_exec.rs` runs
 
 ```text
 DELETE FROM disabled_clients WHERE client_id = $1 AND (<delete policy>) RETURNING ...
@@ -1820,7 +1852,7 @@ reports in full.
 | Change | Drift effect | Why it was made |
 |---|---|---|
 | `currencies.exponent` `INT` → `BIGINT` | **-1 change, -1 unmappable column** | `Int` emits `int8` and the introspector refuses to map `int4` back onto it, so the column was excluded from the comparison entirely |
-| The two `currencies` CHECKs renamed to `<table>_<column>_<validator>_check` | **0** | The names are the half that *can* converge at 0.11.1; the kinds cannot (below) |
+| The two `currencies` CHECKs renamed to `<table>_<column>_<validator>_check` | **0** | The names are the half that *can* converge at 0.12.0; the kinds cannot (below) |
 | `providers.flow` native enum → `TEXT` + `providers_flow_enum_check` | **0** | Nothing to do with drift: CrateStack cannot *decode* a native enum column |
 
 #### The rename that buys nothing, and why it is still right
@@ -1905,7 +1937,7 @@ finding worth carrying:
 
 So `providers` reports exactly the same four lines before and after. One of
 those four, `column flow type differs (live: Scalar("String"), schema:
-Enum("ProviderFlow"))`, is **permanent at 0.11.1** and is not a defect in
+Enum("ProviderFlow"))`, is **permanent at 0.12.0** and is not a defect in
 `schemas/vpay.cstack`: the enum's *name* has no catalog representation to
 recover it from, which `enums.rs`'s own doc comment calls documented
 lossiness. Every enum-typed column in the schema carries one such line
@@ -2024,8 +2056,9 @@ configuration; a default cannot help it. What a default *can* do is invent a
 capability for some other writer that forgot one, and a rail silently recorded
 as "does not refund", or silently recorded as enabled, is worse than an
 `INSERT` that refuses. The second way out — upstream growing a way to include
-a defaulted column in an upsert input — remains open and would now be a
-simplification rather than an unblocking.
+a defaulted column in an upsert input — remains open (re-checked at 0.12.0
+on 2026-09-07: `create_input_fields` still filters every `@default(...)`
+field) and would now be a simplification rather than an unblocking.
 
 **The two halves are one commit, and that is measured.** With the five
 `@default(...)` removed from the schema and the DDL untouched, the drift report
@@ -2147,7 +2180,7 @@ That statement is `reconcile`'s disable pass, `UPDATE providers SET enabled =
 false WHERE code <> ALL($1) AND enabled`: it addresses rows by their
 *absence* from a list, which no generated builder expresses, and it is the
 statement that makes "configuration is the authority" true for a rail the
-deployment dropped. Three properties of 0.11.1 decide where it
+deployment dropped. Three properties of 0.12.0 decide where it
 falls, and none of them is a matter of taste:
 
 - **Model policies are compiled into the SQL.** `@@allow`/`@@deny` become
@@ -2320,7 +2353,7 @@ exactly one `sqlx`.
 
 The generated `pub mod axum` compiles and is never referenced: vpay keeps its
 own router and its Stripe-shaped `/v1`. `crypto-aws-lc-rs` must never be
-enabled — `deny.toml` bans `aws-lc-rs` (ADR-0005, ADR-0007), and at 0.11.1 the
+enabled — `deny.toml` bans `aws-lc-rs` (ADR-0005, ADR-0007), and at 0.12.0 the
 feature is a `compile_error!` rather than a working mode in any case.
 
 One ergonomic consequence, recorded because the failure message does not
