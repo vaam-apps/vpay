@@ -109,6 +109,23 @@ struct CreateParams {
     #[serde(default)]
     metadata: BTreeMap<String, String>,
     description: Option<String>,
+    /// The `cus_…` this intent is for (S4a).
+    ///
+    /// **Accepted and stored since 2026-09-06.** It was on
+    /// [`UnsupportedStripeParams`]' opposite list — accepted and *dropped* —
+    /// from Step 5b until migration `0034` gave it somewhere to point. It
+    /// belonged there while it did: a merchant who sent one got the payment
+    /// they asked for, from the payer they asked, for the amount they asked,
+    /// and nothing about where or when money moved was changed by dropping
+    /// it. What changed is that there is now a `customers` table and a
+    /// foreign key, so the honest answer is to store it.
+    ///
+    /// A `cus_…` that is not this merchant's is a `400` naming this
+    /// parameter — never a 404, and never a different sentence from "no such
+    /// customer", or the field becomes an oracle for which customers exist
+    /// under some other tenant. See
+    /// [`crate::v1::customers::resolve_for_attachment`].
+    customer: Option<String>,
     /// Stripe's `confirm`, accepted **only so it can be refused**.
     ///
     /// vpay has no confirm-on-create: creation and confirmation are two
@@ -147,9 +164,12 @@ struct CreateParams {
 /// are accepted-and-ignored, and stay that way:
 ///
 /// * `setup_future_usage`, `confirmation_method`, `receipt_email`,
-///   `statement_descriptor`, `customer` — vpay does not implement them, and a
+///   `statement_descriptor` — vpay does not implement them, and a
 ///   merchant who sends one gets the payment they asked for anyway, taken
-///   from the payer they asked, for the amount they asked;
+///   from the payer they asked, for the amount they asked. **`customer` left
+///   this list on 2026-09-06**: it is accepted and *stored* now (migration
+///   `0034`), so it is neither refused nor dropped — see
+///   [`CreateParams::customer`];
 /// * `expand`, `metadata` — `expand` is not implemented (the response simply
 ///   has no expanded field, which is visible in the response itself);
 ///   `metadata` is implemented and stored.
@@ -302,7 +322,30 @@ pub(crate) async fn create(
         payment_method_types,
         metadata,
         description,
+        customer,
     } = validated;
+
+    // Resolved *after* `validate_create` because it is the one create rule
+    // that costs a database read, and inside the same release-on-failure
+    // block for the same reason every other rule is: a merchant who names a
+    // customer they have not created yet, creates it, and retries under the
+    // same key must get their intent — not a 24-hour-old refusal that is no
+    // longer true. It also stamps the customer's retention clock, which is
+    // what stops the twelve-month sweep from deleting a customer a merchant
+    // takes payments from every week.
+    let customer_id = match crate::v1::customers::resolve_for_attachment(
+        repositories.as_ref(),
+        &scope,
+        customer.as_deref(),
+    )
+    .await
+    {
+        Ok(customer_id) => customer_id,
+        Err(error) => {
+            post.release(repositories.as_ref(), &scope, claim_id).await;
+            return Err(error);
+        }
+    };
 
     let new = NewPaymentIntent {
         id: ids::payment_intent_id(),
@@ -323,6 +366,7 @@ pub(crate) async fn create(
         ),
         metadata: Value::Object(metadata),
         description,
+        customer_id,
         // Minted here, once, and never again: there is no rotation endpoint
         // (§4) because a payer credential that could be rolled would need a
         // way to tell a browser holding the old one, and "retry" on this API
@@ -359,6 +403,10 @@ struct ValidCreate {
     payment_method_types: Vec<String>,
     metadata: Map<String, Value>,
     description: Option<String>,
+    /// The raw `customer` field, **not yet resolved**: resolving it is a
+    /// database read, and this function is the one that decides everything
+    /// from the request alone. [`create`] resolves it immediately after.
+    customer: Option<String>,
 }
 
 /// Decodes and checks a create body. Split out of [`create`] so that "the
@@ -383,6 +431,7 @@ async fn validate_create(
         payment_method_types: validated_rails(&params.payment_method_types, config)?,
         metadata: validated_metadata(&params.metadata)?,
         description: validated_description(params.description)?,
+        customer: params.customer,
     })
 }
 
@@ -784,6 +833,22 @@ pub(crate) async fn confirm_once(
     rendering: SecretRendering,
 ) -> Result<Response, ApiError> {
     let intent = load_confirmable_intent(repositories, scope, id).await?;
+
+    // The customer's retention clock, stamped here rather than only on
+    // create. A confirm is the clearest possible evidence that a customer is
+    // live — a payer is being asked for money — and an intent created eleven
+    // months ago and confirmed today would otherwise leave its customer one
+    // month from being swept.
+    //
+    // It reads the customer id off the intent this handler has already
+    // resolved and authorised, so there is nothing to validate and no way to
+    // name a customer that is not this merchant's. A failure is logged and
+    // swallowed; see `customers::touch` for why a payment must not fail
+    // because a housekeeping timestamp could not move.
+    if let Some(customer_id) = intent.customer_id.as_deref() {
+        crate::v1::customers::touch(repositories, customer_id).await;
+    }
+
     // Step 1b, and it is one read answering two things: whether a checkout
     // session forbids this confirm at all, and — when one drives it — where a
     // redirect rail must send the payer back to.

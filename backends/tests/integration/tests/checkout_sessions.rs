@@ -1819,15 +1819,17 @@ async fn an_intent_may_have_only_one_open_session() -> anyhow::Result<()> {
         success_url: Some(CANCEL_URL.to_owned()),
         cancel_url: Some(CANCEL_URL.to_owned()),
         return_url: None,
+        customer_id: None,
         publishable_key: PK_A.to_owned(),
         client_secret_suffix: vpay_core::ids::client_secret_suffix(),
         return_token: vpay_core::ids::return_token(),
         expires_at: time::OffsetDateTime::now_utc() + time::Duration::hours(24),
         created_at: time::OffsetDateTime::now_utc(),
     };
-    let error = h
-        .repositories
-        .create(&new)
+    // Through the trait: `Customers` (S4a) also declares a `create`, so a
+    // bare method call is ambiguous — and naming the trait is what ADR-0016
+    // standard 5 asks for anyway.
+    let error = vpay_db::CheckoutSessions::create(h.repositories.as_ref(), &new)
         .await
         .expect_err("a second open session on one intent must be refused by the index");
     assert!(

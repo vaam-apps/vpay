@@ -90,6 +90,19 @@ object_tag!(
     "refund"
 );
 object_tag!(
+    /// The `"customer"` discriminator.
+    ///
+    /// Stripe's own spelling for a stored, merchant-owned payer record. The
+    /// distinction [`AccountHolderTag`] draws is unchanged and is now
+    /// load-bearing in both directions: an `account_holder` is a *stateless
+    /// rail query* that stores nothing and has no id, a `customer` is this —
+    /// a `cus_…` with a lifecycle, metadata and a retention clock. A
+    /// deployment can have both for one payer and they are not the same
+    /// object.
+    CustomerTag,
+    "customer"
+);
+object_tag!(
     /// The `"checkout.session"` discriminator.
     ///
     /// Stripe's own spelling, dot and all, so a merchant switching an
@@ -326,6 +339,22 @@ pub struct PaymentIntentObject {
     pub metadata: Map<String, Value>,
     /// The merchant's own description, or `null`.
     pub description: Option<String>,
+    /// The `cus_…` this intent is for, or `null` (S4a).
+    ///
+    /// The id, never the expanded object. `expand` is not implemented
+    /// (`docs/api/README.md`), so there is no way for a merchant to ask for
+    /// the object — and rendering it unasked would put a payer's name, email
+    /// and phone number into every `payment_intent.*` webhook body, signed,
+    /// delivered at-least-once and stored in `events` forever. The customer
+    /// is one `GET /v1/customers/{id}` away for anybody who holds the
+    /// merchant token; the webhook receiver deliberately is not given it.
+    ///
+    /// This key was **absent** until 2026-09-06 and the request field was
+    /// accepted and dropped (`docs/api/README.md`'s "accepted and ignored"
+    /// list). Both SDKs model it as optional so a vpay predating it still
+    /// decodes, which is exactly why the server must not omit it — see
+    /// [`RefundObject::fee`]'s note on the same trap.
+    pub customer: Option<String>,
     /// Unix **seconds** — not milliseconds, and not RFC 3339. Stripe's
     /// `created` is seconds and both SDKs model it as `i64`.
     pub created: i64,
@@ -601,6 +630,11 @@ pub struct CheckoutSessionObject {
     /// honest answer there: the merchant is not being told the link, they are
     /// being told they already have it.
     pub url: Option<String>,
+    /// The `cus_…` this session is for, or `null` (S4a). The id, never the
+    /// expanded object — [`PaymentIntentObject::customer`]'s reason,
+    /// unchanged, and with the same force: this object is the `data.object`
+    /// of every `checkout.session.expired`.
+    pub customer: Option<String>,
     /// Unix **seconds** when this session stops being `open` on its own —
     /// like every other timestamp on this API, and not RFC 3339.
     pub expires_at: i64,
@@ -648,6 +682,7 @@ impl CheckoutSessionObject {
             cancel_url: row.cancel_url.clone(),
             return_url: row.return_url.clone(),
             url,
+            customer: row.customer_id.clone(),
             expires_at: row.expires_at.unix_timestamp(),
             created: row.created_at.unix_timestamp(),
         }
@@ -1294,6 +1329,123 @@ impl TryFrom<&vpay_db::PaymentIntentRow> for PaymentIntentObject {
             )?,
             metadata: metadata_of(&row.metadata, "payment_intents")?,
             description: row.description.clone(),
+            customer: row.customer_id.clone(),
+            created: row.created_at.unix_timestamp(),
+            livemode: row.livemode,
+        })
+    }
+}
+
+/// A `customer` (S4a): the merchant-owned record of a payer they expect to
+/// see again.
+///
+/// # The seven keys, and the one field of the row that is deliberately not
+/// among them
+///
+/// `customers.last_used_at` is **not** on the wire. It is the retention
+/// sweep's clock — vpay moves it whenever an intent or a session names the
+/// customer — and a merchant who could read it would build on a value whose
+/// motion is vpay's business and whose meaning may widen the day invoices
+/// exist. `the_customer_object_is_the_documented_seven_keys` below is the
+/// tripwire: adding it here would put it in every `customer.*` webhook body,
+/// signed and stored in `events` forever, before anybody wrote it down.
+///
+/// The three identifiers are `Option<String>` and at least one of them is
+/// always present — migration `0034`'s `at_least_one_identifier`, which this
+/// type deliberately does not re-express: a Rust enum over "which one is
+/// here" would be a second copy of a rule the database already owns, and it
+/// would have to be exhaustive over a set that grows.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CustomerObject {
+    /// `cus_…` — `vpay_core::ids::customer_id`.
+    pub id: String,
+    /// Always `"customer"`.
+    pub object: CustomerTag,
+    /// The payer's name, or `null`.
+    pub name: Option<String>,
+    /// The payer's email, or `null`.
+    pub email: Option<String>,
+    /// The payer's phone number, canonicalised (`2376XXXXXXXX`, no `+`), or
+    /// `null`.
+    ///
+    /// Echoed back in the **canonical** form rather than as the merchant
+    /// typed it, and that is a wire contract rather than an implementation
+    /// leak: it is the value a rail is given and the value a merchant would
+    /// compare against `payer_ref`, so rendering the original spelling would
+    /// make two systems that hold the same number disagree about it.
+    pub phone: Option<String>,
+    /// The merchant's own key/value pairs, echoed back.
+    ///
+    /// `Map<String, Value>` for [`PaymentIntentObject::metadata`]'s reason.
+    pub metadata: Map<String, Value>,
+    /// Unix **seconds** — not milliseconds, and not RFC 3339.
+    pub created: i64,
+    /// `false` for a sandbox deployment's objects. Taken from the row, not
+    /// from configuration read at render time, for
+    /// [`PaymentIntentObject::livemode`]'s reason.
+    pub livemode: bool,
+}
+
+/// What `DELETE /v1/customers/{id}` answers with.
+///
+/// Stripe's own deleted-object shape — `id`, `object`, `deleted: true` — and
+/// deliberately **not** the customer it removed. Two reasons, and the second
+/// is the one that decides it:
+///
+/// * a merchant who just deleted a record does not need it handed back, and
+/// * this response is the one most likely to be logged by an integration
+///   confirming an erasure, so returning the payer's name, email and phone in
+///   it would write the personal data into a log *because* it was deleted.
+///
+/// `deleted` is a [`DeletedTrue`] rather than a `bool` for the reason every
+/// `object` field is a tag: `false` is not a value this response can carry,
+/// and a `bool` field is one typo away from telling a merchant an erasure did
+/// not happen when it did.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DeletedObject {
+    /// The id that was deleted.
+    pub id: String,
+    /// The `object` the id named — `"customer"` today, and a field rather
+    /// than a constant because Stripe's deleted shape carries the deleted
+    /// object's own type and an SDK switches on it.
+    pub object: CustomerTag,
+    /// Always `true`.
+    pub deleted: DeletedTrue,
+}
+
+/// Serialises as `true` and holds nothing — [`DeletedObject::deleted`]'s
+/// type. The [`object_tag!`] device applied to a boolean.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeletedTrue;
+
+impl Serialize for DeletedTrue {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bool(true)
+    }
+}
+
+impl TryFrom<&vpay_db::CustomerRow> for CustomerObject {
+    type Error = ApiError;
+
+    /// Renders a stored customer as the object a merchant reads.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Internal`] for a `metadata` that is not a JSON object — a
+    /// state migration `0034`'s `metadata_is_object` CHECK makes impossible,
+    /// so seeing one means the schema and this code disagree. Nothing a
+    /// *caller* can send reaches an `Err` here; see this module's header on
+    /// why the conversion is fallible at all.
+    fn try_from(row: &vpay_db::CustomerRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row.id.clone(),
+            object: CustomerTag,
+            name: row.name.clone(),
+            email: row.email.clone(),
+            phone: row.phone.clone(),
+            metadata: metadata_of(&row.metadata, "customers")?,
             created: row.created_at.unix_timestamp(),
             livemode: row.livemode,
         })
@@ -1375,6 +1527,7 @@ mod tests {
             "last_payment_error": null,
             "metadata": { "order_id": "1234" },
             "description": null,
+            "customer": null,
             "created": 1_753_401_600,
             "livemode": false,
         })
@@ -1395,6 +1548,7 @@ mod tests {
                 "1234".to_owned(),
             )])),
             description: None,
+            customer: None,
             created: 1_753_401_600,
             livemode: false,
         }
@@ -1428,6 +1582,13 @@ mod tests {
             "last_payment_error",
             "metadata",
             "description",
+            // `customer` since 2026-09-06 (S4a). It was **absent** before
+            // that and the request field was dropped, so a merchant SDK
+            // predating it models the key as optional — which is exactly why
+            // the server must not omit it: an absent key decodes without
+            // complaint in either client, and a merchant would simply never
+            // learn the field exists.
+            "customer",
             "created",
             "livemode",
         ] {
@@ -1435,10 +1596,10 @@ mod tests {
         }
         assert_eq!(
             object.len(),
-            12,
+            13,
             "an undocumented key was added: {object:?}"
         );
-        for null_key in ["next_action", "last_payment_error", "description"] {
+        for null_key in ["next_action", "last_payment_error", "description", "customer"] {
             assert_eq!(
                 object.get(null_key),
                 Some(&Value::Null),
@@ -1447,7 +1608,7 @@ mod tests {
         }
     }
 
-    /// The browser wrapper is the twelve keys **plus one**, at the top level
+    /// The browser wrapper is the thirteen keys **plus one**, at the top level
     /// — not a nested object.
     ///
     /// `sdks/stripe-js/src/types.ts`'s `PaymentIntent` is written against
@@ -1456,7 +1617,7 @@ mod tests {
     /// `intent` and every browser call would decode to something with no
     /// `status` on it.
     #[test]
-    fn the_browser_wrapper_is_the_twelve_keys_plus_the_client_secret() {
+    fn the_browser_wrapper_is_the_thirteen_keys_plus_the_client_secret() {
         let rendered = serde_json::to_value(PaymentIntentWithSecret::new(
             sample("pi_1"),
             "pi_1_secret_abc".to_owned(),
@@ -1466,15 +1627,15 @@ mod tests {
 
         assert_eq!(
             object.len(),
-            13,
-            "the browser object must be exactly the twelve documented keys plus \
+            14,
+            "the browser object must be exactly the thirteen documented keys plus \
              `client_secret` — got a different key count"
         );
         assert_eq!(
             object.get("client_secret").and_then(Value::as_str),
             Some("pi_1_secret_abc")
         );
-        // Every one of the twelve is still there, at the top level, byte for
+        // Every one of the thirteen is still there, at the top level, byte for
         // byte what the merchant surface renders.
         let plain = serde_json::to_value(sample("pi_1")).expect("serialises");
         let plain = plain.as_object().expect("an object");
@@ -1524,7 +1685,7 @@ mod tests {
     /// body render through.
     ///
     /// `every_documented_key_is_present_including_the_null_ones` already
-    /// pins `len() == 12`; this says out loud what that number is protecting,
+    /// pins `len() == 13`; this says out loud what that number is protecting,
     /// so a future reader tempted to "just add the field" finds the reason
     /// rather than only the assertion.
     #[test]
@@ -1535,7 +1696,7 @@ mod tests {
             !object.contains_key("client_secret"),
             "a payer credential must not reach the /v1 list or events.data: {object:?}"
         );
-        assert_eq!(object.len(), 12);
+        assert_eq!(object.len(), 13);
     }
 
     /// The contract's whole point: a merchant's own client decodes what this
@@ -2200,6 +2361,7 @@ mod tests {
             success_url: Some("https://shop.example/ok?sid={CHECKOUT_SESSION_ID}".to_owned()),
             cancel_url: Some("https://shop.example/cancel".to_owned()),
             return_url: None,
+            customer_id: None,
             publishable_key: "pk_test_acmecameroonsandbox01".to_owned(),
             client_secret_suffix: "neverlogthissessioncredential000".to_owned(),
             return_token: "neverlogthisreturntoken000000000".to_owned(),
@@ -2254,6 +2416,7 @@ mod tests {
                 "cancel_url": "https://shop.example/cancel",
                 "return_url": null,
                 "url": url,
+                "customer": null,
                 "expires_at": 1_757_000_000,
                 "created": 1_756_913_600,
                 "client_secret": vpay_core::ids::client_secret(&row.id, &row.client_secret_suffix),
@@ -2273,6 +2436,8 @@ mod tests {
             "cancel_url",
             "return_url",
             "url",
+            // `customer` since 2026-09-06 (S4a); the id, never the object.
+            "customer",
             "expires_at",
             "created",
             "client_secret",
@@ -2281,7 +2446,7 @@ mod tests {
         }
         assert_eq!(
             object.len(),
-            14,
+            15,
             "an undocumented key appeared: {rendered:#}"
         );
 
@@ -2294,7 +2459,7 @@ mod tests {
         );
     }
 
-    /// The `data.object` of a `checkout.session.expired` event: the thirteen
+    /// The `data.object` of a `checkout.session.expired` event: the fourteen
     /// documented keys, `status` already `expired`, and **no credential of
     /// any kind**.
     ///
@@ -2309,7 +2474,7 @@ mod tests {
     /// Decisive: change `expired_snapshot` to pass a `Some(url)` through, or
     /// to render `CheckoutSessionWithSecret`, and this fails.
     #[test]
-    fn an_expired_session_snapshot_is_the_thirteen_keys_and_carries_no_credential() {
+    fn an_expired_session_snapshot_is_the_fourteen_keys_and_carries_no_credential() {
         let row = session_row();
         let secret = vpay_core::ids::client_secret(&row.id, &row.client_secret_suffix);
 
@@ -2329,6 +2494,11 @@ mod tests {
             "cancel_url",
             "return_url",
             "url",
+            // The `cus_…` and never the expanded customer: this body is
+            // stored in `events.data`, signed and delivered at-least-once,
+            // and the expanded object is a payer's name, email and phone
+            // number.
+            "customer",
             "expires_at",
             "created",
         ] {
@@ -2336,7 +2506,7 @@ mod tests {
         }
         assert_eq!(
             object.len(),
-            13,
+            14,
             "an undocumented key appeared in a webhook body: {rendered:#}"
         );
         assert!(
@@ -2430,7 +2600,7 @@ mod tests {
             .get("payment_intent")
             .and_then(Value::as_object)
             .expect("`untagged` renders the object with no discriminator");
-        assert_eq!(expanded.len(), 13, "the twelve keys plus client_secret");
+        assert_eq!(expanded.len(), 14, "the thirteen keys plus client_secret");
         assert_eq!(expanded.get("client_secret"), Some(&json!(secret)));
         // The fields the page cannot paint without.
         assert_eq!(expanded.get("amount"), Some(&json!(5000)));
@@ -2443,7 +2613,7 @@ mod tests {
         assert!(expanded.contains_key("next_action"));
         assert!(expanded.contains_key("last_payment_error"));
 
-        // /v1/browser return read — the same twelve keys, and no credential.
+        // /v1/browser return read — the same thirteen keys, and no credential.
         let without = merchant.with_expanded_intent(ExpandableIntent::Expanded(Box::new(intent)));
         let rendered = serde_json::to_value(&without).expect("serialises");
         let expanded = rendered
@@ -2452,8 +2622,8 @@ mod tests {
             .expect("an object");
         assert_eq!(
             expanded.len(),
-            12,
-            "the twelve documented keys, and no more"
+            13,
+            "the thirteen documented keys, and no more"
         );
         assert!(
             !expanded.contains_key("client_secret"),

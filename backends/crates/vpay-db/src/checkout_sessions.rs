@@ -40,8 +40,9 @@ use crate::payment_intents::LIVE_CHARGE_STATES;
 /// (migration `0028`, following `events.fanout_state` and `jobs.kind`), so
 /// `sqlx` decodes them into `String` directly.
 const COLUMNS: &str = "id, seq, merchant_id, payment_intent_id, livemode, ui_mode, status, \
-                       payment_status, success_url, cancel_url, return_url, publishable_key, \
-                       client_secret_suffix, return_token, expires_at, created_at, updated_at";
+                       payment_status, success_url, cancel_url, return_url, customer_id, \
+                       publishable_key, client_secret_suffix, return_token, expires_at, \
+                       created_at, updated_at";
 
 /// The `status` a session is in while it can still be driven — the one label
 /// the partial unique index `checkout_sessions_one_open_per_intent` is built
@@ -106,6 +107,14 @@ pub struct CheckoutSessionRow {
     pub cancel_url: Option<String>,
     /// Embedded mode's forward destination; `None` for a hosted session.
     pub return_url: Option<String>,
+    /// The customer this session is for, or `None` (migration `0034`).
+    ///
+    /// Copied from the session's intent at create when the intent has one, so
+    /// a merchant who attached a customer to the intent does not have to
+    /// repeat themselves — and so the two rows cannot disagree about who is
+    /// paying. Same `NO ACTION` foreign key as
+    /// [`crate::PaymentIntentRow::customer_id`].
+    pub customer_id: Option<String>,
     /// The merchant publishable key every URL vpay mints for this session
     /// carries as `?key=` — the hosted page, the embedded iframe and the
     /// return page.
@@ -259,6 +268,7 @@ impl fmt::Debug for CheckoutSessionRow {
             .field("success_url", &self.success_url)
             .field("cancel_url", &self.cancel_url)
             .field("return_url", &self.return_url)
+            .field("customer_id", &self.customer_id)
             // In full, deliberately, unlike the two below it: a publishable
             // key is public by design, and "which key did this session
             // pin?" is the first question asked when a payer's return page
@@ -318,6 +328,10 @@ pub struct NewCheckoutSession {
     pub cancel_url: Option<String>,
     /// Embedded mode's one destination, or `None` for hosted.
     pub return_url: Option<String>,
+    /// The customer this session is for, or `None`. Resolved by the API from
+    /// the session's intent, or from an explicit `customer` on the request —
+    /// see `vpay_api::v1::checkout_sessions::prepare_create`.
+    pub customer_id: Option<String>,
     /// The publishable key to pin on this session. Must be one of
     /// [`Self::merchant_id`]'s registered keys — a rule only `vpay-config`
     /// can see, so the API checks it and the column's CHECK is a shape
@@ -780,9 +794,10 @@ impl CheckoutSessions for crate::repository::PgRepositories {
         let sql = format!(
             "INSERT INTO checkout_sessions (id, merchant_id, payment_intent_id, livemode, \
              ui_mode, status, payment_status, success_url, cancel_url, return_url, \
-             publishable_key, client_secret_suffix, return_token, expires_at, created_at) \
+             customer_id, publishable_key, client_secret_suffix, return_token, expires_at, \
+             created_at) \
              VALUES ($1, $2, $3, $4, $5, '{OPEN}', 'unpaid', $6, $7, $8, $9, $10, $11, $12, \
-             $13) \
+             $13, $14) \
              RETURNING {COLUMNS}"
         );
 
@@ -795,6 +810,7 @@ impl CheckoutSessions for crate::repository::PgRepositories {
             .bind(new.success_url.as_deref())
             .bind(new.cancel_url.as_deref())
             .bind(new.return_url.as_deref())
+            .bind(new.customer_id.as_deref())
             .bind(&new.publishable_key)
             .bind(&new.client_secret_suffix)
             .bind(&new.return_token)
@@ -1053,6 +1069,7 @@ mod tests {
             success_url: Some("https://shop.example/ok".to_owned()),
             cancel_url: Some("https://shop.example/cancel".to_owned()),
             return_url: None,
+            customer_id: None,
             publishable_key: "pk_test_acmecameroonsandbox01".to_owned(),
             client_secret_suffix: "neverlogthissessioncredential000".to_owned(),
             return_token: "neverlogthisreturntoken000000000".to_owned(),

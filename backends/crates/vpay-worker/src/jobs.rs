@@ -19,12 +19,13 @@ use crate::error::Decision;
 /// The kinds of job this workspace can enqueue.
 ///
 /// Closed, and closed against a database constraint rather than a convention:
-/// migration 0023's `kind_is_known` CHECK lists exactly these seven strings,
-/// so an eighth spelled here and not there is refused by Postgres at the
+/// migration 0034's `kind_is_known` CHECK lists exactly these eight strings,
+/// so a ninth spelled here and not there is refused by Postgres at the
 /// insert rather than discovered by a worker that claims a job it cannot
 /// dispatch. The two webhook kinds arrived with migration 0022 (0021
 /// deliberately withheld them, so Step 4 could not enqueue a delivery nothing
-/// would run) and [`Self::ScanDeliveries`] with 0023, on the same terms; the
+/// would run), [`Self::ScanDeliveries`] with 0023 and
+/// [`Self::SweepIdleCustomers`] with 0034, on the same terms; the
 /// constraint and this enum move together, always.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,6 +79,24 @@ pub enum JobKind {
     /// (`crate::webhooks::handle_scan_deliveries`,
     /// `docs/runbooks/webhook-delivery-failures.md`).
     ScanDeliveries,
+    /// The twelve-month customer retention sweep (S4a, migration `0034`):
+    /// hard-delete every customer nothing has used for twelve months and
+    /// which no payment intent or checkout session references, emitting one
+    /// `customer.deleted` per deletion in the same transaction as the delete.
+    ///
+    /// A singleton ([`SWEEP_CUSTOMERS_DEDUPE_KEY`]) on
+    /// [`Self::SweepExpired`]'s exact terms — and deliberately **not** a
+    /// fifth statement inside that job, which is where the other three
+    /// housekeeping deletes live. What separates them is what a failure
+    /// means: `sweep_expired`'s three statements are bounded deletes of
+    /// vpay's own bookkeeping whose healthy answer is zero, while this one
+    /// erases a merchant's personal-data records and emits a
+    /// merchant-visible event for each. Sharing a job would report a failing
+    /// customer sweep as "the housekeeping sweep is unhealthy", with an
+    /// idempotency-key count it has nothing to do with in the same log line,
+    /// and would put a merchant-visible event behind the same lease as an
+    /// internal delete.
+    SweepIdleCustomers,
 }
 
 impl JobKind {
@@ -99,6 +118,7 @@ impl JobKind {
             Self::FanOutEvents => "fan_out_events",
             Self::DeliverWebhook => "deliver_webhook",
             Self::ScanDeliveries => "scan_deliveries",
+            Self::SweepIdleCustomers => "sweep_idle_customers",
         }
     }
 
@@ -344,6 +364,17 @@ pub const FANOUT_DEDUPE_KEY: &str = "fanout:events";
 /// `ON CONFLICT DO NOTHING` and never be seeded at all.
 pub const SCAN_DELIVERIES_DEDUPE_KEY: &str = "scan:deliveries";
 
+/// The `jobs.dedupe_key` of the one and only customer retention sweep
+/// (migration `0034`). A singleton, on [`SWEEP_DEDUPE_KEY`]'s exact terms.
+///
+/// `sweep:customers`, in [`SWEEP_DEDUPE_KEY`]'s (`sweep:expired`) namespace
+/// and deliberately not equal to it — [`SCAN_DELIVERIES_DEDUPE_KEY`]'s
+/// argument, applied to the sweeps: a shared key would let one lose to the
+/// other's `ON CONFLICT DO NOTHING` and never be seeded at all, and the one
+/// that lost would be the one that deletes personal data on a promise vpay
+/// made to a payer.
+pub const SWEEP_CUSTOMERS_DEDUPE_KEY: &str = "sweep:customers";
+
 /// The `jobs.dedupe_key` for delivering one `webhook_deliveries` row.
 ///
 /// Keyed on the *delivery*, not on the event: a merchant with two endpoints
@@ -364,7 +395,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const KINDS: [JobKind; 7] = [
+    const KINDS: [JobKind; 8] = [
         JobKind::PollCharge,
         JobKind::ResubmitCharge,
         JobKind::SweepExpired,
@@ -372,20 +403,23 @@ mod tests {
         JobKind::FanOutEvents,
         JobKind::DeliverWebhook,
         JobKind::ScanDeliveries,
+        JobKind::SweepIdleCustomers,
     ];
 
-    /// Transcribed from migration 0023's `kind_is_known` CHECK — the current
-    /// one. If these seven strings and that constraint ever disagree, every
+    /// Transcribed from migration 0034's `kind_is_known` CHECK — the current
+    /// one. If these eight strings and that constraint ever disagree, every
     /// enqueue of the odd one out fails at the database, so the list is
     /// written out here rather than generated from the enum.
     ///
-    /// This constant has *changed* twice, both times deliberately: 0021's
-    /// version asserted `deliver_webhook` was **not** enqueueable, which was
-    /// true for exactly as long as no handler existed, and 0022 added both
-    /// webhook kinds with their handlers. 0023 adds `scan_deliveries` with
-    /// its own, and `the_check_constraint_is_migration_0023s` reads the
-    /// migration file so this list cannot quietly drift from it.
-    const KIND_IS_KNOWN: [&str; 7] = [
+    /// This constant has *changed* three times, every one deliberately:
+    /// 0021's version asserted `deliver_webhook` was **not** enqueueable,
+    /// which was true for exactly as long as no handler existed; 0022 added
+    /// both webhook kinds with their handlers; 0023 added `scan_deliveries`
+    /// with its own; and 0034 adds `sweep_idle_customers` with
+    /// `crate::handlers`' `sweep_idle_customers`.
+    /// `the_check_constraint_is_migration_0034s` reads the migration file so
+    /// this list cannot quietly drift from it.
+    const KIND_IS_KNOWN: [&str; 8] = [
         "poll_charge",
         "resubmit_charge",
         "sweep_expired",
@@ -393,6 +427,7 @@ mod tests {
         "fan_out_events",
         "deliver_webhook",
         "scan_deliveries",
+        "sweep_idle_customers",
     ];
 
     #[test]
@@ -409,12 +444,12 @@ mod tests {
     /// found by a worker enqueueing a job Postgres refuses — at runtime, in
     /// the settlement path.
     #[test]
-    fn the_check_constraint_is_migration_0023s() {
+    fn the_check_constraint_is_migration_0034s() {
         let sql = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../migrations/0023_jobs-scan-deliveries.sql"
+            "/../../migrations/0034_create-customers.sql"
         ))
-        .expect("migration 0023 is in the tree");
+        .expect("migration 0034 is in the tree");
         let expected = KIND_IS_KNOWN
             .iter()
             .map(|kind| format!("'{kind}'"))
@@ -422,7 +457,7 @@ mod tests {
             .join(",");
         assert!(
             sql.contains(&format!("CHECK (kind IN\n  ({expected}))")),
-            "KIND_IS_KNOWN no longer matches migration 0023's kind_is_known; expected \
+            "KIND_IS_KNOWN no longer matches migration 0034's kind_is_known; expected \
              ({expected})"
         );
     }
@@ -530,6 +565,7 @@ mod tests {
         assert_eq!(SCAN_DEDUPE_KEY, "scan:live");
         assert_eq!(SCAN_DELIVERIES_DEDUPE_KEY, "scan:deliveries");
         assert_eq!(FANOUT_DEDUPE_KEY, "fanout:events");
+        assert_eq!(SWEEP_CUSTOMERS_DEDUPE_KEY, "sweep:customers");
         assert_eq!(
             webhook_dedupe_key(delivery),
             "webhook:00000000-0000-0000-0000-000000000001"
@@ -542,6 +578,7 @@ mod tests {
             SCAN_DEDUPE_KEY.to_owned(),
             SCAN_DELIVERIES_DEDUPE_KEY.to_owned(),
             FANOUT_DEDUPE_KEY.to_owned(),
+            SWEEP_CUSTOMERS_DEDUPE_KEY.to_owned(),
             webhook_dedupe_key(delivery),
         ];
         let unique: std::collections::BTreeSet<&String> = keys.iter().collect();

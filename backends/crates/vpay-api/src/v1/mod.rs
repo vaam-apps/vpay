@@ -62,6 +62,14 @@ pub mod boot;
 /// [`payment_intents`]'s reason: one resource, one file, and the routes
 /// below name it.
 pub mod checkout_sessions;
+/// The Customer resource (S4a): `/v1/customers`, five routes.
+///
+/// Its own module for [`payment_intents`]'s reason — one resource, one file
+/// — and, more than the others, because the privacy rules that apply to a
+/// table whose whole content is a payer's personal data apply *only* here and
+/// belong beside the code they constrain. Its header is the short version;
+/// `docs/flows/customers.md` is the long one.
+pub mod customers;
 pub mod events;
 /// Cursor paging, shared by [`events`] and [`payment_intents`].
 ///
@@ -252,6 +260,26 @@ pub const V1_ROUTES: &[V1Route] = &[
         path: "/refunds/{id}",
         methods: &["GET"],
         mount: || get(refunds::retrieve),
+    },
+    V1Route {
+        path: "/customers",
+        methods: &["POST", "GET"],
+        mount: || post(customers::create).get(customers::list),
+    },
+    // Three methods on one path, which no other resource here has. `POST` is
+    // the update (Stripe's spelling — there is no `PUT` and no `PATCH` in
+    // that API, so a merchant's existing client sends a `POST`), and `DELETE`
+    // is the hard delete: a customer is personal data, and the only honest
+    // answer to "remove this" is to remove it. `required_scopes` reads the
+    // method, so `DELETE` needs `payments:write` like every other change.
+    V1Route {
+        path: "/customers/{id}",
+        methods: &["GET", "POST", "DELETE"],
+        mount: || {
+            get(customers::retrieve)
+                .post(customers::update)
+                .delete(customers::delete)
+        },
     },
 ];
 

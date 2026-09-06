@@ -229,24 +229,45 @@ CREATE INDEX payment_intents_customer_idx ON payment_intents (customer_id)
 CREATE INDEX checkout_sessions_customer_idx ON checkout_sessions (customer_id)
     WHERE customer_id IS NOT NULL;
 
--- THE EVENT VOCABULARY, REOPENED FOR THE THREE CUSTOMER TYPES
+-- THE EVENT VOCABULARY, REOPENED FOR ONE TYPE AND NOT FOR THREE
 --
 -- Same mechanism as 0024's `fanout_state_is_known`, 0022/0023's
 -- `jobs.kind_is_known` and 0029's own reopening: the database is what refuses
--- a type no code writes, so the CHECK moves in lockstep with the code rather
--- than being written permissively ahead of it.
+-- a type no code writes, so the CHECK moves in lockstep with the code that
+-- writes it rather than being written permissively ahead of it.
 --
--- All three are Stripe's own type names, which is docs/flows/webhooks.md's
--- standing rule: a custom type is silently dropped by any merchant using
--- `stripe-node`'s typed event union or an exhaustive `switch`, so an invented
--- one would have no branch at all in a Stripe-shaped handler.
+-- WHY ONLY `customer.deleted`, WHEN STRIPE HAS THREE
 --
--- `customer.deleted` is the one that had to exist. A hard delete is
--- unobservable by polling — the object is gone, and a `GET` afterwards is
--- byte-identical to a `GET` for an id that never existed — so without an
--- event a merchant whose customer was swept has no way to learn it happened.
--- Stripe emits `customer.deleted` for exactly this and merchants already
--- handle it.
+-- Stripe emits `customer.created` and `customer.updated` as well, and S4a's
+-- brief asked for all three. They are NOT added here, and the reason is the
+-- rule in the paragraph above rather than a shortage of time: nothing writes
+-- them. `POST /v1/customers` and `POST /v1/customers/{id}` are single
+-- statements on the pool; emitting an event from either means putting the
+-- write and the event in one transaction, which is a change to the shape of
+-- those two methods and not a line in this list. Adding the labels now would
+-- put two values in a closed vocabulary that no code can produce — which is
+-- exactly what 0023's comment says this mechanism exists to prevent, and
+-- what would make the CHECK stop being evidence of anything.
+--
+-- (`payment_intent.created`, `payment_intent.processing` and
+-- `payment_intent.canceled` ARE in this list with no writer. They came in
+-- together in 0018, before the lockstep rule was written down, and
+-- docs/flows/webhooks.md's Status section has listed them as unwritten ever
+-- since. They are the precedent for *not* doing this again.)
+--
+-- The gap is recorded rather than left to be discovered:
+-- docs/flows/customers.md "What is not built", docs/flows/webhooks.md's
+-- Status section, docs/status.md, and a dated row in docs/sdks/parity.md.
+--
+-- `customer.deleted` is the one that had to exist regardless of scope. A hard
+-- delete is unobservable by polling — the object is gone, and a `GET`
+-- afterwards is byte-identical to a `GET` for an id that never existed — so
+-- without an event a merchant whose customer was swept has no way at all to
+-- learn it happened. It is Stripe's own type name, which is
+-- docs/flows/webhooks.md's standing rule: a custom type is silently dropped
+-- by any merchant using `stripe-node`'s typed event union or an exhaustive
+-- `switch`, so an invented one would have no branch in a Stripe-shaped
+-- handler.
 ALTER TABLE events DROP CONSTRAINT type_is_a_documented_event;
 ALTER TABLE events ADD CONSTRAINT type_is_a_documented_event CHECK (type IN (
     'payment_intent.created',
@@ -257,8 +278,6 @@ ALTER TABLE events ADD CONSTRAINT type_is_a_documented_event CHECK (type IN (
     'charge.refunded',
     'charge.refund.updated',
     'checkout.session.expired',
-    'customer.created',
-    'customer.updated',
     'customer.deleted'
 ));
 
@@ -298,8 +317,8 @@ COMMENT ON COLUMN payment_intents.customer_id IS
 COMMENT ON COLUMN checkout_sessions.customer_id IS
     'The customer this session is for, or NULL. Copied from the session''s intent at create when the intent has one, or supplied directly. Same NO ACTION reasoning as payment_intents.customer_id.';
 COMMENT ON COLUMN events.type IS
-    'Constrained to the eleven event types in docs/flows/webhooks.md. Only real Stripe event types, so a merchant''s existing Stripe-shaped handler recognises every one of them. customer.created/updated/deleted (0034) are the only ones whose data.object is a customer; customer.deleted is the only way a merchant can learn about a hard delete, since a GET afterwards is byte-identical to one for an id that never existed.';
+    'Constrained to the nine event types in docs/flows/webhooks.md. Only real Stripe event types, so a merchant''s existing Stripe-shaped handler recognises every one of them. customer.deleted (0034) is the only one whose data.object is a customer, and the only way a merchant can learn about a hard delete, since a GET afterwards is byte-identical to one for an id that never existed. customer.created and customer.updated are deliberately NOT in this list: nothing writes them — see 0034''s own comment and docs/flows/customers.md.';
 COMMENT ON COLUMN events.object_id IS
-    'The id of the object this event is about: pi_ for payment_intent.*, ch_/re_ for the refund types, cs_ for checkout.session.expired (0029) and cus_ for customer.* (0034). Untyped and un-foreign-keyed on purpose — it points into five different tables depending on type, and a polymorphic reference cannot be a foreign key. It is NOT a foreign key onto customers in particular for a second reason: customer.deleted describes a row that no longer exists.';
+    'The id of the object this event is about: pi_ for payment_intent.*, ch_/re_ for the refund types, cs_ for checkout.session.expired (0029) and cus_ for customer.deleted (0034). Untyped and un-foreign-keyed on purpose — it points into five different tables depending on type, and a polymorphic reference cannot be a foreign key. It is NOT a foreign key onto customers in particular for a second reason: customer.deleted describes a row that no longer exists.';
 COMMENT ON COLUMN jobs.kind IS
     'What to run, from a vocabulary closed by kind_is_known and mirrored exactly by vpay_worker::jobs::JobKind: poll_charge, resubmit_charge, sweep_expired, scan_live_charges, fan_out_events, deliver_webhook, scan_deliveries, and sweep_idle_customers (0034 — the twelve-month retention sweep, a singleton on dedupe key sweep:customers). A kind spelled here and not in that enum is a row no worker can dispatch; one spelled there and not here is refused at the insert.';

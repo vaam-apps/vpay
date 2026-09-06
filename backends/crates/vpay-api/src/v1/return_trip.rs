@@ -338,6 +338,7 @@ mod tests {
             success_url: Some("https://shop.example/ok".to_owned()),
             cancel_url: Some("https://shop.example/cancel".to_owned()),
             return_url: None,
+            customer_id: None,
             publishable_key: "pk_test_acmecameroonsandbox01".to_owned(),
             client_secret_suffix: "a".repeat(32),
             return_token: "b".repeat(32),
