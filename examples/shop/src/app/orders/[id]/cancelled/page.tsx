@@ -89,8 +89,17 @@ export default async function OrderCancelledPage({
             order is still <code>unpaid</code>, its PaymentIntent is still live
             at vpay, and a charge already submitted to a rail could still
             settle. The button below asks vpay to cancel the intent. Even then
-            this shop writes nothing — the order becomes <code>cancelled</code>{" "}
-            when the signed <code>payment_intent.canceled</code> event arrives.
+            this shop writes nothing — the order would become{" "}
+            <code>cancelled</code> when the signed{" "}
+            <code>payment_intent.canceled</code> event arrived.{" "}
+            <strong>
+              It will not: vpay emits no event for that transition.
+            </strong>{" "}
+            The cancel really does move the intent at vpay — measured on the
+            demo stack, 2026-09-06 — and this order will nevertheless stay{" "}
+            <code>unpaid</code>, because moving it from anything other than a
+            signed event is the one thing this example exists to argue
+            against. See <code>examples/shop/README.md</code>.
           </p>
         </>
       ) : null}
