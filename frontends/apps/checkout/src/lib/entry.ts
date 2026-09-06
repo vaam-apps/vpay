@@ -14,7 +14,18 @@ import { parsePageCredentials } from './link';
 import type { CheckoutErrorCode } from './types';
 
 export type EntryDecision =
-  | { kind: 'ready'; key: string; clientSecret: string; parentOrigin: string | null }
+  | {
+      kind: 'ready';
+      key: string;
+      clientSecret: string;
+      /** The framer's origin, for an embedded page. `null` otherwise. */
+      parentOrigin: string | null;
+      /**
+       * The opener's origin, for a hosted page in a **popup**. `null`
+       * otherwise, and never non-null at the same time as `parentOrigin`.
+       */
+      openerOrigin: string | null;
+    }
   | { kind: 'refused' }
   | { kind: 'error'; code: CheckoutErrorCode };
 
@@ -31,10 +42,19 @@ export interface EntryInput {
   allowedOrigins: readonly string[];
   /** `window.parent !== window`. */
   framed: boolean;
+  /**
+   * `window.opener !== null` — this document was opened by a script in
+   * another window, which is what a popup checkout is (2026-09-06).
+   *
+   * Optional so that every existing caller and test keeps its meaning: a
+   * page that does not say has no opener.
+   */
+  hasOpener?: boolean | undefined;
 }
 
 export function decideEntry(input: EntryInput): EntryDecision {
   let parentOrigin: string | null = null;
+  let openerOrigin: string | null = null;
 
   if (input.mode === 'embedded') {
     if (!input.framed) {
@@ -53,6 +73,20 @@ export function decideEntry(input: EntryInput): EntryDecision {
     // 'none'`, so a browser that honoured it never got here; this is the
     // second lock for one that did not.
     return { kind: 'refused' };
+  } else if (input.hasOpener === true) {
+    // `/c/{id}` in a POPUP the merchant's page opened (2026-09-06). The
+    // opener is resolved exactly as a framer is — `document.referrer`
+    // matched against the list the server produced, never used to extend it
+    // — so the worst a lying opener can do is name an origin the merchant
+    // already registered.
+    //
+    // **An opener that does not resolve is not a refusal.** A hosted page is
+    // a complete page on its own: it renders, it takes the payment, and it
+    // sends the payer to `success_url` in this window. What it loses is the
+    // ability to tell the opener anything, which is a degraded integration
+    // rather than an unsafe one — the opposite of the embedded case, where a
+    // page with no parent to report to has no way to finish at all.
+    openerOrigin = resolveParentOrigin(input.referrer, input.allowedOrigins);
   }
 
   const credentials = parsePageCredentials(input.search, input.hash);
@@ -67,6 +101,7 @@ export function decideEntry(input: EntryInput): EntryDecision {
     key: credentials.key,
     clientSecret: credentials.clientSecret,
     parentOrigin,
+    openerOrigin,
   };
 }
 

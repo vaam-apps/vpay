@@ -54,18 +54,45 @@ export interface CheckoutControllerOptions {
   stripe: Stripe;
   /** Performs a top-level navigation. `window.location.assign` in a browser. */
   navigate: (url: string) => void;
+  /**
+   * Closes this window. `window.close` in a browser, absent everywhere else.
+   *
+   * Only ever called for a **popup** (`channel.peer === 'opener'`), and only
+   * after `vpay:complete` has been posted: a popup that stays open after the
+   * payer has pressed "Back to {merchant}" is a window they now have to
+   * find and close themselves, on a phone, on top of a merchant page that
+   * has already moved on.
+   */
+  closeWindow?: (() => void) | undefined;
   /** Non-null only when this page is framed by an origin the merchant registered. */
   channel: FrameChannel | null;
+  /**
+   * The deployment's `checkout.allowed_methods` (`config.yaml`), or `null`
+   * for "no opinion". Handed to `contextOf`, which puts it on the context
+   * the pure reducer reads — see `CheckoutContext.allowedMethods`.
+   */
+  allowedMethods?: readonly string[] | null | undefined;
   /** Poll budget handed to `waitForPaymentIntent`. */
   pollTimeoutMs?: number | undefined;
   /** Poll interval handed to `waitForPaymentIntent`. */
   pollIntervalMs?: number | undefined;
+  /**
+   * Reads the window that opened this one. `() => window.opener` in a
+   * browser; absent everywhere else.
+   *
+   * A function rather than the handle, because "is the merchant's tab still
+   * open?" is a question about *now* — the payer may have closed it while
+   * they were paying — and a captured value would answer about page load.
+   */
+  opener?: (() => Window | null) | undefined;
 }
 
 export type StateListener = (state: CheckoutState) => void;
 
 export class CheckoutController {
   #state: CheckoutState = INITIAL_STATE;
+  /** Whether `vpay:complete` has already gone out. See {@link CheckoutController.announceComplete}. */
+  #announced = false;
   readonly #listeners = new Set<StateListener>();
   readonly #options: CheckoutControllerOptions;
 
@@ -99,7 +126,10 @@ export class CheckoutController {
       this.#dispatch({ type: 'load_failed', error: result.error });
       return;
     }
-    this.#dispatch({ type: 'loaded', context: contextOf(result.value) });
+    this.#dispatch({
+      type: 'loaded',
+      context: contextOf(result.value, this.#options.allowedMethods ?? null),
+    });
     if (this.#state.name === 'waiting') {
       await this.#poll();
     } else if (this.#state.name === 'outcome') {
@@ -214,12 +244,53 @@ export class CheckoutController {
     await this.#poll();
   }
 
-  /** Sends the payer back to the merchant. No-op unless an outcome is on screen. */
+  /**
+   * Sends the payer back to the merchant. No-op unless an outcome is on
+   * screen.
+   *
+   * Three shapes, one per place this page can be running:
+   *
+   * - **Framed** — ask the parent to navigate (D8). An iframe navigating
+   *   itself would render the merchant's confirmation page inside its own
+   *   checkout widget.
+   * - **A popup** — make sure the opener has heard `vpay:complete`, then
+   *   close this window. The merchant's own page is already where the payer
+   *   is going back to; navigating this window to `success_url` would leave
+   *   the merchant's page untouched behind a popup showing a second copy of
+   *   it. If the opener has gone (the payer closed the merchant's tab), the
+   *   popup navigates itself instead, so the payer is never left on a dead
+   *   window.
+   * - **Top-level** — this document navigates itself, as before.
+   */
   forward(url: string): void {
     this.#dispatch({ type: 'forward', url });
-    if (this.#state.name === 'forwarding') {
-      this.#navigateTopLevel(url);
+    if (this.#state.name !== 'forwarding') {
+      return;
     }
+    const channel = this.#options.channel;
+    if (channel !== null && channel.peer === 'opener') {
+      this.#announceComplete();
+      if (this.#openerIsGone()) {
+        this.#options.navigate(url);
+        return;
+      }
+      this.#options.closeWindow?.();
+      return;
+    }
+    this.#navigateTopLevel(url);
+  }
+
+  /**
+   * Whether the window that opened this popup is still there.
+   *
+   * `closed` is one of the three members readable on a cross-origin `Window`
+   * handle, so this is a real check rather than an optimistic one. A `null`
+   * opener means the browser severed the relationship (a `rel=noopener`
+   * link, a navigation that discarded it).
+   */
+  #openerIsGone(): boolean {
+    const opener = this.#options.opener?.() ?? undefined;
+    return opener === null || opener === undefined || opener.closed;
   }
 
   /**
@@ -235,7 +306,10 @@ export class CheckoutController {
    */
   #navigateTopLevel(url: string): void {
     const channel = this.#options.channel;
-    if (channel !== null) {
+    // A POPUP navigates itself: it is a top-level browsing context, and
+    // `vpay:redirect` to an opener would send the merchant's own page to the
+    // rail out from under the payer. Only a frame delegates.
+    if (channel !== null && channel.peer === 'parent') {
       channel.post({ type: 'vpay:redirect', url });
       return;
     }
@@ -283,12 +357,35 @@ export class CheckoutController {
       this.#options.credentials,
     );
     if (refreshed.ok) {
-      this.#dispatch({ type: 'session_refreshed', session: contextOf(refreshed.value).session });
+      this.#dispatch({
+        type: 'session_refreshed',
+        session: contextOf(refreshed.value, this.#options.allowedMethods ?? null).session,
+      });
     }
-    const state = this.#state;
-    if (state.name !== 'outcome') {
+    this.#announceComplete();
+  }
+
+  /**
+   * `vpay:complete`, **at most once per page**.
+   *
+   * Two moments can reach it: the outcome first appearing (the session
+   * re-read above), and the payer pressing "Back to {merchant}" in a popup.
+   * Whichever comes first wins. A second copy would fire a merchant's
+   * `onComplete` twice for one payment, and a merchant that treated that
+   * handler as a cue to create an order would create two.
+   */
+  #announceComplete(): void {
+    if (this.#announced) {
       return;
     }
+    const state = this.#state;
+    if (!('context' in state) || state.context === null) {
+      return;
+    }
+    if (state.name !== 'outcome' && state.name !== 'forwarding') {
+      return;
+    }
+    this.#announced = true;
     this.#options.channel?.post({
       type: 'vpay:complete',
       session: state.context.session.id,

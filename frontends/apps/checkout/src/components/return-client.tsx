@@ -4,30 +4,38 @@
  * Top-level in both modes: the payer got here by a full-page redirect from
  * the rail, so there is no parent to talk to and `window.location.assign`
  * is the forward.
+ *
+ * **No timer navigates**, for the same reason as the payment page: the
+ * outcome screen has a button and nothing else. This page carried the same
+ * five-second countdown until 2026-09-06.
+ *
+ * There is no page memory here either. The return trip has no form to
+ * prefill, and a page that cannot confirm has nothing to remember.
  */
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import type { Branding } from '../config/settings';
 import { translator, type Locale } from '../i18n/index';
 import { BrowserCheckoutApi } from '../lib/api';
 import { decideReturnEntry } from '../lib/entry';
 import { forwardKindFor, forwardTarget } from '../lib/forward';
 import { recallPublishableKey } from '../lib/link';
 import { RETURN_INITIAL_STATE, ReturnController, type ReturnState } from '../lib/return';
-import { AUTO_FORWARD_SECONDS } from './checkout-client';
 import { ReturnView } from './return-view';
 
 export interface ReturnClientProps {
   sessionId: string;
   apiBaseUrl: string;
   initialLocale: Locale;
+  /** `branding.yaml`, read at container start. The return page carries the same mark as the payment page. */
+  branding: Branding;
 }
 
 export function ReturnClient(props: ReturnClientProps) {
   const [locale, setLocale] = useState<Locale>(props.initialLocale);
   const [state, setState] = useState<ReturnState>(RETURN_INITIAL_STATE);
-  const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
   const controllerRef = useRef<ReturnController | null>(null);
 
   useEffect(() => {
@@ -73,33 +81,11 @@ export function ReturnClient(props: ReturnClientProps) {
     );
   }, [state]);
 
-  const onContinue = useCallback(() => {
+  const onReturnToMerchant = useCallback(() => {
     if (destination !== null) {
       controllerRef.current?.forward(destination);
     }
   }, [destination]);
-
-  useEffect(() => {
-    if (state.name !== 'outcome' || destination === null) {
-      // REAL finding: see the same countdown in `checkout-client.tsx`.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setSecondsLeft(null);
-      return;
-    }
-    setSecondsLeft(AUTO_FORWARD_SECONDS);
-    let remaining = AUTO_FORWARD_SECONDS;
-    const timer = setInterval(() => {
-      remaining -= 1;
-      setSecondsLeft(remaining);
-      if (remaining <= 0) {
-        clearInterval(timer);
-        controllerRef.current?.forward(destination);
-      }
-    }, 1_000);
-    return () => {
-      clearInterval(timer);
-    };
-  }, [state.name, destination]);
 
   const t = useMemo(() => translator(locale), [locale]);
 
@@ -108,9 +94,9 @@ export function ReturnClient(props: ReturnClientProps) {
       state={state}
       t={t}
       locale={locale}
+      branding={props.branding}
       destination={destination}
-      secondsLeft={secondsLeft}
-      onContinue={onContinue}
+      onReturnToMerchant={onReturnToMerchant}
       onLocaleChange={setLocale}
     />
   );

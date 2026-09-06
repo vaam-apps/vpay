@@ -41,17 +41,19 @@ describe('intentOutcome', () => {
           last_payment_error: { code: 'insufficient_funds', message: 'no' },
         }),
       ),
-    ).toEqual({ kind: 'failed', failure: 'insufficient_funds' });
+    ).toEqual({ kind: 'failed', failure: 'insufficient_funds', reason: 'no' });
   });
 
   it('reads succeeded and canceled', () => {
     expect(intentOutcome(makeIntent({ status: 'succeeded' }))).toEqual({
       kind: 'succeeded',
       failure: null,
+      reason: null,
     });
     expect(intentOutcome(makeIntent({ status: 'canceled' }))).toEqual({
       kind: 'canceled',
       failure: null,
+      reason: null,
     });
   });
 });
@@ -261,7 +263,12 @@ describe('contextOf', () => {
     const session = makeContext().session;
     const intent = makeIntent();
     const view = { ...session, payment_intent: intent, merchant: { name: 'Boutique' } };
-    expect(contextOf(view)).toEqual({ session, intent, merchant: { name: 'Boutique' } });
+    expect(contextOf(view)).toEqual({
+      session,
+      intent,
+      merchant: { name: 'Boutique' },
+      allowedMethods: null,
+    });
   });
 
   it('drops the session’s client_secret, so no rendered state carries one', () => {
@@ -336,5 +343,55 @@ describe('railChoices', () => {
         (r) => r.code,
       ),
     ).toEqual(['orange_money', 'mtn_momo']);
+  });
+});
+
+describe('the deployment’s allowed_methods narrows what a payer is offered', () => {
+  const BOTH = { payment_method_types: ['mtn_momo', 'orange_money'] };
+
+  it('offers every rail the intent carries when the deployment has no opinion', () => {
+    const rails = railChoices(makeIntent(BOTH), null);
+    expect(rails.supported.map((rail) => rail.code)).toEqual(['mtn_momo', 'orange_money']);
+    expect(rails.unsupported).toEqual([]);
+  });
+
+  it('moves an excluded rail to unsupported rather than dropping it silently', () => {
+    // Told, not hidden: the payer learns the rail is not on offer here,
+    // exactly as D9 already does for a rail this page has no flow for.
+    const rails = railChoices(makeIntent(BOTH), ['mtn_momo']);
+    expect(rails.supported.map((rail) => rail.code)).toEqual(['mtn_momo']);
+    expect(rails.unsupported).toEqual(['orange_money']);
+  });
+
+  it('cannot widen what the intent offers', () => {
+    // The merchant chose the intent's list and the server validated it. A
+    // deployment allowing a rail the intent does not carry adds nothing.
+    const rails = railChoices(makeIntent({ payment_method_types: ['mtn_momo'] }), [
+      'mtn_momo',
+      'orange_money',
+    ]);
+    expect(rails.supported.map((rail) => rail.code)).toEqual(['mtn_momo']);
+  });
+
+  it('takes the page straight to the one remaining rail’s screen', () => {
+    // Two rails on the intent, one allowed: no selector, because there is
+    // nothing to select.
+    const state = stateForContext(makeContext({}, BOTH, 'Boutique Test', ['orange_money']));
+    expect(state.name).toBe('ready_redirect');
+  });
+
+  it('refuses honestly when the deployment excludes every rail the intent offers', () => {
+    const state = stateForContext(makeContext({}, BOTH, 'Boutique Test', ['zzz_pay']));
+    expect(state).toMatchObject({ name: 'refused', reason: 'no_supported_rail' });
+  });
+
+  it('carries the policy on the context, so the pure reducer never reads configuration', () => {
+    const context = makeContext({}, BOTH, 'Boutique Test', ['mtn_momo']);
+    expect(context.allowedMethods).toEqual(['mtn_momo']);
+    // And a `problem` on the entry screen re-derives the same narrowed list
+    // rather than the intent's full one.
+    const entry = stateForContext(context);
+    const withProblem = reduce(entry, { type: 'problem', problem: 'msisdn.invalid' });
+    expect(withProblem).toMatchObject({ name: 'collect_msisdn', problem: 'msisdn.invalid' });
   });
 });

@@ -88,6 +88,7 @@ export const CHECKOUT_SCREENS: Record<string, CheckoutState> = {
     context: makeContext({ status: 'complete', payment_status: 'paid' }, { status: 'succeeded' }),
     kind: 'succeeded',
     failure: null,
+    reason: null,
   },
   outcome_failed: {
     name: 'outcome',
@@ -95,17 +96,24 @@ export const CHECKOUT_SCREENS: Record<string, CheckoutState> = {
       { status: 'expired', payment_status: 'failed' },
       {
         status: 'requires_payment_method',
-        last_payment_error: { code: 'insufficient_funds', message: 'x' },
+        last_payment_error: {
+          code: 'insufficient_funds',
+          message: 'Le solde du compte est insuffisant (MTN-4001)',
+        },
       },
     ),
     kind: 'failed',
     failure: 'insufficient_funds',
+    // The rail's own words, as `providerReason` cleans them. Shown under the
+    // translated sentence, never instead of it.
+    reason: 'Le solde du compte est insuffisant (MTN-4001)',
   },
   outcome_canceled: {
     name: 'outcome',
     context: makeContext({ status: 'expired', payment_status: 'failed' }, { status: 'canceled' }),
     kind: 'canceled',
     failure: null,
+    reason: null,
   },
   forwarding: {
     name: 'forwarding',
@@ -144,6 +152,7 @@ export const RETURN_SCREENS: Record<string, ReturnState> = {
     },
     kind: 'succeeded',
     failure: null,
+    reason: null,
   },
   outcome_failed: {
     name: 'outcome',
@@ -151,11 +160,15 @@ export const RETURN_SCREENS: Record<string, ReturnState> = {
       session: makeSession({ status: 'expired', payment_status: 'failed' }),
       intent: makePublicIntent({
         status: 'requires_payment_method',
-        last_payment_error: { code: 'payer_timeout', message: 'x' },
+        last_payment_error: {
+          code: 'payer_timeout',
+          message: 'Payer did not approve in time (OM-TIMEOUT)',
+        },
       }),
       merchant: { name: 'Boutique Test' },
     },
     kind: 'failed',
     failure: 'payer_timeout',
+    reason: 'Payer did not approve in time (OM-TIMEOUT)',
   },
 };

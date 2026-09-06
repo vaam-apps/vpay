@@ -48,7 +48,31 @@ export interface RedirectMessage {
 
 export type ChildMessage = ResizeMessage | CompleteMessage | RedirectMessage;
 
+/**
+ * Which window on the other end of the channel.
+ *
+ * `parent` is the classic embedded case: `/e/{id}` inside the merchant's own
+ * iframe. `opener` is a **popup** — `/c/{id}` opened with `window.open` from
+ * the merchant's page (2026-09-06). A popup is not a frame: `window.parent`
+ * is the popup itself, so a channel that only ever looked at `parent` said
+ * nothing to the merchant at all.
+ *
+ * The two differ in more than which handle is posted to, which is why this
+ * is a value rather than an implementation detail:
+ *
+ * - **No `vpay:resize` to an opener.** A popup owns its own window size;
+ *   telling the merchant's page how tall this document is would be telling
+ *   it about a window it does not lay out.
+ * - **No `vpay:redirect` to an opener.** A popup *is* a top-level browsing
+ *   context and may navigate itself, and asking the opener to navigate would
+ *   send the merchant's own page to Orange Money out from under the payer.
+ *   `CheckoutController` reads {@link FrameChannel.peer} to decide.
+ */
+export type ChannelPeer = 'parent' | 'opener';
+
 export interface FrameChannel {
+  /** Which window is on the other end. */
+  readonly peer: ChannelPeer;
   /** The origin every message is sent to and accepted from. */
   readonly parentOrigin: string;
   post(message: ChildMessage): void;
@@ -59,8 +83,10 @@ export interface FrameChannel {
 }
 
 export interface FrameChannelOptions {
-  /** The framed window — `window` in the browser, a stub in tests. */
+  /** The framed or popped-up window — `window` in the browser, a stub in tests. */
   win: Window;
+  /** Which window to talk to. Defaults to `parent`, the embedded case. */
+  peer?: ChannelPeer | undefined;
   /** The single allowed origin, from {@link import('./origins.js').resolveParentOrigin}. */
   parentOrigin: string;
   /** Element whose height is reported. Usually `document.documentElement`. */
@@ -72,23 +98,35 @@ export interface FrameChannelOptions {
 /**
  * Opens the channel.
  *
- * Returns `null` when the window has no parent other than itself — a page
- * that is not framed has nobody to talk to, and posting to `window.parent`
- * when `parent === self` would deliver the message to this very document.
+ * Returns `null` when there is nobody on the other end: a page that is not
+ * framed has no parent but itself (posting to `window.parent` when
+ * `parent === self` would deliver the message to this very document), and a
+ * page that was not opened by a script has no opener.
  */
 export function createFrameChannel(options: FrameChannelOptions): FrameChannel | null {
   const { win, parentOrigin } = options;
-  const parent: Window | null = win.parent;
-  if (parent === null || parent === win) {
+  const peer: ChannelPeer = options.peer ?? 'parent';
+  // `Window.opener` is `any` in `lib.dom` — it is whatever the opener chose
+  // to leave there for same-origin openers — so it is narrowed here rather
+  // than trusted. Nothing is ever *read* off it: the only thing this channel
+  // does with the handle is `postMessage` to a pinned origin.
+  const opener: unknown = win.opener;
+  const peerWindow: Window | null =
+    peer === 'opener'
+      ? typeof opener === 'object' && opener !== null
+        ? (opener as Window)
+        : null
+      : win.parent;
+  if (peerWindow === null || peerWindow === undefined || peerWindow === win) {
     return null;
   }
 
   const post = (message: ChildMessage): void => {
     // The target origin is the second argument, always, and always the
-    // resolved framer. `postMessage(message, '*')` does not appear in this
-    // repository's checkout code; `frame.test.ts` asserts that every call
-    // this channel makes names `parentOrigin`.
-    parent.postMessage(message, parentOrigin);
+    // resolved framer or opener. `postMessage(message, '*')` does not appear
+    // in this repository's checkout code; `frame.test.ts` asserts that every
+    // call this channel makes names `parentOrigin`, on both peers.
+    peerWindow.postMessage(message, parentOrigin);
   };
 
   const listener = (event: MessageEvent): void => {
@@ -107,7 +145,8 @@ export function createFrameChannel(options: FrameChannelOptions): FrameChannel |
   const ResizeObserverCtor = (win as unknown as { ResizeObserver?: typeof ResizeObserver })
     .ResizeObserver;
   let observer: ResizeObserver | null = null;
-  const observed = options.observe;
+  // No height reporting to an opener: see {@link ChannelPeer}.
+  const observed = peer === 'parent' ? options.observe : undefined;
   if (observed !== undefined && typeof ResizeObserverCtor === 'function') {
     const created = new ResizeObserverCtor((entries) => {
       const entry = entries[0];
@@ -131,6 +170,7 @@ export function createFrameChannel(options: FrameChannelOptions): FrameChannel |
   }
 
   return {
+    peer,
     parentOrigin,
     post,
     postHeight(height: number): void {

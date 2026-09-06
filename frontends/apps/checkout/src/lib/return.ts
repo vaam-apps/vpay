@@ -42,7 +42,14 @@ export type ReturnState =
   | { name: 'error'; error: CheckoutError }
   | { name: 'expired'; context: ReturnContext }
   | { name: 'polling'; context: ReturnContext; notice: MessageKey | null }
-  | { name: 'outcome'; context: ReturnContext; kind: OutcomeKind; failure: FailureCode | null }
+  | {
+      name: 'outcome';
+      context: ReturnContext;
+      kind: OutcomeKind;
+      failure: FailureCode | null;
+      /** The rail's own words, cleaned by `providerReason`, or `null`. */
+      reason: string | null;
+    }
   | { name: 'forwarding'; context: ReturnContext; kind: OutcomeKind; url: string };
 
 export type ReturnEvent =
@@ -65,7 +72,7 @@ export const RETURN_INITIAL_STATE: ReturnState = { name: 'loading' };
 export function stateForReturn(context: ReturnContext, previousNotice: MessageKey | null = null): ReturnState {
   const { session, intent } = context;
   if (session.status === 'complete') {
-    return { name: 'outcome', context, kind: 'succeeded', failure: null };
+    return { name: 'outcome', context, kind: 'succeeded', failure: null, reason: null };
   }
   if (session.status === 'expired') {
     if (session.payment_status === 'failed') {
@@ -75,13 +82,20 @@ export function stateForReturn(context: ReturnContext, previousNotice: MessageKe
         context,
         kind: outcome?.kind ?? 'failed',
         failure: outcome?.failure ?? null,
+        reason: outcome?.reason ?? null,
       };
     }
     return { name: 'expired', context };
   }
   const outcome = intentOutcome(intent);
   if (outcome !== null) {
-    return { name: 'outcome', context, kind: outcome.kind, failure: outcome.failure };
+    return {
+      name: 'outcome',
+      context,
+      kind: outcome.kind,
+      failure: outcome.failure,
+      reason: outcome.reason,
+    };
   }
   return { name: 'polling', context, notice: previousNotice };
 }

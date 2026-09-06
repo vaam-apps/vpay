@@ -15,7 +15,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { DICTIONARIES, LOCALES, format, translator, type Locale } from '../i18n/index';
 import type { CheckoutState } from '../lib/machine';
 import { formatAmount } from '../lib/money';
-import { SESSION_ID, makeContext, makePublicIntent, makeSession } from '../testing/fixtures';
+import {
+  SESSION_ID,
+  makeBranding,
+  makeContext,
+  makeMemoryControls,
+  makePublicIntent,
+  makeSession,
+} from '../testing/fixtures';
 import { CheckoutView, type CheckoutViewProps } from './checkout-view';
 import { ReturnView } from './return-view';
 import { CHECKOUT_SCREENS, RETURN_SCREENS } from '../testing/screen-states';
@@ -27,18 +34,41 @@ function renderState(state: CheckoutState, locale: Locale, overrides: Partial<Ch
     state,
     t: translator(locale),
     locale,
+    branding: makeBranding(),
     destination: 'https://shop.example/ok?sid=cs_test_fixture000000000001',
-    secondsLeft: 5,
+    defaultMsisdn: null,
+    lastRail: null,
+    memory: makeMemoryControls(),
     onChooseRail: NOOP,
     onBack: NOOP,
     onSubmitMsisdn: NOOP,
     onStartRedirect: NOOP,
     onRetryPoll: NOOP,
-    onContinue: NOOP,
+    onReturnToMerchant: NOOP,
     onLocaleChange: NOOP,
     ...overrides,
   };
   return render(<CheckoutView {...props} />);
+}
+
+/** The return view's props, with the same defaults, so a story-shaped literal stays one line. */
+function renderReturn(
+  state: React.ComponentProps<typeof ReturnView>['state'],
+  locale: Locale,
+  overrides: Partial<React.ComponentProps<typeof ReturnView>> = {},
+) {
+  return render(
+    <ReturnView
+      state={state}
+      t={translator(locale)}
+      locale={locale}
+      branding={makeBranding()}
+      destination="https://shop.example/done"
+      onReturnToMerchant={NOOP}
+      onLocaleChange={NOOP}
+      {...overrides}
+    />,
+  );
 }
 
 /** The `data-screen` each state is expected to render, so a silent fallthrough fails. */
@@ -157,6 +187,7 @@ describe('a session whose read carried no merchant name', () => {
       ),
       kind: 'succeeded',
       failure: null,
+      reason: null,
     },
   };
 
@@ -175,7 +206,7 @@ describe('a session whose read carried no merchant name', () => {
 
   it('puts no identifier, and no stand-in that reads like data, where the name would be', () => {
     const { container, unmount } = renderState(UNNAMED['outcome'] as CheckoutState, 'en');
-    for (const testId of ['pay-to', 'outcome-body', 'countdown']) {
+    for (const testId of ['pay-to', 'outcome-body']) {
       const rendered = text(container, testId);
       // No unfilled placeholder, no id standing in for a name, and no dash
       // or empty gap left by a sentence written for a name.
@@ -201,8 +232,8 @@ describe('a session whose read carried no merchant name', () => {
     expect(text(outcome.container, 'outcome-body')).toBe(
       format(DICTIONARIES.en['outcome.succeeded_body_unnamed'], { amount }),
     );
-    expect(text(outcome.container, 'countdown')).toBe(
-      format(DICTIONARIES.en['outcome.auto_forward_unnamed'], { seconds: 5 }),
+    expect(outcome.container.querySelector('[data-outcome] button')?.textContent).toBe(
+      DICTIONARIES.en['outcome.back_to_unnamed'],
     );
     outcome.unmount();
   });
@@ -214,30 +245,26 @@ describe('a session whose read carried no merchant name', () => {
     );
     expect(text(container, 'pay-to')).toContain('Boutique Test');
     expect(text(container, 'outcome-body')).toContain('Boutique Test');
-    expect(text(container, 'countdown')).toContain('Boutique Test');
+    expect(container.querySelector('[data-outcome] button')?.textContent).toContain(
+      'Boutique Test',
+    );
     unmount();
   });
 
   it('does the same on the return page', () => {
-    const { container, unmount } = render(
-      <ReturnView
-        state={{
-          name: 'outcome',
-          context: {
-            session: makeSession({ status: 'complete', payment_status: 'paid' }),
-            intent: makePublicIntent({ status: 'succeeded' }),
-            merchant: null,
-          },
-          kind: 'succeeded',
-          failure: null,
-        }}
-        t={translator('fr')}
-        locale="fr"
-        destination="https://shop.example/done"
-        secondsLeft={3}
-        onContinue={NOOP}
-        onLocaleChange={NOOP}
-      />,
+    const { container, unmount } = renderReturn(
+      {
+        name: 'outcome',
+        context: {
+          session: makeSession({ status: 'complete', payment_status: 'paid' }),
+          intent: makePublicIntent({ status: 'succeeded' }),
+          merchant: null,
+        },
+        kind: 'succeeded',
+        failure: null,
+        reason: null,
+      },
+      'fr',
     );
     expect(text(container, 'pay-to')).toBe(DICTIONARIES.fr['page.pay_to_unnamed']);
     expect(text(container, 'outcome-body')).toBe(
@@ -268,36 +295,86 @@ describe('accessibility', () => {
     }
   });
 
-  it('gives every control an accessible name and a native, focusable element', () => {
+  it('gives every control an accessible name and a keyboard-reachable element', () => {
     for (const [name, state] of Object.entries(CHECKOUT_SCREENS)) {
       const { container, unmount } = renderState(state, 'fr');
-      const controls = container.querySelectorAll('button, input, select, a[href]');
+      // Native elements, plus anything wearing an interactive ARIA role.
+      // The second half is not a formality: Base UI's checkbox renders a
+      // `<span role="checkbox" tabindex="0">`, so a query for native tags
+      // alone would have walked straight past the one control on this page
+      // that is not one — see the case below.
+      const controls = container.querySelectorAll(
+        'button, input, select, a[href], [role="checkbox"], [role="button"], [role="radio"], [role="switch"]',
+      );
       for (const control of controls) {
-        expect(['BUTTON', 'INPUT', 'SELECT', 'A'], name).toContain(control.tagName);
+        // `aria-hidden` elements are not in the accessibility tree at all.
+        // Base UI's checkbox puts one there — a native input carrying the
+        // form value beside the `role="checkbox"` button that IS the
+        // control — and naming it would be naming something no assistive
+        // technology can reach.
+        if (control.getAttribute('aria-hidden') === 'true') {
+          expect(control.getAttribute('tabindex'), `${name}: ${control.outerHTML}`).toBe('-1');
+          continue;
+        }
+        const labelledBy = control.getAttribute('aria-labelledby');
         const labelled =
           control.getAttribute('aria-label') ??
+          (labelledBy === null
+            ? null
+            : labelledBy
+                .split(/\s+/)
+                .map((id) => container.querySelector(`#${id}`)?.textContent ?? '')
+                .join(' ')) ??
           (control.id.length > 0
             ? container.querySelector(`label[for="${control.id}"]`)?.textContent
             : null) ??
           control.textContent;
         expect(labelled?.trim(), `${name}: ${control.outerHTML}`).not.toBe('');
+        // Reachable by keyboard: a native control, or an element that put
+        // itself in the tab order on purpose.
+        const native = ['BUTTON', 'INPUT', 'SELECT', 'A'].includes(control.tagName);
+        if (!native) {
+          expect(control.getAttribute('tabindex'), `${name}: ${control.outerHTML}`).toBe('0');
+          // And it must report its own state, or a screen reader announces a
+          // checkbox with nothing to say about whether it is ticked.
+          if (control.getAttribute('role') === 'checkbox') {
+            expect(['true', 'false'], `${name}`).toContain(control.getAttribute('aria-checked'));
+          }
+        }
       }
-      // Nothing pretending to be a control.
-      expect(container.querySelectorAll('div[onclick], span[role="button"]').length).toBe(0);
+      // Nothing pretending to be a control WITHOUT being one: an element with
+      // a handler and no role, or a role and no way to reach it.
+      for (const impostor of container.querySelectorAll('div[onclick], span[onclick]')) {
+        expect(impostor.getAttribute('role'), name).not.toBeNull();
+      }
       unmount();
     }
   });
 
-  it('ties the MSISDN error to the field with aria-describedby and aria-invalid', () => {
+  it('ties the MSISDN hint and error to the field, whatever ids Base UI mints', () => {
     const { container, unmount } = renderState(
       CHECKOUT_SCREENS['collect_msisdn_invalid'] as CheckoutState,
       'en',
     );
     const input = container.querySelector('input#vpay-msisdn');
     expect(input?.getAttribute('aria-invalid')).toBe('true');
-    const described = input?.getAttribute('aria-describedby') ?? '';
-    expect(described).toContain('vpay-msisdn-error');
-    expect(container.querySelector('#vpay-msisdn-error')?.getAttribute('role')).toBe('alert');
+    // The ids are Base UI's now, so the assertion is on the PROPERTY rather
+    // than on three strings this file used to keep in step with the markup:
+    // whatever `aria-describedby` points at must resolve, and between them
+    // the targets must carry both the hint and the error.
+    const ids = (input?.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean);
+    expect(ids.length).toBeGreaterThanOrEqual(2);
+    const described = ids
+      .map((id) => {
+        const target = container.querySelector(`#${id}`);
+        expect(target, `aria-describedby names #${id}, which is not in the document`).not.toBeNull();
+        return target?.textContent ?? '';
+      })
+      .join(' ');
+    expect(described).toContain(DICTIONARIES.en['msisdn.hint']);
+    expect(described).toContain(DICTIONARIES.en['msisdn.invalid']);
+    // And the error announces itself, for a payer who is already past the field.
+    expect(screen.getByTestId('msisdn-problem').getAttribute('role')).toBe('alert');
     unmount();
   });
 });
@@ -338,27 +415,31 @@ describe('the controls do what the screen says', () => {
     unmount();
   });
 
-  it('offers Continue plus a visible countdown when there is somewhere to go', () => {
-    const onContinue = vi.fn();
-    const { unmount } = renderState(
+  it('offers one named button back to the merchant, and no timer', () => {
+    const onReturnToMerchant = vi.fn();
+    const { container, unmount } = renderState(
       CHECKOUT_SCREENS['outcome_succeeded'] as CheckoutState,
       'en',
-      { onContinue },
+      { onReturnToMerchant },
     );
-    expect(screen.getByTestId('countdown').textContent).toContain('5');
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    expect(onContinue).toHaveBeenCalledTimes(1);
+    // The button names where it goes. A generic "Continue" on an outcome
+    // screen is the one place a payer cannot guess the destination.
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Boutique Test' }));
+    expect(onReturnToMerchant).toHaveBeenCalledTimes(1);
+    // Nothing counts down, in either dictionary, on either page.
+    expect(container.textContent).not.toMatch(/\d+\s*s\./);
+    expect(screen.queryByTestId('countdown')).toBeNull();
     unmount();
   });
 
   it('says so plainly when the session names nowhere to return to', () => {
-    const { unmount } = renderState(
+    const { container, unmount } = renderState(
       CHECKOUT_SCREENS['outcome_succeeded'] as CheckoutState,
       'en',
-      { destination: null, secondsLeft: null },
+      { destination: null },
     );
     expect(screen.getByTestId('no-destination')).toBeTruthy();
-    expect(screen.queryByTestId('countdown')).toBeNull();
+    expect(container.querySelector('[data-outcome] button')).toBeNull();
     unmount();
   });
 
@@ -381,17 +462,7 @@ describe('the return view', () => {
   for (const [name, state] of Object.entries(RETURN_SCREENS)) {
     for (const locale of LOCALES) {
       it(`renders ${name} in ${locale}`, () => {
-        const { container, unmount } = render(
-          <ReturnView
-            state={state}
-            t={translator(locale)}
-            locale={locale}
-            destination="https://shop.example/done"
-            secondsLeft={3}
-            onContinue={NOOP}
-            onLocaleChange={NOOP}
-          />,
-        );
+        const { container, unmount } = renderReturn(state, locale);
         expect(container.querySelector('[data-screen]')?.textContent?.trim()).not.toBe('');
         unmount();
       });
@@ -399,18 +470,247 @@ describe('the return view', () => {
   }
 
   it('shows the failure the intent reported, in the payer’s language', () => {
-    const { container, unmount } = render(
-      <ReturnView
-        state={RETURN_SCREENS['outcome_failed']!}
-        t={translator('fr')}
-        locale="fr"
-        destination={null}
-        secondsLeft={null}
-        onContinue={NOOP}
-        onLocaleChange={NOOP}
-      />,
-    );
+    const { container, unmount } = renderReturn(RETURN_SCREENS['outcome_failed']!, 'fr', {
+      destination: null,
+    });
     expect(container.textContent).toContain(DICTIONARIES.fr['failure.payer_timeout']);
+    unmount();
+  });
+});
+
+describe('branding, from the deployment’s own branding.yaml', () => {
+  it('shows the plain page title when nothing is configured', () => {
+    const { unmount } = renderState(CHECKOUT_SCREENS['collect_msisdn'] as CheckoutState, 'en');
+    expect(screen.getByTestId('brand-name').textContent).toBe(DICTIONARIES.en['page.title']);
+    expect(screen.queryByTestId('brand-logo')).toBeNull();
+    expect(screen.queryByTestId('support-contact')).toBeNull();
+    unmount();
+  });
+
+  it('shows the operator’s name, logo and support contact when they are', () => {
+    const { unmount } = renderState(CHECKOUT_SCREENS['collect_msisdn'] as CheckoutState, 'en', {
+      branding: makeBranding({
+        displayName: 'Vaam Payments',
+        logoUrl: 'https://cdn.example/logo.svg',
+        supportContact: 'support@vaam.example',
+      }),
+    });
+    expect(screen.getByTestId('brand-name').textContent).toBe('Vaam Payments');
+    const logo = screen.getByTestId('brand-logo');
+    expect(logo.getAttribute('src')).toBe('https://cdn.example/logo.svg');
+    // The image is the only place that name appears if the heading is
+    // hidden, so it carries it.
+    expect(logo.getAttribute('alt')).toBe('Vaam Payments');
+    expect(screen.getByTestId('support-contact').textContent).toContain('support@vaam.example');
+    unmount();
+  });
+
+  it('never lets the operator’s name stand in for the merchant’s', () => {
+    // The one substitution that would be a lie: telling a payer they are
+    // paying whoever runs the deployment.
+    const state: CheckoutState = {
+      name: 'collect_msisdn',
+      context: makeContext({}, {}, null),
+      rails: {
+        supported: [{ code: 'mtn_momo', flow: 'mobile_money_push', label: 'rail.mtn_momo' }],
+        unsupported: [],
+      },
+      rail: { code: 'mtn_momo', flow: 'mobile_money_push', label: 'rail.mtn_momo' },
+      problem: null,
+    };
+    const { container, unmount } = renderState(state, 'en', {
+      branding: makeBranding({ displayName: 'Vaam Payments' }),
+    });
+    expect(screen.getByTestId('pay-to').textContent).toBe(DICTIONARIES.en['page.pay_to_unnamed']);
+    expect(screen.getByTestId('pay-to').textContent).not.toContain('Vaam Payments');
+    // It is in the header, and only there: nothing outside `brand-name`
+    // carries it.
+    const brand = screen.getByTestId('brand-name');
+    const elsewhere = [...container.querySelectorAll('*')].filter(
+      (node) => node !== brand && !brand.contains(node) && !node.contains(brand),
+    );
+    for (const node of elsewhere) {
+      expect(node.textContent ?? '').not.toContain('Vaam Payments');
+    }
+    unmount();
+  });
+
+  it('gives the logo a word even when there is no name to use', () => {
+    const { unmount } = renderState(CHECKOUT_SCREENS['collect_msisdn'] as CheckoutState, 'fr', {
+      branding: makeBranding({ logoUrl: 'https://cdn.example/logo.svg' }),
+    });
+    expect(screen.getByTestId('brand-logo').getAttribute('alt')).toBe(
+      DICTIONARIES.fr['page.operator_logo_alt'],
+    );
+    unmount();
+  });
+});
+
+describe('the rail’s own words on a failure', () => {
+  it('shows them under the translated sentence, never instead of it', () => {
+    const { unmount } = renderState(CHECKOUT_SCREENS['outcome_failed'] as CheckoutState, 'en');
+    // The translated message is still the headline.
+    expect(screen.getByTestId('outcome-body').textContent).toBe(
+      DICTIONARIES.en['failure.insufficient_funds'],
+    );
+    // And the provider's own text is beside it, labelled as theirs.
+    const detail = screen.getByTestId('provider-reason');
+    expect(detail.textContent).toContain(DICTIONARIES.en['outcome.provider_said']);
+    expect(detail.textContent).toContain('MTN-4001');
+    unmount();
+  });
+
+  it('shows nothing at all where the API gave no message', () => {
+    const state = structuredClone(CHECKOUT_SCREENS['outcome_failed']) as CheckoutState & {
+      reason: string | null;
+    };
+    state.reason = null;
+    const { unmount } = renderState(state, 'en');
+    expect(screen.queryByTestId('provider-reason')).toBeNull();
+    unmount();
+  });
+
+  it('renders it as text, so a rail cannot put markup on vpay’s page', () => {
+    const state = structuredClone(CHECKOUT_SCREENS['outcome_failed']) as CheckoutState & {
+      reason: string | null;
+    };
+    state.reason = '<img src=x onerror=alert(1)>';
+    const { container, unmount } = renderState(state, 'en');
+    expect(screen.getByTestId('provider-reason').textContent).toContain('<img');
+    expect(container.querySelector('img')).toBeNull();
+    unmount();
+  });
+});
+
+describe('page memory, on the entry screens', () => {
+  function mtnState(): CheckoutState {
+    return CHECKOUT_SCREENS['collect_msisdn'] as CheckoutState;
+  }
+
+  it('offers the opt-in with the box clear and the cost stated on the control', () => {
+    const { container, unmount } = renderState(mtnState(), 'en');
+    // `getByRole`, not `getByTestId`: Base UI forwards every prop to both the
+    // `role="checkbox"` button and the `aria-hidden` input beside it, and the
+    // one this assertion is about is the one in the accessibility tree.
+    const box = screen.getByRole('checkbox');
+    expect(container.querySelectorAll('[data-testid="remember"]').length).toBe(1);
+    expect(box.getAttribute('aria-checked')).toBe('false');
+    // The warning is the checkbox's own description, not a tooltip.
+    const describedBy = box.getAttribute('aria-describedby') ?? '';
+    expect(document.getElementById(describedBy)?.textContent).toBe(
+      DICTIONARIES.en['memory.warning'],
+    );
+    unmount();
+  });
+
+  it('shows nothing at all when config.yaml turned the feature off', () => {
+    const { container, unmount } = renderState(mtnState(), 'en', {
+      memory: makeMemoryControls({ offered: false }),
+    });
+    expect(container.querySelectorAll('[data-testid="remember"]').length).toBe(0);
+    expect(screen.queryByTestId('remember-warning')).toBeNull();
+    expect(screen.queryByTestId('forget')).toBeNull();
+    expect(container.textContent).not.toContain(DICTIONARIES.en['memory.warning']);
+    unmount();
+  });
+
+  it('reports a tick and an untick to the client that owns the store', () => {
+    const onRememberChange = vi.fn();
+    const { unmount } = renderState(mtnState(), 'en', {
+      memory: makeMemoryControls({ onRememberChange }),
+    });
+    fireEvent.click(screen.getByRole('checkbox'));
+    expect(onRememberChange).toHaveBeenCalledWith(true, expect.anything());
+    unmount();
+  });
+
+  it('toggles from the sentence and from the keyboard, not only from the box', () => {
+    // The box is a 16-pixel target on a phone. Both of these are measured
+    // rather than assumed: Base UI's checkbox is a `<span role="checkbox">`,
+    // so neither the label association nor the space key is something the
+    // platform gives for free.
+    const onRememberChange = vi.fn();
+    const { container, unmount } = renderState(mtnState(), 'en', {
+      memory: makeMemoryControls({ onRememberChange }),
+    });
+    fireEvent.click(container.querySelector('#vpay-remember-label') as HTMLElement);
+    expect(onRememberChange).toHaveBeenCalledTimes(1);
+    const box = screen.getByRole('checkbox');
+    fireEvent.keyDown(box, { key: ' ' });
+    fireEvent.keyUp(box, { key: ' ' });
+    expect(onRememberChange).toHaveBeenCalledTimes(2);
+    unmount();
+  });
+
+  it('prefills the number this device remembered, and leaves it editable', () => {
+    const { container, unmount } = renderState(mtnState(), 'en', {
+      defaultMsisdn: '237671234567',
+      memory: makeMemoryControls({ remember: true, hasRecord: true }),
+    });
+    const input = container.querySelector('input#vpay-msisdn') as HTMLInputElement;
+    expect(input.value).toBe('237671234567');
+    fireEvent.change(input, { target: { value: '237680000000' } });
+    expect(input.value).toBe('237680000000');
+    unmount();
+  });
+
+  it('offers the way out only when there is something to forget', () => {
+    const first = renderState(mtnState(), 'en');
+    expect(first.queryByTestId('forget')).toBeNull();
+    first.unmount();
+
+    const onForget = vi.fn();
+    const { unmount } = renderState(mtnState(), 'en', {
+      memory: makeMemoryControls({ hasRecord: true, onForget }),
+    });
+    fireEvent.click(screen.getByTestId('forget'));
+    expect(onForget).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
+  it('says so once the device has been cleared, rather than leaving the payer guessing', () => {
+    const { unmount } = renderState(mtnState(), 'en', {
+      memory: makeMemoryControls({ forgotten: true }),
+    });
+    expect(screen.getByTestId('forgotten').textContent).toBe(DICTIONARIES.en['memory.forgotten']);
+    unmount();
+  });
+
+  it('offers the same opt-in on the redirect screen, naming the rail rather than a number', () => {
+    const { unmount } = renderState(CHECKOUT_SCREENS['ready_redirect'] as CheckoutState, 'en');
+    const box = screen.getByRole('checkbox');
+    const labelId = box.getAttribute('aria-labelledby') ?? '';
+    // "Remember Orange Money on this device" — the rail, because a redirect
+    // rail collects the number on its own page and this one never sees it.
+    expect(document.getElementById(labelId)?.textContent).toBe(
+      format(DICTIONARIES.en['memory.remember_method'], {
+        rail: DICTIONARIES.en['rail.orange_money'],
+      }),
+    );
+    unmount();
+  });
+
+  it('marks the rail this device last used without choosing it', () => {
+    const onChooseRail = vi.fn();
+    const { unmount } = renderState(CHECKOUT_SCREENS['select_rail'] as CheckoutState, 'en', {
+      lastRail: 'orange_money',
+      onChooseRail,
+    });
+    const marked = screen.getByTestId('last-used');
+    expect(marked.closest('button')?.getAttribute('data-rail')).toBe('orange_money');
+    // Marked, not pressed: a page that advanced itself past a screen the
+    // payer has not read is the mistake the countdown was.
+    expect(onChooseRail).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('leaves the MSISDN form’s only submit button the submit button', () => {
+    // The Cypress specs click `button[type="submit"]`, and the memory
+    // controls must not add a second one.
+    const { container, unmount } = renderState(mtnState(), 'en', {
+      memory: makeMemoryControls({ hasRecord: true }),
+    });
+    expect(container.querySelectorAll('button[type="submit"]').length).toBe(1);
     unmount();
   });
 });

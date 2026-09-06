@@ -1,6 +1,7 @@
 import { headers } from 'next/headers';
 
 import { CheckoutClient } from '../../../src/components/checkout-client';
+import { runtimeConfig } from '../../../src/config/runtime';
 import { pickLocale } from '../../../src/i18n/index';
 import { EMBED_ORIGINS_HEADER, decodeOriginsHeader } from '../../../src/lib/csp';
 import { browserApiBaseUrl } from '../../../src/lib/env';
@@ -27,6 +28,7 @@ export default async function EmbeddedCheckoutPage({
 }) {
   const { id } = await params;
   const requestHeaders = await headers();
+  const { branding, checkout } = runtimeConfig();
   return (
     <CheckoutClient
       sessionId={id}
@@ -34,6 +36,8 @@ export default async function EmbeddedCheckoutPage({
       mode="embedded"
       allowedOrigins={decodeOriginsHeader(requestHeaders.get(EMBED_ORIGINS_HEADER))}
       initialLocale={pickLocale(requestHeaders.get('accept-language'))}
+      branding={branding}
+      settings={checkout}
     />
   );
 }

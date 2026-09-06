@@ -1,0 +1,54 @@
+# vpay checkout page — operational settings
+#
+# Mount at /etc/vpay/checkout/config.yaml (or point
+# VPAY_CHECKOUT_CONFIG_FILE elsewhere). Read once, at container start, with
+# the same "a bad key costs that key" rule as branding.yaml.
+#
+# The top-level key is `checkout:`, mirroring the section of the same name in
+# the API's own `config/application.yml`. This is a DIFFERENT file for a
+# different process: vpay-server reads that one, and this container reads
+# this one. They are not merged and nothing checks that they agree — except
+# `public_base_url`, below, which the page compares against its own origin.
+#
+# See docs/flows/hosted-checkout.md, "Runtime configuration".
+checkout:
+  # The origin (optionally with a path prefix) payers reach this page on —
+  # the same value as the API's `checkout.public_base_url`.
+  #
+  # It is a DIAGNOSTIC here and nothing else. The API mints every payer link,
+  # so this container never builds one. What it does with the value: report
+  # it on `GET /config/v1`, and log one console warning in the payer's own
+  # browser when the origin the page was loaded from disagrees with it —
+  # which is the first symptom of a proxy in front of this container that the
+  # API was never told about.
+  public_base_url: https://checkout.vaam.example
+
+  # The rail codes this deployment will show. Omit the key entirely for "no
+  # opinion", which is the default and offers whatever the payment intent
+  # carries.
+  #
+  # It can only NARROW. The intent's own `payment_method_types` is what the
+  # merchant chose and the server validated; a code here that the intent does
+  # not offer adds nothing. A rail the intent offers and this list excludes
+  # is shown to the payer as unsupported — told, not silently dropped.
+  #
+  # An EMPTY list is refused (a WARN, and every rail stays on offer): it
+  # would refuse every payment on the deployment, which is a thing to say in
+  # a replica count, not in a settings file.
+  allowed_methods:
+    - mtn_momo
+    - orange_money
+
+  features:
+    # Whether the page OFFERS to remember a payer's number and last method on
+    # their own device (IndexedDB, opt-in, clearable). `false` removes the
+    # offer entirely — no checkbox, no read, no write.
+    #
+    # `true` or `false`, spelled out. `on`/`off`/`yes`/`no` are plain STRINGS
+    # in the YAML 1.2 core schema this container parses, so writing
+    # `page_memory: off` gets a WARN and the default rather than silently
+    # turning the feature ON while you believed you turned it off.
+    #
+    # The default is `true`, because the payer's own tick box is the second
+    # lock: the flag being on means only that the offer is made.
+    page_memory: true

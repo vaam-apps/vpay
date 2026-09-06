@@ -68,12 +68,51 @@ describe('every response', () => {
 });
 
 describe('the hosted page', () => {
-  it("is frame-ancestors 'none' and asks the API nothing", async () => {
+  it("is frame-ancestors 'none', and asks the API nothing without a key", async () => {
     const { impl, calls } = originsFetch(['https://shop.example']);
     vi.stubGlobal('fetch', impl);
     const response = await middleware(request('/c/cs_1'));
     expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
     expect(calls).toEqual([]);
+  });
+
+  it('resolves the origin list when the link carries a key, for the popup case', async () => {
+    // 2026-09-06: a hosted page may be running in a popup the merchant's
+    // script opened, and the origin it may `postMessage` to comes from the
+    // same server-side lookup the embedded page uses.
+    const { impl, calls } = originsFetch(['https://shop.example']);
+    vi.stubGlobal('fetch', impl);
+    const response = await middleware(request('/c/cs_1?key=pk_test_1'));
+    expect(calls).toEqual([`${API}/v1/browser/checkout/origins?key=pk_test_1`]);
+    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+  });
+
+  it('NEVER lets that list reach its CSP, however many origins came back', async () => {
+    // The decisive one. The hosted page is not framable, popup or not, and a
+    // merchant registering an origin so its popup can be talked to must not
+    // thereby make its hosted checkout embeddable. Deleting the
+    // `embedded ? origins : []` guard in `middleware.ts` fails exactly here.
+    const { impl } = originsFetch(['https://shop.example', 'https://www.shop.example']);
+    vi.stubGlobal('fetch', impl);
+    const response = await middleware(request('/c/cs_1?key=pk_test_1'));
+    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+  });
+
+  it('forwards the resolved list to the route so the page can pin an opener', async () => {
+    const { impl } = originsFetch(['https://shop.example']);
+    vi.stubGlobal('fetch', impl);
+    const response = await middleware(request('/c/cs_1?key=pk_test_1'));
+    expect(response.headers.get('x-middleware-request-x-vpay-embed-origins')).toBe(
+      'https://shop.example',
+    );
+  });
+
+  it('asks nothing for the RETURN page, whose referrer is the rail’s', async () => {
+    const { impl, calls } = originsFetch(['https://shop.example']);
+    vi.stubGlobal('fetch', impl);
+    const response = await middleware(request('/c/cs_1/return?t=tok&key=pk_test_1'));
+    expect(calls).toEqual([]);
+    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
   });
 });
 

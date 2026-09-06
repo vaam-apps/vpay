@@ -31,3 +31,40 @@ export function failureMessage(code: FailureCode | null): MessageKey | null {
   }
   return FAILURE_MESSAGES[code] ?? 'failure.unknown';
 }
+
+/**
+ * The rail's own sentence, where the API gave one, bounded and cleaned.
+ *
+ * **Shown as data beside the translated message, never instead of it.**
+ * `last_payment_error.message` is written by whatever wrote the rail's
+ * response; it arrives in a language nobody chose, it is not part of the
+ * closed vocabulary above, and this page does not control a word of it. The
+ * reason it is rendered at all is that a payer standing in a shop with
+ * "payment not completed" on the screen, when the rail actually said
+ * something specific, is a payer this page is withholding the useful half
+ * from.
+ *
+ * What this function guarantees to the layout: at most
+ * {@link MAX_PROVIDER_REASON} characters, no control characters, whitespace
+ * collapsed, and `null` rather than an empty string. React escapes the rest
+ * — the value reaches the DOM as a text node and never as markup, an
+ * attribute or a URL.
+ */
+export const MAX_PROVIDER_REASON = 300;
+
+/** Every C0 and C1 control character, plus the Unicode line separators. */
+// eslint-disable-next-line no-control-regex -- naming the control characters is the whole job: this is what strips them out of a rail's message before it is rendered.
+const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g;
+
+export function providerReason(message: string | null | undefined): string | null {
+  if (typeof message !== 'string') {
+    return null;
+  }
+  const cleaned = message.replace(CONTROL, ' ').replace(/\s+/g, ' ').trim();
+  if (cleaned.length === 0) {
+    return null;
+  }
+  return cleaned.length > MAX_PROVIDER_REASON
+    ? `${cleaned.slice(0, MAX_PROVIDER_REASON - 1)}\u2026`
+    : cleaned;
+}

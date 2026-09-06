@@ -3,15 +3,21 @@
  *
  * Everything that needs a browser lives here and nowhere else: reading the
  * fragment, resolving the framer, opening the `postMessage` channel,
- * building the `@vaam-apps/vpay-stripe-js` client, and the auto-forward countdown.
- * The decisions it makes are all imported — `decideEntry`, `reduce`,
- * `forwardTarget` — so this file is wiring, not policy.
+ * building the `@vaam-apps/vpay-stripe-js` client, and reading and writing
+ * this device's page memory. The decisions it makes are all imported —
+ * `decideEntry`, `reduce`, `forwardTarget`, `memoryRecordFor` — so this file
+ * is wiring, not policy.
+ *
+ * **No timer navigates.** There was a five-second auto-forward here until
+ * 2026-09-06; the outcome screen now has a button and nothing else. What
+ * remains of that machinery is `forward`, called from the button's handler.
  */
 'use client';
 
 import { loadStripe, type Stripe } from '@vaam-apps/vpay-stripe-js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import type { Branding, CheckoutSettings } from '../config/settings';
 import { pickLocale, translator, type Locale } from '../i18n/index';
 import { BrowserCheckoutApi } from '../lib/api';
 import { CheckoutController } from '../lib/controller';
@@ -20,10 +26,10 @@ import { createFrameChannel, type FrameChannel } from '../lib/frame';
 import { rememberPublishableKey } from '../lib/link';
 import { forwardKindFor, forwardTarget } from '../lib/forward';
 import { INITIAL_STATE, type CheckoutState } from '../lib/machine';
+import { browserPageMemory } from '../lib/memory-idb';
+import { memoryRecordFor, pageMemoryFor, type PageMemoryRecord } from '../lib/memory';
+import { normalizeCameroonMsisdn } from '../lib/msisdn';
 import { CheckoutView } from './checkout-view';
-
-/** Seconds a payer has to read the outcome before the page forwards on its own. */
-export const AUTO_FORWARD_SECONDS = 5;
 
 export interface CheckoutClientProps {
   sessionId: string;
@@ -34,17 +40,68 @@ export interface CheckoutClientProps {
   allowedOrigins: readonly string[];
   /** Chosen from `Accept-Language` on the server. The switch changes it here. */
   initialLocale: Locale;
+  /** `branding.yaml`, read at container start and passed down rather than fetched. */
+  branding: Branding;
+  /** `config.yaml`'s `checkout:` section, same. */
+  settings: CheckoutSettings;
 }
 
 export function CheckoutClient(props: CheckoutClientProps) {
   const [locale, setLocale] = useState<Locale>(props.initialLocale);
   const [state, setState] = useState<CheckoutState>(INITIAL_STATE);
-  const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+  const [remembered, setRemembered] = useState<PageMemoryRecord | null>(null);
+  const [remember, setRemember] = useState(false);
+  const [forgotten, setForgotten] = useState(false);
   const controllerRef = useRef<CheckoutController | null>(null);
+
+  /**
+   * The store, or the one that remembers nothing.
+   *
+   * Memoised on the flag alone, which is a prop that does not change while a
+   * payer is on the page — so this value is stable for the page's life and
+   * safe to name in the dependency array of the effect that reads it. It was
+   * held in a ref for one revision; a ref written during render is a React
+   * defect (`react-hooks/refs` caught it) and there was nothing here that
+   * needed one.
+   */
+  const { memory: pageMemory, offered: memoryOffered } = useMemo(
+    () => pageMemoryFor(props.settings.features.pageMemory, browserPageMemory()),
+    [props.settings.features.pageMemory],
+  );
 
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
+
+  /**
+   * One warning, in the browser console, when this container's
+   * `checkout.public_base_url` disagrees with the origin the page was
+   * actually loaded from.
+   *
+   * It changes nothing a payer sees. It exists because the misconfiguration
+   * it names — a proxy in front of this container that the API's own
+   * `checkout.public_base_url` does not know about — produces links that
+   * work for whoever built them and fail for everyone else, with no error
+   * anywhere.
+   */
+  useEffect(() => {
+    const configured = props.settings.publicBaseUrl;
+    if (configured === null) {
+      return;
+    }
+    let expected: string;
+    try {
+      expected = new URL(configured).origin;
+    } catch {
+      return;
+    }
+    if (expected !== window.location.origin) {
+      // eslint-disable-next-line no-console -- a deployment diagnostic naming two origins. Both are public by construction; neither is a session, a payer or a credential, and `secrets.test.ts`' console trace covers this page.
+      console.warn(
+        `[vpay-checkout] configured public_base_url origin ${expected} is not the origin this page was loaded from (${window.location.origin})`,
+      );
+    }
+  }, [props.settings.publicBaseUrl]);
 
   useEffect(() => {
     const decision = decideEntry({
@@ -54,6 +111,10 @@ export function CheckoutClient(props: CheckoutClientProps) {
       referrer: document.referrer,
       allowedOrigins: props.allowedOrigins,
       framed: window.parent !== window,
+      // A popup: `/c/{id}` opened by `window.open` from the merchant's page.
+      // `window.parent` is this window, so nothing above would have found a
+      // peer — see `frame.ts`'s `ChannelPeer`.
+      hasOpener: window.opener !== null && window.opener !== undefined,
     });
 
     if (decision.kind === 'refused') {
@@ -82,12 +143,33 @@ export function CheckoutClient(props: CheckoutClientProps) {
         parentOrigin: decision.parentOrigin,
         observe: document.documentElement,
       });
+    } else if (decision.openerOrigin !== null) {
+      // No `observe`: a popup sizes itself, and the channel would refuse to
+      // report a height to an opener anyway.
+      channel = createFrameChannel({
+        win: window,
+        peer: 'opener',
+        parentOrigin: decision.openerOrigin,
+      });
     }
 
     let disposed = false;
     let unsubscribe: (() => void) | null = null;
 
     void (async () => {
+      // Memory is read BEFORE the session, and before any screen that could
+      // show a prefilled field exists. That ordering is what lets the MSISDN
+      // input stay uncontrolled: by the time a form renders, the value it
+      // would default to is already known, so a payer is never typing into a
+      // field about to be replaced. The read is local and the session read
+      // that follows is a network round trip, so it costs nothing visible.
+      const record = await pageMemory.read();
+      if (disposed) {
+        return;
+      }
+      setRemembered(record);
+      setRemember(record !== null);
+
       let stripe: Stripe;
       try {
         stripe = await loadStripe(decision.key, { baseUrl: props.apiBaseUrl });
@@ -108,7 +190,10 @@ export function CheckoutClient(props: CheckoutClientProps) {
         api: new BrowserCheckoutApi({ baseUrl: props.apiBaseUrl }),
         stripe,
         navigate: (url) => window.location.assign(url),
+        closeWindow: () => window.close(),
+        opener: () => window.opener as Window | null,
         channel,
+        allowedMethods: props.settings.allowedMethods,
       });
       controllerRef.current = controller;
       unsubscribe = controller.subscribe(setState);
@@ -122,7 +207,14 @@ export function CheckoutClient(props: CheckoutClientProps) {
       channel?.dispose();
       controllerRef.current = null;
     };
-  }, [props.apiBaseUrl, props.allowedOrigins, props.mode, props.sessionId]);
+  }, [
+    pageMemory,
+    props.apiBaseUrl,
+    props.allowedOrigins,
+    props.mode,
+    props.sessionId,
+    props.settings.allowedMethods,
+  ]);
 
   const destination = useMemo(() => {
     if (state.name !== 'outcome') {
@@ -134,38 +226,59 @@ export function CheckoutClient(props: CheckoutClientProps) {
     );
   }, [state]);
 
-  const onContinue = useCallback(() => {
+  const onReturnToMerchant = useCallback(() => {
     if (destination !== null) {
       controllerRef.current?.forward(destination);
     }
   }, [destination]);
 
-  // The countdown. Visible, and the Continue button is always there — an
-  // auto-forward a payer cannot pre-empt is a payment page that reads its
-  // own outcome to itself.
-  useEffect(() => {
-    if (state.name !== 'outcome' || destination === null) {
-      // REAL finding: the countdown is interval-driven state that could be
-      // derived during render instead. Left as it is; the timer is covered by
-      // `checkout-view.test.tsx`.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setSecondsLeft(null);
-      return;
-    }
-    setSecondsLeft(AUTO_FORWARD_SECONDS);
-    let remaining = AUTO_FORWARD_SECONDS;
-    const timer = setInterval(() => {
-      remaining -= 1;
-      setSecondsLeft(remaining);
-      if (remaining <= 0) {
-        clearInterval(timer);
-        controllerRef.current?.forward(destination);
+  /**
+   * The one moment anything is written to this device.
+   *
+   * Ticked box → the record; unticked box → the record is removed. Both run
+   * on a deliberate submit, so a payer who unticks and pays has cleared the
+   * device by paying, and a payer who merely visits has left nothing behind.
+   */
+  const rememberOnSubmit = useCallback(
+    (msisdn: string | null, rail: string | null) => {
+      if (!remember) {
+        void pageMemory.clear();
+        setRemembered(null);
+        return;
       }
-    }, 1_000);
-    return () => {
-      clearInterval(timer);
-    };
-  }, [state.name, destination]);
+      const record = memoryRecordFor({ msisdn, rail }, Date.now());
+      if (record === null) {
+        return;
+      }
+      void pageMemory.write(record);
+      setRemembered(record);
+    },
+    [pageMemory, remember],
+  );
+
+  const onSubmitMsisdn = useCallback(
+    (raw: string) => {
+      // Normalised here as well as in the controller, and deliberately: what
+      // is stored is the canonical `2376XXXXXXXX`, and a number the page
+      // would refuse to send is a number it must not keep either.
+      rememberOnSubmit(normalizeCameroonMsisdn(raw), 'mtn_momo');
+      void controllerRef.current?.submitMsisdn(raw);
+    },
+    [rememberOnSubmit],
+  );
+
+  const onStartRedirect = useCallback(() => {
+    const rail = state.name === 'ready_redirect' ? state.rail.code : null;
+    rememberOnSubmit(null, rail);
+    void controllerRef.current?.startRedirect();
+  }, [rememberOnSubmit, state]);
+
+  const onForget = useCallback(() => {
+    void pageMemory.clear();
+    setRemembered(null);
+    setRemember(false);
+    setForgotten(true);
+  }, [pageMemory]);
 
   const t = useMemo(() => translator(locale), [locale]);
 
@@ -174,14 +287,27 @@ export function CheckoutClient(props: CheckoutClientProps) {
       state={state}
       t={t}
       locale={locale}
+      branding={props.branding}
       destination={destination}
-      secondsLeft={secondsLeft}
+      defaultMsisdn={remembered?.msisdn ?? null}
+      lastRail={remembered?.rail ?? null}
+      memory={{
+        offered: memoryOffered,
+        remember,
+        onRememberChange: (next) => {
+          setRemember(next);
+          setForgotten(false);
+        },
+        hasRecord: remembered !== null,
+        onForget,
+        forgotten,
+      }}
       onChooseRail={(rail) => controllerRef.current?.chooseRail(rail)}
       onBack={() => controllerRef.current?.back()}
-      onSubmitMsisdn={(msisdn) => void controllerRef.current?.submitMsisdn(msisdn)}
-      onStartRedirect={() => void controllerRef.current?.startRedirect()}
+      onSubmitMsisdn={onSubmitMsisdn}
+      onStartRedirect={onStartRedirect}
       onRetryPoll={() => void controllerRef.current?.retryPoll()}
-      onContinue={onContinue}
+      onReturnToMerchant={onReturnToMerchant}
       onLocaleChange={setLocale}
     />
   );

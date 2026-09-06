@@ -1,0 +1,41 @@
+# vpay checkout page — branding
+#
+# Mount this file at /etc/vpay/checkout/branding.yaml in the
+# `ghcr.io/vaam-apps/vpay-checkout` container (or point
+# VPAY_CHECKOUT_BRANDING_FILE somewhere else). It is read ONCE, when the
+# process starts: a change here is a pod restart, exactly as it is for
+# vpay-server's own config (ADR-0003).
+#
+# Every key is optional, and a key that is absent, blank or malformed costs
+# exactly that key. The container prints one WARN line per problem, naming
+# the file and the key, and serves the page regardless — a payment page that
+# refused to render because a logo URL had a typo would be a worse failure
+# than a page with no logo.
+#
+# See docs/flows/hosted-checkout.md, "Runtime configuration".
+
+# WHOSE NAME THIS IS: the operator's — whoever runs this deployment of vpay.
+# It is NOT the merchant's. What a payer is told they are paying comes from
+# the checkout session (`merchant: { name }`, set per merchant in the API's
+# own `merchant_clients[].display_name`), and this value never stands in for
+# it. Shown in the page header. At most 80 characters.
+display_name: Vaam Payments
+
+# Absolute http/https only. Anything else — a relative path, a `data:` URI,
+# `javascript:` — is dropped with a WARN. Rendered at 32 px high beside the
+# name; an SVG or a 2x PNG is the right thing to serve.
+logo_url: https://cdn.vaam.example/vpay/logo.svg
+
+# `#rrggbb`, six digits, nothing else. Converted at startup into a daisyUI
+# `--p`/`--pc` override on the `bumblebee` theme and emitted into <head>, so
+# it arrives with the first byte rather than as a flash of the default. The
+# text colour that goes ON this colour is derived, not configured, by
+# daisyUI's own rule — so a colour nobody can read text on is not a colour
+# this file can produce.
+primary_color: "#f3c623"
+
+# Free text, at most 200 characters, rendered at the foot of every screen as
+# DATA — never as a `mailto:` or `tel:` link this page composed. An address,
+# a phone number, an opening time; whatever a payer stuck on a failed
+# payment should be told.
+support_contact: support@vaam.example — 8h–18h

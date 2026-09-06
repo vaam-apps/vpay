@@ -16,6 +16,8 @@ export const fr: Record<MessageKey, string> = {
   'page.amount_label': 'Montant',
   'page.reference_label': 'Référence',
   'page.testmode': 'Mode test — aucun argent ne circule sur ce déploiement.',
+  'page.operator_logo_alt': 'Logo',
+  'page.support': 'Assistance : {contact}',
 
   'locale.label': 'Langue',
   'locale.en': 'English',
@@ -48,10 +50,14 @@ export const fr: Record<MessageKey, string> = {
   'outcome.failed_title': 'Paiement non abouti',
   'outcome.canceled_title': 'Paiement annulé',
   'outcome.canceled_body': 'Ce paiement a été annulé. Rien n’a été prélevé.',
-  'outcome.continue': 'Continuer',
-  'outcome.auto_forward': 'Retour vers {merchant} dans {seconds} s.',
-  'outcome.auto_forward_unnamed': 'Retour dans {seconds} s.',
+  'outcome.back_to': 'Retour vers {merchant}',
+  'outcome.back_to_unnamed': 'Retour à la boutique',
   'outcome.no_destination': 'Ce paiement est terminé. Vous pouvez fermer cette page.',
+  'outcome.provider_said': 'Ce qu’a répondu l’opérateur',
+
+  'state.forwarding_title': 'Retour en cours',
+  'state.forwarding_body': 'Nous vous ramenons vers {merchant}.',
+  'state.forwarding_body_unnamed': 'Nous vous ramenons vers la boutique.',
 
   'failure.insufficient_funds': 'Le solde du compte était insuffisant.',
   'failure.payer_timeout': 'Vous n’avez pas validé le paiement à temps.',
@@ -79,6 +85,14 @@ export const fr: Record<MessageKey, string> = {
   'error.missing_secret': 'Il manque à ce lien l’identifiant qui déverrouille le paiement.',
   'error.missing_return_token': 'Il manque son jeton à ce lien de retour.',
   'error.retry': 'Réessayer',
+
+  'memory.remember_number': 'Mémoriser ce numéro sur cet appareil',
+  'memory.remember_method': 'Mémoriser {rail} sur cet appareil',
+  'memory.warning':
+    'Toute autre personne qui utilise cet appareil le verra. Ne cochez pas cette case sur un téléphone partagé ou emprunté.',
+  'memory.forget': 'Oublier ce que cet appareil a mémorisé',
+  'memory.forgotten': 'Cet appareil ne mémorise plus rien.',
+  'memory.last_used': 'Dernier utilisé',
 
   'refusal.embed_title': 'Cette page ne s’affichera pas ici',
   'refusal.embed_body':

@@ -1,6 +1,7 @@
 import { headers } from 'next/headers';
 
 import { ReturnClient } from '../../../../src/components/return-client';
+import { runtimeConfig } from '../../../../src/config/runtime';
 import { pickLocale } from '../../../../src/i18n/index';
 import { browserApiBaseUrl } from '../../../../src/lib/env';
 
@@ -31,6 +32,7 @@ export default async function CheckoutReturnPage({
       sessionId={id}
       apiBaseUrl={browserApiBaseUrl()}
       initialLocale={pickLocale(requestHeaders.get('accept-language'))}
+      branding={runtimeConfig().branding}
     />
   );
 }
