@@ -350,9 +350,8 @@ it is not a relation predicate — so the insert branch takes one connection.
 
 ## 6. A hazard in `just fmt` that is not this change's, found while running the gate
 
-`just fmt` is `cargo fmt --all` **then** `pnpm exec prettier --write .`, and
-this repository ships no prettier configuration file. Running it on this tree
-rewrites roughly two hundred tracked files with prettier's defaults —
+`just fmt` is `cargo fmt --all` **then** `pnpm exec prettier --write .`.
+Running it on this tree rewrites 222 tracked files with prettier's defaults —
 `*italic*` to `_italic_` in every Markdown file, every Markdown table
 column-padded, `package.json`'s inline `engines` object exploded onto three
 lines — and then **fails**, because
@@ -366,9 +365,17 @@ error: Recipe `fmt` failed on line 265 with exit code 2
 
 So the recipe leaves the tree reformatted *and* reports failure. Reverted in
 full here; no prettier output is in this branch. Not fixed, because it is
-unrelated to this task and the fix is a decision (add a `.prettierrc` and a
-`.prettierignore` matching how the tree is actually written, or narrow the
-recipe's glob to the TypeScript trees). `just ci` is unaffected — it runs
+unrelated to this task and the fix is a decision (add a `.prettierrc`
+matching how the tree is actually written, narrow the recipe's glob to the
+TypeScript trees, or add an ignore entry for the fixture).
+
+**Correction, review pass 2026-09-06:** this section said "this repository
+ships no prettier configuration file". It does — `.prettierignore`, added in
+Step 6, whose header comment documents this exact failure mode for
+`deploy/helm/**/templates/`. So the parse error has an established in-repo
+remedy (one more ignore line) and is not a new decision; the 222 reformatted
+files still are. The count was also "roughly two hundred" by eye and is 222
+by `prettier --list-different .`. `just ci` is unaffected — it runs
 `fmt-check` (`cargo fmt --all -- --check`), never `fmt`.
 
 ---

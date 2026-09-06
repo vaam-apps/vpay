@@ -3483,17 +3483,28 @@ read), two container cases in `vpay-db/tests/repositories.rs`, and two in
 `postgres_smoke.rs`.
 
 **A hazard found while running the gate, recorded and not fixed:** `just fmt`
-is `cargo fmt --all` *then* `pnpm exec prettier --write .`, and this
-repository ships no prettier configuration. Running it rewrites roughly two
-hundred tracked files with prettier's defaults and then fails on
+is `cargo fmt --all` *then* `pnpm exec prettier --write .`. Running it
+rewrites **222** tracked files with prettier's defaults (measured read-only
+with `prettier --list-different .` in the review pass) and then **fails** on
 `backends/crates/vpay-config/tests/fixtures/malformed.yml`, which is
-deliberately malformed YAML. `just ci` is unaffected — it runs `fmt-check`,
-never `fmt` — so this is a trap for the "Before you open a PR" instruction in
-`AGENTS.md` rather than a broken gate. The fix is a decision (add a
-`.prettierrc`/`.prettierignore` matching how the tree is actually written, or
-narrow the recipe's glob) and is left to a maintainer.
+deliberately malformed YAML — so the recipe leaves the tree reformatted *and*
+reports failure. `just ci` is unaffected: it runs `fmt-check`
+(`cargo fmt --all -- --check`), never `fmt`. This is a trap for the "Before
+you open a PR" instruction in `AGENTS.md`, not a broken gate.
+
+This entry said "this repository ships no prettier configuration" until the
+review pass corrected it. It ships `.prettierignore` (Step 6), whose own
+header comment describes exactly this failure mode for
+`deploy/helm/**/templates/` and whose established remedy is an ignore entry.
+That changes what is being left to the maintainer: not "introduce prettier
+configuration", but (a) whether `.prettierignore` should grow an entry for a
+fixture that is *deliberately* unparseable, which is the pattern already in
+that file, and (b) separately, what to do about the 222 files prettier's
+defaults would rewrite — which an ignore entry does not address and a
+`.prettierrc` or a narrower glob would.
 [docs/plans/exp17-notes/opus.md](plans/exp17-notes/opus.md) § 6 has the
-transcript.
+transcript and
+[opus-review.md](plans/exp17-notes/opus-review.md) finding 2 the correction.
 
 **Mutations run on 2026-09-06**, transcripts in
 [docs/plans/exp17-notes/opus.md](plans/exp17-notes/opus.md):
