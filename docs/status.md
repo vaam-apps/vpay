@@ -3347,27 +3347,37 @@ It is `Category::Internal` / `Retry::Never` now, with the same `code` a CHECK
 violation publishes so a merchant cannot tell which of the two layers
 refused.
 
-**Gate, run on this branch on 2026-09-06 against the pinned 1.98.0
+**Gate, re-run on the reviewed head on 2026-09-06 against the pinned 1.98.0
 toolchain.** `just ci` end to end, exit 0, with containers and with
 `node_modules` installed from the pinned lockfile under the `.nvmrc` Node
-(22.23.2). All **ten** `just verify` gates green — `check-schema` now reports
+(22.23.2). All **ten** `just verify` gates green — `check-schema` reports
 **15** model/enum declarations and `cratestack_min_declarations` is raised
 13 -> 15 in the same commit, per that floor's own rule. `just verify-ignored`:
-**0 ignored (expected 0), 43 test binaries (expected 43), 1389 total** —
-master's 1382 plus this change's seven, every one in a file that already
+**0 ignored (expected 0), 43 test binaries (expected 43), 1390 total** —
+master's 1382 plus this change's eight, every one in a file that already
 existed, so `expected_suites` stays 43 and the 1080 floor is untouched.
-Recipe by recipe on the final head, each run on its own so a failure could be
-attributed: `fmt-check` 0, `clippy` 0 (19 s), `verify` 0 (8 s), `test-rust` 0
-(**941 s — 1389 tests run, 1389 passed, 0 skipped**), `test-doc` 0 (**96
+Recipe by recipe, each run on its own so a failure could be attributed:
+`fmt-check` 0, `clippy` 0 (13 s), `verify` 0 (8 s), `test-rust` 0
+(**1536 s — 1390 tests run, 1390 passed, 0 skipped**), `test-doc` 0 (**96
 passed, 1 ignored** — the ignored one is `sdks/rust`'s README block and is
-pre-existing), `verify-ignored` 0, `lint-web` 0 (19 s), `test-web` 0 (9 s),
+pre-existing), `verify-ignored` 0, `lint-web` 0 (20 s), `test-web` 0 (8 s),
 `deny` 0 (`advisories ok, bans ok, licenses ok, sources ok`).
 
-The seven: two `vpay-db` unit tests in `webhook_deliveries` (the `preview_sql`
+`test-rust` needed a second run, and the reason is recorded rather than
+smoothed over: the first re-run failed
+`a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` at
+exactly 120.007 s with `failed to create a container: Timeout error` — the
+same container-start contention described below, in a test this change does
+not touch, on a host running two other container suites. It passes 3/3 in
+isolation (117 s / 1.2 s / 1.3 s) and passed in both clean full runs.
+
+The eight: two `vpay-db` unit tests in `webhook_deliveries` (the `preview_sql`
 pin on both outbox statements, and the policy-slot assertion), one in `events`
-(the JSON blocker pin), three container cases in
-`vpay-db/tests/repositories.rs` (the abandon test, its commit control, and
-the `23502` proof), and one in `postgres_smoke.rs` (the event vocabulary).
+(the JSON blocker pin), four container cases in
+`vpay-db/tests/repositories.rs` (the abandon test, its commit control, the
+`23502` proof, and the review's
+`a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing`),
+and one in `postgres_smoke.rs` (the event vocabulary).
 
 **Two flakes were observed and are not this change's**, recorded because
 "green on the third run" is worth saying out loud. Under a host load average
@@ -3380,7 +3390,10 @@ own header documents at length as the reason that file exists; both pass in
 isolation (1.5 s and 65 s for the whole suite) and both passed in the clean
 run above. Neither touches a line this change wrote.
 
-**Six mutations, every one applied, run and reverted** (transcripts in
+**Six mutations by the implementer and five more by the review, every one
+applied, run and reverted**
+([plans/exp18-notes/opus-review.md](plans/exp18-notes/opus-review.md) has the
+review's). The implementer's six (transcripts in
 [plans/exp18-notes/opus.md](plans/exp18-notes/opus.md)): both `run_in_tx ->
 run` swaps make the abandon test red in about a second and **neither hangs**,
 unlike the currency upsert's equivalent; the three `@@allow` deletions are
@@ -3388,6 +3401,18 @@ caught with no container in milliseconds and their runtime effects differ
 exactly as documented (delivery `create` LOUD everywhere, delivery `update`
 LOUD only on a re-run — the crash-recovery path, event `update` SILENT and
 total); and dropping the events CHECK behaves as described above.
+
+The review's five, run independently: bypassing `mark_fanned_out_in_tx`
+entirely makes `fan_out_creates_one_delivery_and_one_job_per_endpoint_and_is_idempotent`
+red on `fanout_state` (`"pending"` vs `"done"`); deleting `model
+WebhookDelivery`'s `@@allow("update")` is caught in 4 ms with no container,
+**and** — with that no-container assertion also deleted —
+`a_second_delivery_for_one_event_and_endpoint_is_not_created` still catches
+it, so the two are defence in depth rather than one gate twice; dropping the
+events CHECK fails **both** the vocabulary test and the drift assertion
+(which is the correction above); and mapping `create_in_tx`'s policy denial
+back to `Ok(None)` — the plausible "fix" for the narrowed contract — makes
+the new pinning test red in 1.3 s.
 
 #### The first CrateStack writes (2026-09-06)
 

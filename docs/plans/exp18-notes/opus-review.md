@@ -34,6 +34,16 @@ exactly. The crash-safety suites by name: `worker_kill9`'s two scenarios
 (`a_server_killed_mid_submit_…` 69 s, `a_worker_killed_mid_poll_…` 5 s), 23
 `worker_recovery` cases, 17/17 `webhooks`.
 
+**Re-run on the reviewed head** (`021f38c`, plus this file): all nine recipes
+exit 0 again, `Summary [1535.710s] 1390 tests run: 1390 passed (5 slow), 0
+skipped`, `verify-ignored: 0 ignored (expected 0), 43 test binaries (expected
+43), 1390 total`, `test-doc` 96 passed / 1 ignored, `deny` all four ok. One
+`test-rust` attempt in between failed
+`a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` at
+exactly 120.007 s with `failed to create a container: Timeout error` — the
+flake characterised in §2, in a test nothing here touches, on a host running
+two other container suites. Re-run, green. Recorded rather than dropped.
+
 **The gate being green is not the finding.** Six of the findings below were
 reached with `just ci` green, which is the point of running mutations instead.
 
@@ -90,7 +100,7 @@ Why this matters in both directions:
   wrong, and a claim nobody checks is what this repository says it will not
   ship.
 
-Fixed in `3f1b91d`: all five statements corrected against the measurement, the
+Fixed in `d4c65ba`: all five statements corrected against the measurement, the
 vocabulary test's justification restated on what it actually adds, and the
 two-signal story (count moves; behaviour is asserted) written down once.
 
@@ -146,7 +156,7 @@ say so where the contract is claimed, and to pin it: the narrowed contract is
 now load-bearing on a config guard that lives in a different crate, and
 nothing connected the two.
 
-Fixed in `a1c6f2e`: the contract is stated with its condition, the two guards
+Fixed in `ad7a493`: the contract is stated with its condition, the two guards
 it now rests on are named at the call site and in the reference, and
 `a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing`
 pins the measured behaviour in both branches (uncommitted → `Denied`,
@@ -181,7 +191,7 @@ connection — `vpay_db::pool::MAX_CONNECTIONS` (10) and `--worker-concurrency`
 (4 + 4 ≤ 10); at a concurrency of 10 it does not, and every `Existing`-branch
 fan-out — i.e. the crash-recovery path — would queue on `ACQUIRE_TIMEOUT`.
 
-Fixed in `9d4e77c`: the claim corrected to name the branch it holds on, the
+Fixed in `5a76bbe`: the claim corrected to name the branch it holds on, the
 second-connection fact recorded at the call site, in the reference and on
 `MAX_CONNECTIONS`, and the concurrency interaction listed for the maintainer
 (§3) rather than decided here.
@@ -200,7 +210,7 @@ against the tree:
 | `a_pending_event_is_flipped_once_and_a_second_flip_reports_false` | `webhook_deliveries.rs:647` | no |
 | `a_delivery_for_an_unknown_event_is_refused_by_the_foreign_key` | `schemas/vpay.cstack:799` | no — the assertion lives inside `migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states` |
 
-Fixed in `c8a0d31`: every citation now names a test that exists, checked by
+Fixed in `a456cf2`: every citation now names a test that exists, checked by
 resolving the whole set again after the edit.
 
 ### F5 — the JSON blocker's tripwire does not trip on the event it claims to · misleading-claim
@@ -227,13 +237,13 @@ test: `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`
 pins `EXPECTED_UNMAPPABLE_COLUMNS = 17`, and a `map_scalar` that learned
 `jsonb` would move it.
 
-Fixed in `e5b7a24`: the claim replaced with which test notices which event.
+Fixed in `e8d3f92`: the claim replaced with which test notices which event.
 
 ### F6 — stale sub-count beside the number it explains · nit
 
 `docs/status.md`: "at least `cratestack_min_declarations` (15 since
 2026-09-06: **seven models, six enums**; 12 before that)". The file declares
-nine models and six enums; 7 + 6 = 13, the previous value. Fixed in `b2d0f45`.
+nine models and six enums; 7 + 6 = 13, the previous value. Fixed in `021f38c`.
 
 ---
 
