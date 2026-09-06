@@ -154,8 +154,11 @@ signed and delivered, and CrateStack 0.11.1's `Json` scalar round-trips
 through `cratestack::Value`, whose number decoding falls back to `f64` for
 anything that is not an `i64`. Merchant-authored `metadata` travels inside
 `data`. The insert therefore stays one hand-written statement in the same
-transaction — ugly and deliberate — and two tests pin the blocker so an
-upstream fix is noticed rather than remembered. See
+transaction — ugly and deliberate — and two tests pin the blocker: they go red
+the day somebody declares the column, which is the mistake worth catching
+before a lossy number conversion reaches a signed payload. (They do *not*
+notice an upstream fix on their own; the drift report's unmappable-column
+count is what does. Corrected 2026-09-06.) See
 [../reference/vpay-db.md](../reference/vpay-db.md) § CrateStack.
 
 The duplicate-delivery guard this document rests on is unchanged and is still

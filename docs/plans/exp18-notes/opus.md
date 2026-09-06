@@ -78,7 +78,15 @@ two measured reasons, and the second is the one that decides it:
    vpay does not choose. That is not a conversion to introduce to save one
    raw statement.
 
-Pinned so an upstream fix is noticed rather than remembered:
+Pinned — but pinned against the wrong event, corrected by the review
+([opus-review.md](opus-review.md) F5). Both tests below render or run the
+statement the *current* model generates, so they go red when somebody
+declares `data Json`. Neither can notice an upstream `map_scalar` fix:
+`map_scalar` is `cratestack-migrate`'s, which is not in `vpay-db`'s compiled
+graph, and `preview_sql` renders from this file's macro expansion alone. The
+tripwire for the upstream half already exists and is
+`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`'s
+`EXPECTED_UNMAPPABLE_COLUMNS = 17`. The two pins:
 `the_events_insert_cannot_move_until_a_json_column_can_be_modelled` (no
 database; pins the rendered five-column `INSERT`) and
 `a_generated_events_insert_is_refused_by_the_not_null_on_data` (runs exactly

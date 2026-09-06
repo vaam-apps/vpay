@@ -3259,7 +3259,14 @@ while the declared one does not), and it routes the payload through
 number that is not an `i64`. `events.data` is the object that is **signed and
 delivered** to a merchant and it carries merchant-authored `metadata`. So the
 insert stays one hand-written statement in the same transaction, and two
-tests pin the blocker so an upstream fix is noticed rather than remembered:
+tests pin the blocker. **What they pin, corrected by the review:** both render
+or run the statement the *current* model generates, so they go red when
+somebody declares `data Json` — not when CrateStack is fixed. `map_scalar`
+lives in `cratestack-migrate`, which is not in `vpay-db`'s compiled graph, so
+no Rust test here can see it change; the tripwire for that half is
+`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`'s
+`EXPECTED_UNMAPPABLE_COLUMNS = 17`, which `events.data` would leave. The two
+pins are:
 `the_events_insert_cannot_move_until_a_json_column_can_be_modelled` (no
 database, pins the rendered five-column INSERT) and
 `a_generated_events_insert_is_refused_by_the_not_null_on_data` (runs it and

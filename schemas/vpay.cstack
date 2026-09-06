@@ -757,9 +757,29 @@ model Event {
   // So the insert stays one hand-written `sqlx` statement, in the SAME
   // transaction as everything above — honest, ugly, reversible. It is
   // reversible the day `map_scalar` learns `jsonb` AND `Value` round-trips
-  // an arbitrary `serde_json::Value`; both halves are needed, and
+  // an arbitrary `serde_json::Value`; both halves are needed.
+  //
+  // WHICH TEST NOTICES WHICH HALF — corrected 2026-09-06 by the review,
+  // because this comment used to say
   // `the_events_insert_cannot_move_until_a_json_column_can_be_modelled`
-  // fails when the first one lands so nobody has to remember.
+  // "fails when the first one lands so nobody has to remember", and it
+  // cannot. That test calls `preview_sql`, which renders from the macro
+  // expansion of THIS FILE and nothing else, so its output is a function of
+  // the declaration below being absent. `map_scalar` lives only in
+  // `cratestack-migrate` — introspection, which `cratestack-pg` takes as a
+  // dev-dependency — so it is not in `vpay-db`'s compiled graph at all and
+  // an upstream fix to it cannot change what that test sees.
+  //
+  //   * `map_scalar` learning `jsonb` is noticed by
+  //     `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`,
+  //     which pins `EXPECTED_UNMAPPABLE_COLUMNS = 17`. `events.data` would
+  //     leave that list and the count would move.
+  //   * `Value` growing a lossless round-trip is noticed by nothing here,
+  //     and cannot be — it is a property of a crate this file does not
+  //     compile against. It has to be checked when the first bullet fires.
+  //   * The two pins below are what notice somebody DECLARING `data Json`,
+  //     which is the mistake they are actually good for: they go red before
+  //     a lossy conversion can reach a signed payload.
   //
   // GAP — `fanout_attempts INT` (migration 0024) is not declared either, and
   // this one costs nothing. `Int` always emits `int8`; `map_scalar` refuses
