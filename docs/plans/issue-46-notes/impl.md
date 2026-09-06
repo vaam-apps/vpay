@@ -223,3 +223,124 @@ Separately, and **not** part of `just ci` because it needs the network:
   for that crate, deliberately marked as such in its module header.
 * Nothing here has ever spoken to MTN or Orange. Whether either rail reports a
   refund fee at all remains unverified, exactly as the issue said.
+
+## 10. Rebased onto `1bd2183` (2026-09-06)
+
+This branch was rebased onto `origin/master` at **`1bd2183`** — the merge of
+PR #49 (issue #47, account-holder name lookup) — after that PR landed first.
+Fifteen commits replayed; no commit was dropped and the branch's net diff
+against master is byte-identical in shape to what it was against `65a5952`
+(25 files, 1760 insertions, 31 deletions), which is the check that says the
+rebase added and lost nothing.
+
+**Five files conflicted, and every one was resolved by keeping both sides:**
+
+* `backends/crates/vpay-provider/src/measured.rs` and
+  `backends/crates/vpay-adapter-mtn-momo/src/lib.rs` — both branches widened
+  the same `use vpay_provider::{…}` list. Union: `AccountHolder` (#49) and
+  `Refunded` (this branch) are both imported.
+* `backends/crates/vpay-api/src/model.rs` — both branches added an
+  `object_tag!` invocation at the same insertion point, and git's markers cut
+  *through* the two macro calls rather than between them: the conflict shared
+  one `object_tag!(` and one `);` between `AccountHolderTag` and `RefundTag`.
+  Resolved by reconstructing **both** complete invocations, not by trusting
+  the marker boundaries. Six `object_tag!`s now, in the order
+  `PaymentIntentTag`, `ListTag`, `EventTag`, `AccountHolderTag`, `RefundTag`,
+  `CheckoutSessionTag`.
+* `docs/sdks/parity.md` — two independent new paragraphs at the same anchor.
+  Both kept: #49's `account_holders` note first, this branch's `refund.fee`
+  shape note second. Both row sets (five `account_holders` rows, one
+  `refund.fee` row) and both ⛔-index entries survive.
+* `docs/flows/merchant-auth.md` — the **only** hunk where "keep both" would
+  have duplicated a paragraph rather than merged one: #49 and this branch
+  rewrote the *same* "**Served** marks…" sentence. #49's edit was the date
+  `2026-09-03` → `2026-09-05`; this branch's rewrite already carries that
+  date and adds the provenance (`re-read off vpay_api::v1::V1_ROUTES`) and
+  the `/v1/checkout/sessions` caveat, so this branch's paragraph was taken as
+  the superset. Nothing from #49 is lost by it. The Resources table itself
+  merged cleanly and holds **both** branches' rows — `/v1/events`,
+  `/v1/events/{id}` and `/v1/account_holders`.
+
+**One break carried no conflict marker at all,** which is the reason a build
+is not optional after a rebase. #49 added
+`backends/crates/vpay-api/src/v1/account_holders.rs`, whose `AnsweringRail`
+test double implements `ProviderAdapter::refund` returning `Submitted`. This
+branch changes that return type to `Refunded`. The two never touched the same
+line — the file did not exist on this branch — so git merged them silently and
+`cargo build --workspace --all-targets` failed with `E0053`. Fixed in the
+commit that changes the port (`feat(provider): refund answers Refunded…`), by
+changing the double's signature; its body was and remains
+`Err(ProviderError::Unsupported)`, so no behaviour moved.
+
+**This branch still does not touch the refund object's route.** `V1_ROUTES`
+is unchanged by it; `/v1/refunds` is still unmounted, and `RefundObject` is
+still exactly ten keys (`the_refund_object_is_the_documented_ten_keys`).
+
+### The gate on the rebased tree, measured 2026-09-06
+
+Measured, not recalled, and **the container-backed part of `test-rust` did
+not run** — see the caveat below, which is stated here rather than left out
+because a partial gate reported as a whole one is worse than a red one.
+
+* `fmt-check`, `clippy --workspace --all-targets -- -D warnings`: clean.
+* `verify`: *"ok — the ten gates above passed; the verify-docs report is
+  advisory"*.
+* `cargo build --workspace --all-targets`: clean.
+* `verify-ignored`: *"0 ignored (expected 0), 42 test binaries (expected 42),
+  1330 total (minimum 1080)"*. `origin/master` at `1bd2183` was measured on
+  the same machine at **1319 total across the same 42 binaries, 0 ignored**,
+  so this branch adds **11** Rust tests: `vpay-api` +7, `vpay-core` +1,
+  `vpay-sdk::resources` +1, `vpay-tests-integration::postgres_smoke` +2. No
+  new test binary, which is why the `expected_suites` recipe variable does
+  not move.
+* `test-doc`: **96 passed, 0 failed, 1 ignored** (master after #49 was 94).
+* `lint-web` (`pnpm -r typecheck` then `pnpm -r lint`): clean.
+* `test-web`: every package passes — `sdks/nodejs` **178 passed** across 9
+  files, `sdks/stripe-js` 119, `frontends/apps/checkout` 302,
+  `examples/shop` 57, `frontends/packages/config` 63, plus the small ones.
+* `deny`: *"advisories ok, bans ok, licenses ok, sources ok"*.
+* **`test-rust` did NOT complete.** Two full `just ci` runs reached it and
+  both died on the host's rootless Docker, not on this branch: the first at
+  1019/1330 with *"container is not ready: container startup timeout"*, the
+  second at 998/1330 with *"failed to create a container: Timeout error"*.
+  The daemon then wedged outright (a zombie `dockerd` with 24 threads stuck
+  in `sync_inodes_sb`/`wb_wait_for_completion` behind ~11 GB of dirty pages)
+  and was replaced by a recovery daemon with an empty image cache which, at
+  the time of writing, cannot pull: `postgres:16-alpine` and
+  `wiremock/wiremock:3.9.2` sit at *"Pulling fs layer"* with **0 bytes**
+  of host network ingress, while the host itself reaches
+  `registry-1.docker.io` fine. Every test that failed in either run failed
+  on container startup; **no assertion failed in either run.**
+* The named unit cases that do not need a container were run on the rebased
+  tree and pass: all seven of `vpay-api`'s refund/fee cases, including
+  `the_refund_object_is_the_documented_ten_keys`,
+  `an_unreported_refund_fee_renders_null_and_a_reported_zero_renders_zero`,
+  `a_reported_fee_never_moves_the_payers_amount` and
+  `a_refund_delivered_as_either_refund_event_carries_fee_present_and_null`.
+  **`postgres_smoke`'s two new cases and its migration-count assertion (31)
+  are exactly what could not be re-run**, so the claim "31 migrations apply
+  and `fee_non_negative` fires" rests on the pre-rebase measurement in
+  section 7 plus the fact that this rebase changed no migration and no SQL.
+
+### The two decisive mutations, re-run on the rebased tree
+
+Both applied to `TryFrom<&vpay_db::RefundRow> for RefundObject`, run, and
+reverted; `git status` clean afterwards.
+
+1. `amount: row.amount` → `amount: row.amount - row.fee.unwrap_or(0)` —
+   **`a_reported_fee_never_moves_the_payers_amount` FAILS**, on
+   `a fee of Some(250) changed the amount the payer gets back / left: 1750,
+   right: 2000`. The other six cases still pass, which is the point: this
+   mutation is invisible to every one of them.
+2. `fee: row.fee` → `fee: Some(row.fee.unwrap_or(0))` — **the absent-vs-zero
+   case FAILS**, on `a rail that reported no fee must render null; 0 would
+   tell a merchant the movement was free, which nobody measured / left: 0,
+   right: Null`. Three others fall with it (`…the_documented_ten_keys`,
+   `the_merchant_sdk_deserialises…`, `a_refund_delivered_as_either_refund_event…`).
+
+### Still true after the rebase, and worth restating
+
+PR #51 adds a **second** refund renderer on top of the same object. Whichever
+of #50 and #51 lands second will have to rebase again, and the collision will
+be in the same place this one was — `vpay_api::model`'s refund block and the
+`refund` rows of `docs/flows/merchant-auth.md` and `docs/sdks/parity.md`.
