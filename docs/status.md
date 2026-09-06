@@ -3708,6 +3708,22 @@ The new container test calls the public trait, asserts the variant, the
 upserted survives — so it also pins that the refusal rolls the whole boot-step-4
 transaction back.
 
+**Two coverage gaps closed alongside it, both in the decisive direction the
+task brief named.**
+
+1. `a_rail_the_configuration_disables_is_not_re_enabled_by_reconcile` asserted
+   all eight columns after the disable and the repeat, but never the *reverse*:
+   nothing in the tree turned `providers.enabled` from `false` back to `true`
+   through `reconcile`. A fourth reconcile now does, asserting all eight
+   columns again. Stated plainly, because it matters for how much this is
+   worth: **no single-line mutation was found that this step alone kills** —
+   every one tried is caught earlier by the first or second assertion. What it
+   pins is a documented behaviour (`ProviderHost::enabled`'s doc and
+   [flows/configuration.md](flows/configuration.md): turning a rail off in the
+   YAML is not the same as deleting its block) that no test exercised.
+2. `a_reconcile_that_waited_for_the_boot_lock_overwrites_what_the_holder_committed`
+   — see the paragraph on `for_update` below.
+
 
 ---
 

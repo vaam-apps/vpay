@@ -2994,6 +2994,48 @@ async fn a_rail_the_configuration_disables_is_not_re_enabled_by_reconcile() -> a
         "every replica runs boot step 4; a disabled rail must not come back on the next one"
     );
 
+    // And the other direction, which is a different claim rather than the
+    // same one read backwards. Everything above is satisfied by a `reconcile`
+    // that can only ever turn capabilities OFF — the disable pass writes
+    // `enabled = false` and four of the five column defaults were `false`, so
+    // "the row matches the config" and "the row is the pessimistic value"
+    // agree on every assertion so far. Turning the rail back ON, with every
+    // other capability flipped back with it, is where they stop agreeing: the
+    // only statement that can produce this row is the upsert's `DO UPDATE
+    // SET`, and the disable pass (`WHERE code <> ALL($1) AND enabled`) has to
+    // leave a configured code alone for it to survive to the commit.
+    let restored = vpay_db::ProviderSeed {
+        code: "mtn_momo".to_owned(),
+        display_name: "MTN MoMo".to_owned(),
+        flow: "push".to_owned(),
+        supports_refunds: false,
+        supports_partial_refunds: false,
+        delivers_callbacks: true,
+        requires_ip_allowlist: false,
+        enabled: true,
+    };
+    repositories
+        .reconcile(&currencies, std::slice::from_ref(&restored))
+        .await
+        .context("re-enabling a rail must succeed")?;
+    assert_eq!(
+        full_provider_row(&pool, "mtn_momo").await?,
+        (
+            "mtn_momo".to_owned(),
+            "MTN MoMo".to_owned(),
+            "push".to_owned(),
+            false,
+            false,
+            true,
+            false,
+            true,
+        ),
+        "an operator who turns a rail back on must get it back. An `enabled` of `false` here \
+         means reconcile can disable a rail but not re-enable one — check that the disable pass \
+         still excludes configured codes (`WHERE code <> ALL($1)`) and that it still runs AFTER \
+         the upserts, not before them"
+    );
+
     Ok(())
 }
 
