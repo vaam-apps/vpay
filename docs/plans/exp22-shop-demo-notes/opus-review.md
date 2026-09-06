@@ -37,7 +37,7 @@ one transition and missed for the other. The other four MTN numbers are
 decided by the **status query**, which is the worker's path, and are correct
 as documented.
 
-Fixed: the row now reads `unpaid` and carries a `note` rendered both in the
+Fixed (commit `e56e44a`, which also carries R8): the row now reads `unpaid` and carries a `note` rendered both in the
 README and in the panel; `TestNumber.orderStatus` gained `"unpaid"` and a
 required `note` for any row that does not settle, pinned by a new case in
 `test-numbers.test.ts`. The fact itself is now a **gate**:
@@ -75,7 +75,7 @@ already created an order and cleared the cart, the rejection was not a
 `message` listener and close poll leaked because `stop()` is only reached
 above that line.
 
-Fixed with the `href` setter. `stubPopup` in `popup.test.ts` now models a
+Fixed with the `href` setter (commit `38aa6cd`, which also carries R4 and R5's documentation). `stubPopup` in `popup.test.ts` now models a
 cross-origin `Location` (`assign()` throws), so pointing the code back at
 `assign` fails 17 of the 27 cases rather than none.
 
@@ -99,8 +99,8 @@ Neither is a security hole — both fail closed — and neither was written down
   `completionOrigin` to the opener's, so the browser drops the message —
   and `notifyCheckoutOpener` still answers `true`.
 
-Fixed: both written into `sdks/stripe-js/README.md`, and the shop's return
-page now passes `close: false` — the opener closes the window itself on a
+Fixed: both written into `sdks/stripe-js/README.md` (in `38aa6cd`), and the
+shop's return page now passes `close: false` (`1b493af`) — the opener closes the window itself on a
 message it actually recognised, which is the only case in which it should be
 closed.
 
@@ -126,8 +126,11 @@ Corrected in `opus.md`.
 `test-numbers.test.ts` proves the README and the module agree. It does not
 prove either agrees with the WireMock mappings, which is where the outcome
 actually comes from — the table could name a number no mapping steers and
-both copies would still agree. Added a case that reads the rail stubs' own
-mapping files.
+both copies would still agree. Added a case that reads the rail stubs' own mapping
+files and asserts each failing number is keyed on by some mapping's
+`request` (never by its `metadata`, which is prose). Decisive: renumbering
+`…503` to `…504` in *both* the module and the README leaves the
+README-agreement case green and fails this one.
 
 ## Maintainer decisions surfaced, not taken
 
@@ -153,3 +156,108 @@ Three ways out, and the choice is not this review's:
 It is the same question as D5 (`payment_intent.canceled`) with a different
 transition, and answering one without the other would leave the taxonomy
 half-emitted.
+
+## What was run
+
+### `just ci`, on `ce88aae` and on the final head
+
+Recipe by recipe, with counts, in the report accompanying this branch. The
+one thing worth recording here is the failure that is **not** this change:
+`just test-rust` failed twice on `ce88aae` with
+`failed to create a container: Timeout error` and
+`Client(CreateContainer(RequestTimeoutError))` — a 120 s bollard timeout, on
+two *different* tests, on a host carrying a load average of ~24 with other
+agents' suites and compose stacks running. Eight `Created` containers were
+left stranded by those timeouts and pruned. This is the same failure the
+implementer reported three times and it is environmental: nothing in this
+branch touches container start-up, and every test that timed out passed in a
+later run.
+
+### Cypress — it runs, and everything passes
+
+The claim that it could not be run here is R6. What actually happened:
+
+* `pnpm exec cypress install` → `Cypress 15.21.1 is installed in
+  ~/.cache/Cypress/15.21.1`; `pnpm exec cypress verify` → `Verified Cypress!`
+* `just demo_project=exp22-review demo_port=18280 demo_receiver_port=18283
+  demo_orange_port=18282 demo_checkout_port=18285 demo_shop_port=18286
+  test-e2e` — one compose stack of the review's own, on its own project and
+  its own ports, torn down with `down -v` by the recipe.
+* **11 tests, 11 passing, 0 failing, 0 pending, 0 skipped, exit 0.**
+  `checkout.cy.ts` 1, `dashboard.cy.ts` 3, `shop-hosted.cy.ts` 3 (MTN → paid
+  via the webhook; **Orange redirect → paid**, 64.6 s; a payment that does
+  not succeed lands on `cancel_url` and never becomes `paid`),
+  `shop-embedded.cy.ts` 4 (frame `src` and `frame-ancestors`, MTN inside the
+  frame → paid, Orange breaking out to `return_url`, and a refusal to be
+  framed by an unregistered origin).
+
+So `ce88aae`'s spec repairs are correct, and its "**Neither spec was run**"
+is now "both were, and both pass". **No popup was opened by any of this**:
+there is still no spec that opens one, so `docs/sdks/parity.md`'s dated ⛔ and
+the 🟡 on the popup row are untouched and remain accurate.
+
+### ZenStack 3, against a real Postgres
+
+Run against a throwaway `postgres:16-alpine` on a port of the review's own,
+removed afterwards. Every cell of the implementer's v2→v3 table reproduced:
+
+| Call | Result |
+|---|---|
+| `product.create` | throws `operation is rejected by access policies` |
+| `product.deleteMany({})` | `{count: 0}`; 5 catalogue rows before and after |
+| `order.deleteMany({})`, `orderItem.deleteMany({})`, `webhookEvent.updateMany`, `webhookEvent.deleteMany` | each `{count: 0}`; the order row survives and the event's `type` is unchanged |
+| one payer reading another's order by id | **allowed** — there is no principal, exactly as `schema.zmodel` and the README say |
+
+`zen migrate deploy` applied all three migrations from empty, and
+`zen migrate dev --create-only` afterwards produced a 30-byte "This is an
+empty migration" — so the zmodel and the committed migrations agree. The
+silent `{count: 0}` on a denied bulk write is documented where a developer
+will meet it: the header of `policies.test.ts`, the "ZenStack, honestly"
+section of `examples/shop/README.md`, and `docs/status.md`'s ZenStack 3 row.
+
+The brief asked whether "a customer reading another customer's order is
+refused". It is not, and that is not a defect of this branch: the shop is
+guest checkout with no principal, the zmodel says so in a comment, the README
+says so in prose, and `docs/status.md` carries it as a named 🟡 gap. A
+`@@allow('all', auth() != null)` there would be a claim of protection this
+shop cannot make.
+
+### The worker's first poll (the Orange race)
+
+Confirmed by reading the code, not by re-measuring:
+`vpay_api::v1::payment_intents::insert_charge` enqueues `poll_charge` with
+`run_at = OffsetDateTime::now_utc()` in the same transaction as the charge —
+so `poll_delay(0)` really is the delay before the *second* attempt, and the
+implementer's corrected account of D1 (T+449 ms against ~12 s to type) is
+right. The stub was left alone, as the brief directs.
+
+## Mutations
+
+Each was applied, the named suite run, and the mutation reverted.
+
+| # | Mutation | Suite | Result |
+|---|---|---|---|
+| M1 | delete the `event.origin !== completionOrigin` check in `popup.ts` | `sdks/stripe-js` `popup.test.ts` | **2 failed** / 24 passed |
+| M2 | delete the `event.source !== popup` check | same | **1 failed** / 25 passed |
+| M3 | drop `$use(new PolicyPlugin())` from `src/server/db.ts` | shop `policies.test.ts` | **1 failed** / 5 passed |
+| M4 | widen `Product` to `@@allow('all', true)` and regenerate | same | **1 failed** / 5 passed |
+| M5 | change the README's `…503` row to `provider_error` | shop `test-numbers.test.ts` | **1 failed** |
+| M6 | `provider_unavailable.retryable = false` | shop `failures.test.ts` | **1 failed** / 7 passed |
+| M7 | put `popup.location.assign(url)` back | `popup.test.ts` | **17 failed** / 10 passed — 0 before the fix |
+| M8 | renumber `…503` → `…504` in **both** the module and the README | shop `test-numbers.test.ts` | README-agreement case **passes**, the new stub cross-check **fails** — which is the whole reason R8 exists |
+
+## Not checked
+
+* **No popup was opened by a real browser**, by this review or by anything
+  else. The parity ⛔ is accurate and stays.
+* **`ZenStackShopStore` still has no automated test of its own.** The review
+  drove it indirectly through the Cypress specs and directly by hand through
+  the policy probe above, and asserted nothing about the class itself. The 🟡
+  in `docs/status.md` is unchanged and honest.
+* **The Orange test numbers still do not work from a browser**, and the
+  review did not try to make them: fixing the stub is a maintainer decision
+  (D1), and `shop-hosted.cy.ts`'s Orange case reaching `paid` in 64.6 s is
+  exactly the race the branch documents, not evidence against it.
+* **`payer_declined` is still emitted by no adapter** (the branch's D2);
+  nothing here changed that.
+* `frontends/apps/checkout` was not touched or reviewed — exp21 owns it.
