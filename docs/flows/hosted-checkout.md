@@ -474,16 +474,29 @@ two uses of the list are separate expressions so that widening one cannot
 widen the other. `the hosted page > NEVER lets that list reach its CSP` is the
 test, and it was measured failing with the guard removed.
 
-**The popup's return trip is not wired, and that is a real gap.** After a
-redirect rail sends the payer back to `/c/{id}/return`, that page's referrer
-is the *rail's* origin, so there is nothing to resolve an opener from and the
-return page opens no channel: it forwards top-level **inside the popup**, and
-the merchant's own window hears nothing until it asks its own backend. So the
-popup shape is complete for a push rail (MTN) and incomplete for a redirect
-rail (Orange). The obvious repair — pin the opener to the merchant's single
-registered origin when there is exactly one — is **left to the maintainer**,
-because it is a `postMessage` target chosen by a rule rather than by an
-observed referrer, and that is a security decision, not a wiring one.
+**The popup's return trip is wired by a different rule** (the maintainer's
+decision, 2026-09-06). After a redirect rail sends the payer back to
+`/c/{id}/return`, that page's referrer is the *rail's* origin, so
+`resolveParentOrigin` has nothing to match and the popup would end with the
+merchant's window hearing nothing. So the return page resolves its opener
+with `soleOrigin` instead: **when the merchant has registered exactly one
+`checkout_origins` entry, that is the target; with none or with several,
+there is no channel.**
+
+The reasoning, in the maintainer's own terms: with one registered origin the
+`postMessage` target *is* the merchant's own origin, which is the only party
+the message could ever have been for — so the worst case is a message
+delivered to its intended reader. With two or more, picking one would be
+choosing a target by guess, on a page that has just come back from a third
+party, and the page stays silent instead.
+
+Everything else about the popup holds here unchanged: `vpay:complete` at most
+once, the button closes the window, and an opener that has gone means the page
+navigates itself to `success_url`/`cancel_url` rather than closing. `soleOrigin`
+counts **after** normalising, so one malformed registered origin is none rather
+than one to pin to. `middleware.ts` resolves the list for `/c/{id}/return` as
+well, and — the third path it now does that for — **its CSP is still
+`frame-ancestors 'none'`**.
 
 ## Where the headers come from
 
@@ -688,8 +701,10 @@ daisyUI's `bumblebee` theme and Base UI component defaults replace
 five-second auto-forward is gone and a named "Back to {merchant}" button is
 the only way off them; `branding.yaml` and `config.yaml` are read at
 container start; and the page can remember a payer's number and last method
-on their own device, opt-in and clearable. **429 vitest cases in 23 files, 0
-skipped** (was 302 in 17). What has *not* changed: no rail behind this page
+on their own device, opt-in and clearable. **442 vitest cases in 22 files, 0
+skipped** (was 302 in 17). The popup peer and the return trip's `soleOrigin`
+rule landed the same day, at the `examples/shop` track's request and by the
+maintainer's decision respectively. What has *not* changed: no rail behind this page
 has ever been anything but a WireMock host, and the four "what is not built"
 entries above are joined by five more.
 

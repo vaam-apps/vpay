@@ -50,18 +50,22 @@ const EMBEDDED_PATH = /^\/e\/[^/]+\/?$/;
  * framed, popup or not, and the two uses of this list are kept apart below
  * so that widening one cannot widen the other.
  *
- * The return page is excluded deliberately: after a rail's redirect its
- * referrer is the *rail's* origin, so there is nothing there to resolve an
- * opener from. See `docs/flows/hosted-checkout.md`.
+ * The **return** page needs it too, since the maintainer's decision of
+ * 2026-09-06, but for a third reason again: its referrer is the *rail's*
+ * origin, so it resolves an opener by a different rule — the merchant's
+ * single registered origin, where there is exactly one (`soleOrigin`).
  */
 const HOSTED_PATH = /^\/c\/[^/]+\/?$/;
+
+/** `/c/{cs_id}/return`. Same lookup, `soleOrigin`'s rule, still `frame-ancestors 'none'`. */
+const RETURN_PATH = /^\/c\/[^/]+\/return\/?$/;
 
 export async function middleware(request: NextRequest): Promise<NextResponse> {
   const path = request.nextUrl.pathname;
   const embedded = EMBEDDED_PATH.test(path);
   let origins: readonly string[] = [];
 
-  if (embedded || HOSTED_PATH.test(path)) {
+  if (embedded || HOSTED_PATH.test(path) || RETURN_PATH.test(path)) {
     const key = request.nextUrl.searchParams.get('key');
     const baseUrl = serverApiBaseUrl();
     if (key !== null && key.length > 0 && baseUrl !== null) {

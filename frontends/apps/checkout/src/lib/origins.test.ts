@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { normalizeOrigins, originOf, resolveParentOrigin } from './origins';
+import { normalizeOrigins, originOf, resolveParentOrigin, soleOrigin } from './origins';
 
 describe('originOf', () => {
   it('returns the origin of an absolute http(s) URL', () => {
@@ -79,5 +79,28 @@ describe('resolveParentOrigin', () => {
     expect(resolveParentOrigin('https://shop.example.evil.test/', allowed)).toBeNull();
     expect(resolveParentOrigin('http://shop.example/', allowed)).toBeNull();
     expect(resolveParentOrigin('https://shop.example:8443/', allowed)).toBeNull();
+  });
+});
+
+describe('soleOrigin', () => {
+  it('answers the origin when a merchant registered exactly one', () => {
+    expect(soleOrigin(['https://shop.example'])).toBe('https://shop.example');
+  });
+
+  it('answers null for none, and for more than one', () => {
+    // The return page's rule (2026-09-06). Zero is the default and means no
+    // site may be talked to; two or more would mean choosing a
+    // `postMessage` target by guess.
+    expect(soleOrigin([])).toBeNull();
+    expect(soleOrigin(['https://a.example', 'https://b.example'])).toBeNull();
+  });
+
+  it('counts AFTER normalising, so one malformed entry is none', () => {
+    expect(soleOrigin(['https://shop.example/pay'])).toBeNull();
+    expect(soleOrigin(['https://Shop.example'])).toBeNull();
+    // And a duplicate collapses to one rather than reading as two.
+    expect(soleOrigin(['https://shop.example', 'https://shop.example'])).toBe(
+      'https://shop.example',
+    );
   });
 });

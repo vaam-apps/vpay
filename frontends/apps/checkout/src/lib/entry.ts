@@ -9,7 +9,7 @@
  * refuses without touching the API — and therefore without a hostile framer
  * learning whether the session id in the URL exists.
  */
-import { resolveParentOrigin } from './origins';
+import { resolveParentOrigin, soleOrigin } from './origins';
 import { parsePageCredentials } from './link';
 import type { CheckoutErrorCode } from './types';
 
@@ -107,13 +107,30 @@ export function decideEntry(input: EntryInput): EntryDecision {
 
 /** The return page's version: a token in the query, and a key from wherever one is. */
 export type ReturnEntryDecision =
-  | { kind: 'ready'; key: string; returnToken: string }
+  | {
+      kind: 'ready';
+      key: string;
+      returnToken: string;
+      /**
+       * The opener to report completion to, when this page is the last
+       * screen of a **popup** checkout, or `null`.
+       *
+       * Resolved by a different rule from the payment page's, and it has to
+       * be: a payer arriving here came from the *rail*, so `document.referrer`
+       * names Orange and not the merchant. See `soleOrigin`.
+       */
+      openerOrigin: string | null;
+    }
   | { kind: 'error'; code: CheckoutErrorCode };
 
 export function decideReturnEntry(input: {
   search: string;
   /** `recallPublishableKey`'s answer, or `null`. */
   rememberedKey: string | null;
+  /** `window.opener !== null`. Absent means "no opener". */
+  hasOpener?: boolean | undefined;
+  /** The origins `middleware.ts` resolved for this key. Absent means "none". */
+  allowedOrigins?: readonly string[] | undefined;
 }): ReturnEntryDecision {
   const query = new URLSearchParams(
     input.search.startsWith('?') ? input.search.slice(1) : input.search,
@@ -126,5 +143,11 @@ export function decideReturnEntry(input: {
   if (key === null || key.length === 0) {
     return { kind: 'error', code: 'error.missing_key' };
   }
-  return { kind: 'ready', key, returnToken: token };
+  return {
+    kind: 'ready',
+    key,
+    returnToken: token,
+    openerOrigin:
+      input.hasOpener === true ? soleOrigin(input.allowedOrigins ?? []) : null,
+  };
 }

@@ -1,7 +1,7 @@
 # exp21 — the checkout page restyled and made runtime-configurable
 
 Working notes for the change described in
-[`../../flows/hosted-checkout.md`](../../flows/hosted-checkout.md)'s three new
+[`../../flows/hosted-checkout.md`](../../flows/hosted-checkout.md)'s four new
 sections. Branch `claude/exp21-checkout-page`, base `06e27f9`.
 
 The maintainer's four requirements (2026-09-05) and what happened to each:
@@ -14,8 +14,13 @@ The maintainer's four requirements (2026-09-05) and what happened to each:
 | 4 | Page memory: prefill number and method; **PIN vault** in IndexedDB | number and method done; **the PIN vault was refused** — see below |
 
 A fifth item arrived mid-task from the `examples/shop` track: **the popup
-peer**. Done, with three deliberate departures, all recorded in the flow doc's
-"The popup, and why it is a third peer".
+peer** — a popup is not a frame, so `window.parent === window` inside one and
+vpay said nothing to a merchant who opened the hosted page with
+`window.open`. Done, with three deliberate departures, all recorded in the
+flow doc's "The popup, and why it is a third peer".
+
+A sixth followed it: the maintainer took the return-trip decision that item 4
+of §2 had surfaced, and it is built — see that entry.
 
 ---
 
@@ -65,12 +70,16 @@ taken.**
    by this branch** and visible in `outcomes-hosted.png`; AGENTS.md forbids
    inlining a status colour in a component, so fixing it means changing the
    tokens package, which is a different change with a different blast radius.
-4. **The popup's return trip is not wired.** After a redirect rail, the return
-   page's referrer is the *rail's* origin, so there is nothing to resolve an
-   opener from. The popup shape is complete for MTN and incomplete for Orange.
-   The obvious repair — pin the opener to the merchant's single registered
-   origin where there is exactly one — is a `postMessage` target chosen by a
-   rule rather than by an observed referrer, which is a security decision.
+4. ~~**The popup's return trip is not wired.**~~ **Taken by the maintainer,
+   same day, and built**: the return page pins its opener with `soleOrigin`
+   — the merchant's single registered `checkout_origins` entry where there is
+   exactly one, and no channel with none or with several. The rationale
+   recorded with the decision: with one registered origin the `postMessage`
+   target *is* the merchant's own origin and is the only party the message
+   could ever have been for, so the worst case is a message delivered to its
+   intended reader. `soleOrigin` counts after normalising, so one malformed
+   registered origin is none rather than one to pin to. Six unit cases in
+   `entry.test.ts`, three in `origins.test.ts`, five in `return.test.ts`.
 5. **The chart templates no ConfigMap for either YAML file**, so a Kubernetes
    deployment has no supported way to supply them. `compose.demo.yml` mounts
    them; the chart was left alone because `just helm-check` needs the network
@@ -168,6 +177,9 @@ not testing.
 | `entry.ts`: never resolve an opener | **1 failed** |
 | `screens.tsx`: outcome button loses the merchant's name | **17 failed** |
 | `settings.ts`: swallow a wrong-typed key instead of reporting it | **1 failed** |
+| `origins.ts`: `soleOrigin` pins the first of several instead of refusing | **1 failed** |
+| `entry.ts`: the return page never pins an opener | **1 failed** |
+| `middleware.ts`: the return page's CSP takes the resolved list | **3 failed** |
 
 **One mutation survived on the first pass and produced a code change**:
 `checkout-client.tsx` with `offered: true` hard-coded passed all 426 tests.
@@ -192,6 +204,6 @@ mutation:
 `just ci`, recipe by recipe, is recorded at the end of the branch's final
 commit message and in the report. The numbers that moved:
 
-- `just test-web` — `@vpay/checkout` **302 → 429 vitest cases in 23 files, 0
+- `just test-web` — `@vpay/checkout` **302 → 442 vitest cases in 22 files, 0
   skipped**.
 - Nothing under `backends/` was touched, so the Rust numbers are `master`'s.

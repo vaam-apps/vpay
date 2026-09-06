@@ -107,12 +107,18 @@ describe('the hosted page', () => {
     );
   });
 
-  it('asks nothing for the RETURN page, whose referrer is the rail’s', async () => {
+  it('resolves the list for the RETURN page too, and still sends no frame-ancestors', async () => {
+    // The return page pins an opener by a different rule (`soleOrigin`),
+    // because its referrer is the RAIL's — but it needs the same list to
+    // apply that rule to. Its CSP is unchanged.
     const { impl, calls } = originsFetch(['https://shop.example']);
     vi.stubGlobal('fetch', impl);
     const response = await middleware(request('/c/cs_1/return?t=tok&key=pk_test_1'));
-    expect(calls).toEqual([]);
+    expect(calls).toEqual([`${API}/v1/browser/checkout/origins?key=pk_test_1`]);
     expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+    expect(response.headers.get('x-middleware-request-x-vpay-embed-origins')).toBe(
+      'https://shop.example',
+    );
   });
 });
 
