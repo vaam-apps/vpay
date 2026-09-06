@@ -1,11 +1,26 @@
 //! Resource-server JWT validation for vpay's two protected HTTP surfaces:
 //! `/v1` (merchant, ADR-0010) and `/dash/v1` (dashboard, ADR-0009).
 //!
-//! STATUS: the merchant half is live and guards real rows —
-//! [`crate::require_merchant_token`] validates through [`MerchantJwtValidator`]
-//! and is mounted in front of the whole `/v1` nest. The dashboard half is
-//! unmounted: [`AuthenticatedDashboard`] exists, no `/dash/v1/*` route does,
-//! and nothing constructs a [`DashboardJwtValidator`].
+//! STATUS, corrected 2026-09-06. The merchant half is live and guards real
+//! rows — [`crate::require_merchant_token`] validates through
+//! [`MerchantJwtValidator`] and is mounted in front of the whole `/v1` nest.
+//!
+//! This paragraph used to say the dashboard half was unmounted, that no
+//! `/dash/v1/*` route existed and that nothing constructed a
+//! [`DashboardJwtValidator`]. All three stopped being true on 2026-09-06:
+//! [`crate::require_dashboard_token`] validates through
+//! [`DashboardJwtValidator`] in front of two `GET` routes
+//! ([`crate::dash::DASH_ROUTES`]), and `vpay-server`'s `main` builds one
+//! whenever the deployment registers a `dashboard_client`.
+//!
+//! What is still true, and is the sentence that matters: **no grant this
+//! deployment serves can mint a token for that surface**, so it is a resource
+//! server with no issuer. See `crate::dash`'s module header and
+//! `docs/flows/dashboard.md`.
+//!
+//! [`AuthenticatedDashboard`], the *extractor*, is genuinely mounted on
+//! nothing and remains so — `/dash/v1` validates once in middleware, for
+//! [`crate::require_merchant_token`]'s reason.
 //!
 //! Validation is local — `crate::jwks_cache` (private) caches the JWKS and every check
 //! after the first verifies the signature from memory. The one input that can

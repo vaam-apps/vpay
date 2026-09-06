@@ -343,9 +343,19 @@ auth).
 in front of the whole `/v1` nest by `vpay_api::router`, and `vpay-server` builds
 the validator behind it against this process's own JWKS. Behind that boundary is
 `/v1/payment_intents`, whose every query is filtered by the tenant the
-middleware resolved. The dashboard half is unmounted — `AuthenticatedDashboard`
-exists, no `/dash/v1/*` route does, and nothing constructs a
-`DashboardJwtValidator`.
+middleware resolved.
+
+**Corrected 2026-09-06.** This paragraph used to end "the dashboard half is
+unmounted — `AuthenticatedDashboard` exists, no `/dash/v1/*` route does, and
+nothing constructs a `DashboardJwtValidator`". All three clauses are now
+false: `require_dashboard_token` validates through a `DashboardJwtValidator`
+in front of two `GET` routes, and `vpay-server` builds one whenever the
+deployment registers a `dashboard_client` — see
+[the dashboard surface](#the-dashboard-surface-dash). What is still true is
+the sentence that matters: no grant this deployment serves can mint a token
+for that surface. `AuthenticatedDashboard`, the extractor, is mounted on
+nothing and stays that way; `/dash/v1` validates once in middleware, for the
+merchant boundary's reason.
 
 ### Validation is local, not a network round trip per request
 
