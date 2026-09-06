@@ -1072,9 +1072,19 @@ verify-docs:
 # because its configuration is different in the one way that matters (it
 # registers a `dashboard_client`, and every other suite must keep registering
 # none, so that `/dash/v1` stays a 404 in all of them). Measured the way
-# `verify-ignored` measures it, on this branch: **1418 total, 44 test
-# binaries, 0 ignored**. The 1080 floor stands untouched — 44 new tests is
-# not a reason to move a floor whose job is catching a binary that vanished.
+# `verify-ignored` measures it, on this branch: **1421 total, 44 test
+# binaries, 0 ignored**. The 1080 floor stands untouched — thirteen new tests
+# is not a reason to move a floor whose job is catching a binary that
+# vanished.
+#
+# 1418 -> 1421 later the same day, in the sabotage review of that branch: the
+# suite went from ten cases to thirteen and nothing else moved, so the binary
+# count is unchanged and this line is the only number that had to. The three
+# are the ones that made three mutations observable — the detail timeline and
+# refunds actually rendering, a list cursor from another tenant positioning
+# nothing, and a write method refused by the boundary rather than by the
+# route table. `expected_suites` is deliberately NOT touched by any of them;
+# a new case is not a new binary.
 expected_ignored := "0"
 expected_suites := "44"
 # A floor, not a target — set a little under the measured 1059

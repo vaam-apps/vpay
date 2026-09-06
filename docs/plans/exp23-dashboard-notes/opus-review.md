@@ -202,6 +202,38 @@ handler renders the same object and has no such assertion.
 - **`/dash/v1` rather than `/dashboard/v1`** is correct: the brief was wrong
   and two accepted ADRs say `/dash/v1`.
 
+## Phase 2 — what was fixed, and the proof
+
+One commit per finding. Every test added was run against the mutation it
+exists for, on a clean tree, and the mutation reverted.
+
+| finding | commit | decisive mutation, re-run **after** the fix |
+|---|---|---|
+| F1 | `test(dash): the detail timeline and refunds are proven to render…` | M8 (`Ok(vec![])` from both reads) now fails `the_detail_read_renders_the_timeline_and_the_refunds_it_has`; M9 (neutralise `list_for_objects`' `merchant_id` predicate, both binds kept) fails the same test |
+| F2 | `test(dash): a list cursor from another tenant positions nothing` | M10 (drop `AND merchant_id = $1` from both cursor subqueries) now fails `a_cursor_naming_another_merchants_intent_answers_an_empty_page` |
+| F3 | `test(dash): a write method is refused by the boundary…` | M7 (`required_scope` answers the read scope for every method) now fails `a_write_method_is_refused_by_the_boundary_not_by_the_route_table` |
+| F4 | `docs(dash): required_scope's doc said 405…` | doc only; the behaviour it describes is now also pinned by F3's test |
+| F5 | `docs(dash): the charge read is NOT tenant-scoped…` | doc only |
+| F6 | `docs: retire 'the dashboard half is unmounted'…` | doc only |
+| F7 | `docs(dash): record that the client_id check cannot survive…` | deliberately not fixed — maintainer decision |
+| F8 | `fix(config): the two new boot-refusal messages had a ten-space gap` | both formats rendered standalone: one line, single spaces |
+| F9 | `docs(config): the sandbox overlay's comment omitted…` | doc only |
+| F10 | `test(dash): the payments LIST is asserted free of client_secret too` | M11 (render `PaymentIntentWithSecret` in the list) fails `the_dashboard_lists_only_the_merchant_it_is_bound_to` |
+
+No test was weakened and no assertion removed. The suite went 10 -> 13 cases;
+`expected_suites` stays 44, because a new case is not a new binary.
+
+### Mutations re-run after the fixes
+
+| # | before | after |
+|---|---|---|
+| M7 | not caught | **caught** — `a_write_method_is_refused_by_the_boundary_not_by_the_route_table` |
+| M8 | not caught | **caught** — `the_detail_read_renders_the_timeline_and_the_refunds_it_has` |
+| M9 | (not run before) | **caught** — same test |
+| M10 | not caught | **caught** — `a_cursor_naming_another_merchants_intent_answers_an_empty_page` |
+| M11 | (new) | **caught** — `the_dashboard_lists_only_the_merchant_it_is_bound_to` |
+| M6 | not caught | **still not caught**, and deliberately so — see the implementer's note; the conditional mount and the middleware's `None` guard answer the same 404 independently, and both are kept |
+
 ## Not checked
 
 - The frontend. `frontends/apps/dashboard` is byte-identical to the base
