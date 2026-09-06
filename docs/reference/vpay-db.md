@@ -1391,6 +1391,21 @@ are acceptable is that a container-backed test makes each red, and neither is
 detectable by `just check-schema`, `cargo build`, `just clippy` or any of the
 ten `just verify` gates.
 
+**And, since 2026-09-06, by a test that needs no container.** The four
+mutations above were re-run by the sabotage review, and every one of them left
+`cargo nextest run -p vpay-db --lib` green at 26 passed — the whole
+database-free half of the gate was blind to every policy hole.
+`ModelDescriptor` publishes one `&'static [ReadPolicy]` per action slot and
+`push_allow_policy_query` renders the literal `FALSE` for an empty one, so
+"is this slot empty" is the runtime question itself, askable in a unit test:
+`disabled_clients::tests::every_action_this_crate_calls_has_an_allow_arm`
+asserts all four are occupied and no `@@deny` has appeared, and is red under
+each of the four mutations in about 4 ms. It is not a substitute for the
+container tests — a non-empty slot does not say the policy admits *this*
+caller, which is the thing `auth().isSystem()` has to get right — it removes
+the wait to learn that a slot is empty. Any second model this crate reaches
+through CrateStack should copy it.
+
 Two other things that follow from the same mechanism and are not obvious:
 
 - **`@@allow("create", ...)` alone is not enough for an upsert.** Both slots

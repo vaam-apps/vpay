@@ -3263,6 +3263,21 @@ by a generated read, agreeing with itself — the exact thing that test's own
 doc comment disclaimed. It seeds with an inline `INSERT` and removes with an
 inline `DELETE` now, deliberately not shared with the new write test.
 
+**The gate that was blind, and now is not (review, 2026-09-06).** Every one
+of the four mutations above was re-run by the sabotage review, and all four
+reproduced — *and* all four left `cargo nextest run -p vpay-db --lib` green at
+26 passed. The database-free half of the gate could not see a single missing
+`@@allow` arm, including the two whose runtime effect is silent. `vpay-db`'s
+unit suite now carries
+`disabled_clients::tests::every_action_this_crate_calls_has_an_allow_arm`,
+which reads the four `&'static [ReadPolicy]` slots off the compiled
+`ModelDescriptor` and fails in 4 ms with no Docker; deleting each arm in turn
+was re-run against it and it is red four times out of four. It does not
+replace the container tests — a non-empty slot is not the same claim as "the
+policy admits this caller" — it removes the wait to find out that a slot is
+empty. Details and the transcripts:
+[docs/plans/exp16-notes/opus-review.md](plans/exp16-notes/opus-review.md).
+
 **Stays `NotImplemented`: nothing.** No function gained a stub, no test was
 weakened, and no `#[ignore]` was added.
 
@@ -3290,6 +3305,11 @@ skipped** across 43 binaries in 689.775 s — 1369 plus this change's three (two
 `vpay-db` unit tests and one integration test; no new test binary, so
 `expected_suites` stays 43 and `min_tests` stays 1080). The container-backed
 drift test was re-run separately and passes with its constants unmoved.
+
+**Re-measured by the review on the same day: 1373 / 43 binaries / 0 skipped,
+`-p vpay-db --lib` 27**, after the review added the policy-slot test described
+below. `just test-doc` **96 passed, 1 ignored** and all ten `just verify`
+gates unchanged; `just ci` green end to end.
 
 The first of the two `just test-rust` runs failed one test —
 `webhooks the_delivered_signature_verifies_with_the_shipping_node_sdk`, with

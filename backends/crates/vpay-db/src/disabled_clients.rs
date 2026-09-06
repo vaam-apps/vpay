@@ -368,4 +368,90 @@ mod tests {
             "the model name the error carries must not be blank"
         );
     }
+
+    /// Every action this crate calls on `DisabledClient` has an `@@allow`
+    /// arm — asserted against the **compiled descriptor**, with no database.
+    ///
+    /// This exists because of a measurement, not a worry. On 2026-09-06 each
+    /// of the four `@@allow` lines was deleted from `schemas/vpay.cstack` in
+    /// turn and the suites re-run
+    /// ([docs/plans/exp16-notes/opus-review.md](../../../../docs/plans/exp16-notes/opus-review.md)
+    /// § 3): `cargo build`, `just clippy`, `just check-schema` and all ten
+    /// `just verify` gates stayed green every time, **and so did `cargo
+    /// nextest run -p vpay-db --lib`, 26 passed, four times out of four.**
+    /// The only thing that went red was a Postgres-backed test. Two of the
+    /// four holes are silent at runtime — a missing `read` leaves the kill
+    /// switch OFF and every revoked client admitted, a missing `delete`
+    /// leaves a client permanently revoked — so "you need Docker to find out"
+    /// was the entire safety net under a control this table exists to
+    /// provide.
+    ///
+    /// `ModelDescriptor` publishes one `&'static [ReadPolicy]` per slot and
+    /// `push_allow_policy_query` renders the literal `FALSE` for an empty
+    /// one, so "is this slot empty" *is* the runtime question, asked at the
+    /// speed of a unit test. This does not replace the container tests: they
+    /// prove the policy admits *this* caller, which a non-empty slot does
+    /// not. It replaces waiting for them to find out that a slot is empty.
+    ///
+    /// The `detail` assertion is doing a second job and is deliberately
+    /// `== 1` rather than `!is_empty()`. `model DisabledClient` declares no
+    /// `detail` and no `list` arm, so the only way that slot can be occupied
+    /// is `cratestack-macros`' `model/descriptor.rs:45-47` compiling
+    /// `@@allow("read", …)` into **both** `&["list", "read"]` and
+    /// `&["detail", "read"]`. It is the executable form of the correction in
+    /// F1: `@@allow("all", …)` would not have granted `list`/`detail` that
+    /// the four arms withhold, because `read` already grants them.
+    #[test]
+    fn every_action_this_crate_calls_has_an_allow_arm() {
+        use crate::schema::cratestack_schema::models::DISABLED_CLIENT_MODEL as model;
+
+        assert!(
+            !model.read_allow_policies.is_empty(),
+            "`@@allow(\"read\", auth().isSystem())` is missing from `model DisabledClient`: \
+             `is_client_disabled` would answer `Ok(false)` for every client and the kill \
+             switch would be silently OFF"
+        );
+        assert!(
+            !model.create_allow_policies.is_empty(),
+            "`@@allow(\"create\", …)` is missing: `disable_client` would fail every insert \
+             with `Forbidden` -> `PersistenceError::Denied` -> `Category::Internal`"
+        );
+        assert!(
+            !model.update_allow_policies.is_empty(),
+            "`@@allow(\"update\", …)` is missing: `disable_client` would succeed the first \
+             time and fail the second, because only the conflict branch consults this slot"
+        );
+        assert!(
+            !model.delete_allow_policies.is_empty(),
+            "`@@allow(\"delete\", …)` is missing: `enable_client` would remove nothing and \
+             return `Ok`, leaving a client revoked with nothing said — `delete_many` \
+             compiles its policy into the WHERE, where an empty allow list is `FALSE`"
+        );
+
+        assert_eq!(
+            model.detail_allow_policies.len(),
+            1,
+            "`@@allow(\"read\", …)` is compiled into the `detail` slot as well as the `list` \
+             one, and `model DisabledClient` declares no `detail` arm of its own — so this \
+             is 1 or the macro's action lists have changed"
+        );
+
+        // Nothing denies, and a `@@deny` would win over every arm above
+        // (`push_action_policy_query` wraps the allow list in `NOT (<deny>)
+        // AND (…)`), so an accidental one is worth failing on here rather
+        // than in a container.
+        for (slot, denies) in [
+            ("read", model.read_deny_policies),
+            ("detail", model.detail_deny_policies),
+            ("create", model.create_deny_policies),
+            ("update", model.update_deny_policies),
+            ("delete", model.delete_deny_policies),
+        ] {
+            assert!(
+                denies.is_empty(),
+                "`model DisabledClient` grew a `@@deny(\"{slot}\", …)`; it overrides every \
+                 `@@allow` for that action and no call site in this crate expects one"
+            );
+        }
+    }
 }
