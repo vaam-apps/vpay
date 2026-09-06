@@ -417,6 +417,18 @@ impl ConfigReconcile for crate::repository::PgRepositories {
             // consequence, recorded because it inverts the currency finding:
             // with no row lock held here, `.run(&ctx)` fails in 1.2 s instead
             // of deadlocking. See docs/reference/vpay-db.md § CrateStack.
+            //
+            // What the conflict probe needs in exchange, and it is a real
+            // constraint rather than an incidental one: this transaction has
+            // to be able to SEE a row another writer committed while it was
+            // waiting on the advisory lock above. That is READ COMMITTED,
+            // Postgres's default and the one `pool.begin()` opens.
+            // `a_reconcile_that_waited_for_the_boot_lock_overwrites_what_the_holder_committed`
+            // in `tests/repositories.rs` is what pins it: under `SET
+            // TRANSACTION ISOLATION LEVEL REPEATABLE READ` the snapshot is
+            // taken when the lock statement starts, the probe cannot see the
+            // committed row, and boot fails with `40001` (measured
+            // 2026-09-06; no other reconcile case notices).
             self.cs
                 .provider()
                 .upsert(input)

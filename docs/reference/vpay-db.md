@@ -1739,6 +1739,18 @@ is the assertion that fails; the currency equivalent had to be written
 specifically because its mutation produced `SLOW [>480.000s]` and no error at
 all.
 
+What the conflict probe needs in exchange is **READ COMMITTED**, and that is a
+real constraint rather than an incidental one: the transaction has to see a
+`providers` row another writer committed while it was waiting on
+`lock_keys::CONFIG_RECONCILE`. `pool.begin()` opens Postgres's default and
+that is what makes this work.
+`a_reconcile_that_waited_for_the_boot_lock_overwrites_what_the_holder_committed`
+(`vpay-db/tests/repositories.rs`, added in the review pass on 2026-09-06) is
+the only test that says so: under `SET TRANSACTION ISOLATION LEVEL REPEATABLE
+READ` the snapshot is taken when the advisory-lock statement starts, before
+the holder commits, the probe cannot see the row, and boot fails with `40001`
+— measured, with every other reconcile case still passing.
+
 **A classification changed on purpose.** `CreateProviderInput::flow` is the
 schema's `ProviderFlow` enum, so `reconcile` parses `ProviderSeed::flow` — a
 `String`, and left one, because Step 2's D4 says `vpay-db` binds strings —

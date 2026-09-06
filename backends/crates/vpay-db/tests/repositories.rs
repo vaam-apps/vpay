@@ -3476,6 +3476,136 @@ async fn reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_released() ->
     Ok(())
 }
 
+/// A `reconcile` that waited for `lock_keys::CONFIG_RECONCILE` converges on
+/// **its own** configuration over the row the holder committed while it
+/// waited — on all eight columns.
+///
+/// This is the question the absent `find_unique(...).for_update()` on the
+/// provider pass raises, asked as an assertion rather than answered in a
+/// comment. The currency pass reads under a row lock because it has to
+/// *compare* before it writes; the provider pass has nothing to compare, so
+/// the only thing standing between two boots of different configurations is
+/// the advisory lock and the conflict probe `upsert` takes for itself
+/// (`upsert_exec.rs::run_upsert_in_tx` → `select_for_update_by_conflict_
+/// target` on `tx`). `reconcile_waits_for_the_boot_lock_and_proceeds_once_it_
+/// is_released` above proves the waiting half but releases the lock by
+/// **rollback**, so it never asks what the waiter does with state that
+/// actually landed.
+///
+/// The blocker here is deliberately *not* another `reconcile`: it is a plain
+/// writer holding the same advisory lock, which is the case the module
+/// comment describes the currency row lock as binding. What this proves is
+/// that the provider pass needs no such lock — the row it finds is the
+/// committed one, the upsert takes its UPDATE branch, and the eight columns
+/// that come out are the waiter's configuration and not a mixture of the two.
+///
+/// **The mutation it kills, measured 2026-09-06.** Add `SET TRANSACTION
+/// ISOLATION LEVEL REPEATABLE READ` after `reconcile`'s `pool.begin()` — a
+/// plausible "make boot safer" edit. This test then FAILS in 4.2 s with
+/// `could not serialize access due to concurrent update` (`40001`), because
+/// the transaction's snapshot is taken when the `pg_advisory_xact_lock`
+/// statement *starts*, which is before the holder commits, so the upsert's
+/// conflict probe cannot see the row and the INSERT collides with it. Every
+/// other reconcile case passes under that mutation, including
+/// `reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_released` and
+/// `two_concurrent_reconciles_with_the_seeds_in_opposite_orders_both_succeed_and_converge`.
+/// So boot step 4 depends on **READ COMMITTED**, and this is the only test
+/// that says so.
+///
+/// If this ever goes red on the `enabled` column alone, suspect the disable
+/// pass; if it goes red as a *mixture* of the two configurations, the
+/// `DO UPDATE SET` list has lost a column and
+/// `the_provider_upsert_carries_all_eight_columns` is the faster witness.
+#[tokio::test]
+async fn a_reconcile_that_waited_for_the_boot_lock_overwrites_what_the_holder_committed()
+-> anyhow::Result<()> {
+    use std::time::Duration;
+
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let currencies = vec![vpay_db::CurrencySeed {
+        code: "XAF".to_owned(),
+        exponent: 0,
+    }];
+
+    // The holder: the reconcile lock plus a row of its own, uncommitted.
+    let mut blocker = pool
+        .begin()
+        .await
+        .context("the blocker transaction begins")?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(vpay_db::lock_keys::CONFIG_RECONCILE)
+        .execute(&mut *blocker)
+        .await
+        .context("taking the reconcile lock must succeed")?;
+    sqlx::query(
+        "INSERT INTO providers \
+            (code, display_name, flow, supports_refunds, supports_partial_refunds, \
+             delivers_callbacks, requires_ip_allowlist, enabled) \
+         VALUES ('mtn_momo', 'Stale Name', 'redirect', true, true, true, true, true)",
+    )
+    .execute(&mut *blocker)
+    .await
+    .context("the blocker's own write must succeed")?;
+
+    // The waiter, whose configuration disagrees with the holder's row on
+    // every one of the eight columns except the primary key.
+    let seed = vpay_db::ProviderSeed {
+        code: "mtn_momo".to_owned(),
+        display_name: "MTN MoMo".to_owned(),
+        flow: "push".to_owned(),
+        supports_refunds: false,
+        supports_partial_refunds: false,
+        delivers_callbacks: false,
+        requires_ip_allowlist: false,
+        enabled: false,
+    };
+    let mut reconciling = tokio::spawn({
+        let repositories = Arc::clone(&repositories);
+        let currencies = currencies.clone();
+        let providers = vec![seed.clone()];
+        async move { repositories.reconcile(&currencies, &providers).await }
+    });
+
+    let finished_while_locked = tokio::time::timeout(Duration::from_secs(3), &mut reconciling)
+        .await
+        .is_ok();
+    assert!(
+        !finished_while_locked,
+        "reconcile completed while another writer held lock_keys::CONFIG_RECONCILE"
+    );
+
+    // Release by COMMIT, not rollback: the waiter must now meet a row that
+    // exists.
+    blocker
+        .commit()
+        .await
+        .context("committing the blocker must succeed")?;
+    tokio::time::timeout(Duration::from_secs(30), reconciling)
+        .await
+        .context("reconcile must proceed once the lock is released")?
+        .context("the reconcile task must not panic")?
+        .context("the reconcile itself must succeed against a row that now exists")?;
+
+    assert_eq!(
+        full_provider_row(&pool, "mtn_momo").await?,
+        (
+            "mtn_momo".to_owned(),
+            "MTN MoMo".to_owned(),
+            "push".to_owned(),
+            false,
+            false,
+            false,
+            false,
+            false,
+        ),
+        "the reconcile that waited must have overwritten every column of the committed row with \
+         its own configuration. Any value from the blocker's row surviving here is the provider \
+         pass reading, or writing, something other than what this deployment configured"
+    );
+
+    Ok(())
+}
+
 /// Two boot step 4s running at once, with the rails listed in **opposite**
 /// orders, both succeed and leave the same rows.
 ///

@@ -3721,8 +3721,31 @@ task brief named.**
    pins is a documented behaviour (`ProviderHost::enabled`'s doc and
    [flows/configuration.md](flows/configuration.md): turning a rail off in the
    YAML is not the same as deleting its block) that no test exercised.
-2. `a_reconcile_that_waited_for_the_boot_lock_overwrites_what_the_holder_committed`
-   — see the paragraph on `for_update` below.
+2. Nothing asked what a `reconcile` that *waited* on the advisory lock does
+   with state the holder **committed** while it waited — which is the question
+   the deliberately absent `find_unique(...).for_update()` on the provider
+   pass raises. `reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_
+   released` releases the lock by rollback, so the waiter always meets an
+   empty table.
+   `a_reconcile_that_waited_for_the_boot_lock_overwrites_what_the_holder_committed`
+   now holds the lock in one connection, writes a `providers` row that
+   disagrees with the waiter's configuration on all eight columns, **commits**,
+   and asserts the waiter's own configuration is what survives. The answer is
+   that the provider pass needs no row lock of its own: the advisory lock
+   serialises, and `upsert`'s conflict probe locks the committed row.
+
+**A dependency this made visible, and it was not written down anywhere: boot
+step 4 requires READ COMMITTED.** Adding `SET TRANSACTION ISOLATION LEVEL
+REPEATABLE READ` after `reconcile`'s `pool.begin()` — a plausible "make boot
+safer" edit — makes the new test FAIL in 4.2 s with `could not serialize
+access due to concurrent update` (`40001`), because the snapshot is taken when
+the `pg_advisory_xact_lock` statement starts, i.e. *before* the holder
+commits, so the conflict probe cannot see the row it must update. Measured
+2026-09-06; **every other reconcile case passes under that mutation**,
+`reconcile_waits_for_the_boot_lock_…` and
+`two_concurrent_reconciles_…_converge` included. Recorded in
+`config_reconcile.rs`'s comment on that loop and in
+[reference/vpay-db.md](reference/vpay-db.md#cratestack).
 
 
 ---
