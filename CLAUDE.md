@@ -7,10 +7,14 @@ is specific to working here as an agent.
 ## Before you start
 
 ```bash
-just verify    # three self-checks, all of which must pass before AND after your
+just verify    # ten self-checks, all of which must pass before AND after your
                # change, plus the `verify-docs` report, which never fails
 cat docs/status.md
 ```
+
+*(This said "three" until 2026-09-06 and had been wrong since 2026-09-03.
+[AGENTS.md](AGENTS.md) carries the count and the history of every gate that
+moved it; that is the copy to trust, and this one now agrees with it.)*
 
 `docs/status.md` tells you what is actually built. Do not infer capability from
 the presence of a file — most of this repo is scaffold, and it says so.
