@@ -53,6 +53,7 @@ application's side of them.
   - [What runs through it today](#what-runs-through-it-today)
   - [Why the generated module is private, and what keeps it that way](#why-the-generated-module-is-private-and-what-keeps-it-that-way)
   - [What stays raw sqlx, and why](#what-stays-raw-sqlx-and-why)
+  - [What compiling the schema does not prove](#what-compiling-the-schema-does-not-prove)
   - [Errors: why vpay classifies them itself](#errors-why-vpay-classifies-them-itself)
   - [The context, and the policy it satisfies](#the-context-and-the-policy-it-satisfies)
   - [What this added to the dependency graph](#what-this-added-to-the-dependency-graph)
@@ -1336,6 +1337,31 @@ There is a fourth reason the *writes* have not moved, specific to this table:
 moving them buys nothing until the read has been proven, and a change that
 moves a read and a write together cannot say which of the two the parity test
 is testing.
+
+### What compiling the schema does not prove
+
+`cargo build` now parses and type-checks `schemas/vpay.cstack`, and
+`just check-schema` runs the CLI over it. Neither of them knows anything about
+the database, and it is worth writing down exactly how little that leaves,
+because "it compiles" reads like more than it is. Both measured on
+2026-09-06 (`docs/plans/exp14-notes/opus-review.md`, M7 and M8):
+
+- **A modelled column may name a type the live table cannot produce.** Change
+  `reason String?` to `reason Json?` on `DisabledClient` — the column is
+  `TEXT` — and `just check-schema` says `schema OK`, `cargo build` succeeds,
+  and `just clippy` and all ten `just verify` gates stay green. The failure
+  arrives as an `sqlx` decode error at the first read, i.e. in production, or
+  in the container-backed drift test and the parity test, which are the only
+  two things that would have caught it.
+- **A missing `@@allow` is invisible to every one of them.** Delete
+  `@@allow("read", auth().isSystem())` and the same list stays green, because
+  a refused read is a `WHERE` clause rather than an error. The kill-switch
+  answers "not disabled" for every client and nothing says so.
+
+So the guard on both is container-backed by construction, and both of those
+tests are among the cases still owed to CI. Adding a `model` to this schema
+is not free, and the drift test and the parity test are what make it safe —
+not the compiler.
 
 The transaction seam is untouched, and can stay untouched: every CrateStack
 builder exposes `run_in_tx(&mut sqlx::Transaction<'_, Postgres>, &ctx)`, so
