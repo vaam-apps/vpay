@@ -322,7 +322,7 @@ mod tests {
     ///
     /// What is left for this test, and it is the reason it exists: the
     /// rendering belongs to a **pinned external crate**. `cratestack-sqlx`
-    /// 0.11.1's `upsert.rs` builds `DO UPDATE SET {col} = EXCLUDED.{col}`;
+    /// 0.12.0's `upsert.rs` builds `DO UPDATE SET {col} = EXCLUDED.{col}`;
     /// a version that rendered `COALESCE(EXCLUDED.reason, reason)` instead,
     /// or that stopped honouring the column default on insert, would change
     /// `disable_client`'s observable behaviour with no diff in this

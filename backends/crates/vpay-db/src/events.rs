@@ -467,7 +467,7 @@ mod tests {
         cratestack_schema::Cratestack::builder(pool).build()
     }
 
-    /// The events INSERT cannot move to CrateStack at 0.11.1, and this is the
+    /// The events INSERT cannot move to CrateStack at 0.12.0, and this is the
     /// statement that says why.
     ///
     /// `TxRepositories::create_in_tx` and `mark_fanned_out_in_tx` both moved
