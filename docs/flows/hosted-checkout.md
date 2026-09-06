@@ -257,6 +257,18 @@ why — on a handset, in a shop, with someone waiting. That the button was
 always there beside the countdown did not fix it: it made the countdown a
 race a slow reader loses.
 
+**A failed outcome is red.** *Corrected 2026-09-07.* The screen took its
+colour from `@vpay/tokens`' `statusTone` through the intent status each
+outcome implies, and a failed attempt leaves the intent at
+`requires_payment_method` — which is `neutral`, because on a **dashboard**
+that status means "awaiting a payment method" rather than "this failed". The
+mapping was accurate and the screen was wrong: a payer whose payment failed
+read a grey box while a payer who cancelled read a red one. An operator's
+status palette is not a payer's outcome palette, so `@vpay/tokens` now carries
+both — `statusTone` unchanged, and `checkoutOutcomeTone` for these three
+screens. `canceled` stays red rather than becoming a softer amber; that is a
+design call left to the maintainer.
+
 **A failed outcome also shows the rail's own words** where the API gave any.
 `last_payment_error.message` is rendered as *data*, under the translated
 sentence and labelled as the provider's ("What the payment provider said"),
@@ -481,10 +493,13 @@ embedded page makes, on every hosted page load that carries a `key`, whether
 or not the page turns out to be in a popup — the server cannot know, because
 `window.opener` is a fact only the browser has. `fetchCheckoutOrigins` catches
 every failure and answers an empty list, so a vpay API that is down or
-refusing costs the hosted page **no channel** and nothing else; what it has
-no bound on is a *slow* one, because there is no timeout on that fetch, and a
-hanging API would hold the hosted page's first byte. That was already true of
-the embedded page and is now true of one more route.
+refusing costs the hosted page **no channel** and nothing else. *Corrected
+2026-09-07:* this paragraph used to end by naming a gap — no timeout on that
+fetch, so a hanging API would hold the payment page's first byte. There is one
+now. `ORIGINS_TIMEOUT_MS` is two seconds, overridable per call so the budget is
+a test rather than a wait, and the abort lands in the same empty list every
+other failure does. Two cases in `middleware.test.ts` drive it with a `fetch`
+that never answers; removing the signal makes the first hang.
 
 **The popup's return trip is wired by a different rule** (the maintainer's
 decision, 2026-09-06). After a redirect rail sends the payer back to
@@ -570,22 +585,36 @@ content policy while forbidding nothing.
   repository enforces or checks that an operator has done it.
 - **No accessibility gate.** The screens have Storybook stories with the a11y
   addon configured, and nothing runs axe. What *is* asserted in vitest: every
-  control is a native focusable element with an accessible name, the live region
-  is mounted from first render, focus moves to the new screen's heading, and the
-  MSISDN error is tied to its field.
+  control — **native or not** — has an accessible name and is in the tab order,
+  the live region is mounted from first render, focus moves to the new screen's
+  heading, and the MSISDN error is tied to its field. *Corrected 2026-09-07:*
+  this bullet said "every control is a native focusable element", which stopped
+  being true when the memory opt-in became Base UI's checkbox — a
+  `<span role="checkbox" tabindex="0">` with a visually hidden input beside it.
+  The test asserts the property rather than the tag: role, tab index,
+  accessible name, `aria-checked`, and the label click and space key both
+  measured. **The bumblebee theme's contrast has been checked by nobody**:
+  `@vpay/ui`'s Storybook runs axe's `color-contrast` rule against `corporate`
+  and `business`, which this app does not use, and that Storybook is not part
+  of `just ci` either.
 - **`checkout_not_configured` answers `500`, not `503`.** A truthful `503`
   needs either a new `Category` or `Category::Configuration` moving — an
   ADR-level change to [ADR-0011](../adr/0011-error-modelling.md) touching every
   error in the workspace, **left to the maintainer**.
 - ~~**The auto-forward countdown is 5 seconds and not configurable.**~~
   **Retired 2026-09-06:** there is no countdown. See "The outcome screens".
-- **No pod has run the page with a mounted `branding.yaml` or `config.yaml`.**
-  The parsers, the colour conversion and the filesystem layer are unit-tested
-  (57 cases across `src/config/`), `compose.demo.yml` mounts the two example
-  files, and the container was run by hand with them (see
-  [`../plans/exp21-checkout-page-notes/opus.md`](../plans/exp21-checkout-page-notes/opus.md)).
-  The chart templates no ConfigMap for either file, so a Kubernetes
-  deployment has no supported way to supply them yet.
+- **No POD has run the page with a mounted `branding.yaml` or `config.yaml`,
+  and the chart still cannot supply them.** The parsers, the colour conversion
+  and the filesystem layer are unit-tested (57 cases across `src/config/`).
+  *Corrected 2026-09-07:* this bullet claimed "the container was run by hand
+  with them" and cited
+  [`../plans/exp21-checkout-page-notes/opus.md`](../plans/exp21-checkout-page-notes/opus.md),
+  which says the opposite — "no container was run with the mounted files, and
+  no pod ever". What is true now is stronger than either: `compose.demo.yml`
+  mounts the two examples, and `just test-e2e` brought that stack up and drove
+  all four Cypress specs green through it, so the mounted path is the path the
+  browser tests run on. The **chart** templates no ConfigMap for either file,
+  so a Kubernetes deployment has no supported way to supply them yet.
 - **Nothing has watched a real browser's IndexedDB.** Page memory's adapter is
   driven in vitest by a hand-written `IDBFactory` stub
   (`src/testing/idb-stub.ts`), which models the object graph the adapter
@@ -713,12 +742,30 @@ daisyUI's `bumblebee` theme and Base UI component defaults replace
 five-second auto-forward is gone and a named "Back to {merchant}" button is
 the only way off them; `branding.yaml` and `config.yaml` are read at
 container start; and the page can remember a payer's number and last method
-on their own device, opt-in and clearable. **442 vitest cases in 22 files, 0
-skipped** (was 302 in 17). The popup peer and the return trip's `soleOrigin`
-rule landed the same day, at the `examples/shop` track's request and by the
-maintainer's decision respectively. What has *not* changed: no rail behind this page
-has ever been anything but a WireMock host, and the four "what is not built"
-entries above are joined by five more.
+on their own device, opt-in and clearable. The popup peer and the return
+trip's `soleOrigin` rule landed the same day, at the `examples/shop` track's
+request and by the maintainer's decision respectively. What has *not* changed:
+no rail behind this page has ever been anything but a WireMock host, and the
+four "what is not built" entries above are joined by five more.
+
+**Updated 2026-09-07: a real browser, and the defect it found.** The entry
+above was written with **no Cypress run** — the binary could not be fetched
+where it was built — and the specs were not green. The runtime theme override
+was emitted inside an explicitly written `<head>` element, and React threw #418
+(*hydration failed because the server rendered HTML did not match the client*),
+uncaught, on the hosted payment page: **all three of `shop-hosted.cy.ts`'s
+tests failed**, with the page stuck on "Loading this payment…". It reproduces
+only with a `primary_color` configured, which is why no unit case could have
+seen it. Fixed with React 19's own hoisting (`href` + `precedence`), guarded by
+`src/layout.test.tsx` on the element tree rather than on the markup. Three more
+fixes came with it: a two-second bound on the origins lookup that now holds the
+payment page's first byte, a failed outcome that is no longer neutral grey
+while a cancelled one is red, and two example values that put a broken image
+and a permanent false warning into the demo. **`just test-e2e` on this head:
+11 Cypress tests, 11 passing, 0 skipped** — `checkout.cy.ts` (1),
+`dashboard.cy.ts` (3), `shop-hosted.cy.ts` (3) and `shop-embedded.cy.ts` (4) —
+through a compose stack that mounts both YAML files. The page's own suite is
+**448 vitest cases in 23 files, 0 skipped** (was 302 in 17).
 
 See [../status.md](../status.md) for the per-feature ledger and the reasons
 several of those rows are 🟡 where this document says "built".
