@@ -3470,9 +3470,12 @@ toolchain.** `just ci` end to end, exit 0, with containers and with
 gates green — including `check-schema` at cratestack 0.11.1, still 13
 model/enum declarations (this change adds policies, not declarations).
 `just verify-ignored`: **0 ignored (expected 0), 43 test binaries (expected
-43), 1381 total** — master's 1373 plus this change's eight, every one of them
-in a file that already existed, so `expected_suites` stays 43 and the 1080
-floor is untouched. `just test-doc` **96 passed, 1 ignored** (the ignored one
+43), 1382 total** — master's 1373 plus this change's eight and the review
+pass's one, every one of them in a file that already existed, so
+`expected_suites` stays 43 and the 1080 floor is untouched. (The whole gate
+was re-run recipe by recipe in the review pass at the delivered commit and
+was green there too, at 1381: `test-rust` 16 m 30 s, **1381 passed, 0
+skipped**.) `just test-doc` **96 passed, 1 ignored** (the ignored one
 is `sdks/rust`'s README block and is pre-existing). `just deny`:
 `advisories ok, bans ok, licenses ok, sources ok`. `just fmt-check` and
 `just clippy` clean.
@@ -3481,6 +3484,21 @@ The eight: four `vpay-db` unit tests in `config_reconcile` (two `preview_sql`
 pins, the policy-slot assertion, and the container-backed provider parity
 read), two container cases in `vpay-db/tests/repositories.rs`, and two in
 `postgres_smoke.rs`.
+
+The ninth is the review pass's:
+`a_currency_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`,
+also in `vpay-db/tests/repositories.rs`. It closes the one gap the mutations
+above did not cover — that the CrateStack currency write is inside *vpay's*
+transaction. Swapping that one `run_in_tx(&mut tx, &ctx)` for `run(&ctx)`
+did not fail the suite, it **hung** it: `upsert`'s own conflict probe is
+`SELECT … FOR UPDATE`, so off the transaction it waits on the row lock
+`find_unique(...).for_update()` is holding while that transaction waits on
+it, and `reconcile_is_idempotent_and_disables_a_dropped_provider_code`
+reported `SLOW [>480.000s]` until the run was killed. In a deployment that
+is a boot that never returns. `.for_update()` and `run_in_tx` are therefore
+coupled, which the comment on that loop had not said — it argued only about
+`gate_update_policy`'s policy probe, a different query that genuinely has no
+`FOR UPDATE`.
 
 **A hazard found while running the gate, recorded and not fixed:** `just fmt`
 is `cargo fmt --all` *then* `pnpm exec prettier --write .`. Running it
