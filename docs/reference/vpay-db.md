@@ -51,6 +51,9 @@ application's side of them.
 - [TLS: no `CryptoProvider` is installed here](#tls-no-cryptoprovider-is-installed-here)
 - [CrateStack](#cratestack)
   - [What runs through it today](#what-runs-through-it-today)
+  - [Migration 0032: what `currencies` and `providers` cost](#migration-0032-what-currencies-and-providers-cost)
+  - [`reconcile`: read first, then write, and why that is the guard](#reconcile-read-first-then-write-and-why-that-is-the-guard)
+  - [`providers` cannot be written through CrateStack, and that is a maintainer's decision](#providers-cannot-be-written-through-cratestack-and-that-is-a-maintainers-decision)
   - [Why the generated module is private, and what keeps it that way](#why-the-generated-module-is-private-and-what-keeps-it-that-way)
   - [What stays raw sqlx, and why](#what-stays-raw-sqlx-and-why)
   - [What compiling the schema does not prove](#what-compiling-the-schema-does-not-prove)
@@ -1248,28 +1251,40 @@ work, and each binary installs the provider at boot
 `vpay-db` compiles `schemas/vpay.cstack` with
 [CrateStack](https://cratestack.dev)'s `include_server_schema!` macro
 (`cratestack = { package = "cratestack-pg", version = "=0.11.1" }`) and runs
-**three** queries through the generated data layer — the whole of one table's
-repository, and nothing else. This section says which three, what deliberately
-did not move, and which of CrateStack's behaviours vpay has had to work around
-rather than adopt. It is the application's side of `schemas/vpay.cstack`'s own
-header, which carries the schema's side.
+**five** queries through the generated data layer, spread over two tables.
+This section says which five, what deliberately did not move, and which of
+CrateStack's behaviours vpay has had to work around rather than adopt. It is
+the application's side of `schemas/vpay.cstack`'s own header, which carries
+the schema's side.
 
 It said "**one** query" until 2026-09-06, when the two `disabled_clients`
-writes followed the read.
+writes followed the read, and "**three**" until later the same day, when
+migration 0032 made `currencies` modellable and `ConfigReconcile::reconcile`'s
+currency pass moved.
 
 Everything here was measured against the 0.11.1 sources on 2026-09-06;
-`docs/plans/exp14-notes/opus.md` and `docs/plans/exp16-notes/opus.md` have the
-transcripts.
+`docs/plans/exp14-notes/opus.md`, `docs/plans/exp16-notes/opus.md` and
+`docs/plans/exp17-notes/opus.md` have the transcripts.
 
 ### What runs through it today
 
-`DisabledClients`, all three methods, and no other repository at all:
+`DisabledClients`, all three methods; the currency half of
+`ConfigReconcile::reconcile`; and one read that exists only in a test:
 
 | Method | CrateStack builder | Policy slot it needs |
 |---|---|---|
 | `is_client_disabled` | `find_unique(id).run(ctx)` | `read` |
 | `disable_client` | `upsert(CreateDisabledClientInput).run(ctx)` | `create` **and** `update` |
 | `enable_client` | `delete_many().where_(client_id.eq(..)).run(ctx)` | `delete` |
+| `reconcile`, per currency | `find_unique(code).for_update().run_in_tx(tx, ctx)` | `read` |
+| `reconcile`, per currency | `upsert(CreateCurrencyInput).run_in_tx(tx, ctx)` | `create` **and** `update` |
+
+Plus one that is **test-only and says so**: `model Provider` carries
+`@@allow("read", …)` and `vpay-db`'s own
+`a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` reads a
+row through `find_unique`. No production path reads `providers` through
+CrateStack. That test exists because migration 0032's native-enum conversion
+has no other witness — see "The enum conversion no report can see" below.
 
 Nothing about the trait changed for any of them — the signatures, the
 deliberate absence of a cache, and `enable_client`'s "a no-op, not an error"
@@ -1279,14 +1294,15 @@ caller branching on the *classification* sees nothing (a `23505` is still a
 `409 resource_conflict`); a caller matching the variant would have silently
 stopped matching, which is why both trait doc comments say so.
 
-This table went first because the migration needed to model it is empty.
-`disabled_clients` is three columns (`TEXT PRIMARY KEY`, `TIMESTAMPTZ NOT NULL
-DEFAULT now()`, `TEXT`), every one of which is inside `cratestack-migrate`'s
+`disabled_clients` went first because the migration needed to model it is
+empty. It is three columns (`TEXT PRIMARY KEY`, `TIMESTAMPTZ NOT NULL DEFAULT
+now()`, `TEXT`), every one of which is inside `cratestack-migrate`'s
 `map_scalar`; it has no CHECK constraint and no enum column. `currencies`
-would have needed `exponent INT` widened to `BIGINT` first (`int4` is
-unmapped), and `providers` would have needed its native `provider_flow` enum
-converted to `TEXT` + CHECK, because CrateStack reads every enum column with
-`try_get::<String>` and a native Postgres enum decodes as an error.
+needed `exponent INT` widened to `BIGINT` first (`int4` is unmapped), and
+`providers` needed its native `provider_flow` enum converted to `TEXT` +
+CHECK, because CrateStack reads every enum column with `try_get::<String>`
+and a native Postgres enum decodes as an error. **Migration 0032 did both**,
+and the three sub-sections below are what it cost and what it bought.
 
 The read went a day before the writes on purpose, and the sequencing is worth
 recording because it is the only reason the parity test proves anything:
@@ -1446,6 +1462,241 @@ Two other things that follow from the same mechanism and are not obvious:
   one. `every_action_this_crate_calls_has_an_allow_arm` pins the corrected
   fact: `detail_allow_policies.len() == 1` while `model DisabledClient`
   declares no `detail` arm at all.
+
+### Migration 0032: what `currencies` and `providers` cost
+
+Three statements, and their effects on the drift report are wildly unequal.
+All three numbers below were measured with
+`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` on
+2026-09-06, before and after; `docs/plans/exp17-notes/opus.md` has both
+reports in full.
+
+| Change | Drift effect | Why it was made |
+|---|---|---|
+| `currencies.exponent` `INT` → `BIGINT` | **-1 change, -1 unmappable column** | `Int` emits `int8` and the introspector refuses to map `int4` back onto it, so the column was excluded from the comparison entirely |
+| The two `currencies` CHECKs renamed to `<table>_<column>_<validator>_check` | **0** | The names are the half that *can* converge at 0.11.1; the kinds cannot (below) |
+| `providers.flow` native enum → `TEXT` + `providers_flow_enum_check` | **0** | Nothing to do with drift: CrateStack cannot *decode* a native enum column |
+
+#### The rename that buys nothing, and why it is still right
+
+`diff/checks.rs` matches CHECK constraints by name first and compares kinds
+second. A hand-named CHECK is therefore proposed for `DROP` however correct
+its predicate is, which is what `code_is_iso4217_shape` and
+`exponent_in_range` were doing in the report. Renaming them to
+`currencies_code_iso4217_check` and `currencies_exponent_range_check` — with
+the predicates the generator emits, `code ~ '^[A-Z]{3}$'` byte for byte and
+`exponent >= 0 AND exponent <= 4` in place of `BETWEEN 0 AND 4` — fixes the
+name half and **moves the count by zero**.
+
+The reason is a deliberate upstream decision, not a bug and not something a
+better rename could avoid. Introspection reports *every* validator-derived
+CHECK as `CheckKind::Raw(<deparsed text>)`; it reconstructs only
+`CheckKind::Enum`, and never `Iso4217`, `Range` or `Length`. `ir/checks.rs`
+says why: "design doc §2.2 notes the compiled SQL for e.g. `@range(0, 150)` is
+indistinguishable from hand-written `CHECK (age >= 0 AND age <= 150)` once it
+reaches the catalog. Rather than guess which validator (if any) produced it,
+introspection always reports it as opaque text." So a matching name turns two
+unrelated report lines ("this CHECK is in the database and not the schema"
+plus "this one is in the schema and not the database") into a same-named
+drop-and-add pair. Clearer report, same number.
+
+It is still right, for two reasons that are about the future rather than the
+count. The database now carries the name a generated `migrate diff` would
+emit DDL against. And when upstream grows validator reconstruction, the names
+will already be in place and the count will fall on its own — whereas leaving
+them hand-named would mean doing this rename later, on a table with rows.
+
+**The general lesson for anyone moving the next table:** do not expect a
+CHECK rename to move `EXPECTED_DRIFT_CHANGES`. Only a *type* fix or a whole
+table entering the schema does.
+
+`providers.code_length` and `providers.display_name_length` were deliberately
+**not** renamed. The count would not have moved for the reason above;
+`display_name` carries no `@db_enforce` so its CHECK has no authored
+counterpart to converge on at all; and `postgres_smoke.rs` asserts the report
+still carries ``CHECK `code_length` ...`` as its proof that the report says
+*something* about `providers` beside the invisible cross-column CHECK.
+
+#### The enum conversion no report can see
+
+`providers.flow` was `provider_flow`, a native Postgres enum. It is `TEXT`
+with `CHECK (flow IN ('push', 'redirect'))` now, named
+`providers_flow_enum_check` — `naming.rs::check_name(table, column, "enum")`.
+
+The conversion had to happen and has nothing to do with drift. CrateStack
+never emits a native enum on any backend: its generated row decoders read an
+enum column with `try_get::<String>()` and `.parse()`, so a native enum column
+**fails to decode on every read** (`emit/postgres/columns.rs`, upstream issue
+#228). Any CrateStack query touching `providers` would have errored.
+
+And the drift report is structurally blind to the whole thing, which is the
+finding worth carrying:
+
+- `introspect/postgres/enums.rs` *already synthesised* an
+  `AddCheck { name: "providers_flow_enum_check", kind: Enum { .. } }` out of
+  `pg_enum` for the native column, so the CHECK matched before and matches
+  after.
+- `introspect/postgres/columns.rs::resolve_column` maps a native enum and a
+  `TEXT` column onto the *same* `ColumnType::Scalar("String")`.
+
+So `providers` reports exactly the same four lines before and after. One of
+those four, `column flow type differs (live: Scalar("String"), schema:
+Enum("ProviderFlow"))`, is **permanent at 0.11.1** and is not a defect in
+`schemas/vpay.cstack`: the enum's *name* has no catalog representation to
+recover it from, which `enums.rs`'s own doc comment calls documented
+lossiness. Every enum-typed column in the schema carries one such line
+(`charges.state`, `charges.failure_code`, `payment_intents.status`,
+`ledger_entries.account`, `ledger_entries.direction`), and no migration can
+remove them.
+
+This is the mirror image of the multi-column-CHECK blind spot: there, the
+report cannot see a constraint that exists; here, it cannot see a conversion
+that happened. Both mean the same thing operationally — **a green drift report
+is not evidence about either**, and a hand-written test is. For this
+conversion that test is
+`a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx`
+(`vpay-db`'s own `config_reconcile::tests`), and reverting the `ALTER COLUMN
+flow TYPE TEXT` is what makes it red.
+
+`providers.flow` is the **first of vpay's seven native enums** to be
+converted. The other six — `intent_status`, `charge_state`, `failure_code`,
+`account_kind`, `direction`, and `payment_intents.last_payment_error_code` —
+are on tables no CrateStack query touches, and each will need the same
+treatment before one can.
+
+### `reconcile`: read first, then write, and why that is the guard
+
+`ConfigReconcile::reconcile`'s currency pass is two CrateStack calls where it
+used to be one hand-written statement, and the extra round trip is not a
+regression to be optimised away later. It is the invariant.
+
+The statement it replaced was:
+
+```text
+INSERT INTO currencies (code, exponent) VALUES ($1, $2)
+ON CONFLICT (code) DO UPDATE SET exponent = currencies.exponent
+RETURNING exponent
+```
+
+`SET exponent = currencies.exponent` is a deliberate **no-op** write: it locks
+the row and makes `RETURNING` yield the *stored* value, so the comparison
+behind `DbError::CurrencyExponentConflict` could happen in Rust. CrateStack's
+`upsert` renders `SET exponent = EXCLUDED.exponent` — measured with
+`preview_sql` and pinned by
+`the_currency_upsert_would_overwrite_a_stored_exponent_on_its_own` — which is
+the *overwrite* that error exists to refuse. Letting it land would reinterpret
+every amount already stored in that currency, silently, with no write to any
+of those rows.
+
+So the shape is:
+
+```text
+SELECT code, exponent FROM currencies WHERE code = $1 LIMIT 1 FOR UPDATE   -- find_unique(code).for_update()
+   -> Some(row) with a different exponent?  CurrencyExponentConflict, transaction rolls back
+   -> otherwise
+INSERT INTO currencies (code, exponent) ... ON CONFLICT DO UPDATE SET exponent = EXCLUDED.exponent
+```
+
+Both `run_in_tx` on the transaction `reconcile` opened, after the same
+`pg_advisory_xact_lock`, in the same sorted order. CrateStack joins vpay's
+transaction; it never opens one of its own on this path. This is the first use
+of `run_in_tx` anywhere in vpay.
+
+**Two guards, and they are not the same guard.** The advisory lock serialises
+`reconcile` against every other `reconcile` — that is what
+`reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_released` proves,
+and it still passes with `.for_update()` deleted. The row lock binds a writer
+that does *not* go through this function. Measured on 2026-09-06: with
+`.for_update()` deleted, **every test in the repository stayed green**, which
+is why this change adds
+`reconcile_reads_the_exponent_under_a_row_lock_and_cannot_clobber_a_concurrent_writer`
+— an outside transaction updates the row uncommitted, `reconcile` blocks on
+the read, and the assertion is that the outside writer's value *survives*.
+Without the row lock the plain `SELECT` returns the pre-commit value, the
+comparison passes, and the upsert writes over a committed change. See
+`docs/plans/exp17-notes/opus.md` § 2.
+
+**Two pooled connections on the conflict branch**, as with `disable_client`:
+`upsert_resolve.rs::gate_update_policy` runs its policy probe on
+`runtime.pool()` while this transaction holds a connection of its own. It does
+**not** deadlock against the row this transaction just locked, and that is
+worth stating explicitly because it is the obvious worry:
+`row_passes_update_policy` emits a plain `SELECT 1 ... AND (<policy>)` with no
+`FOR UPDATE`, and Postgres's MVCC reads are not blocked by writers. Two of
+`MAX_CONNECTIONS = 10` per in-flight reconcile, on a boot step the advisory
+lock already admits one at a time.
+
+### `providers` cannot be written through CrateStack, and that is a maintainer's decision
+
+`reconcile`'s **provider** pass is still a hand-written `INSERT ... ON
+CONFLICT`. Not an oversight, and not "we ran out of time": CrateStack's upsert
+input cannot carry it. Measured with `preview_sql` on 2026-09-06 and pinned by
+`the_provider_upsert_cannot_carry_the_capability_columns`:
+
+```text
+INSERT INTO providers (code, display_name, flow) VALUES ($1, $2, $3)
+ON CONFLICT (code) DO UPDATE SET display_name = EXCLUDED.display_name, flow = EXCLUDED.flow
+```
+
+`supports_refunds`, `supports_partial_refunds`, `delivers_callbacks`,
+`requires_ip_allowlist` and `enabled` are in neither list.
+`cratestack-macros`' `model/inputs.rs::create_input_fields` and
+`model/descriptor/columns.rs`'s `upsert_update_columns` both drop every field
+carrying a `@default(...)`, and `model Provider` carries one on all five
+because the live table does (migration 0002: `DEFAULT FALSE` ×4, `DEFAULT
+TRUE`).
+
+What that would do if it shipped: boot step 4 would insert every rail with the
+column defaults regardless of what the deployment configured — a rail
+configured `supports_refunds: true` recorded as not supporting refunds — and
+would never carry a capability change to an existing row, so a rail an
+operator had just disabled would come back enabled. A plausible-looking
+success storing the wrong value, which is what `AGENTS.md`'s second rule is
+about.
+
+**The two ways out, neither taken here:**
+
+1. Remove the five `@default(...)`s from `model Provider` and `ALTER TABLE
+   providers ALTER COLUMN ... DROP DEFAULT` on all five in a migration. This
+   works — **measured, not assumed**, in the review pass of 2026-09-06: with
+   the five removed from the model, `preview_sql` renders
+
+   ```text
+   INSERT INTO providers (code, display_name, flow, supports_refunds,
+       supports_partial_refunds, delivers_callbacks, requires_ip_allowlist, enabled)
+   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+   ON CONFLICT (code) DO UPDATE SET display_name = EXCLUDED.display_name,
+       flow = EXCLUDED.flow, supports_refunds = EXCLUDED.supports_refunds, … ,
+       enabled = EXCLUDED.enabled
+   ```
+
+   which is exactly the statement `reconcile` would need. It also lets a code
+   generator's input-shaping rule decide vpay's DDL, and it removes a
+   defaulting behaviour any future writer of that table would reasonably
+   expect. Leaving the `@default`s off *without* the DDL change is not an
+   option, and that too is measured rather than reasoned: the drift report
+   goes **84 → 89**, exactly five `column … default value differs` lines on
+   `providers`.
+2. Upstream grows a way to include a defaulted column in an upsert input.
+
+**What notices, either way, is stronger than a test.** `the_provider_upsert_
+cannot_carry_the_capability_columns` is described above as a `preview_sql`
+pin, and it is — but the first thing to break is the *compiler*. The five
+columns are absent from `CreateProviderInput`'s **fields**, not merely from
+the rendered SQL, so the day they become settable `vpay-db` stops building:
+
+```text
+error[E0063]: missing fields `delivers_callbacks`, `enabled`,
+`requires_ip_allowlist` and 2 other fields in initializer of `CreateProviderInput`
+  --> backends/crates/vpay-db/src/config_reconcile.rs
+```
+
+Reproduced in the review pass. So this is not a signal that can rot quietly:
+it is a build failure first and a red assertion second.
+
+Until one of those happens, the provider pass stays hand-written and
+`model Provider` carries `@@allow("read", …)` and no write arm — an arm no
+call site uses is a permission nothing can measure.
 
 ### Why the generated module is private, and what keeps it that way
 

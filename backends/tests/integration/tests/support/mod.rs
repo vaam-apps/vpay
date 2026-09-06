@@ -356,14 +356,15 @@ pub(crate) async fn reconcile_from_config(
     let currencies = config
         .currencies
         .iter()
-        .map(|entry| {
-            Ok(CurrencySeed {
-                code: entry.code.to_ascii_uppercase(),
-                exponent: i32::try_from(entry.exponent)
-                    .context("a currency exponent that fits the column")?,
-            })
+        // `i64::from`, not a `try_from`: `currencies.exponent` is `BIGINT`
+        // since migration 0032 and `entry.exponent` is a `u32`, so the
+        // conversion cannot fail. Kept in step with `vpay_api::v1::boot`'s
+        // `boot_seeds`, which this helper deliberately mirrors.
+        .map(|entry| CurrencySeed {
+            code: entry.code.to_ascii_uppercase(),
+            exponent: i64::from(entry.exponent),
         })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .collect::<Vec<_>>();
 
     let providers = config
         .providers

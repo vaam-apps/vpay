@@ -92,8 +92,8 @@ async fn seed_providers(pool: &PgPool) -> anyhow::Result<()> {
         "INSERT INTO providers \
             (code, display_name, flow, supports_refunds, supports_partial_refunds, delivers_callbacks, requires_ip_allowlist) \
          VALUES \
-            ('mtn_momo', 'MTN MoMo', 'push'::provider_flow, true, true, true, true), \
-            ('orange_money', 'Orange Money', 'redirect'::provider_flow, false, false, true, false)",
+            ('mtn_momo', 'MTN MoMo', 'push', true, true, true, true), \
+            ('orange_money', 'Orange Money', 'redirect', false, false, true, false)",
     )
     .execute(pool)
     .await
@@ -164,8 +164,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 31,
-        "all thirty-one migrations under backends/migrations should be recorded as applied \
+        applied, 32,
+        "all thirty-two migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -190,7 +190,15 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          reason 0027 keeps the rail callback off one, \
          and issue #46's 0031 refunds.fee, the nullable column behind the \
          refund object's tenth field — nullable so that 'the rail reported \
-         no fee' stays distinguishable from 'the movement was free')"
+         no fee' stays distinguishable from 'the movement was free', \
+         and 0032, which brings `currencies` and `providers` into the shape \
+         schemas/vpay.cstack projects: exponent INT -> BIGINT, the two \
+         hand-named currencies CHECKs renamed to the generator's \
+         <table>_<column>_<validator>_check spelling, and the FIRST of \
+         vpay's seven native enums -- providers.flow -- converted to TEXT \
+         plus providers_flow_enum_check, because CrateStack's generated \
+         row decoders read an enum column with try_get::<String>() and a \
+         native enum column therefore fails to decode on every read)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -326,7 +334,7 @@ async fn partial_refunds_without_refunds_is_rejected_by_the_database() -> anyhow
     let err = sqlx::query(
         "INSERT INTO providers \
             (code, display_name, flow, supports_refunds, supports_partial_refunds) \
-         VALUES ('incoherent_provider', 'Incoherent Provider', 'push'::provider_flow, false, true)",
+         VALUES ('incoherent_provider', 'Incoherent Provider', 'push', false, true)",
     )
     .execute(&pool)
     .await
@@ -338,6 +346,113 @@ async fn partial_refunds_without_refunds_is_rejected_by_the_database() -> anyhow
         db_err.constraint(),
         Some("partial_refunds_imply_refunds"),
         "the rejection must come from the coherence CHECK specifically"
+    );
+
+    Ok(())
+}
+
+// --- migration 0032 (the cratestack shape for currencies and providers) ----
+//
+// Three constraints, one of which is a *replacement* for a type that no
+// longer exists. Every one of them is a rename or a re-expression of
+// something migrations 0001 and 0002 already enforced, so what these tests
+// are really asking is whether the enforcement survived the move — a
+// renamed-away CHECK and a dropped one look identical from anywhere except
+// an INSERT that ought to fail.
+
+/// `currencies_code_iso4217_check` (migration 0032) fires, under its new
+/// name and with the predicate `@iso4217` renders.
+///
+/// It was `code_is_iso4217_shape` until 0032. The predicate did not change —
+/// `code ~ '^[A-Z]{3}$'`, which is byte-identical to what
+/// `cratestack-migrate`'s `emit/postgres/checks.rs` produces for `@iso4217`
+/// — only the name did, to `naming.rs::check_name`'s
+/// `<table>_<column>_<validator>_check`. Asserting on `constraint()` rather
+/// than merely on "the insert failed" is what makes this a test of the
+/// renamed constraint and not of the primary key.
+#[tokio::test]
+async fn a_currency_code_that_is_not_three_uppercase_letters_is_rejected_by_the_database()
+-> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    let err = sqlx::query("INSERT INTO currencies (code, exponent) VALUES ('xa1', 0)")
+        .execute(&pool)
+        .await
+        .expect_err("a code that is not three uppercase letters must be rejected");
+
+    let db_err = err.as_database_error().expect("a database-level error");
+    eprintln!("observed rejection: {db_err}");
+    assert_eq!(
+        db_err.constraint(),
+        Some("currencies_code_iso4217_check"),
+        "the rejection must come from 0032's renamed ISO-4217 shape CHECK specifically. If this \
+         says `code_is_iso4217_shape`, 0032 did not run; if it says None, the constraint was \
+         dropped rather than renamed"
+    );
+
+    Ok(())
+}
+
+/// `providers_flow_enum_check` (migration 0032) refuses what the
+/// `provider_flow` enum type used to refuse — and the type is gone.
+///
+/// This is the first of vpay's seven native Postgres enums to be converted
+/// to `TEXT` + CHECK, and the conversion had to happen for a runtime reason
+/// no drift report can see: `cratestack`'s generated row decoders read an
+/// enum column with `try_get::<String>()` and `.parse()`, so a native enum
+/// column fails to decode on every read through that layer (upstream issue
+/// #228). `vpay-db`'s own
+/// `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` is
+/// the test that proves the read now works; this one proves the conversion
+/// did not cost the *validation* the native type was providing.
+///
+/// The `DROP TYPE` assertion is the half that would otherwise go unnoticed:
+/// a leftover `provider_flow` type with no column using it is dead weight
+/// that a later reader has to prove is dead before touching anything.
+#[tokio::test]
+async fn an_unknown_provider_flow_is_refused_by_the_check_that_replaced_the_enum_type()
+-> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    let err = sqlx::query(
+        "INSERT INTO providers (code, display_name, flow) \
+         VALUES ('typo_rail', 'Typo Rail', 'redirekt')",
+    )
+    .execute(&pool)
+    .await
+    .expect_err("a flow that is neither push nor redirect must be rejected");
+
+    let db_err = err.as_database_error().expect("a database-level error");
+    eprintln!("observed rejection: {db_err}");
+    assert_eq!(
+        db_err.constraint(),
+        Some("providers_flow_enum_check"),
+        "the rejection must come from 0032's membership CHECK. Before 0032 this insert failed \
+         with an invalid-input-value error carrying NO constraint name, because the native enum \
+         type refused it at cast time"
+    );
+
+    // Both legal values still are.
+    for flow in ["push", "redirect"] {
+        sqlx::query("INSERT INTO providers (code, display_name, flow) VALUES ($1, $2, $3)")
+            .bind(format!("ok_{flow}"))
+            .bind("Fine")
+            .bind(flow)
+            .execute(&pool)
+            .await
+            .context("push and redirect must both still be accepted")?;
+    }
+
+    // The type itself is gone. `to_regtype` returns NULL for a type that
+    // does not exist, which is a cheaper and less brittle question than
+    // parsing `pg_type`.
+    let leftover: Option<String> = sqlx::query_scalar("SELECT to_regtype('provider_flow')::text")
+        .fetch_one(&pool)
+        .await
+        .context("asking whether the provider_flow type still exists must succeed")?;
+    assert_eq!(
+        leftover, None,
+        "migration 0032 drops the now-unused `provider_flow` enum type"
     );
 
     Ok(())
@@ -423,6 +538,15 @@ async fn a_charge_referencing_a_nonexistent_payment_intent_is_rejected_by_the_da
 /// property of the currency (XAF=0, EUR=2); the schema bounds it to a
 /// plausible range (0..=4) rather than accepting an arbitrary integer that
 /// would silently corrupt `Money::to_provider_string`'s output.
+///
+/// The constraint was `exponent_in_range` with the predicate `exponent
+/// BETWEEN 0 AND 4` until migration 0032 renamed it to
+/// `currencies_exponent_range_check` and re-spelled the predicate as
+/// `exponent >= 0 AND exponent <= 4` — the same accepted set, written the
+/// way `@range(min: 0, max: 4)` renders it, under the name
+/// `naming.rs::check_name` generates. The value 5 rather than something huge
+/// is deliberate: the *range* has to be what refuses it, not the column
+/// width, which 0032 widened at the same time.
 #[tokio::test]
 async fn an_out_of_range_currency_exponent_is_rejected_by_the_database() -> anyhow::Result<()> {
     let (_container, pool) = migrated_postgres().await?;
@@ -436,8 +560,29 @@ async fn an_out_of_range_currency_exponent_is_rejected_by_the_database() -> anyh
     eprintln!("observed rejection: {db_err}");
     assert_eq!(
         db_err.constraint(),
-        Some("exponent_in_range"),
-        "the rejection must come from the exponent range CHECK specifically"
+        Some("currencies_exponent_range_check"),
+        "the rejection must come from the exponent range CHECK specifically. If this says \
+         `exponent_in_range`, migration 0032 did not run; if it says None, the rename dropped \
+         the constraint instead of replacing it"
+    );
+
+    // The column 0032 also widened, asserted here rather than in a test of
+    // its own because a widening that silently dropped the CHECK above is
+    // exactly the failure worth catching in one place. `cratestack`'s `Int`
+    // always emits `int8` and its introspector deliberately refuses to map
+    // `int4` back onto it, so an `int4` here is not a narrower `Int` — it is
+    // a column `migrate baseline` cannot compare at all, which is what the
+    // `EXPECTED_UNMAPPABLE_COLUMNS` 18 -> 17 move below records.
+    let data_type: String = sqlx::query_scalar(
+        "SELECT data_type FROM information_schema.columns \
+         WHERE table_name = 'currencies' AND column_name = 'exponent'",
+    )
+    .fetch_one(&pool)
+    .await
+    .context("reading the exponent column's type must succeed")?;
+    assert_eq!(
+        data_type, "bigint",
+        "migration 0032 widens currencies.exponent to BIGINT"
     );
 
     Ok(())
@@ -833,11 +978,47 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 /// this total did not move. `refunds.fee` is `numeric`, which cratestack maps,
 /// so it did not enter the unmappable block either.
 ///
+/// **85 -> 84 on 2026-09-06**, by migration 0032, and *which* of that
+/// migration's three changes moved it is the finding worth carrying, because
+/// two of the three moved nothing:
+///
+///   * `currencies.exponent` `INT` -> `BIGINT` is the whole of the -1. The
+///     column was in the trailing "could not confidently map" block, so the
+///     schema's declaration of it read as `column exponent is declared in
+///     the schema but does not exist in the live database`. `Int` emits
+///     `int8` and the introspector refuses to map `int4` back onto it
+///     deliberately, so an `INT` column is not a narrower `Int` — it is a
+///     column the comparison cannot see. `EXPECTED_UNMAPPABLE_COLUMNS` falls
+///     by one for the same reason, which is the direction that matters: the
+///     count fell because the report is comparing *more*, not less.
+///   * Renaming the two hand-named `currencies` CHECKs to the generator's
+///     `<table>_<column>_<validator>_check` spelling moved **nothing**.
+///     `diff/checks.rs` matches by name first and then compares kinds, and
+///     introspection reports every validator-derived CHECK as
+///     `CheckKind::Raw(<deparsed text>)` — it reconstructs only
+///     `CheckKind::Enum`, and never `Iso4217` or `Range`
+///     (`ir/checks.rs`: "Rather than guess which validator (if any) produced
+///     it, introspection always reports it as opaque text"). So two
+///     unrelated lines became a same-named drop-and-add pair: a clearer
+///     report, the same number. Not a reason to revert the rename — the
+///     names are the half that *can* converge at 0.11.1 — but a reason not
+///     to expect a validator rename to move this constant.
+///   * Converting `providers.flow` from the native `provider_flow` enum to
+///     `TEXT` + `providers_flow_enum_check` also moved **nothing**, and
+///     `providers` reports exactly the same four lines it did before.
+///     `introspect/postgres/enums.rs` already synthesised that CHECK from
+///     `pg_enum` for the native column, and `resolve_column` projects a
+///     native enum and a TEXT column onto the same `Scalar("String")`. The
+///     conversion is real and load-bearing — it is what lets `cratestack`
+///     decode the column at all — and this report is structurally blind to
+///     it, exactly as it is blind to the ten multi-column CHECKs. See
+///     `docs/plans/exp17-notes/opus.md`.
+///
 /// It is deliberately not, and must never become, `0`. A zero here would not
 /// mean the schema had caught up — it would mean the report stopped finding
 /// things, which is the failure mode `--strict` is easiest to misread as
 /// success in.
-const EXPECTED_DRIFT_CHANGES: u32 = 85;
+const EXPECTED_DRIFT_CHANGES: u32 = 84;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -851,6 +1032,11 @@ const EXPECTED_DRIFT_CHANGES: u32 = 85;
 /// **Still 16 after migration 0031 (2026-09-06):** the column 0031 adds
 /// lands on `refunds`, which was already on this list as an undeclared table
 /// and stays exactly one entry on it.
+///
+/// **Still 16 after migration 0032 (2026-09-06):** `currencies` lost one of
+/// its five lines and `providers` lost none, so both tables are still on the
+/// list. This is the assertion that says so: a -1 in the change count with
+/// this number unmoved means a line went away, not a table.
 const EXPECTED_DRIFTED_RELATIONS: u32 = 16;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
@@ -867,7 +1053,17 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 16;
 /// **Still 18 after migration 0031 (2026-09-06):** `refunds.fee` is `numeric`,
 /// which cratestack maps onto a `.cstack` scalar, so it is compared rather
 /// than excluded. The 18 still include `refunds.metadata` (`jsonb`).
-const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 18;
+///
+/// **18 -> 17 on 2026-09-06**, by migration 0032: `currencies.exponent` was
+/// the one `int4` in this block that a migration could remove, and it is
+/// `BIGINT` now. This is the *good* direction for this constant and the
+/// reason `EXPECTED_DRIFT_CHANGES` may fall alongside it — the comparison
+/// grew by a column and the drift it found on that column was zero. Every
+/// remaining entry is a `jsonb`, a `bytea`, or an `int2`/`int4` on a table
+/// `schemas/vpay.cstack` does not model at all; `jsonb` and `bytea` do not
+/// round-trip at 0.11.1 (they are emitted but not read back), so this number
+/// cannot reach zero by schema work alone.
+const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 17;
 
 /// The `--out-dir` handed to `migrate baseline`, removed when it goes out of
 /// scope.
