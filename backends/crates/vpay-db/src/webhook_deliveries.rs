@@ -143,6 +143,28 @@ pub struct DeliveryRow {
 /// should enqueue nothing further — the earlier pass's job already exists
 /// under the same `jobs.dedupe_key`.
 ///
+/// **That contract holds for a delivery an earlier, *committed* pass created,
+/// and only for one.** Since this call moved to CrateStack on 2026-09-06, a
+/// second call for the same `(event_id, endpoint_id)` inside the **same,
+/// still-open** transaction is refused with
+/// [`crate::PersistenceError::Denied`] rather than answered `None` — the
+/// statement it replaced answered `None` for that too. The cause is that
+/// `.do_nothing()` splits its branch decision across two connections:
+/// `resolve_pre_probe` reads through the caller's transaction and sees the
+/// uncommitted row, and `authorize_existing_row`'s update-policy re-check is
+/// a `SELECT` on a **pool** connection that cannot
+/// (`upsert_do_nothing_authorize.rs` -> `upsert_sql.rs`), so it concludes the
+/// policy denied a row it simply could not see.
+///
+/// Nothing reaches it today, by two guards in other crates rather than by
+/// anything here: `vpay_config` refuses a duplicate webhook endpoint `id` at
+/// boot, and `EndpointRegistry::from_pairs` dedups by id, so `fan_out_one`'s
+/// loop cannot call this twice for one pair.
+/// `a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing`
+/// pins both halves — the refusal and the unchanged committed-row `None` —
+/// so the day either changes it is a red test rather than a duplicate
+/// webhook. `docs/plans/exp18-notes/opus-review.md` F2 has the measurement.
+///
 /// Deliberately not an upsert. `DO UPDATE SET url = …` would let a re-run
 /// silently re-point a delivery that has already been attempted, so the row
 /// would no longer say where the bytes actually went.

@@ -496,6 +496,22 @@ async fn fan_out_one(
                     // the event would not be in the backlog — so it is a
                     // concurrent drain, and the `mark_fanned_out_in_tx` below
                     // will tell us to roll back.
+                    //
+                    // It cannot be an earlier turn of *this* loop either, and
+                    // since 2026-09-06 that is load-bearing rather than
+                    // obvious: `create_in_tx` runs through CrateStack's
+                    // `.do_nothing()`, whose update-policy re-check on the
+                    // already-exists branch reads on a POOL connection and so
+                    // cannot see a row this transaction inserted moments ago.
+                    // Called twice for one pair it answers
+                    // `PersistenceError::Denied`, not `None`, and this whole
+                    // fan-out would fail. What keeps that unreachable is that
+                    // `endpoint.id` is unique per merchant — refused at boot
+                    // by `vpay_config`, and deduped again by
+                    // `EndpointRegistry::from_pairs`. Two guards, in two
+                    // crates, that this loop now depends on;
+                    // `a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing`
+                    // in `vpay-db` is what states the dependency out loud.
                     let Some(delivery_id) = delivery_id else {
                         continue;
                     };

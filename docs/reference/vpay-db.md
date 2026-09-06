@@ -1338,6 +1338,45 @@ finds no existing delivery and so locks nothing, and the `events` row is held
 only by the `FOR KEY SHARE` the delivery's foreign key takes, which does not
 conflict with the `FOR NO KEY UPDATE` a non-key `UPDATE` wants.
 
+#### What the move narrowed: `create_in_tx`'s `Ok(None)` now means "an earlier **committed** pass"
+
+The seam works. One thing behind it changed anyway, it is not visible in any
+call site, and the review measured it rather than reading it off the
+signature.
+
+`create_in_tx`'s contract is that a repeat creation for one
+`(event_id, endpoint_id)` answers `Ok(None)` — the quiet answer an
+at-least-once drain needs. Through CrateStack that holds only when the
+earlier row was **committed**. A second call inside the *same, still-open*
+transaction is refused with `PersistenceError::Denied`:
+
+```
+first  = Ok(Some(f2ba579c-…))
+second = Err(Persistence(Denied { model: "WebhookDelivery", action: "upsert",
+                                  detail: "forbidden: update policy denied this upsert" }))
+```
+
+The statement it replaced, run twice in one transaction against the same
+database, answered `Some(…)` then `None`.
+
+The cause is that `.do_nothing()` decides its branch across two connections.
+`upsert_do_nothing_probe.rs::resolve_pre_probe` runs `SELECT … FOR UPDATE`
+**on the caller's transaction**, so it sees the uncommitted row and takes the
+`Existing` branch; `upsert_do_nothing_authorize.rs` then re-checks the update
+policy with `row_passes_update_policy(runtime.pool(), …)` — a `SELECT 1` on a
+**pool** connection, which cannot see that row, finds nothing, and reads the
+absence as a denial.
+
+**Nothing in vpay reaches it**, and by two guards that live in other crates:
+`vpay_config` refuses a duplicate webhook endpoint `id` at boot and
+`EndpointRegistry::from_pairs` dedups by id, so `fan_out_one`'s loop cannot
+call this twice for one pair. That is a real dependency the fan-out did not
+have before — config validation in one crate now keeps a persistence call
+correct in another — so it is stated in both places and pinned by
+`a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing`,
+which asserts the refusal *and* the unchanged committed-row `None`. It is
+reported upstream rather than worked around here.
+
 #### `events.data`: the one write that did not move, and why
 
 `TxRepositories::insert_in_tx` is still one hand-written `sqlx` statement,

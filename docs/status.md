@@ -3315,6 +3315,21 @@ re-pinning the constant. Measured both ways;
 [plans/exp18-notes/opus-review.md](plans/exp18-notes/opus-review.md) F1 has
 the transcript.
 
+**One contract narrowed, found by the review and pinned rather than papered
+over.** `create_in_tx` answers `Ok(None)` for a repeat creation of one
+`(event, endpoint)` pair — the quiet answer the at-least-once drain needs.
+Through CrateStack that holds only when the earlier row was **committed**: a
+second call inside the *same, still-open* transaction is refused with
+`PersistenceError::Denied`, where the raw `INSERT … ON CONFLICT DO NOTHING`
+it replaced answered `None`. `.do_nothing()` probes for the existing row
+through the caller's transaction and then re-checks the update policy on a
+**pool** connection, which cannot see it. Unreachable in vpay — a duplicate
+endpoint `id` is refused at boot by `vpay_config` and deduped again by
+`EndpointRegistry` — but the fan-out's correctness now rests on those two
+guards in a way it did not before, so both ends say so and
+`a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing`
+asserts both halves. Reported upstream, not worked around.
+
 **`PersistenceError::Invalid` is new.** The generated `input.validate()` runs
 before any SQL on every write path, and `CratestackError::Validation` was
 falling into the `Backend` wildcard — `Category::Storage`, which is

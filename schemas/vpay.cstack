@@ -857,6 +857,21 @@ model WebhookDelivery {
   //             the crash-recovery path, i.e. the one nobody exercises until
   //             production does.
   //
+  // AND THAT RE-CHECK RUNS ON A POOL CONNECTION, NOT ON THE CALLER'S
+  // TRANSACTION, which is worth knowing here because it narrows
+  // `create_in_tx`'s contract. `row_passes_update_policy` takes
+  // `runtime.pool()` and issues its own `SELECT 1 FROM webhook_deliveries
+  // WHERE ...`, so a row the caller inserted moments ago in its own
+  // still-open transaction is found by the `Existing` pre-probe (which does
+  // read through `tx`) and then invisible to the authorisation read — which
+  // reports that as a denial. Measured 2026-09-06: a second `create_in_tx`
+  // for one pair inside ONE transaction answers `Denied`, where the raw
+  // `INSERT ... ON CONFLICT DO NOTHING` it replaced answered `None`.
+  // Unreachable in vpay (a duplicate endpoint `id` is refused at boot and
+  // deduped by `EndpointRegistry`), pinned by
+  // `a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing`,
+  // and reported upstream — docs/plans/exp18-notes/opus-review.md F2 and §4.
+  //
   // No `read`, no `delete`: nothing reads or deletes a delivery through
   // CrateStack. `WebhookDeliveries::{get,pending_due,for_event,
   // record_success,record_attempt}` are all still sqlx, because `DeliveryRow`

@@ -6689,6 +6689,134 @@ async fn a_second_delivery_for_one_event_and_endpoint_is_not_created() -> anyhow
     Ok(())
 }
 
+/// The `Ok(None)` above holds only for a delivery an **earlier, committed**
+/// pass created. A second `create_in_tx` for the same pair inside the *same,
+/// still-open* transaction is refused outright — and that is a narrowing the
+/// move to CrateStack introduced on 2026-09-06, not a property of the outbox.
+///
+/// # Why it happens, in the pinned 0.11.1 sources
+///
+/// `.upsert(..).do_nothing()` resolves its branch in two steps that do not
+/// use the same connection:
+///
+///   1. `upsert_do_nothing_probe.rs::resolve_pre_probe` runs
+///      `SELECT ... FOR UPDATE` **on the caller's transaction**, so it *does*
+///      see a row the caller inserted a moment ago and takes the `Existing`
+///      branch.
+///   2. `upsert_do_nothing_authorize.rs::authorize_existing_row` then
+///      re-checks the update policy with
+///      `upsert_sql.rs::row_passes_update_policy(runtime.pool(), ..)` — a
+///      `SELECT 1 FROM webhook_deliveries WHERE ... ` issued **on a pool
+///      connection**, which cannot see the caller's uncommitted row. It finds
+///      nothing, reads that as "the update policy denied this row", and
+///      raises `Forbidden`.
+///
+/// The statement this replaced had no such split: one
+/// `INSERT ... ON CONFLICT DO NOTHING RETURNING id` inside the transaction
+/// answered `None` for the second call. Measured both ways on 2026-09-06;
+/// `docs/plans/exp18-notes/opus-review.md` F2 carries the transcript.
+///
+/// # Why this is pinned rather than fixed here
+///
+/// It is unreachable in vpay today, and by two independent guards rather
+/// than by luck: `vpay_config` **refuses a duplicate webhook endpoint `id`
+/// at boot** (`webhook-duplicate-endpoint-id.yml`), and
+/// `vpay_worker::webhooks::EndpointRegistry::from_pairs` dedups by id
+/// besides — so `fan_out_one`'s loop cannot call this twice for one pair.
+/// That means `fan_out_one`'s correctness now rests on a config guard in
+/// another crate, which it did not before, and nothing connected the two.
+/// This test is the connection: it fails if CrateStack changes the
+/// behaviour, and it is what a future caller that batches deliveries
+/// differently will trip over here rather than in production.
+///
+/// It deliberately asserts the behaviour as it **is**, not as it should be.
+/// The upstream issue is listed in `opus-review.md` §4.
+#[tokio::test]
+async fn a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing()
+-> anyhow::Result<()> {
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let event = insert_event(
+        repositories.as_ref(),
+        &fixture_event("evt_same_tx", "merchant_a"),
+    )
+    .await?;
+
+    // ---- the narrowing: both calls inside ONE transaction ----
+    let observed = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let first = tx
+                    .create_in_tx("evt_same_tx", "ep_same", "https://example.test/same")
+                    .await?;
+                assert!(
+                    first.is_some(),
+                    "the first creation in the transaction must insert, or the second one is \
+                     not testing the Existing branch at all"
+                );
+                let second = tx
+                    .create_in_tx("evt_same_tx", "ep_same", "https://example.test/same")
+                    .await;
+                // Returned rather than asserted here, so the transaction is
+                // closed cleanly before the assertion runs.
+                Ok::<_, vpay_db::DbError>(TxOutcome::Abandon(second.err()))
+            })
+        })
+        .await?;
+
+    let error = observed.into_inner().context(
+        "a repeat creation inside one transaction is REFUSED, not reported as `Ok(None)`. If \
+         this is now `None`, CrateStack's `.do_nothing()` has stopped re-checking the update \
+         policy on a pool connection — delete this test and restore `create_in_tx`'s \
+         unconditional contract in its doc comment, in `schemas/vpay.cstack` and in \
+         docs/reference/vpay-db.md",
+    )?;
+    assert!(
+        matches!(
+            &error,
+            vpay_db::DbError::Persistence(vpay_db::PersistenceError::Denied { model, .. })
+                if *model == "WebhookDelivery"
+        ),
+        "the refusal arrives as a policy denial naming the model, because the pool-side \
+         re-check cannot see the uncommitted row: {error:?}"
+    );
+
+    // Nothing was left behind: the transaction was abandoned, so the first
+    // creation is gone too. This is what makes the narrowing survivable —
+    // it fails the whole pass rather than half-committing one.
+    assert!(
+        repositories.for_event(&event.id).await?.is_empty(),
+        "the abandoned transaction must leave no delivery behind"
+    );
+
+    // ---- the control: the documented contract, unchanged, for a COMMITTED row ----
+    create_delivery(
+        repositories.as_ref(),
+        &event.id,
+        "ep_same",
+        "https://example.test/same",
+    )
+    .await?
+    .context("the committed first pass must insert")?;
+
+    let repeat = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let again = tx
+                    .create_in_tx("evt_same_tx", "ep_same", "https://example.test/same")
+                    .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(again))
+            })
+        })
+        .await?;
+    assert!(
+        repeat.into_inner().is_none(),
+        "a re-run against a COMMITTED row is still the quiet `Ok(None)` the at-least-once \
+         drain depends on — this half is what the narrowing above does NOT touch: {repeat:?}"
+    );
+
+    Ok(())
+}
+
 /// The other half of `the_events_insert_cannot_move_until_a_json_column_can_be_modelled`:
 /// the statement CrateStack would generate for `Event.create(..)` really is
 /// refused by the database, and refused for the reason claimed.
