@@ -83,10 +83,13 @@ pub fn adapters_by_code(
 /// # Errors
 ///
 /// [`ConfigError::ProviderWithoutAdapter`] for a configured rail the calling
-/// binary links no code for; [`ConfigError::Validation`] for a currency
-/// exponent that does not fit the column (unreachable while
-/// `Config::validate_all` bounds it, and therefore a signal that the bound
-/// is gone).
+/// binary links no code for. That is now the *only* error this returns: it
+/// also returned [`ConfigError::Validation`] for "a currency exponent that
+/// does not fit the column" until migration 0032 widened
+/// `currencies.exponent` to `BIGINT` and `CurrencySeed::exponent` to `i64`.
+/// Every `u32` fits an `i64`, so that arm became unreachable *by type*
+/// rather than merely unreached, and a `try_from` kept for it would have
+/// been an error path no input could take — see the conversion below.
 pub fn boot_seeds(
     config: &Config,
     adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
@@ -95,17 +98,18 @@ pub fn boot_seeds(
         .currencies
         .iter()
         .map(|entry| {
-            let exponent = i32::try_from(entry.exponent).map_err(|_error| {
-                ConfigError::Validation(format!(
-                    "currency {} declares exponent {}, which does not fit the \
-                     `currencies.exponent` column; Config::validate_all bounds it to 0..=4, so \
-                     reaching this means that bound is gone",
-                    entry.code, entry.exponent
-                ))
-            })?;
+            // Infallible, and deliberately spelled as such. `entry.exponent`
+            // is a `u32` and the column is `BIGINT` since migration 0032, so
+            // there is no value this can refuse; a `try_from` here would be
+            // an error branch nothing could reach and no test could cover.
+            // The real bound is still two layers up and unchanged —
+            // `Config::validate_all` pins each currency's exponent to
+            // `vpay_core::Currency::exponent`'s canonical table, and
+            // `currencies_exponent_range_check` refuses anything outside
+            // `0..=4` at the database.
             Ok(CurrencySeed {
                 code: entry.code.to_ascii_uppercase(),
-                exponent,
+                exponent: i64::from(entry.exponent),
             })
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
@@ -145,15 +149,22 @@ pub fn boot_seeds(
     Ok((currencies, providers))
 }
 
-/// The `provider_flow` enum label for a flow shape.
+/// The `providers.flow` label for a flow shape.
 ///
 /// Spelled here rather than through `serde` because the column is read and
 /// written as a `String` (Step 2's D4) and [`ProviderFlow`] has no
 /// `as_wire_str` of its own the way `IntentStatus` and `ChargeState` do. A
-/// label that disagreed with migration 0002's `CREATE TYPE provider_flow AS
-/// ENUM ('push', 'redirect')` is a `DbError::Query` at boot, not a silently
-/// stored typo — which is why this is a `match` and not a `to_lowercase` of
-/// the variant name.
+/// label the column does not accept is a `DbError::Query` at boot, not a
+/// silently stored typo — which is why this is a `match` and not a
+/// `to_lowercase` of the variant name.
+///
+/// What refuses a bad label moved in migration 0032 and the guarantee did
+/// not: it was migration 0002's `CREATE TYPE provider_flow AS ENUM ('push',
+/// 'redirect')` refusing the cast, and it is now
+/// `providers_flow_enum_check` refusing the row. The enum type had to go
+/// because `cratestack`'s generated row decoders read an enum column with
+/// `try_get::<String>()`, so a native enum column fails to decode on every
+/// read through that layer.
 ///
 /// Private: nothing outside [`boot_seeds`] should be turning a flow into a
 /// column value, and a `pub` version would be a second vocabulary competing
@@ -560,8 +571,12 @@ mod tests {
         assert_eq!(display_name_for("etoile_pay"), "Etoile Pay");
     }
 
-    /// The labels migration 0002's `provider_flow` enum accepts. A typo here
-    /// is a `DbError::Query` at boot in every deployment at once.
+    /// The labels `providers_flow_enum_check` accepts — migration 0002's
+    /// `provider_flow` enum members until migration 0032 replaced the type
+    /// with the CHECK. A typo here is a `DbError::Query` at boot in every
+    /// deployment at once, and
+    /// `an_unknown_provider_flow_is_refused_by_the_check_that_replaced_the_enum_type`
+    /// in `postgres_smoke.rs` is what proves the database still refuses one.
     #[test]
     fn the_flow_labels_are_the_enum_members_migration_0002_declares() {
         assert_eq!(flow_label(ProviderFlow::Push), "push");

@@ -172,6 +172,45 @@ enum Direction {
 
 // --- reference data ------------------------------------------------------
 
+// The second model in this file that is READ AND WRITTEN rather than
+// sketched. `ConfigReconcile::reconcile` (boot step 4) runs its currency pass
+// as `find_unique(code).for_update()` then `upsert(...)`, both `run_in_tx` on
+// vpay's own transaction — see backends/crates/vpay-db/src/config_reconcile.rs.
+//
+// Migration 0032 is what made that possible, and it had to change the live
+// table twice. `exponent` was `INT`: `Int` here always emits `int8`, and
+// cratestack's introspector deliberately refuses to map `int4` back onto
+// `Int` ("an `int4` column silently mapped to `Int` would make a live table
+// that actually differs from the schema look identical to it"), so the column
+// was invisible to `migrate baseline` — reported as "declared in the schema
+// but does not exist in the live database". It is `BIGINT` now. And the two
+// CHECKs below were named `code_is_iso4217_shape` and `exponent_in_range` by
+// hand; the diff engine matches checks by NAME first (`diff/checks.rs`), so
+// they are `currencies_code_iso4217_check` and
+// `currencies_exponent_range_check` now, which is `naming.rs::check_name`'s
+// `<table>_<column>_<validator>_check`.
+//
+// What that rename bought, measured with the drift test on 2026-09-06 and
+// recorded because the answer is not the expected one: **nothing, in the
+// count.** Introspection reports EVERY validator-derived CHECK as
+// `CheckKind::Raw(<deparsed text>)` and never reconstructs `Iso4217` or
+// `Range` from it (`ir/checks.rs`: "Rather than guess which validator (if
+// any) produced it, introspection always reports it as opaque text"). Only
+// `CheckKind::Enum` has a reconstructor. So a matching name turns two
+// unrelated lines ("this CHECK is in the database and not the schema" plus
+// "this one is in the schema and not the database") into a same-named
+// drop-and-add pair, which is a clearer report and the same number. The
+// count fell from 85 to 84 purely because of the `exponent` widening. Both
+// halves are in docs/plans/exp17-notes/opus.md.
+//
+// Three `@@allow` arms, one per action `config_reconcile` actually calls:
+// `read` for the `find_unique`, and `create` + `update` for the `upsert`,
+// which pre-flights the create policy on every call and gates the conflict
+// branch on the update one. No `delete` arm: nothing deletes a currency, and
+// a reference row that a `DELETE` could reach is a foreign key waiting to
+// break. `auth().isSystem()` for `DisabledClient`'s reason — `vpay-db` reads
+// this table as trusted in-process code and `SystemContext` is unreachable
+// from anything an HTTP caller controls.
 model Currency {
   code String @id @iso4217 @db_enforce // 'XAF', 'EUR' — real DB CHECK, verified below
   exponent Int @range(min: 0, max: 4) @db_enforce // docs/flows/money.md: a property of the currency, not the environment
@@ -179,8 +218,48 @@ model Currency {
   payment_intents PaymentIntent[] @relation(fields: [code], references: [currency_code])
   charges Charge[] @relation(fields: [code], references: [currency_code])
   ledger_entries LedgerEntry[] @relation(fields: [code], references: [currency_code])
+
+  @@allow("read", auth().isSystem())
+  @@allow("create", auth().isSystem())
+  @@allow("update", auth().isSystem())
 }
 
+// `flow` is the FIRST of vpay's seven native Postgres enums to be converted
+// to TEXT + CHECK, by migration 0032. It had to be: cratestack never emits a
+// native `CREATE TYPE ... AS ENUM` on any backend, because its generated row
+// decoders read an enum column with `try_get::<String>()` and `.parse()` —
+// so a native enum column fails to decode on EVERY read through this layer
+// (`emit/postgres/columns.rs`, upstream issue #228). The validation the type
+// used to give is back as `providers_flow_enum_check`, the name
+// `naming.rs::check_name(table, column, "enum")` generates, with the
+// predicate Postgres deparses into the exact shape
+// `introspect/postgres/check_pattern.rs::reconstruct_enum` reads back.
+//
+// The conversion is INVISIBLE to `migrate baseline`, measured on 2026-09-06,
+// and that is worth stating because it is the mirror image of the
+// multi-column-CHECK blind spot this file's header already records.
+// `introspect/postgres/enums.rs` already synthesised `providers_flow_enum_check`
+// out of `pg_enum` for the native column, and `resolve_column` projects a
+// native enum and a TEXT column onto the same `Scalar("String")` — so the
+// report said exactly the same four things about `providers` before and
+// after. The one line it keeps saying, `column flow type differs (live:
+// Scalar("String"), schema: Enum("ProviderFlow"))`, is permanent at 0.11.1
+// and not a defect in this file: the enum's NAME has no catalog
+// representation to recover it from, which `enums.rs`'s own doc comment
+// calls out as documented lossiness. A drift report is not what proves this
+// conversion worked; `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx`
+// in config_reconcile.rs is, and reverting the migration's `ALTER COLUMN
+// flow TYPE TEXT` is what makes it fail.
+//
+// `@@allow("read", ...)` and NOTHING ELSE, deliberately, and this is the one
+// asymmetry with `Currency` above. `config_reconcile`'s provider pass is
+// still a hand-written `INSERT ... ON CONFLICT`, because CrateStack's upsert
+// input cannot carry a `@default(...)` column and the five capability
+// booleans below all have one — see the GAP note at the end of this model.
+// Granting `create`/`update` here would be granting a permission no call
+// site uses, which is a permission nothing can measure; `DisabledClient`'s
+// comment argues the same rule from the other direction. Add them in the
+// commit that moves the write, not before it.
 model Provider {
   code String @id @length(min: 1, max: 64) @db_enforce // 'mtn_momo' | 'orange_money'
   display_name String @length(min: 1, max: 128)
@@ -192,6 +271,8 @@ model Provider {
   enabled Boolean @default(true)
 
   charges Charge[] @relation(fields: [code], references: [provider_code])
+
+  @@allow("read", auth().isSystem())
 
   // GAP — no DB-level coherence CHECK expressible in THIS GRAMMAR.
   // backends/crates/vpay-provider/src/lib.rs:28-34 (Capabilities::is_coherent)
@@ -217,6 +298,39 @@ model Provider {
   // this file, are the authoritative schema for this constraint; this GAP
   // is about what THIS grammar can express, not about what the database
   // enforces.
+
+  // GAP — the five `@default(...)` booleans above make this model
+  // UNWRITEABLE through CrateStack's upsert, and the fix is a maintainer's
+  // decision rather than a code change.
+  //
+  // `cratestack-macros`' `model/inputs.rs::create_input_fields` and
+  // `model/descriptor/columns.rs`'s `upsert_update_columns` both filter out
+  // every field carrying `@default(...)` ("server-owned identity bindings
+  // ... clobbering these on update would turn upsert into 'take ownership of
+  // any row I name'"). Measured with `preview_sql` on 2026-09-06 and pinned
+  // by `the_provider_upsert_cannot_carry_the_capability_columns` in
+  // backends/crates/vpay-db/src/config_reconcile.rs:
+  //
+  //   INSERT INTO providers (code, display_name, flow) VALUES ($1, $2, $3)
+  //   ON CONFLICT (code) DO UPDATE SET display_name = EXCLUDED.display_name,
+  //                                    flow = EXCLUDED.flow
+  //
+  // `supports_refunds`, `supports_partial_refunds`, `delivers_callbacks`,
+  // `requires_ip_allowlist` and `enabled` are in neither list. Boot step 4
+  // would write the column defaults instead of the deployment's
+  // configuration and would never carry a capability change to an existing
+  // row — a rail an operator had just disabled would come back enabled.
+  //
+  // The four defaults are here because the live table has them (migration
+  // 0002: `DEFAULT FALSE` x4, `DEFAULT TRUE`), and while they are here they
+  // cost zero drift. Removing them from this model to unblock the upsert
+  // means `ALTER TABLE providers ALTER COLUMN ... DROP DEFAULT` on all five
+  // in a migration — letting a code generator's input-shaping rule decide
+  // vpay's DDL — or the drift report grows five `default value differs`
+  // lines. That trade is not this file's to make. Recorded in
+  // docs/status.md; the alternative is upstream growing a way to include a
+  // defaulted column in an upsert input, which is what the pinned
+  // `preview_sql` test will notice.
 }
 
 // --- payments --------------------------------------------------------------

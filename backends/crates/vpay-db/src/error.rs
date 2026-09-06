@@ -166,8 +166,11 @@ pub enum DbError {
     /// decimal places while the database recorded zero.
     ///
     /// Refused rather than upserted, and this is the whole reason
-    /// `config_reconcile` reads the stored exponent back instead of writing
-    /// `DO UPDATE SET exponent = EXCLUDED.exponent`. The exponent is not a
+    /// `config_reconcile` reads the stored exponent — with
+    /// `find_unique(code).for_update()` since 2026-09-06 — before it upserts,
+    /// instead of letting `DO UPDATE SET exponent = EXCLUDED.exponent` land.
+    /// That statement is exactly what CrateStack's `upsert` renders, which is
+    /// why the read is not an optimisation there but the guard itself. The exponent is not a
     /// per-deployment setting; it is a property of the currency itself
     /// (`docs/flows/money.md`, and migration 0001's own comment), and every
     /// amount already stored is an integer count of minor units *at the
@@ -187,9 +190,19 @@ pub enum DbError {
         /// The ISO-4217 code whose exponent disagrees.
         code: String,
         /// What the database already holds, and what existing amounts mean.
-        stored: i32,
+        ///
+        /// `i64`, not `i32`, since migration 0032 widened
+        /// `currencies.exponent` to `BIGINT` — `Int` in a `.cstack` model
+        /// always emits `int8`, and an `int4` column is not a narrower `Int`
+        /// to `cratestack`, it is a column its introspector refuses to map at
+        /// all. The value is still bounded to `0..=4` two layers upstream
+        /// (`vpay_config`'s `Config::validate_all`, then
+        /// `currencies_exponent_range_check`); the width is about which
+        /// integer the column *is*, not about how large an exponent vpay
+        /// accepts.
+        stored: i64,
         /// What this deployment's configuration asked for.
-        seeded: i32,
+        seeded: i64,
     },
 
     /// A query that ran through CrateStack's data layer rather than through

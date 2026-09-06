@@ -2469,7 +2469,14 @@ async fn list_page_walks_forward_and_backward_over_twenty_five_intents() -> anyh
 /// to the call rather than to a captured environment.
 async fn provider_snapshot(pool: &PgPool) -> anyhow::Result<Vec<(String, String, bool, bool)>> {
     let rows: Vec<(String, String, bool, bool)> = sqlx::query_as(
-        "SELECT code, flow::TEXT, supports_refunds, enabled FROM providers ORDER BY code",
+        // No `flow::TEXT` cast any more: migration 0032 made `flow` a plain
+        // `TEXT` column guarded by `providers_flow_enum_check`, because
+        // cratestack's generated row decoders read an enum column with
+        // `try_get::<String>()` and a native Postgres enum fails that on
+        // every read. The cast was doing real work while `provider_flow`
+        // existed; leaving it would now be a no-op that reads as though the
+        // column were still an enum.
+        "SELECT code, flow, supports_refunds, enabled FROM providers ORDER BY code",
     )
     .fetch_all(pool)
     .await
@@ -2606,7 +2613,12 @@ async fn reconcile_is_idempotent_and_disables_a_dropped_provider_code() -> anyho
         78,
         "a misconfigured deployment must exit 78 (fix the deploy), never 69 (wait for Postgres)"
     );
-    let stored_exponent: i32 =
+    // `i64`, because migration 0032 widened `currencies.exponent` to
+    // `BIGINT`. An `i32` here decodes as "mismatched types; Rust type `i32`
+    // (as SQL type `INT4`) is not compatible with SQL type `INT8`" — sqlx
+    // refuses the narrowing rather than performing it, which is why this is
+    // a compile-and-run change and not a silent one.
+    let stored_exponent: i64 =
         sqlx::query_scalar("SELECT exponent FROM currencies WHERE code = 'XAF'")
             .fetch_one(&pool)
             .await
@@ -2614,6 +2626,102 @@ async fn reconcile_is_idempotent_and_disables_a_dropped_provider_code() -> anyho
     assert_eq!(
         stored_exponent, 0,
         "the refused transaction must have rolled back whole"
+    );
+
+    Ok(())
+}
+
+/// A currency row this deployment did **not** write is still refused when
+/// its exponent disagrees — which is the case the `find_unique(...)
+/// .for_update()` read exists for, and the one the statement it replaced
+/// could not have been asked.
+///
+/// `reconcile_is_idempotent_and_disables_a_dropped_provider_code` above
+/// reaches the same refusal, but it seeds `XAF` *through `reconcile` itself*
+/// first. That leaves one thing unproven: whether the guard reads what is
+/// actually in the table, or merely remembers what this process put there.
+/// Here the row is inserted by hand — the shape an operator's `psql`, an
+/// older release, or a replica that booted with a different configuration
+/// leaves behind — and then boot step 4 runs against it.
+///
+/// Why that distinction is worth a test of its own: since 2026-09-06 the
+/// comparison is a separate `SELECT ... FOR UPDATE` rather than the
+/// `RETURNING` of a no-op `ON CONFLICT DO UPDATE`, because CrateStack's
+/// `upsert` renders `SET exponent = EXCLUDED.exponent` and would have
+/// **overwritten** the stored value (pinned by
+/// `the_currency_upsert_would_overwrite_a_stored_exponent_on_its_own` in
+/// `vpay-db`'s own unit tests). If that read is ever dropped, or if
+/// `@@allow("read", auth().isSystem())` leaves `model Currency` — which
+/// compiles into the `WHERE` clause and turns "the row is there" into "no
+/// row" silently — this test is what fails, and the assertion at the end is
+/// what makes it fail for the right reason: the stored exponent is still 0.
+#[tokio::test]
+async fn a_hand_seeded_currency_exponent_is_read_back_and_refused_not_overwritten()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+
+    // Not through `reconcile`: this is the row somebody else left.
+    sqlx::query("INSERT INTO currencies (code, exponent) VALUES ('XAF', 0)")
+        .execute(&pool)
+        .await
+        .context("seeding XAF at exponent 0 by hand must succeed")?;
+
+    let (mtn, _orange) = reconcile_rails();
+    let error = repositories
+        .reconcile(
+            &[vpay_db::CurrencySeed {
+                code: "XAF".to_owned(),
+                exponent: 2,
+            }],
+            std::slice::from_ref(&mtn),
+        )
+        .await
+        .expect_err("a deployment that disagrees with the stored exponent must be refused");
+
+    match &error {
+        vpay_db::DbError::CurrencyExponentConflict {
+            code,
+            stored,
+            seeded,
+        } => {
+            assert_eq!(code, "XAF");
+            assert_eq!(*stored, 0, "the refusal must name what the DATABASE holds");
+            assert_eq!(*seeded, 2, "and what this deployment asked for");
+        }
+        other => panic!("expected a named exponent conflict, got {other:?}"),
+    }
+    assert_eq!(
+        vpay_core::Classify::category(&error),
+        vpay_core::Category::Configuration,
+        "the fix is a corrected deployment, never a retry"
+    );
+    assert_eq!(
+        vpay_core::Classify::category(&error).exit_code(),
+        78,
+        "a misconfigured deployment must exit 78 (fix the deploy), never 69 (wait for Postgres)"
+    );
+
+    // The whole transaction rolled back: the exponent is untouched AND the
+    // provider the same call would have written is absent. The second half
+    // is what says the refusal happened before any other write landed, not
+    // merely that this one row survived.
+    let stored_exponent: i64 =
+        sqlx::query_scalar("SELECT exponent FROM currencies WHERE code = 'XAF'")
+            .fetch_one(&pool)
+            .await
+            .context("re-reading the exponent must succeed")?;
+    assert_eq!(
+        stored_exponent, 0,
+        "the stored exponent must be untouched — every amount already recorded in XAF is a \
+         count of minor units at exponent 0"
+    );
+    let providers_written: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM providers")
+        .fetch_one(&pool)
+        .await
+        .context("counting providers must succeed")?;
+    assert_eq!(
+        providers_written, 0,
+        "the refusal must roll the whole transaction back, not just skip the currency"
     );
 
     Ok(())
@@ -2645,6 +2753,125 @@ fn reconcile_rails() -> (vpay_db::ProviderSeed, vpay_db::ProviderSeed) {
             enabled: true,
         },
     )
+}
+
+/// `reconcile` reads the stored exponent **under a row lock**, so a writer
+/// that is not another `reconcile` cannot slip a change in between the read
+/// and the upsert.
+///
+/// **This is the test that fails if `.for_update()` is removed from the
+/// currency read**, and it is deliberately not
+/// `reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_released`
+/// below. That one passes with or without the row lock — measured on
+/// 2026-09-06, and recorded in `docs/plans/exp17-notes/opus.md` — because the
+/// advisory lock is what serialises boot against boot. So does every other
+/// test in this file: the whole suite was green with `.for_update()` deleted
+/// until this case was written. Two guards, two tests, and neither covers the
+/// other's.
+///
+/// The interleaving is deterministic rather than raced, which is what makes
+/// this a test rather than a flake:
+///
+/// 1. `XAF` is seeded at exponent 0 by hand.
+/// 2. A transaction this test controls issues `UPDATE ... SET exponent = 3`
+///    and does **not** commit. It now holds the row's write lock, and the
+///    value 3 is invisible to every other snapshot.
+/// 3. `reconcile` starts with a seed of `XAF` at exponent 0 — a seed that
+///    *agrees* with what is committed and *disagrees* with what is about to
+///    be. It takes the advisory lock (free), then blocks on the row.
+/// 4. The blocker commits. The read unblocks and sees 3.
+///
+/// With `.for_update()` the read is what blocked, so it returns the
+/// *post-commit* 3 and boot refuses: `CurrencyExponentConflict { stored: 3,
+/// seeded: 0 }`. Without it the plain `SELECT` would have returned the
+/// pre-commit 0 immediately, the comparison would have passed, and the
+/// upsert — whose own internal probe blocks on the same row — would then have
+/// written `exponent = 0` over the committed 3, silently. That is the race
+/// the row lock closes, and the assertion on the stored value at the end is
+/// what distinguishes the two outcomes rather than merely observing that
+/// something was refused.
+#[tokio::test]
+async fn reconcile_reads_the_exponent_under_a_row_lock_and_cannot_clobber_a_concurrent_writer()
+-> anyhow::Result<()> {
+    use std::time::Duration;
+
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let (mtn, _orange) = reconcile_rails();
+
+    sqlx::query("INSERT INTO currencies (code, exponent) VALUES ('XAF', 0)")
+        .execute(&pool)
+        .await
+        .context("seeding XAF at exponent 0 must succeed")?;
+
+    // A writer that is not a `reconcile`, so the advisory lock does not bind
+    // it: an operator's `psql`, a data fix, a future admin surface.
+    let mut blocker = pool
+        .begin()
+        .await
+        .context("the blocker transaction begins")?;
+    sqlx::query("UPDATE currencies SET exponent = 3 WHERE code = 'XAF'")
+        .execute(&mut *blocker)
+        .await
+        .context("the uncommitted competing update must succeed")?;
+
+    let mut reconciling = tokio::spawn({
+        let repositories = Arc::clone(&repositories);
+        let providers = vec![mtn.clone()];
+        let currencies = vec![vpay_db::CurrencySeed {
+            code: "XAF".to_owned(),
+            exponent: 0,
+        }];
+        async move { repositories.reconcile(&currencies, &providers).await }
+    });
+
+    // It must not get past the currency row while the write lock is held.
+    // Same window and same reasoning as the boot-lock test below.
+    let finished_while_locked = tokio::time::timeout(Duration::from_secs(3), &mut reconciling)
+        .await
+        .is_ok();
+    assert!(
+        !finished_while_locked,
+        "reconcile finished while another transaction held the `currencies` row's write lock;          it cannot have read the row under `FOR UPDATE`"
+    );
+
+    blocker
+        .commit()
+        .await
+        .context("releasing the row lock must succeed")?;
+
+    let outcome = reconciling
+        .await
+        .context("the reconcile task must not panic")?;
+    let error = outcome.expect_err(
+        "the read must see the committed 3 and refuse a seed of 0. If this returned `Ok`, the          read did not block on the row and boot has just overwritten another writer's value",
+    );
+    match &error {
+        vpay_db::DbError::CurrencyExponentConflict {
+            code,
+            stored,
+            seeded,
+        } => {
+            assert_eq!(code, "XAF");
+            assert_eq!(
+                *stored, 3,
+                "the refusal must name the value the OTHER writer committed, which is only                  visible to a read that waited for it"
+            );
+            assert_eq!(*seeded, 0);
+        }
+        other => panic!("expected a named exponent conflict, got {other:?}"),
+    }
+
+    let stored_exponent: i64 =
+        sqlx::query_scalar("SELECT exponent FROM currencies WHERE code = 'XAF'")
+            .fetch_one(&pool)
+            .await
+            .context("re-reading the exponent must succeed")?;
+    assert_eq!(
+        stored_exponent, 3,
+        "the other writer's value must survive. A 0 here is the exact silent clobber this row          lock exists to prevent: boot read a stale 0, agreed with itself, and wrote it back over          a committed 3"
+    );
+
+    Ok(())
 }
 
 /// `reconcile` takes `lock_keys::CONFIG_RECONCILE` before it touches a row,
