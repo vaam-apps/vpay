@@ -400,20 +400,35 @@ model LedgerEntry {
 // branch it did not name. `enable_client` is `.delete_many(..).run(ctx)`
 // and needs `delete`.
 //
-// Four arms rather than one `@@allow("all", ...)`, deliberately.
+// Four arms rather than one `@@allow("all", ...)`, deliberately — but NOT
+// for the reason this comment gave until the review of 2026-09-06.
 // `cratestack-macros`' `parse_policy_expression` treats `"all"` as matching
-// every action, so one line would work — and would also grant `list` and
-// `detail`, which nothing in vpay calls, and would make the per-action
-// mutations below inexpressible. The three write actions fail LOUDLY when
-// their arm is missing (`CratestackError::Forbidden` -> `PersistenceError::
-// Denied` -> `Category::Internal`), unlike `read`, whose absence is a
-// silent `WHERE FALSE`. The one exception is `delete`, because
-// `enable_client` goes through `delete_many`, whose policy clause is part
-// of the `WHERE` too: deleting the `delete` arm removes zero rows and
-// returns `Ok`, so the enable half of
-// `a_client_disabled_through_cratestack_is_visible_to_both_paths` is what
-// makes it red. All three mutations were run; docs/status.md carries the
-// dated row and the transcripts.
+// every action, so one line would work, and it would grant exactly what
+// these four grant and nothing more. This comment claimed `"all"` "would
+// also grant `list` and `detail`"; it would not grant them *additionally*,
+// because `@@allow("read", ...)` already does. `model/descriptor.rs:45-47`
+// compiles the `read` arm into BOTH `&["list", "read"]` and
+// `&["detail", "read"]`, which is asserted in
+// `disabled_clients.rs::every_action_this_crate_calls_has_an_allow_arm`
+// (`detail_allow_policies.len() == 1` with no `detail` arm declared here).
+//
+// The real and only reason for four lines is that each can be deleted on
+// its own, and the four runtime effects are not alike:
+//
+//   create  -> LOUD  (`CratestackError::Forbidden` -> `PersistenceError::
+//                     Denied` -> `Category::Internal`), on every call
+//   update  -> LOUD, but only on the conflict branch — a first disable of
+//              a given client succeeds and the second fails
+//   delete  -> SILENT: `enable_client` goes through `delete_many`, whose
+//              policy clause is part of the `WHERE`, so a missing arm
+//              removes zero rows and returns `Ok`
+//   read    -> SILENT, the same way, and the dangerous direction: every
+//              revoked client is admitted again
+//
+// A wildcard would have made that asymmetry unmeasurable. All four
+// mutations were run twice — by the change and again by its review —
+// against a real Postgres; docs/status.md carries the dated row and
+// docs/plans/exp16-notes/ the transcripts.
 model DisabledClient {
   client_id String @id
   // `@default(now())`, not `@default(dbgenerated())`, and the difference is

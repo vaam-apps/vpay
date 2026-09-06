@@ -30,10 +30,19 @@ None }`). So the vocabulary is `list | detail | read | create | update |
 delete | all`, a delete **does** need its own arm, and `@@allow("all", …)`
 would have worked as a single line.
 
-Four explicit arms were written instead. `"all"` would also grant `list` and
-`detail`, which nothing in vpay calls, and it would collapse the four policy
-mutations in § 3 into one — the per-action asymmetry in § 4 is the most
-useful thing this change measured and a wildcard would have hidden it.
+Four explicit arms were written instead, and § 1's original justification for
+that was wrong — corrected here on 2026-09-06 by
+[opus-review.md](opus-review.md) § 2 rather than left to be re-read as
+measured. It said `"all"` "would also grant `list` and `detail`, which nothing
+in vpay calls". It would not grant them additionally: `"read"` is a member of
+*both* action lists above, so `@@allow("read", auth().isSystem())` already
+fills `read_allow_policies` and `detail_allow_policies`, and the four arms and
+`@@allow("all", …)` populate an identical set of slots.
+
+The reason that survives is the other one: each arm is separately droppable,
+so the four policy mutations in § 3 are four measurements instead of one, and
+the per-action asymmetry in § 4 — the most useful thing this change measured —
+would have been invisible under a wildcard.
 
 ## 2. Why `enable_client` is `delete_many` and not `delete`
 

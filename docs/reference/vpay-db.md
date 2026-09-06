@@ -1411,11 +1411,19 @@ Two other things that follow from the same mechanism and are not obvious:
 - **`@@allow("create", ...)` alone is not enough for an upsert.** Both slots
   are consulted, and the `update` one only on the branch that a fresh database
   never takes. Mutation 2 above is what makes that concrete.
-- **Four arms rather than one `@@allow("all", ...)`.**
-  `cratestack-macros`' `parse_policy_expression` treats `"all"` as matching
-  every action, so one line would compile and work — and would also grant
-  `list` and `detail`, which nothing in vpay calls, and would collapse the
-  four mutations above into one.
+- **Four arms rather than one `@@allow("all", ...)`, and not for the reason
+  first written here.** `cratestack-macros`' `parse_policy_expression` treats
+  `"all"` as matching every action, so one line would compile and work. This
+  section claimed until the review of 2026-09-06 that `"all"` "would also
+  grant `list` and `detail`, which nothing in vpay calls" — it would not grant
+  them *additionally*. `model/descriptor.rs:45-47` compiles a `read` arm into
+  **both** `&["list", "read"]` and `&["detail", "read"]`, so the four arms and
+  `@@allow("all", …)` populate an identical set of slots. The genuine and
+  sufficient reason for four lines is that each is separately droppable, which
+  is what makes the four rows of the table above four measurements rather than
+  one. `every_action_this_crate_calls_has_an_allow_arm` pins the corrected
+  fact: `detail_allow_policies.len() == 1` while `model DisabledClient`
+  declares no `detail` arm at all.
 
 ### Why the generated module is private, and what keeps it that way
 
