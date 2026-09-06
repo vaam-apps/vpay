@@ -2510,11 +2510,39 @@ fn verify_repositories(root: &Path) -> Result<(), String> {
 ///    reachable from another crate; `pub mod schema;` is not);
 /// 3. it is declared *at all*, so a module the gate cannot find fails rather
 ///    than passing by finding nothing;
-/// 4. no `pub use` anywhere in the crate names it.
+/// 4. no `pub use` anywhere in the crate names it;
+/// 5. no unrestricted-`pub` *signature* anywhere in the crate names it.
 ///
 /// `pub(crate)` is accepted rather than demanded because the rule is about
 /// what leaves the crate, and a gate that insisted on the exact spelling
 /// `mod schema;` would be a rule about characters.
+///
+/// # Why requirement 5, added 2026-09-06 by review
+///
+/// Requirements 2 and 4 read the two spellings that *name a module*. They are
+/// not the only two ways out. Measured against the gate with 1–4 in place,
+/// both of these compiled **and passed**:
+///
+/// ```text
+/// pub type CratestackHandle = crate::schema::cratestack_schema::Cratestack;
+/// pub fn cratestack_handle(pool: sqlx::PgPool)
+///     -> crate::schema::cratestack_schema::Cratestack { … }
+/// ```
+///
+/// Either one hands every consumer of `vpay-db` the generated runtime hub —
+/// and through it every model delegate — which is the whole of what
+/// requirements 2 and 4 exist to prevent, reached by a spelling they do not
+/// read. `concrete_repository_types`' alias fixpoint does not catch them
+/// either: it only promotes an alias whose *target* is already in the set,
+/// and `Cratestack` is declared by no source file, so it never is.
+///
+/// So: any line naming the module whose enclosing item is introduced by an
+/// unrestricted `pub` — `pub fn`, `pub type`, `pub const`, `pub static`,
+/// `pub struct`, `pub enum`, `pub trait`, in any file of the crate — is a
+/// violation. `mod` and `use` are excluded because 2 and 4 already own them
+/// and say something more specific. `pub(crate)` and private items are not
+/// violations, for requirement 2's reason: `PgRepositories`' own
+/// `pub(crate) cs` field names the module on purpose and leaves no crate.
 fn generated_schema_leaks(root: &Path, db_files: &[(PathBuf, String)]) -> Vec<String> {
     let mut problems = Vec::new();
 
@@ -2578,12 +2606,114 @@ fn generated_schema_leaks(root: &Path, db_files: &[(PathBuf, String)]) -> Vec<St
                     relative(root, source_path),
                 ));
             }
+            for line in exported_signature_lines_naming(text, module) {
+                problems.push(format!(
+                    "{}:{line}: an unrestricted `pub` item names `{module}`, so the expansion of \
+                     `{GENERATED_SCHEMA_MACRO}` leaves `vpay-db` through its signature — a \
+                     `pub type` alias or a `pub fn` returning the generated runtime hands out \
+                     every model delegate just as surely as a `pub use` does, and neither names \
+                     a type any source file declares. Make it `pub(crate)` (ADR-0016, \
+                     standard 5)",
+                    relative(root, source_path),
+                ));
+            }
         }
     }
 
     problems.sort();
     problems.dedup();
     problems
+}
+
+/// The item keywords that introduce something a crate can hand out, minus the
+/// two [`generated_schema_leaks`] already reports more specifically.
+///
+/// `mod` and `use` are absent on purpose: requirements 2 and 4 own them and
+/// their messages say what to do about them, so including them here would
+/// report one mistake twice and in the vaguer of the two wordings.
+const EXPORTABLE_ITEM_KEYWORDS: [&str; 10] = [
+    "fn ",
+    "async fn ",
+    "unsafe fn ",
+    "const fn ",
+    "type ",
+    "const ",
+    "static ",
+    "struct ",
+    "enum ",
+    "trait ",
+];
+
+/// Every line whose enclosing item is introduced by an unrestricted `pub` and
+/// which names `module` as a whole word.
+///
+/// # Why line-anchored rather than parsed
+///
+/// The gate reads source text (`generated_schema_leaks` says why), so the
+/// question "is this occurrence part of a public signature or part of a
+/// function body?" has to be answered without a syntax tree. Walking back to
+/// the nearest line that *starts* an item or a statement answers it well
+/// enough to be worth having, and errs in the safe direction:
+///
+/// - `pub type X = crate::schema::…;` — the naming line is its own anchor and
+///   starts `pub type` → reported.
+/// - `pub fn f(\n    a: A,\n) -> crate::schema::… {` — the naming line
+///   anchors back to `pub fn f(` → reported.
+/// - `pub(crate) cs: crate::schema::…,` — anchors to itself, `pub(crate)` is
+///   not `pub ` → not reported, which is `PgRepositories`' real field.
+/// - `let cs = crate::schema::…::builder(pool).build();` — anchors to itself,
+///   starts `let` → not reported, which is `PgRepositories::boxed`'s body.
+///
+/// A `pub fn` on an inherent impl of a `pub(crate)` type would be reported
+/// even though nothing outside the crate can call it. That is deliberate: a
+/// gate about what leaves a crate should over-report a `pub` that means
+/// nothing rather than under-report one that means everything, and the fix is
+/// to write the visibility that was intended.
+fn exported_signature_lines_naming(text: &str, module: &str) -> Vec<usize> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+
+    for (index, line) in lines.iter().enumerate() {
+        if word_lines(line, module).is_empty() {
+            continue;
+        }
+        let anchor = (0..=index).rev().find_map(|i| {
+            let candidate = lines.get(i).copied().unwrap_or_default().trim_start();
+            starts_an_item_or_statement(candidate).then_some((i, candidate))
+        });
+        let Some((anchor_index, anchor)) = anchor else {
+            continue;
+        };
+        let Some(rest) = anchor.strip_prefix("pub ") else {
+            continue;
+        };
+        if EXPORTABLE_ITEM_KEYWORDS
+            .iter()
+            .any(|keyword| rest.starts_with(keyword))
+        {
+            // The *item's* line, not the naming line: a `pub fn` that mentions
+            // the module in both its return type and its body is one leak, and
+            // the line worth printing is the one whose visibility is wrong.
+            out.push(anchor_index + 1);
+        }
+    }
+
+    out.dedup();
+    out
+}
+
+/// Whether a trimmed line begins a Rust item or statement rather than
+/// continuing one.
+///
+/// The anchor set for [`exported_signature_lines_naming`]. `}` is in it
+/// because a closing brace ends whatever came before, so a line after one
+/// that is not itself an item start belongs to no signature.
+fn starts_an_item_or_statement(line: &str) -> bool {
+    const STARTERS: [&str; 16] = [
+        "pub ", "pub(", "fn ", "async ", "unsafe ", "type ", "const ", "static ", "struct ",
+        "enum ", "trait ", "impl ", "mod ", "use ", "let ", "}",
+    ];
+    STARTERS.iter().any(|starter| line.starts_with(starter))
 }
 
 /// Line numbers of every `pub use` whose tree names `module` as a path
@@ -10728,6 +10858,113 @@ pub struct Scoped {
             exported_use_lines_naming("pub use {schema::A, other::B};\n", "schema"),
             vec![1]
         );
+    }
+
+    /// A `pub type` alias and a `pub fn` return type are two more ways out of
+    /// the crate, and until 2026-09-06 the gate read neither.
+    ///
+    /// **Measured on the gate as it stood before this test existed: both
+    /// compiled and both printed `ok`.** They are not hypothetical spellings —
+    /// "make the module private and hand out a friendlier alias for the one
+    /// type I need" is exactly what someone does while believing they are
+    /// respecting standard 5, which is the same argument that justified the
+    /// alias fixpoint in `concrete_repository_types`.
+    ///
+    /// The negative half is the one worth guarding: the field
+    /// `PgRepositories` really has is `pub(crate) cs: crate::schema::…`, and a
+    /// gate that reported it would be a gate people delete.
+    #[test]
+    fn a_public_signature_naming_the_generated_module_fails_the_gate_itself() {
+        // Positive: the two evasions, in the two shapes they arrive in.
+        assert_eq!(
+            exported_signature_lines_naming(
+                "pub type CratestackHandle = crate::schema::cratestack_schema::Cratestack;\n",
+                "schema"
+            ),
+            vec![1]
+        );
+        assert_eq!(
+            exported_signature_lines_naming(
+                "pub fn handle(pool: PgPool) -> crate::schema::cratestack_schema::Cratestack {\n}\n",
+                "schema"
+            ),
+            vec![1]
+        );
+        // A signature spread over several lines still anchors to its `pub fn`.
+        assert_eq!(
+            exported_signature_lines_naming(
+                "pub fn handle(\n    pool: PgPool,\n) -> crate::schema::models::Charge {\n}\n",
+                "schema"
+            ),
+            vec![1],
+            "the reported line is the item's, not the continuation line that happens to name it"
+        );
+        // One item, two mentions, one violation.
+        assert_eq!(
+            exported_signature_lines_naming(
+                "pub fn handle(pool: PgPool) -> crate::schema::cratestack_schema::Cratestack {\n    crate::schema::cratestack_schema::Cratestack::builder(pool).build()\n}\n",
+                "schema"
+            ),
+            vec![1]
+        );
+
+        // Negative: the real crate's own uses of the module, neither of which
+        // reaches another crate.
+        assert!(
+            exported_signature_lines_naming(
+                "pub(crate) struct PgRepositories {\n    pub(crate) cs: crate::schema::cratestack_schema::Cratestack,\n}\n",
+                "schema"
+            )
+            .is_empty(),
+            "a `pub(crate)` field is what this crate actually holds"
+        );
+        assert!(
+            exported_signature_lines_naming(
+                "pub(crate) fn boxed(pool: PgPool) -> Arc<dyn Repositories> {\n    let cs = crate::schema::cratestack_schema::Cratestack::builder(pool).build();\n}\n",
+                "schema"
+            )
+            .is_empty(),
+            "naming the module inside a body is not publishing it"
+        );
+        assert!(
+            exported_signature_lines_naming(
+                "pub type Handle = crate::schema_helpers::Thing;\n",
+                "schema"
+            )
+            .is_empty(),
+            "whole-word matching, as everywhere else in this gate"
+        );
+
+        // And end to end, through the gate itself.
+        let dir = TempDir::new("verify-repositories-signature");
+        let root = dir.path();
+        let db = root.join("backends/crates/vpay-db/src");
+        fs::create_dir_all(&db).expect("the temp tree is creatable");
+        fs::create_dir_all(root.join("backends/apps")).expect("the temp tree is creatable");
+        fs::write(
+            db.join("schema.rs"),
+            "::cratestack::include_server_schema!(\"../../../schemas/vpay.cstack\", db = Postgres);\n",
+        )
+        .expect("the source file is writable");
+
+        fs::write(
+            db.join("lib.rs"),
+            format!("{DB}mod schema;\npub type CratestackHandle = crate::schema::cratestack_schema::Cratestack;\n"),
+        )
+        .expect("the source file is writable");
+        let error =
+            verify_repositories(root).expect_err("a `pub type` publishes the generated runtime");
+        assert!(
+            error.contains("unrestricted `pub` item") && error.contains("standard 5"),
+            "the gate must name the leak and the standard: {error}"
+        );
+
+        fs::write(
+            db.join("lib.rs"),
+            format!("{DB}mod schema;\npub(crate) type CratestackHandle = crate::schema::cratestack_schema::Cratestack;\n"),
+        )
+        .expect("the source file is writable");
+        verify_repositories(root).expect("`pub(crate)` reaches no other crate");
     }
 
     #[test]
