@@ -1863,7 +1863,12 @@ asserted:
   payer's money and is never net of the fee. That last case was added on
   review — until it existed, `amount: row.amount - row.fee.unwrap_or(0)`
   passed all 244 of `vpay-api`'s tests
-  ([plans/issue-46-notes/review.md](plans/issue-46-notes/review.md), F1);
+  ([plans/issue-46-notes/review.md](plans/issue-46-notes/review.md), F1). That
+  244 is a dated measurement of the pre-rebase tree and is deliberately not
+  restated: what matters is that the same mutation was **re-run on 2026-09-06
+  after the rebase onto issue #45's merge and still fails that case**, on
+  `left: 1750, right: 2000`
+  ([plans/issue-46-notes/impl.md](plans/issue-46-notes/impl.md) § 11);
 - the port's own `vpay_provider::Refunded::fee` (`Option<Money>`), the only
   thing that could ever fill it;
 - both merchant SDKs' `Refund.fee`, with the parity row and its five tests.

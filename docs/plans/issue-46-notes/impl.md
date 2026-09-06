@@ -525,3 +525,48 @@ dated measurement in a review record, not a live claim, and rewriting it
 would be rewriting history; this paragraph is the correction. Re-measured on
 this tree, `V1_ROUTES` has **eleven** entries — #47's `/account_holders` and
 #51's `/refunds/{id}` are the two the review's nine did not have.
+
+## 12. And once more, onto `c456f24` (2026-09-06) — PR #52 landed mid-rebase
+
+`origin/master` moved again while § 11's gate was running: **`c456f24`**, the
+merge of PR #52 (`verify-sdk-parity` reads both SDKs and is two-directional;
+`.xtask/src/main.rs` +1229 lines, plus `docs/sdks/parity.md`, `docs/status.md`,
+`CLAUDE.md` and the `justfile`). Rebasing onto `bb8de92` and stopping there
+would have left this PR conflicting against the tip it is measured against,
+which is the thing the exercise exists to fix, so the eighteen commits were
+replayed once more.
+
+**No conflict this time**, in either direction — #52 touched
+`docs/sdks/parity.md` above the row block and `docs/status.md` in rows this
+branch does not write. The state after § 11 is tagged `pr50-rebased-onto-bb8de92`
+if the two need comparing.
+
+**The whole gate was re-run on the new base**, because a gate measured against
+the previous one is a claim about a tree nobody will merge:
+
+* `cargo build --workspace --all-targets`, `just fmt-check`, `just clippy`:
+  clean.
+* `just verify`: ok — the ten gates. `verify-sdk-parity` now reports
+  *"359 proving test(s) named in docs/sdks/parity.md all exist, 28 dated
+  gap(s), **14 SDK method(s) enumerated across 17 row(s)**"* — #52's second
+  direction, and the `refund.fee` row passes it. `verify-links`: 775 links in
+  139 files.
+* `cargo nextest run -p vpay-api -p vpay-core -p vpay-sdk`: **475 run, 475
+  passed, 0 skipped**; filtered to `test(refund) or test(fee)`, **18 run, 18
+  passed**.
+* `just test-doc`: 96 passed, 1 ignored. `just deny`: ok.
+* `just verify-ignored`: *"0 ignored (expected 0), 43 test binaries (expected
+  43), **1359** total (minimum 1080)"* — 1342 on the `bb8de92` base plus #52's
+  own xtask cases; no new binary from this branch either way.
+* `just lint-web` and `just test-web` (Node 22.23.2 per `.nvmrc`): clean —
+  `sdks/nodejs` **180 across 9 files**, `sdks/stripe-js` 119,
+  `frontends/apps/checkout` 302, `examples/shop` 57,
+  `frontends/packages/config` 63.
+* **Both mutations re-run on this exact tree and reverted**: netting the fee
+  into `amount` fails `a_reported_fee_never_moves_the_payers_amount`
+  (`left: 1750, right: 2000`), and `fee: Some(row.fee.unwrap_or(0))` fails
+  `an_unreported_refund_fee_renders_null_and_a_reported_zero_renders_zero`
+  plus three others. `git status` clean afterwards.
+* `just test-rust` was **not** attempted a second time (one attempt, per the
+  brief); the host's Docker daemon has not returned. Everything owed to CI in
+  § 11 is still owed, unchanged by this rebase.
