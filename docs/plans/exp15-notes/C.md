@@ -178,6 +178,12 @@ All on this tree, this branch:
 | `just clippy` | ok (one `redundant_closure` on new code, fixed) |
 | `just docs-check` | see below |
 
+**Updated 2026-09-06 by the review pass:** every row above was re-run and
+still holds, plus `just verify-ignored` (`0 ignored (expected 0), 42 test
+binaries, 1333 total`), which this pass had not run. `cargo test -p xtask` is
+now **211**, the three added cases being the two lexer regressions and the
+TypeScript type-parameter case. See [C-review.md](C-review.md).
+
 ## 7. What was NOT done
 
 - **`docs/adr/0015-sdk-parity.md` was not edited.** ADRs are immutable in this
@@ -197,10 +203,26 @@ All on this tree, this branch:
   name every resource `<X>Resource` and declare each as a Rust `impl` or a TS
   `class`; the alternative was a scanner that guessed which of a module's
   types is a capability, which fails quietly. Recorded in the code.
-- **A Rust char literal holding a lone brace would unbalance the lexer.**
+- ~~**A Rust char literal holding a lone brace would unbalance the lexer.**
   Neither SDK contains one; the limitation is the same one
   `balanced_delimited` has carried since it was written, and it is written
-  down rather than left to be found.
+  down rather than left to be found.~~ **Retracted 2026-09-06 by the review
+  pass ([C-review.md](C-review.md) F1): the second sentence was false when it
+  was written.** `sdks/rust/src/webhooks.rs:321` has shipped
+  `altered.push(if last == b'}' { b')' } else { b'}' });` since it was
+  written — two unbalanced closing braces — and is harmless only because that
+  file declares no `…Resource` impl. The limitation was not merely
+  undesirable, it was reachable: with one such literal inside
+  `PaymentIntentsResource`, adding an unrecorded `pub async fn` to the same
+  impl left the gate green at `13 SDK method(s)`, where the same addition
+  without it failed with exit 1. `code_only` now hands Rust literals to
+  `end_of_literal` — the lexer `verify-status`, `verify-serde` and
+  `verify-docs` already share, which this pass should have reused rather than
+  written a weaker copy of (ADR-0016 standard 4). The same commit fixed a
+  second silent defect the same reuse would have avoided: Rust block comments
+  nest and this lexer did not count them, so a method parked inside
+  `/* … /* … */ … */` was enumerated as shipped and the gate demanded a row
+  for a method that does not exist.
 - **Method-name spelling is not normalised across languages.** A Rust
   `list_all` and a Node `listAll` would be two capabilities needing two rows.
   That is the brief's "the SDKs' own spelling" and is arguably the right

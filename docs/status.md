@@ -165,6 +165,41 @@ still failing) — four fail with exit 1 and the fifth, the same
 `payments.teleport` row rewritten as `⛔`/`⛔` with a date, passes. See
 [plans/exp15-notes/C.md](plans/exp15-notes/C.md).
 
+**Reviewed the same day, and the enumerator had three silent holes — all
+three closed** ([plans/exp15-notes/C-review.md](plans/exp15-notes/C-review.md)).
+The review re-ran all five mutations above (all still correct) and added its
+own; three of them passed when they should have failed, and each was a case
+where the *other* SDK still backed the row, so the printed method count did
+not move and nothing was said:
+
+- a Rust **character or byte literal holding a brace** — `b'}'`, the shape
+  `sdks/rust/src/webhooks.rs:321` has shipped since it was written —
+  truncated the enclosing `impl …Resource` and dropped every method after
+  it. Measured: adding an unrecorded `pub async fn` to
+  `PaymentIntentsResource` failed with exit 1 on its own, and passed with
+  exit 0 once one such literal preceded it. The gate's own lexer had claimed
+  in a comment that "neither SDK contains one"; that was false.
+- a **nested Rust block comment** ended at the first `*/`, so a method parked
+  inside `/* … /* … */ … */` was enumerated as shipped and the gate demanded
+  a parity row for a method that does not exist — a false positive whose
+  cheapest cure is deleting the honest comment.
+- a **TypeScript method with a type parameter** (`async listAll<T>(…)`) was
+  read as a field and never enumerated.
+
+The first two are fixed by deleting the second Rust lexer: `code_only` now
+hands Rust literals to `end_of_literal`, the one `verify-status`,
+`verify-serde` and `verify-docs` already share, which knows `r#"…"#`, `b'…'`
+and the lifetime-versus-character-literal ambiguity. Each fix carries a
+regression test measured to fail against the behaviour it replaced. **The
+enumeration of this tree is unchanged** — still the same 13 capabilities
+across 16 rows — so these closed holes, and did not correct a miscount.
+`cargo test -p xtask` 208 → **211 passed, 0 failed, 0 ignored**. Still not
+checked, and recorded rather than fixed: a Node resource declared as an
+object literal or with arrow-function properties remains invisible (neither
+shape exists in `sdks/nodejs` today, checked module by module), and no rule
+compares a row's per-column `✅`/`⛔` cell against whether *that* SDK
+declares the method.
+
 **New 2026-09-05: the three publishable npm packages are renamed
 `@vpay/*` → `@vaam-apps/vpay-*`.** The organisation was renamed
 `vaam-store` → `vaam-apps` on 2026-09-04, and the scope now matches it while
