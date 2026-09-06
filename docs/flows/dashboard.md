@@ -45,9 +45,14 @@ the same rows `/v1` serves:
 | `GET /dash/v1/payment_intents/{id}` | One intent, plus its charge, its refunds and its event timeline                                        |
 
 Both are read-only, and that is structural rather than a promise: any method
-but `GET`/`HEAD` is refused by the boundary _before_ the router matches, so a
-write mounted here later cannot arrive unlogged (ADR-0008 requires an
-`audit_log` row per dashboard write, and none exists).
+but `GET`/`HEAD` is refused by the boundary _before_ the router matches — with
+a `403`, the boundary's answer ("you may not write here at all"), rather than
+the route table's `405` — so a write mounted here later cannot arrive unlogged
+(ADR-0008 requires an `audit_log` row per dashboard write, and none exists).
+Pinned by
+`a_write_method_is_refused_by_the_boundary_not_by_the_route_table`, which
+distinguishes the two answers; before it was written the claim was true and
+untested.
 
 Four checks stand between a request and a row, each in a different place so
 that no single edit removes the boundary:
@@ -158,7 +163,7 @@ reasonably expect it there.
 refusals, and the `Surface::Dashboard` audience constant moved into
 `vpay-config` beside the merchant one.
 `backends/tests/integration/tests/dashboard_read_surface.rs` drives all of it
-over a real booted server on a real Postgres — 12 tests, 0 ignored — and its
+over a real booted server on a real Postgres — 13 tests, 0 ignored — and its
 own header states what it cannot claim.
 
 **Not built:** login, of any kind; the dashboard's server-side session; every

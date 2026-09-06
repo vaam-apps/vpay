@@ -50,7 +50,11 @@
 //! 12. a cursor naming **another merchant's** intent positions nothing and
 //!     answers exactly what an id nothing ever wrote answers — added
 //!     2026-09-06 by the review, which measured that both cursor subqueries
-//!     could lose their tenancy predicate with 35 tests still green.
+//!     could lose their tenancy predicate with 35 tests still green;
+//! 13. a write method is refused by the *boundary*, not by the route table —
+//!     added 2026-09-06 by the review, which measured that
+//!     `dash::required_scope` could answer the read scope for every method
+//!     with all twelve other cases green.
 //!
 //! # Why raw `reqwest` and no SDK
 //!
@@ -179,10 +183,21 @@ impl Harness {
     }
 
     async fn get(&self, path: &str, token: Option<&str>) -> anyhow::Result<(u16, String)> {
+        self.request(reqwest::Method::GET, path, token).await
+    }
+
+    /// The same, with the method as an argument — for the one test that is
+    /// about a method this surface refuses.
+    async fn request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        token: Option<&str>,
+    ) -> anyhow::Result<(u16, String)> {
         let mut request = reqwest::Client::builder()
             .build()
             .expect("a plain-HTTP reqwest client builds once a CryptoProvider is installed")
-            .get(format!("{}{path}", self.base_url));
+            .request(method, format!("{}{path}", self.base_url));
         if let Some(token) = token {
             request = request.bearer_auth(token);
         }
@@ -1035,5 +1050,85 @@ async fn a_cursor_naming_another_merchants_intent_answers_an_empty_page() -> any
         foreign_body, absent_body,
         "another tenant's cursor must answer exactly what an unwritten one does"
     );
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 13
+
+/// A write method is refused by `require_dashboard_token` itself, with a
+/// credential that is valid in every other respect — not by the route table
+/// happening to mount no `post(..)`.
+///
+/// # Why the distinction is the whole point
+///
+/// `dash/mod.rs`, `require_dashboard_token`'s own doc,
+/// `docs/flows/dashboard.md`, `docs/reference/vpay-api.md` and
+/// `docs/status.md` all say a non-read method is refused **before the router
+/// matches**, and that this is what makes "the dashboard is read-only"
+/// structural rather than a promise: ADR-0008 requires an `audit_log` row per
+/// dashboard write and none exists, so a write must not reach a handler at
+/// all. Mutation testing on 2026-09-06 found that claim untested — making
+/// `dash::required_scope` answer the registration's scope for *every* method
+/// left all twelve other cases green, because axum then answered `405` from
+/// the route table and no assertion could tell the two apart.
+///
+/// `403` is what distinguishes them, and it is deliberate: `405` would be the
+/// route table's answer ("wrong method for this path"), `403` is the
+/// boundary's ("you may not write here at all"). Asserted on a path that
+/// **is** mounted, so a `405` would be the honest alternative answer and this
+/// really is a choice between the two.
+///
+/// The decisive mutation: make `dash::required_scope` return
+/// `Some(binding.scope.as_str())` for every method — this then reads `405`.
+#[tokio::test]
+async fn a_write_method_is_refused_by_the_boundary_not_by_the_route_table() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    seed_intent(
+        harness.repositories.as_ref(),
+        MERCHANT_A,
+        "pi_dash_readonly",
+    )
+    .await?;
+
+    let token = harness.dashboard_token();
+    for method in [
+        reqwest::Method::POST,
+        reqwest::Method::PUT,
+        reqwest::Method::PATCH,
+        reqwest::Method::DELETE,
+    ] {
+        for path in [
+            "/dash/v1/payment_intents",
+            "/dash/v1/payment_intents/pi_dash_readonly",
+        ] {
+            let (status, body) = harness.request(method.clone(), path, Some(&token)).await?;
+            assert_eq!(
+                status, 403,
+                "{method} {path} must be refused by the boundary (403), not by the route \
+                 table (405) and not answered: {body}"
+            );
+            assert!(
+                !body.contains("pi_dash_readonly") || path.contains("pi_dash_readonly"),
+                "a refused request must not carry rows: {body}"
+            );
+        }
+    }
+
+    // The same credential still reads, so the 403s are about the method.
+    let (read_status, read_body) = harness
+        .get("/dash/v1/payment_intents", Some(&token))
+        .await?;
+    assert_eq!(read_status, 200, "{read_body}");
+
+    // And `HEAD` — which axum answers from the same `get(..)` handler — is a
+    // read, so it is not caught by the refusal.
+    let (head_status, _) = harness
+        .request(
+            reqwest::Method::HEAD,
+            "/dash/v1/payment_intents",
+            Some(&token),
+        )
+        .await?;
+    assert_eq!(head_status, 200);
     Ok(())
 }
