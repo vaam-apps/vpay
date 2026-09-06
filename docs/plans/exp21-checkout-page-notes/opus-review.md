@@ -187,16 +187,17 @@ The implementer's own fourteen were not re-run; they are recorded in
 
 ## 4. The gates
 
-**`just ci` twice**, recipe by recipe, exit code read from a file. Once on the
-rebased head before any fix, and once on the final head. Both **every recipe
-exit 0**, with the same numbers:
+**`just ci` three times**, recipe by recipe, exit code read from a file: on the
+rebased head before any fix, on the fixed head, and again on the final head
+after the last documentation commit. All three **every recipe exit 0**, with
+the same numbers:
 
 | recipe | result |
 |---|---|
 | `fmt-check` | ok (Rust; `just fmt` also runs prettier over ~222 unrelated files and was deliberately not run) |
 | `clippy` | ok, `-D warnings` |
 | `verify` | all ten gates — `verify-links` **854 links in 153 tracked files**, `verify-status` 1 declared unimplemented item, `verify-toolchain` 1.98.0 |
-| `test-rust` | **1401 run, 1401 passed, 0 skipped** — 1022.8 s then 962.0 s, 43 binaries, real Postgres and real WireMock rails |
+| `test-rust` | **1401 run, 1401 passed, 0 skipped** — 1022.8 s, 962.0 s, 902.4 s, 43 binaries, real Postgres and real WireMock rails |
 | `test-doc` | **96 passed, 1 ignored** |
 | `verify-ignored` | **0 ignored (expected 0), 43 binaries (expected 43), 1401 total (floor 1080)** |
 | `lint-web` | ok |
