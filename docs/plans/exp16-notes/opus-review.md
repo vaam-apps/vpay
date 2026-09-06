@@ -11,10 +11,12 @@ The implementer's account is [opus.md](opus.md). This file records what was
 from the vendored 0.11.1 sources or run against a real Postgres by this
 review, not taken from that document.
 
-## 1. `just ci`, recipe by recipe
+## 1. `just ci`, recipe by recipe — as delivered
 
-One end-to-end run, exit 0, after `pnpm install --frozen-lockfile` under Node
-22.23.2 (`CYPRESS_INSTALL_BINARY=0`).
+One end-to-end run on `539407d` exactly as delivered, exit 0, after
+`pnpm install --frozen-lockfile` under Node 22.23.2
+(`CYPRESS_INSTALL_BINARY=0`). § 7 has the second run, after the review's own
+commits.
 
 | Recipe | Result |
 |---|---|
@@ -172,7 +174,10 @@ Checked and **not** findings:
 - `CreateDisabledClientInput`'s struct literal is exhaustive by construction
   (no `..Default::default()`), so a new non-defaulted column in
   `model DisabledClient` is `error[E0063]` at this call site rather than a
-  silent NULL. That is a *good* property here and a CrateStack ergonomics
+  silent NULL. Re-measured rather than taken from the change's own notes:
+  adding `note String?` to the model produces `error[E0063]: missing field
+  `note` in initializer of `inputs::CreateDisabledClientInput``, pointing at
+  `disabled_clients.rs:210`. That is a *good* property here and a CrateStack ergonomics
   cost everywhere else: the generated input type's shape leaks into every
   caller, so adding a column to a model is a breaking change for every
   literal, in this repository and in any other. Worth an upstream note (§ 6),
@@ -217,5 +222,64 @@ Checked and **not** findings:
 
 ## 7. What this review changed
 
-One commit per finding, on top of `539407d`; each names its proof.
-`just ci` was re-run end to end afterwards.
+One commit per finding, on top of `539407d`, each naming its own proof.
+
+| Commit | Finding | Proof |
+|---|---|---|
+| `f81c40e` | — | this file: phase 1, the re-run gate and the re-run mutations |
+| `d87a90c` | F2 | `every_action_this_crate_calls_has_an_allow_arm` in `disabled_clients.rs`; deleting each of the four arms in turn makes it fail four times out of four, in ~4 ms, with no Docker |
+| `3387fe7` | F1 | `detail_allow_policies.len() == 1` with no `detail` arm declared — the wildcard would have granted nothing extra |
+| `fcca73a` | F4 | `upsert.rs::run` + `upsert_resolve.rs::gate_update_policy` + `pool.rs`'s `MAX_CONNECTIONS = 10` |
+| `062f60d` | F3, F5, F6 | three sentences that were stale, garbled or self-contradicting |
+
+Nothing was weakened: no test was deleted, relaxed or `#[ignore]`d, no
+`#[allow]` was added, and no assertion changed from `==` to something looser.
+The one behavioural question the brief raised — whether `enable_client`
+should assert `rows_affected` so that a silent policy no-op became an error —
+was answered **no**, deliberately, and the reasoning is § 8.
+
+`just ci` re-run end to end after the last commit: **exit 0**, `test-rust`
+**1373 tests run, 1373 passed, 0 skipped** across 43 binaries, `test-doc`
+**96 passed, 1 ignored**, `verify-ignored` **0 ignored / 43 binaries / 1373
+total**, ten `verify` gates ok, `lint-web`/`test-web` ok, `deny` ok.
+
+## 8. The one design question, and why the implementation was left alone
+
+The brief asked whether `enable_client` should assert on `delete_many`'s
+`BatchSummary` — 0 rows vs 1 — so that a policy no-op stopped being silent.
+
+**What the framework allows.** Three shapes, and only three:
+
+1. `.delete(pk)`, which reports a zero-row `DELETE … RETURNING` as
+   `Forbidden` and so cannot express the trait's documented "a no-op, not an
+   error, if `client_id` was not disabled to begin with". Rejected by the
+   implementation for that reason, and the rejection is correct.
+2. `delete_many` + `require total == 1`. This is `.delete(pk)` spelled
+   differently: it fails on every re-enable of an already-enabled client,
+   which is the same contract break.
+3. `delete_many` + *on `total == 0`*, a second read to ask whether the row is
+   still there, reporting `PersistenceError::Denied` when it is. This is the
+   only shape that distinguishes "policy refused" from "nothing to delete".
+
+**What was done: none of them.** (3) is tempting and was not taken, for two
+reasons that outweigh what it buys.
+
+- It is racy in the direction that costs the most. It only reads when it
+  deleted nothing, but between the `DELETE` and the read another caller may
+  legitimately `disable_client` the same id — and the read would then report
+  `Denied` → `Category::Internal`, a page, for a correct concurrent
+  operation. Trading a silent failure that is *fail-safe* (a client stays
+  revoked) for a spurious alarm on a normal race is a bad trade for a
+  kill switch.
+- The thing it was going to catch is caught earlier and for free. A missing
+  `delete` arm is now red in `-p vpay-db --lib` in 4 ms (F2), before any
+  database is involved, in addition to the two container tests that already
+  fail on it. There is no remaining scenario where the silent no-op reaches a
+  deployment through a green gate.
+
+The honest residue, stated because it is not nothing: the descriptor test
+proves the slot is *occupied*, not that the policy in it admits the system
+context. A `@@allow("delete", auth().isMerchant())` would pass F2's test and
+still silently refuse every enable — and only the container tests would say
+so. That is exactly why F2's test is written as an addition to them and never
+as a replacement, and why its doc comment says so.
