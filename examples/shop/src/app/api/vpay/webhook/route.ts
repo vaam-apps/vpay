@@ -10,7 +10,7 @@
  */
 import { db } from "@/server/db";
 import { shopConfig } from "@/server/config";
-import { PrismaShopStore } from "@/server/store/prisma-store";
+import { ZenStackShopStore } from "@/server/store/zenstack-store";
 import { SIGNATURE_HEADER, handleWebhook } from "@/server/webhook";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +19,7 @@ export async function POST(request: Request): Promise<Response> {
   const rawBody = await request.text();
   const result = await handleWebhook(
     {
-      store: new PrismaShopStore(db()),
+      store: new ZenStackShopStore(db()),
       secret: shopConfig().vpayWebhookSecret,
     },
     {

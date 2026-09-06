@@ -639,11 +639,11 @@ Two things about it that will otherwise surprise you:
   `deploy/dev/postgres-init/10-shop-database.sql` runs from Postgres's
   entrypoint, which executes that directory exactly once on an empty data
   directory. A `pgdata` volume from before Step 9 has no `shop` database and
-  `vpay-shop` dies in `prisma migrate deploy`. **`just demo-down` removes
+  `vpay-shop` dies in `zen migrate deploy`. **`just demo-down` removes
   volumes** (`down -v`), so tearing the stack down is the fix; nothing here
   creates the database defensively on every boot, because that would hide a
   stale volume rather than report one.
-- **Its tables and its catalogue come from `prisma migrate deploy`**, run by the
+- **Its tables and its catalogue come from `zen migrate deploy`**, run by the
   container's entrypoint before the server starts. Idempotent, so a restart is a
   no-op:
 

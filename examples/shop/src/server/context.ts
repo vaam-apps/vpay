@@ -10,14 +10,14 @@
 import { shopConfig } from "./config";
 import { db } from "./db";
 import { appRouter } from "./routers/index";
-import { PrismaShopStore } from "./store/prisma-store";
+import { ZenStackShopStore } from "./store/zenstack-store";
 import type { ShopContext } from "./trpc";
 import { vpay } from "./vpay";
 
 export function shopContext(): ShopContext {
   const config = shopConfig();
   return {
-    store: new PrismaShopStore(db()),
+    store: new ZenStackShopStore(db()),
     // A getter, so the merchant private key is read the first time a
     // procedure actually needs vpay. The catalogue and the order pages do
     // not, and a shop whose product list fell over because of a key file it

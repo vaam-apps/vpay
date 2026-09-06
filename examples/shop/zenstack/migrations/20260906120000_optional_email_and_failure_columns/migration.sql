@@ -21,3 +21,8 @@
 -- `providers:` block that puts `mtn_momo` on `currency: XAF` and then
 -- *checks* that it did, precisely so the shop's MTN button is payable. A EUR
 -- product would therefore have been an item nothing in the demo can buy.
+
+ALTER TABLE "orders" ALTER COLUMN "email" DROP NOT NULL;
+
+ALTER TABLE "orders" ADD COLUMN "failure_code" TEXT;
+ALTER TABLE "orders" ADD COLUMN "failure_message" TEXT;

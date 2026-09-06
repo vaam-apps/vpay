@@ -931,7 +931,7 @@ twelve lanes):
 - **A fourth image** (`ghcr.io/vaam-apps/vpay-checkout`), a Helm workload
   behind `checkout.enabled`, and an eight-service demo stack.
 - **`examples/shop`** — a Next.js merchant site with a seeded XAF catalogue,
-  tRPC and ZenStack over Prisma, whose orders turn `paid` only from vpay's
+  tRPC and ZenStack 3, whose orders turn `paid` only from vpay's
   signed webhook and never from the return trip.
 
 **What proves it.** `shop-hosted.cy.ts` and `shop-embedded.cy.ts` drive a real
@@ -954,7 +954,7 @@ test-e2e` from nothing is green in the `vpay-ci` VM: 11 tests over four specs,
   `/v1/browser` reads under the same unmet requirement.
 - **No pod has ever run the page**, and its path-prefix Ingress shape has been
   run by nobody.
-- **The demo shop's `PrismaShopStore` has no automated coverage of its own** —
+- **The demo shop's `ZenStackShopStore` has no automated coverage of its own** —
   verified by hand against a real Postgres, and exercised by the Cypress specs
   without being asserted on.
 - **`checkout_not_configured` answers `500`, not `503`.** A truthful `503`
@@ -1380,7 +1380,7 @@ container. **No browser has been observed enforcing vpay's `frame-ancestors`** �
 Cypress strips the header, so it is asserted as sent, and the refusal a browser
 was seen performing is the checkout app's own origin check. No pod has run the
 page. There is still no rate limiting in front of either unauthenticated
-surface. The demo shop's `PrismaShopStore` has no automated coverage of its
+surface. The demo shop's `ZenStackShopStore` has no automated coverage of its
 own. `checkout_not_configured` still answers `500` where `503` would be
 truthful, and moving it is an ADR-level change **left to the maintainer** —
 along with whether `checkout.public_base_url` should be a separate host or a

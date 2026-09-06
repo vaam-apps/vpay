@@ -12,7 +12,8 @@ services:
   # by an init script on a fresh volume (`deploy/dev/postgres-init/`). Postgres
   # runs everything in /docker-entrypoint-initdb.d exactly once, on an empty
   # data directory — so a `pgdata` volume from before this file existed has no
-  # `shop` database and `vpay-shop` dies in `prisma migrate deploy`.
+  # `shop` database and `vpay-shop` dies in `zen migrate deploy` (it was `prisma migrate deploy`
+  # until the ZenStack 3 upgrade of 2026-09-06).
   # `docker compose ... down -v` (which is what `just demo-down` runs) is the
   # answer; see the SQL file's own header.
   #

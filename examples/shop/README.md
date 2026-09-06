@@ -230,11 +230,11 @@ Standalone, against a vpay you are already running:
 ```bash
 cp examples/shop/.env.example examples/shop/.env   # then edit it
 docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=shop postgres:16-alpine
-pnpm --filter @vpay-examples/shop exec prisma migrate deploy
+pnpm --filter @vpay-examples/shop exec zen migrate deploy
 pnpm --filter @vpay-examples/shop dev
 ```
 
-`prisma migrate deploy` both creates the tables and seeds the catalogue: the
+`zen migrate deploy` both creates the tables and seeds the catalogue: the
 catalogue is a data migration, not a seed script, so there is nothing else to
 remember to run.
 
@@ -263,28 +263,62 @@ The `/v1/oauth` issuer works too — the OP accepts either.
 
 ## The stack, and why each piece is here
 
-| Piece                                              | Version   | Why                                                                             |
-| -------------------------------------------------- | --------- | ------------------------------------------------------------------------------- |
-| Next.js (App Router)                               | 16.3.4    | D11. `output: 'standalone'` for the image.                                      |
-| tRPC                                               | 11.18.0   | D11. Server-side callers for pages, one HTTP client for the browser.            |
-| ZenStack                                           | 2.22.3    | D11. `schema.zmodel` is the source of truth; `enhance()` enforces its policies. |
-| Prisma                                             | 6.19.3    | ZenStack 2.x's ORM. **Not 7** — see below.                                      |
-| Zod                                                | 4.5.4     | tRPC input validation.                                                          |
-| `@vaam-apps/vpay-sdk`, `@vaam-apps/vpay-stripe-js` | workspace | The merchant SDK and the browser SDK.                                           |
+| Piece                                              | Version    | Why                                                                                                |
+| -------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------- |
+| Next.js (App Router)                               | 16.3.4     | D11. `output: 'standalone'` for the image.                                                         |
+| tRPC                                               | 11.18.0    | D11. Server-side callers for pages, one HTTP client for the browser.                               |
+| ZenStack                                           | 3.9.3      | D11. `zenstack/schema.zmodel` is the source of truth; `PolicyPlugin` enforces its `@@allow` rules. |
+| `pg`                                               | 8.x        | ZenStack 3's Postgres driver. v3 has its own ORM — Prisma is not in the request path.              |
+| Prisma                                             | (indirect) | Migrations only, through `@zenstackhq/cli`. Never imported by this package.                        |
+| Zod                                                | 4.5.4      | tRPC input validation.                                                                             |
+| `@vaam-apps/vpay-sdk`, `@vaam-apps/vpay-stripe-js` | workspace  | The merchant SDK and the browser SDK.                                                              |
 
-**Why Prisma 6 and not 7.** ZenStack 2.22.3 prints _"Prisma 7 support is
-untested and not planned"_ and generates a `datasource` block with
-`url = env(...)`, which Prisma 7 rejects outright (`P1012`: connection URLs
-moved to `prisma.config.ts`). Measured, not assumed — the first install of
-this package was against Prisma 7.10.0 and failed exactly there. ZenStack 3
-is still `beta` on npm. 6.19.3 is the newest stable Prisma the newest stable
-ZenStack works with.
+**ZenStack 2 → 3, on 2026-09-06, and what it actually changed.** v3 is a
+rewrite: it replaced Prisma at runtime with its own ORM over Kysely, so
+`@prisma/client` and `@zenstackhq/runtime` are gone from this package and
+`pg` is here instead. The **query surface is unchanged** — v3's ORM is
+Prisma-API-compatible, which is why `zenstack-store.ts` reads as it did — and
+so is the ZModel: the `@@allow` rules were not touched. What did change:
+
+- `enhance(new PrismaClient())` became `new ZenStackClient(schema, {dialect})`
+  `.$use(new PolicyPlugin())`. The policies are a plugin now, and a client
+  without it enforces nothing — which is why `policies.test.ts` asserts the
+  plugin is installed.
+- The schema moved to `zenstack/schema.zmodel` (the v3 CLI's default) and
+  `zen generate` writes `zenstack/{schema,models,input}.ts` there. Those are
+  **generated, not committed** — the repository's `.gitignore` says why —
+  where `prisma/schema.prisma` used to be committed because the container's
+  entrypoint read it. It no longer does.
+- `prisma migrate deploy` became `zen migrate deploy`, and the migrations
+  moved with it to `zenstack/migrations/`. Prisma Migrate is still what
+  applies the SQL; v3 derives a Prisma schema from the zmodel on the fly and
+  drives it. **The migration files themselves were not rewritten** — the same
+  three `migration.sql` files, moved.
+- **Two things got worse, and they are recorded rather than smoothed over.**
+  A denied _bulk_ write no longer throws: `product.deleteMany({})` resolves
+  `{count: 0}` where v2 threw, so the effect is the same and the shape is
+  not. And the policy decision now needs a database, so the refusals this
+  package used to prove offline are no longer proven by anything that runs in
+  CI. Both are measured, and both are in `policies.test.ts`'s header with the
+  numbers.
+
+The v2 note this replaces — "Prisma 6, not 7, because ZenStack 2.22.3 emits a
+`datasource` with `url = env(...)` which Prisma 7 rejects (`P1012`), and
+ZenStack 3 is still beta on npm" — is **retracted, dated 2026-09-06**: v3 is
+not beta any more (`@zenstackhq/orm@3.9.3` is `latest`; it is
+`@zenstackhq/runtime` that stopped at `3.0.0-beta.13`, because the package was
+renamed), and Prisma's version no longer constrains this package because
+nothing here imports it.
 
 **Four `pnpm.overrides` came with this package**, all for advisories no
 version bump clears: `@prisma/config>deepmerge-ts` (GHSA-ggr8-5vv4-36mx,
-high, and it reaches the _production_ graph through `@prisma/client`) and
-three `lodash` entries under chevrotain, which `zenstack` pins transitively.
-The root `package.json` carries the dated justification for each.
+high) and three `lodash` entries under chevrotain. Both survive the v3
+upgrade and for the same reasons, though the paths changed: `@prisma/config`
+now arrives through `@zenstackhq/cli`'s own Prisma dependency rather than
+through `@prisma/client`, so it is a _build_-time path and no longer a
+production one; and chevrotain still arrives under `langium`, which
+`@zenstackhq/language` uses. The root `package.json` carries the dated
+justification for each.
 
 **Why no `@trpc/react-query`.** Three call sites and one poll loop. A query
 cache would be a dependency and a provider for no behaviour.
@@ -295,17 +329,23 @@ something no merchant can reproduce.
 
 ## ZenStack, honestly
 
-`schema.zmodel` compiles to `prisma/schema.prisma` (committed, because the
-container's entrypoint reads it) and to the metadata `enhance()` uses. The
-`@@allow` rules are the ones that are **true of every caller**, because D13
-gives this shop no authenticated principal:
+`zenstack/schema.zmodel` compiles to the TypeScript ZenStack 3's ORM reads
+(`zenstack/{schema,models,input}.ts`, generated by `postinstall`, not
+committed). The `@@allow` rules are the ones that are **true of every
+caller**, because D13 gives this shop no authenticated principal:
 
 - the catalogue is read-only to the application (it is seed data);
 - `webhook_events` is append-only;
 - no order or order line is ever deleted.
 
-`src/server/store/policies.test.ts` proves each refusal, and needs no
-database to do it. What the policies do **not** do is stop one payer reading
+`src/server/store/policies.test.ts` proves that those are still the rules and
+that the client the shop holds still has the plugin that enforces them — and
+its header states plainly what it **stopped** proving at the v3 upgrade,
+which is the refusals themselves. Those need a database now, and CI's `web`
+job has none. The refusals were run by hand against a real Postgres on
+2026-09-06 and the results are in that header.
+
+What the policies do **not** do is stop one payer reading
 another payer's order: there is no principal to compare against, and
 `orders.get` is reachable by anyone holding an order id. A real shop would
 put a session or a signed order token in front of it. This one says so
@@ -313,7 +353,7 @@ instead of writing a rule that would evaluate to `true`.
 
 ## Tests, and what they do not cover
 
-`pnpm --filter @vpay-examples/shop test` — **94 cases** (measured
+`pnpm --filter @vpay-examples/shop test` — **93 cases** (measured
 2026-09-06), no database, no Docker, no network.
 
 - `src/server/orders.test.ts` runs a **real `VpayClient`** against a real
@@ -334,7 +374,9 @@ instead of writing a rule that would evaluate to `true`.
   under this shop's copy.
 - `src/lib/test-numbers.test.ts` parses this document's own rail tables and
   fails if they and `src/lib/test-numbers.ts` disagree in either direction.
-- `src/server/store/policies.test.ts` covers the ZenStack policies.
+- `src/server/store/policies.test.ts` covers the ZenStack policy **rules**
+  and that the plugin enforcing them is installed — and says in its own
+  header what the v3 upgrade cost it.
 - `src/testing/no-runtime-imports.test.ts` is the TypeScript counterpart of
   `cargo xtask verify-no-mocks`: nothing under `src/app`, `src/server`,
   `src/components` or `src/lib` may name `src/testing`.
@@ -347,22 +389,34 @@ cases) and `a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_
 adapters against real WireMock containers. A test in this package could only
 have asserted that the table says what it says.
 
-**Not covered by unit tests:** `PrismaShopStore`. The tests run against an
+**Not covered by unit tests:** `ZenStackShopStore` (`PrismaShopStore` until
+2026-09-06). The tests run against an
 in-memory implementation of the same `ShopStore` port so that they need no
-Postgres in CI's `web` job, which has none. The Prisma implementation was
-verified by hand on 2026-09-04 against the built image and a real Postgres —
+Postgres in CI's `web` job, which has none. The database-backed
+implementation was verified by hand on 2026-09-04 against the built image and a real Postgres —
 migrations applied, catalogue seeded and rendered, a signed delivery
 `applied`, its replay `duplicate` with no second `webhook_events` row, an
 unknown intent 2xx with no write. That hand-run is the only evidence there
-is: **no automated test covers `PrismaShopStore` anywhere in this
+is: **no automated test covers `ZenStackShopStore` anywhere in this
 repository.** `just demo` does not, whatever it may look like — it brings the
 `vpay-shop` container up, waits for its healthcheck and prints its URL, and
 never places an order (`docs/runbooks/demo.md` §5 lists "that the shop works"
 under _does not prove_). Lane 6's Cypress specs — `shop-hosted.cy.ts` and
 `shop-embedded.cy.ts` — **have** merged, and they drive this class in a real
 browser against the demo stack; but they assert on the shop's pages, never on
-`PrismaShopStore` itself, so the sentence above stands: no unit or integration
+the store class itself, so the sentence above stands: no unit or integration
 test covers it.
+
+Re-run by hand on **2026-09-06** after the ZenStack 3 upgrade, against a
+throwaway `postgres:16-alpine`: `zen migrate deploy` applied all three
+migrations from empty (and a `zen migrate dev --create-only` afterwards
+produced an _empty_ migration, so the zmodel and the migrations agree); the
+catalogue seeded; `createOrder` with a **null** e-mail returned an order with
+its line joined to the product name; `applyWebhookEvent` wrote `failed` with
+`insufficient_funds` / `NOT_ENOUGH_FUNDS`; a later `payment_intent.succeeded`
+for the same intent answered `already_settled` and left both the status and
+the failure columns alone; an event naming an unknown intent answered
+`unknown_intent` and wrote nothing.
 
 Also not covered by unit tests: the React components, and the browser end of
 `initEmbeddedCheckout` (that is `@vaam-apps/vpay-stripe-js`'s own suite, and
@@ -383,5 +437,7 @@ docker build -f examples/shop/Dockerfile .        # from the repository root
 Root context, because `@vaam-apps/vpay-sdk` and `@vaam-apps/vpay-stripe-js` are workspace
 dependencies. Standalone output, non-root (`node`, uid 1000), read-only root
 filesystem with a tmpfs on `/tmp`, and an entrypoint that runs
-`prisma migrate deploy` before the server — so a container that starts has a
-schema and a catalogue, or it does not start.
+`zen migrate deploy` before the server — so a container that starts has a
+schema and a catalogue, or it does not start. The entrypoint copies
+`/app/zenstack` to `/tmp` first, because the CLI derives a temporary Prisma
+schema beside the zmodel and the root filesystem is read-only.

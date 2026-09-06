@@ -1,9 +1,16 @@
 // The shop's data model, in ZenStack's schema language.
 //
-// `zenstack generate` compiles this into `prisma/schema.prisma` (committed,
-// because `prisma migrate deploy` in the container's entrypoint reads it) and
-// into the `@zenstackhq/runtime` metadata that `enhance()` consults. The
-// zmodel is the source of truth; never edit `prisma/schema.prisma` by hand.
+// `zen generate` compiles this into the TypeScript ZenStack 3's ORM reads —
+// `zenstack/schema.ts`, `zenstack/models.ts`, `zenstack/input.ts` — and
+// `zen migrate` derives a Prisma schema from it on the fly for Prisma
+// Migrate, which is still what applies the SQL. The zmodel is the source of
+// truth; nothing generated from it is edited by hand.
+//
+// **There is no committed `prisma/schema.prisma` any more.** In v2 there had
+// to be: `prisma migrate deploy` in the container's entrypoint read one. v3's
+// `zen migrate deploy` reads this file instead and generates the Prisma
+// schema itself, so a committed copy would be a second source of truth that
+// nothing checks.
 //
 // # About the access policies below
 //
@@ -36,8 +43,11 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-generator client {
-  provider = "prisma-client-js"
+/// ZenStack 3's access-control plugin. The `@@allow` rules below do nothing
+/// without it — in v2 `enhance()` carried them, in v3 they are a plugin the
+/// client opts into with `$use(new PolicyPlugin())` (`src/server/db.ts`).
+plugin policy {
+  provider = '@zenstackhq/plugin-policy'
 }
 
 /// What the shop knows about an order's money.
