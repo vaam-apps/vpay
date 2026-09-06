@@ -386,8 +386,8 @@ proven against a real Postgres by
 in `backends/crates/vpay-db/tests/repositories.rs` — 74 container-backed
 tests passed on this machine that day.
 
-**Updated 2026-09-06: half of boot step 4 runs through CrateStack, and the
-other half cannot.** `reconcile`'s **currency** pass is now
+**Updated 2026-09-06: all of boot step 4's upserts run through CrateStack.**
+`reconcile`'s **currency** pass is now
 `find_unique(code).for_update().run_in_tx(tx, ctx)` followed by
 `upsert(CreateCurrencyInput).run_in_tx(tx, ctx)` — inside the same
 transaction, after the same `pg_advisory_xact_lock`, in the same sorted
@@ -400,23 +400,48 @@ is what fails if the `.for_update()` goes; the boot-lock test above passes
 without it, because those are two different guards against two different
 writers.
 
-The **provider** pass is still a hand-written `INSERT ... ON CONFLICT`, and
-that is a measured blocker rather than unfinished work: CrateStack's
-generated upsert input drops every `@default(...)` column, and `providers`
-has one on all five capability booleans, so a CrateStack upsert would write
+The **provider** pass is `upsert(CreateProviderInput).run_in_tx(tx, ctx)`
+since later the same day. It was a hand-written `INSERT ... ON CONFLICT` until
+then, and for a measured reason rather than unfinished work: CrateStack's
+generated upsert input drops every `@default(...)` column, and `providers` had
+one on all five capability booleans, so a CrateStack upsert would have written
 the column defaults instead of the deployment's configuration — a rail an
-operator had just disabled would come back enabled. See
+operator had just disabled would come back enabled. **Migration 0033** is the
+maintainer's decision (D7, 2026-09-06) that unblocked it: five
+`ALTER TABLE providers ALTER COLUMN … DROP DEFAULT`, paired in the same commit
+with removing the five `@default(...)` from `schemas/vpay.cstack`, because
+either half alone puts five `default value differs` lines in the drift report.
+The reasoning is that `reconcile` is the only writer of those columns and
+always writes all five, so a default could only invent a capability for a
+writer that forgot one.
+`a_rail_the_configuration_disables_is_not_re_enabled_by_reconcile` is what
+proves the thing that could not be true before: a rail this deployment turns
+off stays off, and every other capability it declares reaches the stored row.
+The cost is that a hand-written `INSERT` into `providers` must now name all
+eight columns — a `23502` rather than a silent difference, asserted by
+`a_hand_written_provider_insert_must_now_name_every_capability_column`. See
 [../status.md](../status.md) and
-[../reference/vpay-db.md](../reference/vpay-db.md); what it would take to
-unblock is a schema decision left to a maintainer.
+[../reference/vpay-db.md](../reference/vpay-db.md).
+
+The only statement in `reconcile` that is still raw sqlx is the **disable
+pass**, `UPDATE providers SET enabled = false WHERE code <> ALL($1) AND
+enabled`, which addresses rows by their absence from a list.
 
 Migration 0032 is what made the currency half possible (`exponent` `INT` ->
 `BIGINT`, the two hand-named CHECKs renamed to CrateStack's own spelling) and
 also converted `providers.flow` from the native `provider_flow` enum to
-`TEXT` + `providers_flow_enum_check`. Nothing about what boot refuses changed:
-an unknown flow is still a `DbError::Query`, from a CHECK constraint rather
-than from a type cast, proven by
-`an_unknown_provider_flow_is_refused_by_the_check_that_replaced_the_enum_type`.
+`TEXT` + `providers_flow_enum_check`. **What boot refuses is unchanged; what
+it says about the refusal is not.** An unknown flow was a `DbError::Query`
+from the CHECK — `Category::Storage`, exit `69`, "wait for Postgres" — until
+the provider pass moved. It is now `DbError::ProviderFlowUnknown`,
+`Category::Configuration`, **exit 78**, refused by `reconcile` before any
+statement runs, because `CreateProviderInput::flow` is the schema's enum
+rather than a string. That is a deliberate correction of the advice, not a
+side effect: waiting has never fixed a typo. The CHECK is untouched and still
+refuses a writer that is not `reconcile`, which is what
+`an_unknown_provider_flow_is_refused_by_the_check_that_replaced_the_enum_type`
+proves; `an_unnameable_flow_is_a_deploy_problem_and_never_reaches_a_statement`
+is what pins the new answer.
 
 **Still not started:** the **config hash** half of step 4 — nothing records
 or compares one, so nothing detects a replica booted from a different config

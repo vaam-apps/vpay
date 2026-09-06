@@ -154,17 +154,23 @@ pub fn boot_seeds(
 /// Spelled here rather than through `serde` because the column is read and
 /// written as a `String` (Step 2's D4) and [`ProviderFlow`] has no
 /// `as_wire_str` of its own the way `IntentStatus` and `ChargeState` do. A
-/// label the column does not accept is a `DbError::Query` at boot, not a
-/// silently stored typo — which is why this is a `match` and not a
-/// `to_lowercase` of the variant name.
+/// label nothing downstream accepts is a failed boot, not a silently stored
+/// typo — which is why this is a `match` and not a `to_lowercase` of the
+/// variant name.
 ///
-/// What refuses a bad label moved in migration 0032 and the guarantee did
-/// not: it was migration 0002's `CREATE TYPE provider_flow AS ENUM ('push',
-/// 'redirect')` refusing the cast, and it is now
-/// `providers_flow_enum_check` refusing the row. The enum type had to go
-/// because `cratestack`'s generated row decoders read an enum column with
+/// **What refuses a bad label has moved twice, and the second move changed
+/// the advice.** It was migration 0002's `CREATE TYPE provider_flow AS ENUM
+/// ('push', 'redirect')` refusing the cast; migration 0032 replaced the enum
+/// type with `providers_flow_enum_check` refusing the row (the type had to
+/// go because `cratestack`'s generated row decoders read an enum column with
 /// `try_get::<String>()`, so a native enum column fails to decode on every
-/// read through that layer.
+/// read through that layer); and since 2026-09-06 `ConfigReconcile::reconcile`
+/// refuses the *seed*, because `CreateProviderInput::flow` is the schema's
+/// `ProviderFlow` enum rather than a string. A bad label is therefore
+/// `DbError::ProviderFlowUnknown` — `Category::Configuration`, exit **78**
+/// ("fix the deploy") — where this comment said `DbError::Query` and meant
+/// exit `69` ("wait for Postgres"). The CHECK is still in the database and
+/// still refuses a writer that is not `reconcile`.
 ///
 /// Private: nothing outside [`boot_seeds`] should be turning a flow into a
 /// column value, and a `pub` version would be a second vocabulary competing
@@ -573,10 +579,17 @@ mod tests {
 
     /// The labels `providers_flow_enum_check` accepts — migration 0002's
     /// `provider_flow` enum members until migration 0032 replaced the type
-    /// with the CHECK. A typo here is a `DbError::Query` at boot in every
-    /// deployment at once, and
+    /// with the CHECK, and the two variants `schemas/vpay.cstack`'s
+    /// `ProviderFlow` enum can name since the provider pass moved onto
+    /// CrateStack. A typo here fails boot in every deployment at once, as
+    /// `DbError::ProviderFlowUnknown` (exit 78) rather than the
+    /// `DbError::Query` this comment claimed;
+    /// `a_flow_label_the_schema_cannot_name_is_refused_by_reconcile_before_any_row_is_written`
+    /// in `vpay-db/tests/repositories.rs` is what proves `reconcile` refuses
+    /// one, and
     /// `an_unknown_provider_flow_is_refused_by_the_check_that_replaced_the_enum_type`
-    /// in `postgres_smoke.rs` is what proves the database still refuses one.
+    /// in `postgres_smoke.rs` that the database still refuses one from any
+    /// other writer.
     #[test]
     fn the_flow_labels_are_the_enum_members_migration_0002_declares() {
         assert_eq!(flow_label(ProviderFlow::Push), "push");

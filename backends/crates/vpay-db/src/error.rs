@@ -205,6 +205,46 @@ pub enum DbError {
         seeded: i64,
     },
 
+    /// A [`crate::ProviderSeed`]'s `flow` is neither `push` nor `redirect`.
+    ///
+    /// Where this refusal *lives* moved on 2026-09-06 and what it refuses did
+    /// not. `providers.flow` is written through CrateStack now, and the
+    /// generated `CreateProviderInput` takes the schema's `ProviderFlow`
+    /// enum rather than a string, so the label has to be parsed in
+    /// `config_reconcile` before the statement is built. It used to reach
+    /// Postgres and be refused there — by `CREATE TYPE provider_flow` until
+    /// migration 0032, then by `providers_flow_enum_check`. Both of those
+    /// still exist and still refuse a hand-written `INSERT`
+    /// (`an_unknown_provider_flow_is_refused_by_the_check_that_replaced_the_enum_type`);
+    /// this variant is what `reconcile` produces before it gets that far.
+    ///
+    /// **The classification is deliberately not the one the old path gave.**
+    /// A CHECK violation arrives as [`Self::Query`] → `Category::Storage` →
+    /// exit `69`, which tells a supervisor to wait for Postgres. A flow
+    /// label vpay's own configuration produced is a *deployment* mistake and
+    /// no amount of waiting fixes it, so this is `Category::Configuration` →
+    /// exit `78` ("fix the deploy"), like
+    /// [`Self::CurrencyExponentConflict`] beside it. That is a change in
+    /// advice, and it is an improvement rather than a side effect: the
+    /// previous answer was wrong about who has to act.
+    ///
+    /// Not reachable from `vpay_api::v1::boot::boot_seeds`, whose
+    /// `flow_label` is a `match` on [`vpay_core::ProviderFlow`] and can
+    /// therefore only emit the two accepted labels (Step 2's D4 keeps the
+    /// seed field a `String`; `vpay-db` binds strings and parses them). It is
+    /// reachable by any other caller of the public [`crate::ConfigReconcile`]
+    /// trait, which is why it is a named variant and not a `panic`.
+    #[error(
+        "provider {code} is configured with flow {flow}, which is neither `push` nor `redirect`"
+    )]
+    ProviderFlowUnknown {
+        /// The rail code whose seed carries the unusable label.
+        code: String,
+        /// The label as configured, quoted back so an operator can see the
+        /// typo. Never a secret — it is one of two words or a mistake.
+        flow: String,
+    },
+
     /// A query that ran through CrateStack's data layer rather than through
     /// a hand-written `sqlx` statement failed.
     ///
@@ -292,9 +332,16 @@ impl vpay_core::Classify for DbError {
             // shape of the same thing: the database is healthy and the
             // deployment is wrong, and booting on regardless would misread
             // every stored amount in that currency.
+            //
+            // A flow label that is neither `push` nor `redirect` is the
+            // fourth, and the only one whose category *changed* when it
+            // moved: it used to reach the `providers_flow_enum_check` CHECK
+            // and come back as `Query`, i.e. as exit 69 "wait for Postgres"
+            // for a typo in a deployment. See the variant.
             Self::Migrate(_)
             | Self::SigningKeyRetired { .. }
-            | Self::CurrencyExponentConflict { .. } => Category::Configuration,
+            | Self::CurrencyExponentConflict { .. }
+            | Self::ProviderFlowUnknown { .. } => Category::Configuration,
             // The database enforced a rule the request broke. Conflict, not
             // Storage: the answer is `409` and "do not repeat this", never
             // `503` and "retry" — see the variant's own comment for why
@@ -329,6 +376,7 @@ impl vpay_core::Classify for DbError {
             Self::UniqueViolation { .. } => "resource_conflict",
             Self::ForeignKeyViolation { .. } => "invalid_reference",
             Self::CurrencyExponentConflict { .. } => "currency_exponent_conflict",
+            Self::ProviderFlowUnknown { .. } => "provider_flow_unknown",
             Self::WriteMatchedNoRow { .. } => "write_matched_no_row",
             Self::Persistence(error) => error.code(),
         }

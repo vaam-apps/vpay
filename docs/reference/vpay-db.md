@@ -1251,16 +1251,17 @@ work, and each binary installs the provider at boot
 `vpay-db` compiles `schemas/vpay.cstack` with
 [CrateStack](https://cratestack.dev)'s `include_server_schema!` macro
 (`cratestack = { package = "cratestack-pg", version = "=0.11.1" }`) and runs
-**five** queries through the generated data layer, spread over two tables.
-This section says which five, what deliberately did not move, and which of
+**six** queries through the generated data layer, spread over three tables.
+This section says which six, what deliberately did not move, and which of
 CrateStack's behaviours vpay has had to work around rather than adopt. It is
 the application's side of `schemas/vpay.cstack`'s own header, which carries
 the schema's side.
 
 It said "**one** query" until 2026-09-06, when the two `disabled_clients`
-writes followed the read, and "**three**" until later the same day, when
-migration 0032 made `currencies` modellable and `ConfigReconcile::reconcile`'s
-currency pass moved.
+writes followed the read; "**three**" until later the same day, when migration
+0032 made `currencies` modellable and `ConfigReconcile::reconcile`'s currency
+pass moved; and "**five**" until migration 0033 dropped the `providers`
+capability defaults and the provider pass moved with them.
 
 Everything here was measured against the 0.11.1 sources on 2026-09-06;
 `docs/plans/exp14-notes/opus.md`, `docs/plans/exp16-notes/opus.md` and
@@ -1268,8 +1269,8 @@ Everything here was measured against the 0.11.1 sources on 2026-09-06;
 
 ### What runs through it today
 
-`DisabledClients`, all three methods; the currency half of
-`ConfigReconcile::reconcile`; and one read that exists only in a test:
+`DisabledClients`, all three methods; and both halves of
+`ConfigReconcile::reconcile`'s upsert work:
 
 | Method | CrateStack builder | Policy slot it needs |
 |---|---|---|
@@ -1278,13 +1279,15 @@ Everything here was measured against the 0.11.1 sources on 2026-09-06;
 | `enable_client` | `delete_many().where_(client_id.eq(..)).run(ctx)` | `delete` |
 | `reconcile`, per currency | `find_unique(code).for_update().run_in_tx(tx, ctx)` | `read` |
 | `reconcile`, per currency | `upsert(CreateCurrencyInput).run_in_tx(tx, ctx)` | `create` **and** `update` |
+| `reconcile`, per provider | `upsert(CreateProviderInput).run_in_tx(tx, ctx)` | `create` **and** `update` |
 
-Plus one that is **test-only and says so**: `model Provider` carries
-`@@allow("read", …)` and `vpay-db`'s own
+Plus one that is **test-only and says so**: `vpay-db`'s own
 `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` reads a
-row through `find_unique`. No production path reads `providers` through
-CrateStack. That test exists because migration 0032's native-enum conversion
-has no other witness — see "The enum conversion no report can see" below.
+`providers` row through `find_unique`. No production path *reads* `providers`
+through CrateStack — `model Provider`'s `read` arm is there for that test, and
+migration 0033 changed the write, not the read. The test exists because
+migration 0032's native-enum conversion has no other witness — see "The enum
+conversion no report can see" below.
 
 Nothing about the trait changed for any of them — the signatures, the
 deliberate absence of a cache, and `enable_client`'s "a no-op, not an error"
@@ -1517,6 +1520,24 @@ counterpart to converge on at all; and `postgres_smoke.rs` asserts the report
 still carries ``CHECK `code_length` ...`` as its proof that the report says
 *something* about `providers` beside the invisible cross-column CHECK.
 
+#### Migration 0033: dropping a default moves no drift, and skipping it moves five
+
+The mirror of the rename finding above, and the reason migration 0033 and the
+`schemas/vpay.cstack` edit are one commit. Measured on 2026-09-06 with the same
+test:
+
+| Variant | Report |
+|---|---|
+| Five `@default(...)` in the schema, five `DEFAULT`s in the database (before) | **84 / 16 / 17** |
+| Neither (after 0033) | **84 / 16 / 17**, `providers` block byte-identical |
+| Schema half only — the five `@default(...)` removed, 0033 absent | **89 / 16 / 17**, five `column … default value differs` lines on `providers` |
+
+So a `DEFAULT` costs drift only when the two sides disagree, and the general
+lesson is the one the CHECK rename taught in the other direction: **do not
+expect a DDL change to move `EXPECTED_DRIFT_CHANGES` just because it is real.**
+What 0033 buys is not a smaller number; it is that
+`Create{Model}Input` can carry the five columns at all.
+
 #### The enum conversion no report can see
 
 `providers.flow` was `provider_flow`, a native Postgres enum. It is `TEXT`
@@ -1626,12 +1647,18 @@ worth stating explicitly because it is the obvious worry:
 `MAX_CONNECTIONS = 10` per in-flight reconcile, on a boot step the advisory
 lock already admits one at a time.
 
-### `providers` cannot be written through CrateStack, and that is a maintainer's decision
+### `providers` is written through CrateStack (D7, resolved 2026-09-06)
 
-`reconcile`'s **provider** pass is still a hand-written `INSERT ... ON
-CONFLICT`. Not an oversight, and not "we ran out of time": CrateStack's upsert
-input cannot carry it. Measured with `preview_sql` on 2026-09-06 and pinned by
-`the_provider_upsert_cannot_carry_the_capability_columns`:
+`reconcile`'s **provider** pass is
+`upsert(CreateProviderInput).run_in_tx(tx, ctx)`. It was a hand-written
+`INSERT ... ON CONFLICT` for one day, and the reason it was is the reason
+migration 0033 exists, so both are recorded here rather than only the outcome.
+
+**The blocker.** `cratestack-macros`' `model/inputs.rs::create_input_fields`
+and `model/descriptor/columns.rs`'s `upsert_update_columns` both drop every
+field carrying a `@default(...)`, and `model Provider` carried one on all five
+capability booleans because the live table did (migration 0002: `DEFAULT
+FALSE` ×4, `DEFAULT TRUE`). Measured with `preview_sql` on 2026-09-06:
 
 ```text
 INSERT INTO providers (code, display_name, flow) VALUES ($1, $2, $3)
@@ -1639,64 +1666,114 @@ ON CONFLICT (code) DO UPDATE SET display_name = EXCLUDED.display_name, flow = EX
 ```
 
 `supports_refunds`, `supports_partial_refunds`, `delivers_callbacks`,
-`requires_ip_allowlist` and `enabled` are in neither list.
-`cratestack-macros`' `model/inputs.rs::create_input_fields` and
-`model/descriptor/columns.rs`'s `upsert_update_columns` both drop every field
-carrying a `@default(...)`, and `model Provider` carries one on all five
-because the live table does (migration 0002: `DEFAULT FALSE` ×4, `DEFAULT
-TRUE`).
+`requires_ip_allowlist` and `enabled` were in neither list. Boot step 4 would
+have inserted every rail with the column defaults regardless of what the
+deployment configured, and would never have carried a capability change to an
+existing row, so a rail an operator had just disabled would come back enabled.
 
-What that would do if it shipped: boot step 4 would insert every rail with the
-column defaults regardless of what the deployment configured — a rail
-configured `supports_refunds: true` recorded as not supporting refunds — and
-would never carry a capability change to an existing row, so a rail an
-operator had just disabled would come back enabled. A plausible-looking
-success storing the wrong value, which is what `AGENTS.md`'s second rule is
-about.
+**The decision.** Two ways out were measured, and the maintainer's delegate
+took the first: remove the five `@default(...)` from `model Provider` **and**
+`ALTER TABLE providers ALTER COLUMN … DROP DEFAULT` on all five. The argument
+is not that a code generator should get to shape vpay's DDL — it is that the
+default was never doing anything for the only writer there is. `reconcile` is
+the sole writer of those five columns and always writes all five from
+configuration; a default cannot help it. What a default *can* do is invent a
+capability for some other writer that forgot one, and a rail silently recorded
+as "does not refund", or silently recorded as enabled, is worse than an
+`INSERT` that refuses. The second way out — upstream growing a way to include
+a defaulted column in an upsert input — remains open and would now be a
+simplification rather than an unblocking.
 
-**The two ways out, neither taken here:**
-
-1. Remove the five `@default(...)`s from `model Provider` and `ALTER TABLE
-   providers ALTER COLUMN ... DROP DEFAULT` on all five in a migration. This
-   works — **measured, not assumed**, in the review pass of 2026-09-06: with
-   the five removed from the model, `preview_sql` renders
-
-   ```text
-   INSERT INTO providers (code, display_name, flow, supports_refunds,
-       supports_partial_refunds, delivers_callbacks, requires_ip_allowlist, enabled)
-   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-   ON CONFLICT (code) DO UPDATE SET display_name = EXCLUDED.display_name,
-       flow = EXCLUDED.flow, supports_refunds = EXCLUDED.supports_refunds, … ,
-       enabled = EXCLUDED.enabled
-   ```
-
-   which is exactly the statement `reconcile` would need. It also lets a code
-   generator's input-shaping rule decide vpay's DDL, and it removes a
-   defaulting behaviour any future writer of that table would reasonably
-   expect. Leaving the `@default`s off *without* the DDL change is not an
-   option, and that too is measured rather than reasoned: the drift report
-   goes **84 → 89**, exactly five `column … default value differs` lines on
-   `providers`.
-2. Upstream grows a way to include a defaulted column in an upsert input.
-
-**What notices, either way, is stronger than a test.** `the_provider_upsert_
-cannot_carry_the_capability_columns` is described above as a `preview_sql`
-pin, and it is — but the first thing to break is the *compiler*. The five
-columns are absent from `CreateProviderInput`'s **fields**, not merely from
-the rendered SQL, so the day they become settable `vpay-db` stops building:
+**The two halves are one commit, and that is measured.** With the five
+`@default(...)` removed from the schema and the DDL untouched, the drift report
+goes **84 → 89**: exactly five `column … default value differs` lines on
+`providers`. With both halves done it stays at **84 / 16 relations / 17
+unmappable**, and the `providers` block is byte-identical to what it was
+before — the two sides agreed when both had the defaults and they agree now
+that neither does. Dropping a default moves no drift by itself.
 
 ```text
-error[E0063]: missing fields `delivers_callbacks`, `enabled`,
-`requires_ip_allowlist` and 2 other fields in initializer of `CreateProviderInput`
-  --> backends/crates/vpay-db/src/config_reconcile.rs
+INSERT INTO providers (code, display_name, flow, supports_refunds,
+    supports_partial_refunds, delivers_callbacks, requires_ip_allowlist, enabled)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (code) DO UPDATE SET display_name = EXCLUDED.display_name,
+    flow = EXCLUDED.flow, supports_refunds = EXCLUDED.supports_refunds, … ,
+    enabled = EXCLUDED.enabled
 ```
 
-Reproduced in the review pass. So this is not a signal that can rot quietly:
-it is a build failure first and a red assertion second.
+is what renders now, pinned by
+`the_provider_upsert_carries_all_eight_columns`.
 
-Until one of those happens, the provider pass stays hand-written and
-`model Provider` carries `@@allow("read", …)` and no write arm — an arm no
-call site uses is a permission nothing can measure.
+**Two things notice a regression, and the compiler is the first.** The five
+columns are `CreateProviderInput` *fields*, not merely SQL: restore a
+`@default(...)` in `schemas/vpay.cstack` and `vpay-db` stops building with
+`error[E0560]: struct `inputs::CreateProviderInput` has no field named
+`supports_refunds`` at `reconcile`'s struct literal (measured). Delete the
+migration instead and the failure is at test time, three ways: the drift test
+at 89 vs 84, the migration-count test at 32 vs 33, and
+`a_hand_written_provider_insert_must_now_name_every_capability_column`, which
+finds the three-column `INSERT` accepted again.
+
+**What the drop costs an operator.** All five columns are `NOT NULL` with no
+default, so a hand-written `INSERT INTO providers (code, display_name, flow)`
+is a `23502` rather than a row with invented capabilities. That is the whole
+cost, it is a refusal rather than a silent difference, and it is asserted in
+both directions by the test named above. Three fixtures in `postgres_smoke.rs`
+had to name the columns in the same commit.
+
+**No `find_unique(...).for_update()` ahead of the provider upsert.** This is
+the asymmetry with the currency pass and it is deliberate. The currency read is
+the *guard*: `upsert` renders `SET exponent = EXCLUDED.exponent`, a stored
+exponent must never be overwritten, so the value has to be read under a row
+lock and compared before the write. A provider has no such value — every one of
+the eight columns is owned by configuration and overwriting it is the point, so
+the read would return a row nothing compares. The row lock itself is taken
+anyway, in the same transaction, by `upsert`'s own conflict probe
+(`upsert_exec.rs::run_upsert_in_tx` calls
+`select_for_update_by_conflict_target` on `tx`). One measured consequence is
+worth writing down because it inverts the currency finding: with no
+`providers` row lock held when the upsert runs, swapping `run_in_tx` for `run`
+**fails in 1.2 s** rather than hanging.
+`a_provider_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`
+is the assertion that fails; the currency equivalent had to be written
+specifically because its mutation produced `SLOW [>480.000s]` and no error at
+all.
+
+What the conflict probe needs in exchange is **READ COMMITTED**, and that is a
+real constraint rather than an incidental one: the transaction has to see a
+`providers` row another writer committed while it was waiting on
+`lock_keys::CONFIG_RECONCILE`. `pool.begin()` opens Postgres's default and
+that is what makes this work.
+`a_reconcile_that_waited_for_the_boot_lock_overwrites_what_the_holder_committed`
+(`vpay-db/tests/repositories.rs`, added in the review pass on 2026-09-06) is
+the only test that says so: under `SET TRANSACTION ISOLATION LEVEL REPEATABLE
+READ` the snapshot is taken when the advisory-lock statement starts, before
+the holder commits, the probe cannot see the row, and boot fails with `40001`
+— measured, with every other reconcile case still passing.
+
+**A classification changed on purpose.** `CreateProviderInput::flow` is the
+schema's `ProviderFlow` enum, so `reconcile` parses `ProviderSeed::flow` — a
+`String`, and left one, because Step 2's D4 says `vpay-db` binds strings —
+before it builds a statement. An unparseable label is
+`DbError::ProviderFlowUnknown`, `Category::Configuration`, exit `78`. It used
+to reach `providers_flow_enum_check` and come back as `DbError::Query` →
+`Category::Storage` → exit `69`, which told a supervisor to wait for a
+database that was working perfectly. The CHECK is untouched and still refuses
+a writer that is not `reconcile`. The parse is a `match` rather than
+`unwrap_or_default()`, because `cratestack-macros` derives `Default` on every
+generated enum with the *first* variant as the default
+(`types/enums.rs::variant_tokens`) and the first variant of `ProviderFlow` is
+`push` — so `unwrap_or_default()` would have stored a typo'd rail as a push
+rail and returned `Ok`.
+
+**`model Provider` gained `create` and `update` arms**, in the commit that
+moved the write and not before it, and has no `delete` arm: `reconcile`
+disables a dropped rail and never removes one, and every `charges` and
+`provider_requests` row references this table. Deleting the `update` arm is
+loud but only from the *second* boot — the first boot of a fresh database
+takes the insert branch — which is why
+`every_action_this_module_calls_has_an_allow_arm` asserts the slot without a
+database.
 
 ### Why the generated module is private, and what keeps it that way
 
@@ -1720,8 +1797,14 @@ is recognised as an implementation.
 ### What stays raw sqlx, and why
 
 Everything else. That sentence used to begin "Everything else, **including
-the two `disabled_clients` writes**"; those moved on 2026-09-06, so the line
-is now exactly one table wide. Three properties of 0.11.1 decide where it
+the two `disabled_clients` writes**"; those moved on 2026-09-06, and the
+`currencies` and `providers` upserts followed the same day, so the line is now
+three tables wide — plus one statement on a table that has otherwise moved.
+That statement is `reconcile`'s disable pass, `UPDATE providers SET enabled =
+false WHERE code <> ALL($1) AND enabled`: it addresses rows by their
+*absence* from a list, which no generated builder expresses, and it is the
+statement that makes "configuration is the authority" true for a rail the
+deployment dropped. Three properties of 0.11.1 decide where it
 falls, and none of them is a matter of taste:
 
 - **Model policies are compiled into the SQL.** `@@allow`/`@@deny` become

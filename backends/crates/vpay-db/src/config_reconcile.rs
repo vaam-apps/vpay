@@ -37,28 +37,64 @@
 //! a deployment where a rail an operator just removed is still accepting
 //! charges.
 //!
-//! # Half of this module runs through CrateStack, and the half that does not
-//! is the interesting half
+//! # Both upserts run through CrateStack; the one statement that does not is
+//! the disable pass
 //!
 //! Since 2026-09-06 the currency pass is `find_unique(code).for_update()`
-//! followed by `upsert(...)`, both `run_in_tx` on the transaction this
-//! function opens and both after the advisory lock below — CrateStack joins
-//! vpay's transaction, it never opens one of its own. The provider pass is
-//! still a hand-written `INSERT ... ON CONFLICT`, and the reason is measured
-//! rather than pending: CrateStack's generated upsert input cannot carry a
-//! `@default(...)` column, and five of `providers`' eight columns have one.
-//! See the comment on that loop, and
+//! followed by `upsert(...)`, and since later the same day the provider pass
+//! is `upsert(...)` — all of them `run_in_tx` on the transaction this
+//! function opens and all of them after the advisory lock below. CrateStack
+//! joins vpay's transaction; it never opens one of its own.
+//!
+//! The provider pass was a hand-written `INSERT ... ON CONFLICT` until then,
+//! and for a measured reason rather than a pending one: CrateStack's
+//! generated upsert input cannot carry a `@default(...)` column, and five of
+//! `providers`' eight columns had one. Migration 0033 dropped those five
+//! column defaults and `schemas/vpay.cstack` dropped the five `@default(...)`
+//! in the same commit — the two halves are one change, because either alone
+//! puts five `default value differs` lines in the drift report. Why a code
+//! generator's input-shaping rule got to decide vpay's DDL is argued in
+//! migration 0033's header and in
 //! [docs/reference/vpay-db.md § CrateStack](../../../../docs/reference/vpay-db.md#cratestack).
+//!
+//! The disable pass — `UPDATE providers SET enabled = false WHERE code <>
+//! ALL($1)` — is still hand-written, because it addresses rows by their
+//! *absence* from a list and no generated builder expresses that.
 //!
 //! # `# Errors` moved, and callers should notice
 //!
-//! The currency statements now fail as [`DbError::Persistence`] rather than
-//! [`DbError::Query`]. The *classification* is unchanged — a `23514` is
-//! still `Category::Internal`, a pool timeout still `Category::Storage`,
-//! because `persistence::classify_cratestack` and `error::classify_write`
-//! are asserted against each other — so a caller branching on
-//! `Classify::category` sees nothing; a caller matching the variant would
-//! have silently stopped matching. Boot only ever reads the category.
+//! The currency and provider statements now fail as [`DbError::Persistence`]
+//! rather than [`DbError::Query`], so a caller matching the *variant* would
+//! have silently stopped matching. Boot only ever reads the category — and
+//! **two categories moved with the variant**, which this paragraph said they
+//! did not until the review pass of 2026-09-06 checked it.
+//!
+//! An integrity violation `vpay-db` had already given its own variant is
+//! genuinely unchanged: `23505` and `23503` classify identically on both
+//! paths, asserted against each other by
+//! `persistence::tests::a_duplicate_key_classifies_the_same_through_cratestack_as_through_sqlx`,
+//! and a pool timeout is `Category::Storage` either way. A `23514` is **not**
+//! in that set and never was. `error::classify_write` deliberately leaves it
+//! in the unclassified [`DbError::Query`] bucket → `Category::Storage` → exit
+//! `69`; `persistence::classify_cratestack` gives it
+//! `PersistenceError::Check` → `Category::Internal` → exit `1`. Nothing
+//! asserts those two against each other, because they disagree.
+//!
+//! What that means here, concretely: the `partial_refunds_imply_refunds`
+//! CHECK is the only `23514` boot step 4 can raise, and until the provider
+//! pass moved it reached a supervisor as `69` ("wait for Postgres") for an
+//! adapter whose declared `Capabilities` are incoherent. It is `1`
+//! ("page someone") now. That is arguably the better answer — nothing about
+//! the database is wrong and `Capabilities::is_coherent` is not checked at
+//! boot, so it is vpay's own bug — but it is a change, it was not asked for,
+//! and whether boot should instead refuse an incoherent adapter as
+//! `Category::Configuration` (exit `78`, like the flow label below) is a
+//! maintainer's call, recorded in docs/status.md rather than taken here.
+//! `a_provider_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`
+//! pins the category so the next move is deliberate.
+//!
+//! One classification changed on purpose rather than as a consequence, and it
+//! is the flow label: see [`DbError::ProviderFlowUnknown`].
 //!
 //! That transaction opens by taking [`lock_keys::CONFIG_RECONCILE`], because
 //! boot step 4 runs in *both* binaries and in every replica of each: a
@@ -78,6 +114,11 @@ use crate::persistence::{classify_cratestack, system_context};
 /// the query that produced it cannot drift apart.
 const CURRENCY_MODEL: &str = "Currency";
 
+/// The `.cstack` model the provider half of [`ConfigReconcile::reconcile`]
+/// writes through, named here for [`CURRENCY_MODEL`]'s reason: the string in
+/// a denial's message and the query that produced it must not drift apart.
+const PROVIDER_MODEL: &str = "Provider";
+
 /// One rail as this deployment describes it: the identity and capabilities
 /// from a linked adapter, plus whether the YAML enables it.
 ///
@@ -92,14 +133,21 @@ pub struct ProviderSeed {
     pub display_name: String,
     /// `push` or `redirect`, the wire form of `vpay_core::ProviderFlow`.
     ///
-    /// Written into a `TEXT` column guarded by
-    /// `providers_flow_enum_check`, so any other string is still a
-    /// [`DbError::Query`] at boot rather than a silently stored typo — the
-    /// refusal moved from the native `provider_flow` enum type to a CHECK
-    /// constraint in migration 0032, which is a change of *mechanism* and
-    /// not of behaviour. It had to move: `cratestack`'s generated row
-    /// decoders read an enum column with `try_get::<String>()`, so a native
-    /// enum column fails to decode on every read through that layer.
+    /// A `String` rather than the enum, which is Step 2's D4 (`vpay-db`
+    /// binds strings; `vpay-core` parses) and is left standing here: the
+    /// producer, `vpay_api::v1::boot::boot_seeds`, already holds a
+    /// `ProviderFlow` and renders it with a `match`, so nothing in vpay can
+    /// put a third word in this field.
+    ///
+    /// Any other string is refused rather than stored, and where it is
+    /// refused has moved twice. The native `provider_flow` enum type refused
+    /// the cast until migration 0032; `providers_flow_enum_check` refused the
+    /// row until 2026-09-06; and since the provider pass became a CrateStack
+    /// upsert — whose input takes the schema's `ProviderFlow` enum, not a
+    /// string — [`ConfigReconcile::reconcile`] refuses the *seed*, as
+    /// [`DbError::ProviderFlowUnknown`]. The CHECK is still there and still
+    /// fires for a writer that is not `reconcile`; what changed is which
+    /// layer answers first, and the advice it gives (exit `78`, not `69`).
     pub flow: String,
     /// Whether the rail can refund at all.
     pub supports_refunds: bool,
@@ -158,17 +206,19 @@ pub trait ConfigReconcile: Send + Sync {
     /// [`DbError::CurrencyExponentConflict`] if a currency is already recorded
     /// with a different exponent — refused rather than overwritten, because
     /// changing it would reinterpret every amount already stored in that
-    /// currency. [`DbError::Persistence`] if either currency statement fails,
-    /// including when a model policy refuses one: every CrateStack call here
-    /// runs as the system principal, so a refusal means
+    /// currency. [`DbError::ProviderFlowUnknown`] if a seed's `flow` is
+    /// neither `push` nor `redirect`; that one is refused before any
+    /// statement runs, and it is the one error here whose category changed
+    /// when the provider pass moved (see the variant).
+    /// [`DbError::Persistence`] if any currency or provider statement fails
+    /// — including `supports_partial_refunds` without `supports_refunds`,
+    /// which the `partial_refunds_imply_refunds` CHECK refuses as a `23514`,
+    /// and including when a model policy refuses one: every CrateStack call
+    /// here runs as the system principal, so a refusal means
     /// `schemas/vpay.cstack` and this module disagree, and it classifies
-    /// `Category::Internal` rather than `Forbidden`.
-    /// [`DbError::Query`] if a `flow` is not `push` or `redirect` (the
-    /// `providers_flow_enum_check` CHECK, which replaced the
-    /// `provider_flow` enum type in migration 0032), if
-    /// `supports_partial_refunds` is set without `supports_refunds` (the
-    /// `partial_refunds_imply_refunds` CHECK), or if any provider statement
-    /// or the commit fails. All of them roll the whole transaction back.
+    /// `Category::Internal` rather than `Forbidden`. [`DbError::Query`] if
+    /// the advisory lock, the disable pass or the commit fails. All of them
+    /// roll the whole transaction back.
     async fn reconcile(
         &self,
         currencies: &[CurrencySeed],
@@ -322,70 +372,93 @@ impl ConfigReconcile for crate::repository::PgRepositories {
         }
 
         for provider in &providers {
-            // Still a hand-written statement, and NOT because nobody got to
-            // it. `CreateProviderInput` — the input CrateStack's `upsert`
-            // takes — carries only `code`, `display_name` and `flow`.
-            // `cratestack-macros`' `model/inputs.rs::create_input_fields` and
-            // `model/descriptor/columns.rs`'s `upsert_update_columns` both
-            // drop every field with a `@default(...)`, and `model Provider`
-            // in `schemas/vpay.cstack` carries one on all five capability
-            // booleans because the live table does
-            // (`DEFAULT FALSE` / `DEFAULT TRUE`, migration 0002).
+            // Parsed before any statement is built, because
+            // `CreateProviderInput::flow` is the schema's `ProviderFlow`
+            // enum and the seed's is a `String` (Step 2's D4). Refusing
+            // here rather than at `providers_flow_enum_check` is what makes
+            // a bad label exit 78 instead of 69 — see
+            // [`DbError::ProviderFlowUnknown`], which is where that
+            // deliberate change of advice is argued.
             //
-            // So a CrateStack upsert here would insert a rail with
-            // `supports_refunds = false, supports_partial_refunds = false,
-            // delivers_callbacks = false, requires_ip_allowlist = false,
-            // enabled = true` **whatever the deployment configured**, and
-            // would never carry a capability change to an existing row. A
-            // rail an operator had just disabled would come back enabled.
-            // That is a plausible-looking success writing the wrong value,
-            // which is the one thing AGENTS.md rule 2 is about.
+            // `map_err` and NOT `unwrap_or_default()`, which is a trap
+            // rather than a style choice: `cratestack-macros` marks the
+            // FIRST variant of every generated enum `#[default]`
+            // (`types/enums.rs::variant_tokens`), and the first variant here
+            // is `push`, so a default would record a typo'd rail as a push
+            // rail and return `Ok`.
+            let flow = provider
+                .flow
+                .parse()
+                .map_err(|_: String| DbError::ProviderFlowUnknown {
+                    code: provider.code.clone(),
+                    flow: provider.flow.clone(),
+                })?;
+
+            // All eight columns, which is the whole of what migration 0033
+            // bought: `cratestack-macros` drops every `@default(...)` field
+            // from `Create{Model}Input`, so while the five capability
+            // booleans carried one this struct could not name them and boot
+            // step 4 would have stored the column defaults instead of the
+            // deployment's configuration. The argument for the DDL is in
+            // that migration's header; the schema half is in
+            // `schemas/vpay.cstack`, and neither works without the other.
             //
-            // The rendered statement is pinned by
-            // `the_provider_upsert_cannot_carry_the_capability_columns`
-            // below, so this paragraph is a test rather than a claim, and so
-            // that an upstream release which fixes it turns that test red —
-            // which is the signal to move this statement. What it would take
-            // on vpay's side instead is a maintainer's call and is written up
-            // in docs/reference/vpay-db.md § CrateStack.
+            // Restore a `@default(...)` on any of the five and this literal
+            // stops compiling before any test runs.
+            let input = crate::schema::cratestack_schema::CreateProviderInput {
+                code: provider.code.clone(),
+                display_name: provider.display_name.clone(),
+                flow,
+                supports_refunds: provider.supports_refunds,
+                supports_partial_refunds: provider.supports_partial_refunds,
+                delivers_callbacks: provider.delivers_callbacks,
+                requires_ip_allowlist: provider.requires_ip_allowlist,
+                enabled: provider.enabled,
+            };
+
+            // `run_in_tx`, and NOT `run`. A provider written on its own
+            // connection survives the rollback a later failure triggers, and
+            // it would also commit ahead of the disable pass below — leaving
+            // the half-reconciled table this function's transaction exists to
+            // prevent.
+            // `a_provider_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`
+            // in `tests/repositories.rs` is what turns that into a red
+            // assertion.
             //
-            // What did change in migration 0032: `$3` is no longer cast to
-            // `::provider_flow`. That type no longer exists — `flow` is TEXT
-            // guarded by `providers_flow_enum_check` — and a bind of an
-            // unknown flow is refused by the CHECK exactly as the enum
-            // refused it, as
-            // `an_unknown_provider_flow_is_refused_by_the_check_that_replaced_the_enum_type`
-            // in `backends/tests/integration/tests/postgres_smoke.rs`
-            // proves. (This named `an_unknown_provider_flow_is_refused_by_
-            // the_database` until 2026-09-06, which is not a test that has
-            // ever existed. Nothing gates a citation to a test name —
-            // `verify-status` lexes `NotImplemented` tokens, not these — so
-            // the only thing that catches one is a reader trying to open it.)
-            sqlx::query(
-                "INSERT INTO providers \
-                 (code, display_name, flow, supports_refunds, supports_partial_refunds, \
-                  delivers_callbacks, requires_ip_allowlist, enabled) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
-             ON CONFLICT (code) DO UPDATE SET \
-                 display_name = EXCLUDED.display_name, \
-                 flow = EXCLUDED.flow, \
-                 supports_refunds = EXCLUDED.supports_refunds, \
-                 supports_partial_refunds = EXCLUDED.supports_partial_refunds, \
-                 delivers_callbacks = EXCLUDED.delivers_callbacks, \
-                 requires_ip_allowlist = EXCLUDED.requires_ip_allowlist, \
-                 enabled = EXCLUDED.enabled",
-            )
-            .bind(&provider.code)
-            .bind(&provider.display_name)
-            .bind(&provider.flow)
-            .bind(provider.supports_refunds)
-            .bind(provider.supports_partial_refunds)
-            .bind(provider.delivers_callbacks)
-            .bind(provider.requires_ip_allowlist)
-            .bind(provider.enabled)
-            .execute(&mut *tx)
-            .await
-            .map_err(classify_write)?;
+            // Deliberately NO `find_unique(...).for_update()` ahead of it,
+            // which is the asymmetry with the currency pass. There the read
+            // IS the guard — a stored exponent must never be overwritten, so
+            // it has to be read and compared first. Here every one of the
+            // eight columns is owned by configuration and overwriting it is
+            // the point, so the read would return a row nothing compares; and
+            // the row lock it would take is taken anyway, in this same
+            // transaction, by `upsert`'s own conflict probe
+            // (`upsert_exec.rs::run_upsert_in_tx` ->
+            // `select_for_update_by_conflict_target` on `tx`). One measured
+            // consequence, recorded because it inverts the currency finding:
+            // with no row lock held here, `.run(&ctx)` fails in 1.2 s instead
+            // of deadlocking. See docs/reference/vpay-db.md § CrateStack.
+            //
+            // What the conflict probe needs in exchange, and it is a real
+            // constraint rather than an incidental one: this transaction has
+            // to be able to SEE a row another writer committed while it was
+            // waiting on the advisory lock above. That is READ COMMITTED,
+            // Postgres's default and the one `pool.begin()` opens.
+            // `a_reconcile_that_waited_for_the_boot_lock_overwrites_what_the_holder_committed`
+            // in `tests/repositories.rs` is what pins it: under `SET
+            // TRANSACTION ISOLATION LEVEL REPEATABLE READ` the snapshot is
+            // taken when the lock statement starts, the probe cannot see the
+            // committed row, and boot fails with `40001` (measured
+            // 2026-09-06; no other reconcile case notices).
+            self.cs
+                .provider()
+                .upsert(input)
+                .run_in_tx(&mut tx, &ctx)
+                .await
+                .map(|_row| ())
+                .map_err(|error| {
+                    DbError::from(classify_cratestack(PROVIDER_MODEL, "upsert", error))
+                })?;
         }
 
         // Anything this deployment no longer configures is disabled, never
@@ -427,6 +500,7 @@ mod tests {
     use anyhow::Context as _;
     use sqlx::postgres::PgPoolOptions;
 
+    use crate::error::DbError;
     use crate::migrations::Migrations as _;
     use crate::repository::PgRepositories;
     use crate::schema::cratestack_schema;
@@ -498,62 +572,78 @@ mod tests {
         );
     }
 
-    /// Why `reconcile`'s **provider** pass is still a hand-written
-    /// `INSERT ... ON CONFLICT` — measured, and pinned so that the day it
-    /// stops being true, this test says so.
+    /// The provider upsert carries **all eight** columns — the inverse of the
+    /// test that stood here until 2026-09-06, and the assertion migration
+    /// 0033 exists to make true.
     ///
     /// `cratestack-macros` drops every `@default(...)` field from both
     /// `Create{Model}Input` and `upsert_update_columns`
     /// (`model/inputs.rs::create_input_fields`,
-    /// `model/descriptor/columns.rs`), and `model Provider` carries a
-    /// `@default(...)` on all five capability booleans because the live
-    /// table does. A CrateStack upsert here would therefore write
-    /// `supports_refunds = false … enabled = true` whatever the deployment
-    /// configured, and would never carry a capability change to an existing
-    /// row.
+    /// `model/descriptor/columns.rs`). `model Provider` carried a
+    /// `@default(...)` on all five capability booleans, because migration
+    /// 0002's table did, so the generated statement was
     ///
-    /// That is the failure this repository's second rule is about: a
-    /// plausible-looking success storing the wrong value. `docs/status.md`
-    /// carries the row, and `schemas/vpay.cstack`'s `Provider` GAP note
-    /// carries what it would take to unblock it — which is a schema decision
-    /// (drop five DB defaults) rather than a code change, and is left to a
-    /// maintainer.
+    /// ```text
+    /// INSERT INTO providers (code, display_name, flow) VALUES ($1, $2, $3)
+    /// ON CONFLICT (code) DO UPDATE SET display_name = EXCLUDED.display_name, flow = EXCLUDED.flow
+    /// ```
     ///
-    /// **This test is the second thing that would notice, not the first.**
-    /// The five columns are missing from `CreateProviderInput`'s *fields*,
-    /// not just from the rendered SQL, so the day they become settable this
-    /// crate stops compiling — `error[E0063]: missing fields
-    /// delivers_callbacks, enabled, requires_ip_allowlist and 2 other
-    /// fields` at the `CreateProviderInput` literal in `reconcile`'s
-    /// provider loop. Measured in the review pass of 2026-09-06, along with
-    /// what `preview_sql` renders once the literal is completed: exactly the
-    /// eight-column statement `reconcile` needs. So the "left to a
-    /// maintainer" above is a real option and not a guess.
+    /// and boot step 4 would have recorded every rail with the column
+    /// defaults rather than the deployment's configuration — a rail an
+    /// operator had just disabled coming back enabled. That is why this pass
+    /// was hand-written SQL for a day, and why the predecessor of this test
+    /// pinned the three-column form.
     ///
-    /// The `starts_with` below is the brittle assertion of the two and
-    /// deliberately kept anyway: a harmless upstream change (different
-    /// identifier quoting, a reordered `RETURNING`) turns it red too. That is
-    /// a loud false alarm — the message prints the SQL — rather than a silent
-    /// false green, and the `!contains` loop underneath is what actually
-    /// pins the finding.
+    /// **What makes this test worth keeping now that it asserts the happy
+    /// shape.** The five `@default(...)` and the five column `DEFAULT`s have
+    /// to move together or the drift report grows five lines, so a future
+    /// editor who restores one half is stopped by the drift test. But an
+    /// editor who restores a `@default(...)` in `schemas/vpay.cstack` alone
+    /// is stopped *earlier* and more clearly: the field leaves
+    /// `CreateProviderInput` and `reconcile`'s struct literal stops
+    /// compiling, with `error[E0560]: struct \`inputs::CreateProviderInput\`
+    /// has no field named \`supports_refunds\`` — measured in this
+    /// direction. (exp17's review measured `E0063`, "missing field", going
+    /// the *other* way, when the fields appeared and the literal did not yet
+    /// name them; the two are not interchangeable and naming the wrong one
+    /// sends a reader looking for the wrong mistake.) This test is what makes
+    /// the *statement* — as opposed to the struct — a checked claim, so the
+    /// assertions below are about which columns reach SQL rather than about
+    /// which fields exist.
+    ///
+    /// The `starts_with` is the brittle assertion of the two and deliberately
+    /// kept: a harmless upstream change (different identifier quoting, a
+    /// reordered `RETURNING`) turns it red too. That is a loud false alarm —
+    /// the message prints the SQL — rather than a silent false green, and the
+    /// `contains` loop underneath is what pins the finding column by column.
     #[tokio::test]
-    async fn the_provider_upsert_cannot_carry_the_capability_columns() {
+    async fn the_provider_upsert_carries_all_eight_columns() {
         let cs = lazy_cratestack();
         let input = cratestack_schema::CreateProviderInput {
             code: "mtn_momo".to_owned(),
             display_name: "MTN MoMo".to_owned(),
             flow: cratestack_schema::ProviderFlow::push,
+            supports_refunds: true,
+            supports_partial_refunds: true,
+            delivers_callbacks: true,
+            requires_ip_allowlist: true,
+            enabled: true,
         };
 
         let sql = cs.provider().upsert(input).preview_sql();
 
         assert!(
             sql.starts_with(
-                "INSERT INTO providers (code, display_name, flow) VALUES ($1, $2, $3) \
+                "INSERT INTO providers (code, display_name, flow, supports_refunds, \
+                 supports_partial_refunds, delivers_callbacks, requires_ip_allowlist, enabled) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
                  ON CONFLICT (code) DO UPDATE SET display_name = EXCLUDED.display_name, \
                  flow = EXCLUDED.flow"
             ),
-            "{sql}"
+            "the generated provider upsert is not the eight-column statement `reconcile` reasons \
+             about. If a `@default(...)` came back to `model Provider`, the crate would not have \
+             compiled — so this is an upstream change in `create_input_fields` or in how the \
+             INSERT list is rendered: {sql}"
         );
         // Written out rather than built with `format!`: `sql_audit.rs` scans
         // this crate's sources for interpolation into anything that looks
@@ -561,6 +651,12 @@ mod tests {
         // fragment is the shape it exists to catch. These are assertion
         // needles, and spelling them in full costs five lines and keeps that
         // audit free of an exception.
+        //
+        // The `DO UPDATE SET` half is the one that matters most and is the
+        // half a `@default(...)` used to remove on its own: without these
+        // five assignments the upsert inserts the configured capabilities on
+        // a fresh database and then never carries a *change* to them, which
+        // is a bug no first boot can show.
         for assignment in [
             "supports_refunds = EXCLUDED.supports_refunds",
             "supports_partial_refunds = EXCLUDED.supports_partial_refunds",
@@ -569,17 +665,81 @@ mod tests {
             "enabled = EXCLUDED.enabled",
         ] {
             assert!(
-                !sql.contains(assignment),
-                "`{assignment}` is now rendered by the generated upsert. If this failed after a \
-                 cratestack bump, `reconcile`'s provider loop can move off hand-written SQL — \
-                 read the comment on that loop first: {sql}"
+                sql.contains(assignment),
+                "`{assignment}` is missing from the generated upsert's update list, so a \
+                 capability change would never reach an existing row. Check whether a \
+                 `@default(...)` returned to `model Provider` in `schemas/vpay.cstack`, and read \
+                 backends/migrations/0033_providers-drop-capability-defaults.sql: {sql}"
             );
         }
+
+        // `enabled` on its own line, because it is the column whose default
+        // was `TRUE` rather than `FALSE`: while `@default(true)` was there, a
+        // rail the deployment had disabled was inserted as ENABLED. A rail
+        // taking money it was configured not to take is the worst of the five
+        // and is what `a_rail_the_configuration_disables_is_not_re_enabled_by_reconcile`
+        // in `tests/repositories.rs` proves against a real database.
         assert!(
-            !sql.contains("(code, display_name, flow, supports_refunds"),
-            "the five capability columns must be absent from the INSERT list too, or this test \
-             is asserting only half of the problem: {sql}"
+            sql.contains(", enabled)") && sql.contains("$8"),
+            "`enabled` must be in the INSERT column list and bound, or boot step 4 records every \
+             rail as enabled whatever the deployment says: {sql}"
         );
+    }
+
+    /// A flow the schema's enum cannot name is refused by [`reconcile`]
+    /// itself, with the category that tells an operator to fix the deploy.
+    ///
+    /// No database: the parse is upstream of every statement, which is the
+    /// whole change this test pins. Before 2026-09-06 the same seed reached
+    /// Postgres and came back as a `23514` from
+    /// `providers_flow_enum_check` — [`DbError::Query`], `Category::Storage`,
+    /// exit `69`, i.e. "wait for Postgres" for a word that will never become
+    /// valid by waiting.
+    ///
+    /// The `unwrap_or_default()` trap this guards is real rather than
+    /// theoretical: `cratestack-macros` derives `Default` on every generated
+    /// enum with the FIRST variant as the default
+    /// (`types/enums.rs::variant_tokens`), and the first variant of
+    /// `ProviderFlow` is `push`. A `.unwrap_or_default()` in `reconcile`
+    /// would therefore store a typo'd rail as a push rail and return `Ok`.
+    ///
+    /// [`reconcile`]: ConfigReconcile::reconcile
+    #[test]
+    fn an_unnameable_flow_is_a_deploy_problem_and_never_reaches_a_statement() {
+        use std::str::FromStr as _;
+        use vpay_core::{Category, Classify as _, Retry};
+
+        assert!(
+            cratestack_schema::ProviderFlow::from_str("redirekt").is_err(),
+            "the parse this test is about has to fail for a label the enum cannot name"
+        );
+        assert_eq!(
+            cratestack_schema::ProviderFlow::default(),
+            cratestack_schema::ProviderFlow::push,
+            "the generated `Default` is the first variant, which is why `reconcile` matches on \
+             the parse result instead of calling `unwrap_or_default()`"
+        );
+
+        let error = DbError::ProviderFlowUnknown {
+            code: "typo_rail".to_owned(),
+            flow: "redirekt".to_owned(),
+        };
+
+        assert_eq!(error.category(), Category::Configuration);
+        assert_eq!(error.category().exit_code(), 78);
+        assert_eq!(error.retry(), Retry::Never);
+        assert_ne!(
+            error.category(),
+            DbError::Query(sqlx::Error::RowNotFound).category(),
+            "if this ever matches, the flow refusal has gone back to telling a supervisor to \
+             wait for a database that is perfectly healthy"
+        );
+
+        // The sentence is the remediation: an operator sees this line and
+        // nothing else, so it has to name the rail and the bad word.
+        let text = error.to_string();
+        assert!(text.contains("typo_rail"), "{text}");
+        assert!(text.contains("redirekt"), "{text}");
     }
 
     /// Every action this module calls on `Currency` and `Provider` has an
@@ -607,6 +767,11 @@ mod tests {
     ///   `Provider` `read`   -> SILENT, and today only a test notices, since
     ///                          no production path reads `providers` through
     ///                          CrateStack yet.
+    ///   `Provider` `create` -> LOUD, on every boot, for `Currency`
+    ///                          `create`'s reason.
+    ///   `Provider` `update` -> LOUD, but only on the conflict branch: a
+    ///                          fresh database's first boot succeeds and
+    ///                          every later one fails. Measured 2026-09-06.
     ///
     /// The `Currency` `read` case is why this file's container test compares
     /// against a raw sqlx read rather than merely asserting the reconcile
@@ -638,18 +803,28 @@ mod tests {
             "`@@allow(\"read\", auth().isSystem())` is missing from `model Provider`: the \
              CrateStack read would return `None` for a row that exists"
         );
-
-        // `model Provider` deliberately has NO create/update/delete arm:
-        // nothing writes it through CrateStack (see
-        // `the_provider_upsert_cannot_carry_the_capability_columns`), and an
-        // arm no call site uses is a permission nothing can measure. If this
-        // fails, the write moved — check that it moved deliberately.
         assert!(
-            provider.create_allow_policies.is_empty()
-                && provider.update_allow_policies.is_empty()
-                && provider.delete_allow_policies.is_empty(),
-            "`model Provider` grew a write arm. `reconcile`'s provider pass is hand-written SQL \
-             and needs none; grant one in the commit that moves the write, not before it"
+            !provider.create_allow_policies.is_empty(),
+            "`@@allow(\"create\", …)` is missing from `model Provider`: every boot would fail \
+             the provider upsert with `Forbidden` -> `PersistenceError::Denied` -> \
+             `Category::Internal`, before any SQL ran"
+        );
+        assert!(
+            !provider.update_allow_policies.is_empty(),
+            "`@@allow(\"update\", …)` is missing from `model Provider`: the first boot against a \
+             fresh database would succeed and every later one would fail, because only the \
+             conflict branch consults this slot — so a deployment could pass CI and crash-loop \
+             on its second pod"
+        );
+
+        // `model Provider` deliberately has NO delete arm, for `Currency`'s
+        // reason: `reconcile` disables a dropped rail rather than removing
+        // it, because every `charges` and `provider_requests` row references
+        // this table and a rail that has ever taken money must stay nameable.
+        assert!(
+            provider.delete_allow_policies.is_empty(),
+            "`model Provider` grew a `@@allow(\"delete\", …)`; `reconcile` disables a dropped \
+             rail and never deletes one, and the foreign keys would refuse anyway"
         );
         // Nothing deletes a currency either. A reference row a `DELETE`
         // could reach is a foreign key waiting to break.
@@ -670,6 +845,8 @@ mod tests {
             ("Currency", "update", currency.update_deny_policies),
             ("Provider", "read", provider.read_deny_policies),
             ("Provider", "detail", provider.detail_deny_policies),
+            ("Provider", "create", provider.create_deny_policies),
+            ("Provider", "update", provider.update_deny_policies),
         ] {
             assert!(
                 denies.is_empty(),
