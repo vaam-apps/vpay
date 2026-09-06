@@ -290,6 +290,23 @@ with the `FOR NO KEY UPDATE` a non-key `UPDATE` wants.
 So the two seams have *different* failure signatures under the same mistake,
 and only measurement distinguishes them.
 
+**Corrected by the review ([opus-review.md](opus-review.md) F3).** The
+paragraph above is true of the branch these two mutations take and false as a
+general statement about this call. `.do_nothing()` locks nothing only on the
+`Inserted` branch. On the `Existing` branch `resolve_pre_probe` is
+`select_for_update_by_conflict_target(&mut **tx, …)` — a `SELECT … FOR UPDATE`
+on this very transaction — and `authorize_existing_row` then *does* ask a
+second, pooled connection about that same row. It still does not hang, but
+because a plain `SELECT 1` does not block on a `FOR UPDATE` row lock, not
+because no lock is taken.
+
+The consequence that mattered and was missed: **on the `Existing` branch this
+call holds two connections at once**, where every write in `vpay-db` before
+this change held one. `MAX_CONNECTIONS` is 10 and `--worker-concurrency`
+defaults to 4, so the default still fits; a concurrency of 10 does not, and
+the path that would queue on `ACQUIRE_TIMEOUT` is crash recovery. Reserved for
+the maintainer as opus-review.md §3 item 4.
+
 ### 5b. Mutation 6 is the most important one in this file
 
 `events.type_is_a_documented_event` is cited by migration `0018`'s own

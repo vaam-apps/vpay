@@ -1332,11 +1332,34 @@ performs both writes inside a transaction that then returns
 
 Neither mutation **hangs**, unlike the currency upsert's equivalent
 (see "`reconcile`: read first, then write"), and the reason is the lock
-shape rather than luck: this transaction takes no `FOR UPDATE` on a row it
-then asks a second connection to probe. The `do_nothing()` conflict probe
-finds no existing delivery and so locks nothing, and the `events` row is held
-only by the `FOR KEY SHARE` the delivery's foreign key takes, which does not
-conflict with the `FOR NO KEY UPDATE` a non-key `UPDATE` wants.
+shape rather than luck: on the branch these mutations take, this transaction
+takes no `FOR UPDATE` on a row it then asks a second connection to probe. The
+`do_nothing()` conflict probe finds no existing delivery and so locks nothing,
+and the `events` row is held only by the `FOR KEY SHARE` the delivery's
+foreign key takes, which does not conflict with the `FOR NO KEY UPDATE` a
+non-key `UPDATE` wants.
+
+**"On the branch these mutations take" is a correction the review made, and
+the general claim it replaces was wrong.** `.do_nothing()` locks nothing only
+on the `Inserted` branch. On the `Existing` branch `resolve_pre_probe` *is* a
+`SELECT … FOR UPDATE` on the caller's transaction, and `authorize_existing_row`
+*does* then ask a second, pooled connection about that same row. It still does
+not hang, because a plain `SELECT 1` does not block on a `FOR UPDATE` row lock
+in Postgres — the conclusion survives, its stated reason did not.
+
+**The consequence that had gone unrecorded: on the `Existing` branch,
+`create_in_tx` holds two connections at once** — the transaction's, and the
+one `row_passes_update_policy` takes from the pool. Every write in this crate
+before 2026-09-06 needed exactly one. That interacts with two numbers chosen
+when a transaction meant one connection: `vpay_db::pool::MAX_CONNECTIONS` (10)
+and the worker's `--worker-concurrency` (default 4, operator-settable). At the
+default it fits (4 + 4 ≤ 10). At a concurrency of 10 it does not, and the path
+that would queue on `ACQUIRE_TIMEOUT` is the `Existing` branch — i.e. crash
+recovery, the one that only runs when something has already gone wrong.
+Nothing enforces the relationship and nothing measures it; it is listed as a
+maintainer decision in
+[../plans/exp18-notes/opus-review.md](../plans/exp18-notes/opus-review.md) §3
+rather than decided by a persistence-layer swap.
 
 #### What the move narrowed: `create_in_tx`'s `Ok(None)` now means "an earlier **committed** pass"
 

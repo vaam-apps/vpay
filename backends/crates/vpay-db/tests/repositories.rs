@@ -6927,13 +6927,25 @@ async fn a_generated_events_insert_is_refused_by_the_not_null_on_data() -> anyho
 /// Neither mutation hangs, and that is worth recording because the currency
 /// upsert's equivalent mutation *did*
 /// (`a_currency_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`).
-/// The reason is the lock shape: this transaction takes no `FOR UPDATE` on a
-/// row it then asks a second connection to probe. `upsert(..).do_nothing()`'s
-/// conflict probe finds no existing delivery, so it locks nothing; the
-/// `events` row is held only by the `FOR KEY SHARE` the delivery's foreign
-/// key takes, which does not conflict with the `FOR NO KEY UPDATE` a
-/// non-key `UPDATE` wants. So both mutations fail loudly in about a second
-/// rather than deadlocking, and this test is a red assertion either way.
+/// The reason is the lock shape: on this path the transaction takes no
+/// `FOR UPDATE` on a row it then asks a second connection to probe. The
+/// `upsert(..).do_nothing()` conflict probe finds no existing delivery, so it
+/// locks nothing; the `events` row is held only by the `FOR KEY SHARE` the
+/// delivery's foreign key takes, which does not conflict with the
+/// `FOR NO KEY UPDATE` a non-key `UPDATE` wants. So both mutations fail
+/// loudly in about a second rather than deadlocking, and this test is a red
+/// assertion either way.
+///
+/// **Corrected 2026-09-06 by the review: that reasoning is right about the
+/// branch these mutations take and wrong in general.** `.do_nothing()` locks
+/// nothing only on the `Inserted` branch, which is the one this test
+/// exercises. On the `Existing` branch `resolve_pre_probe` really is
+/// `SELECT ... FOR UPDATE` on this transaction
+/// (`upsert_do_nothing_probe.rs`), and `authorize_existing_row` really does
+/// then ask a second, pooled connection about that same row. It still does
+/// not hang — a plain `SELECT 1` does not block on a `FOR UPDATE` row lock in
+/// Postgres — but the conclusion holds for that reason, not for the one
+/// above. See `a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing`.
 #[tokio::test]
 async fn an_abandoned_fan_out_leaves_no_delivery_and_the_event_still_pending() -> anyhow::Result<()>
 {
