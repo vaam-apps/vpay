@@ -24,8 +24,15 @@ webhooks:
 
 # Local dev typically runs the dashboard's own frontend dev server on 3000,
 # separate from vpay-server's own :8080 — override just this one field, not
-# the whole dashboard_client block; figment's dict merge leaves client_id
-# and scope untouched from the base file.
+# the whole dashboard_client block; figment's dict merge leaves client_id,
+# merchant_id and scope untouched from the base file.
+#
+# merchant_id is named here on purpose (it was not until 2026-09-06, when it
+# was added and this list was not): it is the ONE tenant /dash/v1 reads, and
+# replacing this block wholesale rather than overlaying one field would drop
+# it — which is a boot refusal (ConfigError::DashboardUnknownMerchant) if the
+# overlay names nothing, and a dashboard pointed at the wrong merchant if it
+# names something else.
 dashboard_client:
   redirect_uris:
     - http://localhost:3000/dash/v1/callback
