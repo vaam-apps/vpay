@@ -336,8 +336,14 @@ impl ConfigReconcile for crate::repository::PgRepositories {
             // `::provider_flow`. That type no longer exists — `flow` is TEXT
             // guarded by `providers_flow_enum_check` — and a bind of an
             // unknown flow is refused by the CHECK exactly as the enum
-            // refused it, as `an_unknown_provider_flow_is_refused_by_the_database`
-            // proves.
+            // refused it, as
+            // `an_unknown_provider_flow_is_refused_by_the_check_that_replaced_the_enum_type`
+            // in `backends/tests/integration/tests/postgres_smoke.rs`
+            // proves. (This named `an_unknown_provider_flow_is_refused_by_
+            // the_database` until 2026-09-06, which is not a test that has
+            // ever existed. Nothing gates a citation to a test name —
+            // `verify-status` lexes `NotImplemented` tokens, not these — so
+            // the only thing that catches one is a reader trying to open it.)
             sqlx::query(
                 "INSERT INTO providers \
                  (code, display_name, flow, supports_refunds, supports_partial_refunds, \
