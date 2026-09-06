@@ -3624,7 +3624,8 @@ lock is held when the upsert runs, swapping `run_in_tx` for `run` **fails in
 1.2 s instead of hanging**, which is the opposite of what the same mutation
 does to the currency pass.
 
-**Tests: +3 net in `vpay-db`, +1 in `postgres_smoke.rs`, one replaced.**
+**Tests: +3 net in `vpay-db`, +1 in `postgres_smoke.rs`, one replaced** (the
+review pass below added more; see its own subsection for the counts)**.**
 `the_provider_upsert_cannot_carry_the_capability_columns` became
 `the_provider_upsert_carries_all_eight_columns` (same file, inverted claim).
 New: `an_unnameable_flow_is_a_deploy_problem_and_never_reaches_a_statement`
@@ -3681,6 +3682,31 @@ statements it protects.
 | Delete `@@allow("update", …)` from `model Provider` | LOUD, and **only on the second boot**: `every_action_this_module_calls_has_an_allow_arm` fails in 3 ms with no container, and two container cases fail with `Provider: a model policy denied a system upsert: forbidden: update policy denied this upsert` — `reconcile_is_idempotent_…` at "a second, identical reconcile must succeed" and `a_rail_the_configuration_disables_…` at "reconciling a disabled rail must succeed". A fresh database's first boot succeeds, which is why the no-container slot test exists |
 | Delete migration 0033, keep the schema edit | **Test-time**, three ways: `the_cstack_schema_drifts_…` fails at **89 vs 84** with five `column … default value differs` lines on `providers`; `a_hand_written_provider_insert_must_now_name_every_capability_column` fails because the three-column INSERT succeeds again; `schema_migrates_cleanly_on_an_empty_database` fails at 32 vs 33 |
 | Restore one `@default(false)` in `model Provider`, keep 0033 | **Compile-time**: `error[E0560]: struct `inputs::CreateProviderInput` has no field named `supports_refunds``. The schema half cannot regress silently — the crate stops building before any test runs |
+
+##### Review pass, 2026-09-06: one mutation the delivered change did not survive
+
+The four mutations above were re-run and reproduce. A fifth, not run when the
+change was written, **survived it**, and closing it is why this section has a
+review subsection at all.
+
+| Mutation | As delivered | After the review |
+|---|---|---|
+| `reconcile`'s flow parse `.map_err(…)` → `.unwrap_or_default()` | **SURVIVES.** `cargo nextest run -p vpay-db`: **112/112 passed**. `redirekt` is stored as a **push rail** — `cratestack-macros` marks the first variant of every generated enum `#[default]` and `ProviderFlow`'s first variant is `push` — and boot step 4 returns `Ok` | **FAILS in 1.27 s** on `a_flow_label_the_schema_cannot_name_is_refused_by_reconcile_before_any_row_is_written`, at `a flow that is neither ``push`` nor ``redirect`` must be refused` |
+
+Nothing exercised `reconcile` with an unnameable flow.
+`an_unnameable_flow_is_a_deploy_problem_and_never_reaches_a_statement`
+constructs `DbError::ProviderFlowUnknown` **by hand** and asserts how it
+classifies; it never calls `reconcile`, so it is green whatever `reconcile`
+does with the label. The `unwrap_or_default()` trap that the code comment,
+the variant's doc, this page and
+[reference/vpay-db.md](reference/vpay-db.md#cratestack) all describe as
+guarded was, until this test, guarded by prose only.
+
+The new container test calls the public trait, asserts the variant, the
+`Category::Configuration`/exit-78 classification, and that **neither** a
+`providers` row nor the `currencies` row the pass before it had already
+upserted survives — so it also pins that the refusal rolls the whole boot-step-4
+transaction back.
 
 
 ---

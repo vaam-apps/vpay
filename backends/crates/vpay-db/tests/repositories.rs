@@ -3089,6 +3089,102 @@ async fn a_provider_written_through_cratestack_is_rolled_back_with_the_rest_of_t
     Ok(())
 }
 
+/// `reconcile` itself refuses a flow label the schema's enum cannot name, and
+/// has written nothing when it does — asserted **through the public trait,
+/// against a real database**.
+///
+/// It exists because the no-container
+/// `an_unnameable_flow_is_a_deploy_problem_and_never_reaches_a_statement` in
+/// `config_reconcile.rs` cannot make this claim: that test constructs
+/// `DbError::ProviderFlowUnknown` by hand and asserts how it *classifies*. It
+/// never calls `reconcile`, so it stays green whatever `reconcile` does with
+/// a bad label.
+///
+/// **The mutation this exists for, measured on 2026-09-06 before it was
+/// written.** Replace `reconcile`'s `.parse().map_err(...)` with
+/// `.parse().unwrap_or_default()` — the exact trap the comment above that
+/// call warns about, because `cratestack-macros` marks the FIRST variant of
+/// every generated enum `#[default]` (`types/enums.rs::variant_tokens`) and
+/// the first variant of `ProviderFlow` is `push`. The whole `vpay-db` suite
+/// passed under that mutation, 112/112: boot recorded `typo_rail` as a
+/// **push rail** and returned `Ok`. That is `AGENTS.md`'s second rule
+/// exactly — a plausible-looking success storing the wrong value — and the
+/// provider count below is what turns it red.
+///
+/// The currency count is not decoration either. The parse is inside the
+/// provider loop, which runs *after* every currency has been upserted, so
+/// `XAF` is written and must then be rolled back with everything else; a
+/// non-zero there would be boot step 4 left half-applied by a refusal.
+#[tokio::test]
+async fn a_flow_label_the_schema_cannot_name_is_refused_by_reconcile_before_any_row_is_written()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+
+    let currencies = vec![vpay_db::CurrencySeed {
+        code: "XAF".to_owned(),
+        exponent: 0,
+    }];
+    let typo = vpay_db::ProviderSeed {
+        code: "typo_rail".to_owned(),
+        display_name: "Typo Rail".to_owned(),
+        flow: "redirekt".to_owned(),
+        supports_refunds: true,
+        supports_partial_refunds: false,
+        delivers_callbacks: false,
+        requires_ip_allowlist: false,
+        enabled: true,
+    };
+
+    let error = repositories
+        .reconcile(&currencies, std::slice::from_ref(&typo))
+        .await
+        .expect_err("a flow that is neither `push` nor `redirect` must be refused");
+
+    let vpay_db::DbError::ProviderFlowUnknown { code, flow } = &error else {
+        panic!(
+            "expected DbError::ProviderFlowUnknown, got {error:?}. If this is an `Ok`, \
+             `reconcile` swallowed the label — check that the parse is a `map_err` and not \
+             `unwrap_or_default()`, whose default is the first variant, `push`"
+        );
+    };
+    assert_eq!(code, "typo_rail");
+    assert_eq!(flow, "redirekt");
+
+    // Exit 78 ("fix the deploy"), never 69 ("wait for Postgres"): the
+    // database is healthy and no amount of waiting turns `redirekt` into a
+    // flow. Both binaries' `exit_code_for` reads exactly this category out of
+    // the `anyhow` chain with `find_in_chain::<DbError>`, so pinning the
+    // category here pins the code a supervisor sees.
+    assert_eq!(
+        vpay_core::Classify::category(&error),
+        vpay_core::Category::Configuration,
+        "a typo in a deployment must not be reported as a storage outage"
+    );
+    assert_eq!(vpay_core::Classify::category(&error).exit_code(), 78);
+    assert_eq!(vpay_core::Classify::retry(&error), vpay_core::Retry::Never);
+
+    let providers_written: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM providers")
+        .fetch_one(&pool)
+        .await
+        .context("counting providers must succeed")?;
+    assert_eq!(
+        providers_written, 0,
+        "a 1 here is `typo_rail` stored with the FIRST `ProviderFlow` variant — `push` — which \
+         is precisely what `.unwrap_or_default()` in `reconcile` does, silently and with an `Ok`"
+    );
+    let currencies_written: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM currencies")
+        .fetch_one(&pool)
+        .await
+        .context("counting currencies must succeed")?;
+    assert_eq!(
+        currencies_written, 0,
+        "the refusal happens inside the transaction the currency pass has already written to, \
+         so it has to roll that back as well: boot step 4 is all-or-nothing"
+    );
+
+    Ok(())
+}
+
 /// The two rails every reconcile test seeds, in the shape `boot_seeds`
 /// produces them. A free function rather than a `const` because
 /// `ProviderSeed` owns its `String`s.
