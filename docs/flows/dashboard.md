@@ -60,7 +60,9 @@ that no single edit removes the boundary:
 1. the token validates for `Surface::Dashboard` — signature, expiry, issuer
    and audience (`vpay:dash/v1`), against vpay's own published JWKS;
 2. its `client_id` is the registered dashboard client's. The audience says
-   which _surface_; only the `sub` says which _credential_;
+   which _surface_; only the `sub` says which _credential_. **This check does
+   not survive a real login, and that is recorded rather than fixed** — see
+   "The `client_id` check is written for the grant we have" below;
 3. it carries the registration's single scope;
 4. every query filters by the bound `merchant_id`.
 
@@ -104,6 +106,27 @@ table with password hashes; WebAuthn; TOTP; federating the human step to an
 external IdP in front of vpay's own OP) is an ADR, and it interacts with
 ADR-0009's "vpay is its own OP" in ways a passing implementation must not
 settle.
+
+### The `client_id` check is written for the grant we have
+
+Found by the 2026-09-06 review and deliberately **not** changed, because
+changing it means choosing something reserved for the maintainer.
+
+Check 2 above compares the token's `sub` with the registered dashboard
+client's `client_id`. Under `client_credentials` that is right: Authkestra's
+`TokenManager::issue_client_token` sets `sub` to the client id. Under the
+authorization-code grant this slice is blocked on,
+`default_handle_authorization_code` issues a **user** token — `sub` is the
+staff member's identity and the client id goes into `aud`. So the check as
+written would refuse every token a working dashboard login produced.
+
+Which claim identifies the dashboard *credential* once a human is in the loop
+(`azp`, an explicit `client_id` claim, or the audience itself under the rule
+that the dashboard audience becomes the `DashboardClient`'s `client_id`) is
+part of the same decision as blocker 2 below, and belongs with it. Nothing
+else here makes that work harder: moving `vpay:dash/v1` into one
+`vpay_config::DASHBOARD_AUDIENCE` constant makes the audience half of it a
+single edit.
 
 A second, smaller decision is already recorded as a maintainer's call and is
 also unresolved: `authkestra-op`'s `default_handle_authorization_code` mints

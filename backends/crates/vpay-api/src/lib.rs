@@ -872,6 +872,32 @@ where
 /// (`vpay_config::ConfigError::MerchantClaimsDashboardAudience`); this is
 /// the second of the two, and neither is sufficient alone.
 ///
+/// # This check will not survive the login it is waiting for
+///
+/// Recorded by the 2026-09-06 review, and **left as it is on purpose**: it is
+/// correct for every token this deployment can currently produce and wrong
+/// for the ones the next track will.
+///
+/// `ResourceClaims::client_id` is the token's `sub`. Under
+/// `client_credentials` that is the OAuth2 client
+/// (`authkestra_engine::token::TokenManager::issue_client_token` sets `sub:
+/// client_id.to_string()`), so comparing it with the registration's
+/// `client_id` asks exactly the intended question. Under the
+/// **authorization-code** grant `docs/flows/dashboard-auth.md` prescribes,
+/// `authkestra_op`'s `default_handle_authorization_code` calls
+/// `issue_user_token_with_extra(auth_code.identity, …, Some(client_id))` —
+/// `sub` becomes `identity.external_id`, **the staff member**, and the
+/// `client_id` goes in `aud`. So this arm would refuse every token a real
+/// dashboard login issued.
+///
+/// **Which claim identifies the dashboard credential once a human is in the
+/// loop is a maintainer decision** — `azp`, an explicit `client_id` claim, or
+/// the audience itself under ADR-0017's rule that the dashboard audience
+/// becomes the `DashboardClient`'s `client_id` — and it belongs with that
+/// track rather than being guessed here. Nothing else in this module makes
+/// that track harder; `vpay_config::DASHBOARD_AUDIENCE` being one constant
+/// makes the audience half easier. This is the one line that has to move.
+///
 /// # Why a method it does not serve is refused here
 ///
 /// `dash::required_scope` answers `None` for anything but a read, and this
