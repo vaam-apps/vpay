@@ -11,7 +11,12 @@
 //! * `verify-errors`    — every error type classifies itself, and `anyhow`
 //!   stays at the process edge (`docs/adr/0011-error-modelling.md`).
 //! * `verify-sdk-parity` — every ✅ in `docs/sdks/parity.md` names a test that
-//!   exists, and every ⛔ carries a date (`docs/adr/0015-sdk-parity.md`).
+//!   exists, every ⛔ carries a date, and the matrix agrees with the SDKs in
+//!   **both** directions: every `<resource>.<method>` either SDK declares has
+//!   a row, and every such row names a method at least one SDK declares
+//!   unless every cell dates it as a gap (`docs/adr/0015-sdk-parity.md`).
+//!   The code→doc half landed 2026-09-06; before it, deleting a whole
+//!   capability row was measured to pass.
 //! * `verify-links`     — every relative link in a tracked `*.md` resolves to
 //!   a tracked path. New 2026-09-05; before it, `just docs-check` printed
 //!   "link checking is not implemented yet" and exited 0.
@@ -2849,9 +2854,9 @@ struct ParityRow {
     line: usize,
 }
 
-/// Fail if the parity matrix claims something the SDK trees do not carry.
+/// Fail if the parity matrix and the SDK trees disagree, in either direction.
 ///
-/// Three rules, one per way the matrix could start lying:
+/// Five rules, one per way the matrix could start lying:
 ///
 /// * a `✅` cell names the test(s) that prove the capability **in that SDK**,
 ///   and every one of them must exist there — a Rust `#[test]`/`#[tokio::test]`
@@ -2864,6 +2869,18 @@ struct ParityRow {
 ///   at since it was written.
 /// * no cell may be blank. A blank cell is the only answer that says nothing,
 ///   and it is what an unfinished row looks like.
+/// * **code → doc**: every `<resource>.<method>` an SDK declares has a row.
+/// * **doc → code**: every `<resource>.<method>` row names a method at least
+///   one SDK declares, unless the row is a dated `⛔` in every column.
+///
+/// The last two landed on 2026-09-06 and are the reason this gate is worth
+/// anything as a *parity* check. Until then it read the matrix and only ever
+/// asked whether what the matrix said was true; deleting a whole row was
+/// measured to pass (350 proving tests → 347, exit 0), and a method with no
+/// row at all was invisible. ADR-0015's rule is "every SDK ships every
+/// feature or a dated gap", which is a claim about the SDKs, and a check that
+/// starts from the document can only ever verify the document's own
+/// footnotes. See `docs/plans/exp15-notes/C.md`.
 fn verify_sdk_parity(root: &Path) -> Result<(), String> {
     let path = root.join(SDK_PARITY_DOC);
     let doc = fs::read_to_string(&path).map_err(|e| {
@@ -2879,27 +2896,36 @@ fn verify_sdk_parity(root: &Path) -> Result<(), String> {
     }
 
     println!(
-        "verify-sdk-parity: ok — {} proving test(s) named in {SDK_PARITY_DOC} all exist, {} dated gap(s)",
-        outcome.proven, outcome.gaps
+        "verify-sdk-parity: ok — {} proving test(s) named in {SDK_PARITY_DOC} all exist, \
+         {} dated gap(s), {} SDK method(s) enumerated across {} row(s)",
+        outcome.proven, outcome.gaps, outcome.methods, outcome.capability_rows
     );
     Ok(())
 }
 
-/// What [`parity_outcome`] found: everything wrong, and the two counts the
+/// What [`parity_outcome`] found: everything wrong, and the counts the
 /// success line reports.
 struct ParityOutcome {
     problems: Vec<String>,
     proven: usize,
     gaps: usize,
+    /// Distinct `<resource>.<method>` capabilities enumerated from the SDK
+    /// trees. Reported because a gate that silently enumerated nothing would
+    /// pass both new directions vacuously, and the number is the cheapest
+    /// thing that would make that visible.
+    methods: usize,
+    /// Rows whose capability cell names a `<resource>.<method>`.
+    capability_rows: usize,
 }
 
 /// Checks every cell of every parity table in `doc` against the SDK trees
-/// under `root`.
+/// under `root`, and the two trees against each other's record of them.
 ///
 /// Takes the document text rather than reading it, so the rules can be proven
 /// against synthetic matrices — including matrices this repository does not
 /// have and must never grow (a `✅` naming a test that was renamed away, a
-/// blank cell, an undated `⛔`).
+/// blank cell, an undated `⛔`, a deleted row, a row for a method nothing
+/// ships).
 fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
     let mut problems = Vec::new();
     let mut proven = 0usize;
@@ -2916,8 +2942,18 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
             problems,
             proven,
             gaps,
+            methods: 0,
+            capability_rows: 0,
         };
     }
+
+    // One enumeration per distinct column, not per table: every table in the
+    // document compares the same two SDK roots, and walking each of them once
+    // per table would be five identical walks.
+    let mut shipped: BTreeMap<String, SdkMethod> = BTreeMap::new();
+    let mut walked: BTreeSet<&str> = BTreeSet::new();
+    let mut named_by_a_row: BTreeSet<String> = BTreeSet::new();
+    let mut capability_rows = 0usize;
 
     for table in &tables {
         let mut indexes = Vec::new();
@@ -2928,6 +2964,13 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
                     "{SDK_PARITY_DOC}:{}: column `{column}` is not a directory in this repository",
                     table.line
                 ));
+            }
+            if walked.insert(column.as_str()) {
+                for method in sdk_methods(root, column) {
+                    // First declaration wins, so the reported `file:line` is
+                    // stable rather than dependent on column order.
+                    shipped.entry(method.capability.clone()).or_insert(method);
+                }
             }
             indexes.push(test_names_in(&dir));
         }
@@ -2943,6 +2986,11 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
                 ));
                 continue;
             }
+            if let Some(capability) = row_capability(&row.capability) {
+                capability_rows += 1;
+                check_row_names_a_shipped_method(&capability, row, &shipped, &mut problems);
+                named_by_a_row.insert(capability);
+            }
             for ((cell, column), index) in row.cells.iter().zip(&table.columns).zip(&indexes) {
                 check_parity_cell(
                     cell,
@@ -2957,14 +3005,48 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
         }
     }
 
+    for (capability, method) in &shipped {
+        if !named_by_a_row.contains(capability) {
+            problems.push(format!(
+                "{}:{}: `{capability}` is shipped and has no row in {SDK_PARITY_DOC} — \
+                 ADR-0015 records every capability, so a method the matrix never mentions is \
+                 one it can never notice a divergence in. Add a row naming the test(s) that \
+                 prove it in each SDK, or a dated ⛔ row if it is untested; never a row \
+                 inventing a test name",
+                method.file, method.line
+            ));
+        }
+    }
+
     ParityOutcome {
         problems,
         proven,
         gaps,
+        methods: shipped.len(),
+        capability_rows,
     }
 }
 
-/// The three rules on [`verify_sdk_parity`], applied to one cell.
+/// The doc → code direction, applied to one capability row.
+fn check_row_names_a_shipped_method(
+    capability: &str,
+    row: &ParityRow,
+    shipped: &BTreeMap<String, SdkMethod>,
+    problems: &mut Vec<String>,
+) {
+    if shipped.contains_key(capability) || is_planned_gap_row(row) {
+        return;
+    }
+    problems.push(format!(
+        "{SDK_PARITY_DOC}:{}: row `{capability}` names a method no SDK declares — a row for a \
+         capability nothing ships is a claim the matrix keeps making after the code stopped \
+         backing it. Delete the row, or record it as a dated ⛔ in every column if it is \
+         planned rather than gone",
+        row.line
+    ));
+}
+
+/// The first three rules on [`verify_sdk_parity`], applied to one cell.
 fn check_parity_cell(
     cell: &str,
     column: &str,
@@ -3200,6 +3282,531 @@ fn contains_iso_date(text: &str) -> bool {
             _ => c.is_ascii_digit(),
         })
     })
+}
+
+// --------------------------------------------------------------- code → doc
+
+/// The suffix an SDK type must carry to be read as a merchant-facing
+/// resource.
+///
+/// A marker rather than "every type with methods", for the reason
+/// [`PARITY_TABLE_MARKER`] is one: both SDKs already spell their resource
+/// types this way (`PaymentIntentsResource`, `BalanceResource`), and a check
+/// that enumerated every `impl` would have to decide, file by file, which of
+/// `HttpClient`, `TokenManager` and `CreateRefundParams` is a capability —
+/// a judgement it would get wrong quietly rather than loudly.
+///
+/// The cost is the hole: a resource type named something else is invisible to
+/// the code→doc direction. That is a naming convention enforced by nothing,
+/// and it is written down here rather than left to be discovered.
+const RESOURCE_TYPE_SUFFIX: &str = "Resource";
+
+/// Resources whose parity rows spell them as a nested namespace, and the
+/// spelling the rows use.
+///
+/// `CheckoutSessionsResource` snake-cases to `checkout_sessions`, but the
+/// route is `/v1/checkout/sessions`, both SDKs deliberately expose it as
+/// `client.checkout().sessions()` / `client.checkout.sessions`, and every
+/// row in `docs/sdks/parity.md` has spelled it `checkout.sessions` since
+/// 2026-09-04. The alias exists so the rows keep the spelling a merchant
+/// reads rather than the one a type name happens to have; it is a table and
+/// not a rule because there is no rule — `checkout` is a namespace type with
+/// no operations, and nothing in the source says so.
+const PARITY_NESTED_RESOURCES: [(&str, &str); 1] = [("checkout_sessions", "checkout.sessions")];
+
+/// Directory names under an SDK root that hold no shipped surface.
+///
+/// A resource declared in a test fixture is not a capability the SDK ships,
+/// and enumerating one would demand a parity row for something no merchant
+/// can call.
+const PARITY_METHOD_SKIPPED_DIRS: [&str; 5] = ["tests", "test", "testing", "examples", "benches"];
+
+/// Rust's string delimiter. `'` is absent on purpose: in Rust it opens a
+/// lifetime far more often than a char literal, and treating it as a quote
+/// would swallow every `impl Foo<'a>` header.
+const RUST_QUOTES: &[char] = &['"'];
+
+/// TypeScript's three string delimiters, the backtick included because a
+/// template literal is the one that may cross a line break.
+const TS_QUOTES: &[char] = &['"', '\'', '`'];
+
+/// TypeScript member modifiers that may sit between the start of a line and
+/// the method name, and that do not change what the member is.
+const TS_MEMBER_MODIFIERS: [&str; 4] = ["public", "protected", "static", "override"];
+
+/// One capability an SDK actually ships: `<resource>.<method>`, and where it
+/// is declared.
+struct SdkMethod {
+    /// The row name this method requires, per the convention stated in
+    /// `docs/sdks/parity.md`'s header.
+    capability: String,
+    /// Repo-relative path and 1-based line, so a failure can be pasted into
+    /// an editor.
+    file: String,
+    line: usize,
+}
+
+/// Every merchant-callable method the SDK tree under `column` declares.
+///
+/// Source-scanned, like every other gate in this file and for the same
+/// reason: compiling two SDKs in two languages to ask what they export would
+/// make `just verify` depend on a `cargo build` and a `tsc`, and the check
+/// would then be unable to run on a tree that does not build — which is
+/// exactly the tree someone needs it on.
+///
+/// **A column whose language this does not read contributes nothing**, so the
+/// code→doc direction is silent for a hypothetical `sdks/kotlin` until
+/// somebody teaches it that language. That is a known hole and is stated
+/// here rather than left to be discovered; the doc→code direction still
+/// covers such a column's rows.
+fn sdk_methods(root: &Path, column: &str) -> Vec<SdkMethod> {
+    let dir = root.join(column);
+    let mut out = Vec::new();
+    for path in parity_sources(&dir) {
+        if !is_shipped_sdk_source(&dir, &path) {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let file = relative(root, &path);
+        match path.extension().and_then(|e| e.to_str()) {
+            Some("rs") => rust_resource_methods(&text, &file, &mut out),
+            Some(extension) if PARITY_TS_EXTENSIONS.contains(&extension) => {
+                ts_resource_methods(&text, &file, &mut out);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Whether `path` is part of what the SDK under `dir` ships, as opposed to
+/// what it tests itself with.
+fn is_shipped_sdk_source(dir: &Path, path: &Path) -> bool {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        let stem_parts: Vec<&str> = name.split('.').collect();
+        // `client.test.ts`, `client.spec.ts`: the second-to-last segment.
+        if stem_parts.len() >= 3
+            && stem_parts
+                .get(stem_parts.len().saturating_sub(2))
+                .is_some_and(|s| *s == "test" || *s == "spec")
+        {
+            return false;
+        }
+    }
+    let Ok(inside) = path.strip_prefix(dir) else {
+        return true;
+    };
+    !inside.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|n| PARITY_METHOD_SKIPPED_DIRS.contains(&n))
+    })
+}
+
+/// Every `pub async fn` declared directly in an `impl …Resource` block.
+///
+/// `pub async fn` and not `pub fn`: every merchant operation in
+/// `sdks/rust/src/resources.rs` reaches the network, and the one `pub fn` on
+/// a resource type (`CheckoutResource::sessions`) returns the nested resource
+/// rather than performing an operation — a namespace accessor, which the
+/// naming convention excludes along with constructors and private helpers.
+fn rust_resource_methods(text: &str, file: &str, out: &mut Vec<SdkMethod>) {
+    // Comments go first and `#[cfg(test)]` items second, not the other way
+    // round: both passes preserve offsets, and a doc comment *quoting*
+    // `#[cfg(test)]` would otherwise blank the live code beneath it and hide
+    // every method that followed.
+    let code = blank_cfg_test_items(&code_only(text, RUST_QUOTES));
+    for (header_at, resource) in rust_resource_impls(&code) {
+        let Some((body_start, body_end)) = code_block_span(&code, header_at) else {
+            continue;
+        };
+        let Some(body) = code.get(body_start..body_end) else {
+            continue;
+        };
+        let base_line = line_at_offset(&code, body_start);
+        for (offset, line) in top_level_lines(body) {
+            let Some(method) = declared_after(line, "pub async fn ") else {
+                continue;
+            };
+            out.push(SdkMethod {
+                capability: capability_name(&resource, &method),
+                file: file.to_owned(),
+                line: base_line + offset,
+            });
+        }
+    }
+}
+
+/// Every inherent `impl` of a `…Resource` type in already-[`code_only`]
+/// `text`: the byte offset of its header and the snake_case resource name.
+///
+/// Trait impls are skipped — `impl Debug for PaymentIntentsResource` declares
+/// nothing a merchant calls by name — and so is any header this cannot read,
+/// because a header misread as a resource would demand rows for methods that
+/// are not capabilities.
+fn rust_resource_impls(text: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut search = 0usize;
+    while let Some(found) = text.get(search..).and_then(|rest| rest.find("impl")) {
+        let at = search + found;
+        search = at + "impl".len();
+        if text
+            .get(..at)
+            .and_then(|before| before.chars().next_back())
+            .is_some_and(is_ident_char)
+        {
+            continue; // `…_impl`, not the keyword.
+        }
+        let Some(brace) = text.get(search..).and_then(|rest| rest.find('{')) else {
+            break;
+        };
+        let Some(header) = text.get(search..search + brace) else {
+            continue;
+        };
+        if header.contains(" for ") {
+            continue; // A trait impl declares the trait's methods, not the SDK's.
+        }
+        let Some(name) = impl_self_type(header) else {
+            continue;
+        };
+        let Some(resource) = name.strip_suffix(RESOURCE_TYPE_SUFFIX) else {
+            continue;
+        };
+        if resource.is_empty() {
+            continue;
+        }
+        out.push((at, snake_case(resource)));
+    }
+    out
+}
+
+/// The bare type name an inherent `impl` header names, dropping the impl's
+/// own generics (`impl<'a> CheckoutResource<'a>`) and the type's
+/// (`CheckoutSessionsResource<'_>`).
+fn impl_self_type(header: &str) -> Option<String> {
+    let mut rest = header.trim_start();
+    if rest.starts_with('<') {
+        let inside = balanced_delimited(rest, 0, '<', '>')?;
+        let consumed = inside.len() + 2;
+        rest = rest.get(consumed..)?.trim_start();
+    }
+    let name: String = rest.chars().take_while(|c| is_ident_char(*c)).collect();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// Every method declared directly in a `…Resource` class body.
+///
+/// `constructor` and `#private` members are excluded by the naming
+/// convention; a `private` member is excluded for the same reason a `#` one
+/// is, even though TypeScript's `private` is only a compile-time promise.
+///
+/// A `class`, and not an object literal: both SDKs declare every resource as
+/// one, and a scanner that also read object literals would have to decide
+/// which of a module's objects is a resource — the judgement
+/// [`RESOURCE_TYPE_SUFFIX`] exists to avoid making.
+fn ts_resource_methods(text: &str, file: &str, out: &mut Vec<SdkMethod>) {
+    let code = code_only(text, TS_QUOTES);
+    let mut search = 0usize;
+    while let Some(found) = code.get(search..).and_then(|rest| rest.find("class ")) {
+        let at = search + found;
+        search = at + "class ".len();
+        let name: String = code
+            .get(search..)
+            .unwrap_or_default()
+            .trim_start()
+            .chars()
+            .take_while(|c| is_ident_char(*c))
+            .collect();
+        let Some(resource) = name.strip_suffix(RESOURCE_TYPE_SUFFIX) else {
+            continue;
+        };
+        if resource.is_empty() {
+            continue;
+        }
+        let resource = snake_case(resource);
+        let Some((body_start, body_end)) = code_block_span(&code, search) else {
+            continue;
+        };
+        let Some(body) = code.get(body_start..body_end) else {
+            continue;
+        };
+        let base_line = line_at_offset(&code, body_start);
+        for (offset, line) in top_level_lines(body) {
+            let Some(method) = ts_method_name(line) else {
+                continue;
+            };
+            out.push(SdkMethod {
+                capability: capability_name(&resource, &method),
+                file: file.to_owned(),
+                line: base_line + offset,
+            });
+        }
+        search = body_end;
+    }
+}
+
+/// The name of the method this class-body line declares, if it declares one a
+/// merchant can call.
+fn ts_method_name(line: &str) -> Option<String> {
+    let mut rest = line.trim();
+    if rest.starts_with("private ") {
+        return None;
+    }
+    loop {
+        let stripped = TS_MEMBER_MODIFIERS
+            .iter()
+            .find_map(|modifier| rest.strip_prefix(*modifier).filter(|r| r.starts_with(' ')));
+        match stripped {
+            Some(next) => rest = next.trim_start(),
+            None => break,
+        }
+    }
+    rest = rest.strip_prefix("async ").unwrap_or(rest).trim_start();
+    let name: String = rest.chars().take_while(|c| is_ident_char(*c)).collect();
+    if name.is_empty() || name == "constructor" {
+        return None;
+    }
+    // A member is a method only if its name is followed by a parameter list;
+    // `readonly sessions: CheckoutSessionsResource;` is a field.
+    let after = rest.get(name.len()..)?.trim_start();
+    if !after.starts_with('(') {
+        return None;
+    }
+    Some(name)
+}
+
+/// The identifier `line` declares after `keyword`, if it opens with it.
+fn declared_after(line: &str, keyword: &str) -> Option<String> {
+    let rest = line.trim().strip_prefix(keyword)?;
+    let name: String = rest.chars().take_while(|c| is_ident_char(*c)).collect();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// `text` with every string literal, line comment and block comment replaced
+/// by spaces, and every line break kept.
+///
+/// One lexer rather than a rule per caller. Byte offsets and line numbers
+/// still address the original, so a failure can name `file:line`, and
+/// everything downstream — finding an `impl`, matching its braces, deciding
+/// which lines sit at the top level of a body — reads code and only code.
+/// The alternative, a scan that skips lines opening with `//`, was measured
+/// against this file's own fixtures on 2026-09-06: a doc comment carrying a
+/// lone `{` ran the brace matcher off the end of the file and silently
+/// enumerated nothing from that resource, which is the failure mode this
+/// whole gate exists to make impossible.
+///
+/// `quotes` is the language's string delimiters. Rust passes `"` only,
+/// because `'` there opens a lifetime; TypeScript passes `"`, `'` and the
+/// template-literal backtick, the one that survives a line break. A Rust
+/// char literal holding a lone brace would still unbalance the count —
+/// neither SDK contains one, and the limitation is written down here rather
+/// than discovered later.
+fn code_only(text: &str, quotes: &[char]) -> String {
+    /// Where the scan is, between characters.
+    enum State {
+        Code,
+        Str(char),
+        LineComment,
+        BlockComment,
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut state = State::Code;
+    let mut escaped = false;
+    let mut i = 0usize;
+
+    while let Some(&c) = chars.get(i) {
+        let next = chars.get(i + 1).copied();
+        match state {
+            State::Code => {
+                if c == '/' && next == Some('/') {
+                    state = State::LineComment;
+                    out.push_str("  ");
+                    i += 2;
+                    continue;
+                }
+                if c == '/' && next == Some('*') {
+                    state = State::BlockComment;
+                    out.push_str("  ");
+                    i += 2;
+                    continue;
+                }
+                if quotes.contains(&c) {
+                    state = State::Str(c);
+                    out.push(' ');
+                    i += 1;
+                    continue;
+                }
+                out.push(c);
+            }
+            State::Str(quote) => {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == quote {
+                    state = State::Code;
+                } else if c == '\n' && quote != '`' {
+                    // Neither language lets a `"` or `'` literal cross a line
+                    // break, so an unterminated one ends here rather than
+                    // swallowing the rest of the file.
+                    state = State::Code;
+                }
+                out.push(if c == '\n' { '\n' } else { ' ' });
+            }
+            State::LineComment => {
+                if c == '\n' {
+                    state = State::Code;
+                }
+                out.push(if c == '\n' { '\n' } else { ' ' });
+            }
+            State::BlockComment => {
+                if c == '*' && next == Some('/') {
+                    state = State::Code;
+                    out.push_str("  ");
+                    i += 2;
+                    continue;
+                }
+                out.push(if c == '\n' { '\n' } else { ' ' });
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The balanced `{ … }` at or after `from` in already-[`code_only`] text, as
+/// byte offsets of its contents.
+fn code_block_span(code: &str, from: usize) -> Option<(usize, usize)> {
+    let mut depth = 0usize;
+    let mut body_start = None;
+    for (offset, c) in code.char_indices().skip_while(|(offset, _)| *offset < from) {
+        if c == '{' {
+            depth += 1;
+            if depth == 1 {
+                body_start = Some(offset + 1);
+            }
+        } else if c == '}' {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return body_start.map(|start| (start, offset));
+            }
+        }
+    }
+    None
+}
+
+/// The lines of an already-[`code_only`] body that start at brace depth zero,
+/// as `(0-based line offset within the body, line)`.
+///
+/// Depth, rather than indentation, because rustfmt and prettier are both free
+/// to re-indent and neither is free to re-nest: a `pub async fn` inside
+/// another function's body is not a resource method, and an indentation rule
+/// would have to guess.
+fn top_level_lines(code_body: &str) -> Vec<(usize, &str)> {
+    let mut depth_at_line_start = vec![0usize];
+    let mut depth = 0usize;
+    for c in code_body.chars() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            '\n' => depth_at_line_start.push(depth),
+            _ => {}
+        }
+    }
+    code_body
+        .lines()
+        .enumerate()
+        .filter(|(offset, _)| depth_at_line_start.get(*offset) == Some(&0))
+        .collect()
+}
+
+/// The 1-based line `offset` falls on in `text`.
+fn line_at_offset(text: &str, offset: usize) -> usize {
+    1 + text
+        .get(..offset)
+        .map(|before| before.matches('\n').count())
+        .unwrap_or(0)
+}
+
+/// `PaymentIntents` → `payment_intents`.
+fn snake_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for (index, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if index > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// `<resource>.<method>`, in the spelling `docs/sdks/parity.md`'s rows use.
+fn capability_name(resource: &str, method: &str) -> String {
+    let spelled = PARITY_NESTED_RESOURCES
+        .iter()
+        .find(|(from, _)| *from == resource)
+        .map_or(resource, |(_, to)| to);
+    format!("{spelled}.{method}")
+}
+
+/// The capability a row names, if it names one.
+///
+/// A capability row opens with a code span holding a dotted lowercase path
+/// (`` `payment_intents.create` ``); every other row states a behaviour that
+/// spans methods (`An amount outside 0..=2^53-1 is refused …`) and is checked
+/// by the cell rules alone. Opening with the span is load-bearing rather than
+/// merely tidy: `docs/sdks/parity.md` also carries rows that *mention* a
+/// dotted code span mid-sentence — the `checkout.session.expired` event-type
+/// rows — and reading one of those as a capability would demand an SDK method
+/// that should not exist.
+fn row_capability(capability_cell: &str) -> Option<String> {
+    let trimmed = capability_cell.trim();
+    if !trimmed.starts_with('`') {
+        return None;
+    }
+    let first = code_spans(trimmed).into_iter().next()?;
+    is_capability_path(&first).then_some(first)
+}
+
+/// Whether `text` has the shape `<segment>(.<segment>)+`, each segment a
+/// lowercase-initial identifier.
+fn is_capability_path(text: &str) -> bool {
+    let segments: Vec<&str> = text.split('.').collect();
+    if segments.len() < 2 {
+        return false;
+    }
+    segments.iter().all(|segment| {
+        segment
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase())
+            && segment.chars().all(is_ident_char)
+    })
+}
+
+/// Whether every cell of `row` records a dated `⛔` gap.
+///
+/// The one thing that lets a row name a capability neither SDK has: ADR-0015
+/// allows a planned capability to be written down before it exists — the
+/// `events.retrieve` row has been ⛔/⛔ since 2026-09-03 — and deleting such a
+/// row to satisfy the doc→code direction would lose exactly the record the
+/// matrix is for. A row with one ✅ cell is not this: something claims to
+/// ship it, and the claim is what the check is asking about.
+fn is_planned_gap_row(row: &ParityRow) -> bool {
+    !row.cells.is_empty()
+        && row
+            .cells
+            .iter()
+            .all(|cell| cell.trim().starts_with('⛔') && contains_iso_date(cell))
 }
 
 /// Every test name declared under `dir`, by the conventions of whichever
@@ -7803,6 +8410,392 @@ mod sdk_parity_tests {
             &mut names,
         );
         assert!(names.is_empty(), "{names:?}");
+    }
+
+    // ----------------------------------------------------------- code → doc
+
+    /// A Rust resource module carrying every shape the enumerator must tell
+    /// apart: two inherent impls (one with the impl's own lifetime
+    /// parameter), a trait impl, a namespace accessor, a private helper, a
+    /// nested `pub async fn`, and a doc comment quoting one.
+    const RUST_RESOURCE_FIXTURE: &str = r#"//! A synthetic resource module.
+
+pub struct WidgetsResource<'a> {
+    client: &'a Client,
+}
+
+impl WidgetsResource<'_> {
+    /// `POST /v1/widgets`. Do not read `pub async fn frobnicate(` here as a
+    /// method: a doc comment is not a declaration, and this brace `{` must
+    /// not push the depth either.
+    pub async fn create(&self) -> Result<Widget, Error> {
+        pub async fn helper() {}
+        let path = "/v1/widgets/{id}";
+        Ok(Widget)
+    }
+
+    pub async fn list(&self) -> Result<List<Widget>, Error> {
+        Ok(List)
+    }
+
+    async fn sign(&self) {}
+
+    #[must_use]
+    pub fn base(&self) -> &str {
+        "/v1/widgets"
+    }
+}
+
+impl<'a> HolderResource<'a> {
+    pub async fn retrieve(&self) -> Result<Holder, Error> {
+        Ok(Holder)
+    }
+}
+
+impl Debug for WidgetsResource<'_> {
+    pub async fn fmt(&self) {}
+}
+"#;
+
+    #[test]
+    fn a_rust_resources_public_async_methods_are_enumerated_with_their_lines() {
+        let mut out = Vec::new();
+        rust_resource_methods(RUST_RESOURCE_FIXTURE, "sdks/rust/src/widgets.rs", &mut out);
+        let found: Vec<String> = out
+            .iter()
+            .map(|m| format!("{}@{}", m.capability, m.line))
+            .collect();
+        assert_eq!(
+            found,
+            vec!["widgets.create@11", "widgets.list@17", "holder.retrieve@30"],
+            "{found:?}"
+        );
+        assert!(
+            out.iter().all(|m| m.file == "sdks/rust/src/widgets.rs"),
+            "the file is carried through so a failure can be pasted into an editor"
+        );
+    }
+
+    /// The three exclusions, stated one by one so a regression says which
+    /// rule broke rather than only that the count moved.
+    #[test]
+    fn a_trait_impl_a_namespace_accessor_and_a_private_fn_are_not_capabilities() {
+        let mut out = Vec::new();
+        rust_resource_methods(RUST_RESOURCE_FIXTURE, "sdks/rust/src/widgets.rs", &mut out);
+        let names: Vec<&str> = out.iter().map(|m| m.capability.as_str()).collect();
+        assert!(!names.contains(&"widgets.fmt"), "a trait impl: {names:?}");
+        assert!(!names.contains(&"widgets.base"), "a `pub fn`: {names:?}");
+        assert!(!names.contains(&"widgets.sign"), "a private fn: {names:?}");
+        assert!(
+            !names.contains(&"widgets.helper") && !names.contains(&"widgets.frobnicate"),
+            "a nested fn and a doc comment: {names:?}"
+        );
+    }
+
+    /// A Node resource module with the members the enumerator must skip: the
+    /// constructor, a `#private` method, a `private` one, and a field whose
+    /// type is another resource.
+    const NODE_RESOURCE_FIXTURE: &str = r#"import type { HttpClient } from "../http.js";
+
+export class WidgetsResource {
+  readonly #http: HttpClient;
+  readonly sessions: HolderResource;
+
+  constructor(http: HttpClient) {
+    this.#http = http;
+  }
+
+  /** `POST /v1/widgets`. Not a declaration: `async frobnicate(` and a `{`. */
+  async create(params: CreateWidgetParams): Promise<Widget> {
+    const submit = async (body: string) => this.#http.post("/v1/widgets", body);
+    return submit(`{"id":"${params.id}"}`);
+  }
+
+  async list(params?: ListParams): Promise<List<Widget>> {
+    return this.#http.get("/v1/widgets");
+  }
+
+  async #sign(): Promise<string> {
+    return "";
+  }
+
+  private async cache(): Promise<void> {}
+}
+
+export class HolderResource {
+  async retrieve(): Promise<Holder> {
+    return {} as Holder;
+  }
+}
+"#;
+
+    #[test]
+    fn a_node_resource_classes_methods_are_enumerated_with_their_lines() {
+        let mut out = Vec::new();
+        ts_resource_methods(
+            NODE_RESOURCE_FIXTURE,
+            "sdks/nodejs/src/resources/widgets.ts",
+            &mut out,
+        );
+        let found: Vec<String> = out
+            .iter()
+            .map(|m| format!("{}@{}", m.capability, m.line))
+            .collect();
+        assert_eq!(
+            found,
+            vec!["widgets.create@12", "widgets.list@17", "holder.retrieve@29"],
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_constructor_a_hash_private_a_private_and_a_field_are_not_capabilities() {
+        let mut out = Vec::new();
+        ts_resource_methods(
+            NODE_RESOURCE_FIXTURE,
+            "sdks/nodejs/src/resources/widgets.ts",
+            &mut out,
+        );
+        let names: Vec<&str> = out.iter().map(|m| m.capability.as_str()).collect();
+        assert!(
+            !names.iter().any(|n| n.ends_with(".constructor")),
+            "{names:?}"
+        );
+        assert!(!names.contains(&"widgets.sign"), "a #private: {names:?}");
+        assert!(!names.contains(&"widgets.cache"), "a private: {names:?}");
+        assert!(!names.contains(&"widgets.sessions"), "a field: {names:?}");
+        assert!(!names.contains(&"widgets.submit"), "a closure: {names:?}");
+    }
+
+    /// The one alias: the type is `CheckoutSessionsResource` and every row
+    /// since 2026-09-04 spells the capability the way a merchant calls it.
+    #[test]
+    fn the_nested_checkout_resource_keeps_the_spelling_the_rows_use() {
+        let mut out = Vec::new();
+        rust_resource_methods(
+            "impl CheckoutSessionsResource<'_> {\n    pub async fn expire(&self) {}\n}\n",
+            "sdks/rust/src/resources.rs",
+            &mut out,
+        );
+        let names: Vec<&str> = out.iter().map(|m| m.capability.as_str()).collect();
+        assert_eq!(names, vec!["checkout.sessions.expire"], "{names:?}");
+    }
+
+    #[test]
+    fn a_row_opening_with_a_dotted_code_span_is_a_capability_and_nothing_else_is() {
+        assert_eq!(
+            row_capability("`payment_intents.create` — path, body, response object"),
+            Some("payment_intents.create".to_owned())
+        );
+        assert_eq!(
+            row_capability("`checkout.sessions.expire` — empty-bodied POST"),
+            Some("checkout.sessions.expire".to_owned())
+        );
+        // Mid-sentence: the `checkout.session.expired` rows describe an event
+        // type, not a method, and reading one as a capability would demand an
+        // SDK method that must not exist.
+        assert_eq!(
+            row_capability("The `checkout.session.expired` event type is in this SDK's vocabulary"),
+            None
+        );
+        assert_eq!(row_capability("`scope` sent when configured"), None);
+        assert_eq!(row_capability("`User-Agent` names this SDK"), None);
+        assert_eq!(row_capability("A fresh UUIDv4 `jti` per mint"), None);
+    }
+
+    /// Builds a synthetic two-SDK tree that actually **ships** two methods,
+    /// with the proving tests where a real SDK keeps them: a Rust
+    /// `tests/` directory and a Node `*.test.ts`, neither of which the
+    /// enumerator may read as shipped surface.
+    fn synthetic_sdks_shipping_widgets(label: &str) -> TempDir {
+        let dir = TempDir::new(label);
+        let rust_src = dir.path().join("sdks/rust/src");
+        let rust_tests = dir.path().join("sdks/rust/tests");
+        let node_src = dir.path().join("sdks/nodejs/src/resources");
+        fs::create_dir_all(&rust_src).expect("the rust src fixture directory is creatable");
+        fs::create_dir_all(&rust_tests).expect("the rust tests fixture directory is creatable");
+        fs::create_dir_all(&node_src).expect("the node fixture directory is creatable");
+
+        fs::write(
+            rust_src.join("resources.rs"),
+            "impl WidgetsResource<'_> {\n    \
+             pub async fn create(&self) {}\n    \
+             pub async fn list(&self) {}\n\
+             }\n",
+        )
+        .expect("the rust resource fixture is writable");
+        fs::write(
+            rust_tests.join("widgets.rs"),
+            "#[tokio::test]\n\
+             async fn a_widget_is_created() {}\n\
+             #[tokio::test]\n\
+             async fn widgets_are_listed() {}\n\
+             impl SmugglerResource<'_> {\n    \
+             pub async fn smuggle(&self) {}\n\
+             }\n",
+        )
+        .expect("the rust test fixture is writable");
+        fs::write(
+            node_src.join("widgets.ts"),
+            "export class WidgetsResource {\n  \
+             async create() {}\n  \
+             async list() {}\n\
+             }\n",
+        )
+        .expect("the node resource fixture is writable");
+        fs::write(
+            node_src.join("widgets.test.ts"),
+            "it(\"creates a widget\", () => {});\n\
+             it(\"lists widgets\", () => {});\n\
+             export class StowawayResource {\n  \
+             async stow() {}\n\
+             }\n",
+        )
+        .expect("the node test fixture is writable");
+
+        dir
+    }
+
+    const WIDGETS: &str = "| `widgets.create` | ✅ `a_widget_is_created` | ✅ `creates a widget` |\n\
+                           | `widgets.list` | ✅ `widgets_are_listed` | ✅ `lists widgets` |\n";
+
+    #[test]
+    fn a_tree_whose_every_shipped_method_has_a_row_passes() {
+        let dir = synthetic_sdks_shipping_widgets("parity-both-ways-pass");
+        let doc = format!("{HEADER}{WIDGETS}");
+        let outcome = parity_outcome(dir.path(), &doc);
+        assert!(outcome.problems.is_empty(), "{:?}", outcome.problems);
+        assert_eq!(outcome.methods, 2);
+        assert_eq!(outcome.capability_rows, 2);
+    }
+
+    /// A resource declared in a test fixture is not shipped surface, and the
+    /// tests in the same files still index — the enumerator and the test
+    /// index read the same trees and must disagree about which files count.
+    #[test]
+    fn a_resource_declared_under_tests_is_not_enumerated_as_shipped() {
+        let dir = synthetic_sdks_shipping_widgets("parity-test-only-resource");
+        let doc = format!("{HEADER}{WIDGETS}");
+        let outcome = parity_outcome(dir.path(), &doc);
+        assert!(outcome.problems.is_empty(), "{:?}", outcome.problems);
+        assert_eq!(
+            outcome.methods, 2,
+            "`smuggler.smuggle` and `stowaway.stow` live in test files"
+        );
+    }
+
+    /// The defect this gate was extended to close, as a regression test:
+    /// deleting a whole capability row was measured on 2026-09-06 to pass,
+    /// 350 proving tests dropping to 347 with exit 0.
+    #[test]
+    fn deleting_a_whole_row_fails_and_names_the_method_it_stopped_recording() {
+        let dir = synthetic_sdks_shipping_widgets("parity-deleted-row");
+        let doc = format!(
+            "{HEADER}| `widgets.create` | ✅ `a_widget_is_created` | ✅ `creates a widget` |\n"
+        );
+        let found = problems(&dir, &doc);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let message = found.first().map(String::as_str).unwrap_or_default();
+        assert!(message.contains("widgets.list"), "{message}");
+        assert!(
+            message.contains("sdks/rust/src/resources.rs:3"),
+            "the failure names file:line, {message}"
+        );
+    }
+
+    #[test]
+    fn a_shipped_method_with_no_row_at_all_fails() {
+        let dir = synthetic_sdks_shipping_widgets("parity-unrecorded-method");
+        let doc = format!(
+            "{HEADER}| A widget id is percent-encoded | ✅ `a_widget_is_created` | ✅ `creates a widget` |\n"
+        );
+        let found = problems(&dir, &doc);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(
+            found.iter().any(|m| m.contains("widgets.create"))
+                && found.iter().any(|m| m.contains("widgets.list")),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_row_naming_a_method_no_sdk_declares_fails_and_names_the_row() {
+        let dir = synthetic_sdks_shipping_widgets("parity-stale-row");
+        let doc = format!(
+            "{HEADER}{WIDGETS}| `widgets.teleport` | ✅ `a_widget_is_created` | ✅ `creates a widget` |\n"
+        );
+        let found = problems(&dir, &doc);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let message = found.first().map(String::as_str).unwrap_or_default();
+        assert!(message.contains("widgets.teleport"), "{message}");
+        assert!(
+            message.contains(&format!("{SDK_PARITY_DOC}:5")),
+            "the failure names the row's own line, {message}"
+        );
+    }
+
+    /// ADR-0015 lets a capability be written down before it exists — the
+    /// `events.retrieve` row has been ⛔/⛔ since 2026-09-03 — so a row every
+    /// column dates as a gap is the one that may name nothing.
+    #[test]
+    fn a_row_for_a_method_nothing_ships_passes_when_every_cell_is_a_dated_gap() {
+        let dir = synthetic_sdks_shipping_widgets("parity-planned-gap");
+        let doc = format!(
+            "{HEADER}{WIDGETS}| `widgets.teleport` | ⛔ 2026-09-06 — planned. Owner: SDK maintainers | ⛔ 2026-09-06 — same. Owner: SDK maintainers |\n"
+        );
+        let outcome = parity_outcome(dir.path(), &doc);
+        assert!(outcome.problems.is_empty(), "{:?}", outcome.problems);
+        assert_eq!(outcome.gaps, 2);
+    }
+
+    /// One ✅ means something claims to ship it, which is precisely the claim
+    /// the doc→code direction exists to check — so half a gap is not a gap.
+    #[test]
+    fn a_half_dated_row_for_a_method_nothing_ships_still_fails() {
+        let dir = synthetic_sdks_shipping_widgets("parity-half-gap");
+        let doc = format!(
+            "{HEADER}{WIDGETS}| `widgets.teleport` | ⛔ 2026-09-06 — planned. Owner: SDK maintainers | ✅ `creates a widget` |\n"
+        );
+        let found = problems(&dir, &doc);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found
+                .first()
+                .is_some_and(|m| m.contains("names a method no SDK declares")),
+            "{found:?}"
+        );
+    }
+
+    /// The vacuity guard. Both new directions are satisfied by an enumerator
+    /// that finds nothing, so the count this repository's own SDKs yield is
+    /// asserted rather than merely printed — and asserted by name, because
+    /// "13" would survive the list changing under it.
+    #[test]
+    fn the_repositorys_own_sdks_enumerate_exactly_the_capabilities_the_matrix_records() {
+        let root = repo_root();
+        let expected = [
+            "account_holders.retrieve",
+            "balance.retrieve",
+            "checkout.sessions.create",
+            "checkout.sessions.expire",
+            "checkout.sessions.list",
+            "checkout.sessions.retrieve",
+            "events.list",
+            "payment_intents.cancel",
+            "payment_intents.confirm",
+            "payment_intents.create",
+            "payment_intents.list",
+            "payment_intents.retrieve",
+            "refunds.create",
+        ];
+        for column in ["sdks/rust", "sdks/nodejs"] {
+            let found: BTreeSet<String> = sdk_methods(&root, column)
+                .into_iter()
+                .map(|m| m.capability)
+                .collect();
+            let found: Vec<&str> = found.iter().map(String::as_str).collect();
+            assert_eq!(found, expected, "{column}");
+        }
     }
 
     #[test]
