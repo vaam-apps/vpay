@@ -1,82 +1,100 @@
 // vpay — CrateStack schema
 //
 // ┌──────────────────────────────────────────────────────────────────────────┐
-// │ STATUS: SYNTAX VERIFIED, CONTENT IS A DESIGN SKETCH — NOT WIRED IN       │
+// │ STATUS: PARTLY COMPILED SINCE 2026-09-06 — ONE MODEL IS REAL, THE        │
+// │ REST IS A DESIGN SKETCH                                                  │
 // │                                                                          │
-// │ The previous version of this file admitted the real .cstack grammar was  │
-// │ unknown and was written in an invented Prisma-like shape. It has been    │
-// │ rewritten against the real grammar, cross-checked field by field         │
-// │ against cratestack-parser's own test suite rather than guessed from an   │
-// │ overview page. (That note used to blame "cratestack.dev/docs 404s        │
-// │ publicly". Corrected 2026-09-05: /docs does 404, but the docs are at     │
-// │ cratestack.dev/getting-started/quickstart, /guides/*, /architecture/*,   │
-// │ /reference/* and /tooling/*.)                                            │
+// │ This file used to say "NOT WIRED IN" and "EXCLUDED FROM THE BUILD        │
+// │ GRAPH". Both stopped being true on 2026-09-06:                           │
+// │ backends/crates/vpay-db/src/schema.rs now invokes                        │
+// │ include_server_schema!("../../../schemas/vpay.cstack", db = Postgres),   │
+// │ so EVERY declaration below is compiled by rustc into `vpay-db` on        │
+// │ every build, and a syntax or type error here is a build failure          │
+// │ rather than a gate failure. The generated module is PRIVATE to           │
+// │ `vpay-db` and re-exported nowhere (ADR-0016 standard 5; `cargo xtask     │
+// │ verify-repositories` fails if that changes).                             │
 // │                                                                          │
-// │ NOTHING HERE IS A HAND-RUN CLAIM ANY MORE. Since 2026-09-05              │
-// │ `just check-schema` runs                                                 │
+// │ Compiled is not the same as used, and the difference matters more        │
+// │ than usual here. Exactly ONE model — `DisabledClient` — has a query      │
+// │ running through it: `DisabledClients::is_client_disabled` is a           │
+// │ CrateStack `find_unique(...).run(ctx)`. Every other model below is       │
+// │ still a design sketch that happens to be type-checked by a compiler      │
+// │ as well as by the CLI; no code reads or writes through any of them,      │
+// │ several do not match the live table at all (see the drift list), and     │
+// │ the two `disabled_clients` WRITES are still raw sqlx. docs/status.md     │
+// │ is the authoritative done/not-done list.                                 │
+// │                                                                          │
+// │ The content was rewritten against the real grammar in 2026-09, field     │
+// │ by field against cratestack-parser's own test suite rather than          │
+// │ guessed from an overview page. (An earlier note blamed                   │
+// │ "cratestack.dev/docs 404s publicly". Corrected 2026-09-05: /docs does    │
+// │ 404, but the docs are at cratestack.dev/getting-started/quickstart,      │
+// │ /guides/*, /architecture/*, /reference/* and /tooling/*.)                │
+// │                                                                          │
+// │ TWO INDEPENDENT THINGS CHECK THIS FILE, and they are not the same        │
+// │ check. `just check-schema` runs                                          │
 // │   $ cratestack check --schema schemas/vpay.cstack                        │
 // │   schema OK: schemas/vpay.cstack                                         │
-// │ as the sixth gate in `just verify`, so `just ci` and CI's `self-checks`  │
-// │ job re-verify this file on every run, at the cratestack-cli version      │
-// │ pinned as `cratestack_version` in the justfile — 0.11.1 today. It        │
-// │ passed at 0.10.1, 0.7.10 and 0.7.8 before that, and moving the pin to    │
-// │ 0.11.1 needed no edit here.                                              │
+// │ as the seventh gate in `just verify`, at the CLI version pinned as       │
+// │ `cratestack_version` in the justfile — 0.11.1 today, the same version    │
+// │ `Cargo.toml` pins the LIBRARY to, which is why the two cannot answer     │
+// │ about different grammars. `cargo build` is the other: the macro          │
+// │ parses this file with `cratestack-parser` and fails the build on         │
+// │ anything the CLI would reject, and on some things it would not           │
+// │ (composite `@@id`, list-arity scalars on a database-backed model).       │
 // │                                                                          │
 // │ The 0.10 grammar added block attributes this file does not use (@@sql,   │
 // │ @@embedded_sql, @@server_sql for views; @@paged, @@subscribe, @@audit,   │
 // │ @@soft_delete). 0.11.1 still has no @@check(expr) — no hit for           │
 // │ '@@check' anywhere in cratestack-parser 0.11.1 or cratestack-migrate     │
-// │ 0.11.1, and the latter's convert/checks.rs still promotes a CHECK        │
-// │ only from @db_enforce on a single field — so the GAP notes on            │
-// │ cross-column CHECKs below remain accurate. (KNOWN_ATTRIBUTE_NAMES was    │
-// │ cited here too until 2026-09-05; it is a typo-suggestion table and       │
-// │ lists no 'index' either, so it proves nothing. See docs/status.md.)      │
+// │ 0.11.1, and the latter's convert/checks.rs still promotes a CHECK only   │
+// │ from @db_enforce on a single field — so the GAP notes on cross-column    │
+// │ CHECKs below remain accurate. (KNOWN_ATTRIBUTE_NAMES was cited here      │
+// │ too until 2026-09-05; it is a typo-suggestion table and lists no         │
+// │ 'index' either, so it proves nothing. See docs/status.md.)               │
 // │                                                                          │
-// │ That proves the file *parses and type-checks* against the real grammar   │
-// │ — every scalar, attribute, relation and enum below was cross-checked     │
-// │ against cratestack-parser's own test suite, not guessed from a public    │
-// │ overview page. It does NOT prove a working migration or a running        │
-// │ server: this file is still EXCLUDED FROM THE BUILD GRAPH. No crate       │
-// │ depends on it, `cratestack migrate diff` has never been run against a    │
-// │ real vpay Postgres, and `docs/status.md` still lists the database        │
-// │ schema itself as not started. Wiring it in is separate future work.      │
+// │ THE GAP TO THE MIGRATIONS IS MEASURED, AND IT MUST MOVE WHEN THIS        │
+// │ FILE GROWS. `cratestack migrate baseline --strict` runs against a        │
+// │ real, fully migrated vpay Postgres in postgres_smoke.rs::the_cstack_     │
+// │ schema_drifts_from_the_migrations_by_a_measured_amount, which pins the   │
+// │ count, the number of relations it is spread over, and the exact set of   │
+// │ tables the database has and this file does not. 86 changes over 17       │
+// │ relations on 2026-09-05; **85 over 16 since 2026-09-06**, when           │
+// │ `DisabledClient` landed and `disabled_clients` left the report           │
+// │ entirely. That is a comparison, not a migration source: nothing          │
+// │ generates DDL from this file and it drives no migration —                │
+// │ `backends/migrations/*.sql` remains the authoritative schema.            │
 // │                                                                          │
-// │ SINCE 2026-09-05 THE GAP IS MEASURED. `cratestack migrate baseline       │
-// │ --strict` has been run against a real, fully migrated vpay Postgres —    │
-// │ 86 pending drift changes across 17 tables/views — and that number is     │
-// │ asserted by an integration test                                          │
-// │ (postgres_smoke.rs::the_cstack_schema_drifts_from_the_migrations_by_a_   │
-// │ measured_amount). That is a comparison, not a wiring-in: nothing         │
-// │ generates from this file and it drives no migration, so the paragraph    │
-// │ above stands. IT MUST MOVE WHEN THIS FILE GROWS. What the measurement    │
-// │ added to the GAP notes below: the two cross-column CHECKs are not just   │
-// │ inexpressible here, they are INVISIBLE to `migrate baseline` — all ten   │
-// │ multi-column CHECKs in the database are — so a clean --strict run would  │
-// │ say nothing about either of them. That is CrateStack's own documented    │
-// │ gap, not just a measurement: cratestack-migrate 0.11.1's                 │
-// │ src/introspect/postgres/mod.rs lists "Multi-column and zero-column       │
-// │ CHECK constraints are skipped" because AddCheck ties to exactly one      │
-// │ column. So the ask below is not only @@check(expr) in the grammar — it   │
-// │ needs an IR op that is not single-column and introspection that reads    │
-// │ array_length(conkey, 1) > 1, or a parsed @@check would still be          │
-// │ invisible to migrate baseline and migrate diff. See docs/status.md,      │
-// │ "The measured drift", and docs/plans/exp13-notes/opus.md.                │
+// │ What the measurement added to the GAP notes below: the two               │
+// │ cross-column CHECKs are not just inexpressible here, they are            │
+// │ INVISIBLE to `migrate baseline` — all ten multi-column CHECKs in the     │
+// │ database are — so a clean --strict run would say nothing about either    │
+// │ of them. That is CrateStack's own documented gap: cratestack-migrate     │
+// │ 0.11.1's src/introspect/postgres/mod.rs lists "Multi-column and          │
+// │ zero-column CHECK constraints are skipped" because AddCheck ties to      │
+// │ exactly one column. So the ask below is not only @@check(expr) in the    │
+// │ grammar — it needs an IR op that is not single-column and                │
+// │ introspection that reads array_length(conkey, 1) > 1, or a parsed        │
+// │ @@check would still be invisible to migrate baseline and migrate diff.   │
+// │ See docs/status.md, "The measured drift", and                            │
+// │ docs/plans/exp13-notes/opus.md.                                          │
 // │                                                                          │
-// │ One more thing this rewrite had to learn the hard way: `cratestack       │
+// │ One more thing the rewrite had to learn the hard way: `cratestack        │
 // │ check` rejects column-aligned field declarations (multiple spaces        │
 // │ between a field name and its type) with a confusing "invalid type        │
 // │ reference" error that points at the wrong token entirely. Every field    │
 // │ below is therefore single-spaced, matching the real project's own        │
 // │ example schemas — not a style choice, a parser constraint.               │
 // │                                                                          │
-// │ This file models only what has real, tested Rust types to mirror         │
-// │ (vpay-core::state, vpay-core::failure, vpay-provider::Capabilities,      │
-// │ vpay-ledger). It deliberately does NOT invent shapes for entities that   │
-// │ exist only as prose in docs/flows/*.md with zero backing Rust type —     │
-// │ provider_requests, webhook events/endpoints, the job queue, idempotency  │
-// │ keys, and Merchant. The "GAP" comments below explain exactly what's      │
-// │ missing and why it was left out rather than invented. See                │
-// │ docs/status.md for the authoritative done/not-done list.                 │
+// │ Apart from `DisabledClient`, this file models only what has real,        │
+// │ tested Rust types to mirror (vpay-core::state, vpay-core::failure,       │
+// │ vpay-provider::Capabilities, vpay-ledger). It deliberately does NOT      │
+// │ invent shapes for entities that exist only as prose in docs/flows/*.md   │
+// │ with zero backing Rust type — provider_requests, webhook                 │
+// │ events/endpoints, the job queue, idempotency keys, and Merchant. The     │
+// │ "GAP" comments below explain exactly what's missing and why it was       │
+// │ left out rather than invented. See docs/status.md for the                │
+// │ authoritative done/not-done list.                                        │
 // └──────────────────────────────────────────────────────────────────────────┘
 
 datasource db {
@@ -337,6 +355,59 @@ model LedgerEntry {
   // belongs to. That is a real gap in the Rust type this schema mirrors,
   // not something to paper over by adding a merchant_id column the Rust
   // side doesn't have.
+}
+
+// --- operations ----------------------------------------------------------
+
+// The operator kill-switch (backends/migrations/0012_create-disabled-clients.sql).
+//
+// THE FIRST MODEL IN THIS FILE THAT IS COMPILED RATHER THAN SKETCHED. It is
+// the one `vpay-db`'s private `mod schema` reads through CrateStack today —
+// `DisabledClients::is_client_disabled` runs `find_unique(...).run(ctx)`
+// against it — so unlike every other declaration here, getting a column
+// wrong is a runtime decode failure rather than a design note. It was chosen
+// to go first because it is the only vpay table whose every column type is
+// already inside `cratestack-migrate`'s `map_scalar` (TEXT, TIMESTAMPTZ,
+// TEXT), it carries no CHECK constraint, and it names no enum: the migration
+// needed to model it is empty. See docs/reference/vpay-db.md § CrateStack.
+//
+// `@@allow("read", ...)` and NOTHING ELSE, deliberately. A model with no
+// `@@allow` is deny-by-default and its generated reads return zero rows —
+// the policy is compiled into the SQL `WHERE` clause, so the read succeeds
+// and finds nothing rather than failing. That is why the parity test in
+// `vpay-db/tests/repositories.rs` compares the CrateStack read against a
+// direct sqlx read of the same row instead of merely asserting it does not
+// error: deleting this line makes the kill-switch answer "not disabled" for
+// every client, which is the failure this whole adoption most has to be
+// unable to make silently.
+//
+// `auth().isSystem()` rather than `auth() != null`: `vpay-db` reaches this
+// table as trusted in-process code, never on behalf of a request, and
+// `SystemContext` is deliberately unreachable from a request-derived
+// context (`cratestack-core`'s context/system.rs — there is no
+// `From<CratestackContext>`), so the predicate a system read satisfies
+// cannot be satisfied by anything an HTTP caller controls.
+//
+// The two WRITES (`disable_client`, `enable_client`) are still raw sqlx and
+// are not covered by this policy: `@@allow("read", ...)` grants nothing to
+// `create`/`update`/`delete`, and adding those arms before there is a
+// CrateStack write to gate would be a claim about a code path that does not
+// exist. docs/status.md carries the dated row.
+model DisabledClient {
+  client_id String @id
+  // `@default(now())`, not `@default(dbgenerated())`, and the difference is
+  // measured rather than stylistic. `migrate baseline` introspects the live
+  // column's `pg_get_expr(...)` as `ColumnDefault::Function("now()")`;
+  // `@default(now())` converts to the same thing, so the two compare equal
+  // and this table leaves the drift report entirely — 86 changes over 17
+  // relations became 85 over 16. `@default(dbgenerated())` converts to
+  // `ColumnDefault::DbGenerated`, which never equals a `Function`, so it
+  // leaves one permanent `column disabled_at default value differs` line and
+  // the total stays at 86. Both were run; see docs/plans/exp14-notes/opus.md.
+  disabled_at DateTime @default(now())
+  reason String?
+
+  @@allow("read", auth().isSystem())
 }
 
 // --- intentionally not modeled ------------------------------------------

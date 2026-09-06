@@ -564,11 +564,15 @@ cratestack_version := "0.11.1"
 
 # The floor for `check-schema`'s "is there anything here?" assertion: the
 # number of top-level `model`/`enum` declarations schemas/vpay.cstack must
-# still carry for a `schema OK` to mean anything. Six models and six enums
-# today. A FLOOR, deliberately, not an exact count — adding a model is not a
-# reason to fail a gate, and this exists to catch a file that was emptied or
-# truncated, not one that grew.
-cratestack_min_declarations := "12"
+# still carry for a `schema OK` to mean anything. Seven models and six enums
+# today — 12 until 2026-09-06, when `DisabledClient` became the first model
+# in that file a Rust crate actually compiles (`vpay-db`'s private
+# `mod schema`). A FLOOR, deliberately, not an exact count — adding a model
+# is not a reason to fail a gate, and this exists to catch a file that was
+# emptied or truncated, not one that grew. It is raised with the model
+# rather than left at 12 because the floor is only worth what the last
+# person to grow the file was willing to promise.
+cratestack_min_declarations := "13"
 
 # `schemas/vpay.cstack` parses and type-checks against the real CrateStack
 # grammar. Seventh gate in `just verify`, new 2026-09-05.
