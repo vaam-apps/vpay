@@ -3389,6 +3389,26 @@ enum to `TEXT` + `providers_flow_enum_check`, with `DROP TYPE provider_flow`.
 multi-column, invisible to `migrate baseline` in both directions, and guarded
 only by `partial_refunds_without_refunds_is_rejected_by_the_database`.
 
+**0032 is not backward compatible with the previous release's binary, and
+that is an operational cost this section owes an operator.** It is the first
+migration here to alter a column *type* that shipping code binds. Measured on
+2026-09-06 against a database that already had rows (the review pass; the
+repository's own migration tests only ever apply to an empty one): after 0032,
+the pre-0032 binary's boot-step-4 insert fails with `type "provider_flow" does
+not exist` (SQLSTATE `42704`), and its `i32` read of `currencies.exponent`
+fails to decode against `int8` — sqlx refuses the narrowing. Migrations here
+are forward-only and both binaries migrate-then-reconcile at boot, so in a
+rolling deploy, or after a rollback to the previous image, any old-version
+process that restarts once 0032 has landed **crash-loops at boot step 4**.
+Ship 0032 with the release that carries the matching code and do not roll that
+release back past it. Turning this into an expand/contract pair across two
+releases would remove the constraint; that was **not** done and is a
+maintainer's decision, not the reviewer's — see
+[docs/plans/exp17-notes/opus-review.md](plans/exp17-notes/opus-review.md),
+finding 3. The rows themselves are safe: the same measurement confirmed every
+`currencies.exponent` and `providers.flow` value survives, and a rail already
+`enabled = false` stays disabled.
+
 **`providers.flow` is the first of vpay's seven native enums to be
 converted.** The other six — `intent_status`, `charge_state`, `failure_code`,
 `account_kind`, `direction`, and `payment_intents.last_payment_error_code` —

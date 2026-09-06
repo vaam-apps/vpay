@@ -5,6 +5,29 @@
 -- predicate below is semantically the one it replaces. What changes is the
 -- spelling, and the spelling is what the diff engine matches on.
 --
+-- WHAT DOES CHANGE, and is not about enforcement: **this migration is not
+-- backward compatible with the binary of the previous release.** It is the
+-- first one here to alter a column *type* that shipping code binds. Measured
+-- on 2026-09-06 against a real database with rows already in it:
+--
+--   * the pre-0032 binary's boot step 4 issues
+--     `INSERT INTO providers (..., flow, ...) VALUES ($1, $2, $3::provider_flow, ...)`,
+--     which after this migration is
+--     `ERROR: type "provider_flow" does not exist` (SQLSTATE 42704);
+--   * that same binary reads `currencies.exponent` as `i32`, which sqlx
+--     refuses against `int8` rather than narrowing.
+--
+-- Migrations here are forward-only (no `down.sql`), and both binaries run
+-- `run_migrations()` and then `ConfigReconcile::reconcile` before serving
+-- anything. So during a rolling deploy, or after a rollback to the previous
+-- image, any old-version process that *restarts* once this has landed
+-- crash-loops at boot step 4. Deploy it with the release that carries the
+-- matching code, and do not roll that release back past it. Splitting this
+-- into an expand/contract pair across two releases (add a TEXT column,
+-- dual-write, drop the enum a release later) would remove the constraint and
+-- is a maintainer's call — see docs/plans/exp17-notes/opus-review.md,
+-- finding 3.
+--
 -- Why each statement, and what it costs, is in
 -- docs/reference/vpay-db.md § CrateStack. The short version:
 --
