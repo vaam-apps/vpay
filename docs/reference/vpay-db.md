@@ -513,6 +513,109 @@ an escaping routine; a future alphabet that needed escaping would break
 absorbed, so `//c/…` — a protocol-relative URL naming a different host — is
 not reachable through it.
 
+## `customers`
+
+The first vpay table **born** with a `schemas/vpay.cstack` model rather than
+acquiring one afterwards, and the only one whose whole content is another
+person's personal data. [`../flows/customers.md`](../flows/customers.md) is the
+product document; this section is why the code is shaped the way it is.
+
+### Two of seven methods go through CrateStack, and one column decides which
+
+| Method | |
+|---|---|
+| `touch_last_used` | **CrateStack** — `update_many(..).set(..)` |
+| `delete` | **CrateStack** — `delete_many(..)` |
+| `create`, `update`, `get_for_merchant`, `list_page`, `idle_since`, `delete_idle` | hand-written `sqlx` |
+
+The column is `metadata JSONB NOT NULL`, undeclared on `model Customer` for
+the two costs that model's GAP note measures: `map_scalar` does not read
+`jsonb` back, so declaring `metadata Json` would make the live column stay
+invisible while the *declared* one became a `[blocking]` drift line; and
+`Value::from_plain_json` demotes any JSON number outside `i64` to `f64`,
+silently, on a column that is merchant-authored and echoed back verbatim.
+
+The consequence is not obvious and is worth stating: because the model does
+not declare the column, the generated model *struct* has no field for it
+either, so a CrateStack **read** could not render the wire object at all.
+Every operation that touches `metadata` in either direction — create, update,
+and every read — is therefore a hand-written statement, which is five of the
+seven.
+
+That is not a consolation prize. The two that did move are the two where being
+wrong is irreversible: `touch_last_used` is the write the twelve-month
+retention sweep reads, and `delete` is the hard delete of personal data. Both
+policy failures are **silent** — `update_many` and `delete_many` compile the
+`@@allow` into the statement's own `WHERE`, so a deleted arm matches zero rows
+and returns `Ok` — which is why `every_action_this_module_calls_has_an_allow_arm`
+asserts the compiled descriptor with no container, and why it also asserts the
+*absence* of the three arms this model deliberately does not grant.
+
+### `list_page` and the sweep stay raw SQL, and it is the query shape
+
+`list_page`'s cursor is `seq < (SELECT seq FROM customers WHERE id = $2 AND
+merchant_id = $1)` — a correlated subquery, which `cratestack::Filter` has no
+constructor for. The two-statement alternative (resolve the cursor id to a
+`seq`, then filter on the literal) is a *different* query with a race in it:
+between the two reads the cursor row can be deleted, and this table's rows
+**are** deleted, by both `DELETE /v1/customers/{id}` and the retention sweep.
+The one-statement form degrades to an empty page there.
+
+`idle_since` and `delete_idle` share a `NOT EXISTS` pair over
+`payment_intents` and `checkout_sessions` — correlated subqueries over
+*different* tables, which `Filter` compares nothing of, and for which there is
+no `@relation` to side-load because neither of those tables is modelled.
+
+The pair is one `const UNREFERENCED`, and it is a constant because
+`sql_audit` made it one: it was first written as a function taking the outer
+query's alias, and the gate failed on the computed `{guard}`. Both call sites
+spell the table `customers`, so there was no alias to parameterise. The
+duplication that matters is the *other* direction — a table in the read's
+guard and not the write's would render a `customer.deleted` object for a
+customer the write then refuses to delete — and
+`the_sweep_guard_names_every_table_that_can_reference_a_customer` pins the
+count at two so the day invoices exist, the omission is a test failure.
+
+### `touch_last_used` is monotonic by *filter*, not by `GREATEST`
+
+The method's contract is "a stamp never moves a customer's clock backwards",
+and the obvious statement for that is `SET last_used_at = GREATEST(last_used_at,
+$2)`. `UpdateCustomerInput` renders a plain assignment and cannot express it.
+
+So the guard is the **predicate** instead: `where_(last_used_at.lt(now))`
+means a stale stamp matches zero rows and is a no-op, which is the same
+observable behaviour. `Ok(false)` therefore covers one more normal case —
+"already stamped at or after this instant" — and the method's doc says so.
+
+Why it matters at all: `now` is the *calling process's* instant, two vpay
+processes do not share a clock, and the horizon is twelve months. A rewind is
+not a rounding error; it is the difference between a customer surviving a
+sweep and not. It is also why migration `0034` carries **no**
+`CHECK (last_used_at >= created_at)`: both instants come from process clocks,
+so a server a second behind would turn a `POST /v1/payment_intents` into a
+`500` for a reason no merchant could act on.
+
+### The chrono/time boundary, crossed a second time
+
+`to_chrono` is the second place this crate crosses it and the first in that
+direction — `client_assertion::chrono_to_offset_date_time` converts the other
+way for `authkestra-op`. CrateStack's generated inputs and filters take
+`chrono::DateTime<Utc>`; every TIMESTAMPTZ this crate binds by hand is
+`time::OffsetDateTime`.
+
+The conversion has an `unwrap_or` that cannot be reached: chrono's range is
+roughly ±262,000 years and `time::OffsetDateTime`'s (default features) is
+years −9999..=9999, four orders of magnitude narrower.
+`the_chrono_conversion_is_total_over_every_instant_time_can_hold` proves that
+at both extremes rather than asserting it in prose, so a future `time` with
+`large-dates` enabled turns the branch red instead of silently clamping.
+
+ADR-0007 denies `expect`, so the unreachable branch still answers something,
+and *which* answer is not arbitrary: `MAX_UTC` means "freshly used" in both
+slots this function feeds, so the branch fails in the direction that **keeps**
+a merchant's personal-data record. `UNIX_EPOCH` would do the opposite — stamp
+a live customer as maximally idle and hand it to the next sweep.
+
 ## `charges`
 
 Three writes, and only one of them is unguarded. `insert_for_intent` opens the
@@ -1291,8 +1394,8 @@ work, and each binary installs the provider at boot
 `vpay-db` compiles `schemas/vpay.cstack` with
 [CrateStack](https://cratestack.dev)'s `include_server_schema!` macro
 (`cratestack = { package = "cratestack-pg", version = "=0.11.1" }`) and runs
-**six** queries through the generated data layer, spread over three tables.
-This section says which six, what deliberately did not move, and which of
+**eight** queries through the generated data layer, spread over five tables.
+This section says which eight, what deliberately did not move, and which of
 CrateStack's behaviours vpay has had to work around rather than adopt. It is
 the application's side of `schemas/vpay.cstack`'s own header, which carries
 the schema's side.
@@ -1301,7 +1404,9 @@ It said "**one** query" until 2026-09-06, when the two `disabled_clients`
 writes followed the read; "**three**" until later the same day, when migration
 0032 made `currencies` modellable and `ConfigReconcile::reconcile`'s currency
 pass moved; and "**five**" until migration 0033 dropped the `providers`
-capability defaults and the provider pass moved with them.
+capability defaults and the provider pass moved with them. It said "**six**"
+until the outbox landed, and "**eight** over five tables" since 2026-09-06,
+when S4a's `customers` added `touch_last_used` and `delete`.
 
 Everything here was measured against the 0.11.1 sources on 2026-09-06;
 `docs/plans/exp14-notes/opus.md`, `docs/plans/exp16-notes/opus.md` and
@@ -1322,6 +1427,8 @@ Everything here was measured against the 0.11.1 sources on 2026-09-06;
 | `reconcile`, per provider | `upsert(CreateProviderInput).run_in_tx(tx, ctx)` | `create` **and** `update` |
 | `create_in_tx` (the outbox) | `upsert(CreateWebhookDeliveryInput).do_nothing().on_conflict(&["event_id","endpoint_id"]).run_in_tx(tx, ctx)` | `create` **and** `update` |
 | `mark_fanned_out_in_tx` | `update_many().where_(id).where_(fanout_state).set(UpdateEventInput).run_in_tx(tx, ctx)` | `update` |
+| `touch_last_used` (customers) | `update_many().where_(id).where_(last_used_at.lt(now)).set(UpdateCustomerInput).run(ctx)` | `update` |
+| `delete` (customers) | `delete_many().where_(id).where_(merchant_id).run(ctx)` | `delete` |
 
 Plus one that is **test-only and says so**: `vpay-db`'s own
 `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` reads a

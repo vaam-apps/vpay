@@ -11,18 +11,46 @@ Constant-time comparison; reject a timestamp older than 5 minutes.
 `payment_intent.created`, `payment_intent.processing`,
 `payment_intent.succeeded`, `payment_intent.payment_failed`,
 `payment_intent.canceled`, `charge.refunded`, `charge.refund.updated`,
-`checkout.session.expired`.
+`checkout.session.expired`, `customer.deleted`.
 
 A custom type is silently dropped by any merchant using `stripe-node`'s typed
 event union or an exhaustive `switch`. This is why a late success emits a plain
 `payment_intent.succeeded`: an event merchants structurally tend to ignore is
 the worst possible carrier for "money actually arrived".
 
-**Three of the eight are written, and only three.** `payment_intent.succeeded`
+**Four of the nine are written, and only four.** `payment_intent.succeeded`
 and `payment_intent.payment_failed` come from the settlement transaction (TX 1
 below); `checkout.session.expired` comes from the housekeeping sweep, since
-2026-09-04. The other five are documented shapes nothing emits — events are
-written for terminal transitions only.
+2026-09-04; `customer.deleted` comes from the twelve-month customer retention
+sweep, since 2026-09-06 (S4a). The other five are documented shapes nothing
+emits — events are written for terminal transitions only.
+
+**`customer.deleted` is the one type a merchant cannot substitute polling
+for.** Every other event describes a row that is still there afterwards, so a
+merchant who missed one can re-read the object. This one describes a **hard
+delete**: the row is gone, and a `GET /v1/customers/{id}` afterwards is
+byte-identical to one for an id that never existed. `data.object` is the
+customer as it stood immediately before the delete — `name`, `email` and
+`phone` included, because after the delete there is nothing else to read. It
+is written inside the same transaction as the delete, so a crash cannot leave
+a customer erased with nobody told; see
+[customers.md](customers.md).
+
+**`customer.created` and `customer.updated` are NOT in the list above**, and
+that is deliberate rather than an omission. Both are real Stripe types and a
+Stripe-shaped handler has branches for them — but nothing in vpay writes
+either, and migration `0023`'s rule is that this vocabulary moves in lockstep
+with the code that writes it. `POST /v1/customers` and
+`POST /v1/customers/{id}` are single statements on the pool; emitting an event
+means putting the write and the event in one transaction, which is a change to
+the shape of two repository methods rather than a line in a `CHECK`. Adding
+the labels ahead of a writer would put two values in a closed vocabulary that
+no code can produce, which is what the mechanism exists to prevent. The five
+unwritten types above are the precedent for **not** doing it again: they came
+in together in `0018`, before the rule was written down, and have been listed
+as unwritten in this document's Status section ever since. Consequence for a
+merchant, stated plainly: **an external mirror of your customers has to
+poll.**
 
 **`charge.refunded` and `charge.refund.updated` carry a `refund`**, which
 since 2026-09-05 ([issue #46](https://github.com/vaam-apps/vpay/issues/46)) is
@@ -559,6 +587,20 @@ delivery has been observed reaching a receiver.**
   `payment_intent.canceled` — plus the two refund types, are unchanged: events
   are written for terminal transitions only (decision 4 of
   `docs/plans/2026-09-03-step4-worker.md`).
+- **`customer.created` and `customer.updated` are not in the vocabulary at
+  all** (2026-09-06, S4a), which is a different and stronger statement than
+  the five above: those are *listed and unwritten*, these are *absent*,
+  because the database refuses a type no code writes. A merchant mirroring
+  their customers externally has to poll `GET /v1/customers`. See the section
+  above for why the labels were not added ahead of a writer, and
+  [customers.md](customers.md) "What is not built" for what adding them would
+  cost.
+- **No deployment has ever emitted a `customer.deleted`.** The event, its
+  fan-out and its delivery rows are proven against a real Postgres through the
+  real worker loop by
+  `the_sweep_deletes_an_idle_unreferenced_customer_and_keeps_the_other_two`
+  with a horizon that suite controls; no vpay has been up for twelve months,
+  and no merchant endpoint has received one.
 - **A merchant expiring its own session emits nothing.** `POST
   /v1/checkout/sessions/{id}/expire` moves the row and writes no event, so a
   merchant whose own systems are the ones that need telling has to tell them.

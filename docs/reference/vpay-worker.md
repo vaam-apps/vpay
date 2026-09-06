@@ -480,6 +480,90 @@ honest if the tests override the *same* value production uses. An integration
 test asking for `not_found_window: 50 ms` exercises the identical code path a
 deployment runs at 60 s, with no sleeps.
 
+## The customer retention sweep
+
+`sweep_idle_customers` (S4a, migration `0034`) — a singleton on the dedupe key
+`sweep:customers`, seeded at boot with the other four and rescheduling itself
+hourly. What it deletes and why is
+[`../flows/customers.md`](../flows/customers.md); this is why it is a job of
+its own and how it is shaped.
+
+### Why it is not a fifth statement inside `sweep_expired`
+
+It runs on the same hourly schedule and its healthy answer is zero too, which
+is exactly the argument that put *checkout-session expiry* inside that job.
+What separates this one is what a failure means. `sweep_expired`'s three
+statements are bounded deletes of vpay's own bookkeeping — idempotency
+records, client-assertion `jti`s, dead workers' leases. This one erases a
+merchant's personal-data records and emits a merchant-visible event for each.
+
+Sharing a job would report a failing customer sweep as "the housekeeping sweep
+is unhealthy", with an idempotency-key count it has nothing to do with in the
+same log line, and would put a merchant-visible event behind the same lease as
+an internal delete.
+
+### The shape is `expire_due_sessions`', for its reasons
+
+A page (`CUSTOMER_PAGE`, a hundred), then a transaction per row: the event's
+`data` is the **rendered** wire object, and only `vpay-api` knows that shape,
+so the row has to be read and rendered before the write that describes it. One
+customer's failure is logged at `WARN` and the pass moves on; the customer
+stays, so the next pass retries it. The `WARN` names the customer id and its
+merchant and **no identifier of the payer's** — `CustomerRow`'s `Debug`
+redacts all three, which is why the log line takes `%row.id` rather than
+`?row`.
+
+The guard is re-evaluated inside the delete's own transaction rather than
+trusted from the page: a merchant can create an intent for the customer
+between the read and the write, and a customer a payment was just taken from
+must not be erased on the strength of a read taken before it.
+
+Progress-conditional immediate rescheduling, exactly as `sweep_expired` and
+`handle_fan_out` do — otherwise a deployment with more than one page of idle
+customers drains at a hundred an hour.
+
+### `CUSTOMER_IDLE_AFTER` is not configurable, deliberately
+
+Twelve months, expressed as 365 days. A retention period is a promise vpay
+makes to a **payer**, and a deployment that could shorten it from a YAML file
+would be one where that promise depends on an operator nobody audits. ADR-0003
+draws the same line for the checkout session's 24 hours.
+
+The 365-day approximation of "twelve months" is deliberate too: a calendar
+year needs month arithmetic to be exact across leap years, and the difference
+is at most a day at the end of a twelve-month horizon, while the thing that
+actually decides whether a customer survives is whether a merchant used it —
+measured in weeks.
+
+### `JobKind::from_wire` had a hand-maintained list, and this job found it
+
+Recorded because it is the failure mode this crate is most exposed to and it
+was live for exactly one commit. `JobKind::as_wire_str` is an exhaustive
+`match`, so a variant added to the enum without a wire spelling does not
+compile. `from_wire` held a **private copy** of the same list, and
+`SweepIdleCustomers` was missing from it.
+
+The result was silent and total: the row was written, claimed, and
+dead-lettered as *"`sweep_idle_customers` is not a job kind this build knows;
+the row was written by a different version"*, with `alert = true`, for a kind
+this build ships. The sweep never ran and every log line blamed a phantom
+deployment skew. `cargo build`, `just clippy` and all ten `verify` gates were
+green.
+
+The list is now `JobKind::EVERY`, a `pub const` that
+`the_kinds_are_exactly_the_check_constraints` compares against migration
+`0034`'s own `kind_is_known` — so the omission is a four-millisecond unit-test
+failure. The test's own `KINDS` array *was a second copy* of the same list,
+which is precisely why it could not have caught this; it now aliases the
+shipped constant. **There is no construction at 1.98.0 that makes a
+string→enum parse exhaustive**, so the honest statement is that this is
+test-enforced and not compiler-enforced, and `EVERY`'s doc says so.
+
+What caught it in the first place was the integration suite driving
+`vpay_worker::run_once` rather than calling the repository, and asserting the
+job's **disposition** rather than only its effect: "the row survived" reports
+a dead letter only by accident.
+
 ## The outbox drain
 
 The process — the two transactions, the abandonment after five passes, the
