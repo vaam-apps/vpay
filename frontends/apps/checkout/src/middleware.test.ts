@@ -11,6 +11,7 @@
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ORIGINS_TIMEOUT_MS, fetchCheckoutOrigins } from './lib/api';
 import { middleware } from '../middleware';
 
 const API = 'https://api.vpay.test';
@@ -43,6 +44,32 @@ function originsFetch(origins: string[] | null, status = 200) {
     });
   });
   return { impl, calls };
+}
+
+/**
+ * A `fetch` that never answers and never closes the socket, and resolves only
+ * when the caller aborts it.
+ *
+ * The shape a timeout exists for. A refusal and an unreachable host both
+ * REJECT, and `fetchCheckoutOrigins` has always caught those; what it could
+ * not survive was a peer that accepted the connection and then said nothing,
+ * because `await` on that promise is `await` forever.
+ */
+function neverAnswers() {
+  const started: Array<{ signal: AbortSignal | undefined }> = [];
+  const impl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+    started.push({ signal: init?.signal ?? undefined });
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (signal === undefined || signal === null) {
+        return;
+      }
+      signal.addEventListener('abort', () => {
+        reject(new DOMException('The operation was aborted.', 'AbortError'));
+      });
+    });
+  });
+  return { impl, started };
 }
 
 beforeEach(() => {
@@ -154,6 +181,21 @@ describe('the embedded page', () => {
     vi.stubGlobal('fetch', impl);
     const response = await middleware(request('/e/cs_1?key=pk_test_1'));
     expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+  });
+
+  it('gives up on a lookup that never answers, and lands in the same fail-closed list', async () => {
+    // No fake timers: the abort has to travel through a real `AbortSignal`,
+    // and the budget is a parameter precisely so this is milliseconds rather
+    // than a wait.
+    const { impl, started } = neverAnswers();
+    const origins = await fetchCheckoutOrigins('https://api.vpay.test', 'pk_test_1', impl, 20);
+    expect(origins).toEqual([]);
+    expect(started).toHaveLength(1);
+    expect(started[0]?.signal?.aborted, 'the request was aborted, not left running').toBe(true);
+  });
+
+  it('bounds the wait at two seconds by default, on a call that names no budget', () => {
+    expect(ORIGINS_TIMEOUT_MS).toBe(2_000);
   });
 
   it("is 'none' when the API refuses the key", async () => {
