@@ -33,6 +33,25 @@ Run one recipe at a time so a failure could be attributed, containers up, no
 `docs/status.md`'s claimed numbers (1381 total, 43 binaries, 0 ignored, ten
 `verify` gates) are accurate.
 
+**Re-run after the review's own commits**, same method, at
+`974b72b`:
+
+| Recipe | Exit | Wall |
+|---|---|---|
+| `fmt-check` | 0 | 0.6 s |
+| `clippy` | 0 | 11.9 s |
+| `verify` | 0 | 7.1 s |
+| `test-rust` | 0 | 11 m 36 s — **1382 tests run: 1382 passed, 0 skipped** |
+| `test-doc` | 0 | 5.1 s |
+| `verify-ignored` | 0 | `0 ignored (expected 0), 43 test binaries (expected 43), 1382 total (minimum 1080)` |
+| `lint-web` | 0 | 18.9 s |
+| `test-web` | 0 | 7.7 s |
+| `deny` | 0 | `advisories ok, bans ok, licenses ok, sources ok` |
+
+The +1 is `a_currency_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`
+(finding 4). `expected_suites` and the ignored count are unmoved; the new
+case lives in a file that already existed.
+
 ---
 
 ## 2. The upstream claims, checked against the vendored 0.11.1 sources
@@ -301,7 +320,43 @@ the live table has them (migration 0002: `DEFAULT FALSE` x4, `DEFAULT TRUE`)"
   the tests, and cite the upstream files; the "zero drift gain" statements
   are cited and, per § 3, correct.
 
-## 8. Not checked
+## 8. What was fixed, and what was deliberately left
+
+Seven commits on top of `d52a0b2`, one per finding:
+
+| Commit | Finding | Proof |
+|---|---|---|
+| `0b4c741` | — | this file |
+| `85ecb8f` | 1 | every backticked identifier long enough to be a test name in `config_reconcile.rs` resolved against `fn <name>` across `backends/`; the only non-match is a constraint name |
+| `5ac1a79` | 4 | new test PASS 1.44 s; FAIL 1.23 s under `run(&ctx)`, message naming the cause |
+| `07b82a9` | 3 | the 42704 and the `int8` decode failure, measured on a populated database; both migration tests re-run green after the comment edit |
+| `d04d78c` | 5, 7 | the repaired message re-printed by re-applying the `.for_update()` mutation; `check-schema` green |
+| `eb4927b` | 2 | `.prettierignore` exists (Step 6, `7d62751`); `prettier --list-different .` = 222, measured read-only |
+| `1a3c638` | 6 | `E0063` at the struct literal; the eight-column `preview_sql`; drift 84 → 89 |
+| `974b72b` | — | `verify-ignored` 1382 |
+
+**Left alone deliberately:**
+
+- The `just fmt` recipe. It is unrelated to S2b, the 222-file half is a real
+  decision, and the implementer was right to decline it. Only the description
+  was wrong.
+- The expand/contract question on 0032 (finding 3). Forward-only migrations
+  are this repository's existing choice; changing it is not a reviewer's
+  call.
+- The provider `@default` question. Both options are now measured rather
+  than argued, which is the most a review should do to a decision explicitly
+  reserved for a maintainer.
+- One pre-existing instance of finding 5's whitespace defect at
+  `repositories.rs:3435` (Step 8's checkout-session address assertion),
+  outside this change's diff.
+- `fn reconcile` is now 203 lines and the longest production function in the
+  repository on `verify-docs`' advisory list, almost all of it comment. Not
+  trimmed: every paragraph is explaining *why* rather than restating the line
+  below, which is what ADR-0016 standard 6 leaves to review, and the same
+  reasoning is linked rather than only duplicated. Flagged so a maintainer
+  can disagree.
+
+## 9. Not checked
 
 - Anything about a Kubernetes cluster, `helm-check` (network) or
   `docs-check-citations` (network) — neither is in `just ci`.
