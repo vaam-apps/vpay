@@ -14,6 +14,50 @@ name in a ✅ cell must exist under that column's directory as a live Rust
 No cell may be blank. Rename a test without editing this file and `just
 verify` fails naming the cell.
 
+## The gate reads this file **and** the SDKs, since 2026-09-06
+
+Until that date it only ever read this file, and could therefore only check
+whether what this file *said* was true. Deleting a whole capability row was
+measured to pass — 350 proving tests dropped to 347 and `just verify` stayed
+green — and an SDK method with no row at all was invisible. ADR-0015's rule
+is a claim about the SDKs ("every SDK ships every feature or a dated gap"),
+so the gate now runs in both directions:
+
+- **code → doc.** Every `<resource>.<method>` either SDK declares must have a
+  row here. A method with no row fails, naming the `file:line` it is declared
+  on.
+- **doc → code.** Every `<resource>.<method>` row must name a method at least
+  one SDK declares — *unless* every one of its cells is a dated ⛔, which is
+  how a capability written down before it exists is recorded (the
+  `events.retrieve` row below has been ⛔/⛔ since 2026-09-03). A stale row
+  fails, naming its own line.
+
+### How a capability row is named
+
+A row is a **capability row** when its first cell *opens* with a code span
+holding `<resource>.<method>`, in the SDKs' own spelling:
+
+| Source | Read as |
+|---|---|
+| Rust `impl <Resource>Resource { pub async fn <method>(` in `sdks/rust/src/resources.rs` | `<resource_snake>.<method>` |
+| Node exported class methods in `sdks/nodejs/src/resources/<resource>.ts` | `<resource_snake>.<method>` |
+
+Resource names map by snake_case in both languages, so
+`PaymentIntentsResource` and `client.paymentIntents` are both
+`payment_intents`, and `AccountHoldersResource` / `client.accountHolders` are
+both `account_holders`. The one nested resource keeps the spelling a merchant
+reads — `checkout.sessions`, not `checkout_sessions` — because that is what
+`client.checkout().sessions()` and `client.checkout.sessions` say and what
+every row here has said since 2026-09-04. Private helpers, constructors and
+namespace accessors (Rust `CheckoutResource::sessions`, Node
+`CheckoutResource.sessions`) are not capabilities.
+
+**Opening with the span is load-bearing, not tidiness.** Rows that describe a
+behaviour spanning several methods carry no leading span and are checked by
+the cell rules alone, and rows that *mention* a dotted code span mid-sentence
+— the `checkout.session.expired` event-type rows below — must not be read as
+naming a method, because there is no such method and there must not be one.
+
 **Measured by reading both SDKs, 2026-09-03**, again for the Checkout Session
 rows on **2026-09-04** (Step 9), again on **2026-09-04** for the
 assertion-audience row (Step 9, lane 5b), and again on **2026-09-04** for the

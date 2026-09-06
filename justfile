@@ -5,7 +5,11 @@
 #   * every unimplemented item is declared in docs/status.md
 #   * every error type is classified (ADR-0011) and anyhow stays in the binaries
 #   * the merchant SDKs stay at parity (ADR-0015): every claimed capability
-#     names a test that exists, every gap is dated and owned
+#     names a test that exists, every gap is dated and owned, and the matrix
+#     and the SDKs agree in BOTH directions — every <resource>.<method> either
+#     SDK declares has a row, and no row survives the method it named
+#     (two-directional since 2026-09-06; before it, deleting a whole row
+#     passed)
 #   * every relative link in a tracked *.md resolves to a tracked path
 #   * every publishable npm package under sdks/ is named @vaam-apps/vpay-*
 #     and is publishable for real (`verify-npm-scope`, 2026-09-05)
