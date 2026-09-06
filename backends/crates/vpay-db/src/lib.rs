@@ -23,6 +23,12 @@ pub mod charges;
 // reachable only from `settlement`.
 pub mod checkout_sessions;
 pub mod config_reconcile;
+// The merchant-owned payer record (S4a). Its own module for
+// `checkout_sessions`' reason — one table family, one file — and because the
+// privacy rules that apply to a table whose whole content is personal data
+// apply only here: the hard delete, the redacting `Debug`, and the
+// twelve-month retention sweep all belong beside the code they constrain.
+pub mod customers;
 pub mod events;
 pub mod idempotency;
 pub mod jobs;
@@ -86,6 +92,9 @@ pub use checkout_sessions::{
 };
 pub use client_assertion::{ClientAssertions, client_assertion_store};
 pub use config_reconcile::{ConfigReconcile, CurrencySeed, ProviderSeed};
+pub use customers::{
+    CustomerListPage, CustomerPatch, CustomerRow, Customers, NewCustomer,
+};
 pub use disabled_clients::DisabledClients;
 pub use error::DbError;
 pub use events::{EventRow, Events, NewEvent};

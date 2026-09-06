@@ -253,7 +253,11 @@ mod tests {
     /// interpolation: both are `SELECT {COLUMNS} …` with every caller value
     /// bound, and `list_page_filtered` — the third new read — reuses the
     /// existing `payment_intents::list_page` site rather than adding one.
-    const EXPECTED_ASSERT_SITES: usize = 39;
+    /// **39 → 45 on 2026-09-06** with the six `customers` statements S4a
+    /// added (`create`, `get_for_merchant`, `update`, `list_page`,
+    /// `idle_since`, `delete_idle`); `touch_last_used` and `delete` go
+    /// through CrateStack and build no string.
+    const EXPECTED_ASSERT_SITES: usize = 45;
 
     /// **The gate.** No `format!` that becomes a statement interpolates
     /// anything but a crate constant.

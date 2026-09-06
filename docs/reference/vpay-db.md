@@ -1111,9 +1111,13 @@ sqlx 0.9 (sqlx#3723) changed `query`, `query_as` and `query_scalar` to take
 therefore no longer compiles as a statement. Under 0.8 this crate passed
 `&sql` at 36 call sites; under 0.9 it passes `AssertSqlSafe(sql)` at the same
 36 — **37 since 2026-09-05**, when `refunds::get_for_merchant` landed with
-issue #45, and **39 since 2026-09-06**, when `refunds::list_for_intent` and
-`events::list_for_objects` landed with the `/dash/v1` payment detail (exp23).
-Taking the `String` **by value** rather than `AssertSqlSafe(&sql)` is
+issue #45, **39 since 2026-09-06**, when `refunds::list_for_intent` and
+`events::list_for_objects` landed with the `/dash/v1` payment detail (exp23),
+and **45 since the same day**, when `customers` landed with S4a
+(`create`, `get_for_merchant`, `update`, `list_page`, `idle_since`,
+`delete_idle` — six of that module's eight methods; `touch_last_used` and
+`delete` go through CrateStack and build no string at all). Taking the
+`String` **by value** rather than `AssertSqlSafe(&sql)` is
 deliberate: the borrowed form goes through `AssertSqlSafe<&str>`, which sqlx's
 own docs describe as copying the string.
 
@@ -1128,15 +1132,26 @@ is the entire reason a statement here is not a literal.
 `AssertSqlSafe`'s contract is that the caller audited the string. Here is the
 audit, re-done on 2026-09-05 from the source rather than inherited:
 
-All 39 statements interpolate exactly two kinds of value.
+All 45 statements interpolate exactly two kinds of value. Re-done on
+2026-09-06 for the six `customers` statements S4a added.
 
-* **A `const … : &str` declared in this crate.** Eleven of them:
-  `charges::COLUMNS`, `checkout_sessions::COLUMNS`, `events::COLUMNS`,
+* **A `const … : &str` declared in this crate.** Thirteen of them:
+  `charges::COLUMNS`, `checkout_sessions::COLUMNS`, `customers::COLUMNS`,
+  `events::COLUMNS`,
   `payment_intents::COLUMNS`, `refunds::COLUMNS`,
   `webhook_deliveries::COLUMNS`,
-  `checkout_sessions::OPEN`, `payment_intents::LIVE_CHARGE_STATES`,
+  `checkout_sessions::OPEN`, `customers::UNREFERENCED`,
+  `payment_intents::LIVE_CHARGE_STATES`,
   `payment_intents::SETTLEABLE_STATUSES`, `jobs::CLAIM_RETURNING` and
   `settlement::PREVIOUS_STATE`. A `const` cannot carry a caller's value.
+
+  `customers::UNREFERENCED` is the one that had to *become* a constant: it is
+  the `NOT EXISTS` pair the retention sweep's read and its write must both
+  carry, and it was first written as `fn unreferenced(alias: &str) -> String`
+  so the two call sites could name the table differently. They do not — both
+  spell it `customers` — and the audit is what said so, by failing on
+  `{guard}`. A computed fragment fails this gate by construction however fixed
+  its inputs are, which is the rule working rather than an inconvenience.
 * **`direction`**, which is
   `let direction = if backwards { "ASC" } else { "DESC" };` — a `bool`
   choosing between two literals written in the same function
@@ -1166,7 +1181,18 @@ That audit is a claim about a file that people edit, so it is also a test:
 reads this crate's own sources and fails if a `format!` bound to `sql`
 interpolates anything that is not one of the constants above or one of the two
 named exceptions. It was proven to fire by three mutations on 2026-09-05, each
-reverted:
+reverted — and it fired **unprompted** on 2026-09-06, twice, against S4a's
+first draft of `customers.rs`: once correctly, on the computed `{guard}`
+described above, and once as a false positive on a `format!("{column} = ")`
+*inside a `#[cfg(test)]` assertion*, which the scanner read as a statement
+because it looks for the word `sql` in the forty characters before a `format!`
+and the assertion's own message printed `{sql}`. The test now builds that
+needle with `concat` and says why. Worth recording rather than quietly working
+around: the scanner is textual, so it will do this again, and the answer is to
+avoid `format!` in a test that mentions `sql` — never to widen the
+allowlist.
+
+The three 2026-09-05 mutations:
 
 * interpolating `{payment_intent_id}` into `charges::get_for_intent` →
   `every_interpolation_into_a_statement_is_a_crate_constant` fails, naming the
@@ -1200,7 +1226,7 @@ is what makes a blanket refusal the correct rule rather than a heuristic.
 ### Why not `QueryBuilder`
 
 sqlx's own suggested alternative. It was considered and rejected: it would
-rewrite 39 working, reviewed statements to remove a risk the audit above shows
+rewrite 45 working, reviewed statements to remove a risk the audit above shows
 is not present, and it would replace SQL that reads as SQL with SQL assembled
 by method calls — in a crate where the statement text *is* the design
 (`FOR UPDATE SKIP LOCKED`, `UPDATE … WHERE state = $2 RETURNING`, the
