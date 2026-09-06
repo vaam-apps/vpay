@@ -518,6 +518,24 @@ mod tests {
     /// carries what it would take to unblock it — which is a schema decision
     /// (drop five DB defaults) rather than a code change, and is left to a
     /// maintainer.
+    ///
+    /// **This test is the second thing that would notice, not the first.**
+    /// The five columns are missing from `CreateProviderInput`'s *fields*,
+    /// not just from the rendered SQL, so the day they become settable this
+    /// crate stops compiling — `error[E0063]: missing fields
+    /// delivers_callbacks, enabled, requires_ip_allowlist and 2 other
+    /// fields` at the `CreateProviderInput` literal in `reconcile`'s
+    /// provider loop. Measured in the review pass of 2026-09-06, along with
+    /// what `preview_sql` renders once the literal is completed: exactly the
+    /// eight-column statement `reconcile` needs. So the "left to a
+    /// maintainer" above is a real option and not a guess.
+    ///
+    /// The `starts_with` below is the brittle assertion of the two and
+    /// deliberately kept anyway: a harmless upstream change (different
+    /// identifier quoting, a reordered `RETURNING`) turns it red too. That is
+    /// a loud false alarm — the message prints the SQL — rather than a silent
+    /// false green, and the `!contains` loop underneath is what actually
+    /// pins the finding.
     #[tokio::test]
     async fn the_provider_upsert_cannot_carry_the_capability_columns() {
         let cs = lazy_cratestack();

@@ -1658,13 +1658,41 @@ about.
 
 1. Remove the five `@default(...)`s from `model Provider` and `ALTER TABLE
    providers ALTER COLUMN ... DROP DEFAULT` on all five in a migration. This
-   works. It also lets a code generator's input-shaping rule decide vpay's
-   DDL, and it removes a defaulting behaviour any future writer of that table
-   would reasonably expect. Leaving the `@default`s off *without* the DDL
-   change is not an option: the drift report would grow five `default value
-   differs` lines.
-2. Upstream grows a way to include a defaulted column in an upsert input. The
-   pinned `preview_sql` test is what will notice.
+   works — **measured, not assumed**, in the review pass of 2026-09-06: with
+   the five removed from the model, `preview_sql` renders
+
+   ```text
+   INSERT INTO providers (code, display_name, flow, supports_refunds,
+       supports_partial_refunds, delivers_callbacks, requires_ip_allowlist, enabled)
+   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+   ON CONFLICT (code) DO UPDATE SET display_name = EXCLUDED.display_name,
+       flow = EXCLUDED.flow, supports_refunds = EXCLUDED.supports_refunds, … ,
+       enabled = EXCLUDED.enabled
+   ```
+
+   which is exactly the statement `reconcile` would need. It also lets a code
+   generator's input-shaping rule decide vpay's DDL, and it removes a
+   defaulting behaviour any future writer of that table would reasonably
+   expect. Leaving the `@default`s off *without* the DDL change is not an
+   option, and that too is measured rather than reasoned: the drift report
+   goes **84 → 89**, exactly five `column … default value differs` lines on
+   `providers`.
+2. Upstream grows a way to include a defaulted column in an upsert input.
+
+**What notices, either way, is stronger than a test.** `the_provider_upsert_
+cannot_carry_the_capability_columns` is described above as a `preview_sql`
+pin, and it is — but the first thing to break is the *compiler*. The five
+columns are absent from `CreateProviderInput`'s **fields**, not merely from
+the rendered SQL, so the day they become settable `vpay-db` stops building:
+
+```text
+error[E0063]: missing fields `delivers_callbacks`, `enabled`,
+`requires_ip_allowlist` and 2 other fields in initializer of `CreateProviderInput`
+  --> backends/crates/vpay-db/src/config_reconcile.rs
+```
+
+Reproduced in the review pass. So this is not a signal that can rot quietly:
+it is a build failure first and a red assertion second.
 
 Until one of those happens, the provider pass stays hand-written and
 `model Provider` carries `@@allow("read", …)` and no write arm — an arm no
