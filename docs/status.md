@@ -3775,6 +3775,29 @@ Deciding between them, and whether boot should check
 `Capabilities::is_coherent` before it reconciles at all, is not the review's
 call.
 
+**Migration 0033 was only ever applied to an empty table.** Its header makes
+three claims. The refusal it creates is asserted
+(`a_hand_written_provider_insert_must_now_name_every_capability_column`, on a
+database migrated from empty). Backward compatibility with the previous
+release's binary is a fact about *code* — the pre-0033 `reconcile` names all
+eight columns in its hand-written `INSERT`, and nothing else in the tree writes
+`providers`; both re-checked against `06e27f9` in the review, and no test can
+execute a binary that is not in this checkout. The third, *"NO DATA CHANGES …
+every existing row keeps exactly the capabilities it had"*, is the one an
+upgrade depends on and nothing exercised it.
+`migration_0033_changes_no_stored_capability_on_a_populated_table`
+(`postgres_smoke.rs`) now does: it restores the five pre-0033 defaults,
+asserts through `pg_attrdef` that the restore was real (so the test cannot go
+vacuous), writes one row that takes all five defaults and one that contradicts
+all five, applies **0033's own text** via `include_str!` rather than a copy of
+its statements, and asserts both rows are byte-identical afterwards, that no
+default survives, and that the three-column `INSERT` is refused on this
+database too.
+
+**Review pass test count: +3 test cases, no new test binary** (all three land
+in files that already existed), so `expected_suites` and the `min_tests` floor
+are untouched.
+
 
 ---
 

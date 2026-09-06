@@ -583,6 +583,180 @@ async fn a_hand_written_provider_insert_must_now_name_every_capability_column() 
     Ok(())
 }
 
+/// Migration 0033 run against a **populated** `providers` table changes no
+/// stored value — including on rows the previous release's three-column
+/// `INSERT` created out of the defaults it drops.
+///
+/// The migration's header claims three things. That an `INSERT` omitting a
+/// capability is refused afterwards is asserted above, on an empty table.
+/// That the file is backward compatible with the previous release's binary is
+/// a fact about code — the pre-0033 `reconcile` names all eight columns in its
+/// hand-written statement and nothing else in the tree writes this table, both
+/// checked by reading `06e27f9` — and no test can execute a binary that is not
+/// in this checkout. This test is the third claim, *"NO DATA CHANGES …
+/// every existing row keeps exactly the capabilities it had"*, which is the
+/// one an upgrade actually depends on and the only one a database can settle.
+///
+/// It works by putting the table back into its pre-0033 shape rather than by
+/// running a truncated migrator: the five `SET DEFAULT` values below are
+/// migration 0002's, and `pg_attrdef` is read **before** the migration as well
+/// as after, so a restore that silently did nothing would fail here instead of
+/// making the whole test vacuous. What is then applied is 0033's own text via
+/// `include_str!`, not a copy of its statements, so the file and this test
+/// cannot drift apart — and applying it to a table that already has rows is
+/// exactly what a deployment does.
+#[tokio::test]
+async fn migration_0033_changes_no_stored_capability_on_a_populated_table() -> anyhow::Result<()> {
+    /// Migration 0033 itself. Read from the file so this test cannot pass
+    /// against a copy of the DDL that the migration no longer contains.
+    const MIGRATION_0033: &str =
+        include_str!("../../../migrations/0033_providers-drop-capability-defaults.sql");
+
+    let (_container, pool) = migrated_postgres().await?;
+
+    // Back to the pre-0033 shape. The values are migration 0002's:
+    // `DEFAULT FALSE` on four capabilities and `DEFAULT TRUE` on `enabled`,
+    // which is the one that mattered — a half-filled row came out OPEN FOR
+    // CHARGES.
+    sqlx::raw_sql(
+        "ALTER TABLE providers ALTER COLUMN supports_refunds SET DEFAULT false; \
+         ALTER TABLE providers ALTER COLUMN supports_partial_refunds SET DEFAULT false; \
+         ALTER TABLE providers ALTER COLUMN delivers_callbacks SET DEFAULT false; \
+         ALTER TABLE providers ALTER COLUMN requires_ip_allowlist SET DEFAULT false; \
+         ALTER TABLE providers ALTER COLUMN enabled SET DEFAULT true;",
+    )
+    .execute(&pool)
+    .await
+    .context("restoring the pre-0033 defaults must succeed")?;
+
+    let defaulted_before: Vec<String> = sqlx::query_scalar(
+        "SELECT a.attname::text FROM pg_attribute a \
+         JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+         WHERE a.attrelid = 'providers'::regclass \
+         ORDER BY a.attname",
+    )
+    .fetch_all(&pool)
+    .await
+    .context("reading providers' column defaults must succeed")?;
+    assert_eq!(
+        defaulted_before,
+        vec![
+            "delivers_callbacks",
+            "enabled",
+            "requires_ip_allowlist",
+            "supports_partial_refunds",
+            "supports_refunds"
+        ],
+        "the pre-0033 shape has to be real before the rest of this test means anything; without \
+         these five defaults the `legacy_rail` insert below could not even run"
+    );
+
+    // One row the way a pre-0033 psql prompt could write it, taking all five
+    // defaults, and one that names every column with values disagreeing with
+    // every default — so a migration that somehow reset a column would show up
+    // whichever direction it reset it in.
+    sqlx::query(
+        "INSERT INTO providers (code, display_name, flow) \
+         VALUES ('legacy_rail', 'Legacy Rail', 'push')",
+    )
+    .execute(&pool)
+    .await
+    .context("the three-column insert must succeed while the defaults are back")?;
+    sqlx::query(
+        "INSERT INTO providers \
+            (code, display_name, flow, supports_refunds, supports_partial_refunds, \
+             delivers_callbacks, requires_ip_allowlist, enabled) \
+         VALUES ('explicit_rail', 'Explicit Rail', 'redirect', true, true, true, true, false)",
+    )
+    .execute(&pool)
+    .await
+    .context("the eight-column insert must succeed")?;
+
+    let read_rows = || async {
+        sqlx::query_as::<_, (String, String, String, bool, bool, bool, bool, bool)>(
+            "SELECT code, display_name, flow, supports_refunds, supports_partial_refunds, \
+             delivers_callbacks, requires_ip_allowlist, enabled FROM providers ORDER BY code",
+        )
+        .fetch_all(&pool)
+        .await
+        .context("reading providers must succeed")
+    };
+    let before = read_rows().await?;
+    assert_eq!(
+        before,
+        vec![
+            (
+                "explicit_rail".to_owned(),
+                "Explicit Rail".to_owned(),
+                "redirect".to_owned(),
+                true,
+                true,
+                true,
+                true,
+                false,
+            ),
+            (
+                "legacy_rail".to_owned(),
+                "Legacy Rail".to_owned(),
+                "push".to_owned(),
+                false,
+                false,
+                false,
+                false,
+                true,
+            ),
+        ],
+        "`legacy_rail` must have taken the defaults — including `enabled = true`, the invented \
+         capability migration 0033 exists to stop"
+    );
+
+    // The upgrade itself.
+    sqlx::raw_sql(MIGRATION_0033)
+        .execute(&pool)
+        .await
+        .context("migration 0033 must apply to a table that already has rows")?;
+
+    assert_eq!(
+        read_rows().await?,
+        before,
+        "ALTER COLUMN ... DROP DEFAULT touches pg_attrdef and must rewrite nothing. A difference \
+         here is a rail whose capabilities changed under an operator during an upgrade — read \
+         migration 0033's `NO DATA CHANGES` paragraph, which would then be wrong"
+    );
+
+    let defaulted_after: Vec<String> = sqlx::query_scalar(
+        "SELECT a.attname::text FROM pg_attribute a \
+         JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+         WHERE a.attrelid = 'providers'::regclass \
+         ORDER BY a.attname",
+    )
+    .fetch_all(&pool)
+    .await
+    .context("re-reading providers' column defaults must succeed")?;
+    assert!(
+        defaulted_after.is_empty(),
+        "0033 must leave no capability default behind on a populated table either: \
+         {defaulted_after:?}"
+    );
+
+    // And the refusal it creates is in force on this database too, not only on
+    // one migrated from empty.
+    let err = sqlx::query(
+        "INSERT INTO providers (code, display_name, flow) \
+         VALUES ('after_the_upgrade', 'After The Upgrade', 'push')",
+    )
+    .execute(&pool)
+    .await
+    .expect_err("the three-column insert must be refused once 0033 has run");
+    assert_eq!(
+        err.as_database_error().and_then(|e| e.code()).as_deref(),
+        Some("23502"),
+        "a not-null violation is the refusal 0033 creates: {err}"
+    );
+
+    Ok(())
+}
+
 /// `amount_refunded + amount_refund_pending <= amount` on `PaymentIntent`.
 ///
 /// `docs/flows/ledger.md` was corrected to say no database constraint
