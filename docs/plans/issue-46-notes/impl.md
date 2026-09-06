@@ -344,3 +344,184 @@ PR #51 adds a **second** refund renderer on top of the same object. Whichever
 of #50 and #51 lands second will have to rebase again, and the collision will
 be in the same place this one was — `vpay_api::model`'s refund block and the
 `refund` rows of `docs/flows/merchant-auth.md` and `docs/sdks/parity.md`.
+
+## 11. Rebased onto `bb8de92` (2026-09-06) — the second rebase, onto PR #51
+
+Section 10 predicted this one: *"PR #51 adds a **second** refund renderer on
+top of the same object. Whichever of #50 and #51 lands second will have to
+rebase again, and the collision will be in the same place this one was."* It
+did, and it was.
+
+`origin/master` is now **`bb8de92`**, the merge of PR #51 (issue #45,
+`GET /v1/refunds/{id}`). Sixteen commits replayed onto it; none dropped.
+
+### The decisions this resolution was made under
+
+Taken by the coordinator under [ADR-0016](../../adr/0016-engineering-standards.md)
+and not re-opened here:
+
+1. **One `RefundObject`/`RefundTag`, ten keys, `status` typed.** Master's nine
+   keys plus this branch's `fee`, with `status: vpay_core::RefundStatus`
+   rather than `String`. Master's doc comment argued for a `String` on the
+   grounds that an unparseable label should not turn a merchant's read into a
+   `500`; that concern is **kept, inverted, and written on the field**:
+   `refunds.status` is a Postgres `ENUM` (`refund_status`, migration `0017`),
+   a fifth value cannot be written without a migration, so a label that fails
+   to parse is a corrupted row rather than a vocabulary this code has not
+   caught up with — and `Internal` is then the honest answer.
+   `every_stored_refund_status_renders_and_decodes_in_the_merchant_sdk` (kept
+   from #51, retargeted) is what stops the two vocabularies drifting.
+2. **One `vpay_db::Refunds` repository** — master's, with its `COLUMNS`
+   projection and its merchant-scoped read (the join onto `payment_intents`,
+   because `refunds` has no `merchant_id`), extended with `r.fee` and one
+   `RefundRow` carrying `fee: Option<i64>`. This branch's trait-less
+   `RefundRow` is gone; there is one row type and no duplicate.
+3. **Master's `v1/refunds.rs` renders through that single ten-key renderer.**
+   The route is untouched by this branch.
+4. **#51's integration suite moved 9 → 10 keys** and now asserts `fee` is
+   *present and `null`* for a seeded row that has none.
+5. **Both refund event types** are covered on both surfaces: the unit case
+   `a_refund_delivered_as_either_refund_event_carries_fee_present_and_null`
+   and, in `backends/tests/integration/tests/refunds.rs`,
+   `the_api_response_and_an_events_payload_for_one_refund_are_byte_identical`,
+   which now loops `charge.refunded` **and** `charge.refund.updated`.
+6. **Every count both PRs measured was re-measured**, not carried — see the
+   gate below.
+
+### Six files conflicted
+
+* **`backends/crates/vpay-api/src/model.rs`** — the substantive one. Five
+  marked hunks, and **three duplicate definitions git produced with no marker
+  at all** because the two branches wrote them at different offsets:
+  two `RefundObject` structs (this branch's above `ListObject`, #51's beside
+  its `TryFrom`), two `refund_row` test fixtures with different signatures
+  (`fn refund_row(id: &str)` vs `fn refund_row(fee: Option<i64>)`), and two
+  `metadata_of` functions with different parameter orders. Resolved to one of
+  each: #51's `metadata_of(value, table)` signature, one struct carrying #51's
+  "one renderer, two surfaces" argument plus this branch's `fee`
+  documentation, and one fixture. #51's five refund cases were kept and
+  retargeted onto that fixture rather than deleted — its whole-value nine-key
+  case is subsumed by `the_refund_object_is_the_documented_ten_keys`, its
+  `reason` case now asserts ten keys and both the `null` and the supplied
+  spelling, and its status-vocabulary case now proves the parse as well as the
+  SDK decode. Its `RefundTag` assertion lives where it landed, inside
+  `the_object_discriminator_cannot_be_anything_else`, so this branch's
+  standalone duplicate of it was dropped.
+* **`backends/crates/vpay-db/src/refunds.rs`** (add/add — both branches
+  created the file) — resolved to #51's module: repository, `COLUMNS`,
+  merchant-scoped read, `sqlx::FromRow` row. `r.fee` joins the projection and
+  `fee: Option<i64>` the row; the module header names `0031` alongside `0017`.
+  Nothing else of this branch's version survives, and nothing of it needed to.
+* **`backends/crates/vpay-db/src/lib.rs`** — both branches wrote the `pub mod
+  refunds;` comment and the re-export. #51's kept in both hunks
+  (`pub use refunds::{RefundRow, Refunds};`).
+* **`docs/api/README.md`** — the `POST /v1/refunds` "not served" row. Merged:
+  #51's reason (no rail can refund; the repository has one read and no write)
+  plus the fact that `GET /v1/refunds/{id}` **is** served and renders ten keys.
+* **`docs/flows/merchant-auth.md`** — twice. The "**Served** marks…" paragraph
+  and the events rows (#51 had already fixed the same `⛔ 404` staleness this
+  branch's commit `f07dcd0` fixed; #51's header paragraph plus this branch's
+  richer per-row test citations were taken), and the "No `/v1/refunds`…"
+  bullet, where #51's correction is kept and the `fee` sentence appended.
+* **`docs/sdks/parity.md`** — twice: the provenance sentence (both dates kept)
+  and the row block, where #51's `refunds.retrieve` row and this branch's
+  `refund.fee` row are both present.
+
+Two more files needed edits with no conflict, because a claim they made had
+become false rather than contested:
+
+* **`backends/migrations/0031_refunds-fee.sql`** — its header and its
+  `COMMENT ON COLUMN` said "no refunds repository, no `/v1/refunds` route" and
+  "NOT WRITTEN OR READ BY ANY CODE". Both were true when written and are not
+  now: the column **is** read and rendered. Rewritten to say what is still
+  true — nothing *writes* it, so every stored value is `NULL`.
+* **`docs/status.md`** — the "Also missing, and larger" paragraph said nothing
+  reads a `refunds` row at all. Corrected to name the write side as the half
+  that is still missing.
+
+### One break carried no conflict marker, again
+
+Reconstructing the two whole SDK test functions that git had fragmented in
+`sdks/rust/tests/resources.rs` (this branch's `a_refund_fee_decodes_as_…` and
+#51's `retrieve_refund_is_a_get_…`, interleaved across two marker regions)
+left **one stray `}`** behind. It is invisible to `git status`, to a
+marker grep and to every doc gate; `cargo build --workspace --all-targets`
+caught it (`unexpected closing delimiter`). The first build after a rebase is
+not optional, and neither is reading its exit code rather than a pipeline's.
+
+### The gate on the rebased tree, measured 2026-09-06
+
+* `cargo build --workspace --all-targets`: **clean** (`Finished dev profile`).
+* `just fmt-check`: clean (one rustfmt nit in the merged test module, fixed).
+* `just clippy` (`--workspace --all-targets -- -D warnings`): clean.
+* `just verify`: *"ok — the ten gates above passed; the verify-docs report is
+  advisory"* — including `verify-sdk-parity: ok — 359 proving test(s) named in
+  docs/sdks/parity.md all exist, 28 dated gap(s)` and `verify-links: ok — 765
+  repository link(s) in 137 tracked markdown file(s)`.
+* `cargo nextest run -p vpay-api -p vpay-core -p vpay-sdk`: **475 tests run,
+  475 passed, 0 skipped.** The named refund/fee cases all pass — filtered to
+  `test(refund) or test(fee)`, **18 run, 18 passed**, including the ten-key
+  tripwire, the absent-vs-null-vs-zero case, `a_reported_fee_never_moves_the_
+  payers_amount` and the both-events case.
+* `just test-doc`: **96 passed, 0 failed, 1 ignored** (`vpay_core` 47, which
+  includes `RefundStatus`'s two doctests).
+* `just verify-ignored`: *"0 ignored (expected 0), 43 test binaries (expected
+  43), 1342 total (minimum 1080)"*. No new test binary, so `expected_suites`
+  stays 43.
+* `just lint-web`: clean (`pnpm -r typecheck`, `pnpm -r lint`; Node 22.23.2
+  per `.nvmrc`).
+* `just test-web`: every package passes — `sdks/nodejs` **180 across 9 files**,
+  `sdks/stripe-js` 119, `frontends/apps/checkout` 302, `examples/shop` 57,
+  `frontends/packages/config` 63, plus the small ones.
+* `just deny`: advisories, bans, licenses and sources ok.
+* `cargo nextest run -p vpay-sdk`: **141 tests run, 141 passed, 0 skipped** —
+  the number `docs/status.md`'s Rust-SDK row now carries, re-measured rather
+  than carried from #45's 136.
+
+### What did NOT run, and is owed to CI
+
+**`just test-rust`, attempted once and stopped on the host, not on this
+branch.** The rootless Docker daemon on this machine is mid-repair: there is
+no socket at `/run/user/1000/docker.sock` at all, and `docker info` fails
+before any test runs. The single attempt reached
+*"672/1342 tests run: 671 passed, 1 failed"*, and the one failure is
+`vpay-db::postgres an_abandoned_transaction_survives_a_rollback_it_cannot_send`
+with *"failed to create a container: Error in the hyper legacy client (Connect)"*
+— nextest then stopped, leaving 670 unrun. **No assertion failed.**
+
+Owed to CI, therefore, and named so nobody has to guess:
+
+* `backends/tests/integration/tests/refunds.rs` — including this rebase's
+  edits: the ten-key assertion, `fee` present-and-null, and the both-event-type
+  loop in `the_api_response_and_an_events_payload_for_one_refund_are_byte_identical`;
+* `backends/tests/integration/tests/postgres_smoke.rs` — the migration count
+  (31), `an_unreported_refund_fee_stays_null_and_never_becomes_zero` and
+  `a_negative_refund_fee_is_rejected_by_the_database`;
+* every other container-backed suite in `backends/tests/integration`,
+  `backends/tests/conformance` and `vpay-db`'s `postgres` binary.
+
+### The two decisive mutations, re-run on the rebased tree
+
+Applied to `TryFrom<&vpay_db::RefundRow> for RefundObject`, run, reverted;
+`git status` shows `model.rs` unmodified afterwards.
+
+1. `amount: row.amount` → `amount: row.amount - row.fee.unwrap_or(0)` —
+   **`a_reported_fee_never_moves_the_payers_amount` FAILS**: *"a fee of
+   Some(250) changed the amount the payer gets back — left: 1750, right:
+   2000"*. Ten of the eleven filtered cases still pass, which is the point.
+2. `fee: row.fee` → `fee: Some(row.fee.unwrap_or(0))` — **`an_unreported_
+   refund_fee_renders_null_and_a_reported_zero_renders_zero` FAILS**: *"left:
+   0, right: Null"*. Three others fall with it
+   (`the_refund_object_is_the_documented_ten_keys`,
+   `the_merchant_sdk_deserialises_the_refund_this_renders`,
+   `a_refund_delivered_as_either_refund_event_carries_fee_present_and_null`).
+
+### One dated record deliberately left alone
+
+[review.md](review.md) §1 records, as measured on 2026-09-05, that
+`V1_ROUTES` had nine entries and no refunds route. That was true of the tree
+it was measured on and is false of this one — #51 added the tenth. It is a
+dated measurement in a review record, not a live claim, and rewriting it
+would be rewriting history; this paragraph is the correction. Re-measured on
+this tree, `V1_ROUTES` has **eleven** entries — #47's `/account_holders` and
+#51's `/refunds/{id}` are the two the review's nine did not have.

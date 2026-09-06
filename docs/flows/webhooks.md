@@ -28,8 +28,10 @@ written for terminal transitions only.
 since 2026-09-05 ([issue #46](https://github.com/vaam-apps/vpay/issues/46)) is
 ten keys rather than nine: the tenth is `fee`, what the rail charged to move
 the money back. `data.object` is the wire object — the same
-`vpay_api::model::RefundObject` a `/v1` response would render — so a webhook
-body and an API response cannot disagree about it. The key is always present
+`vpay_api::model::RefundObject` that `GET /v1/refunds/{id}` renders (issue
+#45) — so a webhook body and an API response cannot disagree about it, and
+`the_api_response_and_an_events_payload_for_one_refund_are_byte_identical`
+drives both refund event types against a real route to prove it. The key is always present
 and, on every refund this deployment could produce, always `null`; **`null` is
 not `0`** and a receiver must not treat it as one
 (`a_refund_delivered_as_either_refund_event_carries_fee_present_and_null`;
