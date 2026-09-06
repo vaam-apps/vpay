@@ -49,6 +49,13 @@ application's side of them.
   - [Why not `QueryBuilder`](#why-not-querybuilder)
   - [The two interpolations that are not constants](#the-two-interpolations-that-are-not-constants)
 - [TLS: no `CryptoProvider` is installed here](#tls-no-cryptoprovider-is-installed-here)
+- [CrateStack](#cratestack)
+  - [What runs through it today](#what-runs-through-it-today)
+  - [Why the generated module is private, and what keeps it that way](#why-the-generated-module-is-private-and-what-keeps-it-that-way)
+  - [What stays raw sqlx, and why](#what-stays-raw-sqlx-and-why)
+  - [Errors: why vpay classifies them itself](#errors-why-vpay-classifies-them-itself)
+  - [The context, and the policy it satisfies](#the-context-and-the-policy-it-satisfies)
+  - [What this added to the dependency graph](#what-this-added-to-the-dependency-graph)
 
 ---
 
@@ -1232,3 +1239,188 @@ process. **So this crate does not call `install_default()`, deliberately.** The
 requirement in the root `Cargo.toml` is real but belongs to the dashboard-auth
 work, and each binary installs the provider at boot
 ([vpay-config.md](vpay-config.md#the-boot-sequence), step 2).
+
+---
+
+## CrateStack
+
+`vpay-db` compiles `schemas/vpay.cstack` with
+[CrateStack](https://cratestack.dev)'s `include_server_schema!` macro
+(`cratestack = { package = "cratestack-pg", version = "=0.11.1" }`) and runs
+**one** query through the generated data layer. This section says which one,
+what deliberately did not move, and which of CrateStack's behaviours vpay has
+had to work around rather than adopt. It is the application's side of
+`schemas/vpay.cstack`'s own header, which carries the schema's side.
+
+Everything here was measured against the 0.11.1 sources on 2026-09-06;
+`docs/plans/exp14-notes/opus.md` has the transcripts.
+
+### What runs through it today
+
+Exactly one method: `DisabledClients::is_client_disabled`, the OAuth
+kill-switch lookup, as
+`self.cs.disabled_client().find_unique(client_id).run(&system_context())`.
+Nothing about the trait changed — the signature, the `# Errors` contract and
+the deliberate absence of a cache are all as they were.
+
+It was chosen first because the migration needed to model its table is empty.
+`disabled_clients` is three columns (`TEXT PRIMARY KEY`, `TIMESTAMPTZ NOT NULL
+DEFAULT now()`, `TEXT`), every one of which is inside `cratestack-migrate`'s
+`map_scalar`; it has no CHECK constraint and no enum column. `currencies`
+would have needed `exponent INT` widened to `BIGINT` first (`int4` is
+unmapped), and `providers` would have needed its native `provider_flow` enum
+converted to `TEXT` + CHECK, because CrateStack reads every enum column with
+`try_get::<String>` and a native Postgres enum decodes as an error.
+
+The proof that it works is a comparison, not an assertion:
+`a_disabled_client_reads_the_same_through_both_paths` in
+`backends/crates/vpay-db/tests/repositories.rs` writes through the unmoved
+sqlx write and then reads the same key through the CrateStack path and through
+two spellings of a direct `SELECT`, for a key that exists and one that does
+not, and requires all of them to agree.
+
+### Why the generated module is private, and what keeps it that way
+
+`include_server_schema!` expands to `pub mod cratestack_schema { … }` **at the
+invocation site**. Put it in `lib.rs` and every generated model struct, every
+query delegate and a whole generated `pub mod axum` become `vpay_db::…` — a
+wholesale reversal of ADR-0016 standard 5 in a one-line diff. So the
+invocation lives in `src/schema.rs`, declared `mod schema;`, and nothing is
+re-exported from it.
+
+That could not be left to review, because the module the macro creates does
+not exist in any source file: no lint, no rustdoc pass and neither of
+`verify-repositories`' two original signals can see a
+`pub use schema::cratestack_schema;`. **Measured on 2026-09-06: with the macro
+in place, both `pub mod schema;` and `pub use schema::cratestack_schema;` made
+`cargo xtask verify-repositories` print `ok`.** The gate now carries a third
+check that fails both, and `DB_HANDLE_TYPES` has learned `Cratestack` and
+`SqlxRuntime` so that a future store holding the runtime instead of a `PgPool`
+is recognised as an implementation.
+
+### What stays raw sqlx, and why
+
+Everything else, including the two `disabled_clients` **writes**. Three
+properties of 0.11.1 decide where the line is, and none of them is a matter of
+taste:
+
+- **Model policies are compiled into the SQL.** `@@allow`/`@@deny` become
+  predicates in the `WHERE` clause of every generated read and write, and a
+  model with no `@@allow` is deny-by-default. A policy mistake therefore does
+  not raise an error — it returns zero rows. On the kill-switch that means
+  "no client is disabled", silently. `model DisabledClient` carries
+  `@@allow("read", auth().isSystem())` and nothing else, and the parity test
+  above is what makes a missing clause red.
+- **Multi-column CHECK constraints are invisible to the migration tooling.**
+  `cratestack-migrate` introspects only single-column CHECKs
+  (`AND array_length(c.conkey, 1) = 1`), and the grammar has no
+  `@@check(expr)` at all. vpay's ten cross-column CHECKs — `no_over_refund`,
+  `partial_refunds_imply_refunds`, `lock_is_paired` and the rest — cannot be
+  expressed here and would not be noticed missing. `backends/migrations/*.sql`
+  stays the authoritative schema; the `.cstack` file is compared against it,
+  never generated from it.
+- **Six Postgres types are mapped, and vpay uses more than six.** `int4`,
+  `int2`, `numeric`, `jsonb`, `bytea` and arrays are not in `map_scalar`, so
+  eighteen live columns are excluded from the drift comparison outright — the
+  number `EXPECTED_UNMAPPABLE_COLUMNS` pins in `postgres_smoke.rs`.
+
+There is a fourth reason the *writes* have not moved, specific to this table:
+moving them buys nothing until the read has been proven, and a change that
+moves a read and a write together cannot say which of the two the parity test
+is testing.
+
+The transaction seam is untouched, and can stay untouched: every CrateStack
+builder exposes `run_in_tx(&mut sqlx::Transaction<'_, Postgres>, &ctx)`, so
+when writes do move, vpay keeps opening its own transaction and CrateStack
+joins it. `UnitOfWork::transaction` and `TxOutcome::Abandon` survive —
+CrateStack's own `transaction` combinator commits on `Ok` and rolls back on
+`Err` with no third ending, and `Abandon` is what the confirm path's
+duplicate-charge `409` is built on. This is also why the root `Cargo.toml`
+pins `sqlx = "=0.9.0"` exactly rather than `"0.9"`: `run_in_tx` only accepts
+vpay's transaction while both halves resolve the same `sqlx-core`.
+
+### Errors: why vpay classifies them itself
+
+`PersistenceError` (`src/persistence.rs`) is the leaf, `DbError::Persistence`
+`#[from]`s it and delegates, and `classify_cratestack` is the single place a
+`CratestackError` is read — the mirror of `error::classify_write`, branching
+on the same SQLSTATEs and carrying the same constraint names.
+
+CrateStack's own `status_code()`/`public_message()` are **not used anywhere**,
+and that is load-bearing rather than stylistic: its `DatabaseTyped` variant is
+a `500` with the canned message `"internal error"`, so a duplicate charge
+would reach a merchant as an outage. Here a `23505` is a `409` with
+`error.code = "resource_conflict"` and `Retry::Never`, exactly as the sqlx
+path already made it —
+`a_duplicate_key_classifies_the_same_through_cratestack_as_through_sqlx`
+asserts the two agree *and* that neither matches what CrateStack would have
+said.
+
+Two honest limits on that mapping:
+
+- **A read never carries a SQLSTATE.** `FindUnique::run` maps its
+  `sqlx::Error` with `CratestackError::Database(error.to_string())` rather
+  than through `cratestack_error_from_sqlx`, so today every failure of the one
+  query vpay runs lands on `PersistenceError::Backend` → `Category::Storage`.
+  That is the same answer `DbError::Query` gave for the `SELECT` it replaced,
+  so nothing regressed; the SQLSTATE arms exist for the writes that have not
+  moved yet and are unit-tested rather than exercised.
+- **`Denied` cannot be produced by the read path either.** A policy refusal on
+  a read is a `WHERE` clause, not an error; `CratestackError::Forbidden` comes
+  only from the write and batch paths. It classifies `Internal`, not
+  `Forbidden`: every CrateStack call in this crate runs as the system
+  principal, so a refusal means the schema and the call site disagree — a
+  deploy bug that pages, never something to tell a merchant they are not
+  allowed to do.
+
+### The context, and the policy it satisfies
+
+`system_context()` returns `SystemContext::for_service("vpay-db")`'s inner
+context. `SystemContext` is the only producer of a context that satisfies
+`auth().isSystem()`, it has no `From<CratestackContext>` and no constructor
+taking one, and `CratestackContext::system` is `#[serde(skip)]` — so the
+marker cannot arrive over a wire and no request-derived context can become
+one. That asymmetry is why the schema names `auth().isSystem()` rather than
+`auth() != null`: the weaker predicate would be satisfied by any authenticated
+caller if this table ever were reached on behalf of a request.
+
+The service name reaches `actor.id = "system:vpay-db"` in
+`cratestack_sqlx::audit::actor_from_context`. Nothing in vpay audits through
+CrateStack yet; the name is fixed now so it does not have to be chosen
+retroactively for rows already written.
+
+### What this added to the dependency graph
+
+`Cargo.lock` goes from 469 packages to 497 (+28), of which twelve are
+`cratestack-*` and all twelve are MIT. `syn` moves 3.0.3 → 3.0.5. The feature
+set is `default-features = false, features = ["postgres"]`, which drops
+`decimal-rust-decimal` (this schema declares no `Decimal`; vpay's money is
+integer minor units) and `codec-json` (vpay generates no client).
+
+Two of the twenty-eight are **BlueOak-1.0.0** — `minicbor` and
+`minicbor-serde` — and they are not optional. `cratestack-pg` declares
+`cratestack-axum` and `cratestack-client-rust` as non-optional dependencies
+with no feature gating either, and both take `minicbor` unconditionally;
+dropping down to `cratestack-sqlx` + `cratestack-macros` directly does not
+help, because `include_server_schema!` emits
+`pub mod axum { use ::cratestack::HttpTransport; … }` unconditionally.
+`deny.toml` therefore carries a **scoped** exception for those two crate names
+— not an entry on the `allow` list — with the maintainer's decision and the
+reasoning beside it. `cargo deny check` reports
+`advisories ok, bans ok, licenses ok, sources ok`, and no other new licence or
+ban appeared. `cargo tree -i aws-lc-rs` is still empty and there is still
+exactly one `sqlx`.
+
+The generated `pub mod axum` compiles and is never referenced: vpay keeps its
+own router and its Stripe-shaped `/v1`. `crypto-aws-lc-rs` must never be
+enabled — `deny.toml` bans `aws-lc-rs` (ADR-0005, ADR-0007), and at 0.11.1 the
+feature is a `compile_error!` rather than a working mode in any case.
+
+One ergonomic consequence, recorded because the failure message does not
+explain itself: `UnitOfWork::transaction`'s `E: From<DbError>` bound used to
+have exactly one candidate (the reflexive `impl<T> From<T> for T`), so `E`
+fell out of inference. `DbError::Persistence(#[from] PersistenceError)` adds a
+second, and a call site that named neither now needs
+`-> TxFuture<'_, Result<TxOutcome<T>, DbError>>` on the closure. One site in
+this workspace was affected (`repository::closure_shape`); the annotation is
+there with a comment.
