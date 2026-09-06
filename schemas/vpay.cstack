@@ -15,15 +15,18 @@
 // │ verify-repositories` fails if that changes).                             │
 // │                                                                          │
 // │ Compiled is not the same as used, and the difference matters more        │
-// │ than usual here. THREE models have queries running through them, all     │
+// │ than usual here. FIVE models have queries running through them, all      │
 // │ of them since 2026-09-06: `DisabledClient` (all three methods —          │
 // │ `find_unique(...).run(ctx)`, `upsert(...).run(ctx)` and                  │
 // │ `delete_many().where_(...).run(ctx)`), `Currency`                        │
 // │ (`find_unique(...).for_update()` then `upsert(...)`, both `run_in_tx`    │
 // │ on boot step 4's transaction) and `Provider` (`upsert(...).run_in_tx`,   │
 // │ which migration 0033 is what made possible — see the note on that        │
-// │ model). This box said "exactly ONE model" until the currencies and       │
-// │ providers passes moved. Every other model below is still a design        │
+// │ model), plus `WebhookDelivery` and `Event` (the outbox: `upsert(...)     │
+// │ .do_nothing()` and `update_many(...)`, both `run_in_tx` on the fan-out   │
+// │ transaction — see those models). This box said "exactly ONE model"       │
+// │ until the currencies, providers and outbox passes moved. Every other     │
+// │ model below is still a design                                            │
 // │ sketch that happens to be type-checked by a compiler as well as by the   │
 // │ CLI; no code reads or writes through any of them, and several do not     │
 // │ match the live table at all (see the drift list). docs/status.md is      │
