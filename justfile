@@ -1052,6 +1052,18 @@ verify-docs:
 # stands untouched. The lesson worth keeping: when two branches each bump a
 # count by one, the merged count is not either branch's number, and only
 # re-running the measurement finds that.
+#
+# **Re-measured and UNCHANGED at 43 on 2026-09-06**, when the first CrateStack
+# read (`vpay-db`'s private `mod schema`, `disabled_clients` through the port)
+# was rebased onto `c456f24`. Recorded even though the number did not move,
+# because the entry above is the reason to check rather than assume: that
+# branch adds **ten** tests and **no** test binary — one parity case and five
+# `persistence::tests` in `vpay-db`, four `repository_tests` in `xtask` — all
+# of them into files that already existed. Measured the way `verify-ignored`
+# measures it, on the rebased tree: **1361 total, 43 test binaries, 0
+# ignored**. 1361 is the rebase's own number and neither branch's: master's
+# total had already moved past the 1334 recorded above when #52 landed
+# `verify-sdk-parity`'s SDK-reading tests. The 1080 floor stands untouched.
 expected_ignored := "0"
 expected_suites := "43"
 # A floor, not a target — set a little under the measured 1059

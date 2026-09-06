@@ -381,3 +381,94 @@ of the 1288 above); none has been run:
 Nothing in this branch was weakened, skipped or `#[ignore]`d to accommodate
 the outage: the tests exist, compile and are listed, and the list above is
 the honest account of which of them a machine has actually run.
+
+---
+
+## 8. Rebased onto `c456f24` (2026-09-06)
+
+This branch was rebased from `65a5952` onto master at **`c456f24`**, which had
+since merged #49 (account-holder lookup — a new port method, a capability, the
+MTN adapter, `GET /v1/account_holders`, both SDKs and their parity rows), #51
+(`GET /v1/refunds/{id}` — `vpay_db::Refunds`, `RefundObject`, a new integration
+binary, `expected_suites` 41 → 42 → 43), and #52 (the two-directional
+`verify-sdk-parity` in `.xtask/src/main.rs`).
+
+**Fifteen commits replayed with zero conflicts, which is the thing to be
+suspicious of rather than pleased about.** `git merge-tree` reported a clean
+tree before the rebase was started, so every overlap was checked by hand
+afterwards instead of being trusted: `.xtask/src/main.rs` (both #52's
+SDK-reading parity tests and this branch's `repository_tests` are present —
+the two `the_repositorys_own_tree_passes` functions that a duplicate-name scan
+flags are **not** a duplicate definition, one is `serde_tests`' and one is
+`repository_tests`'), `backends/crates/vpay-db/src/lib.rs` (#51's
+`pub mod refunds;` / `pub use refunds::{RefundRow, Refunds};` *and* this
+branch's `mod persistence; mod schema;` both survived), `repository.rs`,
+`justfile` (#52's header text and this branch's `cratestack_min_declarations
+:= "13"` are in different hunks), `CLAUDE.md` (master's "ten self-checks"
+correction plus this branch's CrateStack bullet), `Cargo.lock`, and
+`docs/{status.md,reference/vpay-db.md,flows/merchant-auth.md}`.
+
+`Cargo.lock` needed no hand-merge and `cargo build` did not move it: the tree
+still resolves **497 packages**, exactly one `sqlx` and one `sqlx-core` (both
+`0.9.0`, which is what `run_in_tx` requires), and the twelve `cratestack-*`
+crates at **`0.11.1`**.
+
+**The drift constants stay at 85 / 16.** #49, #51 and #52 added no migration —
+`backends/migrations` holds **30** files on `c456f24` and 30 here — so nothing
+about the schema-versus-migrations delta moved.
+
+### Re-measured on the rebased tree, not carried over
+
+| Gate | Before the rebase | On `c456f24` + this branch |
+|---|---|---|
+| `cargo nextest run -p xtask` | 198 passed | **215 passed, 0 skipped** |
+| `just verify-ignored` | 41 binaries, 1289 total | **43 binaries, 1361 total, 0 ignored** |
+| `just test-doc` | 90 passed, 1 ignored | **94 passed, 1 ignored** |
+| `cargo nextest run -p vpay-db --lib` | 24 passed | **24 passed, 0 skipped** |
+| `just verify` | ten gates ok | **ten gates ok**, incl. `verify-sdk-parity: 354 proving test(s), 28 dated gap(s), 14 SDK method(s) across 17 row(s)` |
+
+`expected_suites` was re-measured and **stays 43**: this branch adds ten tests
+and no test binary. `test-doc` is master's 94 — the only fence this branch adds
+is a ```` ```text ```` block, which compiles nothing. `just fmt-check`,
+`just clippy`, `just deny`, `just docs-check`, `just lint-web` and
+`just test-web` are all exit 0, and `cargo build --workspace --all-targets` is
+clean.
+
+The three non-container mutations were re-run on the rebased tree and all three
+still fail as designed: deleting the two `BlueOak-1.0.0` exceptions fails
+`just deny` (exit 4, both `minicbor` and `minicbor-serde` rejected); `pub mod
+schema;` fails `verify-repositories`; and
+`pub type X = crate::schema::cratestack_schema::Cratestack;` fails it too, on
+the alias/`pub fn` arm the review added.
+
+### Still owed to CI — the five, by name, unchanged by the rebase
+
+The rebase changed none of this. The authoring host's rootless Docker is still
+down, so every one of these remains **written, compiled and listed, but never
+executed on any machine**:
+
+1. **`vpay-db::repositories a_disabled_client_reads_the_same_through_both_paths`**
+   — the parity test, and the single most important case on this branch. Until
+   it runs green, "the CrateStack read returns what the sqlx read returns" is
+   read out of the generated query builder, not measured.
+2. **The decisive read-policy mutation** — delete `@@allow("read",
+   auth().isSystem())` from `model DisabledClient` in `schemas/vpay.cstack` and
+   confirm the parity test **FAILS**. It needs (1) to run first, so it has
+   never run either.
+3. **`just test-rust`** (`cargo nextest run --workspace`) — the workspace is
+   listed (1361 tests, 43 binaries, 0 ignored) but not run, so every
+   container-backed suite in `vpay-db`, `vpay-tests-integration`, `vpay-server`
+   and `vpay-worker-bin` is unexecuted here — including the pre-existing
+   `disabled_client_lookup_reflects_disable_and_enable`, which exercises the
+   method this branch changed, and the `client_store` / `merchant_token_flow`
+   suites that reach `is_client_disabled` through the token path.
+4. **The re-run of the drift test on the final tree** —
+   `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`. It
+   passed with the final constants (85 / 16) before the Docker outage, on the
+   same content; it has not been re-run since, and now also not since the
+   rebase.
+5. **The server image build and its size delta.** Not attempted, before or
+   after the rebase. The musl static link has to carry CrateStack's twelve
+   crates plus `minicbor`, `chumsky` and `ariadne`, and the size cost of this
+   change is still **unmeasured**. No buildx builder was created, so there is
+   nothing to clean up.

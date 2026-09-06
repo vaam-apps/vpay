@@ -3129,12 +3129,20 @@ saturation) and was unrecoverable without a reboot. Every gate that needs no
 container is green — `cargo build --workspace --all-targets` with zero
 warnings, `just fmt-check`, `just clippy`, all ten `just verify` gates,
 `cargo nextest run -p vpay-db --lib` (24/24, including all five
-`persistence::tests`), `cargo nextest run -p xtask` (198/198), `just test-doc`
-(90 passed, 1 ignored), `just verify-ignored` (0 ignored, 41 binaries, 1289
-total — master's 1279 plus this branch's ten), `just deny`, `just docs-check`,
-`just lint-web`, `just test-web`. (197/197 and 1288 until 2026-09-06, when
-the review added one more `verify-repositories` test; every one of these was
-re-run after it.) The three that are not, named rather than counted:
+`persistence::tests`), `cargo nextest run -p xtask` (215/215), `just test-doc`
+(94 passed, 1 ignored), `just verify-ignored` (0 ignored, 43 binaries, 1361
+total), `just deny`, `just docs-check`, `just lint-web`, `just test-web`.
+**Every number in that sentence was re-measured on 2026-09-06 after this
+branch was rebased onto `c456f24`** (#49 account-holder lookup, #51
+`GET /v1/refunds/{id}`, #52 the two-directional parity gate) and none of them
+is this branch's own any more: xtask was 197 as delivered and 198 after the
+review's extra `verify-repositories` test, and is 215 now because #52 added
+`verify-sdk-parity`'s SDK-reading tests; `verify-ignored` was 41 binaries /
+1288, then 1289, and is 43 / 1361 now because #47 and #45 each added an
+integration binary. This branch still adds **no** test binary and **ten**
+tests, so `expected_suites` stays at the 43 the rebase inherited and
+`min_tests` stays at 1080. The three cases that are not run, named rather
+than counted:
 
 1. `vpay-db::repositories a_disabled_client_reads_the_same_through_both_paths`
    — the parity test. It compiles and is listed; it has not run. **Until it
