@@ -191,6 +191,24 @@ pub enum DbError {
         /// What this deployment's configuration asked for.
         seeded: i32,
     },
+
+    /// A query that ran through CrateStack's data layer rather than through
+    /// a hand-written `sqlx` statement failed.
+    ///
+    /// `transparent`, and its classification is *delegated* rather than
+    /// re-decided (ADR-0011, ADR-0016 standard 1): [`crate::PersistenceError`]
+    /// is a leaf that has already made every decision this variant could
+    /// make, and a second opinion here is how the two persistence paths would
+    /// start disagreeing about whether a duplicate charge is a `409` or a
+    /// `503`. `cargo xtask verify-errors` fails if the `Classify` impl below
+    /// ever answers for this variant with a wildcard instead of naming it.
+    ///
+    /// One variant rather than one per CrateStack failure for the same
+    /// reason [`Self::Query`] is one variant across every hand-written read:
+    /// the interesting distinctions are inside the leaf, and a caller that
+    /// wants them matches on it.
+    #[error(transparent)]
+    Persistence(#[from] crate::PersistenceError),
 }
 
 /// Maps a failed *write* onto the variant that says whose problem it is:
@@ -277,6 +295,10 @@ impl vpay_core::Classify for DbError {
             // a compare-and-swap this crate's own caller was supposed to
             // have set up matched nothing.
             Self::WriteMatchedNoRow { .. } => Category::Internal,
+            // Delegated, never re-decided. Named explicitly rather than
+            // caught by a wildcard, which is both ADR-0011's rule and what
+            // `verify-errors` checks.
+            Self::Persistence(error) => error.category(),
         }
     }
 
@@ -295,6 +317,7 @@ impl vpay_core::Classify for DbError {
             Self::ForeignKeyViolation { .. } => "invalid_reference",
             Self::CurrencyExponentConflict { .. } => "currency_exponent_conflict",
             Self::WriteMatchedNoRow { .. } => "write_matched_no_row",
+            Self::Persistence(error) => error.code(),
         }
     }
 }

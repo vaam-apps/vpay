@@ -70,5 +70,17 @@ This repo prefers evidence over confidence:
   `CYPRESS_INSTALL_BINARY=0` skips it.
 - `clippy.toml` exempts tests from the `unwrap`/`expect`/`panic` deny. If clippy
   complains about `expect` in a test, you are outside a `#[cfg(test)]` module.
-- `schemas/*.cstack` is **not** wired into the build and its syntax is
-  unverified. Do not try to make it compile.
+- `schemas/vpay.cstack` **is** wired into the build (2026-09-06). This bullet
+  said the opposite — "not wired into the build, its syntax is unverified, do
+  not try to make it compile" — and had been wrong in two stages: `just
+  check-schema` began verifying the syntax on 2026-09-05, and `vpay-db`'s
+  private `mod schema` began *compiling* the file on 2026-09-06. A syntax
+  error in it is now a `cargo build` failure. Two things follow. The CLI and
+  the library must stay on one version — `justfile`'s `cratestack_version`
+  and `Cargo.toml`'s `cratestack = "=0.11.1"` — so bump them together. And
+  the generated module is private to `vpay-db` on purpose: `cargo xtask
+  verify-repositories` fails if `mod schema` is made `pub` or re-exported,
+  because the module the macro creates exists in no source file and nothing
+  else would object. Adding a `model` is not free either: it must match the
+  live table, and `postgres_smoke.rs`'s drift test pins the exact gap. See
+  `docs/reference/vpay-db.md` § CrateStack.

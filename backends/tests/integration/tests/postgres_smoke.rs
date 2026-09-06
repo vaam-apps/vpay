@@ -801,25 +801,57 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 /// Pending drift changes between `schemas/vpay.cstack` and a freshly migrated
 /// vpay database, as counted by `cratestack migrate baseline --strict`.
 ///
-/// **Measured on 2026-09-05, not chosen**, against `cratestack-cli 0.11.1` and
+/// **Measured, not chosen**, against `cratestack-cli 0.11.1` and
 /// `postgres:16-alpine` — `docs/plans/exp13-notes/opus.md` has the full
-/// transcript. **This number must move when the schema grows.** It is the
-/// size of the gap between a design sketch and the migrations that outran it,
-/// so a commit that closes part of that gap and leaves this constant alone
-/// has changed the schema without measuring the change; the test failing is
-/// the intended way to find that out.
+/// transcript for the original 2026-09-05 measurement. **This number must
+/// move when the schema grows.** It is the size of the gap between a design
+/// sketch and the migrations that outran it, so a commit that closes part of
+/// that gap and leaves this constant alone has changed the schema without
+/// measuring the change; the test failing is the intended way to find that
+/// out.
+///
+/// **86 -> 85 on 2026-09-06**, when `schemas/vpay.cstack` gained
+/// `model DisabledClient` and `vpay-db` started reading `disabled_clients`
+/// through CrateStack. One `table … is not declared in the schema` line went
+/// away and nothing replaced it, so `disabled_clients` left the report
+/// entirely and `EXPECTED_DRIFTED_RELATIONS` fell with it. That the count
+/// moved at all is a fact about the *default*, and it was the second thing
+/// tried: `@default(dbgenerated())` on `disabled_at` swaps the missing-table
+/// line for a `column disabled_at default value differs` line and leaves the
+/// total at exactly 86 — a whole table entering the schema, invisible here.
+/// `@default(now())` compares equal to the live `now()` and is why this
+/// number moved (`docs/plans/exp14-notes/opus.md`). The set assertion below
+/// is what caught the first spelling; keep both.
+///
+/// **Unmoved by migration 0031 on 2026-09-06**, re-measured with this test on
+/// the tree rebased onto issue #46. A stationary number here can mean either
+/// "the schema did not change" or "the report stopped looking", so the reason
+/// is recorded rather than assumed: `0031_refunds-fee.sql` adds `refunds.fee`
+/// to a table `schemas/vpay.cstack` does not declare at all, and an undeclared
+/// table contributes exactly one `table ... is not declared in the schema`
+/// line whatever its column count. The schema therefore grew by a column and
+/// this total did not move. `refunds.fee` is `numeric`, which cratestack maps,
+/// so it did not enter the unmappable block either.
 ///
 /// It is deliberately not, and must never become, `0`. A zero here would not
 /// mean the schema had caught up — it would mean the report stopped finding
 /// things, which is the failure mode `--strict` is easiest to misread as
 /// success in.
-const EXPECTED_DRIFT_CHANGES: u32 = 86;
+const EXPECTED_DRIFT_CHANGES: u32 = 85;
 
 /// Tables and views the drift above is spread across. Reported on the same
-/// header line as the change count and pinned for the same reason: 86 changes
-/// concentrated in three relations and 86 spread over seventeen are different
+/// header line as the change count and pinned for the same reason: 85 changes
+/// concentrated in three relations and 85 spread over sixteen are different
 /// facts about the schema, and only one of them is true.
-const EXPECTED_DRIFTED_RELATIONS: u32 = 17;
+///
+/// **17 -> 16 on 2026-09-06**: `disabled_clients` is now modelled exactly and
+/// contributes no change at all, so it is not merely a table whose drift
+/// shrank — it is off the list.
+///
+/// **Still 16 after migration 0031 (2026-09-06):** the column 0031 adds
+/// lands on `refunds`, which was already on this list as an undeclared table
+/// and stays exactly one entry on it.
+const EXPECTED_DRIFTED_RELATIONS: u32 = 16;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
 /// Postgres type onto a `.cstack` scalar, which it reports as a trailing
@@ -831,6 +863,10 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 17;
 /// or a `bytea`. If this number grows, the report is comparing less than it
 /// was, and `EXPECTED_DRIFT_CHANGES` can fall for a reason that has nothing
 /// to do with the schema improving.
+///
+/// **Still 18 after migration 0031 (2026-09-06):** `refunds.fee` is `numeric`,
+/// which cratestack maps onto a `.cstack` scalar, so it is compared rather
+/// than excluded. The 18 still include `refunds.metadata` (`jsonb`).
 const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 18;
 
 /// The `--out-dir` handed to `migrate baseline`, removed when it goes out of
@@ -982,11 +1018,13 @@ fn tables_missing_from_the_schema(stdout: &str) -> Vec<String> {
 ///
 /// The schema's own header lists what it "deliberately does NOT invent shapes
 /// for". This test does not take that list on trust — it measures, and the
-/// measured set is **larger** than the header's: `disabled_clients`,
-/// `oauth_signing_keys` and `oauth_client_assertion_jtis` are lumped under
-/// "the authkestra tables" in that prose, but they live in `public` rather
-/// than in the `authkestra` schema, so they are three more tables the file
-/// omits and not a category it already accounted for.
+/// measured set is **larger** than the header's: `oauth_signing_keys` and
+/// `oauth_client_assertion_jtis` are lumped under "the authkestra tables" in
+/// that prose, but they live in `public` rather than in the `authkestra`
+/// schema, so they are two more tables the file omits and not a category it
+/// already accounted for. `disabled_clients` was a third until 2026-09-06,
+/// when it became the first table this schema models *and* `vpay-db` reads
+/// through CrateStack.
 ///
 /// See `docs/plans/exp13-notes/opus.md` for the full CLI transcript and
 /// `docs/status.md`, "CrateStack", for what this number means.
@@ -1079,6 +1117,15 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
     // total stays at exactly 86. A whole table entering the schema was
     // invisible to `EXPECTED_DRIFT_CHANGES`. This assertion is what caught
     // it. (`docs/plans/exp13-notes/opus.md`, mutation 2.)
+    //
+    // That model landed on 2026-09-06 and `disabled_clients` is gone from the
+    // list below — but with `@default(now())` rather than
+    // `@default(dbgenerated())`, so the replacement line the paragraph above
+    // describes never appeared and the count moved after all (86 -> 85).
+    // The paragraph stays because the mutation it records is still the one
+    // this assertion exists for: the *next* table modelled with a default
+    // this tool renders differently will swap a line for a line, and only
+    // this list will notice.
     let mut missing = tables_missing_from_the_schema(&stdout);
     missing.sort();
     assert_eq!(
@@ -1090,11 +1137,10 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // honestly part of the drift rather than something to filter out.
             "_sqlx_migrations",
             "checkout_sessions",
-            "disabled_clients",
             "events",
             "idempotency_keys",
             "jobs",
-            // These three are `public` tables, not `authkestra` ones. The
+            // These two are `public` tables, not `authkestra` ones. The
             // schema header's "and the authkestra tables" does not cover
             // them; the `authkestra.*` tables really are invisible here,
             // because baseline introspects the connection's own schema.

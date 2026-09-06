@@ -2321,13 +2321,45 @@ const REPOSITORY_CRATE_DIR: &str = "backends/crates/vpay-db";
 ///
 /// This is the mechanical form of "owns a database handle". A row struct
 /// (`ChargeRow`, `JobRow`) carries columns; an implementation carries the
-/// connection it runs them on, and `sqlx` gives it exactly two shapes — a
-/// pool or an open transaction. Deriving the set this way rather than listing
+/// connection it runs them on. Deriving the set this way rather than listing
 /// `PgRepositories` and its siblings by name is what makes the gate cover a
 /// type nobody has written yet: a new `SqlSomethingStore { pool: PgPool }` is
 /// caught the day it is added, without anyone remembering to extend a
 /// constant.
-const DB_HANDLE_TYPES: [&str; 2] = ["PgPool", "Transaction"];
+///
+/// `sqlx` gives a handle two shapes — a pool or an open transaction — and
+/// those were the whole list until 2026-09-06. **CrateStack gives it two
+/// more**, and neither contains the word `PgPool`: `Cratestack` is the
+/// generated runtime hub a store would hold instead of a pool
+/// (`struct CsChargeStore { cs: Cratestack }` owns a connection and would
+/// have been invisible here), and `SqlxRuntime` is the type it wraps, which
+/// `cratestack-pg` re-exports and which a store could hold directly. Both are
+/// added because the first signal is the only one that catches a helper an
+/// umbrella delegates to — such a helper implements no `vpay-db` trait, so
+/// the second signal cannot see it at all.
+///
+/// Matching is on identifier boundaries ([`word_lines`]), which is what keeps
+/// `Cratestack` out of `CratestackError` and `CratestackContext` — both of
+/// which appear in `vpay-db`'s `persistence` module, and neither of which is
+/// a database handle. `a_cratestack_handle_is_a_handle_and_its_error_is_not`
+/// asserts that rather than leaving it to the reader.
+const DB_HANDLE_TYPES: [&str; 4] = ["PgPool", "Transaction", "Cratestack", "SqlxRuntime"];
+
+/// The macro whose expansion `vpay-db` must never publish.
+///
+/// `include_server_schema!` expands to `pub mod cratestack_schema { … }` at
+/// its invocation site: every model struct, every query delegate and a whole
+/// generated `pub mod axum`. In a private module that is crate-internal
+/// detail; at the crate root, or behind a `pub use`, it is public API of
+/// `vpay-db` and a wholesale reversal of standard 5.
+///
+/// The check that follows is textual for a reason that is not laziness: the
+/// module the macro creates **does not exist in any source file**, so the two
+/// signals above — which read declarations and `impl` headers — cannot see
+/// it, and neither can `cargo doc`'s intra-doc link resolution or any lint.
+/// `pub use schema::cratestack_schema;` would hand `vpay_db::cratestack_schema::Charge`
+/// to every consumer, and this gate said `ok` for it until this check landed.
+const GENERATED_SCHEMA_MACRO: &str = "include_server_schema!";
 
 /// Where a reach for a concrete implementation would be a defect: every
 /// library crate that is not [`REPOSITORY_CRATE_DIR`], and both binaries.
@@ -2379,14 +2411,16 @@ fn verify_repositories(root: &Path) -> Result<(), String> {
         ));
     }
 
-    let db_sources: Vec<String> = rust_sources(&db_dir)
+    let db_files: Vec<(PathBuf, String)> = rust_sources(&db_dir)
         .into_iter()
         .filter(|path| path.components().any(|c| c.as_os_str() == "src"))
         .map(|path| {
             let text = fs::read_to_string(&path).unwrap_or_default();
-            blank_cfg_test_items(&strip_comments(&text))
+            let scanned = blank_cfg_test_items(&strip_comments(&text));
+            (path, scanned)
         })
         .collect();
+    let db_sources: Vec<String> = db_files.iter().map(|(_, text)| text.clone()).collect();
 
     let concrete = concrete_repository_types(&db_sources);
     if concrete.is_empty() {
@@ -2396,7 +2430,7 @@ fn verify_repositories(root: &Path) -> Result<(), String> {
         ));
     }
 
-    let mut problems = Vec::new();
+    let mut problems = generated_schema_leaks(root, &db_files);
     let mut scanned = 0usize;
     for dir in REPOSITORY_CONSUMER_DIRS {
         let Ok(entries) = fs::read_dir(root.join(dir)) else {
@@ -2432,7 +2466,8 @@ fn verify_repositories(root: &Path) -> Result<(), String> {
     if problems.is_empty() {
         println!(
             "verify-repositories: ok — {} concrete implementation(s) in {REPOSITORY_CRATE_DIR} \
-             ({}), named by none of the {scanned} source file(s) outside it",
+             ({}), named by none of the {scanned} source file(s) outside it, and no generated \
+             schema module is exported",
             concrete.len(),
             concrete
                 .iter()
@@ -2447,6 +2482,265 @@ fn verify_repositories(root: &Path) -> Result<(), String> {
             problems.join("\n  - ")
         ))
     }
+}
+
+/// Every way `vpay-db` could be publishing a module that only exists after
+/// macro expansion, reported as gate failures.
+///
+/// # Why a third check, and why it is textual
+///
+/// The two signals in [`concrete_repository_types`] read *declarations*. The
+/// generated `cratestack_schema` module is declared by nothing: it appears
+/// only in the token stream `include_server_schema!` produces, so a
+/// `pub use schema::cratestack_schema;` in `lib.rs` publishes every model
+/// struct, every query delegate and a whole generated `pub mod axum` as
+/// `vpay_db::…` — and the gate, reading source text, saw a `pub use` naming
+/// a module it had no opinion about and said `ok`. Measured on 2026-09-06,
+/// on the branch that introduced the macro: both `pub mod schema;` and
+/// `pub use schema::cratestack_schema;` cleared the gate as it stood.
+///
+/// # What it requires
+///
+/// For each file under `vpay-db/src` invoking [`GENERATED_SCHEMA_MACRO`]:
+///
+/// 1. it is not the crate root — a macro at `lib.rs` publishes its expansion
+///    with no `pub` anywhere for a reader to notice;
+/// 2. the module is declared in the crate root without an unrestricted `pub`
+///    (`mod schema;` and `pub(crate) mod schema;` are both fine — neither is
+///    reachable from another crate; `pub mod schema;` is not);
+/// 3. it is declared *at all*, so a module the gate cannot find fails rather
+///    than passing by finding nothing;
+/// 4. no `pub use` anywhere in the crate names it;
+/// 5. no unrestricted-`pub` *signature* anywhere in the crate names it.
+///
+/// `pub(crate)` is accepted rather than demanded because the rule is about
+/// what leaves the crate, and a gate that insisted on the exact spelling
+/// `mod schema;` would be a rule about characters.
+///
+/// # Why requirement 5, added 2026-09-06 by review
+///
+/// Requirements 2 and 4 read the two spellings that *name a module*. They are
+/// not the only two ways out. Measured against the gate with 1–4 in place,
+/// both of these compiled **and passed**:
+///
+/// ```text
+/// pub type CratestackHandle = crate::schema::cratestack_schema::Cratestack;
+/// pub fn cratestack_handle(pool: sqlx::PgPool)
+///     -> crate::schema::cratestack_schema::Cratestack { … }
+/// ```
+///
+/// Either one hands every consumer of `vpay-db` the generated runtime hub —
+/// and through it every model delegate — which is the whole of what
+/// requirements 2 and 4 exist to prevent, reached by a spelling they do not
+/// read. `concrete_repository_types`' alias fixpoint does not catch them
+/// either: it only promotes an alias whose *target* is already in the set,
+/// and `Cratestack` is declared by no source file, so it never is.
+///
+/// So: any line naming the module whose enclosing item is introduced by an
+/// unrestricted `pub` — `pub fn`, `pub type`, `pub const`, `pub static`,
+/// `pub struct`, `pub enum`, `pub trait`, in any file of the crate — is a
+/// violation. `mod` and `use` are excluded because 2 and 4 already own them
+/// and say something more specific. `pub(crate)` and private items are not
+/// violations, for requirement 2's reason: `PgRepositories`' own
+/// `pub(crate) cs` field names the module on purpose and leaves no crate.
+fn generated_schema_leaks(root: &Path, db_files: &[(PathBuf, String)]) -> Vec<String> {
+    let mut problems = Vec::new();
+
+    let generated: Vec<(&PathBuf, &String)> = db_files
+        .iter()
+        .filter(|(_, text)| text.contains(GENERATED_SCHEMA_MACRO))
+        .map(|(path, text)| (path, text))
+        .collect();
+    if generated.is_empty() {
+        return problems;
+    }
+
+    let root_text = db_files
+        .iter()
+        .find(|(path, _)| path.file_name().is_some_and(|name| name == "lib.rs"))
+        .map(|(_, text)| text.as_str())
+        .unwrap_or_default();
+
+    for (path, _) in generated {
+        let file = relative(root, path);
+        let Some(module) = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| *stem != "lib" && *stem != "mod")
+        else {
+            problems.push(format!(
+                "{file}: `{GENERATED_SCHEMA_MACRO}` expands to `pub mod cratestack_schema` at \
+                 its invocation site, so it must live in a named, private module — not in the \
+                 crate root and not in a `mod.rs` (ADR-0016, standard 5)"
+            ));
+            continue;
+        };
+
+        let declaration = format!("mod {module};");
+        let Some(at) = root_text.find(&declaration) else {
+            problems.push(format!(
+                "{file}: `lib.rs` declares no `mod {module};`, so this gate cannot tell whether \
+                 the generated schema module is private; a check that cannot find its subject \
+                 must fail rather than pass (ADR-0016, standard 5)"
+            ));
+            continue;
+        };
+        let before = root_text.get(..at).unwrap_or_default().trim_end();
+        if before.ends_with("pub") {
+            let line = before.matches('\n').count() + 1;
+            problems.push(format!(
+                "backends/crates/vpay-db/src/lib.rs:{line}: `pub mod {module};` publishes the \
+                 module holding `{GENERATED_SCHEMA_MACRO}`, and with it every generated model, \
+                 delegate and the generated `axum` surface, as `vpay_db::{module}::…`. Declare \
+                 it `mod {module};` (ADR-0016, standard 5)"
+            ));
+        }
+
+        for (source_path, text) in db_files {
+            for line in exported_use_lines_naming(text, module) {
+                problems.push(format!(
+                    "{}:{line}: a `pub use` naming `{module}` re-exports the expansion of \
+                     `{GENERATED_SCHEMA_MACRO}` out of `vpay-db`. The generated module does not \
+                     exist in any source file, so nothing else in this repository would object \
+                     (ADR-0016, standard 5)",
+                    relative(root, source_path),
+                ));
+            }
+            for line in exported_signature_lines_naming(text, module) {
+                problems.push(format!(
+                    "{}:{line}: an unrestricted `pub` item names `{module}`, so the expansion of \
+                     `{GENERATED_SCHEMA_MACRO}` leaves `vpay-db` through its signature — a \
+                     `pub type` alias or a `pub fn` returning the generated runtime hands out \
+                     every model delegate just as surely as a `pub use` does, and neither names \
+                     a type any source file declares. Make it `pub(crate)` (ADR-0016, \
+                     standard 5)",
+                    relative(root, source_path),
+                ));
+            }
+        }
+    }
+
+    problems.sort();
+    problems.dedup();
+    problems
+}
+
+/// The item keywords that introduce something a crate can hand out, minus the
+/// two [`generated_schema_leaks`] already reports more specifically.
+///
+/// `mod` and `use` are absent on purpose: requirements 2 and 4 own them and
+/// their messages say what to do about them, so including them here would
+/// report one mistake twice and in the vaguer of the two wordings.
+const EXPORTABLE_ITEM_KEYWORDS: [&str; 10] = [
+    "fn ",
+    "async fn ",
+    "unsafe fn ",
+    "const fn ",
+    "type ",
+    "const ",
+    "static ",
+    "struct ",
+    "enum ",
+    "trait ",
+];
+
+/// Every line whose enclosing item is introduced by an unrestricted `pub` and
+/// which names `module` as a whole word.
+///
+/// # Why line-anchored rather than parsed
+///
+/// The gate reads source text (`generated_schema_leaks` says why), so the
+/// question "is this occurrence part of a public signature or part of a
+/// function body?" has to be answered without a syntax tree. Walking back to
+/// the nearest line that *starts* an item or a statement answers it well
+/// enough to be worth having, and errs in the safe direction:
+///
+/// - `pub type X = crate::schema::…;` — the naming line is its own anchor and
+///   starts `pub type` → reported.
+/// - `pub fn f(\n    a: A,\n) -> crate::schema::… {` — the naming line
+///   anchors back to `pub fn f(` → reported.
+/// - `pub(crate) cs: crate::schema::…,` — anchors to itself, `pub(crate)` is
+///   not `pub ` → not reported, which is `PgRepositories`' real field.
+/// - `let cs = crate::schema::…::builder(pool).build();` — anchors to itself,
+///   starts `let` → not reported, which is `PgRepositories::boxed`'s body.
+///
+/// A `pub fn` on an inherent impl of a `pub(crate)` type would be reported
+/// even though nothing outside the crate can call it. That is deliberate: a
+/// gate about what leaves a crate should over-report a `pub` that means
+/// nothing rather than under-report one that means everything, and the fix is
+/// to write the visibility that was intended.
+fn exported_signature_lines_naming(text: &str, module: &str) -> Vec<usize> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+
+    for (index, line) in lines.iter().enumerate() {
+        if word_lines(line, module).is_empty() {
+            continue;
+        }
+        let anchor = (0..=index).rev().find_map(|i| {
+            let candidate = lines.get(i).copied().unwrap_or_default().trim_start();
+            starts_an_item_or_statement(candidate).then_some((i, candidate))
+        });
+        let Some((anchor_index, anchor)) = anchor else {
+            continue;
+        };
+        let Some(rest) = anchor.strip_prefix("pub ") else {
+            continue;
+        };
+        if EXPORTABLE_ITEM_KEYWORDS
+            .iter()
+            .any(|keyword| rest.starts_with(keyword))
+        {
+            // The *item's* line, not the naming line: a `pub fn` that mentions
+            // the module in both its return type and its body is one leak, and
+            // the line worth printing is the one whose visibility is wrong.
+            out.push(anchor_index + 1);
+        }
+    }
+
+    out.dedup();
+    out
+}
+
+/// Whether a trimmed line begins a Rust item or statement rather than
+/// continuing one.
+///
+/// The anchor set for [`exported_signature_lines_naming`]. `}` is in it
+/// because a closing brace ends whatever came before, so a line after one
+/// that is not itself an item start belongs to no signature.
+fn starts_an_item_or_statement(line: &str) -> bool {
+    const STARTERS: [&str; 16] = [
+        "pub ", "pub(", "fn ", "async ", "unsafe ", "type ", "const ", "static ", "struct ",
+        "enum ", "trait ", "impl ", "mod ", "use ", "let ", "}",
+    ];
+    STARTERS.iter().any(|starter| line.starts_with(starter))
+}
+
+/// Line numbers of every `pub use` whose tree names `module` as a path
+/// segment.
+///
+/// Whole-segment matching, so `pub use schema_helpers::…` is not a hit on
+/// `schema`; and only `pub` forms, because a private `use` is not a route out
+/// of the crate — the same rule [`exported_aliases`] applies.
+fn exported_use_lines_naming(text: &str, module: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    for (i, m) in text.match_indices("pub use ") {
+        if text
+            .get(..i)
+            .and_then(|before| before.chars().next_back())
+            .is_some_and(is_ident_char)
+        {
+            continue;
+        }
+        let rest = text.get(i + m.len()..).unwrap_or_default();
+        let tree = rest
+            .get(..rest.find(';').unwrap_or(rest.len()))
+            .unwrap_or_default();
+        if !word_lines(tree, module).is_empty() {
+            out.push(text.get(..i).unwrap_or_default().matches('\n').count() + 1);
+        }
+    }
+    out
 }
 
 /// The concrete repository implementations declared by `vpay-db`'s sources.
@@ -10440,6 +10734,237 @@ impl Jobs for Delegating {}
             .expect("the temp tree is creatable");
         let error = verify_repositories(root).expect_err("there is nothing to look for");
         assert!(error.contains("no repository implementation"), "{error}");
+    }
+
+    /// A store that holds CrateStack's runtime hub owns a connection just as
+    /// surely as one holding a `PgPool`, and the first signal is the only one
+    /// that can see it — such a helper implements no `vpay-db` trait, so the
+    /// `impl … for` signal never fires.
+    ///
+    /// The second half is the one that would have been easy to get wrong:
+    /// `CratestackError` and `CratestackContext` both appear in `vpay-db`'s
+    /// `persistence` module, neither is a handle, and a substring match would
+    /// have made every type mentioning either into a "repository
+    /// implementation" — with the failure landing on whichever consumer
+    /// legitimately names `vpay_db::PersistenceError`.
+    #[test]
+    fn a_cratestack_handle_is_a_handle_and_its_error_is_not() {
+        let found = concrete_repository_types(&[scanned(
+            "\
+pub(crate) struct CsChargeStore {
+    cs: Cratestack,
+}
+pub(crate) struct RawRuntimeStore {
+    runtime: SqlxRuntime,
+}
+pub struct PersistenceError {
+    inner: CratestackError,
+}
+pub struct Scoped {
+    ctx: CratestackContext,
+}
+",
+        )]);
+        assert!(
+            found.contains("CsChargeStore"),
+            "a store over the generated runtime holds a connection: {found:?}"
+        );
+        assert!(
+            found.contains("RawRuntimeStore"),
+            "so does one over `SqlxRuntime` directly: {found:?}"
+        );
+        assert!(
+            !found.contains("PersistenceError"),
+            "`CratestackError` is not `Cratestack`; whole-identifier matching is what keeps a \
+             public error type out of the set: {found:?}"
+        );
+        assert!(
+            !found.contains("Scoped"),
+            "`CratestackContext` is not a database handle either: {found:?}"
+        );
+    }
+
+    /// A tree that invokes the schema macro from a private module passes, and
+    /// both ways of publishing its expansion fail.
+    ///
+    /// **Measured on 2026-09-06, before this check existed: the gate printed
+    /// `ok` for both mutations.** That is the whole argument for a third
+    /// check — the module `include_server_schema!` creates is declared by no
+    /// source file, so neither of the two declaration-reading signals, and no
+    /// lint or rustdoc pass, has anything to object to.
+    #[test]
+    fn publishing_the_generated_schema_module_fails_the_gate_itself() {
+        let dir = TempDir::new("verify-repositories-generated");
+        let root = dir.path();
+        let db = root.join("backends/crates/vpay-db/src");
+        let api = root.join("backends/crates/vpay-api/src");
+        fs::create_dir_all(&db).expect("the temp tree is creatable");
+        fs::create_dir_all(&api).expect("the temp tree is creatable");
+        fs::create_dir_all(root.join("backends/apps")).expect("the temp tree is creatable");
+        fs::write(
+            db.join("schema.rs"),
+            "::cratestack::include_server_schema!(\"../../../schemas/vpay.cstack\", db = Postgres);\n",
+        )
+        .expect("the source file is writable");
+
+        let private = format!("{DB}mod schema;\n");
+        fs::write(db.join("lib.rs"), &private).expect("the source file is writable");
+        verify_repositories(root).expect("a private module holding the macro is fine");
+
+        // `pub(crate)` is not a leak, and the gate must not turn a rule about
+        // what leaves the crate into a rule about spelling.
+        fs::write(db.join("lib.rs"), format!("{DB}pub(crate) mod schema;\n"))
+            .expect("the source file is writable");
+        verify_repositories(root).expect("`pub(crate)` reaches no other crate");
+
+        fs::write(db.join("lib.rs"), format!("{DB}pub mod schema;\n"))
+            .expect("the source file is writable");
+        let error = verify_repositories(root).expect_err("`pub mod` publishes the expansion");
+        assert!(
+            error.contains("pub mod schema;") && error.contains("standard 5"),
+            "the gate must name the declaration and the standard: {error}"
+        );
+
+        fs::write(
+            db.join("lib.rs"),
+            format!("{private}pub use schema::cratestack_schema;\n"),
+        )
+        .expect("the source file is writable");
+        let error = verify_repositories(root).expect_err("`pub use` publishes the expansion");
+        assert!(
+            error.contains("pub use") && error.contains("schema"),
+            "the gate must name the re-export: {error}"
+        );
+
+        // A module the gate cannot find fails rather than passing vacuously —
+        // the same instinct as `an_empty_db_crate_fails_rather_than_passing_vacuously`.
+        fs::write(db.join("lib.rs"), DB).expect("the source file is writable");
+        let error = verify_repositories(root).expect_err("the module is not declared at all");
+        assert!(error.contains("declares no `mod schema;`"), "{error}");
+    }
+
+    /// A `pub use` of a *different* module whose name merely starts the same
+    /// way is not a leak, and reporting one would train people to work around
+    /// the gate.
+    #[test]
+    fn a_similarly_named_module_is_not_the_generated_one() {
+        assert!(exported_use_lines_naming("pub use schema_helpers::Thing;\n", "schema").is_empty());
+        assert!(exported_use_lines_naming("use schema::cratestack_schema;\n", "schema").is_empty());
+        assert_eq!(
+            exported_use_lines_naming("\n\npub use crate::schema::models::Charge;\n", "schema"),
+            vec![3]
+        );
+        assert_eq!(
+            exported_use_lines_naming("pub use {schema::A, other::B};\n", "schema"),
+            vec![1]
+        );
+    }
+
+    /// A `pub type` alias and a `pub fn` return type are two more ways out of
+    /// the crate, and until 2026-09-06 the gate read neither.
+    ///
+    /// **Measured on the gate as it stood before this test existed: both
+    /// compiled and both printed `ok`.** They are not hypothetical spellings —
+    /// "make the module private and hand out a friendlier alias for the one
+    /// type I need" is exactly what someone does while believing they are
+    /// respecting standard 5, which is the same argument that justified the
+    /// alias fixpoint in `concrete_repository_types`.
+    ///
+    /// The negative half is the one worth guarding: the field
+    /// `PgRepositories` really has is `pub(crate) cs: crate::schema::…`, and a
+    /// gate that reported it would be a gate people delete.
+    #[test]
+    fn a_public_signature_naming_the_generated_module_fails_the_gate_itself() {
+        // Positive: the two evasions, in the two shapes they arrive in.
+        assert_eq!(
+            exported_signature_lines_naming(
+                "pub type CratestackHandle = crate::schema::cratestack_schema::Cratestack;\n",
+                "schema"
+            ),
+            vec![1]
+        );
+        assert_eq!(
+            exported_signature_lines_naming(
+                "pub fn handle(pool: PgPool) -> crate::schema::cratestack_schema::Cratestack {\n}\n",
+                "schema"
+            ),
+            vec![1]
+        );
+        // A signature spread over several lines still anchors to its `pub fn`.
+        assert_eq!(
+            exported_signature_lines_naming(
+                "pub fn handle(\n    pool: PgPool,\n) -> crate::schema::models::Charge {\n}\n",
+                "schema"
+            ),
+            vec![1],
+            "the reported line is the item's, not the continuation line that happens to name it"
+        );
+        // One item, two mentions, one violation.
+        assert_eq!(
+            exported_signature_lines_naming(
+                "pub fn handle(pool: PgPool) -> crate::schema::cratestack_schema::Cratestack {\n    crate::schema::cratestack_schema::Cratestack::builder(pool).build()\n}\n",
+                "schema"
+            ),
+            vec![1]
+        );
+
+        // Negative: the real crate's own uses of the module, neither of which
+        // reaches another crate.
+        assert!(
+            exported_signature_lines_naming(
+                "pub(crate) struct PgRepositories {\n    pub(crate) cs: crate::schema::cratestack_schema::Cratestack,\n}\n",
+                "schema"
+            )
+            .is_empty(),
+            "a `pub(crate)` field is what this crate actually holds"
+        );
+        assert!(
+            exported_signature_lines_naming(
+                "pub(crate) fn boxed(pool: PgPool) -> Arc<dyn Repositories> {\n    let cs = crate::schema::cratestack_schema::Cratestack::builder(pool).build();\n}\n",
+                "schema"
+            )
+            .is_empty(),
+            "naming the module inside a body is not publishing it"
+        );
+        assert!(
+            exported_signature_lines_naming(
+                "pub type Handle = crate::schema_helpers::Thing;\n",
+                "schema"
+            )
+            .is_empty(),
+            "whole-word matching, as everywhere else in this gate"
+        );
+
+        // And end to end, through the gate itself.
+        let dir = TempDir::new("verify-repositories-signature");
+        let root = dir.path();
+        let db = root.join("backends/crates/vpay-db/src");
+        fs::create_dir_all(&db).expect("the temp tree is creatable");
+        fs::create_dir_all(root.join("backends/apps")).expect("the temp tree is creatable");
+        fs::write(
+            db.join("schema.rs"),
+            "::cratestack::include_server_schema!(\"../../../schemas/vpay.cstack\", db = Postgres);\n",
+        )
+        .expect("the source file is writable");
+
+        fs::write(
+            db.join("lib.rs"),
+            format!("{DB}mod schema;\npub type CratestackHandle = crate::schema::cratestack_schema::Cratestack;\n"),
+        )
+        .expect("the source file is writable");
+        let error =
+            verify_repositories(root).expect_err("a `pub type` publishes the generated runtime");
+        assert!(
+            error.contains("unrestricted `pub` item") && error.contains("standard 5"),
+            "the gate must name the leak and the standard: {error}"
+        );
+
+        fs::write(
+            db.join("lib.rs"),
+            format!("{DB}mod schema;\npub(crate) type CratestackHandle = crate::schema::cratestack_schema::Cratestack;\n"),
+        )
+        .expect("the source file is writable");
+        verify_repositories(root).expect("`pub(crate)` reaches no other crate");
     }
 
     #[test]

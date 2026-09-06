@@ -75,7 +75,59 @@ allow = [
   "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
-exceptions = []
+# Scoped exceptions: a licence allowed for NAMED crates only, never added to
+# the `allow` list above. Same standard as the `RUSTSEC-2023-0071` and
+# `CDLA-Permissive-2.0` entries — say what the licence is, why it clears the
+# permissive-only bar this file sets, why the exposure is bounded, and who
+# decided.
+#
+# BLUE OAK 1.0.0, for `minicbor` and `minicbor-serde` ONLY (2026-09-06, with
+# the first CrateStack read).
+#
+# What the licence is. The Blue Oak Model License 1.0.0 is OSI-approved and
+# permissive: it grants copyright and — unlike MIT and BSD, which are silent
+# on the point — an EXPRESS patent licence from every contributor, with the
+# usual defensive-termination clause. There is no copyleft term, no
+# source-disclosure obligation and no network-use trigger, so it clears the
+# bar the `allow` list's own comment sets ("a copyleft dependency in a
+# payment gateway is a legal question"). It is not on the `allow` list
+# because that list is the set of licences vpay accepts *sight unseen* on any
+# future dependency, and this one has been examined for exactly two crates.
+#
+# Why it is here at all, and why it is not avoidable. `cratestack-pg` — the
+# CrateStack facade `vpay-db` compiles `schemas/vpay.cstack` with — declares
+# `cratestack-axum` and `cratestack-client-rust` as NON-optional dependencies
+# with no feature gating either, and both take `minicbor` unconditionally
+# (`cratestack-client-rust` directly, `cratestack-axum` directly and again
+# through `cratestack-codec-cbor`). Measured, not assumed: with
+# `default-features = false, features = ["postgres"]` — the smallest set that
+# still yields a data layer — `cargo deny check licenses` still rejects both
+# crates, and `cargo tree -i minicbor` shows the two edges above. There is no
+# feature combination at 0.11.1 that produces CrateStack's data layer without
+# its HTTP transport; taking `cratestack-sqlx` + `cratestack-macros` directly
+# does not help either, because `include_server_schema!` emits
+# `pub mod axum { use ::cratestack::HttpTransport; … }` unconditionally.
+# See `docs/reference/vpay-db.md` § CrateStack.
+#
+# Why scoped by name rather than allowed globally. Two crates, one author,
+# one purpose (CBOR codec), reached through one dependency this repository
+# pins exactly (`cratestack = "=0.11.1"`). A third crate arriving under Blue
+# Oak is a new fact that should fail this gate and be argued on its own
+# merits, which an entry on the `allow` list above would silently prevent.
+# The generated CBOR transport is compiled and never called — vpay serves its
+# own Stripe-shaped `/v1` — so the exposure is a linked codec, not a wire.
+#
+# Accepted deliberately by the maintainer on 2026-09-05, as part of the
+# decision to adopt CrateStack's data layer. This entry is load-bearing from
+# the moment it lands: delete it and `cargo deny check licenses` fails naming
+# `minicbor` and `minicbor-serde` — the mutation is recorded in
+# `docs/plans/exp14-notes/opus.md`. Revisit if CrateStack ever gates its
+# transport behind a Cargo feature, at which point both crates should leave
+# the graph and this exception should be deleted rather than left to rot.
+exceptions = [
+  { name = "minicbor", allow = ["BlueOak-1.0.0"] },
+  { name = "minicbor-serde", allow = ["BlueOak-1.0.0"] },
+]
 
 [bans]
 multiple-versions = "warn"

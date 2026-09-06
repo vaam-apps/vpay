@@ -544,6 +544,15 @@ pub trait Repositories:
 /// against a real Postgres container).
 pub(crate) struct PgRepositories {
     pub(crate) pool: PgPool,
+    /// CrateStack's view of the *same* pool.
+    ///
+    /// One pool, one sizing policy (`pool`'s own constants), two views of
+    /// it: `SqlxRuntime::new` takes a pool the caller built and `pool()`
+    /// hands it straight back, so this adds no connections and no second
+    /// acquire timeout. It is a field rather than something built per call
+    /// because `Cratestack` is `Clone` over an `Arc`-shaped runtime and the
+    /// delegates borrow from it.
+    pub(crate) cs: crate::schema::cratestack_schema::Cratestack,
 }
 
 impl std::fmt::Debug for PgRepositories {
@@ -561,7 +570,8 @@ impl PgRepositories {
     /// Returns the trait object rather than `Self` so the concrete type has
     /// no way out of this crate: `connect` is the whole public surface.
     pub(crate) fn boxed(pool: PgPool) -> Arc<dyn Repositories> {
-        Arc::new(Self { pool })
+        let cs = crate::schema::cratestack_schema::Cratestack::builder(pool.clone()).build();
+        Arc::new(Self { pool, cs })
     }
 }
 
@@ -600,25 +610,37 @@ mod closure_shape {
         repositories: &dyn Repositories,
         new: &crate::NewCharge,
     ) -> Result<(), DbError> {
+        // `Result<_, DbError>` is spelled out rather than inferred, and that
+        // is a fact about `transaction`'s signature worth recording here
+        // because this module exists to record facts about that signature.
+        // `E: From<DbError>` used to have exactly one candidate — the
+        // reflexive `impl<T> From<T> for T` — so `E` fell out of inference.
+        // `DbError::Persistence(#[from] PersistenceError)` (2026-09-06) added
+        // a second, and every call site that let `E` be inferred from the
+        // bound alone now needs to say which error it means. That is not a
+        // regression in the seam; it is the cost of the composite ADR-0011
+        // asks for, and it is one annotation per site.
         let outcome = repositories
-            .transaction(|tx| {
-                Box::pin(async move {
-                    let charge = tx.insert_for_intent(new).await?;
-                    let enqueued = tx
-                        .enqueue_in_tx(
-                            "poll_charge",
-                            "poll:ch_1",
-                            &serde_json::json!({}),
-                            time::OffsetDateTime::now_utc(),
-                        )
-                        .await?;
-                    if enqueued {
-                        Ok(TxOutcome::Commit(charge))
-                    } else {
-                        Ok(TxOutcome::Abandon(charge))
-                    }
-                })
-            })
+            .transaction(
+                |tx| -> TxFuture<'_, Result<TxOutcome<crate::ChargeRow>, DbError>> {
+                    Box::pin(async move {
+                        let charge = tx.insert_for_intent(new).await?;
+                        let enqueued = tx
+                            .enqueue_in_tx(
+                                "poll_charge",
+                                "poll:ch_1",
+                                &serde_json::json!({}),
+                                time::OffsetDateTime::now_utc(),
+                            )
+                            .await?;
+                        if enqueued {
+                            Ok(TxOutcome::Commit(charge))
+                        } else {
+                            Ok(TxOutcome::Abandon(charge))
+                        }
+                    })
+                },
+            )
             .await?;
         let _ = outcome.into_inner();
         Ok(())

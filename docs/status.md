@@ -361,10 +361,16 @@ correction.
 - **`check-schema` — a gate, in `just verify`, `just ci` and CI's
   `self-checks` job.** `cratestack check --schema schemas/vpay.cstack` at the
   version this repository pins. It is the first gate here that shells out to
-  a tool this repository does not build, and the first thing in the
-  repository that reads `schemas/vpay.cstack` at all — the file is excluded
-  from the build graph, so no compiler has ever looked at it. Until this
-  landed, the evidence that it parses was a transcript someone pasted into
+  a tool this repository does not build, and it was the first thing in the
+  repository that read `schemas/vpay.cstack` at all — ~~the file is excluded
+  from the build graph, so no compiler has ever looked at it~~ **corrected
+  2026-09-06: `vpay-db` compiles the file now** (`mod schema` →
+  `include_server_schema!`), so `cargo build` is a second reader and a
+  syntax error there is a build failure. The gate is not redundant: it runs
+  the *CLI* at the pinned version, and the CLI is what `migrate baseline`
+  and the drift test also use, so it is what keeps the library and the tool
+  answering about one grammar. Until this landed, the evidence that it
+  parses was a transcript someone pasted into
   the "CrateStack" section below after running the CLI by hand; crates.io
   published **29 `cratestack-cli` releases between 0.7.8 (2026-08-08) and the
   pinned 0.11.1 (2026-09-03)** — 26 days, not the "four times in five weeks"
@@ -374,7 +380,8 @@ correction.
   `verify-citations` without `gh`. **A vacuous green is a red gate too**: an
   emptied schema, or one with no `datasource` block, gets `schema OK` and
   exit 0 out of the CLI, so the recipe asserts a `datasource` block and a
-  floor of 12 `model`/`enum` declarations before it believes the result. See
+  floor of 13 `model`/`enum` declarations (12 until 2026-09-06) before it
+  believes the result. See
   "CrateStack" below for the version, the six mutations that prove the gate
   fires, and what a green run does *not* prove.
 - **`verify-toolchain` — a gate, in `just verify`, `just ci` and CI's
@@ -2059,7 +2066,7 @@ makes the core refuse a refund on that rail.
 |---|---|---|
 | `compose.yml` (Postgres + 2 WireMock rails) | ✅ | Written; **never started as a stack on any authoring machine** (Docker Hub unreachable from one; the rootless daemon on another cannot start containers at all). **Started for the first time by the CI `e2e (compose)` job on run `33647189156` (2026-09-02)**, with both WireMock rails and Postgres up and `vpay-server` answering `/healthz` 200 against them — see "GitHub Actions" below. `config/application.yml` used to point both rails at a host named `wiremock`, which no compose file defines; fixed 2026-09-02 to `wiremock-mtn` / `wiremock-orange` (with Orange's `/orange-money-webpay/dev` path prefix, per its flow doc), proven by `vpay-config`'s own test that loads the real file. **Changed 2026-09-03 (Step 3): the mappings these two services bind-mount are now the ones the conformance suite drives.** `backends/tests/conformance/wiremock/{mtn,orange}/mappings/` gained the full failure vocabulary per rail, a WireMock *scenario* (pending → successful), a redirect mapping (`REF_REDIRECT`) and an oversize-body mapping (`REF_HUGE`); a mapping fixed for the suite is fixed for `just up` and for `just demo` in the same edit, because it is one directory. The suite does **not** use this compose stack — it starts its own `wiremock/wiremock` containers via testcontainers, so CI's `rust` job needs no compose services |
 | `compose.e2e.yml` (full stack) | ✅ | **Could not have booted before 2026-09-02**: both binaries exit 78 without `--config`/`VPAY_CONFIG` (mandatory since 2026-08-11), and this file never set it. Now sets `VPAY_CONFIG` and the rail `${VAR}` placeholders (stub values for stub rails) on both services — **six of them as of 2026-09-03 (Step 3)**, up from three: `MTN_SUBSCRIPTION_KEY`, `MTN_API_KEY`, `MTN_API_USER`, `ORANGE_MERCHANT_KEY`, `ORANGE_CLIENT_ID`, `ORANGE_CLIENT_SECRET`, all present on **both** `vpay-server` and `vpay-worker` (miss one on either and the process exits `78` at boot — an unresolved placeholder is fatal by design, never an empty string). All six are listed in `.env.example`. **Run for the first time by CI's `e2e (compose)` job on run `33647189156` (2026-09-02)**: `vpay-server` answered `/healthz` 200 one second after the stack came up, the dashboard answered 200 on `/` a second later, and Cypress passed — see below. **Changed after that run, and therefore not covered by it (Step 1, same day):** `vpay-server` now exits `78` without an RS256 signing key, so this file sets `VPAY_OAUTH_SIGNING_KEY_FILE=/secrets/oauth-signing-key.pem` and read-only bind-mounts `.e2e/oauth-signing-key.pem` (git-ignored, `0644` because the scratch image runs as UID 65532, generated per stack by `just gen-e2e-signing-key` and thrown away with it; CI runs that recipe before `docker compose up`). **No CI run has yet booted the stack with that mount** — the ✅ above is evidence for the previous shape of this file, and the next `e2e (compose)` run is what proves the new one. **Step 3 added the three new rail variables to this file and to nothing else that runs it**, so the same caveat now covers them: they are correct by inspection and by `docker compose config`, and no run has booted the stack since |
-| `backends/Dockerfile` (musl → scratch) | ✅ | Last rewritten 2026-08-09 (musl host target, UID 65532). **Could not have produced a bootable image before 2026-09-02**: it never copied `config/` in, so there was no file for `VPAY_CONFIG` to name. Now bakes `config/` at `/config` and sets `ENV VPAY_CONFIG=/config/application.yml` in both runtime stages (secrets stay `${VAR}`, so the layer holds none). **A second reason it could never have built, found in review the same day:** the builder stage copied every workspace member except `sdks/rust`, and cargo refuses to load a workspace whose `members` list names a missing directory — proven by reconstructing the build context outside Docker and running the Dockerfile's own `cargo build`, which failed at manifest load; `COPY sdks/rust` added. **A third, found by the first CI build that reached the Docker step (run `33646048616`, the fix's own PR):** on the alpine builder the host triple *is* `x86_64-unknown-linux-musl`, and with no `--target` cargo applied `.cargo/config.toml`'s `+crt-static` rustflags to proc-macros too, which cannot be static (`cannot produce proc-macro for async-trait`). The build now passes `--target` set to the builder's own host triple (still never a cross-compile) and copies from `target/<triple>/dist/`; the Dockerfile's header comment explains it. It was the last reason: the next run, `33647189156`, built both images and booted the stack. **Built for the first time by CI's `e2e (compose)` job on run `33647189156` (2026-09-02), and the resulting `scratch` image booted, found its baked config, connected to Postgres, ran the migrations and answered `/healthz` 200.** **Built on an authoring machine for the first time 2026-09-03 (Step 6, block A) by `just release-dry-run`** — both targets, `linux/amd64`, exit 0; the `dist` build took 1 m 55 s and the two `scratch` images are 14.8 MB and 10.7 MB. Built, not booted: no local run has started a container from either. **Changed 2026-09-05: dependency compilation is now a cached layer (cargo-chef `0.1.78`, pinned exactly, `--locked`).** Four stages — `chef` (then `rust:1.95.0-alpine3.22`, **`rust:1.98.0-alpine3.22` since the toolchain bump of 2026-09-05 — every timing in this row was measured on the 1.95.0 base and none has been re-measured on 1.98.0**; `cargo install cargo-chef`, 33 s), `planner` (`cargo chef prepare` → `recipe.json`; manifests and the lockfile, no source, 0.1 s), `builder` cook (`cargo chef cook --profile dist --target <host triple> -p vpay-server -p vpay-worker-bin` — **the same flags as the real build**, with `.cargo/` copied in first so `+crt-static` applies), then the unchanged `cargo build`. `ARG`/`ENV VPAY_GIT_SHA` moved from the first instruction of the builder stage to **after the cook**, because `release.yml` passes a different `github.sha` on every push and an `ARG` above the cook throws the dependency layer away on every release build. `vpay-core/build.rs`'s `cargo::rerun-if-env-changed=VPAY_GIT_SHA` is untouched and still fires. **Measured on the authoring host 2026-09-05, `linux/amd64`, on a dedicated `docker-container` builder** (not the shared default one, which another build was using): cold 254 s → 238 s (**retracted by the 2026-09-05 review pass: that pair was two unpaired samples. Two matched cold pairs — the same isolated builder pruned between the two runs of each pair, runs back to back, the second pair in reverse order — give one-stage 193 s / cargo-chef 256 s and cargo-chef 248 s / one-stage 212 s, i.e. the cold path is 36-63 s SLOWER, which is the `cargo install cargo-chef` plus the cook's own pass. The warm numbers reproduced: source touch 105 s and 114 s, sha-only 101 s and 112 s, `ARG` moved above the cook 215 s, a `docs/` edit 1 s**); **one comment line added to `vpay-server/src/main.rs` 260 s → 125 s**, with the cook step logging `CACHED`; a `--build-arg VPAY_GIT_SHA` change alone **116 s**, cook `CACHED`, and the sha verifiably in the binary (`strings … | grep -c` → 1, versus 0 without the arg). **The `ARG` placement was proven load-bearing by mutation, not asserted:** moving it back above the cook makes the same sha-only build recompile the graph — cook not `CACHED`, 251 s. Runtime images unchanged: `vpay-server` 15.9 MB and two layers before and after, the `config/` layer the same digest in both, `docker export | grep -i 'cargo\|chef\|rust'` empty, and both `scratch` images now **run** (`--version` → `vpay-server 0.1.0` / `vpay-worker-bin 0.1.0`, exit 0) — the first time a container has been started from either on an authoring host. **The saving is ~2x, not the ~10x cargo-chef is usually sold on, and the reason is in the profile:** `[profile.dist]` inherits `release`'s `lto = "fat"` / `codegen-units = 1`, and a fat-LTO link re-consumes every dependency's LLVM IR whatever the cache holds. Single sample per number, one host, amd64 only — see [plans/exp8-notes/opus.md](plans/exp8-notes/opus.md) and, for the sabotage review that re-measured all of it and the six mutations it ran, [plans/exp8-notes/opus-review.md](plans/exp8-notes/opus-review.md). **The review also found the `--profile`/`--target` failure modes differ** — a cook missing `--target` dies in a second on the proc-macro/`+crt-static` conflict, a cook missing `--profile dist` succeeds silently and caches nothing (305 s against 105 s) — and that `[profile.dist]`'s inherited `lto = "fat"`, the thing that bounds the saving, is recorded in no ADR and no comment, so overriding it with `"thin"` is an open maintainer decision |
+| `backends/Dockerfile` (musl → scratch) | ✅ | **Changed 2026-09-06: `COPY schemas ./schemas` added to the `planner` and `builder` stages, and without it this image no longer builds at all.** `vpay-db` compiles `schemas/vpay.cstack` through `include_server_schema!`, whose path resolves against `CARGO_MANIFEST_DIR` and so climbs two levels out of `backends/`; the context copied `.xtask`, `backends`, `sdks/rust` and `examples/merchant-demo` but not `schemas/`, which had only ever been documentation. The first build attempt after the CrateStack read landed died with `error: failed to read schema file /build/backends/crates/vpay-db/../../../schemas/vpay.cstack: No such file or directory` — **a fourth reason this Dockerfile could not have built, and the first one no gate in this repository can catch**, since `just ci` compiles on the host where the file is present. Found only because the image was actually built. Both stages carry the line because the file's own header rule 3 requires their copy lists to stay identical; the cargo-chef cook needs it in neither, because chef stubs workspace members and the macro never expands there. After the fix: `--target server` builds, `docker run --rm … --version` prints `vpay-server 0.1.0`, image **16.9 MB** against master `6978901`'s **16.1 MB** rebuilt on the same host and builder the same day — **+0.8 MB (+5.0%)** for CrateStack's twelve crates. Last rewritten 2026-08-09 (musl host target, UID 65532). **Could not have produced a bootable image before 2026-09-02**: it never copied `config/` in, so there was no file for `VPAY_CONFIG` to name. Now bakes `config/` at `/config` and sets `ENV VPAY_CONFIG=/config/application.yml` in both runtime stages (secrets stay `${VAR}`, so the layer holds none). **A second reason it could never have built, found in review the same day:** the builder stage copied every workspace member except `sdks/rust`, and cargo refuses to load a workspace whose `members` list names a missing directory — proven by reconstructing the build context outside Docker and running the Dockerfile's own `cargo build`, which failed at manifest load; `COPY sdks/rust` added. **A third, found by the first CI build that reached the Docker step (run `33646048616`, the fix's own PR):** on the alpine builder the host triple *is* `x86_64-unknown-linux-musl`, and with no `--target` cargo applied `.cargo/config.toml`'s `+crt-static` rustflags to proc-macros too, which cannot be static (`cannot produce proc-macro for async-trait`). The build now passes `--target` set to the builder's own host triple (still never a cross-compile) and copies from `target/<triple>/dist/`; the Dockerfile's header comment explains it. It was the last reason: the next run, `33647189156`, built both images and booted the stack. **Built for the first time by CI's `e2e (compose)` job on run `33647189156` (2026-09-02), and the resulting `scratch` image booted, found its baked config, connected to Postgres, ran the migrations and answered `/healthz` 200.** **Built on an authoring machine for the first time 2026-09-03 (Step 6, block A) by `just release-dry-run`** — both targets, `linux/amd64`, exit 0; the `dist` build took 1 m 55 s and the two `scratch` images are 14.8 MB and 10.7 MB. Built, not booted: no local run has started a container from either. **Changed 2026-09-05: dependency compilation is now a cached layer (cargo-chef `0.1.78`, pinned exactly, `--locked`).** Four stages — `chef` (then `rust:1.95.0-alpine3.22`, **`rust:1.98.0-alpine3.22` since the toolchain bump of 2026-09-05 — every timing in this row was measured on the 1.95.0 base and none has been re-measured on 1.98.0**; `cargo install cargo-chef`, 33 s), `planner` (`cargo chef prepare` → `recipe.json`; manifests and the lockfile, no source, 0.1 s), `builder` cook (`cargo chef cook --profile dist --target <host triple> -p vpay-server -p vpay-worker-bin` — **the same flags as the real build**, with `.cargo/` copied in first so `+crt-static` applies), then the unchanged `cargo build`. `ARG`/`ENV VPAY_GIT_SHA` moved from the first instruction of the builder stage to **after the cook**, because `release.yml` passes a different `github.sha` on every push and an `ARG` above the cook throws the dependency layer away on every release build. `vpay-core/build.rs`'s `cargo::rerun-if-env-changed=VPAY_GIT_SHA` is untouched and still fires. **Measured on the authoring host 2026-09-05, `linux/amd64`, on a dedicated `docker-container` builder** (not the shared default one, which another build was using): cold 254 s → 238 s (**retracted by the 2026-09-05 review pass: that pair was two unpaired samples. Two matched cold pairs — the same isolated builder pruned between the two runs of each pair, runs back to back, the second pair in reverse order — give one-stage 193 s / cargo-chef 256 s and cargo-chef 248 s / one-stage 212 s, i.e. the cold path is 36-63 s SLOWER, which is the `cargo install cargo-chef` plus the cook's own pass. The warm numbers reproduced: source touch 105 s and 114 s, sha-only 101 s and 112 s, `ARG` moved above the cook 215 s, a `docs/` edit 1 s**); **one comment line added to `vpay-server/src/main.rs` 260 s → 125 s**, with the cook step logging `CACHED`; a `--build-arg VPAY_GIT_SHA` change alone **116 s**, cook `CACHED`, and the sha verifiably in the binary (`strings … | grep -c` → 1, versus 0 without the arg). **The `ARG` placement was proven load-bearing by mutation, not asserted:** moving it back above the cook makes the same sha-only build recompile the graph — cook not `CACHED`, 251 s. Runtime images unchanged: `vpay-server` 15.9 MB and two layers before and after, the `config/` layer the same digest in both, `docker export | grep -i 'cargo\|chef\|rust'` empty, and both `scratch` images now **run** (`--version` → `vpay-server 0.1.0` / `vpay-worker-bin 0.1.0`, exit 0) — the first time a container has been started from either on an authoring host. **The saving is ~2x, not the ~10x cargo-chef is usually sold on, and the reason is in the profile:** `[profile.dist]` inherits `release`'s `lto = "fat"` / `codegen-units = 1`, and a fat-LTO link re-consumes every dependency's LLVM IR whatever the cache holds. Single sample per number, one host, amd64 only — see [plans/exp8-notes/opus.md](plans/exp8-notes/opus.md) and, for the sabotage review that re-measured all of it and the six mutations it ran, [plans/exp8-notes/opus-review.md](plans/exp8-notes/opus-review.md). **The review also found the `--profile`/`--target` failure modes differ** — a cook missing `--target` dies in a second on the proc-macro/`+crt-static` conflict, a cook missing `--profile dist` succeeds silently and caches nothing (305 s against 105 s) — and that `[profile.dist]`'s inherited `lto = "fat"`, the thing that bounds the saving, is recorded in no ADR and no comment, so overriding it with `"thin"` is an open maintainer decision |
 | `frontends/Dockerfile` | ✅ | Last rewritten 2026-08-09. **Never built anywhere yet**: not on an authoring machine, and CI's `e2e (compose)` job, which will build it, has never reached its Docker step. **Built for the first time by CI's `e2e (compose)` job on run `33647189156` (2026-09-02); the standalone Next server answered 200 on `/`.** Its build context had been checked beforehand the same way as the backend one — `pnpm install --frozen-lockfile --filter @vpay/dashboard...` against a reconstruction of exactly what it copies passes the lockfile consistency check with `examples/` and `sdks/nodejs` absent — see below. **Built on an authoring machine for the first time 2026-09-03 (Step 6, block A)** by `just release-dry-run`, `linux/amd64`, exit 0, 339 MB; built, not booted. **Changed 2026-09-04 (Step 9, lane 4): it now builds TWO images.** A shared `base` stage, then `dashboard-builder` → `runner` (unchanged output, name kept so `release.yml`'s matrix entry did not move) and `checkout-builder` → `checkout`. The checkout builder copies `sdks/` as well as `frontends/`, which is load-bearing: `@vpay/checkout` depends on `@vaam-apps/vpay-stripe-js`, whose `exports` resolve to a gitignored `dist/`, so without the SDK's source in the context `next build` fails with `TS2307`. **Every consumer now names its target** (`release.yml`, and `compose.e2e.yml`'s `dashboard` and `vpay-checkout`) — "the last stage wins" stopped being a safe way to say which image you meant. **Both targets built on the authoring host on 2026-09-04 from a clean `git archive` context**, and the `checkout` one was then RUN: `--read-only --tmpfs /tmp`, `uid=1000(node)`, healthcheck healthy, `GET /healthz` 200 carrying `no-store` / `frame-ancestors 'none'` / `no-referrer` / `nosniff`, and `touch /app/nope` refused with "Read-only file system". That is the first time anything in this repository has observed a Next.js image under the constraints the chart asks of it |
 | `deny.toml` | ✅ | `cargo deny check` passes clean: `advisories ok, bans ok, licenses ok, sources ok`. The three advisories that failed before were fixed by **upgrading dependencies, not by suppressing them** — see below. One advisory is explicitly ignored: **RUSTSEC-2023-0071** (Marvin Attack in `rsa`, no patched release, an unconditional dependency of `authkestra-engine` per [ADR-0009](adr/0009-dashboard-oidc-provider.md)), accepted deliberately with the reasoning recorded inline in `deny.toml`. **This entry was preemptive when added and now genuinely fires — and this pass found that the previous pass's own note on *how* it fires was already stale, before this note could even be written once.** The last pass said `authkestra-op`/`authkestra-engine` reached `rsa` only via `vpay-tests-integration`'s dev-dependencies, so "the exposure itself is still narrower than 'in production' ... no shipping binary pulls it in." **That is no longer true, independently re-run and confirmed for this update:** `vpay-db` added `authkestra-op` as a genuine, non-dev dependency this pass (for `SqlClientAssertionStore`, OP-2), and both `vpay-server` and `vpay-worker-bin` depend on `vpay-db`. `cargo tree -i rsa` now shows `rsa v0.9.10 ← authkestra-engine ← authkestra-op ← vpay-db ← vpay-api/vpay-server/vpay-worker-bin`, with no `(dev)` marker anywhere on that specific path (the pre-existing `vpay-tests-integration` dev-only path still exists too, unchanged, in parallel). `cargo deny -L info check advisories` still reports the same `note[advisory-ignored]`/`note[vulnerability]` pair it did before — nothing about the ignore mechanism changed, and `cargo deny check` still exits 0 with 0 errors, so this is **not a CI regression**. What changed is the honesty of this row's own claim about scope: `rsa`'s Marvin-Attack timing side-channel is now reachable from both shipping binaries' production dependency graph, not merely from a test-only crate, even though nothing in either binary calls into `rsa` yet (no shipping code path constructs anything from `authkestra-engine`/`authkestra-op` — see "Merchant auth"/"Dashboard auth" above). The original `deny.toml` comment's own reasoning for accepting the advisory (no patched release exists; RS256 has no alternative in this stack; `/dash/v1` is staff-only, not the merchant payment path) does not depend on which dependency edge is dev-only, so the acceptance itself still stands — only the "no shipping binary pulls it in" line needs correcting, which this row now does. Also bans `aws-lc-rs`/`aws-lc-sys` so a second rustls crypto provider cannot reappear. **New this pass:** `CDLA-Permissive-2.0` was added to the allow list, with its justification recorded inline — it covers `webpki-roots` (Mozilla's CA bundle, data not code), pulled in through `sqlx`'s `tls-rustls-ring` feature now that `vpay-db` is a non-dev dependency using it (root `Cargo.toml`'s own comment: previously latent in the workspace's pins, now actually reachable). `tls-rustls-ring` (vendored roots) was chosen deliberately over `tls-rustls-ring-native-roots`: the runtime image is `FROM scratch` ([ADR-0004](adr/0004-musl-mimalloc.md)) with no OS trust store for `rustls-native-certs` to read, so native roots would fail TLS to Postgres in the shipped image only, while passing locally and in CI where a trust store exists — exactly the kind of gap that would not be caught until a real deployment. `rustls-native-certs` does still appear in the dependency graph (via `bollard → testcontainers → vpay-testkit`), but only as a `[dev-dependencies]` chain — `cargo tree -i rustls-native-certs` shows every path terminating in a dev-dependency of `vpay-testkit`/`vpay-db`/`vpay-tests-integration`, never a shipping binary, independently confirmed for this update **Updated 2026-09-05:** Dependabot alert 19 (`serde_with` < 3.21.0, KeyValueMap panics on empty entries, medium) was closed by a lockfile bump 3.17.0 → 3.21.0. `serde_with` reaches this workspace only through `testcontainers` via `vpay-testkit`, so no shipping binary compiled it; `cargo deny` was already green because the RustSec database had not yet carried the advisory. Verified: `cargo check --workspace --all-targets`, `postgres_smoke` 15/15 on a real container. |
 | GitHub Actions | ✅ | **Correcting this row, which said "never executed": by 2026-09-02 the `ci` workflow had run 13 times (2026-08-09 → 2026-09-02, every one on a pull request) and failed all 13** (`gh run list --workflow ci`; per-job conclusions from `gh run view`). Job by job: `self-checks` passed 13/13; `rust` passed 10/13 (failed on `31317876404`, `31319267218`, `33618568372`) — on the latest run, `33626567174`, it ran `cargo nextest run --workspace` on `ubuntu-latest` with a working Docker daemon, container suites included, and reported `320 passed, 3 skipped`, which is the evidence for every container-backed row on this page; `supply chain` passed 11/13; `web` passed only the last 2 (the `pnpm -r test` Cypress-script bug fixed in the SDK pass); **`e2e (compose)` failed 13/13** — the first eleven at `pnpm/action-setup@v4` (the `packageManager` conflict `bf9811d` fixed), the last two at `pnpm exec cypress install`, because the workflow set `CYPRESS_INSTALL_BINARY: 0` for *all* jobs and then asked Cypress to install. The Docker steps after that never ran once. Two more defects: `on.push.branches` said `main` (the default branch is `master`, so nothing ever ran on a merge), and the `rust` job's flow-style `{ components: rustfmt, clippy }` parsed `clippy` as a stray key. **All fixed 2026-09-02**: the e2e job downloads Cypress normally and verifies it, builds both images, polls `/healthz` for a 200 and the dashboard for a 200 before running the spec; the compiler version is read from `rust-toolchain.toml` (now pinned to `1.95.0`, matching `backends/Dockerfile`) in every Rust job of `ci.yml` and `docs.yml`; and a new `just verify-ignored` step fails the `rust` job if the ignored-test count is not exactly 3, the number of test binaries is not exactly 30 (the check that actually catches a binary dropping out — 18 of the 30 hold eight tests or fewer), or the suite shrinks below 320 tests. **`expected_suites` moved 30 → 32 on 2026-09-02 (Step 1)**, for the two new `vpay-tests-integration` binaries `client_store` and `merchant_token_flow`; the raised value has not yet been exercised by a CI run. **Run 14 of the workflow — `33647189156`, on this fix's own pull request (#14) — is the first green `ci` run in this repository's history**: all five jobs passed; the `rust` job reported `329 tests run: 329 passed, 3 skipped` and `verify-ignored: 3 ignored (expected 3), 30 test binaries (expected 30), 332 total`; the `e2e (compose)` job built both images (5 min 21 s), got `/healthz answered 200 after 1s` and `dashboard: / answered 200 after 2s`, and Cypress ran the one spec (`dashboard.cy.ts`, 3 passing). The run before it, `33646048616`, was the first ever to reach the Docker step and failed there — see "Docker / compose" below for the proc-macro finding it produced. **✅ as of run `33650294682` (2026-09-02), the first push-triggered run on `master` in the repository's history, triggered by the merge of #14 and green on all five jobs.** The claim this row makes — the workflow runs on the default branch and on pull requests, builds the images, boots the stack and runs every suite — would fail visibly if it broke, which is the bar for ✅ here . **Nothing changed here in Step 3 (2026-09-03): no workflow file was touched, and no CI run exists for the `claude/step3-rails` branch.** **Changed 2026-09-03 (Step 5b), and one of the changes costs coverage.** The `web` job now runs `pnpm --filter @vaam-apps/vpay-sdk build` *before* `pnpm -r typecheck` (`sdks/stripe-compat` imports `@vaam-apps/vpay-sdk/stripe`, whose types resolve to the gitignored `dist/`; in the old order a clean checkout failed with `TS2307` — reproduced locally by `rm -rf sdks/nodejs/dist && pnpm -r typecheck`), and the `e2e (compose)` job gains a Rust toolchain, `just gen-demo-keys`, `-f compose.demo.yml` and a `pnpm --filter @vaam-apps/vpay-stripe-compat compat` step (with `VPAY_RECEIVER_URL` pointing at the `wiremock-webhook` container the base overlay already publishes on 8083, which the `constructEvent` case reads the delivery out of). Master's own `e2e` job did **not** already do any of this — checked on the rebase, and there are no duplicated steps. **`config/application-sandbox.yml` is now exercised by nothing.** compose.e2e.yml sets `VPAY_PROFILE: sandbox`; compose.demo.yml overrides it to `demo`, and `vpay-config` loads one overlay — the one the profile names — so the e2e stack loads `application-demo.yml` *instead of* the sandbox overlay, even though `sandbox` is the CLI's default profile. That is inert **today** and only today: the sandbox overlay sets exactly two things the demo overlay does not, `deployment.name` (cosmetic) and `dashboard_client.redirect_uris` (the OIDC callback at `http://localhost:3000/dash/v1/callback`), and the one Cypress spec asserts the dashboard's scaffold notice without ever starting a login, so no redirect URI is read under either profile. The day a spec signs in, this job stops covering the profile it appears to cover. Deliberately *not* fixed by editing compose: the alternative is a third overlay used only by CI, which is one more file to keep in sync, and the choice belongs to a maintainer rather than to this pass. **No CI run exists for the `claude/step5b-stripe-sdk` branch either**, so every count in this row's Step 5b sentences was measured on the authoring machine — including the post-rebase ones: `886 tests run: 886 passed, 0 skipped` with `0 ignored (expected 0), 38 test binaries (expected 38)`, and 25 stripe-compat cases against a real stack. `min_tests` moved 840 → 870 on that measurement; `expected_suites` stayed 38, because Step 5b added no Rust test *binary* — its Rust tests land in files that already existed and its new suite is TypeScript, which cargo does not run. The conformance suite starts its WireMock containers with testcontainers precisely so the `rust` job needs no new services; whether that works on GitHub's runners is unproven, and the counts in this pass's header were all measured on the authoring machine **Changed 2026-09-03 (frontend dependency audit): the `web` job gained a `just audit-web` step, placed immediately after `pnpm install --frozen-lockfile` and before every build step, plus a SHA-pinned `taiki-e/install-action@e67fa11c` (v2.87.4) to provide `just` — the same pin `deploy` uses, chosen over the `@v2` tag the `rust` and `e2e` jobs carry because this is the step that decides whether a known-vulnerable dependency can land. CI runs the recipe rather than a copy of its two commands, so the gate and the local check cannot drift. The `e2e` job deliberately does *not* audit: it installs from the same lockfile. `actionlint` over the edited file: clean.** **No CI run of this change exists yet** — the gate was exercised on the authoring machine instead, in both directions: green on this tree, and exit 1 with `3 high` on `master`'s own lockfile (restored with `git stash`, since `pnpm audit` resolves from `pnpm-lock.yaml` and not from `node_modules`). That second run is the evidence the step can actually fail; a gate only proved green is not a gate. **Updated 2026-09-03 (Step 7): `master` now has a recent green run, `33792230584`** (commit `ca94eac`, the merge of PR #24) — **six** jobs, not the five this row describes above, since `deploy (helm chart)` joined in Step 6: `rust`, `web`, `e2e (compose)`, `supply chain`, `self-checks (no-mocks, status)` and `deploy (helm chart)`, all successful. That run is the CI evidence the "Merchant auth", "Payment intents" and "Charge submission" rows above now cite. **It is a run of `master`, not of Step 7:** nothing on `claude/step7-cleanup` — including the `test-doc` step and the `verify-docs` report this step adds to this workflow — has been executed by CI even once. |
@@ -2081,7 +2088,7 @@ makes the core refuse a refund on that rail.
 | `cargo xtask verify-docs` — a report, never a gate | ✅ | **New 2026-09-03 (Step 7, lane 4), and ✅ for being a report, not for anything it enforces.** Per crate: doc-comment lines against code lines; every production function of 80 lines or more (a brace-depth scan that blanks string literals — a naive one miscounts on a `format!` body containing `{`); every ```` ```ignore ```` doctest fence; every `#[allow]`/`#[expect]` in production code. It **exits 0 whatever it finds** — Step 7's decision (4), because the cheapest way to pass a doc-ratio gate is to delete the `# Errors` sections [ADR-0011](adr/0011-error-modelling.md) depends on. `just verify` runs it after the three gates and says so in its own success line; CI's `self-checks` job runs it too, so the justfile's claim that the job runs exactly `just verify` stays true. Numbers on this tree: **prose 13 048 / compiled-example 1 111 / code 12 938 across the twelve crates — **100.8%** prose-to-code, measured on the final tree. The comparable pair is the *old* convention (every doc line counted as prose, looser denominator), where the design's pre-step baseline was **97.1%** and this tree reads **88.6%** — the full table is in the header above, including the four crates still over 100%. Six production functions of 80 lines or more, down from the eleven Phase A measured; the longest is now `vpay_config::validate_all` at 138, and nothing over 200 remains. **Zero** ```` ```ignore ```` fences in the two trees it scans. Four `#[allow]`/`#[expect]`, exactly the ones Phase A already named — none was added to make a function shorter, which was the live temptation in `poll_charge`**. **Scope, and the limits that follow from it:** `backends/crates` + `backends/apps`, `src/` only, everything from a file's first `#[cfg(test)]` onward excluded — so `sdks/rust` and `.xtask` are outside every number, and its ```` ```ignore ```` list therefore does **not** include the one in `sdks/rust/src/lib.rs` that `cargo test --doc` reports as ignored. 13 unit tests over synthetic sources back it, including one for the defect it shipped with for a single run: three files *discuss* `#[cfg(test)]` in their module headers, a scan over raw text stopped at the sentence, and two 200-line functions and two `#[expect]`s vanished from the report. A report that measures nothing looks exactly like a clean one, which is why it also shouts when it finds no sources at all |
 | Local demo (`just demo`, `examples/merchant-demo`, `compose.demo.yml`) | 🟡 | New 2026-09-02. `just demo` generates a throwaway server signing key and a demo merchant keypair (`just gen-demo-keys`: `cargo xtask gen-signing-key` for the merchant, its public JWK written into a git-ignored `demo` profile overlay `.e2e/application-demo.yml` that `compose.demo.yml` bind-mounts beside the baked base config), brings up `compose.yml` + `compose.e2e.yml` + `compose.demo.yml`, waits for `/healthz`, and runs `cargo run -p merchant-demo` — a Rust binary using `vpay-sdk` that prints one line per step: discovery and JWKS, an access token's decoded claims (never the token), the 401 envelope without a bearer, and the authenticated 404 `unknown_route` for `payment_intents().retrieve(..)` with the sentence "payment intents are not built yet — this is where the next step lands". `compose.demo.yml` publishes no host port for Postgres (`ports: !reset []`) because 5432 is the most commonly occupied port on a developer machine and the demo never reaches Postgres from the host. **🟡, not ✅:** the demo is an assertion harness a human reads, not a test CI runs — nothing fails a build if it regresses; and it demonstrates authentication only, because no `/v1` resource exists yet. Its first run found the runtime-image panic recorded in the "Resource-server JWT validation" row, which is the kind of thing it exists to find. **Updated 2026-09-03 (Step 2): four steps became five, and the fifth is the honest one.** The demo now runs discovery + JWKS, a token, the unauthenticated `401`, then **`payment_intents().create(…)` followed by `.retrieve(…)` through the shipping Rust SDK** — a real write to a real database, asserting the retrieve returns the object the create did — and finally **`.confirm(…)`, whose success condition is a `501 not_implemented`**. A printed payment intent that had been *confirmed* would mean something fabricated one. `just demo` is also port-configurable now: `just demo_port=18080 demo` propagates one number to the three places that must agree — the published port, the demo overlay's `deployment.public_base_url` (which becomes the OP's `issuer`, and a mismatch is an `invalid_client` whose message names no port), and `VPAY_BASE_URL` for the demo binary — and `gen-demo-keys` regenerates the overlay when either that URL or the newly-required `merchant_id` field is missing from it, a check added after a measured failure in which `just demo` spent its whole 120 s readiness budget on a crash loop while the recipe reported it had kept a file that no longer loads. **Updated 2026-09-03 (Step 3): still five steps, and step 5 now *succeeds*.** `payment_intents().confirm(…)` reaches the compose stack's WireMock MTN rail over HTTP and the demo asserts the intent came back **`processing`** with `next_action: null` — a push rail's one success state — then re-reads it and asserts the confirm's response and the later retrieve are the same object, so a status the handler rendered but did not commit would fail the run. It also asserts the *opposite* of what it used to: a confirm that does **not** reach `processing` is now the failure. The demo intent is **EUR**, because `config/application.yml` puts `mtn_momo` on EUR (MTN's sandbox rejects XAF) and `/v1` refuses a confirm whose intent currency is not the rail's — a property of the profile, expressed as config, never a code branch. **Updated again 2026-09-03 (Step 4): five steps became six, and the sixth ends in `succeeded`.** Step 6 polls `payment_intents().retrieve(…)` — exactly as a merchant integration would, through the SDK and nothing else — until the intent leaves `processing`, and asserts it arrived at **`succeeded`**. Nothing in the demo fakes an approval: the `vpay-worker` container (`compose.demo.yml`) claims the poll job the confirm committed, asks the WireMock MTN rail over HTTP, and the stub answers `PENDING` on the first query and `SUCCESSFUL` on the second because the confirm's documentation MSISDN enters a scenario keyed on that number. The first rung of the ladder is 10 s, so the step normally takes ~10–15 s. What step 6 deliberately **cannot** show is `amount_received`: the settlement writes it, the `payment_intent` object does not carry it, and printing it would mean reading the database behind the API the demo exists to demonstrate — the demo says so itself rather than omitting it. **Still 🟡, and the reason changed on 2026-09-03.** It is no longer "nobody has run it". **It was observed end to end on 2026-09-03 during Step 5b's rebase verification** (`just demo_port=18080 demo`): all **seven** steps passed — six became seven with Step 5, which added the webhook step this row's body above does not yet describe: discovery and JWKS, a token, the unauthenticated `401`, create + retrieve, a confirm that reached `processing`, a poll that reached `succeeded` after 7 retrieves, and step 7, the receiver's journal showing a delivery whose `Stripe-Signature` was byte-identical to its `Vpay-Signature` and verified with `vpay-sdk`. The row stays 🟡 because that run is a human reading output, not a build gate: nothing fails CI if the demo regresses, and the step that would catch it there is `sdks/stripe-compat` rather than this. **Updated 2026-09-04 (Step 8, lane A): six steps became four, and the fourth is six payments on both rails.** The walkthrough is now a table — MTN push to `succeeded`, to `insufficient_funds` (payer decline) and to `payer_timeout` (the prompt expired); Orange redirect to `succeeded` with the `next_action.redirect_to_url` printed, to `payer_timeout` (the hosted page expired) and to `provider_error` (the rail refused and documents no reason) — and each one prints the intent's public fields, asserts the exact `last_payment_error.code`, and verifies the `Vpay-Signature` of the webhook that settlement produced, read out of the receiver's own request journal. **Every outcome is selected at the rail stub by a field a merchant controls** — the MSISDN on MTN (documentation numbers `237600000f01`/`237600000f02`, carried to the status query by WireMock scenario, since MTN's status query is a `GET` that steers no other way) and the amount on Orange (5001/5002, which travel on its `POST` status body) — never by rewriting stored state. `just demo` is now `demo-up` + `demo-walk`, both of which exist separately, alongside `demo-status` and `demo-down`; readiness is `docker compose up --wait` on healthchecks (both rail stubs gained one) plus an external `/healthz` poll for the two `FROM scratch` services that cannot carry one. `compose.demo.yml`'s `name:` reads `${VPAY_DEMO_PROJECT:-vpay-demo}` and three `just` variables (`demo_project`, `demo_port`, `demo_receiver_port`) let two stacks run at once — **proven by running both**, two networks, two volumes, two databases, and the second stack's walkthrough green while the first was up. `docs/runbooks/demo.md` is the procedure, with the output of a real run pasted rather than narrated. **Still 🟡, and the reason changed twice on 2026-09-04.** Lane A first recorded that `just demo` from nothing had **never been observed green**: six walkthrough attempts gave two greens and four `500`s on a confirm, every one of them the `write_matched_no_row` race between `vpay-api`'s confirm and `vpay-worker`'s immediately-runnable poll job — **a defect in vpay, not in the demo** (`docs/runbooks/demo.md` §9, `docs/plans/step8-notes/lane-a.md` §3). **Lane G fixed that defect the same day** (see the confirm/worker race row). ~~Lane A's rebased branch — carrying the fix — then ran the walkthrough from nothing green, six outcomes for six with zero `write_matched_no_row`, and that is the measurement this row rests on.~~ **Corrected 2026-09-04, and the correction matters because it removes this row's only end-to-end evidence for the fix:** one green run from nothing exists (lane A's rebased branch, 2026-09-04, **without** lane G — that branch was rebased onto `068d8b7`, master plus lanes B and D, and lane G merged later as `53f7a7e`; the race is timing-dependent and did not fire, so this is one green *pre-fix* run and not evidence for the fix), lane A's own earlier count was two greens in six attempts and zero for three from nothing, lane G did not re-run the demo. Run on the merged branch, 2026-09-04, in the `vpay-ci` VM (code as of `4b5a9d7`, lanes G and H in): `just demo` from nothing six times, **four green** (six outcomes for six each, exit 0); the two failures were the VM's Postgres answering single statements in 14–36 s under host I/O pressure, with the settlement and the webhook both landing in the worker's log after the demo's budgets; `write_matched_no_row` appeared in no run. Three from nothing is met in count, not consecutively. What that one run does establish is the walkthrough itself: exit 0, six outcomes for six, `grep -c write_matched_no_row` = 0 over both logs, on a quiet machine. The row therefore stays 🟡 for three reasons and not one: the demo is a human reading output rather than a build gate, both rails and the receiver are WireMock hosts, and the merged branch's own demo run does not exist yet. **Updated 2026-09-04 (Step 9): four steps became five, the currency became XAF on both rails, the stack became eight services, and the merged branch's demo run now exists.** Step 5 creates one hosted and one embedded Checkout Session, each on its own fresh intent, reads each back, prints the hosted `url` in full and redacts the embedded secret — and stops there: it opens no browser and pays neither. `just demo-up` now also starts `vpay-checkout` (vpay's own payment page) and `vpay-shop` (the demo merchant's storefront), and `demo_checkout_port`/`demo_shop_port` join the four existing variables. **Run from nothing three consecutive times, green, in the `vpay-ci` VM on 2026-09-04 on the merged Step 9 branch** (`551ec80`): six outcomes for six each, XAF on both rails, both sessions created and read back, exit 0, `write_matched_no_row` in no run's logs. Step 8's bar of three from nothing is therefore met **and consecutive**, which it was not before. The row stays 🟡 for the two reasons that survive: nothing in CI fails if the demo regresses, and every rail and receiver in it is a WireMock host |
 | Two demos on one machine | 🟡 | **New 2026-09-04 (Step 8, lane A).** Compose-layer isolation is done and proven (`${VPAY_DEMO_PROJECT}`, `demo_project`/`demo_port`/`demo_receiver_port`; two projects, networks, volumes and databases observed side by side, the second stack's walkthrough green while the first was up). **`.e2e/` is not isolated:** one merchant key pair and one profile overlay serve the whole checkout, so a second `demo-up` on a different `demo_port` regenerates the shared pair and the first stack's `demo-walk` then fails `invalid_client`. Sequential use is fine; interleaved `demo-up` is not. Fixing it means keying `.e2e/` on `demo_project`, which touches `.github/workflows/ci.yml` (the e2e job's signing-key path), `just stripe-compat`, `examples/merchant-stripe-node` and `sdks/stripe-compat` — whose failure mode here is a *silent* `invalid_client`. **Not fixed, and named as a gap rather than left to be discovered** — see `docs/plans/step8-notes/lane-a.md` §4 |
-| `schemas/*.cstack` | 🟡 | ~~**Syntax verified against real CrateStack 0.10.1** (and 0.7.10 / 0.7.8 before it)~~ **Corrected 2026-09-05: that was a hand-run claim, and it is now a gate.** `just check-schema` runs `cratestack check --schema schemas/vpay.cstack` inside `just verify`, `just ci` and CI's `self-checks` job, against **cratestack-cli 0.11.1** — pinned once, as `cratestack_version` in `justfile`, which the workflow reads back rather than repeating. The file passes at 0.11.1 unchanged: **no edit to `schemas/vpay.cstack` was needed** to move from the 0.10.1 the old claim named. Content remains a design sketch, excluded from the build graph — see below. **The migrations are now the authoritative schema, and this file has diverged from them on two constraints**: raw SQL in `backends/migrations/0002_create-providers.sql` and `0003_create-payment-intents.sql` expresses two `CHECK` constraints (`partial_refunds_imply_refunds`, `no_over_refund`) that CrateStack's grammar cannot — no `@@check(expr)` exists in 0.7.8, 0.7.10, 0.10.1 or the pinned 0.11.1
+| `schemas/*.cstack` | 🟡 | ~~**Syntax verified against real CrateStack 0.10.1** (and 0.7.10 / 0.7.8 before it)~~ **Corrected 2026-09-05: that was a hand-run claim, and it is now a gate.** `just check-schema` runs `cratestack check --schema schemas/vpay.cstack` inside `just verify`, `just ci` and CI's `self-checks` job, against **cratestack-cli 0.11.1** — pinned once, as `cratestack_version` in `justfile`, which the workflow reads back rather than repeating. The file passes at 0.11.1 unchanged: **no edit to `schemas/vpay.cstack` was needed** to move from the 0.10.1 the old claim named. ~~Content remains a design sketch, excluded from the build graph~~ **— corrected 2026-09-06: `vpay-db` compiles this file now** (`mod schema` → `include_server_schema!("../../../schemas/vpay.cstack", db = Postgres)`), so every declaration in it is checked by rustc as well as by the CLI, and **one** of them — `DisabledClient` — has a query running through it (`is_client_disabled`). The other six models are still a design sketch that a compiler now type-checks; nothing reads or writes through them, several do not match the live table, and the file still drives no migration. See "The first CrateStack read" below. **The migrations are now the authoritative schema, and this file has diverged from them on two constraints**: raw SQL in `backends/migrations/0002_create-providers.sql` and `0003_create-payment-intents.sql` expresses two `CHECK` constraints (`partial_refunds_imply_refunds`, `no_over_refund`) that CrateStack's grammar cannot — no `@@check(expr)` exists in 0.7.8, 0.7.10, 0.10.1 or the pinned 0.11.1
 (0.10.1's parser adds `@@sql`/`@@embedded_sql`/`@@server_sql` — for views, not
 constraints — plus `@@paged`, `@@subscribe`, `@@audit` and `@@soft_delete`, none
 of which is a cross-column constraint, and `cratestack-migrate` still gates
@@ -2447,14 +2454,18 @@ install a process-wide provider.
 - with the pin at **0.9**: one major, and `cargo check` finishes
   (`Checking cratestack-sqlx v0.11.1 … Checking vpay-db … Finished`).
 
-The scratch crate was deleted afterwards and **no CrateStack crate was added
-to this workspace**. `schemas/vpay.cstack` is still outside the build graph and
-still checked only by `just check-schema`; this bump makes CrateStack
-*possible*, and adopting it is a separate piece of work nobody has started.
+The scratch crate was deleted afterwards and, ~~on that branch, **no
+CrateStack crate was added to this workspace**~~ — **superseded 2026-09-06:
+twelve of them were.** See "The first CrateStack read" below. This bump is
+what made that possible, and it is also why `sqlx` is now pinned `=0.9.0`
+rather than `"0.9"`: `run_in_tx` accepts vpay's `Transaction` only while both
+halves resolve the same `sqlx-core`, and a caret pin would let 0.9.1 break
+that with a trait error nobody would read as a version problem.
 
-**Reserved for the maintainer.** Whether to adopt `cratestack-sqlx` at all now
-that it resolves, and asking authkestra upstream to move
-`authkestra-store-sqlx` to sqlx 0.9 (see the section below).
+~~**Reserved for the maintainer.** Whether to adopt `cratestack-sqlx` at all
+now that it resolves~~ — **answered 2026-09-06: adopted, for one read.**
+Asking authkestra upstream to move `authkestra-store-sqlx` to sqlx 0.9 (see
+the section below) is still open.
 
 **The gate, on the whole branch.** `just ci` **exit 0**, end to end, on this
 machine on 2026-09-05:
@@ -2701,11 +2712,12 @@ justfile; `min_tests` stays 1080. `just test-doc`: **90 passed, 1 ignored**
 `just check-schema` runs `cratestack check --schema schemas/vpay.cstack` and
 is the **seventh gate in `just verify`**, so it is in `just ci` and in CI's
 `self-checks` job — which runs the recipe, not a copy of the command, for the
-reason `just audit-web` and `just helm-check` are called the same way. It is
-the only thing in this repository that reads this file: the schema is
-excluded from the build graph, so no compiler has ever looked at it, and
-before this the evidence it parsed was whatever transcript was last pasted
-here by hand.
+reason `just audit-web` and `just helm-check` are called the same way.
+~~It is the only thing in this repository that reads this file: the schema is
+excluded from the build graph, so no compiler has ever looked at it~~ —
+**corrected 2026-09-06, see "The first CrateStack read" below: `vpay-db`
+compiles this file now.** Before the gate, the evidence it parsed was
+whatever transcript was last pasted here by hand.
 
 **Pinned to `cratestack-cli 0.11.1`** (published 2026-09-03; the latest
 release on crates.io on 2026-09-05, and the version this pass measured). The
@@ -2816,8 +2828,9 @@ with is exactly the one that block's absence disarms. Both are correct
 behaviour for the CLI (a client-only schema is a real thing) and there is no
 flag that asks for more, so `check-schema` asserts the shape of what it
 checked before reporting green: a `datasource` block must be present, and the
-file must still declare at least `cratestack_min_declarations` (12 today: six
-models, six enums) top-level `model`/`enum`s. A floor rather than an exact
+file must still declare at least `cratestack_min_declarations` (13 since
+2026-09-06: seven models, six enums; 12 before that) top-level
+`model`/`enum`s. A floor rather than an exact
 count, so adding a model does not fail the gate — `verify-ignored`'s
 `min_tests` in miniature.
 
@@ -2826,13 +2839,15 @@ What this does and does not prove:
 - **Syntax is verified, and now re-verified on every `just ci`.** Every
   scalar, attribute, relation and enum in the file parses and type-checks
   against the real CrateStack 0.11.1 grammar.
-- **It does not prove a working migration or a running server.** The file is
+- **It does not prove a working migration or a running server.** ~~The file is
   still **excluded from the build graph** — no crate depends on it, no macro
-  consumes it, and it **drives no migration**: nothing generates code or DDL
-  from it, and `cratestack migrate diff` has still never been run against a
-  real vpay Postgres. `just check-schema` does not change that: it parses and
-  type-checks the file and stops there, and this row stays 🟡 for exactly that
-  reason.
+  consumes it~~ **— corrected 2026-09-06: `vpay-db` depends on it and a macro
+  consumes it (below). The rest of this bullet is unchanged and is the part
+  that matters:** it **drives no migration**. Nothing generates DDL from it,
+  `cratestack migrate diff` has still never been run against a real vpay
+  Postgres, and `backends/migrations/*.sql` remains the authoritative schema.
+  `just check-schema` does not change that: it parses and type-checks the
+  file and stops there, and this row stays 🟡 for exactly that reason.
   ~~Nothing diffs it against `backends/migrations/*.sql`.~~ **Corrected
   2026-09-05: something does now, and it found 86 changes — see "The measured
   drift" below.** Comparing the two is not the same as either of them driving
@@ -2880,27 +2895,44 @@ What this does and does not prove:
   merchant a `merchant_payable` posting belongs to. That is a real gap in the
   Rust type this schema mirrors, not something to paper over in the schema.
 
-#### The measured drift (2026-09-05)
+#### The measured drift (2026-09-05; **85 / 16 since 2026-09-06**)
 
 **`schemas/vpay.cstack` differs from the database `backends/migrations/*.sql`
-builds by 86 pending drift changes across 17 tables/views.** Measured, not
-estimated: `cratestack migrate baseline --strict` at the pinned CLI 0.11.1,
-against a `postgres:16-alpine` testcontainer with all 30 migrations applied by
+builds by 85 pending drift changes across 16 tables/views** — 86 across 17
+when first measured on 2026-09-05. Measured, not estimated: `cratestack
+migrate baseline --strict` at the pinned CLI 0.11.1, against a
+`postgres:16-alpine` testcontainer with all 30 migrations applied by
 `sqlx::migrate!`. It is asserted by
 `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` in
 `backends/tests/integration/tests/postgres_smoke.rs` — the exact count, the
-exact seventeen relations, and the exact eleven tables the report names as
-present in the database and absent from the schema. The full transcript is in
-[docs/plans/exp13-notes/opus.md](plans/exp13-notes/opus.md).
+exact sixteen relations, and the exact ten tables the report names as
+present in the database and absent from the schema. The full transcripts are
+in [docs/plans/exp13-notes/opus.md](plans/exp13-notes/opus.md) (the original
+measurement) and [docs/plans/exp14-notes/opus.md](plans/exp14-notes/opus.md)
+(the move).
+
+**Why it moved, and the near-miss worth recording.** `model DisabledClient`
+landed on 2026-09-06 for the existing `disabled_clients` table, and that
+table left the report entirely — one `table … is not declared in the schema`
+line went away with nothing replacing it. That outcome depended on a single
+attribute. With `disabled_at DateTime @default(dbgenerated())`, `migrate
+baseline` reads the live default as `ColumnDefault::Function("now()")` and
+the schema's as `ColumnDefault::DbGenerated`, which never compare equal — so
+the missing-table line is *swapped* for a `column disabled_at default value
+differs` line and **the total stays at exactly 86**. A whole table entering
+the schema would have been invisible to the count. `@default(now())`
+converts to the same `Function("now()")` and compares clean. Both spellings
+were run; the exact-set assertion beside the count is what would have caught
+the first, and is the reason that assertion exists.
 
 Until this test, "content remains a design sketch" was a sentence written from
 reading both files, and nothing ran that could have contradicted it. **The
 number must move when the schema grows**, and it must never be asserted as 0:
-this file is still excluded from the build graph and still drives no migration,
-so a 0 would mean the report stopped finding things rather than that the gap
-closed. `--strict` writes nothing — the out-dir is outside the checkout and is
-asserted empty, no `cratestack_migrations` row is recorded, and the schema file
-is byte-identical afterwards.
+this file still drives no migration, so a 0 would mean the report stopped
+finding things rather than that the gap closed. `--strict` writes nothing —
+the out-dir is outside the checkout and is asserted empty, no
+`cratestack_migrations` row is recorded, and the schema file is byte-identical
+afterwards.
 
 **The two cross-column CHECKs do not appear in the drift report at all.** This
 is the finding, and it strengthens the `@@check(expr)` ask above rather than
@@ -2916,7 +2948,8 @@ matches the schema, and **on this database a green `--strict` run would say
 nothing whatever about the over-refund guard or the refund-capability rule** —
 the two constraints raw SQL added *because* the grammar could not express them
 are exactly the two the drift tool cannot vouch for. Deleting `CONSTRAINT
-no_over_refund` from migration 0003 leaves the count at 86, measured; the test
+no_over_refund` from migration 0003 leaves the count where it was, measured;
+the test
 catches it by reading `pg_constraint` directly, and
 `over_refund_is_rejected_by_the_database` catches it behaviourally.
 
@@ -2955,15 +2988,192 @@ Two further blind spots, both pinned by the same test so they cannot move
 unnoticed: **18 columns are excluded from the comparison entirely** (`jsonb`,
 `int2`/`int4`, `bytea` — the report says so itself and asks for a manual
 review), and the `authkestra.*` tables are never introspected, because baseline
-reads the connection's own schema. `disabled_clients`, `oauth_signing_keys` and
+reads the connection's own schema. `oauth_signing_keys` and
 `oauth_client_assertion_jtis` are **not** in that second category — they are
 `public` tables, so the schema header's "and the authkestra tables" does not
 account for them, and the measured set of undeclared tables is larger than the
 header claims. Measuring rather than copying that list is what surfaced it.
+`disabled_clients` was a third until 2026-09-06, when it became the first
+table this file models *and* `vpay-db` reads through CrateStack.
 
-What was **not** done: `cratestack migrate diff` was still never run, no
-snapshot was ever written, nothing was reconciled, and none of the 86 changes
-was closed. This is a measurement, not a step toward wiring the file in.
+What was **not** done, as of the 2026-09-05 measurement: `cratestack migrate
+diff` was still never run, no snapshot was ever written, nothing was
+reconciled, and none of the 86 changes was closed. **One of them has been
+closed since** — `disabled_clients` — and `migrate diff` is still never run,
+no snapshot is still ever written, and the remaining 85 stand.
+
+#### The first CrateStack read (2026-09-06)
+
+Three things landed together, and each has a mutation that turns a gate red.
+
+**1. The dependency.** `cratestack = { package = "cratestack-pg", version =
+"=0.11.1", default-features = false, features = ["postgres"] }` in
+`[workspace.dependencies]`, taken by `vpay-db` and by no other crate. The
+rename is forced: the schema macros emit absolute `::cratestack::*` paths and
+cannot be told otherwise. The exact pin is forced too, by three other places
+that already name 0.11.1 — `justfile`'s `cratestack_version`, the drift
+measurement, and `rust-toolchain.toml`'s 1.98.0 (which exists *because* every
+0.11.1 crate declares `rust-version = "1.98.0"`). The library and the CLI
+must answer about one grammar.
+
+`Cargo.lock` goes **469 → 497 packages (+28)**; `syn` moves 3.0.3 → 3.0.5.
+Twelve of the twenty-eight are `cratestack-*`, all MIT. The rest:
+`ar_archive_writer` (Apache-2.0 WITH LLVM-exception), `ariadne`, `chumsky`
+(MIT), `const-oid`, `erased-serde`, `hashbrown`, `object`, `psm`, `stacker`,
+`typeid`, `unicode-segmentation`, `unicode-width`, `wasm-streams` (MIT OR
+Apache-2.0), `foldhash` (Zlib) — and **`minicbor` + `minicbor-serde`
+(BlueOak-1.0.0)**, which is the whole reason for the licence exception below.
+`cargo tree -i aws-lc-rs` is still empty and `cargo tree -d` still shows
+exactly one `sqlx` (0.9.0). **Corrected 2026-09-06 by review:** +28 counts
+`Cargo.lock` *entries*, and only **25 are new crate names** — `const-oid`,
+`foldhash` and `hashbrown` are extra *versions* of crates already in the
+graph, which is also why the new version duplicates are three and not two:
+`const-oid` (0.9.6/0.10.2), `foldhash` (0.1.5/0.2.0) **and `hashbrown`**
+(three versions to four). All under `multiple-versions = "warn"`, and
+`cargo deny check bans` is green.
+
+**The MSRV floor moved 1.94 → 1.98** as a direct consequence: the twelve
+`cratestack-*` packages are now the sole maximum over the graph's declared
+`rust_version` fields, where the seven `sqlx-*` were. It is still a metadata
+floor and still not verified by compiling at it; that it now equals the
+toolchain pin is a coincidence of one release, not a policy change.
+
+**2. The licence exception.** `deny.toml` gains a **scoped** exception —
+`minicbor` and `minicbor-serde` only, by name, never an entry on the `allow`
+list. Blue Oak 1.0.0 is OSI-approved and permissive with an express patent
+grant, so it clears the bar that list's comment sets; it is scoped because a
+*third* Blue Oak crate arriving is a new fact that should fail the gate.
+
+It is not avoidable. `cratestack-pg` declares `cratestack-axum` and
+`cratestack-client-rust` non-optional with no feature gating either, and both
+take `minicbor` unconditionally; `default-features = false, features =
+["postgres"]` — the smallest set that still yields a data layer — does not
+remove them. Dropping to `cratestack-sqlx` + `cratestack-macros` directly does
+not help either: `include_server_schema!` emits `pub mod axum { use
+::cratestack::HttpTransport; … }` unconditionally.
+
+- **Decisive test:** delete the exception and `cargo deny check licenses`
+  **FAILS**, naming `minicbor` and `minicbor-serde` at
+  `license = "BlueOak-1.0.0"`. With it, `cargo deny check` reports
+  `advisories ok, bans ok, licenses ok, sources ok`. **No other new licence
+  or ban appeared** — that was checked before the exception was written, not
+  assumed.
+
+**3. One read, and only one.** `DisabledClients::is_client_disabled` — the
+OAuth kill-switch lookup — is now
+`self.cs.disabled_client().find_unique(id).run(&system_context())`. Nothing
+about the trait's public surface changed. `schemas/vpay.cstack` gains `model
+DisabledClient` with `@@allow("read", auth().isSystem())` and nothing else;
+`cratestack_min_declarations` goes 12 → 13.
+
+**What did NOT move, stated plainly:** the two `disabled_clients` *writes*
+are still raw sqlx, no other table moved, no transaction, no enum column, and
+nothing about the transport — the generated `pub mod axum` compiles and is
+never referenced. `backends/migrations/*.sql` is still the authoritative
+schema and still drives every migration.
+
+- **Decisive test (the policy trap):** delete `@@allow("read",
+  auth().isSystem())` from `model DisabledClient` and
+  `a_disabled_client_reads_the_same_through_both_paths` in
+  `backends/crates/vpay-db/tests/repositories.rs` **FAILS** — the CrateStack
+  read returns `None` for a row a direct `SELECT` finds. This is the failure
+  mode the whole adoption most has to be unable to make silently: model
+  policies are compiled into the `WHERE` clause and a model with no `@@allow`
+  is deny-by-default, so a policy mistake does not raise an error, it turns
+  the kill-switch off. `just check-schema` stays green through it, and so
+  does every other gate. **Run on 2026-09-06, not merely designed:** the
+  mutation was applied and the test failed with `CrateStack says false, sqlx
+  says true`; the schema was restored afterwards and the tree is clean.
+- **Decisive test (the gate):** make `mod schema;` public — or add `pub use
+  schema::cratestack_schema;` — and `cargo xtask verify-repositories`
+  **FAILS**. **Measured against the gate as it stood before this change:
+  both spellings printed `ok`.** The module `include_server_schema!` creates
+  does not exist in any source file, so neither of the gate's two original
+  signals, nor rustdoc, nor any lint could see it. `DB_HANDLE_TYPES` also
+  learned `Cratestack` and `SqlxRuntime`, so a store holding the generated
+  runtime instead of a `PgPool` is recognised as an implementation;
+  whole-identifier matching keeps `CratestackError` and `CratestackContext`
+  out, asserted rather than assumed.
+
+  **Extended 2026-09-06 by review, after two more spellings were measured
+  past it.** `pub type CratestackHandle = crate::schema::cratestack_schema::Cratestack;`
+  and a `pub fn` returning the same type both compiled and both printed
+  `ok`: the check read `pub mod` and `pub use` and nothing else, and
+  `concrete_repository_types`' alias fixpoint cannot help, because it only
+  promotes an alias whose target is already in the set and `Cratestack` is
+  declared by no source file. The gate now also fails any unrestricted-`pub`
+  item *signature* naming the module, anywhere in the crate;
+  `PgRepositories`' real `pub(crate) cs` field and `boxed`'s body still pass,
+  which is asserted rather than hoped for. `cargo nextest run -p xtask`
+  197 → 198.
+
+**Errors.** `PersistenceError` (`vpay-db/src/persistence.rs`) is the leaf,
+`DbError::Persistence` `#[from]`s it and delegates, and `classify_cratestack`
+is the single place a `CratestackError` is read — the mirror of
+`classify_write`, branching on the same SQLSTATEs. CrateStack's own
+`status_code()` is **not used**: its `DatabaseTyped` is a 500 with `"internal
+error"`, which would answer a duplicate charge as an outage. Two honest
+limits, both in the code's own doc comments and in
+[docs/reference/vpay-db.md](reference/vpay-db.md): a CrateStack *read* never
+carries a SQLSTATE at all (`FindUnique::run` stringifies its `sqlx::Error`),
+so today every failure of this one query lands on `Storage` — the same answer
+the `SELECT` it replaced gave; and a policy denial cannot be produced by the
+read path either, because a refused read is a `WHERE` clause rather than an
+error. The SQLSTATE and `Denied` arms are unit-tested, not exercised.
+
+**Stays `NotImplemented`: nothing.** No function gained a stub, no test was
+weakened, and every method touched already worked and still works.
+
+~~**Three container-backed cases on this branch have NEVER been executed, and
+are owed to CI.**~~ **Superseded 2026-09-06: the host's Docker daemon came
+back and all three were run.** `just ci` ran **end to end, exit 0**, on this
+branch rebased onto master at `6978901` (#50, `refunds.fee`): `just fmt-check`,
+`just clippy`, all **ten** `just verify` gates, `just test-rust` **1369 tests
+run, 1369 passed, 0 skipped** across 43 binaries in 722.977 s, `just test-doc`
+**96 passed, 1 ignored**, `just verify-ignored` **0 ignored (expected 0), 43
+test binaries (expected 43), 1369 total**, `just lint-web`, `just test-web`
+(1369 is master's 1359 plus this branch's ten tests; this branch still adds no
+test binary, so `expected_suites` stays 43 and `min_tests` stays 1080), and
+`just deny` `advisories ok, bans ok, licenses ok, sources ok`. The three cases
+by name, all **PASS**:
+
+1. `vpay-db::repositories a_disabled_client_reads_the_same_through_both_paths`
+   — the parity test. **Executed for the first time on 2026-09-06: PASS**,
+   6.371 s standalone and 1.627 s inside the full run. "The CrateStack read
+   returns what the sqlx read returns" is now a measurement rather than a
+   reading of the generated query builder.
+2. The decisive mutation on it — deleting `@@allow("read", auth().isSystem())`
+   from `model DisabledClient` — **was run, and the parity test FAILED** with
+   `CrateStack says false, sqlx says true`, i.e. the kill-switch silently OFF,
+   while `just check-schema` stayed green. The schema was restored. The
+   transcript is in [plans/exp14-notes/opus.md](plans/exp14-notes/opus.md) §8.
+3. `just test-rust` itself — run, not merely listed, including the
+   pre-existing `disabled_client_lookup_reflects_disable_and_enable` that
+   exercises the changed method (PASS, 1.274 s), `client_store`'s
+   `find_client_reflects_the_disabled_clients_kill_switch` (PASS), and all ten
+   `merchant_token_flow` cases.
+
+The drift test was re-run on the final rebased tree: **PASS**, and its
+constants do not move — still **85 changes over 16 relations**, 18 unmappable
+columns. Migration `0031` adds `refunds.fee` to a table `schemas/vpay.cstack`
+does not declare at all, and an undeclared table is one report line whatever
+its column count.
+
+~~The server image was not built, so **the size cost of CrateStack's graph on
+the static musl link is unmeasured**.~~ **Built 2026-09-06, and it found a
+defect this branch had introduced:** `backends/Dockerfile` never copied
+`schemas/` into the build context, so `include_server_schema!` failed at macro
+expansion with `failed to read schema file .../schemas/vpay.cstack: No such
+file or directory` and **the release image could not be built at all**. No
+gate in this repository would have caught it — `just ci` builds on the host,
+where the file is present. Fixed by adding `COPY schemas ./schemas` to both
+the `planner` and `builder` stages. The size cost, measured paired on one host
+and builder on 2026-09-06 (master rebuilt from a `git archive` of `6978901`
+rather than compared against an older quoted figure): master **16.1 MB**, this
+branch **16.9 MB** — **+0.8 MB (+5.0%)** for CrateStack's twelve crates plus
+`minicbor`, `chumsky` and `ariadne`. Both images run and print `vpay-server
+0.1.0`.
+`docs/plans/exp14-notes/opus.md` § 7 has the full list.
 
 ---
 

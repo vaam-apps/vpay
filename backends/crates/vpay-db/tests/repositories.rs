@@ -367,6 +367,133 @@ async fn disabled_client_lookup_reflects_disable_and_enable() -> anyhow::Result<
     Ok(())
 }
 
+/// The CrateStack read and a plain `SELECT` must answer identically, for a
+/// row that exists and for one that does not.
+///
+/// **This is the test that makes the whole CrateStack adoption falsifiable**,
+/// and it is written as a comparison rather than as an assertion about
+/// `is_client_disabled` alone for one specific reason. A model policy is
+/// compiled into the `WHERE` clause of the generated read
+/// (`cratestack-sqlx`'s `push_action_policy_query`), and a model with no
+/// `@@allow` is deny-by-default — so a policy mistake does not raise an
+/// error, it silently returns zero rows. `is_client_disabled` would go on
+/// answering `false` for every client, `disabled_client_lookup_reflects_
+/// disable_and_enable` above would still pass its "not disabled" half, and
+/// the kill-switch would be off with nothing red anywhere.
+///
+/// So: write through the sqlx path that has not moved, then read the same
+/// key three ways — the repository method (CrateStack), a direct
+/// `SELECT EXISTS` (the statement this method used to be), and a direct
+/// `SELECT client_id` — and require all three to agree. The second read is
+/// the control: it is what proves the row is really there when the first one
+/// says it is not.
+///
+/// **Decisive mutation, DESIGNED AND NOT YET RUN.** Delete
+/// `@@allow("read", auth().isSystem())` from `model DisabledClient` in
+/// `schemas/vpay.cstack` and this test should fail on the "must agree"
+/// assertion with `CrateStack says false, sqlx says true`. This doc comment
+/// claimed until 2026-09-06 that the mutation had been run and cited a
+/// transcript in `docs/plans/exp14-notes/opus.md`; there is no such
+/// transcript, and that file's own § 7 lists this mutation — and this test —
+/// among the cases the authoring host could not execute, because its Docker
+/// daemon was dead. **Both halves are owed to CI**, and until they are paid
+/// "the CrateStack read returns what the sqlx read returns" is read out of
+/// `cratestack-sqlx`'s query builder rather than measured.
+///
+/// What *has* been measured, on 2026-09-06 and without a container, is the
+/// half that makes the mutation worth running: with the `@@allow` line
+/// deleted, `just check-schema`, `cargo build`, `just clippy` and all ten
+/// `just verify` gates stay green (`docs/plans/exp14-notes/opus-review.md`,
+/// M8). So this test really is the only thing standing between a deleted
+/// policy line and a kill-switch that answers "not disabled" for every
+/// client.
+#[tokio::test]
+async fn a_disabled_client_reads_the_same_through_both_paths() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+
+    /// Reads `disabled_clients` with a statement that has no policy layer
+    /// and no generated code in it, so a disagreement with the repository
+    /// method can only be the CrateStack path's doing.
+    async fn sqlx_says_disabled(pool: &PgPool, client_id: &str) -> anyhow::Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM disabled_clients WHERE client_id = $1)",
+        )
+        .bind(client_id)
+        .fetch_one(pool)
+        .await
+        .context("the control SELECT must run")?;
+
+        // A second spelling of the same question. `SELECT EXISTS` and
+        // `SELECT <column>` fail differently if the table or the column is
+        // not what this test thinks it is, and a control that can be wrong
+        // in the same way as the thing it controls is not a control.
+        let row: Option<String> =
+            sqlx::query_scalar("SELECT client_id FROM disabled_clients WHERE client_id = $1")
+                .bind(client_id)
+                .fetch_optional(pool)
+                .await
+                .context("the second control SELECT must run")?;
+
+        assert_eq!(
+            exists,
+            row.is_some(),
+            "the two control reads of `{client_id}` disagree with each other"
+        );
+        Ok(exists)
+    }
+
+    // Absent: both paths must say "not disabled", and the CrateStack read
+    // must reach `Ok(None)` rather than the `NotFound` error a different
+    // builder would have produced.
+    let absent = "merchant_absent_from_the_table";
+    assert!(!sqlx_says_disabled(&pool, absent).await?);
+    assert_eq!(
+        repositories.is_client_disabled(absent).await?,
+        sqlx_says_disabled(&pool, absent).await?,
+        "an absent client_id must read the same through CrateStack and through sqlx"
+    );
+
+    // Present, written through the sqlx write that deliberately did NOT
+    // move to CrateStack in this change — so this asserts the two layers
+    // see one table, not that one layer is self-consistent.
+    let present = "merchant_disabled_by_the_sqlx_write";
+    repositories
+        .disable_client(present, Some("key compromised, ticket INC-123"))
+        .await
+        .context("the sqlx write must succeed")?;
+
+    let via_sqlx = sqlx_says_disabled(&pool, present).await?;
+    let via_cratestack = repositories.is_client_disabled(present).await?;
+    assert!(
+        via_sqlx,
+        "the control read must find the row the write made"
+    );
+    assert_eq!(
+        via_cratestack, via_sqlx,
+        "a row written by the sqlx path must be visible to the CrateStack read: CrateStack says \
+         {via_cratestack}, sqlx says {via_sqlx}. If CrateStack says false and sqlx says true, the \
+         model's `@@allow(\"read\", auth().isSystem())` clause is missing or the context this \
+         crate reads under stopped being a SystemContext — the read is compiled into the WHERE \
+         clause, so a denied row is indistinguishable from an absent one and the kill-switch is \
+         silently OFF"
+    );
+
+    // And back again: the delete must be visible to the CrateStack read too,
+    // so the agreement is not an artefact of a row that was never removed.
+    repositories
+        .enable_client(present)
+        .await
+        .context("the sqlx delete must succeed")?;
+    assert_eq!(
+        repositories.is_client_disabled(present).await?,
+        sqlx_says_disabled(&pool, present).await?,
+        "a row deleted by the sqlx path must be gone from the CrateStack read too"
+    );
+    assert!(!repositories.is_client_disabled(present).await?);
+
+    Ok(())
+}
+
 // --- oauth_signing_keys --------------------------------------------------
 
 /// Test fixture JWK — a syntactically valid public-key shape; nothing in

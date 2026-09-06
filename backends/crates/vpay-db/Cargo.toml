@@ -21,6 +21,14 @@ vpay-core.workspace = true
 # is a cheap no-op, which is what this crate's own container tests get.
 metrics.workspace = true
 sqlx.workspace = true
+# CrateStack's Postgres data layer, taken here and NOWHERE else in the
+# workspace: `mod schema` compiles `schemas/vpay.cstack` into this crate and
+# `mod persistence` is the only place a `CratestackError` is read. Every
+# generated type stays private (ADR-0016 standard 5), which
+# `cargo xtask verify-repositories` now checks rather than trusts.
+# `docs/reference/vpay-db.md` § CrateStack says what runs through it and what
+# deliberately does not.
+cratestack.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 # The OP's own trait for private_key_jwt replay protection (feature OP-2 /
@@ -47,6 +55,15 @@ time.workspace = true
 # oauth_signing_keys.public_jwk is JSONB; sqlx's "json" feature (already
 # enabled workspace-wide) decodes/encodes it as serde_json::Value directly.
 serde_json.workspace = true
+# Not written by hand anywhere in this crate: `include_server_schema!` emits
+# `#[derive(serde::Serialize, serde::Deserialize)]` by bare path on every
+# generated model, input and enum, so `serde` has to be a direct dependency
+# of the crate that invokes the macro or the build fails with 110 copies of
+# "can't find crate for `serde`". Nothing under `src/` outside `mod schema`
+# names it, which is why `cargo xtask verify-serde` has nothing to say about
+# this crate — it reads source text, and the generated derives are not source
+# text (their field names come from the `.cstack` file, already snake_case).
+serde.workspace = true
 # `charges.provider_reference_id` and `provider_requests.provider_reference_id`
 # are `UUID` columns mirroring `vpay_provider::ChargeRef::reference_id: Uuid`.
 # sqlx's "uuid" feature (already enabled workspace-wide) decodes them, but the

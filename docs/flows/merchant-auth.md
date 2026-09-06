@@ -475,6 +475,25 @@ has not made:
 
 ## Status
 
+**Updated 2026-09-06: the kill-switch lookup changed engine, and nothing
+else changed.** `disabled_clients` (the row in the failure table above) is
+read through CrateStack now —
+`self.cs.disabled_client().find_unique(id).run(&system_context())` in
+`vpay_db::disabled_clients` — instead of through a hand-written
+`SELECT EXISTS`. The trait, the answer, the per-request-no-cache decision and
+the two writes are all unchanged; this is the first and only query in the
+workspace that runs through a generated data layer. It matters here for one
+reason a reader of this document should know: CrateStack compiles a model's
+`@@allow` policy into the `WHERE` clause of the read, so a missing policy
+would make this lookup answer "not disabled" for **every** client — the
+kill-switch silently off — without erroring.
+`a_disabled_client_reads_the_same_through_both_paths` in
+`backends/crates/vpay-db/tests/repositories.rs` exists to make that failure
+red — **and it has not been run yet**: the authoring host's Docker daemon was
+unrecoverable on the day, so that test and its decisive mutation are owed to
+CI. `docs/status.md` § "The first CrateStack read" names all three unexecuted
+cases.
+
 **Updated 2026-09-03 (Step 2): the journey now has a far end.**
 `vpay-server` serves `POST /v1/oauth/token`,
 `GET /v1/oauth/.well-known/openid-configuration` and

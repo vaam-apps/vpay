@@ -63,9 +63,17 @@ mod repository;
 mod client_assertion;
 mod disabled_clients;
 mod error;
+// The CrateStack layer. Both modules are private and neither exports a
+// name: `schema` holds the generated `cratestack_schema` module, and
+// `persistence` is the only place in this crate a `CratestackError` is read.
+// `PersistenceError` itself is `pub` (a `DbError` variant carries it, so a
+// caller can match on it), and it is re-exported below from `persistence`
+// rather than the module being made `pub`.
 mod health;
 mod migrations;
+mod persistence;
 mod pool;
+mod schema;
 mod signing_keys;
 // The audit `sqlx::AssertSqlSafe` demands, as a test rather than a comment.
 // Test-only: it reads this crate's own sources through `CARGO_MANIFEST_DIR`.
@@ -86,6 +94,12 @@ pub use idempotency::{Idempotency, IdempotencyClaim, IdempotencyRecord, Idempote
 pub use jobs::{JobRow, Jobs};
 pub use migrations::Migrations;
 pub use payment_intents::{ListPage, NewPaymentIntent, PaymentIntentRow, PaymentIntents};
+// The leaf `DbError::Persistence` carries. `pub` because a caller matching
+// on `DbError` can reach it; the module it lives in stays private, and
+// `classify_cratestack`/`system_context` stay `pub(crate)` — nothing outside
+// this crate has a `CratestackError` to classify or a reason to build a
+// system context.
+pub use persistence::PersistenceError;
 pub use pool::{connect, connect_lazy};
 pub use provider_requests::ProviderRequests;
 pub use refunds::{RefundRow, Refunds};

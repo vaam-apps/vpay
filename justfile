@@ -564,11 +564,15 @@ cratestack_version := "0.11.1"
 
 # The floor for `check-schema`'s "is there anything here?" assertion: the
 # number of top-level `model`/`enum` declarations schemas/vpay.cstack must
-# still carry for a `schema OK` to mean anything. Six models and six enums
-# today. A FLOOR, deliberately, not an exact count — adding a model is not a
-# reason to fail a gate, and this exists to catch a file that was emptied or
-# truncated, not one that grew.
-cratestack_min_declarations := "12"
+# still carry for a `schema OK` to mean anything. Seven models and six enums
+# today — 12 until 2026-09-06, when `DisabledClient` became the first model
+# in that file a Rust crate actually compiles (`vpay-db`'s private
+# `mod schema`). A FLOOR, deliberately, not an exact count — adding a model
+# is not a reason to fail a gate, and this exists to catch a file that was
+# emptied or truncated, not one that grew. It is raised with the model
+# rather than left at 12 because the floor is only worth what the last
+# person to grow the file was willing to promise.
+cratestack_min_declarations := "13"
 
 # `schemas/vpay.cstack` parses and type-checks against the real CrateStack
 # grammar. Seventh gate in `just verify`, new 2026-09-05.
@@ -1048,6 +1052,18 @@ verify-docs:
 # stands untouched. The lesson worth keeping: when two branches each bump a
 # count by one, the merged count is not either branch's number, and only
 # re-running the measurement finds that.
+#
+# **Re-measured and UNCHANGED at 43 on 2026-09-06**, when the first CrateStack
+# read (`vpay-db`'s private `mod schema`, `disabled_clients` through the port)
+# was rebased onto `c456f24`. Recorded even though the number did not move,
+# because the entry above is the reason to check rather than assume: that
+# branch adds **ten** tests and **no** test binary — one parity case and five
+# `persistence::tests` in `vpay-db`, four `repository_tests` in `xtask` — all
+# of them into files that already existed. Measured the way `verify-ignored`
+# measures it, on the rebased tree: **1361 total, 43 test binaries, 0
+# ignored**. 1361 is the rebase's own number and neither branch's: master's
+# total had already moved past the 1334 recorded above when #52 landed
+# `verify-sdk-parity`'s SDK-reading tests. The 1080 floor stands untouched.
 expected_ignored := "0"
 expected_suites := "43"
 # A floor, not a target — set a little under the measured 1059
