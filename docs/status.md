@@ -149,20 +149,39 @@ method has no row, naming the `file:line` it is declared on, or if a row names
 a method neither SDK declares, naming the row's line — unless every cell of
 that row is a dated `⛔`, which is how a capability written down before it
 exists is recorded. `docs/sdks/parity.md`'s header states the naming
-convention. **Run on this tree, it found nothing to fix**: all 13 shipped
-capabilities already had rows and all 14 distinct capability rows already
-named a shipped method or were dated gaps, so the two directions are recorded
-as *newly enforced*, not as *newly discovered defects*. Its success line now
-reads `350 proving test(s) … 28 dated gap(s), 13 SDK method(s) enumerated
-across 16 row(s)`; the method count is printed so that an enumerator that
-silently found nothing — which would satisfy both new directions vacuously —
-is visible, and a unit test asserts the 13 capabilities by name for the same
-reason. Proven by five mutations, each applied, run and reverted on
+convention. **Run on this tree, it found nothing to fix**: every shipped
+capability already had a row and every distinct capability row already
+named a shipped method or was a dated gap, so the two directions are recorded
+as *newly enforced*, not as *newly discovered defects*. **Re-measured on
+2026-09-06 after this branch was rebased onto `bb8de92`** (which merged issue
+#45 and added `refunds.retrieve` to both SDKs, the server route and the
+matrix), its success line reads `354 proving test(s) named in
+docs/sdks/parity.md all exist, 28 dated gap(s), 14 SDK method(s) enumerated
+across 17 row(s)` — 14 shipped capabilities, all with rows, and 15 distinct
+capabilities named by those rows, the fifteenth being the `events.retrieve`
+dated ⛔. Still nothing to fix. (Before the rebase the same line read `350
+proving test(s) … 13 SDK method(s) enumerated across 16 row(s)`; the numbers
+moved because #45 landed, not because the gate changed.) The method count is
+printed so that an enumerator that silently found nothing — which would
+satisfy both new directions vacuously — is visible, and a unit test asserts
+the 14 capabilities **by name, per SDK**, for the same reason. That
+by-name assertion is not decoration: it is what caught the rebase. Git
+reported no conflict — #45 touched the SDK sources and the matrix, this
+branch touched the gate — and a count-only guard would have stayed green
+while the meaning of "enumerated everything" widened underneath it. Instead
+the test failed naming `sdks/rust` and printing both lists. Proven by five mutations, each applied, run and reverted on
 2026-09-06: a deleted `refunds.create` row, a `pub async fn frobnicate(` added
 to a Rust resource, the same added to a Node one, a `payments.teleport` row
 naming no method, and a renamed proving test (the pre-existing direction,
 still failing) — four fail with exit 1 and the fifth, the same
-`payments.teleport` row rewritten as `⛔`/`⛔` with a date, passes. See
+`payments.teleport` row rewritten as `⛔`/`⛔` with a date, passes.
+**Three of them were re-run on the rebased tree on 2026-09-06 and all three
+still fail with exit 1**: deleting the (new) `refunds.retrieve` row fails
+naming `sdks/rust/src/resources.rs:726`; `pub async fn frobnicate(` added to
+`PaymentIntentsResource` fails naming `sdks/rust/src/resources.rs:512`; and
+the same method preceded by a `b'}'` byte literal in the same `impl` — the
+shape the lexer fix exists for — fails naming
+`sdks/rust/src/resources.rs:516` rather than being swallowed. See
 [plans/exp15-notes/C.md](plans/exp15-notes/C.md).
 
 **Reviewed the same day, and the enumerator had three silent holes — all
@@ -191,8 +210,9 @@ hands Rust literals to `end_of_literal`, the one `verify-status`,
 `verify-serde` and `verify-docs` already share, which knows `r#"…"#`, `b'…'`
 and the lifetime-versus-character-literal ambiguity. Each fix carries a
 regression test measured to fail against the behaviour it replaced. **The
-enumeration of this tree is unchanged** — still the same 13 capabilities
-across 16 rows — so these closed holes, and did not correct a miscount.
+enumeration of this tree is unchanged** — the same capabilities across the
+same rows, 13 across 16 when measured, 14 across 17 after the rebase onto
+`bb8de92` — so these closed holes, and did not correct a miscount.
 `cargo test -p xtask` 208 → **211 passed, 0 failed, 0 ignored**. Still not
 checked, and recorded rather than fixed: a Node resource declared as an
 object literal or with arrow-function properties remains invisible (neither

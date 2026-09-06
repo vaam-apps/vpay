@@ -3586,6 +3586,9 @@ fn ts_method_name(line: &str) -> Option<String> {
     // green at `13 SDK method(s)` with an unrecorded method shipped. It is the
     // TypeScript-only half of a hole Rust never had, because `declared_after`
     // stops at the identifier and never looks for the paren at all.
+    // (`13` was the enumeration on the tree that measurement was taken on;
+    // it is 14 since `refunds.retrieve` landed in `bb8de92`, re-measured on
+    // the rebased tree 2026-09-06 — the mutation still fails with exit 1.)
     let after = match after.starts_with('<') {
         true => {
             let inside = balanced_delimited(after, 0, '<', '>')?;
@@ -3636,7 +3639,11 @@ fn declared_after(line: &str, keyword: &str) -> Option<String> {
 ///   `pub async fn` to `PaymentIntentsResource` left the gate green at
 ///   `13 SDK method(s)`; without it, the same addition failed with exit 1. The
 ///   comment that used to sit here said "neither SDK contains one", which was
-///   false when it was written.
+///   false when it was written. (`13` is the enumeration of the tree that
+///   measurement was taken on. It is **14** since `refunds.retrieve` landed
+///   in `bb8de92`; the mutation was re-run on the rebased tree on 2026-09-06
+///   — `b'}'` followed by an unrecorded `pub async fn` in the same `impl`
+///   still fails with exit 1, naming `sdks/rust/src/resources.rs:516`.)
 /// * **TypeScript** keeps the character-by-character scan below: its
 ///   delimiters are `"`, `'` and the template-literal backtick, the one that
 ///   survives a line break, and none of them has Rust's prefix or lifetime
@@ -8707,8 +8714,10 @@ export class HolderResource {
     /// A generic method is still a method. Measured 2026-09-06: before the
     /// type-parameter list was skipped, `async listAll<T>()` was read as a
     /// field — the gate stayed green at `13 SDK method(s)` with an unrecorded
-    /// method shipped in `sdks/nodejs`. The field case is asserted alongside
-    /// it, because the fix must not turn `readonly x: Y<Z>;` into a method.
+    /// method shipped in `sdks/nodejs`. (`13` is the enumeration of the tree
+    /// that measurement was taken on; it is 14 since `refunds.retrieve`
+    /// landed in `bb8de92`.) The field case is asserted alongside it, because
+    /// the fix must not turn `readonly x: Y<Z>;` into a method.
     #[test]
     fn a_method_with_a_type_parameter_is_still_a_method_and_a_field_is_not() {
         assert_eq!(
@@ -8943,14 +8952,23 @@ export class HolderResource {
 
     /// The vacuity guard. Both new directions are satisfied by an enumerator
     /// that finds nothing, so the count this repository's own SDKs yield is
-    /// asserted rather than merely printed — and asserted by name, because
-    /// "13" would survive the list changing under it.
+    /// asserted rather than merely printed — and asserted by name, because a
+    /// bare count would survive the list changing under it.
+    ///
+    /// **That is not hypothetical: it happened during this branch's rebase.**
+    /// Written against a tree with 13 methods, this test failed on
+    /// 2026-09-06 when the branch was rebased onto `bb8de92`, which merged
+    /// issue #45 and added `refunds.retrieve` to *both* SDKs. Git reported no
+    /// conflict — #45 touched the SDK sources and the matrix, this branch
+    /// touched the gate — so a count-only guard would have stayed green while
+    /// silently widening what "enumerated everything" means. The by-name
+    /// assertion named the SDK (`sdks/rust`) and printed both lists.
     ///
     /// It asserts **two** different things, and a reader hitting the failure
     /// needs to know which one broke, because only one of them is a defect:
     ///
     /// 1. neither enumerator has gone quiet (the vacuity half), and
-    /// 2. the two SDKs happen to declare the *same* 13 methods today.
+    /// 2. the two SDKs happen to declare the *same* 14 methods today.
     ///
     /// (2) is a fact about this tree, **not** a rule — ADR-0015 decision 2
     /// expressly lets a capability land in one SDK with a dated ⛔ row for the
@@ -8981,6 +8999,7 @@ export class HolderResource {
             "payment_intents.list",
             "payment_intents.retrieve",
             "refunds.create",
+            "refunds.retrieve",
         ];
         for column in ["sdks/rust", "sdks/nodejs"] {
             let found: BTreeSet<String> = sdk_methods(&root, column)

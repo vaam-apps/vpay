@@ -235,3 +235,116 @@ TypeScript type-parameter case. See [C-review.md](C-review.md).
   not", and its converse, is a further check this pass did not build; it is
   the obvious next one, and it would need a rule for what a ⛔ cell means when
   the method exists but is untested.
+
+## Rebased onto `bb8de92`, 2026-09-06
+
+Rebased onto `origin/master` at `bb8de92`, which merged PR #51: `GET
+/v1/refunds/{id}`, `refunds.retrieve` in both merchant SDKs, a
+`refunds.retrieve` row in `docs/sdks/parity.md`, re-measured counts in
+`docs/api/README.md`, `docs/status.md` and `README.md`, and
+`expected_suites` 41 → 43.
+
+**Git reported no conflict in any of the nine commits**, and that is the
+interesting part rather than a convenience. The two branches touched
+overlapping files — `docs/sdks/parity.md`, `docs/status.md`, `justfile` — but
+never overlapping line ranges: #51 edited parity.md's "Measured by reading
+both SDKs" paragraph and added a table row, this branch inserted a new
+section above that paragraph; #51 edited the `justfile`'s `verify-docs`
+commentary and `expected_suites` near line 1010, this branch edited the
+header comment at line 5. Both sides were kept in every case, which is what
+the merge should do, and no hand-editing was needed.
+
+**A clean rebase was nevertheless not a correct one.** The branch's own
+vacuity guard failed immediately:
+
+    sdk_parity_tests::the_repositorys_own_sdks_enumerate_exactly_the_capabilities_the_matrix_records
+    assertion `left == right` failed: sdks/rust
+      left:  [… "refunds.create", "refunds.retrieve"]
+      right: [… "refunds.create"]
+
+This is the guard doing exactly the job it was written for, one commit
+earlier than expected. The `expected` list was written against a tree with 13
+methods; #51 added a fourteenth to both SDKs. Nothing about the gate changed
+and nothing about #51 was wrong — the *fact this tree asserts* changed, and
+because the assertion names the capabilities rather than counting them, it
+said so, named the SDK and printed both lists. Had it asserted `len() == 13`,
+or merely "non-empty", the rebase would have been silently green with the
+guard's meaning quietly widened. That is the case the doc comment on that
+test now records, because a guard whose value is hypothetical is easy to
+relax later.
+
+**What was re-measured, in the same commit as the list:**
+
+| | Before the rebase | After |
+|---|---|---|
+| `verify-sdk-parity` proving tests | 350 | **354** |
+| dated gaps | 28 | **28** |
+| SDK methods enumerated | 13 | **14** |
+| capability rows | 16 | **17** |
+| `cargo test -p xtask` | 211 passed, 0 ignored | **211 passed, 0 ignored** |
+| `just verify-ignored` total | 1336 | **1351** |
+| test binaries / `expected_suites` | 42 | **43** (set by #51, not by this branch) |
+
+The success line on the rebased tree, in full:
+
+    verify-sdk-parity: ok — 354 proving test(s) named in docs/sdks/parity.md all exist, 28 dated gap(s), 14 SDK method(s) enumerated across 17 row(s)
+
+The gate found **nothing to fix** on the rebased tree: `refunds.retrieve` is
+declared in both SDKs and #51 gave it a row, so both new directions were
+already satisfied. Fourteen shipped capabilities all have rows; fifteen
+distinct capabilities are named by rows, the fifteenth being the
+`events.retrieve` dated ⛔ that has been ⛔/⛔ since 2026-09-03.
+
+The three doc comments quoting `13 SDK method(s)` — the byte-literal lexer
+note, the TypeScript type-parameter note, and the mutation record beside them
+— were **not** rewritten to 14, because each states what the gate printed on
+the tree its measurement was taken on and changing the figure would make the
+record false. Each now carries the re-measured number alongside it instead.
+
+**Three decisive mutations re-run on the rebased tree**, each applied, run and
+reverted, all exit 1:
+
+| Mutation | Result |
+|---|---|
+| delete the `refunds.retrieve` row | **exit 1**, `sdks/rust/src/resources.rs:726: \`refunds.retrieve\` is shipped and has no row` |
+| `pub async fn frobnicate(` added to `PaymentIntentsResource` | **exit 1**, `sdks/rust/src/resources.rs:512` |
+| a `b'}'` byte literal *then* the same method, same `impl` (the lexer fix) | **exit 1**, `sdks/rust/src/resources.rs:516` |
+
+The third is the one that matters: before the `end_of_literal` reuse, the
+byte literal's brace truncated the enclosing `impl` and every method after it
+vanished, so this mutation passed. It does not now.
+
+**The full gate on the rebased tree**, every command run rather than
+reconstructed:
+
+| Command | Result |
+|---|---|
+| `just verify` | `verify: ok — the ten gates above passed`, exit 0 |
+| `cargo xtask verify-sdk-parity` | `ok — 354 proving test(s) …, 28 dated gap(s), 14 SDK method(s) enumerated across 17 row(s)`, exit 0 |
+| `cargo test -p xtask` | **211 passed, 0 failed, 0 ignored** |
+| `just docs-check` | exit 0 |
+| `just fmt-check` | exit 0 |
+| `just clippy` | exit 0 |
+| `just verify-ignored` | `0 ignored (expected 0), 43 test binaries (expected 43), 1351 total (minimum 1080)`, exit 0 |
+
+**`verify-ignored` failed once before it passed, and the cause was not this
+branch.** The first run died linking the `browser_checkout` test binary with
+`rust-lld: error: undefined hidden symbol: anon.<hash>.llvm.<hash>`,
+referenced from `core/src/ub_checks.rs:73`. Nothing in this branch's diff
+reaches that crate — it touches `.xtask` and documentation only — and
+`cargo clean -p vpay-tests-integration` followed by a rerun passed with the
+numbers above. Recorded rather than quietly re-run: it is a stale-incremental
+linker failure on this host, it is reproducible only from a dirty `target/`,
+and anyone who hits it should clean that crate rather than go looking for a
+defect in the gate.
+
+**One expectation not met, and it is a design decision rather than a defect.**
+The first mutation fails naming *one* SDK's `file:line`, not both. `shipped`
+is a `BTreeMap` keyed by capability and the comment above it says why —
+"first declaration wins, so the reported `file:line` is stable rather than
+dependent on column order" — so a capability both SDKs declare yields one
+violation, deterministically the Rust one. Reporting every declaring SDK
+would be more informative and would match the matrix's per-column shape, but
+it is the same question as the per-column strictness already reserved for the
+maintainer below ("at least one SDK" versus per-SDK), so this pass did not
+pre-empt it. It is listed in the PR as reserved, not silently changed.

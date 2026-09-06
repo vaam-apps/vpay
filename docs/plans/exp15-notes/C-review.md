@@ -3,6 +3,19 @@
 Date: 2026-09-06. Base `1bd2183`, reviewed head `c086f56` (four commits).
 Every command below was run in this worktree; every number is pasted.
 
+> **Every figure in this file was measured on `1bd2183`, before the rebase
+> onto `bb8de92` (2026-09-06).** They are left exactly as measured rather than
+> rewritten, because this is a record of a review that happened on that tree.
+> `bb8de92` merged PR #51, which added `refunds.retrieve` to both merchant
+> SDKs and to the matrix, so the counts below moved afterwards: **350 proving
+> tests → 354, 13 SDK methods → 14, 16 capability rows → 17, and
+> `expected_suites` 42 → 43.** The post-rebase measurements, and the three
+> mutations re-run against them, are in
+> [`C.md`](C.md) under "Rebased onto `bb8de92`". Where this file says `13 SDK
+> method(s)` inside a mutation result, that is what the gate printed at the
+> time and is the evidence for the finding beside it; it is not a claim about
+> the current tree.
+
 ## 0. The gate, as delivered
 
 | Command | Result |
