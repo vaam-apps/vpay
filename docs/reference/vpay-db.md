@@ -1280,6 +1280,8 @@ Everything here was measured against the 0.11.1 sources on 2026-09-06;
 | `reconcile`, per currency | `find_unique(code).for_update().run_in_tx(tx, ctx)` | `read` |
 | `reconcile`, per currency | `upsert(CreateCurrencyInput).run_in_tx(tx, ctx)` | `create` **and** `update` |
 | `reconcile`, per provider | `upsert(CreateProviderInput).run_in_tx(tx, ctx)` | `create` **and** `update` |
+| `create_in_tx` (the outbox) | `upsert(CreateWebhookDeliveryInput).do_nothing().on_conflict(&["event_id","endpoint_id"]).run_in_tx(tx, ctx)` | `create` **and** `update` |
+| `mark_fanned_out_in_tx` | `update_many().where_(id).where_(fanout_state).set(UpdateEventInput).run_in_tx(tx, ctx)` | `update` |
 
 Plus one that is **test-only and says so**: `vpay-db`'s own
 `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` reads a
@@ -1288,6 +1290,200 @@ through CrateStack — `model Provider`'s `read` arm is there for that test, and
 migration 0033 changed the write, not the read. The test exists because
 migration 0032's native-enum conversion has no other witness — see "The enum
 conversion no report can see" below.
+
+#### The transaction seam, now measured rather than argued
+
+The last two rows are different in kind from the ones above them, and the
+difference is the whole point of the outbox landing on this layer.
+
+`reconcile` opens its own `self.pool.begin()`, so when it hands that
+transaction to `run_in_tx` it is handing CrateStack a transaction `vpay-db`
+opened for CrateStack's benefit — nothing else was ever going to be in it.
+`create_in_tx` and `mark_fanned_out_in_tx` are reached through
+`UnitOfWork::transaction`: the transaction is opened by
+`TransactionSource::begin_transaction`, filled by
+`vpay_worker::webhooks::fan_out_one` with a mix of CrateStack writes and
+hand-written `jobs` inserts, and committed or rolled back by the `TxOutcome`
+the closure returns. `run_in_tx<'tx>(self, tx: &mut sqlx::Transaction<'tx,
+Postgres>, ctx)` cannot tell the two situations apart, which is exactly what
+makes the seam work and exactly what makes it unprovable by reading.
+
+`PendingTransaction` grew one private accessor for it. It already owned a
+`Transaction<'static, Postgres>`; it now also carries a clone of the
+`Cratestack` handle, because a delegate borrows from that value and a
+`TxRepositories` method has no other reference in scope to borrow one from.
+`Cratestack` is `Clone` over an `Arc`-shaped `SqlxRuntime`, so the clone adds
+no connection — it is the same pool the transaction is already holding one of.
+The accessor returns the pair `(&Cratestack, &mut Transaction)` in one call
+because the borrow checker will not allow two `&mut self` methods to be held
+across each other.
+
+The two writes are `run_in_tx` and **not** `run`, and the difference is
+proven rather than asserted:
+`an_abandoned_fan_out_leaves_no_delivery_and_the_event_still_pending`
+performs both writes inside a transaction that then returns
+`TxOutcome::Abandon`, and reads the database back. Swapping either call to
+`.run(&ctx)` makes it red in about a second, naming which one:
+
+| Mutation | Measured |
+|---|---|
+| `create_in_tx` -> `.run(&ctx)` | the delivery row **survives** the abandoned transaction |
+| `mark_fanned_out_in_tx` -> `.run(&ctx)` | `fanout_state` is `done` on an event whose deliveries were rolled back — an event no drain will pick up again and no merchant is ever told about |
+
+Neither mutation **hangs**, unlike the currency upsert's equivalent
+(see "`reconcile`: read first, then write"), and the reason is the lock
+shape rather than luck: on the branch these mutations take, this transaction
+takes no `FOR UPDATE` on a row it then asks a second connection to probe. The
+`do_nothing()` conflict probe finds no existing delivery and so locks nothing,
+and the `events` row is held only by the `FOR KEY SHARE` the delivery's
+foreign key takes, which does not conflict with the `FOR NO KEY UPDATE` a
+non-key `UPDATE` wants.
+
+**"On the branch these mutations take" is a correction the review made, and
+the general claim it replaces was wrong.** `.do_nothing()` locks nothing only
+on the `Inserted` branch. On the `Existing` branch `resolve_pre_probe` *is* a
+`SELECT … FOR UPDATE` on the caller's transaction, and `authorize_existing_row`
+*does* then ask a second, pooled connection about that same row. It still does
+not hang, because a plain `SELECT 1` does not block on a `FOR UPDATE` row lock
+in Postgres — the conclusion survives, its stated reason did not.
+
+**The consequence that had gone unrecorded: on the `Existing` branch,
+`create_in_tx` holds two connections at once** — the transaction's, and the
+one `row_passes_update_policy` takes from the pool. Every write in this crate
+before 2026-09-06 needed exactly one. That interacts with two numbers chosen
+when a transaction meant one connection: `vpay_db::pool::MAX_CONNECTIONS` (10)
+and the worker's `--worker-concurrency` (default 4, operator-settable). At the
+default it fits (4 + 4 ≤ 10). At a concurrency of 10 it does not, and the path
+that would queue on `ACQUIRE_TIMEOUT` is the `Existing` branch — i.e. crash
+recovery, the one that only runs when something has already gone wrong.
+Nothing enforces the relationship and nothing measures it; it is listed as a
+maintainer decision in
+[../plans/exp18-notes/opus-review.md](../plans/exp18-notes/opus-review.md) §3
+rather than decided by a persistence-layer swap.
+
+#### What the move narrowed: `create_in_tx`'s `Ok(None)` now means "an earlier **committed** pass"
+
+The seam works. One thing behind it changed anyway, it is not visible in any
+call site, and the review measured it rather than reading it off the
+signature.
+
+`create_in_tx`'s contract is that a repeat creation for one
+`(event_id, endpoint_id)` answers `Ok(None)` — the quiet answer an
+at-least-once drain needs. Through CrateStack that holds only when the
+earlier row was **committed**. A second call inside the *same, still-open*
+transaction is refused with `PersistenceError::Denied`:
+
+```
+first  = Ok(Some(f2ba579c-…))
+second = Err(Persistence(Denied { model: "WebhookDelivery", action: "upsert",
+                                  detail: "forbidden: update policy denied this upsert" }))
+```
+
+The statement it replaced, run twice in one transaction against the same
+database, answered `Some(…)` then `None`.
+
+The cause is that `.do_nothing()` decides its branch across two connections.
+`upsert_do_nothing_probe.rs::resolve_pre_probe` runs `SELECT … FOR UPDATE`
+**on the caller's transaction**, so it sees the uncommitted row and takes the
+`Existing` branch; `upsert_do_nothing_authorize.rs` then re-checks the update
+policy with `row_passes_update_policy(runtime.pool(), …)` — a `SELECT 1` on a
+**pool** connection, which cannot see that row, finds nothing, and reads the
+absence as a denial.
+
+**Nothing in vpay reaches it**, and by two guards that live in other crates:
+`vpay_config` refuses a duplicate webhook endpoint `id` at boot and
+`EndpointRegistry::from_pairs` dedups by id, so `fan_out_one`'s loop cannot
+call this twice for one pair. That is a real dependency the fan-out did not
+have before — config validation in one crate now keeps a persistence call
+correct in another — so it is stated in both places and pinned by
+`a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing`,
+which asserts the refusal *and* the unchanged committed-row `None`. It is
+reported upstream rather than worked around here.
+
+#### `events.data`: the one write that did not move, and why
+
+`TxRepositories::insert_in_tx` is still one hand-written `sqlx` statement,
+inside the same transaction as everything else. It is the honest, ugly,
+reversible half of this change and it is worth being precise about, because
+"CrateStack cannot model a JSONB column" would be **false**.
+
+0.11.1 has a `Json` scalar: `emit/postgres/columns.rs` maps it to `JSONB` and
+`shared/types.rs` maps it to `::cratestack::Json<::cratestack::Value>`. Two
+measured costs are why `model Event` still does not declare `data`:
+
+1. **The drift is worse, not better.** `introspect/postgres/types.rs::map_scalar`
+   does not map `jsonb` back onto any scalar. An *undeclared* `jsonb` column is
+   therefore invisible to the comparison in both directions — declaring the two
+   models moved `EXPECTED_UNMAPPABLE_COLUMNS` not at all and produced no
+   `column data exists in the live database` line. Declaring `data Json` would
+   leave the live column invisible while adding a `[blocking] column data is
+   declared in the schema but does not exist in the live database` line, which
+   is what `currencies.exponent` did before migration 0032.
+2. **The conversion is lossy, and this is the column it must not be lossy on.**
+   `cratestack::Value` is not `serde_json::Value`. `Value::from_plain_json`
+   routes every JSON number through `Number::as_i64()` with an
+   `as_f64().unwrap_or_default()` fallback, so a `u64` above `i64::MAX`
+   anywhere in the payload returns as a float. `events.data` is the wire
+   object that is stored, **signed** and delivered to a merchant
+   ([../flows/webhooks.md](../flows/webhooks.md)), and it embeds
+   merchant-authored `metadata` — arbitrary JSON vpay does not choose.
+
+Because `data` is `JSONB NOT NULL` with no `DEFAULT`, a model without it
+generates a five-column `INSERT` that Postgres refuses with `23502`. That is
+not left as prose: `the_events_insert_cannot_move_until_a_json_column_can_be_modelled`
+pins the rendered statement with no database, and
+`a_generated_events_insert_is_refused_by_the_not_null_on_data` runs exactly
+that statement against a real one and asserts the SQLSTATE. Both go red the
+day the situation changes, which is the point of them.
+
+The reads stay raw too, and for a second reason on top of `data`:
+`Events::list_page`'s cursor is a correlated sub-select (`seq < (SELECT seq
+FROM events WHERE id = $2 AND merchant_id = $1)`) that no delegate expresses.
+
+#### The event vocabulary stays a hand-named CHECK, and that is a live hazard
+
+`events.type_is_a_documented_event` and `events.fanout_state_is_known` are
+multi-value single-column CHECKs, and 0.11.1 has no validator that expresses
+"one of these eight strings" on a `String` column. Both candidates were
+measured and both rejected:
+
+- A `.cstack` enum **would** match in principle — `providers.flow` proves
+  Postgres deparses `IN (...)` into the shape `reconstruct_enum` reads back —
+  but only under the generated name `events_type_enum_check`. `diff/checks.rs`
+  matches by name first, and the live constraint is
+  `type_is_a_documented_event`, so the report would grow a drop-and-add pair
+  rather than converge. Renaming needs a migration this change is scoped not
+  to add.
+- `@db_enforce` on a length validator expresses nothing about a vocabulary.
+
+**The hazard, measured 2026-09-06.** Because the schema does not declare the
+constraint, a generated `cratestack migrate diff` would emit DDL dropping it.
+Nothing runs `migrate diff` in this repository, so that half is latent rather
+than live — and it applies equally to every other `[safe] CHECK ... exists in
+the live database but is not declared` line in the report.
+
+**What notices, corrected on 2026-09-06 by the review.** This section said
+the drift report was "structurally incapable of complaining" and that deleting
+the constraint "fails no drift assertion at all". The first half of that is
+right and reproduces — a lost CHECK removes one `[safe] ... is not declared`
+line, so the count goes **down**, 101 to 100 — but the conclusion drawn from
+it was wrong. `EXPECTED_DRIFT_CHANGES` is an exact `assert_eq!`, not a floor,
+so `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` fails
+on a *lower* count exactly as loudly as on a higher one (`left: 100,
+right: 101`), and its own assertion message already names the diagnosis: "If
+it shrank without an edit to the schema, find out what the report stopped
+seeing before moving anything." That is the general defence for every
+undeclared-CHECK line above, and it was already there.
+
+Two signals, saying different things, which is why
+`an_undocumented_event_type_is_refused_by_the_database` is still worth having
+and is not a duplicate. The count says *a constraint the database had is
+gone*, without saying which or whether it mattered. The test says *the
+vocabulary is still closed*, which is the property four documents actually
+rest on — and it is the signal that survives someone re-pinning the constant,
+which is the cheapest way to make a red drift assertion go away. It was
+written here because the constraint was cited by four documents and asserted
+by nothing.
 
 Nothing about the trait changed for any of them — the signatures, the
 deliberate absence of a cache, and `enable_client`'s "a no-op, not an error"
@@ -1824,8 +2020,20 @@ falls, and none of them is a matter of taste:
   never generated from it.
 - **Six Postgres types are mapped, and vpay uses more than six.** `int4`,
   `int2`, `numeric`, `jsonb`, `bytea` and arrays are not in `map_scalar`, so
-  eighteen live columns are excluded from the drift comparison outright — the
-  number `EXPECTED_UNMAPPABLE_COLUMNS` pins in `postgres_smoke.rs`.
+  seventeen live columns are excluded from the drift comparison outright — the
+  number `EXPECTED_UNMAPPABLE_COLUMNS` pins in `postgres_smoke.rs`. Since
+  2026-09-06 four of those seventeen sit inside tables the schema models
+  *fully* (`events.data`, `events.fanout_attempts`,
+  `webhook_deliveries.attempt`, `webhook_deliveries.status_code`), which is a
+  sharper version of the same point: unmeasured drift can hide inside a table
+  the report otherwise compares column by column, and only that constant says
+  so.
+- **`FOR UPDATE SKIP LOCKED` has no delegate.** `FindMany::for_update()`
+  emits a bare `FOR UPDATE`, so `Jobs::claim` — and therefore the whole
+  `jobs` table — stays hand-written. A lease mechanism that silently lost
+  `SKIP LOCKED` would turn every worker's claim into a queue behind every
+  other worker's. `jobs.payload` is `jsonb` and `jobs.attempts` is `int4`
+  besides.
 
 A fourth reason used to be recorded here — that moving a read and a write
 together produces a parity test that cannot say which of the two it is

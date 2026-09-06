@@ -108,7 +108,40 @@ impl<T> TxOutcome<T> {
 /// (`&NewCharge`, a `&str` merchant id) across the `.await`. With a borrowing
 /// `PgTransaction<'t>` the same signature forces every capture to be
 /// `'static`, which no call site in this workspace can satisfy.
-pub struct PendingTransaction(Transaction<'static, Postgres>);
+pub struct PendingTransaction(Handles);
+
+/// What an open transaction actually holds, in a **private** type.
+///
+/// The indirection is not stylistic and should not be flattened back into
+/// `PendingTransaction`'s own body. `cargo xtask verify-repositories` scans
+/// this file for any line naming `schema` and walks back to the nearest item
+/// that starts it; if that item is `pub`, it fails, because the generated
+/// module does not exist in any source file and so nothing else in the
+/// repository would object to it leaking out of `vpay-db` (ADR-0016,
+/// standard 5). `PendingTransaction` has to be `pub` — `TransactionSource`
+/// hands one back — so naming the `Cratestack` type inside its braces trips
+/// that gate.
+///
+/// The alternative was a private `use crate::schema::cratestack_schema::Cratestack;`
+/// at the top of the file, which would also silence it. That was rejected on
+/// purpose: it silences the gate for *every* item in this file, including a
+/// future `pub fn` that really did hand the runtime out. This keeps the
+/// gate's grip on everything public here and moves only the one field that
+/// is genuinely private out of its reach.
+struct Handles {
+    tx: Transaction<'static, Postgres>,
+    /// CrateStack's handle onto the *same* pool this transaction came from.
+    ///
+    /// Carried on the transaction rather than reached through
+    /// `PgRepositories` because `TxRepositories` is implemented on
+    /// `PendingTransaction` and its methods get no other reference: a
+    /// delegate borrows from the `Cratestack` value, and there is nowhere
+    /// else in the closure's scope to borrow one from. `Cratestack` is
+    /// `Clone` over an `Arc`-shaped runtime (`SqlxRuntime`), so this clone
+    /// adds no connection — it is the same pool `tx` above is holding one
+    /// of.
+    cs: crate::schema::cratestack_schema::Cratestack,
+}
 
 impl std::fmt::Debug for PendingTransaction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -118,15 +151,43 @@ impl std::fmt::Debug for PendingTransaction {
 
 impl PendingTransaction {
     fn conn(&mut self) -> &mut PgConnection {
-        &mut self.0
+        &mut self.0.tx
+    }
+
+    /// The `sqlx` transaction itself, for the CrateStack calls.
+    ///
+    /// Separate from [`Self::conn`] because `run_in_tx` takes
+    /// `&mut sqlx::Transaction<'tx, Postgres>` and **not** the
+    /// `&mut PgConnection` every hand-written statement in this crate takes
+    /// — `create.rs::run_in_tx` needs the `Transaction` in order to reach
+    /// `&mut **tx` for the outbox and audit writes it may add beside the
+    /// caller's. The design's F1: `run_in_tx` cannot tell whose transaction
+    /// it is handed, which is exactly what makes this seam possible.
+    ///
+    /// The pair is returned together because the borrow checker will not let
+    /// a caller hold `&mut self.tx` and `&self.cs` through two separate
+    /// `&mut self` methods.
+    fn cratestack_tx(
+        &mut self,
+    ) -> (
+        // Spelled in full rather than through a `use` at the top of this
+        // file, deliberately: a private `fn` is invisible to
+        // `verify-repositories`' anchor walk, but a file-level import would
+        // hide the module's name from every *public* item here too. See
+        // [`Handles`].
+        &crate::schema::cratestack_schema::Cratestack,
+        &mut Transaction<'static, Postgres>,
+    ) {
+        let Handles { tx, cs } = &mut self.0;
+        (cs, tx)
     }
 
     pub(crate) async fn commit(self) -> Result<(), DbError> {
-        self.0.commit().await.map_err(DbError::Query)
+        self.0.tx.commit().await.map_err(DbError::Query)
     }
 
     pub(crate) async fn rollback(self) -> Result<(), DbError> {
-        self.0.rollback().await.map_err(DbError::Query)
+        self.0.tx.rollback().await.map_err(DbError::Query)
     }
 }
 
@@ -369,11 +430,13 @@ impl TxRepositories for PendingTransaction {
         endpoint_id: &str,
         url: &str,
     ) -> Result<Option<uuid::Uuid>, DbError> {
-        crate::webhook_deliveries::create_in_tx(self.conn(), event_id, endpoint_id, url).await
+        let (cs, tx) = self.cratestack_tx();
+        crate::webhook_deliveries::create_in_tx(cs, tx, event_id, endpoint_id, url).await
     }
 
     async fn mark_fanned_out_in_tx(&mut self, event_id: &str) -> Result<bool, DbError> {
-        crate::webhook_deliveries::mark_fanned_out_in_tx(self.conn(), event_id).await
+        let (cs, tx) = self.cratestack_tx();
+        crate::webhook_deliveries::mark_fanned_out_in_tx(cs, tx, event_id).await
     }
 }
 
@@ -581,7 +644,12 @@ impl TransactionSource for PgRepositories {
         self.pool
             .begin()
             .await
-            .map(PendingTransaction)
+            .map(|tx| {
+                PendingTransaction(Handles {
+                    tx,
+                    cs: self.cs.clone(),
+                })
+            })
             .map_err(DbError::Query)
     }
 }

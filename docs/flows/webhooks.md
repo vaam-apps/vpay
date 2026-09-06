@@ -135,6 +135,46 @@ POST to a merchant endpoint **outside this repository**: `vpay-shop` is a
 container on the same compose network, permitted by the sandbox profile's
 `webhooks.allow_private_targets`, and it is code this repo wrote and tests.
 
+**Updated 2026-09-06: two of the outbox's three writes now run through
+CrateStack, inside the same transactions this document already describes.**
+Nothing about the two-step shape changed — TX 1 still commits the settlement
+and the `events` row together, TX 2 still creates every delivery and flips
+`fanout_state` together, and `TxOutcome::Abandon` is still what a lost race
+returns. What changed is which layer issues two of the statements:
+
+| Write | Layer | Why |
+|---|---|---|
+| the `events` row in TX 1 | raw `sqlx` | `events.data` is `JSONB NOT NULL`; see below |
+| `webhook_deliveries` insert in TX 2 | CrateStack `upsert(..).do_nothing()` | the `ON CONFLICT (event_id, endpoint_id) DO NOTHING` this document depends on |
+| the `fanout_state` flip in TX 2 | CrateStack `update_many(..)` | the compare-and-swap, guard included |
+
+`events.data` did **not** move, and the reason is worth stating in this
+document rather than only in the reference: it is the exact object that is
+signed and delivered, and CrateStack 0.11.1's `Json` scalar round-trips
+through `cratestack::Value`, whose number decoding falls back to `f64` for
+anything that is not an `i64`. Merchant-authored `metadata` travels inside
+`data`. The insert therefore stays one hand-written statement in the same
+transaction — ugly and deliberate — and two tests pin the blocker: they go red
+the day somebody declares the column, which is the mistake worth catching
+before a lossy number conversion reaches a signed payload. (They do *not*
+notice an upstream fix on their own; the drift report's unmappable-column
+count is what does. Corrected 2026-09-06.) See
+[../reference/vpay-db.md](../reference/vpay-db.md) § CrateStack.
+
+The duplicate-delivery guard this document rests on is unchanged and is still
+proved the same way. `an_abandoned_fan_out_leaves_no_delivery_and_the_event_still_pending`
+is the new case that makes the transaction seam itself assertable: both
+CrateStack writes happen, the transaction is abandoned, and neither survives.
+Running either write on its own connection instead makes it red in about a
+second.
+
+**One caveat this change adds, and it is a real one:** `events.type` is still
+closed by a hand-named database CHECK that `schemas/vpay.cstack` cannot
+express, so the drift report would report a *lower* number if the constraint
+were dropped. `an_undocumented_event_type_is_refused_by_the_database` is now
+the only thing that would notice. It did not exist before 2026-09-06, and
+this document's "only real Stripe event types" rule had been resting on it.
+
 **TX 1 — the business transaction.** `vpay_db::Settlement::apply_succeeded` /
 `apply_failed` move the charge, move the intent and insert one `events` row in
 a single transaction, with `fanout_state = 'pending'`. Two types from this

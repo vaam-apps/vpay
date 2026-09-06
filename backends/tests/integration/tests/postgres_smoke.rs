@@ -887,6 +887,104 @@ async fn an_out_of_range_currency_exponent_is_rejected_by_the_database() -> anyh
     Ok(())
 }
 
+/// `events.type_is_a_documented_event` refuses a type no merchant's handler
+/// knows, and `fanout_state_is_known` refuses a state no reader knows.
+///
+/// # Why this test did not exist until 2026-09-06
+///
+/// It should have. Migration `0018`'s own comment argues at length that the
+/// vocabulary "is enforced here rather than trusted to whoever writes the
+/// emitting code later", `docs/api/README.md` cites the constraint by name,
+/// and three Rust doc comments call it "the eight types
+/// `type_is_a_documented_event` allows" — and **nothing anywhere asserted it
+/// fires.** A `grep` for the constraint name across `backends/tests` and
+/// `backends/crates/*/tests` returned nothing before this commit. Four
+/// documents were resting on a constraint no test would have noticed the
+/// deletion of.
+///
+/// That matters more now than it did, because `schemas/vpay.cstack`'s
+/// `model Event` deliberately does **not** declare this CHECK (0.11.1 has no
+/// validator for "one of these eight strings" on a `String` column), so a
+/// generated `cratestack migrate diff` would emit DDL dropping it as
+/// undeclared. Nothing runs `migrate diff` today, so that half is latent.
+///
+/// # What each of the two signals actually says
+///
+/// This doc comment claimed until 2026-09-06 that dropping the constraint
+/// "fails no drift assertion at all" and that this test "is the only thing
+/// that fails". **Both halves were wrong, and the review measured it.**
+/// Deleting the constraint (migration `0029`'s re-add) really does take the
+/// count from 101 to 100 — a lost CHECK removes one `[safe] ... exists in the
+/// live database but is not declared` line, so drift goes *down* — but
+/// `EXPECTED_DRIFT_CHANGES` is an exact `assert_eq!`, not a floor, so
+/// `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` fails
+/// on it too, with `left: 100, right: 101` and a message that already names
+/// this exact diagnosis ("If it shrank without an edit to the schema, find
+/// out what the report stopped seeing before moving anything").
+///
+/// So there are two signals and they say different things, which is why this
+/// test earns its place rather than duplicating one:
+///
+///   * the drift count says **a constraint the database had is gone**. It
+///     notices the deletion and cannot say what was lost or whether it
+///     mattered — every `[safe]` line moves that number the same way.
+///   * this test says **the vocabulary is still closed**, which is the
+///     property `docs/flows/webhooks.md`, `docs/api/README.md` and migration
+///     `0018`'s own comment actually rest on. It is also the only signal that
+///     survives someone re-pinning the constant, which is the cheapest way to
+///     make a red drift assertion go away.
+#[tokio::test]
+async fn an_undocumented_event_type_is_refused_by_the_database() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    // A plausible-looking invention. Stripe has no `payment_intent.updated`,
+    // so a merchant's existing Stripe-shaped handler has no branch for it —
+    // which is the rule docs/flows/webhooks.md states and this CHECK closes.
+    let err = sqlx::query(
+        "INSERT INTO events (id, merchant_id, livemode, type, object_id, data) \
+         VALUES ('evt_bad_type', 'merchant_a', false, 'payment_intent.updated', 'pi_1', '{}')",
+    )
+    .execute(&pool)
+    .await
+    .expect_err("an event type outside the documented vocabulary must be rejected");
+
+    let db_err = err.as_database_error().expect("a database-level error");
+    eprintln!("observed rejection: {db_err}");
+    assert_eq!(
+        db_err.constraint(),
+        Some("type_is_a_documented_event"),
+        "the rejection must come from the vocabulary CHECK specifically, not from a NOT NULL \
+         or a length bound that happens to fire first"
+    );
+
+    // And one of the eight really is accepted, so the assertion above is
+    // about the vocabulary rather than about the INSERT being malformed.
+    sqlx::query(
+        "INSERT INTO events (id, merchant_id, livemode, type, object_id, data) \
+         VALUES ('evt_good_type', 'merchant_a', false, 'payment_intent.succeeded', 'pi_1', '{}')",
+    )
+    .execute(&pool)
+    .await
+    .context("a documented type must be accepted by the same INSERT shape")?;
+
+    // `fanout_state_is_known` (0018, widened by 0024 to a third value) is the
+    // other multi-value single-column CHECK on this table that
+    // `schemas/vpay.cstack` cannot declare, and it guards the compare-and-swap
+    // `mark_fanned_out_in_tx` performs. A state outside the three would make
+    // `Events::pending_page`'s `fanout_state = 'pending'` filter silently
+    // skip an event forever.
+    let bad_state = sqlx::query("UPDATE events SET fanout_state = 'sending' WHERE id = $1")
+        .bind("evt_good_type")
+        .execute(&pool)
+        .await;
+    assert!(
+        bad_state.is_err(),
+        "fanout_state_is_known must refuse a state no reader knows how to interpret"
+    );
+
+    Ok(())
+}
+
 // --- migration 0006 (authkestra-op tables, transcribed) -------------------
 
 /// `authkestra.oauth_codes.client_id` is `NOT NULL REFERENCES
@@ -1313,11 +1411,52 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 ///     it, exactly as it is blind to the ten multi-column CHECKs. See
 ///     `docs/plans/exp17-notes/opus.md`.
 ///
+///
+/// **84 -> 101 on 2026-09-06**, and this is the first time this constant has
+/// gone *up*. `model Event` and `model WebhookDelivery` landed, so `events`
+/// and `webhook_deliveries` stopped being one `table ... is not declared`
+/// line each and started being compared column by column. Seventeen lines
+/// arrived and two left; the breakdown, measured against a freshly migrated
+/// database rather than inferred:
+///
+///   * **12 CHECK/index lines on `events`, 7 on `webhook_deliveries`** — all
+///     `[safe] ... exists in the live database but is not declared in the
+///     schema`. Every one is a constraint or index the migrations own and the
+///     schema deliberately does not restate. Declaring them with
+///     `@db_enforce` would make it *worse*, not better: `diff/checks.rs`
+///     matches by name, the generated name is
+///     `<table>_<column>_<validator>_check`, and the live names are
+///     hand-written (`endpoint_id_length`, `id_length`, …) — so each would
+///     become a drop-and-add PAIR. Two lines where there is now one. That is
+///     exp17's §1a finding applied in the only direction available without a
+///     rename migration, which this change is scoped not to add.
+///   * **`column `seq` default value differs`** — `events.seq` is
+///     `GENERATED ALWAYS AS IDENTITY`, which carries no `pg_attrdef` default
+///     for introspection to read. See `model Event`'s comment for why the
+///     `@default(dbgenerated())` is kept anyway.
+///   * **`column `id` default value differs` on `webhook_deliveries`** — the
+///     model deliberately does not declare `DEFAULT gen_random_uuid()`,
+///     because a `@default(...)` on a primary key is what makes
+///     `.upsert(..)` not exist. `model WebhookDelivery` carries the
+///     measurement.
+///   * **Zero lines for `events.data`, `events.fanout_attempts`,
+///     `webhook_deliveries.attempt` and `webhook_deliveries.status_code`.**
+///     `jsonb` and `int4` are on `map_scalar`'s deliberate unmapped list, so
+///     an undeclared column of either type is invisible to the comparison in
+///     both directions — which is why `EXPECTED_UNMAPPABLE_COLUMNS` below
+///     does not move either. Declaring them would have *added* blocking
+///     lines rather than removed safe ones.
+///
+/// A constant going up is not automatically bad, and this is the case that
+/// shows why: before this change the report said one thing about `events`
+/// ("not declared"), and now it says eleven true things about it. More
+/// drift reported is more of the schema actually being compared.
+///
 /// It is deliberately not, and must never become, `0`. A zero here would not
 /// mean the schema had caught up — it would mean the report stopped finding
 /// things, which is the failure mode `--strict` is easiest to misread as
 /// success in.
-const EXPECTED_DRIFT_CHANGES: u32 = 84;
+const EXPECTED_DRIFT_CHANGES: u32 = 101;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -1336,6 +1475,14 @@ const EXPECTED_DRIFT_CHANGES: u32 = 84;
 /// its five lines and `providers` lost none, so both tables are still on the
 /// list. This is the assertion that says so: a -1 in the change count with
 /// this number unmoved means a line went away, not a table.
+///
+/// **Still 16 after `model Event` and `model WebhookDelivery` (2026-09-06),
+/// and that is the interesting half of the +17.** Both tables were already
+/// on this list — as undeclared tables — and both are still on it, now as
+/// tables that are declared and differ. `disabled_clients` is the only table
+/// so far to leave. So this number moving and
+/// `EXPECTED_DRIFT_CHANGES` moving mean different things, which is the whole
+/// reason both are pinned.
 const EXPECTED_DRIFTED_RELATIONS: u32 = 16;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
@@ -1358,10 +1505,21 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 16;
 /// `BIGINT` now. This is the *good* direction for this constant and the
 /// reason `EXPECTED_DRIFT_CHANGES` may fall alongside it — the comparison
 /// grew by a column and the drift it found on that column was zero. Every
-/// remaining entry is a `jsonb`, a `bytea`, or an `int2`/`int4` on a table
-/// `schemas/vpay.cstack` does not model at all; `jsonb` and `bytea` do not
-/// round-trip at 0.11.1 (they are emitted but not read back), so this number
-/// cannot reach zero by schema work alone.
+/// remaining entry is a `jsonb`, a `bytea`, or an `int2`/`int4`; `jsonb` and
+/// `bytea` do not round-trip at 0.11.1 (they are emitted but not read back),
+/// so this number cannot reach zero by schema work alone.
+///
+/// **Still 17 after `model Event` and `model WebhookDelivery` (2026-09-06),
+/// measured, and the sentence above needed correcting because of it.** It
+/// used to say every remaining entry was on "a table `schemas/vpay.cstack`
+/// does not model at all". Four of them — `events.data`,
+/// `events.fanout_attempts`, `webhook_deliveries.attempt` and
+/// `webhook_deliveries.status_code` — are now on tables the schema models
+/// fully, and they stay in this block because their *columns* are undeclared,
+/// not their tables. That is exactly what makes this constant worth pinning
+/// separately: those four columns are unmeasured drift sitting inside two
+/// otherwise-compared tables, and nothing in `EXPECTED_DRIFT_CHANGES` would
+/// ever say so.
 const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 17;
 
 /// The `--out-dir` handed to `migrate baseline`, removed when it goes out of
@@ -1632,7 +1790,13 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // honestly part of the drift rather than something to filter out.
             "_sqlx_migrations",
             "checkout_sessions",
-            "events",
+            // `events` and `webhook_deliveries` left this list on 2026-09-06
+            // with `model Event` / `model WebhookDelivery`. They are the
+            // second and third tables ever to leave it, after
+            // `disabled_clients` — and unlike that one they did NOT leave
+            // the drift report, because their CHECKs and indexes stay
+            // undeclared on purpose. That difference is the whole content of
+            // `EXPECTED_DRIFT_CHANGES`' 84 -> 101 note.
             "idempotency_keys",
             "jobs",
             // These two are `public` tables, not `authkestra` ones. The
@@ -1643,7 +1807,6 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             "oauth_signing_keys",
             "provider_requests",
             "refunds",
-            "webhook_deliveries",
         ],
         "the set of tables the migrations build and the schema does not declare"
     );

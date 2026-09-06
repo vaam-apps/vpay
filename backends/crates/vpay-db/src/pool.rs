@@ -21,6 +21,32 @@ use crate::repository::{PgRepositories, Repositories};
 /// that budget (other processes, `psql`, a second replica during a rolling
 /// deploy) on its own. Raise this only once real concurrent load is
 /// measured, not speculatively.
+///
+/// # One transaction no longer means one connection (2026-09-06)
+///
+/// The paragraph above was written when every write in this crate was a
+/// statement on a pooled connection or inside a transaction holding one, so
+/// "concurrent DB-touching work" and "connections in use" were the same
+/// number. Since `WebhookDeliveries::create_in_tx` moved to CrateStack's
+/// `.upsert(..).do_nothing()` that is no longer true on one path:
+/// `upsert_do_nothing_authorize.rs` re-checks the update policy with
+/// `row_passes_update_policy(runtime.pool(), …)`, so on the **already-exists**
+/// branch the call takes a **second** connection from this pool while its
+/// transaction is still holding the first.
+///
+/// The arithmetic that follows, and it is arithmetic rather than a
+/// measurement: the worker's `--worker-concurrency` defaults to 4, so 4
+/// fan-outs on that branch want 8 of these 10 and still fit. A concurrency of
+/// 10 — a documented, operator-settable flag — would not, and the requests
+/// that queued on `ACQUIRE_TIMEOUT` would be the crash-recovery path
+/// specifically, since that is the branch that re-creates an existing
+/// delivery.
+///
+/// Nothing here enforces the relationship between this constant and that
+/// flag, and nothing measures it under load. It is written down because the
+/// next person to move either number needs to know the ratio changed, and it
+/// is reserved for the maintainer in
+/// `docs/plans/exp18-notes/opus-review.md` §3 rather than decided here.
 const MAX_CONNECTIONS: u32 = 10;
 
 /// How long a caller waits for a connection to become available from

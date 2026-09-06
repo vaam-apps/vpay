@@ -2828,8 +2828,10 @@ with is exactly the one that block's absence disarms. Both are correct
 behaviour for the CLI (a client-only schema is a real thing) and there is no
 flag that asks for more, so `check-schema` asserts the shape of what it
 checked before reporting green: a `datasource` block must be present, and the
-file must still declare at least `cratestack_min_declarations` (13 since
-2026-09-06: seven models, six enums; 12 before that) top-level
+file must still declare at least `cratestack_min_declarations` (15 since
+2026-09-06: nine models, six enums — the sub-count still read "seven models"
+after the floor moved 13 -> 15, which is the 13 it used to explain; 12 before
+that) top-level
 `model`/`enum`s. A floor rather than an exact
 count, so adding a model does not fail the gate — `verify-ignored`'s
 `min_tests` in miniature.
@@ -2895,15 +2897,20 @@ What this does and does not prove:
   merchant a `merchant_payable` posting belongs to. That is a real gap in the
   Rust type this schema mirrors, not something to paper over in the schema.
 
-#### The measured drift (2026-09-05; **84 / 16 since migration 0032, 2026-09-06**)
+#### The measured drift (2026-09-05; **101 / 16 since `model Event` and `model WebhookDelivery`, 2026-09-06**)
 
 **`schemas/vpay.cstack` differs from the database `backends/migrations/*.sql`
-builds by 84 pending drift changes across 16 tables/views** — 86 across 17
+builds by 101 pending drift changes across 16 tables/views** — 86 across 17
 when first measured on 2026-09-05, 85 across 16 once `model DisabledClient`
 landed, 84 across 16 once migration 0032 widened `currencies.exponent`.
 Measured, not estimated: `cratestack migrate baseline --strict` at the pinned
 CLI 0.11.1, against a `postgres:16-alpine` testcontainer with all 32
-migrations applied by `sqlx::migrate!`. It is asserted by
+migrations applied by `sqlx::migrate!`. **It went UP for the first time on
+2026-09-06 — 84 -> 101 — and that is the good direction here**, because the
+17 new lines are `events` and `webhook_deliveries` being compared column by
+column instead of being dismissed as one `table … is not declared` line each.
+See "The outbox through CrateStack" below for the line-by-line accounting.
+It is asserted by
 `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` in
 `backends/tests/integration/tests/postgres_smoke.rs` — the exact count, the
 exact sixteen relations, and the exact ten tables the report names as
@@ -3220,6 +3227,192 @@ branch **16.9 MB** — **+0.8 MB (+5.0%)** for CrateStack's twelve crates plus
 `minicbor`, `chumsky` and `ariadne`. Both images run and print `vpay-server
 0.1.0`.
 `docs/plans/exp14-notes/opus.md` § 7 has the full list.
+
+#### The outbox through CrateStack, and the transaction seam (2026-09-06)
+
+**Two of the two-step outbox's three writes now run through CrateStack's
+`run_in_tx` on a transaction `UnitOfWork::transaction` opened and `TxOutcome`
+closes.** This is the first time a CrateStack write has joined a transaction
+`vpay-db` did not open for CrateStack's own benefit — `reconcile`'s
+transaction contained nothing else, and the fan-out's contains hand-written
+`jobs` inserts beside the CrateStack ones.
+
+| `TxRepositories` method | Now | Policy slots |
+|---|---|---|
+| `create_in_tx` | `WebhookDelivery.upsert(..).do_nothing().on_conflict(&["event_id","endpoint_id"]).run_in_tx(tx, ctx)` | `create` **and** `update` |
+| `mark_fanned_out_in_tx` | `Event.update_many().where_(id).where_(fanout_state).set(..).run_in_tx(tx, ctx)` | `update` |
+| `insert_in_tx` | **unchanged, raw `sqlx`** — and pinned as blocked | — |
+
+`models Event` and `WebhookDelivery` are new in `schemas/vpay.cstack`, so
+`events` and `webhook_deliveries` are the second and third tables ever to
+leave the report's "present in the database, absent from the schema" list.
+**`jobs` did not move and is not next**: `Jobs::claim` needs `FOR UPDATE SKIP
+LOCKED` and `FindMany::for_update()` emits a bare `FOR UPDATE`. There is **no
+migration**; the migration count stays at 32.
+
+**What did not move, and why it is a measurement rather than an excuse.**
+`insert_in_tx` writes `events.data`, which is `JSONB NOT NULL` with no
+`DEFAULT`. CrateStack 0.11.1 *does* have a `Json` scalar — so "it cannot model
+JSONB" would be false — but declaring `data Json` costs two things that were
+measured rather than argued: it adds a `[blocking]` drift line (because
+`map_scalar` does not read `jsonb` back, so the live column stays invisible
+while the declared one does not), and it routes the payload through
+`cratestack::Value`, whose `from_plain_json` falls back to `f64` for any
+number that is not an `i64`. `events.data` is the object that is **signed and
+delivered** to a merchant and it carries merchant-authored `metadata`. So the
+insert stays one hand-written statement in the same transaction, and two
+tests pin the blocker. **What they pin, corrected by the review:** both render
+or run the statement the *current* model generates, so they go red when
+somebody declares `data Json` — not when CrateStack is fixed. `map_scalar`
+lives in `cratestack-migrate`, which is not in `vpay-db`'s compiled graph, so
+no Rust test here can see it change; the tripwire for that half is
+`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`'s
+`EXPECTED_UNMAPPABLE_COLUMNS = 17`, which `events.data` would leave. The two
+pins are:
+`the_events_insert_cannot_move_until_a_json_column_can_be_modelled` (no
+database, pins the rendered five-column INSERT) and
+`a_generated_events_insert_is_refused_by_the_not_null_on_data` (runs it and
+asserts `23502`).
+
+**A second blocker, closed rather than reserved.**
+`webhook_deliveries.id` carries `DEFAULT gen_random_uuid()`, and a
+`@default(...)` on a primary key makes `generate_upsert_input_struct` emit
+nothing — `.upsert(..)` is a compile error, exactly as the five `@default`
+booleans block `model Provider`'s upsert. Unlike `Provider`, this one needed
+no DDL to unblock: the model simply does not declare the default and
+`vpay-db` mints the `Uuid` itself. The database default is untouched and now
+vestigial. It costs one drift line, and `.upsert(..).do_nothing()` is not
+optional — a bare `INSERT`'s `23505` aborts the enclosing transaction, so it
+could not be turned back into the `Ok(None)` the at-least-once drain needs.
+
+**The drift arithmetic, 84 -> 101 over the same 16 relations, 17 unmappable
+columns unmoved.** Nineteen `[safe] CHECK/index … exists in the live database
+but is not declared` lines arrive, plus two `default value differs`
+(`events.seq` is `GENERATED ALWAYS AS IDENTITY`, which has no `pg_attrdef`
+default to introspect; `webhook_deliveries.id` above), and two
+`table … is not declared` lines leave. Declaring the CHECKs with
+`@db_enforce` would make it **worse** — the generated name is
+`<table>_<column>_<validator>_check` and the live names are hand-written, so
+each would become a drop-and-add *pair*. The four `jsonb`/`int4` columns cost
+zero lines in either direction, which is why `EXPECTED_UNMAPPABLE_COLUMNS`
+does not move; four of those seventeen now sit inside tables the schema
+models fully, which is unmeasured drift hiding inside a compared table and is
+recorded on the constant.
+
+**A gate hole this change had to close before it could claim anything.**
+`events.type_is_a_documented_event` is cited by migration `0018`'s own
+comment, by `docs/api/README.md`, by `docs/flows/webhooks.md` and by three
+Rust doc comments — and **nothing asserted it fired.**
+`an_undocumented_event_type_is_refused_by_the_database` is new in
+`postgres_smoke.rs`. It matters more now: `model Event` cannot express a
+multi-value single-column CHECK at 0.11.1 (a `.cstack` enum would match only
+under the generated name `events_type_enum_check`, and `diff/checks.rs`
+matches by name first), so the constraint stays undeclared.
+
+**Corrected 2026-09-06 by the review.** This paragraph first claimed that
+deleting the constraint "takes the drift count from 101 to 100 and fails no
+drift assertion at all", and that only the new test notices. The count half
+reproduces — losing a `[safe] ... is not declared` line lowers the number —
+but the conclusion was wrong: `EXPECTED_DRIFT_CHANGES` is an exact
+`assert_eq!`, so the drift test fails on 100 just as loudly as on 102, and
+says so ("If it shrank without an edit to the schema, find out what the report
+stopped seeing before moving anything"). Two signals, and they say different
+things: the count says *a constraint is gone*, the new test says *the
+vocabulary is still closed* — the property `docs/flows/webhooks.md` and
+`docs/api/README.md` actually rest on, and the one that survives someone
+re-pinning the constant. Measured both ways;
+[plans/exp18-notes/opus-review.md](plans/exp18-notes/opus-review.md) F1 has
+the transcript.
+
+**One contract narrowed, found by the review and pinned rather than papered
+over.** `create_in_tx` answers `Ok(None)` for a repeat creation of one
+`(event, endpoint)` pair — the quiet answer the at-least-once drain needs.
+Through CrateStack that holds only when the earlier row was **committed**: a
+second call inside the *same, still-open* transaction is refused with
+`PersistenceError::Denied`, where the raw `INSERT … ON CONFLICT DO NOTHING`
+it replaced answered `None`. `.do_nothing()` probes for the existing row
+through the caller's transaction and then re-checks the update policy on a
+**pool** connection, which cannot see it. Unreachable in vpay — a duplicate
+endpoint `id` is refused at boot by `vpay_config` and deduped again by
+`EndpointRegistry` — but the fan-out's correctness now rests on those two
+guards in a way it did not before, so both ends say so and
+`a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing`
+asserts both halves. Reported upstream, not worked around.
+
+**`PersistenceError::Invalid` is new.** The generated `input.validate()` runs
+before any SQL on every write path, and `CratestackError::Validation` was
+falling into the `Backend` wildcard — `Category::Storage`, which is
+**retryable**. A 65-character endpoint id is exactly as long on every retry.
+It is `Category::Internal` / `Retry::Never` now, with the same `code` a CHECK
+violation publishes so a merchant cannot tell which of the two layers
+refused.
+
+**Gate, re-run on the reviewed head on 2026-09-06 against the pinned 1.98.0
+toolchain.** `just ci` end to end, exit 0, with containers and with
+`node_modules` installed from the pinned lockfile under the `.nvmrc` Node
+(22.23.2). All **ten** `just verify` gates green — `check-schema` reports
+**15** model/enum declarations and `cratestack_min_declarations` is raised
+13 -> 15 in the same commit, per that floor's own rule. `just verify-ignored`:
+**0 ignored (expected 0), 43 test binaries (expected 43), 1390 total** —
+master's 1382 plus this change's eight, every one in a file that already
+existed, so `expected_suites` stays 43 and the 1080 floor is untouched.
+Recipe by recipe, each run on its own so a failure could be attributed:
+`fmt-check` 0, `clippy` 0 (13 s), `verify` 0 (8 s), `test-rust` 0
+(**1536 s — 1390 tests run, 1390 passed, 0 skipped**), `test-doc` 0 (**96
+passed, 1 ignored** — the ignored one is `sdks/rust`'s README block and is
+pre-existing), `verify-ignored` 0, `lint-web` 0 (20 s), `test-web` 0 (8 s),
+`deny` 0 (`advisories ok, bans ok, licenses ok, sources ok`).
+
+`test-rust` needed a second run, and the reason is recorded rather than
+smoothed over: the first re-run failed
+`a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` at
+exactly 120.007 s with `failed to create a container: Timeout error` — the
+same container-start contention described below, in a test this change does
+not touch, on a host running two other container suites. It passes 3/3 in
+isolation (117 s / 1.2 s / 1.3 s) and passed in both clean full runs.
+
+The eight: two `vpay-db` unit tests in `webhook_deliveries` (the `preview_sql`
+pin on both outbox statements, and the policy-slot assertion), one in `events`
+(the JSON blocker pin), four container cases in
+`vpay-db/tests/repositories.rs` (the abandon test, its commit control, the
+`23502` proof, and the review's
+`a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing`),
+and one in `postgres_smoke.rs` (the event vocabulary).
+
+**Two flakes were observed and are not this change's**, recorded because
+"green on the third run" is worth saying out loud. Under a host load average
+of 40-90 (an unrelated container stack cycling on the same machine), one run
+failed `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx`
+at exactly 120.006 s and another failed
+`provider_callback::a_callback_settles_the_charge_…::case_2_orange_money` at
+259.9 s. Both are container-start contention, which `.config/nextest.toml`'s
+own header documents at length as the reason that file exists; both pass in
+isolation (1.5 s and 65 s for the whole suite) and both passed in the clean
+run above. Neither touches a line this change wrote.
+
+**Six mutations by the implementer and five more by the review, every one
+applied, run and reverted**
+([plans/exp18-notes/opus-review.md](plans/exp18-notes/opus-review.md) has the
+review's). The implementer's six (transcripts in
+[plans/exp18-notes/opus.md](plans/exp18-notes/opus.md)): both `run_in_tx ->
+run` swaps make the abandon test red in about a second and **neither hangs**,
+unlike the currency upsert's equivalent; the three `@@allow` deletions are
+caught with no container in milliseconds and their runtime effects differ
+exactly as documented (delivery `create` LOUD everywhere, delivery `update`
+LOUD only on a re-run — the crash-recovery path, event `update` SILENT and
+total); and dropping the events CHECK behaves as described above.
+
+The review's five, run independently: bypassing `mark_fanned_out_in_tx`
+entirely makes `fan_out_creates_one_delivery_and_one_job_per_endpoint_and_is_idempotent`
+red on `fanout_state` (`"pending"` vs `"done"`); deleting `model
+WebhookDelivery`'s `@@allow("update")` is caught in 4 ms with no container,
+**and** — with that no-container assertion also deleted —
+`a_second_delivery_for_one_event_and_endpoint_is_not_created` still catches
+it, so the two are defence in depth rather than one gate twice; dropping the
+events CHECK fails **both** the vocabulary test and the drift assertion
+(which is the correction above); and mapping `create_in_tx`'s policy denial
+back to `Ok(None)` — the plausible "fix" for the narrowed contract — makes
+the new pinning test red in 1.3 s.
 
 #### The first CrateStack writes (2026-09-06)
 

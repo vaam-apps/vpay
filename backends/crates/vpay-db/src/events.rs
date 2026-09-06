@@ -383,3 +383,108 @@ impl Events for crate::repository::PgRepositories {
             .map_err(DbError::Query)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Why [`insert_in_tx`] above is still a hand-written statement, as an
+    //! assertion rather than as a paragraph.
+
+    use sqlx::postgres::PgPoolOptions;
+
+    use crate::schema::cratestack_schema;
+
+    /// A pool that has never opened a connection, and cannot: the port is
+    /// unroutable. `connect_lazy` does no I/O and neither does
+    /// `preview_sql`. Same shape and same reason as `config_reconcile.rs`'s
+    /// helper of the same name.
+    fn lazy_cratestack() -> cratestack_schema::Cratestack {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+            .expect("a lazy pool parses its URL and connects to nothing");
+        cratestack_schema::Cratestack::builder(pool).build()
+    }
+
+    /// The events INSERT cannot move to CrateStack at 0.11.1, and this is the
+    /// statement that says why.
+    ///
+    /// `TxRepositories::create_in_tx` and `mark_fanned_out_in_tx` both moved
+    /// on 2026-09-06; this one did not, and the reason is mechanical rather
+    /// than a matter of effort. `events.data` is `JSONB NOT NULL` with no
+    /// `DEFAULT` (migration 0018), and `schemas/vpay.cstack`'s `model Event`
+    /// deliberately does not declare it — the GAP note there carries the two
+    /// measurements, of which the decisive one is that
+    /// `cratestack::Value::from_plain_json` routes every JSON number through
+    /// `Number::as_i64()` with an `as_f64()` fallback, and `events.data` is
+    /// the wire object that gets **signed and delivered** to a merchant with
+    /// merchant-authored `metadata` inside it.
+    ///
+    /// So the generated create renders an INSERT with no `data` column, and
+    /// Postgres answers `23502`. `a_generated_events_insert_is_refused_by_the_not_null_on_data`
+    /// in `tests/repositories.rs` runs exactly this statement against a real
+    /// database and observes that; this test pins the *shape* with no
+    /// database at all, so a `cargo build` on a laptop with no Docker still
+    /// fails the day the situation changes.
+    ///
+    /// **This test is designed to fail when the blocker is lifted.** If
+    /// `map_scalar` learns `jsonb` and `Value` grows a lossless
+    /// `serde_json::Value` round-trip, declare `data Json`, delete this test,
+    /// and move `insert_in_tx` in the same commit — the two GAP notes in
+    /// `schemas/vpay.cstack` are the checklist.
+    #[tokio::test]
+    async fn the_events_insert_cannot_move_until_a_json_column_can_be_modelled() {
+        let cs = lazy_cratestack();
+
+        let sql = cs
+            .event()
+            .create(cratestack_schema::CreateEventInput {
+                id: "evt_1".to_owned(),
+                merchant_id: "merchant_a".to_owned(),
+                livemode: false,
+                r#type: "payment_intent.succeeded".to_owned(),
+                object_id: "pi_1".to_owned(),
+            })
+            .preview_sql();
+
+        assert!(
+            !sql.contains("data"),
+            "if `data` is now in the generated INSERT, `model Event` has grown a `Json` column \
+             and `insert_in_tx` can stop being hand-written — read the GAP note in \
+             schemas/vpay.cstack first, in particular the number-precision half, which a \
+             `map_scalar` fix does NOT close on its own: {sql}"
+        );
+        assert!(
+            sql.starts_with(
+                "INSERT INTO events (id, merchant_id, livemode, type, object_id) \
+                 VALUES ($1, $2, $3, $4, $5)"
+            ),
+            "the generated create is the five-column statement the NOT NULL refuses: {sql}"
+        );
+        // `seq`, `fanout_state` and `created_at` are absent for a different
+        // and benign reason — all three carry `@default(...)`, so
+        // `create_input_fields` filters them out and they take their column
+        // defaults. Asserted so this test cannot be misread as saying every
+        // absent column is a problem.
+        //
+        // The needles are spelled out in full rather than built with a
+        // `format!` over a loop variable: `crate::sql_audit` scans for an
+        // interpolation next to anything statement-shaped and refuses one,
+        // which is exactly what it is for. Five literals cost less than an
+        // audit exception.
+        // Tokenised rather than substring-matched: `next_attempt_at`
+        // contains `attempt`, and a `contains` check silently passed on the
+        // wrong column until this test was run.
+        let columns: Vec<&str> = sql
+            .split_once(") VALUES")
+            .map_or(sql.as_str(), |(head, _)| head)
+            .rsplit_once('(')
+            .map_or("", |(_, tail)| tail)
+            .split(", ")
+            .collect();
+        for defaulted in ["seq", "fanout_state", "created_at"] {
+            assert!(
+                !columns.contains(&defaulted),
+                "`{defaulted}` is `@default(...)` and must stay out of the INSERT column list:                  {sql}"
+            );
+        }
+    }
+}

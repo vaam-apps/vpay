@@ -15,15 +15,18 @@
 // │ verify-repositories` fails if that changes).                             │
 // │                                                                          │
 // │ Compiled is not the same as used, and the difference matters more        │
-// │ than usual here. THREE models have queries running through them, all     │
+// │ than usual here. FIVE models have queries running through them, all      │
 // │ of them since 2026-09-06: `DisabledClient` (all three methods —          │
 // │ `find_unique(...).run(ctx)`, `upsert(...).run(ctx)` and                  │
 // │ `delete_many().where_(...).run(ctx)`), `Currency`                        │
 // │ (`find_unique(...).for_update()` then `upsert(...)`, both `run_in_tx`    │
 // │ on boot step 4's transaction) and `Provider` (`upsert(...).run_in_tx`,   │
 // │ which migration 0033 is what made possible — see the note on that        │
-// │ model). This box said "exactly ONE model" until the currencies and       │
-// │ providers passes moved. Every other model below is still a design        │
+// │ model), plus `WebhookDelivery` and `Event` (the outbox: `upsert(...)     │
+// │ .do_nothing()` and `update_many(...)`, both `run_in_tx` on the fan-out   │
+// │ transaction — see those models). This box said "exactly ONE model"       │
+// │ until the currencies, providers and outbox passes moved. Every other     │
+// │ model below is still a design                                            │
 // │ sketch that happens to be type-checked by a compiler as well as by the   │
 // │ CLI; no code reads or writes through any of them, and several do not     │
 // │ match the live table at all (see the drift list). docs/status.md is      │
@@ -592,6 +595,335 @@ model DisabledClient {
   @@allow("delete", auth().isSystem())
 }
 
+// --- the outbox ----------------------------------------------------------
+
+// `events` (migration 0018, extended by 0024 and 0029) and
+// `webhook_deliveries` (0022) — docs/flows/webhooks.md's two-step outbox.
+//
+// These two models exist for ONE reason: they are the first vpay tables
+// written through CrateStack inside a transaction **vpay opened and vpay
+// closes**. `UnitOfWork::transaction` hands the closure a
+// `PendingTransaction`; `PendingTransaction::tx()` hands that transaction to
+// `run_in_tx`. Everything `config_reconcile` proved about `run_in_tx` it
+// proved on a transaction CrateStack could not tell apart from its own,
+// because `reconcile` owns that one too. Here the transaction is the
+// settlement's / the fan-out's, and the rollback that has to take a
+// CrateStack write with it is vpay's.
+//
+// WHAT MOVED, AND WHAT DID NOT — the honest half.
+//
+//   TxRepositories::create_in_tx        -> WebhookDelivery
+//                                         .upsert(..).do_nothing()  MOVED
+//   TxRepositories::mark_fanned_out_in_tx -> Event .update_many(..) MOVED
+//   TxRepositories::insert_in_tx        -> Event .create(..)    NOT MOVED
+//
+// `insert_in_tx` is blocked, and the block is measured rather than argued:
+// `events.data` is `JSONB NOT NULL` with no `DEFAULT`. A model that does not
+// declare `data` generates
+// `INSERT INTO events (id, merchant_id, livemode, type, object_id) ...`,
+// which Postgres refuses with `23502 null value in column "data" violates
+// not-null constraint` — pinned by
+// `the_events_insert_cannot_move_until_a_json_column_can_be_modelled` in
+// `backends/crates/vpay-db/src/events.rs`. Declaring `data Json` is the only
+// other option at 0.11.1 and it is NOT taken here; see the GAP note at the
+// end of `model Event` for the two measured reasons.
+//
+// WHY NO `@db_enforce` ANYWHERE BELOW, unlike `model Currency`.
+//
+// `@db_enforce` promotes a validator to a CHECK named
+// `naming.rs::check_name` -> `<table>_<column>_<validator>_check`. The live
+// CHECKs are hand-named (`id_length`, `endpoint_id_length`, `url_length`,
+// `excerpt_length`), so promoting them would make the diff emit a
+// drop-and-add pair on two different names — TWO drift lines where not
+// declaring them at all is ONE, and `ir/checks.rs` guarantees the kinds can
+// never match anyway because introspection reports every validator-derived
+// CHECK as `CheckKind::Raw`. Measured 2026-09-06, and it is exp17's finding
+// (docs/plans/exp17-notes/opus.md §1a) applied in the only direction that is
+// available without a rename migration, which this change deliberately does
+// not add.
+//
+// The validators are still declared WITHOUT `@db_enforce`, and that is not a
+// no-op: `cratestack-macros`' `inputs.rs::validate_impl_tokens` generates
+// `input.validate()` from the validator list regardless of `@db_enforce`, and
+// `run_upsert_do_nothing_in_tx` calls it before any SQL runs. So the bound is
+// enforced twice — once in-process, once by the CHECK that was already there
+// — and the in-process half fails *before* the transaction has written
+// anything. Only bounds the migrations actually declare appear below; there
+// is deliberately no validator on `WebhookDelivery.event_id`, because
+// migration 0022 declares no length CHECK on that column and inventing one
+// here would be this file claiming a constraint the database does not have.
+
+model Event {
+  id String @id @length(min: 1, max: 64)
+  // `GENERATED ALWAYS AS IDENTITY` (migration 0018), and an identity column
+  // carries no `pg_attrdef` default — `information_schema` reports
+  // `column_default` NULL and `is_identity = YES`. Introspection reads only
+  // the former, so this line costs exactly one permanent
+  // `column `seq` default value differs` drift line, measured 2026-09-06.
+  // Kept anyway, and the trade is worth writing down: dropping the
+  // `@default(...)` closes that line and makes `seq` a REQUIRED field of
+  // `CreateEventInput` — an explicit value for a `GENERATED ALWAYS` column,
+  // which Postgres refuses outright. One honest drift line beats a create
+  // input that cannot be filled in correctly.
+  seq Int @default(dbgenerated())
+  merchant_id String @length(min: 1, max: 128)
+  livemode Boolean
+  // The closed event vocabulary stays a hand-named database CHECK
+  // (`type_is_a_documented_event`, migrations 0018 and 0029), and this field
+  // carries no validator at all, because 0.11.1 has none that expresses
+  // "one of these eight strings" on a `String` column. The two candidates
+  // were both measured and both rejected:
+  //
+  //   - a `.cstack` `enum EventType` with the variants. `providers.flow`
+  //     shows this CAN match (exp17: Postgres deparses `IN (...)` into the
+  //     shape `check_pattern.rs::reconstruct_enum` reads back) — but only
+  //     under the generated name `events_type_enum_check`. The live
+  //     constraint is `type_is_a_documented_event`, and `diff/checks.rs`
+  //     matches by name first, so the report would grow a drop-and-add pair
+  //     rather than converge. Renaming it needs migration 0033, which this
+  //     change is scoped not to add.
+  //   - `@db_enforce` on some length validator: expresses nothing about the
+  //     vocabulary.
+  //
+  // THE HAZARD, recorded because it is the F4 one and it is real: because
+  // the schema does not declare this CHECK, a generated `cratestack migrate
+  // diff` would emit DDL that DROPS `type_is_a_documented_event` as
+  // undeclared. Nothing in this repository runs `migrate diff` — the
+  // migrations are hand-written and `_sqlx_migrations` is the sole runner
+  // (docs/reference/vpay-db.md) — so the hazard is latent, not live. It
+  // becomes live the day anyone generates a migration from this file, and
+  // the same is true of every other `[safe] CHECK ... exists in the live
+  // database but is not declared in the schema` line in the drift report.
+  type String
+  object_id String @length(min: 1, max: 64)
+  // `fanout_state_is_known` (0018, widened by 0024 to a third value) is the
+  // same multi-value single-column case as `type` above, and left hand-named
+  // for the same reason. `@default('pending')` — single quotes — because
+  // `convert/fields.rs::field_default` classifies an unquoted, non-`()`
+  // argument as a bare `Literal` and the live default deparses to
+  // `'pending'::text`; measured, the double-quoted spelling costs one
+  // `default value differs` line and this one costs none.
+  fanout_state String @default('pending')
+  created_at DateTime @default(now())
+
+  // `update` and nothing else. `mark_fanned_out_in_tx` is an
+  // `update_many(...).where_(id).where_(fanout_state = 'pending')`, and
+  // `update_many_exec.rs` compiles `update_allow_policies` into the
+  // statement's own `WHERE` — so a missing arm is SILENT in the error
+  // channel and catastrophic in behaviour: the compare-and-swap matches zero
+  // rows, returns `false`, and `fan_out_one` abandons EVERY transaction, so
+  // no merchant is ever delivered anything while every log line says the
+  // drain ran. Because the failure is silent rather than raised, the tests
+  // that catch it catch it by its effect:
+  // `a_committed_fan_out_keeps_both_cratestack_writes` is the container one,
+  // and the no-container `every_action_this_module_calls_has_an_allow_arm`
+  // catches it in milliseconds.
+  //
+  // No `read` arm: nothing reads `events` through CrateStack — every read in
+  // `vpay_db::events` is still `sqlx`, because `EventRow` carries `data` and
+  // paging is `WHERE seq > $1 ORDER BY seq LIMIT`, neither of which this
+  // model can express (see the GAP note). No `create` arm, for the same rule
+  // `model Provider` states: an arm no call site uses is a permission
+  // nothing can measure. Grant them in the commit that moves the write.
+  @@allow("update", auth().isSystem())
+
+  // GAP — `data JSONB NOT NULL` is not declared, and that is what keeps
+  // `insert_in_tx` on raw sqlx.
+  //
+  // 0.11.1 HAS a `Json` scalar (`emit/postgres/columns.rs`: `"Json" =>
+  // "JSONB"`, `shared/types.rs`: `Json` -> `::cratestack::Json<::cratestack::Value>`),
+  // so "cratestack cannot model a JSONB column" would be false. Two measured
+  // costs are why it is still not declared here:
+  //
+  //   1. `introspect/postgres/types.rs::map_scalar` does NOT map `jsonb`
+  //      back to any `.cstack` scalar — `jsonb` is on the deliberate
+  //      unmapped list beside `numeric` and the narrow ints. So an
+  //      undeclared `jsonb` column is INVISIBLE to the comparison in both
+  //      directions (measured: declaring these two models moved
+  //      `EXPECTED_UNMAPPABLE_COLUMNS` not at all, and produced no
+  //      `column `data` exists in the live database` line), whereas
+  //      declaring `data Json` makes the live column stay invisible while
+  //      the declared one becomes a `[blocking] column `data` is declared in
+  //      the schema but does not exist in the live database` line — exactly
+  //      what `currencies.exponent` did before migration 0032.
+  //   2. The one that actually decides it. `cratestack::Value` is not
+  //      `serde_json::Value`: `Value::from_plain_json` maps a JSON number
+  //      through `Number::as_i64()` and falls back to
+  //      `as_f64().unwrap_or_default()`, so a `u64` above `i64::MAX`
+  //      anywhere in the payload comes back as an `f64`. `events.data` is
+  //      the wire object that is stored, SIGNED and delivered to a merchant
+  //      (docs/flows/webhooks.md), and it embeds merchant-authored
+  //      `metadata` — arbitrary JSON vpay does not choose. Routing that
+  //      through a lossy number conversion to save one raw statement is not
+  //      a trade this table gets to make.
+  //
+  // So the insert stays one hand-written `sqlx` statement, in the SAME
+  // transaction as everything above — honest, ugly, reversible. It is
+  // reversible the day `map_scalar` learns `jsonb` AND `Value` round-trips
+  // an arbitrary `serde_json::Value`; both halves are needed.
+  //
+  // WHICH TEST NOTICES WHICH HALF — corrected 2026-09-06 by the review,
+  // because this comment used to say
+  // `the_events_insert_cannot_move_until_a_json_column_can_be_modelled`
+  // "fails when the first one lands so nobody has to remember", and it
+  // cannot. That test calls `preview_sql`, which renders from the macro
+  // expansion of THIS FILE and nothing else, so its output is a function of
+  // the declaration below being absent. `map_scalar` lives only in
+  // `cratestack-migrate` — introspection, which `cratestack-pg` takes as a
+  // dev-dependency — so it is not in `vpay-db`'s compiled graph at all and
+  // an upstream fix to it cannot change what that test sees.
+  //
+  //   * `map_scalar` learning `jsonb` is noticed by
+  //     `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`,
+  //     which pins `EXPECTED_UNMAPPABLE_COLUMNS = 17`. `events.data` would
+  //     leave that list and the count would move.
+  //   * `Value` growing a lossless round-trip is noticed by nothing here,
+  //     and cannot be — it is a property of a crate this file does not
+  //     compile against. It has to be checked when the first bullet fires.
+  //   * The two pins below are what notice somebody DECLARING `data Json`,
+  //     which is the mistake they are actually good for: they go red before
+  //     a lossy conversion can reach a signed payload.
+  //
+  // GAP — `fanout_attempts INT` (migration 0024) is not declared either, and
+  // this one costs nothing. `Int` always emits `int8`; `map_scalar` refuses
+  // to read `int4` back as `Int` ("an `int4` column silently mapped to `Int`
+  // would make a live table that actually differs from the schema look
+  // identical to it"), so the live column is excluded from the comparison
+  // and declaring it would add a `[blocking] ... does not exist in the live
+  // database` line while changing nothing about the database. Measured
+  // 2026-09-06. `EventRow` does not carry it either, and
+  // `Events::record_fanout_failure` — which does — is deliberately a
+  // statement on the POOL, not in any transaction, because it counts the
+  // failure of a transaction that has rolled back.
+  //
+  // GAP — `Events::pending_page` / `list_page` / `get_by_id` /
+  // `get_unscoped` stay raw sqlx. `list_page`'s cursor is a correlated
+  // sub-select (`seq < (SELECT seq FROM events WHERE id = $2 AND merchant_id
+  // = $1)`) that no delegate expresses, and every one of the four projects
+  // `data`. Neither is a defect in this file; both are `docs/reference/vpay-db.md`
+  // § CrateStack's "what stays raw SQL" list.
+}
+
+model WebhookDelivery {
+  // THE LIVE COLUMN HAS `DEFAULT gen_random_uuid()` AND THIS LINE
+  // DELIBERATELY DOES NOT DECLARE IT. That costs exactly one
+  // `[safe] column `id` default value differs` drift line (measured
+  // 2026-09-06: 100 -> 101), and it is the price of `create_in_tx` being
+  // expressible at all.
+  //
+  // `cratestack-macros`' `inputs.rs::generate_upsert_input_struct` returns
+  // an EMPTY token stream when `is_generated_on_create(primary_key)` — its
+  // own comment says "Server-generated PKs get no upsert impl; calling
+  // `.upsert(...)` is a compile error" — and `is_generated_on_create` is
+  // `has_default(field)`. With `@default(gen_random_uuid())` here,
+  // `CreateWebhookDeliveryInput` carries no `id` field, no
+  // `UpsertModelInput` impl exists, and
+  // `webhook_delivery().upsert(..).do_nothing()` does not compile. Measured:
+  // `error[E0599]: no method named `upsert` found`.
+  //
+  // The fallback — a plain `.create(..)` — is NOT equivalent and is why this
+  // is worth a paragraph. `create_in_tx` must answer `Ok(None)` for a
+  // (event_id, endpoint_id) pair that already exists, because the fan-out
+  // drain is at-least-once and a re-run must enqueue no second
+  // `deliver_webhook` job. A bare `INSERT` raises `23505` against
+  // `webhook_deliveries_event_endpoint` instead — and a failed statement
+  // ABORTS the enclosing Postgres transaction, so the error cannot be caught
+  // and turned back into `None` without a `SAVEPOINT` this layer does not
+  // have. `ON CONFLICT DO NOTHING` is load-bearing, not stylistic.
+  //
+  // So the id is minted by `vpay-db` (`Uuid::new_v4()`) rather than by
+  // Postgres. Both are v4 UUIDs, nothing references the column, and the
+  // database default stays exactly where it is for any writer that omits the
+  // column — it is now vestigial rather than wrong. Dropping it in a
+  // migration would close the drift line and is deliberately NOT done here:
+  // it is a DDL change bought by a code generator's input-shaping rule,
+  // which is the trade `model Provider`'s GAP note reserves for the
+  // maintainer. The difference worth noting is that unlike `Provider`, this
+  // one needed no DDL to unblock.
+  id Uuid @id
+  // No validator: migration 0022 declares no length CHECK on this column.
+  // It is a foreign key into `events (id)`, and that FK is not declared here
+  // either — `@relation` needs a `WebhookDelivery[]` back-reference on
+  // `model Event`, which would make `Event` name a model whose only purpose
+  // is a write path `Event` is not part of. The FK is real in the database
+  // and the dangling-delivery half of
+  // `migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states`
+  // proves it fires; introspection does not report a live-only foreign key,
+  // so leaving it undeclared costs zero drift (measured).
+  event_id String
+  endpoint_id String @length(min: 1, max: 64)
+  url String @length(min: 1, max: 2048)
+  state String @default('pending')
+  // `excerpt_length` is `response_excerpt IS NULL OR char_length(...) <=
+  // 2000` — a nullable bound with no minimum, which is exactly `@length(max:
+  // ...)` on an optional field.
+  response_excerpt String? @length(max: 2000)
+  payload_sha256 String?
+  created_at DateTime @default(now())
+  sent_at DateTime?
+  responded_at DateTime?
+  next_attempt_at DateTime?
+
+  // BOTH arms are required by ONE call, and that is not obvious enough to
+  // leave to a reader of `upsert_do_nothing_exec.rs`.
+  // `create_in_tx` is `.upsert(input).do_nothing().on_conflict(columns)`:
+  //
+  //   create -> LOUD, unconditionally. `run_upsert_do_nothing_in_tx` calls
+  //             `evaluate_create_policies` before any SQL runs, so a missing
+  //             arm fails every fan-out with `Forbidden` ->
+  //             `PersistenceError::Denied` -> `Category::Internal`.
+  //   update -> LOUD, but ONLY on the already-exists branch.
+  //             `upsert_do_nothing_authorize.rs` re-checks
+  //             `row_passes_update_policy` on the `Existing` path, whose own
+  //             doc says why: `.do_nothing()` hands the caller that row's
+  //             contents, so create authorisation alone must not be a probe
+  //             for a row's existence. A missing arm therefore lets the
+  //             FIRST fan-out of an event succeed and fails only a re-run —
+  //             the crash-recovery path, i.e. the one nobody exercises until
+  //             production does.
+  //
+  // AND THAT RE-CHECK RUNS ON A POOL CONNECTION, NOT ON THE CALLER'S
+  // TRANSACTION, which is worth knowing here because it narrows
+  // `create_in_tx`'s contract. `row_passes_update_policy` takes
+  // `runtime.pool()` and issues its own `SELECT 1 FROM webhook_deliveries
+  // WHERE ...`, so a row the caller inserted moments ago in its own
+  // still-open transaction is found by the `Existing` pre-probe (which does
+  // read through `tx`) and then invisible to the authorisation read — which
+  // reports that as a denial. Measured 2026-09-06: a second `create_in_tx`
+  // for one pair inside ONE transaction answers `Denied`, where the raw
+  // `INSERT ... ON CONFLICT DO NOTHING` it replaced answered `None`.
+  // Unreachable in vpay (a duplicate endpoint `id` is refused at boot and
+  // deduped by `EndpointRegistry`), pinned by
+  // `a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing`,
+  // and reported upstream — docs/plans/exp18-notes/opus-review.md F2 and §4.
+  //
+  // No `read`, no `delete`: nothing reads or deletes a delivery through
+  // CrateStack. `WebhookDeliveries::{get,pending_due,for_event,
+  // record_success,record_attempt}` are all still sqlx, because `DeliveryRow`
+  // carries `attempt` and `status_code` and both are `int4` (see the GAP
+  // note below).
+  @@allow("create", auth().isSystem())
+  @@allow("update", auth().isSystem())
+
+  // GAP — `attempt INT NOT NULL DEFAULT 0` and `status_code INT` are not
+  // declared, for `Event.fanout_attempts`' reason and with the same measured
+  // answer: `int4` is on `map_scalar`'s deliberate unmapped list, so both are
+  // already excluded from the comparison and declaring them as `Int` would
+  // add two `[blocking] ... is declared in the schema but does not exist in
+  // the live database` lines while changing nothing in the database.
+  //
+  // The cost is real and worth naming: `CreateWebhookDeliveryInput` cannot
+  // carry them — which is harmless HERE, because `create_in_tx` sets neither
+  // (both take their column default), and `RETURNING id` is all the caller
+  // reads. It is what keeps `record_attempt` and `record_success` on raw
+  // sqlx, since both write `attempt` / `status_code`. Widening the columns to
+  // `BIGINT` the way migration 0032 widened `currencies.exponent` would close
+  // this, and it is NOT done here: 0032 was measured to break the previous
+  // release's binary at boot (docs/plans/exp17-notes/opus-review.md finding
+  // 3), and a rolling-deploy cost like that belongs to the maintainer, not
+  // to a persistence-layer swap.
+}
+
 // --- intentionally not modeled ------------------------------------------
 //
 // The following are named in docs/flows/*.md and marked ⛔ "not started" in
@@ -601,9 +933,19 @@ model DisabledClient {
 // schema for code that does not exist — the exact failure mode this file
 // was rewritten to stop doing:
 //
-//   - webhook endpoints, the event/outbox pair, and webhook_delivery
-//     (docs/flows/webhooks.md's two-step outbox — fanout_state, retries)
-//   - the job queue and its dedupe_key (docs/flows/reconciler.md)
+//   - webhook ENDPOINTS. Not a table and never will be one: endpoints are
+//     configuration (`merchant_clients[].webhooks[]`, ADR-0003), which is
+//     why `webhook_deliveries.endpoint_id` above references nothing. The
+//     event/outbox pair itself is modelled now — see `model Event` and
+//     `model WebhookDelivery` above.
+//   - the job queue and its dedupe_key (docs/flows/reconciler.md).
+//     Deliberately NOT modelled, and the reason is specific rather than
+//     "nobody got to it": `Jobs::claim` is `FOR UPDATE SKIP LOCKED`, and
+//     `FindMany::for_update()` (query/read/find_many.rs) emits a bare
+//     `FOR UPDATE` with no `SKIP LOCKED`. A lease mechanism that silently
+//     lost `SKIP LOCKED` would turn every worker's claim into a queue
+//     behind every other worker's claim. `jobs.payload` is `JSONB` besides,
+//     and `jobs.attempts` is `int4`.
 //   - idempotency keys (docs/status.md: ⛔, no design doc field list either)
 //   - Merchant (referenced only as a bare merchant_id string everywhere
 //     above — see the GAP note on PaymentIntent.merchant_id)
