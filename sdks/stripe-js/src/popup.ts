@@ -312,6 +312,13 @@ export async function openCheckoutPopup(
     }, CLOSE_POLL_INTERVAL_MS);
   }
 
+  // `assign`, and only because the window is still on the `about:blank` this
+  // side opened — which inherits the opener's origin, so the whole `Location`
+  // object is reachable. Once it has navigated to vpay, the only members of
+  // it a cross-origin opener may touch are the `href` setter and `replace()`;
+  // `assign` would throw. Nothing below reaches for `location` again, and
+  // `closed`, `close()` and `focus()` — the three that are used after the
+  // navigation — are all on the cross-origin allowlist.
   popup.location.assign(url);
 
   return {
