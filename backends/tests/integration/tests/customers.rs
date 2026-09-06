@@ -1296,3 +1296,219 @@ async fn a_retention_stamp_never_moves_a_customers_clock_backwards() -> anyhow::
     h.shutdown().await;
     Ok(())
 }
+
+/// A list is scoped to the caller's tenant, and a cursor naming **another
+/// merchant's** customer pages nothing rather than paging into their range.
+///
+/// Two claims, and the second is the one no other case here makes. The list
+/// route's tenancy is one `WHERE merchant_id = $1`; its *cursor* is a
+/// correlated subquery, and a subquery that resolved the id without the
+/// tenant would turn `starting_after` into a position in another merchant's
+/// sequence — a caller who forged one would page their rows, or, worse, get
+/// their own list silently re-anchored. `vpay_db::customers::list_page`
+/// scopes both subqueries, so a foreign id resolves to `NULL`, `seq < NULL`
+/// is `NULL`, and the page is empty: it fails **closed**.
+///
+/// The forged cursor is well-formed on purpose. A malformed one is refused by
+/// `paging::validated_cursor` before any statement runs, which would prove
+/// nothing about the statement.
+#[tokio::test]
+async fn a_list_is_tenant_scoped_and_a_foreign_cursor_pages_nothing() -> anyhow::Result<()> {
+    let h = harness().await?;
+
+    let mut mine = Vec::new();
+    for index in 0..3 {
+        mine.push(
+            h.a()
+                .customers()
+                .create(
+                    CreateCustomerParams {
+                        name: Some(format!("A's payer {index}")),
+                        ..Default::default()
+                    },
+                    RequestOptions::new(),
+                )
+                .await
+                .expect("merchant A's customer")
+                .id,
+        );
+    }
+
+    let mut theirs = Vec::new();
+    for index in 0..2 {
+        theirs.push(
+            h.b()
+                .customers()
+                .create(
+                    CreateCustomerParams {
+                        name: Some(format!("B's payer {index}")),
+                        ..Default::default()
+                    },
+                    RequestOptions::new(),
+                )
+                .await
+                .expect("merchant B's customer")
+                .id,
+        );
+    }
+
+    let page = h
+        .a()
+        .customers()
+        .list(ListCustomersParams::default())
+        .await
+        .expect("merchant A's list");
+    let seen: Vec<&str> = page.data.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(
+        seen.len(),
+        3,
+        "merchant A has three customers and must see exactly those: {seen:?}"
+    );
+    for id in &theirs {
+        assert!(
+            !seen.contains(&id.as_str()),
+            "merchant B's {id} appeared in merchant A's list: {seen:?}"
+        );
+    }
+
+    // The forged cursor: B's newest customer, sent by A as `starting_after`.
+    // It is a real `cus_…` that really exists — just not A's.
+    let forged = theirs.last().expect("merchant B created two customers");
+    let crossed = h
+        .a()
+        .customers()
+        .list(ListCustomersParams {
+            starting_after: Some(forged.clone()),
+            ..Default::default()
+        })
+        .await
+        .expect("a foreign cursor is answered, not errored");
+    assert!(
+        crossed.data.is_empty(),
+        "a cursor naming another merchant's customer must resolve to nothing and page \
+         nothing — it paged {:?}. Anything non-empty means the cursor subquery is not \
+         tenant-scoped and `starting_after` is a position in another merchant's sequence",
+        crossed
+            .data
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(!crossed.has_more);
+
+    // And the same id as `ending_before`, which is the other subquery and a
+    // separate line of SQL.
+    let crossed_back = h
+        .a()
+        .customers()
+        .list(ListCustomersParams {
+            ending_before: Some(forged.clone()),
+            ..Default::default()
+        })
+        .await
+        .expect("a foreign cursor is answered, not errored");
+    assert!(
+        crossed_back.data.is_empty(),
+        "`ending_before` is a second subquery and must be scoped too; it paged {:?}",
+        crossed_back
+            .data
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // A's own cursor still works, so the assertions above are about tenancy
+    // and not about the cursor being broken for everybody.
+    let ours = h
+        .a()
+        .customers()
+        .list(ListCustomersParams {
+            starting_after: mine.last().cloned(),
+            ..Default::default()
+        })
+        .await
+        .expect("merchant A's own cursor");
+    assert_eq!(
+        ours.data.len(),
+        2,
+        "A's own newest customer as a cursor leaves the two older ones"
+    );
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// `POST /v1/customers` is under the same `Idempotency-Key` machinery as
+/// every other write: a replay answers the **stored** object and writes no
+/// second row, and the same key with a different body is refused.
+///
+/// The refusal is `400` `idempotency_error` / `idempotency_key_in_use`, which
+/// is `vpay_core::Category::Idempotency`'s own kind and code rather than
+/// anything this route chooses (ADR-0011) — asserted verbatim for
+/// `payment_intents.rs`'s reason.
+///
+/// Why it matters more here than on an intent: a customer is personal data,
+/// and a retried create that minted a *second* `cus_…` would leave a merchant
+/// holding one id while vpay held two rows of the same payer — a duplicate no
+/// unique index can catch, because there deliberately is none (see
+/// `docs/flows/customers.md`, "No cross-merchant identity").
+#[tokio::test]
+async fn a_replayed_create_answers_the_stored_customer_and_a_reused_key_is_refused()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let sdk = h.a();
+    let opts = RequestOptions::new().with_idempotency_key("customer-create-0001");
+
+    let first = sdk
+        .customers()
+        .create(phone_only(), opts.clone())
+        .await
+        .expect("the first create");
+
+    let replay = sdk
+        .customers()
+        .create(phone_only(), opts.clone())
+        .await
+        .expect("the replay is answered, not refused");
+    assert_eq!(
+        first.id, replay.id,
+        "a replay must answer the stored customer, not mint a second `cus_…`"
+    );
+    assert_eq!(first.phone, replay.phone);
+
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM customers WHERE merchant_id = $1")
+        .bind(MERCHANT_A)
+        .fetch_one(&h.pool)
+        .await
+        .context("counting merchant A's customers")?;
+    assert_eq!(
+        rows, 1,
+        "the replay must not have created a second customer"
+    );
+
+    // The same key, a different body.
+    let different = CreateCustomerParams {
+        name: Some("Somebody Else".to_owned()),
+        ..Default::default()
+    };
+    let error = sdk
+        .customers()
+        .create(different, opts)
+        .await
+        .expect_err("the same key with a different body must be refused");
+    let message = format!("{error:?}");
+    assert!(
+        message.contains("idempotency_key_in_use"),
+        "the refusal is the documented envelope, not a second customer: {message}"
+    );
+
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM customers WHERE merchant_id = $1")
+        .bind(MERCHANT_A)
+        .fetch_one(&h.pool)
+        .await
+        .context("counting merchant A's customers after the refusal")?;
+    assert_eq!(rows, 1, "the refused request must not have created a row");
+
+    h.shutdown().await;
+    Ok(())
+}
