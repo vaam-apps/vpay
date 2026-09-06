@@ -421,8 +421,8 @@ the child channel in `frontends/apps/checkout` returns `null` and the page
 says nothing. It comes from the merchant's own `success_url`, running inside
 the popup. The design and its limits are in
 [browser-checkout.md](browser-checkout.md)'s Status; the short version is that
-34 unit cases drive it against stub windows and **no test opens a real
-popup**.
+26 unit cases drive it against stub windows and **no test, and nothing in
+any demo run, has opened a real popup**.
 
 See [../status.md](../status.md) for the per-feature ledger and the reasons
 several of those rows are 🟡 where this document says "built".

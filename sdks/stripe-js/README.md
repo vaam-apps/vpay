@@ -437,13 +437,16 @@ a shipping process in ADR-0006's sense.
   `docs/status.md` row.
 - **The popup surface (`openCheckoutPopup` / `notifyCheckoutOpener`) is
   unit-tested and has not been driven by a real browser.** `src/popup.test.ts`
-  (34 tests) drives it against stub windows, because jsdom implements
+  (26 tests) drives it against stub windows, because jsdom implements
   neither `window.open` nor cross-window `postMessage` — so what is proven
   is the origin check, the source check, the open-before-await ordering, the
   blocked-window error, the cancel poll and the round trip between the two
   halves. What is **not** proven anywhere yet is a real browser opening a
-  real window: no Cypress spec covers it, and `examples/shop`'s popup mode
-  was exercised by hand only. Recorded on `docs/status.md`.
+  real window: no Cypress spec covers it, and the hand-run of
+  `examples/shop`'s popup mode on 2026-09-06 reached only the **fallback** —
+  the automation's synthetic click carries no user activation, so
+  `window.open` answered `null` and `CheckoutPopupBlockedError` did its job.
+  Recorded on `docs/status.md` and as a dated ⛔ in `docs/sdks/parity.md`.
 - The `vpay:complete` payload is read strictly: `session` and `status` must
   both be strings. If vpay's checkout page ever sends the session as an
   object, `onComplete` stops firing rather than firing with fields it cannot
