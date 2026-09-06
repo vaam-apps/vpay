@@ -43,6 +43,11 @@
 //! a change made speculatively here.
 
 use crate::error::DbError;
+use crate::persistence::{classify_cratestack, system_context};
+
+/// The `.cstack` model `is_client_disabled` reads, named once so the error a
+/// denial produces and the query that produced it cannot drift apart.
+const MODEL: &str = "DisabledClient";
 
 #[async_trait::async_trait]
 pub trait DisabledClients: Send + Sync {
@@ -89,13 +94,28 @@ pub trait DisabledClients: Send + Sync {
 #[async_trait::async_trait]
 impl DisabledClients for crate::repository::PgRepositories {
     async fn is_client_disabled(&self, client_id: &str) -> Result<bool, DbError> {
-        sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM disabled_clients WHERE client_id = $1)",
-        )
-        .bind(client_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(DbError::Query)
+        // The one query in this crate that runs through CrateStack today.
+        // `find_unique` is a `SELECT … WHERE client_id = $1 LIMIT 1` with the
+        // model's `@@allow` clauses compiled into the same `WHERE`, so a row
+        // the policy does not admit is indistinguishable from a row that is
+        // not there — which is exactly why
+        // `a_disabled_client_reads_the_same_through_both_paths` compares this
+        // against a direct sqlx read instead of merely asserting it does not
+        // error. Deleting the `@@allow("read", …)` line from
+        // `schemas/vpay.cstack` turns this function into a permanent "no
+        // client is disabled", and that test is the only thing that notices.
+        //
+        // `.is_some()` rather than reading a column: the question is whether
+        // a row exists, and the row's own fields (`disabled_at`, `reason`)
+        // are operator context this trait deliberately does not return — see
+        // the module doc.
+        self.cs
+            .disabled_client()
+            .find_unique(client_id.to_owned())
+            .run(&system_context())
+            .await
+            .map(|row| row.is_some())
+            .map_err(|error| DbError::from(classify_cratestack(MODEL, "read", error)))
     }
 
     async fn disable_client(&self, client_id: &str, reason: Option<&str>) -> Result<(), DbError> {
