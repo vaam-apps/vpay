@@ -355,7 +355,9 @@ fn validate_update(params: UpdateParams, current: &CustomerRow) -> Result<Custom
             .as_ref()
             .map_or_else(|| stored.is_some(), Option::is_some)
     };
-    if !after(&name, &current.name) && !after(&email, &current.email) && !after(&phone, &current.phone)
+    if !after(&name, &current.name)
+        && !after(&email, &current.email)
+        && !after(&phone, &current.phone)
     {
         return Err(at_least_one_identifier());
     }
@@ -405,9 +407,10 @@ fn merged_metadata(
     stored: &Value,
     sent: &BTreeMap<String, String>,
 ) -> Result<Map<String, Value>, ApiError> {
-    let mut merged = stored.as_object().cloned().ok_or_else(|| {
-        ApiError::Internal("customers.metadata is not an object".to_owned())
-    })?;
+    let mut merged = stored
+        .as_object()
+        .cloned()
+        .ok_or_else(|| ApiError::Internal("customers.metadata is not an object".to_owned()))?;
 
     for (key, value) in sent {
         if key.chars().count() > METADATA_MAX_KEY_CHARS {
@@ -640,7 +643,10 @@ fn metadata_key_too_long() -> ApiError {
 
 /// See [`metadata_too_many_keys`].
 fn metadata_value_too_long() -> ApiError {
-    ApiError::invalid_param("metadata", "A `metadata` value is longer than 500 characters.")
+    ApiError::invalid_param(
+        "metadata",
+        "A `metadata` value is longer than 500 characters.",
+    )
 }
 
 /// The create path's `metadata`, bounded. The update path merges first and
@@ -966,7 +972,14 @@ mod tests {
     /// must not be able to tell which resource refused them.
     #[test]
     fn the_metadata_bounds_are_the_ones_every_other_resource_uses() {
-        assert_eq!((METADATA_MAX_KEYS, METADATA_MAX_KEY_CHARS, METADATA_MAX_VALUE_CHARS), (50, 40, 500));
+        assert_eq!(
+            (
+                METADATA_MAX_KEYS,
+                METADATA_MAX_KEY_CHARS,
+                METADATA_MAX_VALUE_CHARS
+            ),
+            (50, 40, 500)
+        );
 
         // The messages, byte for byte, against `payment_intents`' own — the
         // property that actually reaches a merchant.
@@ -1032,8 +1045,12 @@ mod tests {
         );
         assert_eq!(
             param_of(
-                &checked_text(Some("a".repeat(EMAIL_MAX_CHARS + 1)), "email", EMAIL_MAX_CHARS)
-                    .expect_err("over")
+                &checked_text(
+                    Some("a".repeat(EMAIL_MAX_CHARS + 1)),
+                    "email",
+                    EMAIL_MAX_CHARS
+                )
+                .expect_err("over")
             ),
             Some("email")
         );

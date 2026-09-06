@@ -628,8 +628,7 @@ fn to_chrono(at: OffsetDateTime) -> chrono::DateTime<chrono::Utc> {
 ///
 /// Invoices are the third object that would belong here and do not exist; see
 /// `docs/flows/customers.md`, "What is not built".
-const UNREFERENCED: &str =
-    "NOT EXISTS (SELECT 1 FROM payment_intents WHERE customer_id = customers.id) \
+const UNREFERENCED: &str = "NOT EXISTS (SELECT 1 FROM payment_intents WHERE customer_id = customers.id) \
      AND NOT EXISTS (SELECT 1 FROM checkout_sessions WHERE customer_id = customers.id)";
 
 #[async_trait::async_trait]

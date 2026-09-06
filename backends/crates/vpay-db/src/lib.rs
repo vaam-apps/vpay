@@ -92,9 +92,7 @@ pub use checkout_sessions::{
 };
 pub use client_assertion::{ClientAssertions, client_assertion_store};
 pub use config_reconcile::{ConfigReconcile, CurrencySeed, ProviderSeed};
-pub use customers::{
-    CustomerListPage, CustomerPatch, CustomerRow, Customers, NewCustomer,
-};
+pub use customers::{CustomerListPage, CustomerPatch, CustomerRow, Customers, NewCustomer};
 pub use disabled_clients::DisabledClients;
 pub use error::DbError;
 pub use events::{EventRow, Events, NewEvent};

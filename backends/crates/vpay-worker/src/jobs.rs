@@ -122,6 +122,42 @@ impl JobKind {
         }
     }
 
+    /// Every kind, in the order [`Self::as_wire_str`] declares them.
+    ///
+    /// # This array is the one thing here the compiler does not check, and it
+    /// bit once
+    ///
+    /// [`Self::as_wire_str`] is an exhaustive `match`, so a variant added to
+    /// the enum without a wire spelling does not compile. **This array has no
+    /// such protection**, and on 2026-09-06 `SweepIdleCustomers` was added to
+    /// the enum and to `as_wire_str` and *not* to the list [`Self::from_wire`]
+    /// then iterated — which was a private copy of this one. The result was
+    /// silent and total: the row was written, claimed, and dead-lettered as
+    /// "not a job kind this build knows; the row was written by a different
+    /// version", with `alert = true`, for a kind the build had shipped. The
+    /// twelve-month customer retention sweep never ran, and every log line
+    /// blamed a phantom deployment skew.
+    ///
+    /// Pulling the list out of `from_wire` and into a `pub const` is not a
+    /// fix — it is what makes the gap *checkable*:
+    /// `the_kinds_are_exactly_the_check_constraints` compares it against the
+    /// migration's own `kind_is_known` list, so an omission here is now a
+    /// unit-test failure in milliseconds rather than a dead-lettered job in
+    /// production. `verify` has no gate for it and there is no construction
+    /// at 1.98.0 that makes a string→enum parse exhaustive, so the honest
+    /// statement is: **this is test-enforced, not compiler-enforced**, and
+    /// the test is named above.
+    pub const EVERY: [Self; 8] = [
+        Self::PollCharge,
+        Self::ResubmitCharge,
+        Self::SweepExpired,
+        Self::ScanLiveCharges,
+        Self::FanOutEvents,
+        Self::DeliverWebhook,
+        Self::ScanDeliveries,
+        Self::SweepIdleCustomers,
+    ];
+
     /// Parses a `jobs.kind` value, or `None` for one this build does not
     /// know.
     ///
@@ -131,19 +167,15 @@ impl JobKind {
     /// mistake but a row written by a newer build. That is a poisoned job
     /// ([`crate::JobError::Poisoned`]), and the caller says so in its own
     /// vocabulary instead of this module inventing a second one.
+    ///
+    /// **A kind missing from [`Self::EVERY`] is indistinguishable, here, from
+    /// a row a newer build wrote** — see that constant for what that cost
+    /// once.
     #[must_use]
     pub fn from_wire(kind: &str) -> Option<Self> {
-        [
-            Self::PollCharge,
-            Self::ResubmitCharge,
-            Self::SweepExpired,
-            Self::ScanLiveCharges,
-            Self::FanOutEvents,
-            Self::DeliverWebhook,
-            Self::ScanDeliveries,
-        ]
-        .into_iter()
-        .find(|candidate| candidate.as_wire_str() == kind)
+        Self::EVERY
+            .into_iter()
+            .find(|candidate| candidate.as_wire_str() == kind)
     }
 }
 
@@ -395,16 +427,16 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const KINDS: [JobKind; 8] = [
-        JobKind::PollCharge,
-        JobKind::ResubmitCharge,
-        JobKind::SweepExpired,
-        JobKind::ScanLiveCharges,
-        JobKind::FanOutEvents,
-        JobKind::DeliverWebhook,
-        JobKind::ScanDeliveries,
-        JobKind::SweepIdleCustomers,
-    ];
+    /// The shipped constant, **not** a copy of it.
+    ///
+    /// It was a copy until 2026-09-06, and that is precisely why
+    /// `SweepIdleCustomers` could be missing from `from_wire`'s list while
+    /// every test here passed: the test's array and the parser's array were
+    /// two places to remember, and the tests only ever checked the one they
+    /// owned. Aliasing the real constant is what makes
+    /// `the_kinds_are_exactly_the_check_constraints` below a claim about the
+    /// **parser** rather than about this file.
+    const KINDS: [JobKind; 8] = JobKind::EVERY;
 
     /// Transcribed from migration 0034's `kind_is_known` CHECK — the current
     /// one. If these eight strings and that constraint ever disagree, every

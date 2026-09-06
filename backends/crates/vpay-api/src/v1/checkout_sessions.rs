@@ -452,7 +452,8 @@ async fn prepare_create(
                 params_customer.as_deref(),
             )
             .await?;
-            if let (Some(on_intent), Some(sent)) = (intent.customer_id.as_deref(), resolved.as_deref())
+            if let (Some(on_intent), Some(sent)) =
+                (intent.customer_id.as_deref(), resolved.as_deref())
                 && on_intent != sent
             {
                 return Err(ApiError::invalid_param(

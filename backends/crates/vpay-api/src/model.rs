@@ -1599,7 +1599,12 @@ mod tests {
             13,
             "an undocumented key was added: {object:?}"
         );
-        for null_key in ["next_action", "last_payment_error", "description", "customer"] {
+        for null_key in [
+            "next_action",
+            "last_payment_error",
+            "description",
+            "customer",
+        ] {
             assert_eq!(
                 object.get(null_key),
                 Some(&Value::Null),

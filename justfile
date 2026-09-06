@@ -1086,7 +1086,14 @@ verify-docs:
 # route table. `expected_suites` is deliberately NOT touched by any of them;
 # a new case is not a new binary.
 expected_ignored := "0"
-expected_suites := "44"
+# 44 -> 45 on 2026-09-06 (S4a, rebased over exp23's 44): `backends/tests/integration/tests/customers.rs`
+# is a new test binary. It is the first new one since issue #47's
+# `account_holders.rs`, and it earns its own file for that file's reason: the
+# privacy rules that apply to `/v1/customers` — hard delete, no cross-merchant
+# identity, a twelve-month retention sweep that erases a merchant's records on
+# a timer — apply only there, and the suite that proves them belongs beside
+# them rather than folded into `payment_intents.rs`.
+expected_suites := "45"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

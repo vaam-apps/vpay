@@ -23,11 +23,11 @@ use std::sync::LazyLock;
 
 use serde_json::{Value, json};
 use vpay_sdk::account_holders::RetrieveAccountHolderParams;
-use vpay_sdk::customers::{CreateCustomerParams, ListCustomersParams, UpdateCustomerParams};
 use vpay_sdk::checkout::{
     CheckoutPaymentStatus, CheckoutSessionStatus, CheckoutUiMode, CreateCheckoutSessionParams,
     ListCheckoutSessionsParams,
 };
+use vpay_sdk::customers::{CreateCustomerParams, ListCustomersParams, UpdateCustomerParams};
 use vpay_sdk::payment_intents::{
     ConfirmPaymentIntentParams, CreatePaymentIntentParams, ListPaymentIntentsParams,
     PaymentMethodType,
@@ -1859,7 +1859,10 @@ async fn del_customer_is_a_delete_that_still_carries_an_idempotency_key() {
 
     let deleted = client
         .customers()
-        .del("cus_1", RequestOptions::new().with_idempotency_key("idem_del"))
+        .del(
+            "cus_1",
+            RequestOptions::new().with_idempotency_key("idem_del"),
+        )
         .await
         .unwrap();
 

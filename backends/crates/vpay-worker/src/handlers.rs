@@ -1179,13 +1179,11 @@ async fn sweep_idle_customers(
     // drain at `CUSTOMER_PAGE` an hour. Conditional on progress, because a
     // full page that deleted nothing is a page every row of which lost its
     // guard, and rescheduling on that is a tight loop against Postgres.
-    Ok(Outcome::RescheduleAfter(
-        if page_was_full && deleted > 0 {
-            Duration::ZERO
-        } else {
-            SWEEP_INTERVAL
-        },
-    ))
+    Ok(Outcome::RescheduleAfter(if page_was_full && deleted > 0 {
+        Duration::ZERO
+    } else {
+        SWEEP_INTERVAL
+    }))
 }
 
 /// One customer: render what the merchant is about to be told, then delete it
