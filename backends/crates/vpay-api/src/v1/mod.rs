@@ -309,6 +309,22 @@ impl MerchantScope {
     pub(crate) fn for_payer(merchant_id: String) -> Self {
         Self { merchant_id }
     }
+
+    /// The **third** way a scope comes into existence: minted by
+    /// [`crate::require_dashboard_token`] from
+    /// [`DashboardBinding::merchant_id`], once a dashboard token has
+    /// validated against the registered dashboard client and carries its
+    /// scope.
+    ///
+    /// Named for its caller like [`Self::for_payer`], and `pub(crate)` for
+    /// the same reason. The distinction worth stating: the merchant path
+    /// *resolves* a tenant from something the token said, and this one does
+    /// not — the tenant comes from configuration, and no claim in any token
+    /// can change it. That is what makes `/dash/v1` a surface bound to one
+    /// merchant rather than a surface a staff credential can point anywhere.
+    pub(crate) fn for_dashboard(merchant_id: String) -> Self {
+        Self { merchant_id }
+    }
 }
 
 impl<S> FromRequestParts<S> for MerchantScope
@@ -570,6 +586,43 @@ pub struct ResourceConfig {
     /// `DuplicateMerchantId` relaxes it has to be decided in configuration
     /// rather than by iteration order. It cannot happen today.
     display_name_by_merchant_id: BTreeMap<String, String>,
+    /// The one dashboard registration this deployment serves `/dash/v1`
+    /// for, if it configured one.
+    ///
+    /// `None` is a complete answer and the common one — a deployment that
+    /// runs no dashboard — and [`crate::router`] reads it as such: the
+    /// `/dash/v1` nest is **not mounted at all** in that case, so every
+    /// path under it answers the honest 404 rather than a 401 promising a
+    /// credential would help.
+    ///
+    /// A single value, not a map keyed by `client_id` like
+    /// [`Self::merchant_id_by_client_id`], because
+    /// `vpay_config::DashboardClient` is a single value: the dashboard is
+    /// one registration bound to one tenant, and a map would model a
+    /// question — "which of several dashboard clients is this?" — the
+    /// configuration cannot ask.
+    dashboard: Option<DashboardBinding>,
+}
+
+/// The `/dash/v1` registration, projected: which credential, which tenant,
+/// which scope.
+///
+/// Its own type rather than three `Option` fields on [`ResourceConfig`],
+/// because the three are only ever meaningful together — a `client_id` with
+/// no `merchant_id` would be a dashboard bound to nothing, and there is no
+/// state of the configuration that produces one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DashboardBinding {
+    /// The registered dashboard credential's `client_id`. A token's `sub`
+    /// must equal this — see [`crate::require_dashboard_token`] for why the
+    /// audience alone is not enough.
+    pub client_id: String,
+    /// The one tenant this dashboard may read. Boot refuses a value no
+    /// merchant registers (`vpay_config::ConfigError::DashboardUnknownMerchant`).
+    pub merchant_id: String,
+    /// The registration's single scope
+    /// (`docs/flows/dashboard-auth.md`'s "Scope"), which a token must carry.
+    pub scope: String,
 }
 
 impl ResourceConfig {
@@ -690,6 +743,17 @@ impl ResourceConfig {
                 .map(|base| base.trim_end_matches('/').to_owned()),
             checkout_origins_by_merchant_id,
             display_name_by_merchant_id,
+            // Cloned rather than referenced for the reason every other field
+            // here is: `ResourceConfig` outlives the `Config` it was
+            // projected from, and the projection is what `AppState` holds.
+            dashboard: config
+                .dashboard_client
+                .as_ref()
+                .map(|dashboard| DashboardBinding {
+                    client_id: dashboard.client_id.clone(),
+                    merchant_id: dashboard.merchant_id.clone(),
+                    scope: dashboard.scope.clone(),
+                }),
         })
     }
 
@@ -712,6 +776,20 @@ impl ResourceConfig {
         self.merchant_id_by_client_id
             .get(client_id)
             .map(String::as_str)
+    }
+
+    /// The `/dash/v1` registration, or `None` if this deployment configured
+    /// no dashboard.
+    ///
+    /// Read in exactly two places, and both of them fail closed on `None`:
+    /// [`crate::router`] does not mount the nest, and
+    /// [`crate::require_dashboard_token`] refuses every request that somehow
+    /// reaches it anyway. The second is not redundant with the first — a
+    /// router assembled by a test, or by a future binary, is not obliged to
+    /// consult the first.
+    #[must_use]
+    pub fn dashboard(&self) -> Option<&DashboardBinding> {
+        self.dashboard.as_ref()
     }
 
     /// The tenant a publishable key names, or `None` if this deployment has

@@ -39,7 +39,7 @@ use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::LoadedSigningKey;
-use vpay_api::resource_auth::{JwtValidator, MerchantJwtValidator, Surface};
+use vpay_api::resource_auth::{DashboardJwtValidator, JwtValidator, MerchantJwtValidator, Surface};
 use vpay_api::{ResourceConfig, RouterDeps};
 use vpay_config::oauth::{GrantType, MerchantClient, WebhookEndpoint};
 use vpay_config::{Config, MERCHANT_AUDIENCE};
@@ -320,18 +320,51 @@ pub(crate) fn router_deps(
     repositories: Arc<dyn Repositories>,
     merchant_op: Arc<MerchantOp>,
     merchant_validator: MerchantJwtValidator,
+    dashboard_validator: Option<DashboardJwtValidator>,
     config: &Config,
 ) -> RouterDeps {
     RouterDeps {
         repositories,
         merchant_op,
         merchant_validator,
+        dashboard_validator,
         adapters: Arc::new(adapters_by_code()),
         resource_config: Arc::new(
             ResourceConfig::from_config(config)
                 .expect("the suite's configuration projects onto the port"),
         ),
     }
+}
+
+/// The `/dash/v1` validator a suite's server should hold, derived from its
+/// own configuration exactly as `vpay-server`'s `main` derives it.
+///
+/// `None` when the configuration registers no `dashboard_client`, which is
+/// every suite but `dashboard_read_surface.rs` — and that `None` is what
+/// makes `/dash/v1` a 404 rather than a 401 in all of them, which is what an
+/// undashboarded deployment does.
+///
+/// A helper here rather than three lines in each harness, for `serve`'s
+/// reason: the audience is the only thing separating the two surfaces, and a
+/// suite that built this with `Surface::Merchant` by copy-paste would have a
+/// dashboard nest that accepted merchant tokens and would still pass every
+/// test that did not look.
+pub(crate) fn dashboard_validator_for(
+    base_url: &str,
+    issuer: &str,
+    config: &Config,
+) -> Option<DashboardJwtValidator> {
+    config.dashboard_client.as_ref().map(|_| {
+        DashboardJwtValidator(
+            JwtValidator::new(
+                format!("{base_url}/v1/oauth/jwks.json"),
+                Duration::from_secs(300),
+                issuer,
+                Surface::Dashboard,
+            )
+            .expect("the vendored-roots JWKS client builds"),
+        )
+    })
 }
 
 /// Boot step 4, run against a test's own configuration.
@@ -720,10 +753,12 @@ pub(crate) async fn serve(
         .expect("the vendored-roots JWKS client builds"),
     );
 
+    let dashboard_validator = dashboard_validator_for(&base_url, merchant_op.issuer(), &config);
     let deps = router_deps(
         Arc::clone(repositories),
         merchant_op,
         merchant_validator,
+        dashboard_validator,
         &config,
     );
     let server = tokio::spawn(async move {

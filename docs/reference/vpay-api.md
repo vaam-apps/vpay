@@ -18,6 +18,10 @@ code is shaped the way it is.
   - [The reference copy is not a dependency](#the-reference-copy-is-not-a-dependency)
   - [Deliberate deviations from `axum_token_handler`](#deliberate-deviations-from-axum_token_handler)
 - [Resource-server JWT validation (`resource_auth.rs`)](#resource-server-jwt-validation-resource_authrs)
+- [The dashboard surface (`dash/`)](#the-dashboard-surface-dash)
+  - [Why the `client_id` check is not redundant with the audience](#why-the-client_id-check-is-not-redundant-with-the-audience)
+  - [Why an absent registration mounts nothing](#why-an-absent-registration-mounts-nothing)
+  - [The wire shapes, and why they are not Stripe's](#the-wire-shapes-and-why-they-are-not-stripes)
 - [The JWKS cache (`jwks_cache.rs`)](#the-jwks-cache-jwks_cachers)
 - [The form decoder (`form.rs`)](#the-form-decoder-formrs)
 - [The confirm path](#the-confirm-path)
@@ -57,6 +61,9 @@ of this process:
 | `POST /v1/browser/payment_intents/{id}/confirm` | none | The same. |
 | **anything else under `/v1/browser`** | none | Its own `.fallback(not_found)`, for the OP nest's reason: without one the path would match `/v1/{*rest}` and answer 401 to a caller that can never hold a token. |
 | **everything else under `/v1`** | `AuthenticatedMerchant` | The merchant API. |
+| `GET /dash/v1/payment_intents` | `require_dashboard_token` | The staff dashboard's payments list. Mounted **only** when `dashboard_client` is configured; otherwise the path falls through to the outer 404. See [the dashboard surface](#the-dashboard-surface-dash). |
+| `GET /dash/v1/payment_intents/{id}` | `require_dashboard_token` | The payment detail: the intent, its charge, its refunds, its event timeline. |
+| **anything else under `/dash/v1`** | `require_dashboard_token` | Its own `.fallback(not_found)`, for the OP nest's reason — and every non-read method is refused by the boundary before the router matches. |
 | `POST /provider/{code}/callback` | **none, and none is possible** | A payment rail telling us something happened. Neither MTN nor Orange signs a callback or sends a shared secret, so there is no credential to check — which is exactly why the handler may not write charge or intent state. See [the rail callback route](#the-rail-callback-route-provider_callbackrs). |
 | **anything else under `/provider`** | none | Its own `.fallback(not_found)`, for the OP nest's reason. |
 | anything else | none | The honest 404. |
@@ -413,6 +420,122 @@ alone would have forced hand-rolling (or living with the gap) had `JwtStrategy`
 been used.
 
 ---
+
+## The dashboard surface (`dash/`)
+
+Two `GET` routes under `/dash/v1`, added 2026-09-06. The product side is
+[docs/flows/dashboard.md](../flows/dashboard.md) and the authentication side
+is [docs/flows/dashboard-auth.md](../flows/dashboard-auth.md); this page
+carries the shape decisions.
+
+**Read the first paragraph of `dash/mod.rs` before anything else**: no client
+of this deployment can obtain a token for this surface, because the
+authorization-code grant that would mint one is not served. What follows
+describes a resource server whose issuer does not exist yet.
+
+Its own module rather than routes under `v1` for the reason `browser` is one:
+it is a different credential, a different tenancy rule and a different
+authentication boundary. A route table shared with `/v1` would be one
+`V1Route` entry away from a merchant token reaching a staff read — and
+`V1_ROUTES` is walked by a boundary test that asserts every entry answers
+`401` without a token, which `DASH_ROUTES` must also do but for a different
+validator.
+
+### Why the `client_id` check is not redundant with the audience
+
+`require_dashboard_token` checks three things about a validated token: the
+audience (through the validator), the `client_id`, and the scope. The second
+looks redundant today and is not.
+
+The audience says which **surface** a token was minted for. The `sub` says
+which **credential** it was minted to. Only the second answers "may this
+caller read the tenant this deployment bound the dashboard to". There is one
+dashboard registration today and the two questions have the same answer — but
+that is a property of a YAML file, not of this code, and the day a second
+dashboard client is registered for a second tenant the `client_id` check is
+the only thing between them.
+
+The boot rule
+(`vpay_config::ConfigError::MerchantClaimsDashboardAudience`) is the other
+half and neither is sufficient alone: it stops a *merchant* registration from
+being able to request `vpay:dash/v1` at `/v1/oauth/token` at all. That was a
+real hole before 2026-09-06 — `handle_client_credentials` honours any
+requested audience `allowed_audiences` permits, and nothing restricted what
+else a merchant could list beside `vpay:v1`. It was harmless only because
+`/dash/v1` mounted nothing.
+
+Any method but `GET`/`HEAD` is refused in the same middleware, **before** the
+router matches. Relying instead on `DASH_ROUTES` mounting no `post(..)` would
+make "the dashboard cannot write" a property of a route table, and a route
+table is the thing a future slice edits. ADR-0008 requires an `audit_log` row
+per dashboard write and none exists, so a write that arrived here must not
+reach a handler at all.
+
+### Why an absent registration mounts nothing
+
+A deployment with no `dashboard_client` gets **no `/dash/v1` nest**, so every
+path under it is the outer honest 404. A mounted nest whose middleware
+refused everything would answer 401 and invite a caller to go looking for a
+credential this deployment could never issue — and it would make "I forgot to
+configure the dashboard" indistinguishable from "my token is wrong".
+
+`require_dashboard_token` *also* answers 404 when the validator or the
+binding is absent. The two are redundant on purpose and the redundancy was
+measured: mutating either one alone leaves the 404 intact, and only mutating
+both makes `a_deployment_with_no_dashboard_client_mounts_no_dash_nest` fail
+(2026-09-06). Neither is deleted, because a router assembled by a future
+binary is not obliged to consult the first and the second is what holds if it
+does not.
+
+### The wire shapes, and why they are not Stripe's
+
+The list is the ordinary `ListObject` envelope over the ordinary
+`PaymentIntentObject`, deliberately: an operator and a merchant looking at
+the same payment must not be told different things about its status or its
+amounts, and two renderers would be two chances to diverge.
+
+The **detail** is vpay's own shape, `object: "dashboard.payment_detail"`.
+Stripe has no "everything about this payment" resource, and inventing one
+under the merchant API's vocabulary would make an SDK author reasonably
+expect it there. `docs/sdks/parity.md` does not cover these routes and must
+not: a `/dash/v1` method in a merchant SDK would be a merchant credential
+reaching for a staff surface.
+
+Three things the detail deliberately omits:
+
+- **`client_secret`.** `GET /v1/payment_intents/{id}` renders it so a
+  merchant who lost the create response can recover it. A staff reader has no
+  such need, and the value authorises confirming the payment from any browser
+  (`vpay_api::browser`). The dashboard observes the object, not the
+  credential that spends it. Asserted over the serialised body, not over the
+  type, because rendering `PaymentIntentWithSecret` instead is a one-word
+  change that still compiles.
+- **The event `data` snapshot.** A timeline row carries the event's id, type,
+  `object_id` and time. The snapshot is the whole object as it was at emit
+  time, so rendering it would put a second, older payment intent inside a
+  response whose first field is the current one, with nothing to tell a
+  reader which is which. `GET /v1/events/{id}` is where the snapshot lives.
+- **The charge's unmasked `payer_ref`, `provider_ref_extra`, `redirect_url`
+  and `return_url`.** A rail's own blob and a payer's browsing path are not
+  what "which rail, what did it say, when" needs.
+
+`payer_ref_masked` **is** rendered, and is `null` on every row this system
+has ever written — nothing populates the column (`open_attempt` stores
+`None`). It is rendered from the column rather than derived in the renderer
+on purpose: deriving a mask would mean reading the *unmasked* value into a
+staff surface, and the failure mode to avoid is this field quietly becoming
+the unmasked number because the masked one was empty.
+
+The filter predicates live in the SQL statement rather than in the handler,
+because a caller cannot filter a page: `list_page` fetches `limit + 1` rows
+to learn `has_more`, so a filter applied to the returned `Vec` would drop
+rows out of a page that has already been counted and the next cursor would
+skip them. `PaymentIntents::list_page` is `list_page_filtered` with an empty
+filter — one statement, so the two surfaces cannot disagree about the cursor.
+
+An unknown `status` is a `400` naming `status`, not an empty page. "No
+payments are `succeded`" is a sentence an operator reads as an answer about
+their payments rather than about their typo.
 
 ## The JWKS cache (`jwks_cache.rs`)
 

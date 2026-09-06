@@ -231,6 +231,45 @@ pub struct ListPage {
     pub ending_before: Option<String>,
 }
 
+/// Extra predicates a list may narrow by, beyond the tenant and the cursor.
+///
+/// **Empty on `/v1`**, which offers no filters at all
+/// (`crate::PaymentIntents::list_page` passes `Self::default()`), and
+/// populated only by `/dash/v1`'s payments list, where an operator asking
+/// "what failed yesterday?" is the ordinary question.
+///
+/// Its own type rather than three arguments so that adding a fourth
+/// predicate is one edit at each end rather than a signature change at
+/// every call site — and so the empty case is spelled `Default::default()`
+/// and reads as "no filter" rather than as three `None`s in an order
+/// nobody can check.
+///
+/// # Why filtering is here and not in the caller
+///
+/// A caller cannot filter a *page*. `list_page` fetches `limit + 1` rows to
+/// learn `has_more`, and a filter applied to the returned `Vec` would drop
+/// rows out of a page that has already been counted — so a page of ten
+/// intents with three failures would answer three rows and `has_more:
+/// false`, and the next cursor would skip the seven it discarded. The
+/// predicate has to be in the statement the `LIMIT` applies to.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IntentFilter {
+    /// One `intent_status` value, as its wire text
+    /// (`vpay_core::IntentStatus::as_wire_str`). Compared as text against
+    /// `status::TEXT` rather than cast to the enum, so an unknown value is
+    /// an empty result rather than a Postgres `invalid input value for
+    /// enum` error 500 — the caller sent a status this deployment does not
+    /// have, which is a caller's mistake and not an outage. `vpay-api`
+    /// refuses an unknown status before it gets here; this is what makes
+    /// that a *policy* rather than the only thing between the query and a
+    /// 500.
+    pub status: Option<String>,
+    /// Only intents created at or after this instant.
+    pub created_gte: Option<OffsetDateTime>,
+    /// Only intents created at or before this instant.
+    pub created_lte: Option<OffsetDateTime>,
+}
+
 /// [`PaymentIntents::transition`], inside a transaction the caller owns.
 ///
 /// Exists because a confirm that a rail accepted has **two** rows to move —
@@ -590,6 +629,26 @@ pub trait PaymentIntents: Send + Sync {
         page: &ListPage,
     ) -> Result<(Vec<PaymentIntentRow>, bool), DbError>;
 
+    /// [`Self::list_page`] with extra predicates — the `/dash/v1` payments
+    /// list.
+    ///
+    /// The same tenancy filter and the same cursor semantics; see
+    /// [`IntentFilter`] for why the predicates cannot be applied to the
+    /// returned page instead. `list_page` is this function with
+    /// [`IntentFilter::default`], not a second statement: two lists over one
+    /// table that disagreed about the cursor would be a paging bug visible
+    /// only on one surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if the read fails.
+    async fn list_page_filtered(
+        &self,
+        merchant_id: &str,
+        page: &ListPage,
+        filter: &IntentFilter,
+    ) -> Result<(Vec<PaymentIntentRow>, bool), DbError>;
+
     /// Moves an intent from `expected` to `new`, atomically, and returns the
     /// row as it now stands.
     ///
@@ -704,6 +763,16 @@ impl PaymentIntents for crate::repository::PgRepositories {
         merchant_id: &str,
         page: &ListPage,
     ) -> Result<(Vec<PaymentIntentRow>, bool), DbError> {
+        self.list_page_filtered(merchant_id, page, &IntentFilter::default())
+            .await
+    }
+
+    async fn list_page_filtered(
+        &self,
+        merchant_id: &str,
+        page: &ListPage,
+        filter: &IntentFilter,
+    ) -> Result<(Vec<PaymentIntentRow>, bool), DbError> {
         // Postgres rejects a negative LIMIT outright, and a zero-row page is
         // never what a caller means. `vpay-api` owns the real ceiling.
         let limit = page.limit.max(1);
@@ -714,6 +783,14 @@ impl PaymentIntents for crate::repository::PgRepositories {
         // second round trip, and both are scoped to the same merchant as the
         // outer query so a cursor from elsewhere resolves to NULL rather than
         // to a position in someone else's range.
+        //
+        // The three filter predicates are `$N IS NULL OR …`, not string
+        // interpolation: an absent filter must produce the *same statement*
+        // as `/v1` sends, so Postgres plans one query rather than eight, and
+        // so a filter value can never reach the SQL text. `status` is
+        // compared against `status::TEXT` for the reason
+        // `IntentFilter::status` gives — a cast to the enum turns an unknown
+        // value into a 500.
         let sql = format!(
             "SELECT {COLUMNS} FROM payment_intents \
          WHERE merchant_id = $1 \
@@ -721,6 +798,9 @@ impl PaymentIntents for crate::repository::PgRepositories {
                 OR seq < (SELECT seq FROM payment_intents WHERE id = $2 AND merchant_id = $1)) \
            AND ($3::TEXT IS NULL \
                 OR seq > (SELECT seq FROM payment_intents WHERE id = $3 AND merchant_id = $1)) \
+           AND ($5::TEXT IS NULL OR status::TEXT = $5) \
+           AND ($6::TIMESTAMPTZ IS NULL OR created_at >= $6) \
+           AND ($7::TIMESTAMPTZ IS NULL OR created_at <= $7) \
          ORDER BY seq {direction} \
          LIMIT $4"
         );
@@ -730,6 +810,9 @@ impl PaymentIntents for crate::repository::PgRepositories {
             .bind(page.starting_after.as_deref())
             .bind(page.ending_before.as_deref())
             .bind(limit.saturating_add(1))
+            .bind(filter.status.as_deref())
+            .bind(filter.created_gte)
+            .bind(filter.created_lte)
             .fetch_all(&self.pool)
             .await
             .map_err(DbError::Query)?;

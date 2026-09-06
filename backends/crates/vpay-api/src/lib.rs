@@ -77,6 +77,12 @@ use vpay_db::Repositories;
 use vpay_provider::ProviderAdapter;
 
 pub mod browser;
+// The staff surface, `/dash/v1`. Its own module rather than routes under
+// `v1` for the reason `browser` is: it is a different credential, a
+// different tenancy rule and a different authentication boundary, and a
+// route table shared with `/v1` would be one `V1Route` entry away from a
+// merchant token reaching a staff read.
+pub mod dash;
 pub mod error;
 pub mod form;
 pub mod idempotency;
@@ -114,9 +120,10 @@ pub mod v1;
 pub use vpay_provider::http as http_client;
 
 pub use browser::{BROWSER_ROUTES, PayerScope};
+pub use dash::{DASH_NEST, DASH_ROUTES, DashRoute};
 pub use error::ApiError;
 pub use provider_callback::{PROVIDER_CALLBACK_ROUTE, PROVIDER_NEST};
-pub use resource_auth::MerchantJwtValidator;
+pub use resource_auth::{DashboardJwtValidator, MerchantJwtValidator};
 /// The boot steps both binaries call, under the name to call them by.
 ///
 /// The module itself is [`v1::boot`] for historical reasons; nothing about
@@ -125,8 +132,8 @@ pub use resource_auth::MerchantJwtValidator;
 /// did.
 pub use v1::boot;
 pub use v1::{
-    MerchantScope, ResourceConfig, SCOPE_PAYMENTS_READ, SCOPE_PAYMENTS_WRITE, V1_ROUTES, V1Route,
-    WebhookEndpointConfig, required_scopes,
+    DashboardBinding, MerchantScope, ResourceConfig, SCOPE_PAYMENTS_READ, SCOPE_PAYMENTS_WRITE,
+    V1_ROUTES, V1Route, WebhookEndpointConfig, required_scopes,
 };
 
 use resource_auth::extract_bearer_token;
@@ -284,6 +291,18 @@ pub struct RouterDeps {
     /// `Arc` because axum clones router state per request and an adapter may
     /// hold a connection pool of its own.
     pub adapters: Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>,
+    /// Validates the bearer tokens `/dash/v1` accepts.
+    ///
+    /// `Option`, and that is the whole mounting decision: `None` means this
+    /// deployment configured no `dashboard_client`, and [`router`] then
+    /// mounts **no `/dash/v1` nest at all**, so every path under it answers
+    /// the honest 404 rather than a 401 that promises a credential would
+    /// help. A separate value from [`Self::merchant_validator`] for that
+    /// field's reason — the JWKS URL is a deployment fact — and a *second*
+    /// validator rather than one with two audiences, because a validator
+    /// that accepted either audience is exactly the confusion
+    /// [`resource_auth::Surface`] exists to prevent.
+    pub dashboard_validator: Option<DashboardJwtValidator>,
     /// The slice of the YAML deployment configuration a request path needs —
     /// see [`ResourceConfig`], which is also where `livemode` reaches a
     /// handler from.
@@ -305,6 +324,7 @@ pub(crate) struct AppState {
     repositories: Arc<dyn Repositories>,
     merchant_op: std::sync::Arc<op::MerchantOp>,
     merchant_validator: MerchantJwtValidator,
+    dashboard_validator: Option<DashboardJwtValidator>,
     adapters: Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>,
     resource_config: Arc<ResourceConfig>,
 }
@@ -330,6 +350,16 @@ impl FromRef<AppState> for std::sync::Arc<op::MerchantOp> {
 impl FromRef<AppState> for MerchantJwtValidator {
     fn from_ref(state: &AppState) -> Self {
         state.merchant_validator.clone()
+    }
+}
+
+/// So [`require_dashboard_token`] resolves its validator out of router
+/// state. `Option`, unlike [`MerchantJwtValidator`]'s impl: see
+/// [`RouterDeps::dashboard_validator`] — a deployment with no dashboard has
+/// no validator, and the middleware refuses rather than inventing one.
+impl FromRef<AppState> for Option<DashboardJwtValidator> {
+    fn from_ref(state: &AppState) -> Self {
+        state.dashboard_validator.clone()
     }
 }
 
@@ -818,6 +848,132 @@ where
     next.run(Request::from_parts(parts, body)).await
 }
 
+/// The `/dash/v1` authentication **and** authorisation boundary — the
+/// mirror of [`require_merchant_token`], and different from it in exactly
+/// the three ways the dashboard is different from a merchant.
+///
+/// | | `/v1` | `/dash/v1` |
+/// |---|---|---|
+/// | tenant | resolved from the token's `client_id` | **fixed** by `dashboard_client.merchant_id` |
+/// | credential | any registered merchant client | the **one** registered dashboard client |
+/// | methods | every method, scoped per verb | `GET`/`HEAD` only; everything else refused here |
+///
+/// # Why the `client_id` check is not redundant with the audience
+///
+/// The audience says which *surface* a token was minted for; the `sub` says
+/// which *credential* it was minted to. Only the second answers "may this
+/// caller read the tenant this deployment bound the dashboard to". Today
+/// there is one dashboard registration and the two questions have the same
+/// answer — but "there is only one, so it does not matter" is a property of
+/// a YAML file, not of this code, and the day a second dashboard client is
+/// registered for a second tenant the check is the only thing standing
+/// between them. Boot already refuses a merchant registration that could
+/// mint this audience at all
+/// (`vpay_config::ConfigError::MerchantClaimsDashboardAudience`); this is
+/// the second of the two, and neither is sufficient alone.
+///
+/// # Why a method it does not serve is refused here
+///
+/// `dash::required_scope` answers `None` for anything but a read, and this
+/// function turns that into a `403` **before** the router matches — the
+/// same answer `/v1` gives a token that carries none of the scopes its
+/// method needs, and for the same reason: it is a statement about the
+/// credential's permissions, which the caller can already inspect. (Not a
+/// `405`: this surface answers no method on any path with a credential that
+/// could ever be allowed to write, so "the method is wrong for this route"
+/// would be a narrower and less true thing to say than "you may not write
+/// here at all".) The
+/// alternative — relying on `dash::DASH_ROUTES` mounting no `post(..)` —
+/// makes "the dashboard cannot write" a property of a route table rather
+/// than of the boundary, and a route table is the thing a future slice
+/// edits. ADR-0008 requires an `audit_log` row per dashboard write and none
+/// exists, so a write that arrived here must not reach a handler at all.
+///
+/// # Why `None` for the validator is a `404` and not a `500`
+///
+/// A deployment with no `dashboard_client` mounts no nest, so this function
+/// is unreachable in that configuration and the honest answer to a request
+/// that reached it anyway is the same one the unmounted deployment gives:
+/// there is no such route here. A `500` would claim vpay is broken when the
+/// truth is that this deployment does not run a dashboard.
+///
+/// Generic over the state for [`require_merchant_token`]'s reason: a test
+/// mounts this exact function rather than a copy of it.
+pub async fn require_dashboard_token<S>(
+    State(state): State<S>,
+    request: Request<Body>,
+    next: Next,
+) -> Response
+where
+    S: Send + Sync + Clone + 'static,
+    Option<DashboardJwtValidator>: FromRef<S>,
+    Arc<ResourceConfig>: FromRef<S>,
+{
+    let (mut parts, body) = request.into_parts();
+
+    let resource_config = Arc::<ResourceConfig>::from_ref(&state);
+    let (Some(validator), Some(binding)) = (
+        Option::<DashboardJwtValidator>::from_ref(&state),
+        resource_config.dashboard(),
+    ) else {
+        return not_found(parts.method.clone(), parts.uri.clone())
+            .await
+            .into_response();
+    };
+
+    // Before the token is even looked at: a method this surface does not
+    // serve is refused whatever credential it carries, so a write can never
+    // be *authenticated* here, only rejected.
+    let Some(required_scope) = dash::required_scope(&parts.method, binding) else {
+        tracing::warn!(
+            method = %parts.method,
+            "a /dash/v1 request names a method this read-only surface does not serve; refusing"
+        );
+        return ApiError::Forbidden.into_response();
+    };
+
+    let claims = {
+        let token = match extract_bearer_token(&parts) {
+            Ok(token) => token,
+            Err(rejection) => return ApiError::from(rejection).into_response(),
+        };
+        match validator.0.validate(token).await {
+            Ok(claims) => claims,
+            Err(rejection) => return ApiError::from(rejection).into_response(),
+        }
+    };
+
+    if claims.client_id != binding.client_id {
+        tracing::warn!(
+            client_id = %claims.client_id,
+            "a validly signed dashboard-audience token names a client that is not this \
+             deployment's registered dashboard client; refusing rather than guessing a tenant"
+        );
+        return ApiError::Forbidden.into_response();
+    }
+
+    if !claims.has_scope(required_scope) {
+        tracing::warn!(
+            client_id = %claims.client_id,
+            granted = ?claims.scope,
+            required = required_scope,
+            "a /dash/v1 token does not carry the dashboard registration's scope; refusing"
+        );
+        return ApiError::Forbidden.into_response();
+    }
+
+    // The tenant this surface reads is the *bound* one, never anything the
+    // token said. That is the difference from `/v1` that matters most: there
+    // is no claim a caller could put in a token that changes which merchant
+    // a `/dash/v1` query filters by.
+    parts
+        .extensions
+        .insert(MerchantScope::for_dashboard(binding.merchant_id.clone()));
+    parts.extensions.insert(claims);
+
+    next.run(Request::from_parts(parts, body)).await
+}
+
 /// The largest `/v1` request body this router will read, in bytes.
 ///
 /// 64 KiB. Every documented `/v1` body is a handful of form fields
@@ -862,6 +1018,7 @@ pub fn router(deps: RouterDeps) -> Router {
         repositories: deps.repositories,
         merchant_op: deps.merchant_op,
         merchant_validator: deps.merchant_validator,
+        dashboard_validator: deps.dashboard_validator,
         adapters: deps.adapters,
         resource_config: deps.resource_config,
     };
@@ -978,7 +1135,39 @@ pub fn router(deps: RouterDeps) -> Router {
         // code would otherwise get to choose.
         .layer(from_fn(track_http_metrics));
 
-    Router::new()
+    // The staff surface, and the only nest that is *conditional*: a
+    // deployment with no `dashboard_client` mounts nothing here, so every
+    // `/dash/v1/...` path falls through to the outer honest 404. That is the
+    // fail-closed reading of an absent registration — the alternative, a
+    // mounted nest whose middleware refuses everything, answers 401 to a
+    // caller and invites them to go looking for a credential that this
+    // deployment could never issue.
+    //
+    // Both halves of the condition are required and neither is redundant:
+    // the validator is what checks a token, the binding is what a query
+    // filters by, and a nest mounted with one and not the other would be a
+    // surface that authenticates and cannot answer, or one that answers and
+    // cannot authenticate.
+    let dash_is_configured =
+        state.dashboard_validator.is_some() && state.resource_config.dashboard().is_some();
+    let dash = dash_is_configured.then(|| {
+        dash::routes()
+            .layer(from_fn_with_state(
+                state.clone(),
+                require_dashboard_token::<AppState>,
+            ))
+            // Outside the token check, for the `/v1` nest's reason: an
+            // anonymous caller must not be able to make this process
+            // buffer a body before the 401. The limit is `/v1`'s,
+            // although this surface reads no body at all — a shared
+            // constant cannot drift, and the day a dashboard write
+            // exists it is already bounded.
+            .layer(RequestBodyLimitLayer::new(V1_BODY_LIMIT_BYTES))
+            // Inside the nest, for the reason every other nest gives.
+            .layer(from_fn(track_http_metrics))
+    });
+
+    let router = Router::new()
         .route("/healthz", get(healthz))
         .fallback(not_found)
         // **Before the two nests, and that ordering is the whole reason a
@@ -991,16 +1180,25 @@ pub fn router(deps: RouterDeps) -> Router {
         .nest("/v1/oauth", oauth)
         .nest("/v1/browser", browser)
         .nest("/v1", v1)
-        .nest(PROVIDER_NEST, provider)
-        .with_state(state)
-        .layer(
-            ServiceBuilder::new()
-                .layer(from_fn(discard_unusable_request_id))
-                .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-                .layer(from_fn(mirror_request_id_header))
-                .layer(TraceLayer::new_for_http().make_span_with(make_request_span))
-                .layer(PropagateRequestIdLayer::x_request_id()),
-        )
+        .nest(PROVIDER_NEST, provider);
+
+    // `nest` after the fold rather than inside the chain, because the chain
+    // is not an `Option`-shaped expression — and writing it as one would
+    // need a `Router` identity to merge against, which is exactly the thing
+    // a reader would then have to check does nothing.
+    let router = match dash {
+        Some(dash) => router.nest(DASH_NEST, dash),
+        None => router,
+    };
+
+    router.with_state(state).layer(
+        ServiceBuilder::new()
+            .layer(from_fn(discard_unusable_request_id))
+            .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+            .layer(from_fn(mirror_request_id_header))
+            .layer(TraceLayer::new_for_http().make_span_with(make_request_span))
+            .layer(PropagateRequestIdLayer::x_request_id()),
+    )
 }
 
 #[cfg(test)]

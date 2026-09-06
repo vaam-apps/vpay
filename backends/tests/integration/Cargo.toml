@@ -109,6 +109,18 @@ rsa = "0.9"
 rand.workspace = true
 # `rsa`'s modulus/exponent are base64url in a JWK.
 base64 = "0.22"
+# `tests/dashboard_read_surface.rs` mints ONE token by hand: the expired one.
+# Every other token that suite presents comes from
+# `authkestra_engine::token::TokenManager::issue_client_token` — the shipping
+# mint path — but that function takes `expires_in_secs: u64` and can only look
+# forward, while `jsonwebtoken`'s default `Validation` allows 60 seconds of
+# clock leeway, so an "expired" token has to be minted with an `exp` more than
+# a minute in the past. The alternative was a test that sleeps for over a
+# minute. Not a workspace dependency (see the root manifest), so pinned
+# directly here at exactly what `vpay-api` pins — the same package the
+# resource-server validator verifies with, so the two cannot disagree about
+# the wire format.
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 # `authkestra_resource`'s JWKS fetch builds a reqwest client eagerly and the
 # workspace pins reqwest `rustls-no-provider`, which panics without a
 # process-wide default `CryptoProvider`. This test binary installs one, the

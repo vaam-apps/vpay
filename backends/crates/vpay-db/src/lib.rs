@@ -93,7 +93,9 @@ pub use health::Health;
 pub use idempotency::{Idempotency, IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome};
 pub use jobs::{JobRow, Jobs};
 pub use migrations::Migrations;
-pub use payment_intents::{ListPage, NewPaymentIntent, PaymentIntentRow, PaymentIntents};
+pub use payment_intents::{
+    IntentFilter, ListPage, NewPaymentIntent, PaymentIntentRow, PaymentIntents,
+};
 // The leaf `DbError::Persistence` carries. `pub` because a caller matching
 // on `DbError` can reach it; the module it lives in stays private, and
 // `classify_cratestack`/`system_context` stay `pub(crate)` — nothing outside

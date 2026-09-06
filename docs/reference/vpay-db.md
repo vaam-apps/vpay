@@ -1111,7 +1111,9 @@ sqlx 0.9 (sqlx#3723) changed `query`, `query_as` and `query_scalar` to take
 therefore no longer compiles as a statement. Under 0.8 this crate passed
 `&sql` at 36 call sites; under 0.9 it passes `AssertSqlSafe(sql)` at the same
 36 — **37 since 2026-09-05**, when `refunds::get_for_merchant` landed with
-issue #45. Taking the `String` **by value** rather than `AssertSqlSafe(&sql)` is
+issue #45, and **39 since 2026-09-06**, when `refunds::list_for_intent` and
+`events::list_for_objects` landed with the `/dash/v1` payment detail (exp23).
+Taking the `String` **by value** rather than `AssertSqlSafe(&sql)` is
 deliberate: the borrowed form goes through `AssertSqlSafe<&str>`, which sqlx's
 own docs describe as copying the string.
 
@@ -1126,7 +1128,7 @@ is the entire reason a statement here is not a literal.
 `AssertSqlSafe`'s contract is that the caller audited the string. Here is the
 audit, re-done on 2026-09-05 from the source rather than inherited:
 
-All 37 statements interpolate exactly two kinds of value.
+All 39 statements interpolate exactly two kinds of value.
 
 * **A `const … : &str` declared in this crate.** Eleven of them:
   `charges::COLUMNS`, `checkout_sessions::COLUMNS`, `events::COLUMNS`,
@@ -1141,6 +1143,18 @@ All 37 statements interpolate exactly two kinds of value.
   (`events.rs`, `payment_intents.rs`, `checkout_sessions.rs`, in each case
   inside `list_page`). Postgres has no bind parameter for a sort direction,
   which is why it is interpolated at all.
+
+**Re-checked 2026-09-06 for the two sites exp23 added, and for the one it
+did not.** `refunds::list_for_intent` and `events::list_for_objects` are each
+`SELECT {COLUMNS} … WHERE …` with `COLUMNS` the module's own `const` and every
+caller value bound — `merchant_id`, `payment_intent_id`, and, in the events
+read, a whole `&[String]` of object ids passed to `= ANY($2)` as one bound
+array rather than a generated `IN (…)` list, precisely so the statement's
+*text* does not depend on the number of arguments. `payment_intents::list_page_filtered`
+adds three predicates and **no** site: it is the existing `list_page`
+statement with `($5::TEXT IS NULL OR status::TEXT = $5)` and two timestamp
+bounds written the same way, so an absent filter sends the byte-identical
+statement `/v1` sends and a filter value can never reach the SQL text.
 
 **No caller-supplied value reaches a statement string anywhere in this crate.**
 Every merchant id, intent id, cursor, limit, status, timestamp and payload is
@@ -1186,7 +1200,7 @@ is what makes a blanket refusal the correct rule rather than a heuristic.
 ### Why not `QueryBuilder`
 
 sqlx's own suggested alternative. It was considered and rejected: it would
-rewrite 37 working, reviewed statements to remove a risk the audit above shows
+rewrite 39 working, reviewed statements to remove a risk the audit above shows
 is not present, and it would replace SQL that reads as SQL with SQL assembled
 by method calls — in a crate where the statement text *is* the design
 (`FOR UPDATE SKIP LOCKED`, `UPDATE … WHERE state = $2 RETURNING`, the

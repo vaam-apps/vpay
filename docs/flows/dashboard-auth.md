@@ -108,19 +108,53 @@ and/or a deny-list; **which one vpay implements is not yet decided.**
 | Piece | Owner |
 |---|---|
 | OP handlers (`/authorize`, `/token`, `/userinfo`, discovery, jwks) | `authkestra-op`, mounted into `/dash/v1` |
-| Client registration (dashboard's own `client_id`, redirect URIs, PKCE requirement, single read-only scope) | vpay configuration (ADR-0003 — YAML, not the dashboard) |
+| Client registration (dashboard's own `client_id`, its bound `merchant_id`, redirect URIs, PKCE requirement, single read-only scope) | vpay configuration (ADR-0003 — YAML, not the dashboard). `merchant_id` since 2026-09-06: the one tenant `/dash/v1` reads, refused at boot if unregistered |
 | Authorization codes, device codes | **Nothing, as of 2026-09-05.** The schema exists (`backends/migrations/0006_create-authkestra-op-tables.sql`) and its four tables are unread and unwritten by any code path. This row said `authkestra_op::sqlx_store::SqlxOpStore` against vpay's Postgres, and that was true of the type `/v1`'s OP put in three unreachable slots; those slots hold `vpay_api::op::refusing_stores`' fail-closed types now, and the `sqlx-postgres` feature that gated `SqlxOpStore` is off in every manifest. A `/dash/v1` that ever serves the authorization-code grant has to choose a store, and `SqlxOpStore` is no longer a free choice: it pins `sqlx ^0.8`, and this workspace has moved to 0.9. See "The three OP stores that pinned sqlx 0.8" in [status.md](../status.md) |
 | `oauth_refresh_tokens`, `oauth_device_codes` | Created by the same migration (`authkestra-op`'s fixed DDL is transcribed wholesale, not column-by-column selected) but structurally unused by this flow: refresh tokens are not issued (Token lifetimes, above) and the device grant is not offered on any client this deployment registers |
 | Signing keys and rotation | vpay operational tooling. Storage schema exists (`backends/migrations/0007_create-oauth-signing-keys.sql`: `oauth_signing_keys`, at most one active key enforced by a partial unique index); key generation and rotation logic itself is not yet designed or written |
-| Session → per-record authorization (which staff member may view which merchant's records) | vpay's own layer on top of the validated token; not Authkestra's concern. Scoped to *view* today — see Scope, above, for why there is nothing to authorize a write against yet |
+| Session → per-record authorization (which staff member may view which merchant's records) | vpay's own layer on top of the validated token; not Authkestra's concern. Built 2026-09-06 as `vpay_api::require_dashboard_token`, and it authorizes by **registration** rather than by staff member: the tenant is `dashboard_client.merchant_id`, and no claim in any token changes it. Which *staff member* is which cannot be authorized against anything, because there is no staff identity — see blocker 1. Scoped to *view* — see Scope, above, for why there is nothing to authorize a write against yet |
 | Audit log row per write | [ADR-0008](../adr/0008-dashboard-scope.md) — one row per dashboard action, independent of the auth mechanism. Not yet applicable: there is no write path to log (Scope, above) |
 
 ## Status
 
-**No login has ever been performed. There is no `/dash/v1` route of any
-kind.** That has not changed, and the merchant work of 2026-09-02 makes it
-*more* important to say plainly, because several pieces this flow needs now
-exist and serve a different surface.
+**No login has ever been performed.** That has not changed and is the only
+sentence in this section a reader should carry away.
+
+~~There is no `/dash/v1` route of any kind.~~ **That half stopped being true
+on 2026-09-06**, and the correction has to be read together with the sentence
+above it, because separately each is misleading. Two `GET` routes are now
+mounted at `/dash/v1` — the payments list and the payment detail
+([dashboard.md](dashboard.md), slice 1) — behind the validator this document
+describes. **No grant this deployment serves can mint a token for them.**
+They are a resource server with no issuer: real, tested, fail-closed, and
+unreachable by any client. What that slice deliberately did *not* do is
+invent a way to reach them.
+
+What it did add that this document owns:
+
+- `Surface::Dashboard.audience()` is no longer a local literal. It returns
+  `vpay_config::DASHBOARD_AUDIENCE`, beside `MERCHANT_AUDIENCE`, because
+  there are now three parties that must agree on the string rather than one.
+- **A merchant registration may no longer claim the dashboard audience.**
+  `handle_client_credentials` mints a token for any audience a registration's
+  `allowed_audiences` permits, so before this a merchant whose YAML listed
+  `vpay:dash/v1` could have obtained a token this document's validator
+  accepts. `vpay_config::ConfigError::MerchantClaimsDashboardAudience`
+  refuses that registration at boot. This was an open hole rather than a
+  hypothetical one; it was closed the day `/dash/v1` first mounted a route,
+  and it would have been worth closing earlier.
+- `dashboard_client` gained a required `merchant_id`: the one tenant the
+  dashboard may read, refused at boot if no merchant registers it
+  (`ConfigError::DashboardUnknownMerchant`).
+- The missing half of the audience pair is now proven over a real router:
+  `a_merchant_audience_token_is_refused_on_dash_v1`
+  (`backends/tests/integration/tests/dashboard_read_surface.rs`) is the
+  partner `a_dashboard_audience_token_is_refused_on_v1` has had none of since
+  it was written.
+
+The merchant work of 2026-09-02 still makes the "no login" sentence *more*
+important to say plainly, because several pieces this flow needs exist and
+serve a different surface.
 
 **What exists now and belongs to `/v1`, not here:**
 
@@ -164,11 +198,27 @@ exist and serve a different surface.
 
 **What blocks this flow, specifically:**
 
-1. **No route.** No `/login`, no `/authorize`, no `/userinfo`, no
-   `/dash/v1`. `authkestra-axum` is deliberately not a dependency (its
-   bundled router mounts endpoints this deployment must not serve and
-   publishes a one-key JWKS instead of the rotation window vpay serves), so
-   these have to be written, not enabled.
+1. **No login route.** ~~No `/dash/v1`.~~ Corrected 2026-09-06: the
+   `/dash/v1` *resource* routes exist (above). What does not exist is any of
+   `/login`, `/authorize`, `/userinfo` or the dashboard's callback.
+   `authkestra-axum` is deliberately not a dependency (its bundled router
+   mounts endpoints this deployment must not serve and publishes a one-key
+   JWKS instead of the rotation window vpay serves), so these have to be
+   written, not enabled.
+
+   **And writing them needs a decision that has never been taken: how does a
+   staff member prove who they are?** `authkestra_op::handlers::authorize::handle_authorize`
+   takes an already-authenticated `authkestra_engine::auth::state::Identity`
+   **as a parameter** — it authenticates nobody. vpay must supply one, and
+   vpay has no staff table (33 migrations, none), no credential store, no
+   password hashing, and no `authkestra_engine::auth::strategy::AuthenticationStrategy`
+   implementation. Choosing among a staff table with password hashes,
+   WebAuthn, TOTP, or federating the *human* step to an external IdP in front
+   of vpay's own OP is an ADR-level decision that touches ADR-0009's central
+   claim, and it is **not** a default to pick in passing — the same standing
+   this document already gives the audience problem in item 3 below. Nothing
+   in this repository records it as an open question; it is recorded here
+   now, on 2026-09-06, because a slice went looking for it and found nothing.
 2. **No session store.** `authkestra-engine` is pinned
    `features = ["rustls-no-provider", "token", "session"]` — **without
    `sql-postgres`** — so no SQL-backed session store is compiled into the
@@ -197,8 +247,25 @@ accepts a correctly-audienced token and rejects a merchant-audienced one
 `a_merchant_audience_token_is_rejected_by_the_dashboard_validator`, unit
 tests in `resource_auth.rs`), and the merchant surface rejects a
 dashboard-audienced token over a real booted server
-(`a_dashboard_audience_token_is_refused_on_v1`). `AuthenticatedDashboard` is
-mounted on nothing. `hmac`, `sha2`, `subtle` and `aes-gcm` were listed here
+(`a_dashboard_audience_token_is_refused_on_v1`).
+
+~~`AuthenticatedDashboard` is mounted on nothing.~~ **Corrected 2026-09-06.**
+The dashboard *validator* is now mounted, in front of the two `/dash/v1`
+read routes, and the ten cases in
+`backends/tests/integration/tests/dashboard_read_surface.rs` prove over a
+real booted server that: the bound merchant's rows come back and another's do
+not; another merchant's id is byte-for-byte the same 404 as one that never
+existed; a merchant-audience token is refused; a dashboard-audience token for
+an *unregistered client* is refused; a token without the registered scope is
+refused; an expired token is a 401; no route answers without a token; the
+detail read carries no `client_secret` where `/v1`'s does; and a deployment
+with no `dashboard_client` mounts no nest. What none of them proves, and what
+no test in this repository can prove today, is that a token could ever be
+*obtained*. (`AuthenticatedDashboard`, the extractor, is still mounted on
+nothing — `require_dashboard_token` validates once in middleware for
+`require_merchant_token`'s reason.)
+
+`hmac`, `sha2`, `subtle` and `aes-gcm` were listed here
 as unused workspace pins; `sha2` gained its first real consumer on
 2026-09-02 (the RFC 7638 thumbprint in `vpay_api::op::keys`), and the other
 three are still unused.
