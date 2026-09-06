@@ -475,24 +475,39 @@ has not made:
 
 ## Status
 
-**Updated 2026-09-06: the kill-switch lookup changed engine, and nothing
-else changed.** `disabled_clients` (the row in the failure table above) is
-read through CrateStack now —
-`self.cs.disabled_client().find_unique(id).run(&system_context())` in
-`vpay_db::disabled_clients` — instead of through a hand-written
-`SELECT EXISTS`. The trait, the answer, the per-request-no-cache decision and
-the two writes are all unchanged; this is the first and only query in the
-workspace that runs through a generated data layer. It matters here for one
-reason a reader of this document should know: CrateStack compiles a model's
-`@@allow` policy into the `WHERE` clause of the read, so a missing policy
-would make this lookup answer "not disabled" for **every** client — the
-kill-switch silently off — without erroring.
-`a_disabled_client_reads_the_same_through_both_paths` in
-`backends/crates/vpay-db/tests/repositories.rs` exists to make that failure
-red — **and it has not been run yet**: the authoring host's Docker daemon was
-unrecoverable on the day, so that test and its decisive mutation are owed to
-CI. `docs/status.md` § "The first CrateStack read" names all three unexecuted
-cases.
+**Updated 2026-09-06: the whole kill-switch repository changed engine, and
+nothing else changed.** `disabled_clients` (the row in the failure table
+above) is read *and written* through CrateStack now —
+`find_unique(id).run(&system_context())` for the lookup,
+`upsert(..).run(..)` for `disable_client` and
+`delete_many().where_(..).run(..)` for `enable_client`, all in
+`vpay_db::disabled_clients` — instead of through hand-written statements.
+This paragraph said "the two writes are unchanged" until later the same day;
+they moved too, and no raw sqlx against that table is left. The trait, the
+answers, and the per-request-no-cache decision are all unchanged, and this is
+still the only table in the workspace that runs through a generated data
+layer.
+
+It matters here for one reason a reader of this document should know:
+CrateStack compiles a model's `@@allow` policy into the `WHERE` clause of a
+read, so a missing `read` policy would make this lookup answer "not disabled"
+for **every** client — the kill-switch silently off — without erroring. The
+writes split two ways on the same question, which is worth knowing before
+trusting one: a missing `create` or `update` policy makes `disable_client`
+**error** (the policy is evaluated in Rust, ahead of the SQL), while a missing
+`delete` policy makes `enable_client` return `Ok` and remove nothing, leaving
+a client revoked. Two container-backed tests in
+`backends/crates/vpay-db/tests/repositories.rs` —
+`a_disabled_client_reads_the_same_through_both_paths` and
+`a_client_disabled_through_cratestack_is_visible_to_both_paths` — exist to
+make each of those red, and all four policy mutations plus two code mutations
+were run against a real Postgres. **Corrected 2026-09-06: this paragraph said
+the read parity test "has not been run yet" and was owed to CI. It has been
+run** — `docs/status.md` § "The first CrateStack read" records the first
+execution and the change that moved these writes ran it again, passing, with
+its `@@allow("read", …)` mutation re-verified after the test's seed changed.
+This sentence had simply not been updated when the earlier claim was.
+`docs/status.md` § "The first CrateStack writes" carries all six mutations.
 
 **Updated 2026-09-03 (Step 2): the journey now has a far end.**
 `vpay-server` serves `POST /v1/oauth/token`,
