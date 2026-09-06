@@ -125,11 +125,32 @@ pub(crate) async fn list(
 ///
 /// One read of the intent — tenant-scoped, so another merchant's id is the
 /// **same `404`** a nonexistent one gets, exactly as on `/v1` — then the
-/// charge, the refunds and the events, each of which is also tenant-scoped
-/// in its own right. That repetition is deliberate: a detail assembler that
-/// scoped only the first read would leak the rest to anyone who could guess
-/// an id, and "the first read already checked" is precisely the reasoning
-/// that stops being true when someone reorders the function.
+/// charge, the refunds and the events.
+///
+/// # Which of the four reads carries a tenant, and which does not
+///
+/// Three of the four take `scope.merchant_id()` and filter on it: the intent
+/// ([`PaymentIntents::get_for_merchant`]), the refunds
+/// ([`Refunds::list_for_intent`], through the join onto `payment_intents`)
+/// and the events ([`Events::list_for_objects`]). The repetition is
+/// deliberate, because "the first read already checked" is precisely the
+/// reasoning that stops being true when someone reorders the function — and
+/// for the events it is not merely belt and braces: `events.object_id` is a
+/// plain `TEXT` column with **no foreign key** (migration `0018`), so its
+/// `merchant_id` predicate is the only thing between two tenants' timelines
+/// (`the_detail_read_renders_the_timeline_and_the_refunds_it_has`).
+///
+/// **The charge read is the exception, and it is not tenant-scoped.**
+/// [`vpay_db::Charges::get_for_intent`] takes no `merchant_id` and cannot:
+/// `charges` has no such column, and the trait's own doc says taking one
+/// "would suggest this function performs that check, which would be a worse
+/// lie than not offering it". It is safe here for exactly one reason — the
+/// intent id it is handed came from the scoped read above — which means it
+/// *is* an instance of the reasoning this section warns about, held together
+/// by the ordering. A future edit that reads the charge before the intent, or
+/// from an id a caller supplied, would leak it. Until 2026-09-06 this comment
+/// claimed all four reads were "tenant-scoped in [their] own right", which
+/// told a reader the opposite of that.
 pub(crate) async fn retrieve(
     State(repositories): State<super::Repos>,
     scope: MerchantScope,
