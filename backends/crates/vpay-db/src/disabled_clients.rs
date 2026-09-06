@@ -58,7 +58,16 @@ pub trait DisabledClients: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::Query`] if the lookup itself fails.
+    /// Returns [`DbError::Persistence`] if the lookup itself fails — **not**
+    /// [`DbError::Query`], which is what this said until 2026-09-06 and what
+    /// the hand-written `SELECT EXISTS` produced. The read runs through
+    /// CrateStack now, and `FindUnique::run` stringifies its `sqlx::Error`
+    /// into `CratestackError::Database` rather than carrying a SQLSTATE, so
+    /// every failure of this query arrives as
+    /// `PersistenceError::Backend`. It still classifies `Category::Storage`
+    /// with the code `database_query_failed`, so a caller branching on the
+    /// classification rather than on the variant sees no change; a caller
+    /// matching the variant would have silently stopped matching.
     async fn is_client_disabled(&self, client_id: &str) -> Result<bool, DbError>;
 
     /// Disables `client_id`, with an optional free-text operator note.
