@@ -15,14 +15,17 @@
 // │ verify-repositories` fails if that changes).                             │
 // │                                                                          │
 // │ Compiled is not the same as used, and the difference matters more        │
-// │ than usual here. Exactly ONE model — `DisabledClient` — has a query      │
-// │ running through it: `DisabledClients::is_client_disabled` is a           │
-// │ CrateStack `find_unique(...).run(ctx)`. Every other model below is       │
-// │ still a design sketch that happens to be type-checked by a compiler      │
-// │ as well as by the CLI; no code reads or writes through any of them,      │
-// │ several do not match the live table at all (see the drift list), and     │
-// │ the two `disabled_clients` WRITES are still raw sqlx. docs/status.md     │
-// │ is the authoritative done/not-done list.                                 │
+// │ than usual here. Exactly ONE model — `DisabledClient` — has queries      │
+// │ running through it, and since 2026-09-06 it has all three of them:       │
+// │ `is_client_disabled` is `find_unique(...).run(ctx)`, `disable_client`    │
+// │ is `upsert(...).run(ctx)` and `enable_client` is                         │
+// │ `delete_many().where_(...).run(ctx)`. This box said "the two             │
+// │ `disabled_clients` WRITES are still raw sqlx" until then; no raw sqlx    │
+// │ statement against that table is left in `vpay-db`. Every other model     │
+// │ below is still a design sketch that happens to be type-checked by a      │
+// │ compiler as well as by the CLI; no code reads or writes through any of   │
+// │ them, and several do not match the live table at all (see the drift      │
+// │ list). docs/status.md is the authoritative done/not-done list.           │
 // │                                                                          │
 // │ The content was rewritten against the real grammar in 2026-09, field     │
 // │ by field against cratestack-parser's own test suite rather than          │
@@ -388,11 +391,44 @@ model LedgerEntry {
 // `From<CratestackContext>`), so the predicate a system read satisfies
 // cannot be satisfied by anything an HTTP caller controls.
 //
-// The two WRITES (`disable_client`, `enable_client`) are still raw sqlx and
-// are not covered by this policy: `@@allow("read", ...)` grants nothing to
-// `create`/`update`/`delete`, and adding those arms before there is a
-// CrateStack write to gate would be a claim about a code path that does not
-// exist. docs/status.md carries the dated row.
+// The two WRITES moved to CrateStack on 2026-09-06, which is what the three
+// extra `@@allow` arms below are for — this comment said "still raw sqlx"
+// until then. `disable_client` is `.upsert(..).run(ctx)` and needs BOTH
+// `create` and `update`: `cratestack-sqlx`'s `upsert_exec.rs` pre-flights
+// the create policy on every call and `upsert_resolve.rs` gates the update
+// branch separately, so a model with only one of the two fails whichever
+// branch it did not name. `enable_client` is `.delete_many(..).run(ctx)`
+// and needs `delete`.
+//
+// Four arms rather than one `@@allow("all", ...)`, deliberately — but NOT
+// for the reason this comment gave until the review of 2026-09-06.
+// `cratestack-macros`' `parse_policy_expression` treats `"all"` as matching
+// every action, so one line would work, and it would grant exactly what
+// these four grant and nothing more. This comment claimed `"all"` "would
+// also grant `list` and `detail`"; it would not grant them *additionally*,
+// because `@@allow("read", ...)` already does. `model/descriptor.rs:45-47`
+// compiles the `read` arm into BOTH `&["list", "read"]` and
+// `&["detail", "read"]`, which is asserted in
+// `disabled_clients.rs::every_action_this_crate_calls_has_an_allow_arm`
+// (`detail_allow_policies.len() == 1` with no `detail` arm declared here).
+//
+// The real and only reason for four lines is that each can be deleted on
+// its own, and the four runtime effects are not alike:
+//
+//   create  -> LOUD  (`CratestackError::Forbidden` -> `PersistenceError::
+//                     Denied` -> `Category::Internal`), on every call
+//   update  -> LOUD, but only on the conflict branch — a first disable of
+//              a given client succeeds and the second fails
+//   delete  -> SILENT: `enable_client` goes through `delete_many`, whose
+//              policy clause is part of the `WHERE`, so a missing arm
+//              removes zero rows and returns `Ok`
+//   read    -> SILENT, the same way, and the dangerous direction: every
+//              revoked client is admitted again
+//
+// A wildcard would have made that asymmetry unmeasurable. All four
+// mutations were run twice — by the change and again by its review —
+// against a real Postgres; docs/status.md carries the dated row and
+// docs/plans/exp16-notes/ the transcripts.
 model DisabledClient {
   client_id String @id
   // `@default(now())`, not `@default(dbgenerated())`, and the difference is
@@ -408,6 +444,9 @@ model DisabledClient {
   reason String?
 
   @@allow("read", auth().isSystem())
+  @@allow("create", auth().isSystem())
+  @@allow("update", auth().isSystem())
+  @@allow("delete", auth().isSystem())
 }
 
 // --- intentionally not modeled ------------------------------------------

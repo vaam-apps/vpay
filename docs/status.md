@@ -2088,7 +2088,7 @@ makes the core refuse a refund on that rail.
 | `cargo xtask verify-docs` — a report, never a gate | ✅ | **New 2026-09-03 (Step 7, lane 4), and ✅ for being a report, not for anything it enforces.** Per crate: doc-comment lines against code lines; every production function of 80 lines or more (a brace-depth scan that blanks string literals — a naive one miscounts on a `format!` body containing `{`); every ```` ```ignore ```` doctest fence; every `#[allow]`/`#[expect]` in production code. It **exits 0 whatever it finds** — Step 7's decision (4), because the cheapest way to pass a doc-ratio gate is to delete the `# Errors` sections [ADR-0011](adr/0011-error-modelling.md) depends on. `just verify` runs it after the three gates and says so in its own success line; CI's `self-checks` job runs it too, so the justfile's claim that the job runs exactly `just verify` stays true. Numbers on this tree: **prose 13 048 / compiled-example 1 111 / code 12 938 across the twelve crates — **100.8%** prose-to-code, measured on the final tree. The comparable pair is the *old* convention (every doc line counted as prose, looser denominator), where the design's pre-step baseline was **97.1%** and this tree reads **88.6%** — the full table is in the header above, including the four crates still over 100%. Six production functions of 80 lines or more, down from the eleven Phase A measured; the longest is now `vpay_config::validate_all` at 138, and nothing over 200 remains. **Zero** ```` ```ignore ```` fences in the two trees it scans. Four `#[allow]`/`#[expect]`, exactly the ones Phase A already named — none was added to make a function shorter, which was the live temptation in `poll_charge`**. **Scope, and the limits that follow from it:** `backends/crates` + `backends/apps`, `src/` only, everything from a file's first `#[cfg(test)]` onward excluded — so `sdks/rust` and `.xtask` are outside every number, and its ```` ```ignore ```` list therefore does **not** include the one in `sdks/rust/src/lib.rs` that `cargo test --doc` reports as ignored. 13 unit tests over synthetic sources back it, including one for the defect it shipped with for a single run: three files *discuss* `#[cfg(test)]` in their module headers, a scan over raw text stopped at the sentence, and two 200-line functions and two `#[expect]`s vanished from the report. A report that measures nothing looks exactly like a clean one, which is why it also shouts when it finds no sources at all |
 | Local demo (`just demo`, `examples/merchant-demo`, `compose.demo.yml`) | 🟡 | New 2026-09-02. `just demo` generates a throwaway server signing key and a demo merchant keypair (`just gen-demo-keys`: `cargo xtask gen-signing-key` for the merchant, its public JWK written into a git-ignored `demo` profile overlay `.e2e/application-demo.yml` that `compose.demo.yml` bind-mounts beside the baked base config), brings up `compose.yml` + `compose.e2e.yml` + `compose.demo.yml`, waits for `/healthz`, and runs `cargo run -p merchant-demo` — a Rust binary using `vpay-sdk` that prints one line per step: discovery and JWKS, an access token's decoded claims (never the token), the 401 envelope without a bearer, and the authenticated 404 `unknown_route` for `payment_intents().retrieve(..)` with the sentence "payment intents are not built yet — this is where the next step lands". `compose.demo.yml` publishes no host port for Postgres (`ports: !reset []`) because 5432 is the most commonly occupied port on a developer machine and the demo never reaches Postgres from the host. **🟡, not ✅:** the demo is an assertion harness a human reads, not a test CI runs — nothing fails a build if it regresses; and it demonstrates authentication only, because no `/v1` resource exists yet. Its first run found the runtime-image panic recorded in the "Resource-server JWT validation" row, which is the kind of thing it exists to find. **Updated 2026-09-03 (Step 2): four steps became five, and the fifth is the honest one.** The demo now runs discovery + JWKS, a token, the unauthenticated `401`, then **`payment_intents().create(…)` followed by `.retrieve(…)` through the shipping Rust SDK** — a real write to a real database, asserting the retrieve returns the object the create did — and finally **`.confirm(…)`, whose success condition is a `501 not_implemented`**. A printed payment intent that had been *confirmed* would mean something fabricated one. `just demo` is also port-configurable now: `just demo_port=18080 demo` propagates one number to the three places that must agree — the published port, the demo overlay's `deployment.public_base_url` (which becomes the OP's `issuer`, and a mismatch is an `invalid_client` whose message names no port), and `VPAY_BASE_URL` for the demo binary — and `gen-demo-keys` regenerates the overlay when either that URL or the newly-required `merchant_id` field is missing from it, a check added after a measured failure in which `just demo` spent its whole 120 s readiness budget on a crash loop while the recipe reported it had kept a file that no longer loads. **Updated 2026-09-03 (Step 3): still five steps, and step 5 now *succeeds*.** `payment_intents().confirm(…)` reaches the compose stack's WireMock MTN rail over HTTP and the demo asserts the intent came back **`processing`** with `next_action: null` — a push rail's one success state — then re-reads it and asserts the confirm's response and the later retrieve are the same object, so a status the handler rendered but did not commit would fail the run. It also asserts the *opposite* of what it used to: a confirm that does **not** reach `processing` is now the failure. The demo intent is **EUR**, because `config/application.yml` puts `mtn_momo` on EUR (MTN's sandbox rejects XAF) and `/v1` refuses a confirm whose intent currency is not the rail's — a property of the profile, expressed as config, never a code branch. **Updated again 2026-09-03 (Step 4): five steps became six, and the sixth ends in `succeeded`.** Step 6 polls `payment_intents().retrieve(…)` — exactly as a merchant integration would, through the SDK and nothing else — until the intent leaves `processing`, and asserts it arrived at **`succeeded`**. Nothing in the demo fakes an approval: the `vpay-worker` container (`compose.demo.yml`) claims the poll job the confirm committed, asks the WireMock MTN rail over HTTP, and the stub answers `PENDING` on the first query and `SUCCESSFUL` on the second because the confirm's documentation MSISDN enters a scenario keyed on that number. The first rung of the ladder is 10 s, so the step normally takes ~10–15 s. What step 6 deliberately **cannot** show is `amount_received`: the settlement writes it, the `payment_intent` object does not carry it, and printing it would mean reading the database behind the API the demo exists to demonstrate — the demo says so itself rather than omitting it. **Still 🟡, and the reason changed on 2026-09-03.** It is no longer "nobody has run it". **It was observed end to end on 2026-09-03 during Step 5b's rebase verification** (`just demo_port=18080 demo`): all **seven** steps passed — six became seven with Step 5, which added the webhook step this row's body above does not yet describe: discovery and JWKS, a token, the unauthenticated `401`, create + retrieve, a confirm that reached `processing`, a poll that reached `succeeded` after 7 retrieves, and step 7, the receiver's journal showing a delivery whose `Stripe-Signature` was byte-identical to its `Vpay-Signature` and verified with `vpay-sdk`. The row stays 🟡 because that run is a human reading output, not a build gate: nothing fails CI if the demo regresses, and the step that would catch it there is `sdks/stripe-compat` rather than this. **Updated 2026-09-04 (Step 8, lane A): six steps became four, and the fourth is six payments on both rails.** The walkthrough is now a table — MTN push to `succeeded`, to `insufficient_funds` (payer decline) and to `payer_timeout` (the prompt expired); Orange redirect to `succeeded` with the `next_action.redirect_to_url` printed, to `payer_timeout` (the hosted page expired) and to `provider_error` (the rail refused and documents no reason) — and each one prints the intent's public fields, asserts the exact `last_payment_error.code`, and verifies the `Vpay-Signature` of the webhook that settlement produced, read out of the receiver's own request journal. **Every outcome is selected at the rail stub by a field a merchant controls** — the MSISDN on MTN (documentation numbers `237600000f01`/`237600000f02`, carried to the status query by WireMock scenario, since MTN's status query is a `GET` that steers no other way) and the amount on Orange (5001/5002, which travel on its `POST` status body) — never by rewriting stored state. `just demo` is now `demo-up` + `demo-walk`, both of which exist separately, alongside `demo-status` and `demo-down`; readiness is `docker compose up --wait` on healthchecks (both rail stubs gained one) plus an external `/healthz` poll for the two `FROM scratch` services that cannot carry one. `compose.demo.yml`'s `name:` reads `${VPAY_DEMO_PROJECT:-vpay-demo}` and three `just` variables (`demo_project`, `demo_port`, `demo_receiver_port`) let two stacks run at once — **proven by running both**, two networks, two volumes, two databases, and the second stack's walkthrough green while the first was up. `docs/runbooks/demo.md` is the procedure, with the output of a real run pasted rather than narrated. **Still 🟡, and the reason changed twice on 2026-09-04.** Lane A first recorded that `just demo` from nothing had **never been observed green**: six walkthrough attempts gave two greens and four `500`s on a confirm, every one of them the `write_matched_no_row` race between `vpay-api`'s confirm and `vpay-worker`'s immediately-runnable poll job — **a defect in vpay, not in the demo** (`docs/runbooks/demo.md` §9, `docs/plans/step8-notes/lane-a.md` §3). **Lane G fixed that defect the same day** (see the confirm/worker race row). ~~Lane A's rebased branch — carrying the fix — then ran the walkthrough from nothing green, six outcomes for six with zero `write_matched_no_row`, and that is the measurement this row rests on.~~ **Corrected 2026-09-04, and the correction matters because it removes this row's only end-to-end evidence for the fix:** one green run from nothing exists (lane A's rebased branch, 2026-09-04, **without** lane G — that branch was rebased onto `068d8b7`, master plus lanes B and D, and lane G merged later as `53f7a7e`; the race is timing-dependent and did not fire, so this is one green *pre-fix* run and not evidence for the fix), lane A's own earlier count was two greens in six attempts and zero for three from nothing, lane G did not re-run the demo. Run on the merged branch, 2026-09-04, in the `vpay-ci` VM (code as of `4b5a9d7`, lanes G and H in): `just demo` from nothing six times, **four green** (six outcomes for six each, exit 0); the two failures were the VM's Postgres answering single statements in 14–36 s under host I/O pressure, with the settlement and the webhook both landing in the worker's log after the demo's budgets; `write_matched_no_row` appeared in no run. Three from nothing is met in count, not consecutively. What that one run does establish is the walkthrough itself: exit 0, six outcomes for six, `grep -c write_matched_no_row` = 0 over both logs, on a quiet machine. The row therefore stays 🟡 for three reasons and not one: the demo is a human reading output rather than a build gate, both rails and the receiver are WireMock hosts, and the merged branch's own demo run does not exist yet. **Updated 2026-09-04 (Step 9): four steps became five, the currency became XAF on both rails, the stack became eight services, and the merged branch's demo run now exists.** Step 5 creates one hosted and one embedded Checkout Session, each on its own fresh intent, reads each back, prints the hosted `url` in full and redacts the embedded secret — and stops there: it opens no browser and pays neither. `just demo-up` now also starts `vpay-checkout` (vpay's own payment page) and `vpay-shop` (the demo merchant's storefront), and `demo_checkout_port`/`demo_shop_port` join the four existing variables. **Run from nothing three consecutive times, green, in the `vpay-ci` VM on 2026-09-04 on the merged Step 9 branch** (`551ec80`): six outcomes for six each, XAF on both rails, both sessions created and read back, exit 0, `write_matched_no_row` in no run's logs. Step 8's bar of three from nothing is therefore met **and consecutive**, which it was not before. The row stays 🟡 for the two reasons that survive: nothing in CI fails if the demo regresses, and every rail and receiver in it is a WireMock host |
 | Two demos on one machine | 🟡 | **New 2026-09-04 (Step 8, lane A).** Compose-layer isolation is done and proven (`${VPAY_DEMO_PROJECT}`, `demo_project`/`demo_port`/`demo_receiver_port`; two projects, networks, volumes and databases observed side by side, the second stack's walkthrough green while the first was up). **`.e2e/` is not isolated:** one merchant key pair and one profile overlay serve the whole checkout, so a second `demo-up` on a different `demo_port` regenerates the shared pair and the first stack's `demo-walk` then fails `invalid_client`. Sequential use is fine; interleaved `demo-up` is not. Fixing it means keying `.e2e/` on `demo_project`, which touches `.github/workflows/ci.yml` (the e2e job's signing-key path), `just stripe-compat`, `examples/merchant-stripe-node` and `sdks/stripe-compat` — whose failure mode here is a *silent* `invalid_client`. **Not fixed, and named as a gap rather than left to be discovered** — see `docs/plans/step8-notes/lane-a.md` §4 |
-| `schemas/*.cstack` | 🟡 | ~~**Syntax verified against real CrateStack 0.10.1** (and 0.7.10 / 0.7.8 before it)~~ **Corrected 2026-09-05: that was a hand-run claim, and it is now a gate.** `just check-schema` runs `cratestack check --schema schemas/vpay.cstack` inside `just verify`, `just ci` and CI's `self-checks` job, against **cratestack-cli 0.11.1** — pinned once, as `cratestack_version` in `justfile`, which the workflow reads back rather than repeating. The file passes at 0.11.1 unchanged: **no edit to `schemas/vpay.cstack` was needed** to move from the 0.10.1 the old claim named. ~~Content remains a design sketch, excluded from the build graph~~ **— corrected 2026-09-06: `vpay-db` compiles this file now** (`mod schema` → `include_server_schema!("../../../schemas/vpay.cstack", db = Postgres)`), so every declaration in it is checked by rustc as well as by the CLI, and **one** of them — `DisabledClient` — has a query running through it (`is_client_disabled`). The other six models are still a design sketch that a compiler now type-checks; nothing reads or writes through them, several do not match the live table, and the file still drives no migration. See "The first CrateStack read" below. **The migrations are now the authoritative schema, and this file has diverged from them on two constraints**: raw SQL in `backends/migrations/0002_create-providers.sql` and `0003_create-payment-intents.sql` expresses two `CHECK` constraints (`partial_refunds_imply_refunds`, `no_over_refund`) that CrateStack's grammar cannot — no `@@check(expr)` exists in 0.7.8, 0.7.10, 0.10.1 or the pinned 0.11.1
+| `schemas/*.cstack` | 🟡 | ~~**Syntax verified against real CrateStack 0.10.1** (and 0.7.10 / 0.7.8 before it)~~ **Corrected 2026-09-05: that was a hand-run claim, and it is now a gate.** `just check-schema` runs `cratestack check --schema schemas/vpay.cstack` inside `just verify`, `just ci` and CI's `self-checks` job, against **cratestack-cli 0.11.1** — pinned once, as `cratestack_version` in `justfile`, which the workflow reads back rather than repeating. The file passes at 0.11.1 unchanged: **no edit to `schemas/vpay.cstack` was needed** to move from the 0.10.1 the old claim named. ~~Content remains a design sketch, excluded from the build graph~~ **— corrected 2026-09-06: `vpay-db` compiles this file now** (`mod schema` → `include_server_schema!("../../../schemas/vpay.cstack", db = Postgres)`), so every declaration in it is checked by rustc as well as by the CLI, and **one** of them — `DisabledClient` — has queries running through it: `is_client_disabled` (a `find_unique`) since 2026-09-06, and **`disable_client` (an `upsert`) and `enable_client` (a `delete_many`) since later the same day** — the whole of that table's repository, and the model now carries four `@@allow` arms rather than one. The other six models are still a design sketch that a compiler now type-checks; nothing reads or writes through them, several do not match the live table, and the file still drives no migration. See "The first CrateStack read" and "The first CrateStack writes" below. **The migrations are now the authoritative schema, and this file has diverged from them on two constraints**: raw SQL in `backends/migrations/0002_create-providers.sql` and `0003_create-payment-intents.sql` expresses two `CHECK` constraints (`partial_refunds_imply_refunds`, `no_over_refund`) that CrateStack's grammar cannot — no `@@check(expr)` exists in 0.7.8, 0.7.10, 0.10.1 or the pinned 0.11.1
 (0.10.1's parser adds `@@sql`/`@@embedded_sql`/`@@server_sql` — for views, not
 constraints — plus `@@paged`, `@@subscribe`, `@@audit` and `@@soft_delete`, none
 of which is a cross-column constraint, and `cratestack-migrate` still gates
@@ -3066,11 +3066,12 @@ about the trait's public surface changed. `schemas/vpay.cstack` gains `model
 DisabledClient` with `@@allow("read", auth().isSystem())` and nothing else;
 `cratestack_min_declarations` goes 12 → 13.
 
-**What did NOT move, stated plainly:** the two `disabled_clients` *writes*
-are still raw sqlx, no other table moved, no transaction, no enum column, and
-nothing about the transport — the generated `pub mod axum` compiles and is
-never referenced. `backends/migrations/*.sql` is still the authoritative
-schema and still drives every migration.
+**What did NOT move, stated plainly:** ~~the two `disabled_clients` *writes*
+are still raw sqlx~~ **— superseded later the same day; see "The first
+CrateStack writes" below** — no other table moved, no transaction, no enum
+column, and nothing about the transport — the generated `pub mod axum`
+compiles and is never referenced. `backends/migrations/*.sql` is still the
+authoritative schema and still drives every migration.
 
 - **Decisive test (the policy trap):** delete `@@allow("read",
   auth().isSystem())` from `model DisabledClient` and
@@ -3174,6 +3175,150 @@ branch **16.9 MB** — **+0.8 MB (+5.0%)** for CrateStack's twelve crates plus
 `minicbor`, `chumsky` and `ariadne`. Both images run and print `vpay-server
 0.1.0`.
 `docs/plans/exp14-notes/opus.md` § 7 has the full list.
+
+#### The first CrateStack writes (2026-09-06)
+
+`DisabledClients::disable_client` is `.upsert(CreateDisabledClientInput).run(&system_context())`
+and `DisabledClients::enable_client` is
+`.delete_many().where_(client_id.eq(..)).run(&system_context())`. That is the
+whole of one table's repository — read and both writes — through the generated
+data layer, and still the only table in the workspace that is. `model
+DisabledClient` gains `@@allow` arms for `create`, `update` and `delete`
+alongside the `read` it already had; `cratestack_min_declarations` does not
+move (13), the drift constants do not move (**85 changes over 16 relations,
+18 unmappable columns**, re-run and passing), and there is **no migration**.
+
+**The trait surface is unchanged and the `# Errors` contract is not.** Both
+writes now return `DbError::Persistence` where they returned `DbError::Query`,
+the same correction the read took hours earlier. A caller branching on the
+classification sees nothing — `classify_cratestack` and `classify_write` are
+asserted against each other in `persistence.rs` — and a caller matching the
+*variant* would have silently stopped matching, which is why both trait doc
+comments say so in `# Errors`.
+
+**What did NOT move:** every other table, every transaction (`UnitOfWork` is
+untouched and no CrateStack `run_in_tx` is called anywhere), every enum
+column, and the transport. `backends/migrations/*.sql` is still the
+authoritative schema.
+
+**Two deviations from the obvious shape, both measured rather than
+preferred:**
+
+1. **`enable_client` is `delete_many`, not `delete(pk)`.** `cratestack-sqlx`
+   0.11.1's `query/write/delete_exec.rs` reports a `DELETE … RETURNING` that
+   matched no row as `CratestackError::Forbidden("delete policy denied this
+   operation")`, and with no `@version` column on this model it has no way to
+   tell that from a real policy refusal. `.delete()` would therefore turn
+   every re-enable of an already-enabled client into a `Category::Internal`
+   error, breaking this trait's documented "a no-op, not an error" contract
+   and two existing tests. The cost of the alternative is recorded in the
+   table below: `delete_many`'s policy lives in the `WHERE`, so a missing
+   `delete` policy is silent.
+2. **`disable_client` costs a second round trip.** `.upsert()` is
+   transactional by construction — it probes the conflict target with `SELECT
+   … FOR UPDATE` and may run an `ON CONFLICT DO NOTHING` first — to tell a
+   create from an update for an event/audit fan-out this model has neither of.
+   Accepted: disabling a client is an operator action, not a hot path.
+   `is_client_disabled` is on the token path and stayed a single
+   `find_unique`.
+
+**The rendered upsert is the statement it replaced, byte for byte** —
+`INSERT INTO disabled_clients (client_id, reason) VALUES ($1, $2) ON CONFLICT
+(client_id) DO UPDATE SET reason = EXCLUDED.reason` plus a `RETURNING` nobody
+reads. `disabled_at` is in neither the insert list nor the `SET` list, because
+`cratestack-macros` excludes every `@default(...)` column from both, which is
+what keeps "a second disable leaves the original `disabled_at` untouched"
+true. Two new unit tests in `disabled_clients.rs` assert that rendering
+without a database; their value is as a guard on a **pinned external crate's**
+output, since a schema edit that removed the default is caught earlier by the
+compiler (`error[E0063]: missing field \`disabled_at\``, measured).
+
+**Decisive tests — six mutations, all run against a real Postgres, none
+merely designed.** The most useful result is that the three write actions do
+not behave alike:
+
+| Mutation | Runtime effect | What went red |
+|---|---|---|
+| drop `@@allow("create", …)` | `disable_client` **errors**: `Forbidden` → `PersistenceError::Denied` → `Category::Internal` | `a_client_disabled_through_cratestack_is_visible_to_both_paths`, at the **first** disable |
+| drop `@@allow("update", …)` | `disable_client` **errors on the conflict branch only** — the first disable of a client succeeds | the same test, at the **second** disable, plus `disabled_client_lookup_reflects_disable_and_enable`. A test that disabled once and stopped would have passed |
+| drop `@@allow("delete", …)` | `enable_client` removes nothing and returns **`Ok`** — silent | the same test's enable assertion, which reads the row back through a plain `SELECT`; plus the lookup test |
+| drop `@@allow("read", …)` | kill switch silently OFF (unchanged from the read change) | `a_disabled_client_reads_the_same_through_both_paths`, `CrateStack says false, sqlx says true` — **re-verified after its seed changed** |
+| replace the `upsert` call with `Ok(())` | disable does nothing | `find_client_reflects_the_disabled_clients_kill_switch` (integration): "a disabled client must stop resolving immediately" |
+| replace `delete_many` with an `update_many` that sets `reason` | enable updates instead of deleting | the enable assertion, on the row still being there |
+
+So: **`create` and `update` fail loudly, `read` and `delete` fail silently.**
+`upsert_exec.rs` evaluates the create policy in Rust before it builds any SQL
+and `upsert_resolve.rs` does the same for the conflict branch, so an empty
+allow list is a real error there; the read and `delete_many` paths compile the
+policy into a `WHERE` clause where an empty allow list renders `FALSE`. The
+two silent holes fail in opposite directions, and only one of them is safe: a
+missing `read` policy leaves every revoked client **admitted**, a missing
+`delete` policy leaves a client **revoked**.
+Neither is visible to `just check-schema`, `cargo build`, `just clippy` or any
+of the ten `just verify` gates — re-measured for the three new arms.
+
+**`a_disabled_client_reads_the_same_through_both_paths` changed, and had to.**
+It seeded its row by calling `disable_client`; that call is now a CrateStack
+`upsert`, so leaving it would have made the test a generated write read back
+by a generated read, agreeing with itself — the exact thing that test's own
+doc comment disclaimed. It seeds with an inline `INSERT` and removes with an
+inline `DELETE` now, deliberately not shared with the new write test.
+
+**The gate that was blind, and now is not (review, 2026-09-06).** Every one
+of the four mutations above was re-run by the sabotage review, and all four
+reproduced — *and* all four left `cargo nextest run -p vpay-db --lib` green at
+26 passed. The database-free half of the gate could not see a single missing
+`@@allow` arm, including the two whose runtime effect is silent. `vpay-db`'s
+unit suite now carries
+`disabled_clients::tests::every_action_this_crate_calls_has_an_allow_arm`,
+which reads the four `&'static [ReadPolicy]` slots off the compiled
+`ModelDescriptor` and fails in 4 ms with no Docker; deleting each arm in turn
+was re-run against it and it is red four times out of four. It does not
+replace the container tests — a non-empty slot is not the same claim as "the
+policy admits this caller" — it removes the wait to find out that a slot is
+empty. Details and the transcripts:
+[docs/plans/exp16-notes/opus-review.md](plans/exp16-notes/opus-review.md).
+
+**Stays `NotImplemented`: nothing.** No function gained a stub, no test was
+weakened, and no `#[ignore]` was added.
+
+**Not done, named:** the transaction seam is still unexercised — no CrateStack
+`run_in_tx` is called anywhere, because neither of these two writes has
+anything to be atomic with. `providers`, `currencies` and every other table
+are unmoved. The `Unique`, `ForeignKey` and `Check` arms of
+`PersistenceError` are still unit-tested rather than exercised:
+`disabled_clients` has no foreign key and no CHECK, and its only unique
+constraint is the primary key the upsert exists to absorb. The release image
+was not rebuilt (this change adds no dependency and no file the Dockerfile
+would have to copy).
+[docs/plans/exp16-notes/opus.md](plans/exp16-notes/opus.md) has the
+transcripts and § 6 the full "not measured" list.
+
+**Gate, run on this branch on 2026-09-06 against the pinned 1.98.0
+toolchain.** `cargo build --workspace --all-targets`, `just fmt-check`,
+`just clippy`, all **ten** `just verify` gates, `cargo nextest run -p vpay-db
+--lib` **26 passed** (24 + the two render tests), `cargo nextest run -p xtask`
+**215 passed**, `just test-doc` **96 passed, 1 ignored**, `just deny`
+`advisories ok, bans ok, licenses ok, sources ok`, `just docs-check`, and
+`just verify-ignored` **0 ignored (expected 0), 43 test binaries (expected
+43), 1372 total**. `just test-rust`: **1372 tests run, 1372 passed, 0
+skipped** across 43 binaries in 689.775 s — 1369 plus this change's three (two
+`vpay-db` unit tests and one integration test; no new test binary, so
+`expected_suites` stays 43 and `min_tests` stays 1080). The container-backed
+drift test was re-run separately and passes with its constants unmoved.
+
+**Re-measured by the review on the same day: 1373 / 43 binaries / 0 skipped,
+`-p vpay-db --lib` 27**, after the review added the policy-slot test described
+below. `just test-doc` **96 passed, 1 ignored** and all ten `just verify`
+gates unchanged; `just ci` green end to end.
+
+The first of the two `just test-rust` runs failed one test —
+`webhooks the_delivered_signature_verifies_with_the_shipping_node_sdk`, with
+`sh: 1: tsc: not found` — because no `node_modules` had been installed in that
+worktree. It is unrelated to this change, which touches no TypeScript;
+`pnpm install --frozen-lockfile` under the pinned Node 22.23.2 fixed it and
+the rerun above is the green one. Recorded rather than dropped, because
+"1372 passed" on a second attempt is a different claim from "1372 passed".
 
 ---
 

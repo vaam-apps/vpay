@@ -1248,23 +1248,38 @@ work, and each binary installs the provider at boot
 `vpay-db` compiles `schemas/vpay.cstack` with
 [CrateStack](https://cratestack.dev)'s `include_server_schema!` macro
 (`cratestack = { package = "cratestack-pg", version = "=0.11.1" }`) and runs
-**one** query through the generated data layer. This section says which one,
-what deliberately did not move, and which of CrateStack's behaviours vpay has
-had to work around rather than adopt. It is the application's side of
-`schemas/vpay.cstack`'s own header, which carries the schema's side.
+**three** queries through the generated data layer — the whole of one table's
+repository, and nothing else. This section says which three, what deliberately
+did not move, and which of CrateStack's behaviours vpay has had to work around
+rather than adopt. It is the application's side of `schemas/vpay.cstack`'s own
+header, which carries the schema's side.
+
+It said "**one** query" until 2026-09-06, when the two `disabled_clients`
+writes followed the read.
 
 Everything here was measured against the 0.11.1 sources on 2026-09-06;
-`docs/plans/exp14-notes/opus.md` has the transcripts.
+`docs/plans/exp14-notes/opus.md` and `docs/plans/exp16-notes/opus.md` have the
+transcripts.
 
 ### What runs through it today
 
-Exactly one method: `DisabledClients::is_client_disabled`, the OAuth
-kill-switch lookup, as
-`self.cs.disabled_client().find_unique(client_id).run(&system_context())`.
-Nothing about the trait changed — the signature, the `# Errors` contract and
-the deliberate absence of a cache are all as they were.
+`DisabledClients`, all three methods, and no other repository at all:
 
-It was chosen first because the migration needed to model its table is empty.
+| Method | CrateStack builder | Policy slot it needs |
+|---|---|---|
+| `is_client_disabled` | `find_unique(id).run(ctx)` | `read` |
+| `disable_client` | `upsert(CreateDisabledClientInput).run(ctx)` | `create` **and** `update` |
+| `enable_client` | `delete_many().where_(client_id.eq(..)).run(ctx)` | `delete` |
+
+Nothing about the trait changed for any of them — the signatures, the
+deliberate absence of a cache, and `enable_client`'s "a no-op, not an error"
+contract are all as they were. What did change is the `# Errors` contract:
+all three now return `DbError::Persistence` rather than `DbError::Query`. A
+caller branching on the *classification* sees nothing (a `23505` is still a
+`409 resource_conflict`); a caller matching the variant would have silently
+stopped matching, which is why both trait doc comments say so.
+
+This table went first because the migration needed to model it is empty.
 `disabled_clients` is three columns (`TEXT PRIMARY KEY`, `TIMESTAMPTZ NOT NULL
 DEFAULT now()`, `TEXT`), every one of which is inside `cratestack-migrate`'s
 `map_scalar`; it has no CHECK constraint and no enum column. `currencies`
@@ -1273,20 +1288,164 @@ unmapped), and `providers` would have needed its native `provider_flow` enum
 converted to `TEXT` + CHECK, because CrateStack reads every enum column with
 `try_get::<String>` and a native Postgres enum decodes as an error.
 
-The proof that it works is a comparison, not an assertion:
-`a_disabled_client_reads_the_same_through_both_paths` in
-`backends/crates/vpay-db/tests/repositories.rs` writes through the unmoved
-sqlx write and then reads the same key through the CrateStack path and through
-two spellings of a direct `SELECT`, for a key that exists and one that does
-not, and requires all of them to agree.
+The read went a day before the writes on purpose, and the sequencing is worth
+recording because it is the only reason the parity test proves anything:
+moving a read and a write together produces a test that cannot say which of
+the two it is testing. `a_disabled_client_reads_the_same_through_both_paths`
+was written while the write was still hand-written sqlx; when the write moved,
+that test's seed became an inline `INSERT`/`DELETE` rather than a call to
+`disable_client`, for exactly the same reason. Its sibling
+`a_client_disabled_through_cratestack_is_visible_to_both_paths` covers the
+writes, reading every assertion back through a plain `SELECT`.
 
-**That test has never been executed.** It compiles and `cargo nextest list`
-names it, and no machine has run it: the host that wrote it had no working
-Docker daemon, and neither did the host that reviewed it. Until CI runs it,
-everything this section says about the CrateStack read returning what the
-sqlx read returns is read out of `cratestack-sqlx`'s query builder rather
-than measured. [docs/status.md](../status.md) § "The first CrateStack read"
-names it and the two other container-backed cases owed to CI.
+Both were executed against a real Postgres on 2026-09-06 and both pass. So
+did the six mutations in "What a missing policy costs, per action" below.
+
+#### `disable_client`: the same statement, and one extra round trip
+
+`.upsert()` renders
+
+```text
+INSERT INTO disabled_clients (client_id, reason) VALUES ($1, $2)
+ON CONFLICT (client_id) DO UPDATE SET reason = EXCLUDED.reason
+RETURNING client_id AS "client_id", disabled_at AS "disabled_at", reason AS "reason"
+```
+
+which is the hand-written statement it replaced plus a `RETURNING` nobody
+reads. Two properties of that rendering carry the trait's documented
+behaviour, and both come from the same predicate in `cratestack-macros`'
+`model/descriptor/columns.rs` and `model/inputs.rs`: a `@default(...)` column
+is in neither `CreateDisabledClientInput` nor `upsert_update_columns`. So
+`disabled_at` is left to the column default on insert, and is never assigned
+on conflict — which is what makes "a second disable leaves the original
+`disabled_at` untouched" true rather than hoped for. `reason` is assigned, and
+assigned from `EXCLUDED` rather than a `COALESCE`, so `disable_client(id,
+None)` clears the note.
+
+The cost is a round trip. `.upsert()` is transactional by construction: it
+opens its own transaction, probes the conflict target with a `SELECT ... FOR
+UPDATE`, and may run an `ON CONFLICT DO NOTHING` before the real statement
+(`upsert_resolve.rs`, cratestack#745), all to tell a create from an update for
+the event and audit fan-out that `model DisabledClient` has neither of. That
+is CrateStack's fixed shape for `upsert` and it is accepted rather than worked
+around: an operator disabling a client is not a hot path. `is_client_disabled`
+is — it is on the token-issuance path — and it stayed a single `find_unique`.
+
+**On the conflict branch the cost is a round trip on a *second* pooled
+connection**, which is a different kind of cost and was not written down until
+the review of 2026-09-06 measured it out of the source.
+`UpsertRecord::run` begins its transaction on `runtime.pool()` and holds that
+connection for the whole call; `upsert_resolve.rs::gate_update_policy` then
+calls `row_passes_update_policy(runtime.pool(), …)`, which `fetch_optional`s
+on the **same pool** while the transaction's connection is still checked out.
+So a second disable of an already-disabled client needs two of
+`pool.rs`'s `MAX_CONNECTIONS = 10` at once. Ten concurrent ones would each
+hold the first and wait `ACQUIRE_TIMEOUT` (5 s) for the second, and all ten
+would then fail as `PersistenceError::Backend` → `Category::Storage`.
+
+Not reachable today and recorded rather than worked around: `disable_client`
+has no shipping caller at all yet (see [roadmap.md](../roadmap.md)), and the
+*insert* branch takes only one connection, because `auth().isSystem()` is not
+a relation predicate and `evaluate_create_policies` therefore issues no query
+for it. It is the first thing to re-check if a route or an admin surface ever
+calls this method concurrently, and it is on the list of things worth sending
+upstream ([docs/plans/exp16-notes/opus-review.md](../plans/exp16-notes/opus-review.md) § 6):
+the probe could run on the transaction's own connection, which already holds
+the row lock.
+
+#### `enable_client`: why `delete_many` and not `delete`
+
+`.delete(pk)` is the builder the primary key invites, and it is wrong here.
+`cratestack-sqlx` 0.11.1's `query/write/delete_exec.rs` runs
+
+```text
+DELETE FROM disabled_clients WHERE client_id = $1 AND (<delete policy>) RETURNING ...
+```
+
+and, when `fetch_optional` returns `None`, answers
+`CratestackError::Forbidden("delete policy denied this operation")`. There is
+no version column on this model, so the one disambiguation that function has
+(a stale `If-Match`) does not apply: **it cannot tell "the policy refused you"
+from "there was no such row", and it names the first.** `enable_client`'s
+contract is the opposite — "a no-op, not an error, if `client_id` was not
+disabled to begin with" — so `.delete()` would turn every re-enable of an
+already-enabled client into a `Category::Internal` error, and break both
+`disabled_client_lookup_reflects_disable_and_enable` and
+`find_client_reflects_the_disabled_clients_kill_switch`.
+
+`delete_many` returns `BatchSummary { total: 0, .. }` instead. The count is
+dropped rather than asserted on, because `client_id` is the primary key so it
+is only ever 0 or 1, and requiring 1 is the same thing as failing on an absent
+row.
+
+The price is stated here rather than left to be discovered: `delete_many` puts
+its policy clause in the `WHERE` (`push_action_policy_query`), so this is the
+one write whose policy mistake is **silent**. See the table below.
+
+#### What a missing policy costs, per action
+
+The three write actions do not behave alike, and the difference is the most
+useful thing this adoption has measured. All six rows were produced by
+deleting the named line and running the named test against a real Postgres on
+2026-09-06.
+
+| Missing `@@allow` | What happens at runtime | What goes red |
+|---|---|---|
+| `read` | Read returns `Ok(None)` for every client — **kill switch silently OFF** | `a_disabled_client_reads_the_same_through_both_paths`: `CrateStack says false, sqlx says true` |
+| `create` | `disable_client` **errors** on the insert branch: `Forbidden` → `PersistenceError::Denied` → `Category::Internal` | the write parity test, at the first `disable_client` |
+| `update` | `disable_client` **errors** on the *conflict* branch only — the first disable of a client succeeds and the second fails | the write parity test, at the *second* `disable_client`; a test that disabled once and stopped would have passed |
+| `delete` | `enable_client` removes nothing and returns `Ok` — **silent** | the write parity test's enable assertion, which reads the row back through a plain `SELECT` rather than trusting the return |
+
+The `create` and `update` rows are loud because `upsert_exec.rs` evaluates
+`create_allow_policies` in Rust, before it builds any SQL, and
+`upsert_resolve.rs::gate_update_policy` does the same for the conflict branch;
+an empty allow list is `Ok(false)` there and becomes a `Forbidden`. The `read`
+and `delete` rows are silent because those two paths compile the policy into a
+`WHERE` clause, where an empty allow list renders `FALSE`
+(`query/support/policy.rs::push_allow_policy_query`) and a refused row is
+indistinguishable from an absent one.
+
+**Both silent failures are fail-safe in direction**, which is worth stating
+but is not why they are acceptable: a missing `read` policy leaves every
+client *admitted* (dangerous, and the reason the read parity test exists), and
+a missing `delete` policy leaves a client *revoked* (safe). The reason both
+are acceptable is that a container-backed test makes each red, and neither is
+detectable by `just check-schema`, `cargo build`, `just clippy` or any of the
+ten `just verify` gates.
+
+**And, since 2026-09-06, by a test that needs no container.** The four
+mutations above were re-run by the sabotage review, and every one of them left
+`cargo nextest run -p vpay-db --lib` green at 26 passed — the whole
+database-free half of the gate was blind to every policy hole.
+`ModelDescriptor` publishes one `&'static [ReadPolicy]` per action slot and
+`push_allow_policy_query` renders the literal `FALSE` for an empty one, so
+"is this slot empty" is the runtime question itself, askable in a unit test:
+`disabled_clients::tests::every_action_this_crate_calls_has_an_allow_arm`
+asserts all four are occupied and no `@@deny` has appeared, and is red under
+each of the four mutations in about 4 ms. It is not a substitute for the
+container tests — a non-empty slot does not say the policy admits *this*
+caller, which is the thing `auth().isSystem()` has to get right — it removes
+the wait to learn that a slot is empty. Any second model this crate reaches
+through CrateStack should copy it.
+
+Two other things that follow from the same mechanism and are not obvious:
+
+- **`@@allow("create", ...)` alone is not enough for an upsert.** Both slots
+  are consulted, and the `update` one only on the branch that a fresh database
+  never takes. Mutation 2 above is what makes that concrete.
+- **Four arms rather than one `@@allow("all", ...)`, and not for the reason
+  first written here.** `cratestack-macros`' `parse_policy_expression` treats
+  `"all"` as matching every action, so one line would compile and work. This
+  section claimed until the review of 2026-09-06 that `"all"` "would also
+  grant `list` and `detail`, which nothing in vpay calls" — it would not grant
+  them *additionally*. `model/descriptor.rs:45-47` compiles a `read` arm into
+  **both** `&["list", "read"]` and `&["detail", "read"]`, so the four arms and
+  `@@allow("all", …)` populate an identical set of slots. The genuine and
+  sufficient reason for four lines is that each is separately droppable, which
+  is what makes the four rows of the table above four measurements rather than
+  one. `every_action_this_crate_calls_has_an_allow_arm` pins the corrected
+  fact: `detail_allow_policies.len() == 1` while `model DisabledClient`
+  declares no `detail` arm at all.
 
 ### Why the generated module is private, and what keeps it that way
 
@@ -1309,9 +1468,10 @@ is recognised as an implementation.
 
 ### What stays raw sqlx, and why
 
-Everything else, including the two `disabled_clients` **writes**. Three
-properties of 0.11.1 decide where the line is, and none of them is a matter of
-taste:
+Everything else. That sentence used to begin "Everything else, **including
+the two `disabled_clients` writes**"; those moved on 2026-09-06, so the line
+is now exactly one table wide. Three properties of 0.11.1 decide where it
+falls, and none of them is a matter of taste:
 
 - **Model policies are compiled into the SQL.** `@@allow`/`@@deny` become
   predicates in the `WHERE` clause of every generated read and write, and a
@@ -1333,10 +1493,12 @@ taste:
   eighteen live columns are excluded from the drift comparison outright — the
   number `EXPECTED_UNMAPPABLE_COLUMNS` pins in `postgres_smoke.rs`.
 
-There is a fourth reason the *writes* have not moved, specific to this table:
-moving them buys nothing until the read has been proven, and a change that
-moves a read and a write together cannot say which of the two the parity test
-is testing.
+A fourth reason used to be recorded here — that moving a read and a write
+together produces a parity test that cannot say which of the two it is
+testing. That was an argument for *sequencing*, not for staying, and it was
+honoured: the read landed on 2026-09-06 and the writes a change later, with
+the read's test re-seeded from an inline `INSERT` so it kept testing the read.
+See "What runs through it today" above.
 
 ### What compiling the schema does not prove
 
@@ -1353,23 +1515,31 @@ because "it compiles" reads like more than it is. Both measured on
   arrives as an `sqlx` decode error at the first read, i.e. in production, or
   in the container-backed drift test and the parity test, which are the only
   two things that would have caught it.
-- **A missing `@@allow` is invisible to every one of them.** Delete
-  `@@allow("read", auth().isSystem())` and the same list stays green, because
-  a refused read is a `WHERE` clause rather than an error. The kill-switch
-  answers "not disabled" for every client and nothing says so.
+- **A missing `@@allow` is invisible to every one of them.** Delete any of
+  the four on `DisabledClient` and the same list stays green — including the
+  three added on 2026-09-06 for the writes, re-measured then. That is true
+  even for the two whose absence *does* raise an error at runtime
+  (`create`, `update`): the check happens in `cratestack-sqlx` at query time,
+  not at macro-expansion time, so nothing a compiler or the CLI can see is
+  different.
 
-So the guard on both is container-backed by construction, and both of those
-tests are among the cases still owed to CI. Adding a `model` to this schema
-is not free, and the drift test and the parity test are what make it safe —
-not the compiler.
+So the guard on all of them is container-backed by construction. Adding a
+`model` to this schema is not free, and the drift test and the two parity
+tests are what make it safe — not the compiler.
 
 The transaction seam is untouched, and can stay untouched: every CrateStack
-builder exposes `run_in_tx(&mut sqlx::Transaction<'_, Postgres>, &ctx)`, so
-when writes do move, vpay keeps opening its own transaction and CrateStack
-joins it. `UnitOfWork::transaction` and `TxOutcome::Abandon` survive —
+builder exposes `run_in_tx(&mut sqlx::Transaction<'_, Postgres>, &ctx)`, so a
+write that needs to join vpay's own transaction can, and neither of the two
+that moved on 2026-09-06 does — `disable_client` and `enable_client` are each
+one statement with nothing to be atomic with, so both call `.run(ctx)` and let
+CrateStack own whatever transaction it wants underneath (the upsert opens
+one; `delete_many` opens one). `UnitOfWork::transaction` and
+`TxOutcome::Abandon` survive — `UnitOfWork::transaction` and `TxOutcome::Abandon` survive —
 CrateStack's own `transaction` combinator commits on `Ok` and rolls back on
 `Err` with no third ending, and `Abandon` is what the confirm path's
-duplicate-charge `409` is built on. This is also why the root `Cargo.toml`
+duplicate-charge `409` is built on. The first write that *does* need to be in
+a vpay transaction is where `run_in_tx` gets exercised; nothing exercises it
+today. This is also why the root `Cargo.toml`
 pins `sqlx = "=0.9.0"` exactly rather than `"0.9"`: `run_in_tx` only accepts
 vpay's transaction while both halves resolve the same `sqlx-core`.
 
@@ -1407,6 +1577,15 @@ Two honest limits on that mapping:
   deploy bug that pages, never something to tell a merchant they are not
   allowed to do.
 
+  **`Denied` stopped being unreachable on 2026-09-06**, when `disable_client`
+  became an upsert: that path evaluates its policies in Rust and raises a real
+  `Forbidden`, so the variant is now exercised by a container-backed mutation
+  and not only by `persistence.rs`'s unit test. `enable_client` still cannot
+  produce it — `delete_many`'s policy is a `WHERE` clause like the read's.
+  The `Unique`, `ForeignKey` and `Check` arms remain unit-tested rather than
+  exercised: `disabled_clients` has no foreign key and no CHECK, and the one
+  unique constraint it has is the primary key the upsert exists to absorb.
+
 ### The context, and the policy it satisfies
 
 `system_context()` returns `SystemContext::for_service("vpay-db")`'s inner
@@ -1420,8 +1599,13 @@ caller if this table ever were reached on behalf of a request.
 
 The service name reaches `actor.id = "system:vpay-db"` in
 `cratestack_sqlx::audit::actor_from_context`. Nothing in vpay audits through
-CrateStack yet; the name is fixed now so it does not have to be chosen
-retroactively for rows already written.
+CrateStack yet — `model DisabledClient` carries no `@@audit`, so
+`descriptor.audit_enabled` is `false` and neither write calls
+`ensure_audit_table`; the same is true of `@@subscribe` and the event outbox,
+so no generated write in this crate creates a table. The name is fixed now so
+it does not have to be chosen retroactively for rows already written, and
+2026-09-06 is when it first attributed one: until the writes moved, every
+CrateStack call in this crate was a read.
 
 ### What this added to the dependency graph
 
