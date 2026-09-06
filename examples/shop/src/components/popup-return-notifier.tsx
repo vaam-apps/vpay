@@ -18,6 +18,16 @@ import { notifyCheckoutOpener } from "@vaam-apps/vpay-stripe-js";
  * redirect has. One return page therefore serves the hosted, popup and
  * embedded integrations without branching on a query parameter.
  *
+ * **`close: false`, deliberately** (review finding, 2026-09-06). "Has an
+ * opener" is not the same as "is a vpay popup": a shop tab that some *other*
+ * page opened with `window.open` has one too, and a payer checking out from
+ * it by an ordinary redirect reaches this very page. The message is harmless
+ * there — it is pinned to `targetOrigin`, so a third-party opener receives
+ * nothing — but closing the window is not, and the default would have closed
+ * that payer's tab. The popup is still closed on the paths where it should
+ * be: `openCheckoutPopup`'s own listener closes it, and only on a message it
+ * accepted from the window it opened.
+ *
  * The message is a **cue**. The opener navigates to this same page in its
  * own window, where the poll reads the shop's database — which only the
  * signature-verified webhook writes.
@@ -37,7 +47,7 @@ export function PopupReturnNotifier({
       // on.
       return;
     }
-    notifyCheckoutOpener({ session: sessionId, status });
+    notifyCheckoutOpener({ session: sessionId, status, close: false });
   }, [sessionId, status]);
   return null;
 }

@@ -78,12 +78,19 @@ nothing (`frontends/apps/checkout/src/lib/frame.ts` returns `null` when there
 is no parent). So the popup loads the **hosted** page, and what closes the
 loop is `success_url` — this shop's own `/orders/{id}/return`, running
 _inside_ the popup, calling `@vaam-apps/vpay-stripe-js`'s
-`notifyCheckoutOpener`, which posts to `window.opener` and closes the window.
+`notifyCheckoutOpener`, which posts to `window.opener`. The **opener** then
+closes the popup, on a message it accepted from the window it opened.
 
 `notifyCheckoutOpener` answers `false` and does nothing when there is no
 opener, which is what a payer who came back by an ordinary redirect has — so
 one return page serves all three surfaces with no branch on a query
-parameter.
+parameter. It is called with `close: false` for the other half of that
+property, which is easy to miss: **"has an opener" is not the same as "is a
+vpay popup."** A tab this shop was opened into by somebody else's
+`window.open` has one too, and a payer checking out from it by an ordinary
+redirect reaches this same page — the default `close: true` would have closed
+their tab. The message itself is harmless there: it is pinned to
+`targetOrigin`, so a third-party opener never receives it.
 
 Two things the shop does _not_ treat as authority: the completion message
 (it navigates to the return page, which polls the shop's database) and the
