@@ -16,7 +16,7 @@
  * walkthrough brings the shop container up, waits for its healthcheck and
  * prints its URL, and never places an order. Lane 6's Cypress specs have
  * merged and do click an order through in a real browser, but they assert on
- * the shop's pages and never on `PrismaShopStore` itself — so it still has no
+ * the shop's pages and never on `ZenStackShopStore` itself — so it still has no
  * unit or integration test of its own.
  *
  * `src/testing/` is never imported by anything under `src/app` or

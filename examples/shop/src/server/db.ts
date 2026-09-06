@@ -43,7 +43,7 @@ import { schema, type SchemaType } from "../../zenstack/schema";
  * TypeScript answers `any` for it — which would silently take the model
  * methods' types with it. `ClientContract` is the ORM's own name for the
  * shape, and `$use` returns one too, so the enforced and unenforced clients
- * are the same type and `PrismaShopStore` needs to know nothing about
+ * are the same type and `ZenStackShopStore` needs to know nothing about
  * plugins.
  */
 export type ShopClient = ClientContract<SchemaType>;

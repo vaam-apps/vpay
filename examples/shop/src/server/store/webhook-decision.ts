@@ -1,8 +1,8 @@
 /**
  * The one place that decides what a webhook delivery does to an order.
  *
- * Both `ShopStore` implementations — Prisma and the in-memory one the tests
- * use — call this, so the rule the tests prove is the rule production runs.
+ * Both `ShopStore` implementations — `ZenStackShopStore` and the in-memory
+ * one the tests use — call this, so the rule the tests prove is the rule production runs.
  * Without it the two implementations would each carry their own copy of the
  * dedupe-then-settle logic and only one of them would ever be tested.
  */
