@@ -158,7 +158,7 @@ Error: the CrateStack provider read failed: database: error occurred while decod
 That is `emit/postgres/columns.rs`'s stated reason for never emitting a
 native enum ("the generated row decoders read every enum field with
 `try_get::<String>` and `.parse()`, so a native enum column fails to decode
-on every read", upstream issue #228), reproduced.
+on every read", upstream issue cratestack/cratestack#228), reproduced.
 
 The useful secondary finding: the failure is **sqlx-level, not
 CrateStack-level**. Any Rust reader binding `String` to a native enum column
