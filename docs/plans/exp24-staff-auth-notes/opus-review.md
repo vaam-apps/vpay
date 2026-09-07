@@ -218,6 +218,30 @@ than why it is not: the day something does (an import, a restore), the
 silent-overwrite failure is one staff member's password hash and second factor
 replaced by another account's.
 
+## What the F1/F6 fix cost the exp23 suite, and why that is the finding again
+
+Adding the staff-row read broke **eight of the fifteen** tests in
+`dashboard_read_surface.rs`, all with `403` where they expected `200`. The
+cause is worth writing down because it is F1 restated:
+
+`dashboard_read_surface.rs` mints its own tokens — that is the whole point of
+that suite, which exists to test the resource server rather than the grant —
+with `sub = "stf_0000000000000000000dash"`, a staff member **nobody ever
+created**. Fifteen tests presented a credential for a person who did not
+exist, and nothing noticed, because until this review nothing on that path
+read `staff_members`. The suite's own header says its tokens are "exactly what
+`vpay_api::staff::oauth::token` mints", and they were not: the shipping mint's
+`sub` is `oauth_authorization_codes.staff_id`, a column with a foreign key to
+that table.
+
+Fixed by seeding the row rather than by relaxing the check — the suite now
+presents what the grant can actually produce. And the case it used to
+represent by accident now has a test of its own,
+`a_token_whose_subject_names_no_staff_member_is_refused`, which only this
+suite can express (`staff_sign_in.rs` mints nothing, so its staff row exists
+by construction). It is what a **deleted** account's credential looks like.
+Decisive: adding an `Ok(None) => {}` arm makes it `200`.
+
 ## Storage and secrets
 
 - **The pepper and the TOTP key are never logged.** Every `tracing` call on the

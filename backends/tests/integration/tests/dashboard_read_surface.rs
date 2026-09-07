@@ -169,6 +169,22 @@ impl Harness {
     /// with its own test — it is what every `client_credentials` token looks
     /// like.
     fn staff_token(&self, audience: &str, scope: &str, merchant: Option<&str>) -> String {
+        self.staff_token_for(STAFF_ID, audience, scope, merchant)
+    }
+
+    /// [`Self::staff_token`] with the **subject** a parameter too.
+    ///
+    /// One caller: the test that presents a token for a `stf_…` no
+    /// `staff_members` row names. That is a case only this suite can build —
+    /// `staff_sign_in.rs` mints nothing and every subject it presents came
+    /// out of a real sign-in, so its staff row exists by construction.
+    fn staff_token_for(
+        &self,
+        subject: &str,
+        audience: &str,
+        scope: &str,
+        merchant: Option<&str>,
+    ) -> String {
         let mut extra = std::collections::HashMap::new();
         if let Some(merchant) = merchant {
             extra.insert(
@@ -179,7 +195,7 @@ impl Harness {
         self.signing_key
             .token_manager()
             .issue_user_token_with_extra(
-                vpay_api::op::dashboard::token_identity_for(STAFF_ID),
+                vpay_api::op::dashboard::token_identity_for(subject),
                 TOKEN_TTL_SECS,
                 Some(scope.to_owned()),
                 Some(audience.to_owned()),
@@ -344,6 +360,8 @@ async fn harness_with(dashboard: bool) -> anyhow::Result<Harness> {
     })
     .await?;
 
+    seed_staff(repositories.as_ref()).await?;
+
     Ok(Harness {
         _container: container,
         server: served.server,
@@ -357,6 +375,41 @@ async fn harness_with(dashboard: bool) -> anyhow::Result<Harness> {
 
 async fn harness() -> anyhow::Result<Harness> {
     harness_with(true).await
+}
+
+/// Writes the `staff_members` row every token this suite mints names.
+///
+/// **Required since the exp24 review (findings F1 and F6).**
+/// `require_dashboard_token` reads the row its `sub` names and refuses a
+/// `disabled` one, a missing one, or one whose `merchant_id` is not the
+/// binding — so a token for a `stf_…` nobody created is now a `403`, which is
+/// the right answer and which eight tests here were relying on not happening.
+///
+/// Seeding it is a strengthening rather than a workaround: what this suite
+/// presents is meant to be exactly what the authorization-code grant
+/// produces, and that grant's `sub` is `oauth_authorization_codes.staff_id`,
+/// a column with a foreign key to this table. A token whose subject names no
+/// person was never a thing the shipping mint could produce.
+///
+/// The password hash is a placeholder and is never verified: nothing in this
+/// suite signs in. `staff_sign_in.rs` is where a real credential is exercised.
+async fn seed_staff(repositories: &dyn Repositories) -> anyhow::Result<()> {
+    vpay_db::Staff::create(
+        repositories,
+        vpay_db::NewStaff {
+            id: STAFF_ID.to_owned(),
+            merchant_id: MERCHANT_A.to_owned(),
+            email: "dash-reader@example.test".to_owned(),
+            display_name: "Dash Reader".to_owned(),
+            // Never verified here — see this function's doc.
+            password_hash: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$notarealhash"
+                .to_owned(),
+            now: time::OffsetDateTime::now_utc(),
+        },
+    )
+    .await
+    .context("seeding the staff member every token in this suite names")?;
+    Ok(())
 }
 
 /// Writes one payment intent directly through the repository.
@@ -1262,5 +1315,64 @@ async fn a_write_method_is_refused_by_the_boundary_not_by_the_route_table() -> a
         )
         .await?;
     assert_eq!(head_status, 200);
+    Ok(())
+}
+
+// ------------------------------------------------------------------ test 16
+
+/// **A validly signed, in-audience, in-tenant, in-scope token whose `sub`
+/// names no staff member is refused.**
+///
+/// Added by the exp24 review (findings F1 and F6). `require_dashboard_token`
+/// reads the `staff_members` row its `sub` names, and this is the third of
+/// the three cases that read shares one answer with — the other two are a
+/// `disabled` row and a row belonging to another merchant, both of which
+/// `staff_sign_in.rs` drives through a real sign-in.
+///
+/// This one can only be built here, by minting: a subject with no row is not
+/// something the shipping grant can produce, because
+/// `oauth_authorization_codes.staff_id` has a foreign key to the table. It is
+/// worth pinning anyway, and for a reason the delivered surface makes plain —
+/// **this whole suite minted such tokens for fifteen tests and nothing
+/// noticed**, because until the review nothing on this path read
+/// `staff_members` at all. The refusal is what a deleted account looks like.
+///
+/// The three assertions that make it decisive: the control token works, the
+/// unknown subject is refused, and the refusal carries none of the tenant's
+/// rows.
+#[tokio::test]
+async fn a_token_whose_subject_names_no_staff_member_is_refused() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    seed_intent(harness.repositories.as_ref(), MERCHANT_A, "pi_dash_a_only").await?;
+
+    // The control: everything about this token is right, including its
+    // subject, and it reads.
+    let (status, body) = harness.dash_json("/dash/v1/payment_intents").await?;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body.get("data").and_then(Value::as_array).map(Vec::len),
+        Some(1),
+        "the control reads the bound merchant's intent: {body}"
+    );
+
+    // One thing moved: a subject nobody created.
+    let orphan = harness.staff_token_for(
+        "stf_0000000000000000000ghost",
+        DASHBOARD_CLIENT,
+        DASHBOARD_SCOPE,
+        Some(MERCHANT_A),
+    );
+    let (status, body) = harness
+        .get("/dash/v1/payment_intents", Some(&orphan))
+        .await?;
+    assert_eq!(
+        status, 403,
+        "a token naming a staff member who does not exist must be refused: a deleted account's \
+         credential is not a credential: {body}"
+    );
+    assert!(
+        !body.contains("pi_dash_a_only"),
+        "and the refusal carries none of the tenant's rows: {body}"
+    );
     Ok(())
 }
