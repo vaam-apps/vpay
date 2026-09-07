@@ -51,6 +51,12 @@
 [data-theme='bumblebee'] {
   --color-error-content: oklch(32% 0.13 25.723);
   --color-info-content: oklch(37% 0.09 240.876);
+  /* bumblebee's `--radius-selector: 1rem` turns a 24px checkbox into a full
+   * circle, which on a payment page reads as a radio ("choose one of") for
+   * what is a single opt-in. Decided 2026-09-07 (maintainer's delegate, exp26
+   * Lane B review): a checkbox looks like a checkbox. Toggles and radios are
+   * unaffected — daisyUI rounds those on their own tokens. */
+  --radius-selector: 0.25rem;
 }
 
 /* pnpm sets node-linker=isolated, so @vpay/ui reaches consumers through a
