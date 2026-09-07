@@ -7,8 +7,13 @@
  * other fails the "covers each state the machine can be in" assertion.
  *
  * Picked up by `frontends/packages/ui/.storybook/main.ts`, which is where
- * the a11y addon and the two daisyUI themes are already configured; CI's
- * `web` job builds that Storybook.
+ * the a11y addon and the daisyUI themes are already configured; CI's `web`
+ * job builds that Storybook. **The theme this app itself ships is
+ * `bumblebee` and only that one** (`tailwind.config.ts`), which the shared
+ * Storybook does not know about — a story here is reviewed under whatever
+ * theme that config lists, so it shows the layout and the copy honestly and
+ * the *colour* only approximately. Saying so beats a screenshot nobody
+ * questions.
  */
 import type { Meta, StoryObj } from '@storybook/react';
 
@@ -16,9 +21,11 @@ import { translator, type Locale } from '../i18n/index';
 import type { CheckoutState } from '../lib/machine';
 import { CheckoutView } from './checkout-view';
 import { ReturnView } from './return-view';
+import { makeBranding, makeMemoryControls } from '../testing/fixtures';
 import { CHECKOUT_SCREENS, RETURN_SCREENS } from '../testing/screen-states';
 
 const NOOP = () => undefined;
+const BRANDING = makeBranding();
 
 function Screen({ state, locale }: { state: CheckoutState; locale: Locale }) {
   return (
@@ -26,14 +33,17 @@ function Screen({ state, locale }: { state: CheckoutState; locale: Locale }) {
       state={state}
       t={translator(locale)}
       locale={locale}
+      branding={BRANDING}
       destination="https://shop.example/ok?sid=cs_test_fixture000000000001"
-      secondsLeft={5}
+      defaultMsisdn={null}
+      lastRail={null}
+      memory={makeMemoryControls()}
       onChooseRail={NOOP}
       onBack={NOOP}
       onSubmitMsisdn={NOOP}
       onStartRedirect={NOOP}
       onRetryPoll={NOOP}
-      onContinue={NOOP}
+      onReturnToMerchant={NOOP}
       onLocaleChange={NOOP}
     />
   );
@@ -95,9 +105,9 @@ export const ReturnPolling: Story = {
       state={RETURN_SCREENS['polling']!}
       t={translator('fr')}
       locale="fr"
+      branding={BRANDING}
       destination={null}
-      secondsLeft={null}
-      onContinue={NOOP}
+      onReturnToMerchant={NOOP}
       onLocaleChange={NOOP}
     />
   ),
@@ -110,9 +120,9 @@ export const ReturnSucceeded: Story = {
       state={RETURN_SCREENS['outcome_succeeded']!}
       t={translator('fr')}
       locale="fr"
+      branding={BRANDING}
       destination="https://shop.example/done"
-      secondsLeft={5}
-      onContinue={NOOP}
+      onReturnToMerchant={NOOP}
       onLocaleChange={NOOP}
     />
   ),
@@ -125,9 +135,9 @@ export const ReturnFailed: Story = {
       state={RETURN_SCREENS['outcome_failed']!}
       t={translator('fr')}
       locale="fr"
+      branding={BRANDING}
       destination="https://shop.example/done"
-      secondsLeft={5}
-      onContinue={NOOP}
+      onReturnToMerchant={NOOP}
       onLocaleChange={NOOP}
     />
   ),

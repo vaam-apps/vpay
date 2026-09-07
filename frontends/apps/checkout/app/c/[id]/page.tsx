@@ -1,7 +1,9 @@
 import { headers } from 'next/headers';
 
 import { CheckoutClient } from '../../../src/components/checkout-client';
+import { runtimeConfig } from '../../../src/config/runtime';
 import { pickLocale } from '../../../src/i18n/index';
+import { EMBED_ORIGINS_HEADER, decodeOriginsHeader } from '../../../src/lib/csp';
 import { browserApiBaseUrl } from '../../../src/lib/env';
 
 /**
@@ -25,13 +27,21 @@ export default async function HostedCheckoutPage({
 }) {
   const { id } = await params;
   const requestHeaders = await headers();
+  const { branding, checkout } = runtimeConfig();
   return (
     <CheckoutClient
       sessionId={id}
       apiBaseUrl={browserApiBaseUrl()}
       mode="hosted"
-      allowedOrigins={[]}
+      // Not for framing — this page's CSP is `frame-ancestors 'none'` and
+      // `decideEntry` refuses outright if it finds itself framed. It is the
+      // list an OPENER is matched against when this page is running in a
+      // popup the merchant's script opened (2026-09-06); `middleware.ts`
+      // resolved it server-side from the same lookup the embedded page uses.
+      allowedOrigins={decodeOriginsHeader(requestHeaders.get(EMBED_ORIGINS_HEADER))}
       initialLocale={pickLocale(requestHeaders.get('accept-language'))}
+      branding={branding}
+      settings={checkout}
     />
   );
 }

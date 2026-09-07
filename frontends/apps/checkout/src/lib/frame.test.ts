@@ -21,19 +21,25 @@ interface Harness {
   listenerCount(): number;
 }
 
-function stubWindow(): Harness {
+function stubWindow(peer: 'parent' | 'opener' = 'parent'): Harness {
   const sent: { message: ChildMessage; origin: string }[] = [];
   const listeners = new Set<(event: MessageEvent) => void>();
-  const parent = {
+  const other = {
     postMessage: (message: ChildMessage, origin: string) => {
       sent.push({ message, origin });
     },
   };
   const win = {
-    parent,
+    // A popup's `window.parent` IS the popup: that is exactly the fact that
+    // made the old channel silent in one, so the stub models it.
+    parent: peer === 'opener' ? undefined : other,
+    opener: peer === 'opener' ? other : null,
     addEventListener: (_type: string, fn: (event: MessageEvent) => void) => listeners.add(fn),
     removeEventListener: (_type: string, fn: (event: MessageEvent) => void) => listeners.delete(fn),
   } as unknown as Window;
+  if (peer === 'opener') {
+    (win as unknown as { parent: Window }).parent = win;
+  }
   return {
     win,
     sent,
@@ -125,5 +131,61 @@ describe('createFrameChannel', () => {
     expect(h.listenerCount()).toBe(1);
     channel?.dispose();
     expect(h.listenerCount()).toBe(0);
+  });
+});
+
+describe('a popup, where the peer is the opener', () => {
+  it('opens a channel where the old parent-only one was silent', () => {
+    const h = stubWindow('opener');
+    // The whole defect this fixes: in a popup `window.parent === window`,
+    // so asking for the parent channel answers null and vpay says nothing
+    // to the merchant at all.
+    expect(createFrameChannel({ win: h.win, parentOrigin: PARENT })).toBeNull();
+    const channel = createFrameChannel({ win: h.win, peer: 'opener', parentOrigin: PARENT });
+    expect(channel?.peer).toBe('opener');
+  });
+
+  it('names the opener’s origin as the target of every message — never "*"', () => {
+    const h = stubWindow('opener');
+    const channel = createFrameChannel({ win: h.win, peer: 'opener', parentOrigin: PARENT });
+    channel?.post({ type: 'vpay:complete', session: 'cs_1', status: 'complete' });
+    expect(h.sent).toEqual([
+      { message: { type: 'vpay:complete', session: 'cs_1', status: 'complete' }, origin: PARENT },
+    ]);
+    expect(h.sent.every((entry) => entry.origin !== '*')).toBe(true);
+  });
+
+  it('is null when there is no opener', () => {
+    const h = stubWindow('parent');
+    expect(createFrameChannel({ win: h.win, peer: 'opener', parentOrigin: PARENT })).toBeNull();
+  });
+
+  it('reports no height to an opener, which does not lay this window out', () => {
+    const h = stubWindow('opener');
+    const observed = { getBoundingClientRect: () => ({ height: 480 }) } as unknown as Element;
+    createFrameChannel({ win: h.win, peer: 'opener', parentOrigin: PARENT, observe: observed });
+    // A frame gets a first-paint `vpay:resize` because the parent creates it
+    // at height 0. A popup sizes itself.
+    expect(h.sent).toEqual([]);
+  });
+
+  it('still drops a message from any origin but the opener’s', () => {
+    const h = stubWindow('opener');
+    const seen: unknown[] = [];
+    createFrameChannel({
+      win: h.win,
+      peer: 'opener',
+      parentOrigin: PARENT,
+      onMessage: (data) => seen.push(data),
+    });
+    h.deliver(new MessageEvent('message', { origin: 'https://evil.example', data: { x: 1 } }));
+    expect(seen).toEqual([]);
+    h.deliver(new MessageEvent('message', { origin: PARENT, data: { x: 2 } }));
+    expect(seen).toEqual([{ x: 2 }]);
+  });
+
+  it('still defaults to the parent when no peer is named', () => {
+    const h = stubWindow('parent');
+    expect(createFrameChannel({ win: h.win, parentOrigin: PARENT })?.peer).toBe('parent');
   });
 });

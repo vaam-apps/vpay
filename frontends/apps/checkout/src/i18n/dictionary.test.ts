@@ -40,7 +40,13 @@ describe('the dictionaries', () => {
   });
 
   it('translates every key without leaving a placeholder unfilled', () => {
-    const values = { merchant: 'Boutique', amount: '5 000 FCFA', seconds: 3, rail: 'zzz_pay' };
+    const values = {
+      merchant: 'Boutique',
+      amount: '5 000 FCFA',
+      seconds: 3,
+      rail: 'zzz_pay',
+      contact: 'support@example.test',
+    };
     for (const locale of LOCALES) {
       const t = translator(locale);
       for (const key of KEYS) {

@@ -19,6 +19,10 @@
  * ({@link EMBED_ORIGINS_HEADER}) so the page's own `postMessage` check uses
  * the same list the browser was given, rather than looking it up a second
  * time and possibly getting a different answer.
+ *
+ * Since 2026-09-06 the **hosted** page gets that header too, because it may
+ * be in a popup and needs an origin to post to. Its CSP does not change: see
+ * {@link HOSTED_PATH}.
  */
 import { NextResponse, type NextRequest } from 'next/server';
 
@@ -35,10 +39,33 @@ import { normalizeOrigins } from './src/lib/origins';
 /** `/e/{cs_id}` and nothing else. The hosted and return pages are never framed. */
 const EMBEDDED_PATH = /^\/e\/[^/]+\/?$/;
 
+/**
+ * `/c/{cs_id}` and nothing else — **not** `/c/{cs_id}/return`.
+ *
+ * The hosted page needs the origin list too, since 2026-09-06, for a reason
+ * that has nothing to do with framing: it may be running in a **popup** the
+ * merchant's page opened, and the origin it may `postMessage` to has to come
+ * from the same server-side lookup the embedded page's does. Its CSP is
+ * unaffected and stays `frame-ancestors 'none'` — a hosted page is never
+ * framed, popup or not, and the two uses of this list are kept apart below
+ * so that widening one cannot widen the other.
+ *
+ * The **return** page needs it too, since the maintainer's decision of
+ * 2026-09-06, but for a third reason again: its referrer is the *rail's*
+ * origin, so it resolves an opener by a different rule — the merchant's
+ * single registered origin, where there is exactly one (`soleOrigin`).
+ */
+const HOSTED_PATH = /^\/c\/[^/]+\/?$/;
+
+/** `/c/{cs_id}/return`. Same lookup, `soleOrigin`'s rule, still `frame-ancestors 'none'`. */
+const RETURN_PATH = /^\/c\/[^/]+\/return\/?$/;
+
 export async function middleware(request: NextRequest): Promise<NextResponse> {
+  const path = request.nextUrl.pathname;
+  const embedded = EMBEDDED_PATH.test(path);
   let origins: readonly string[] = [];
 
-  if (EMBEDDED_PATH.test(request.nextUrl.pathname)) {
+  if (embedded || HOSTED_PATH.test(path) || RETURN_PATH.test(path)) {
     const key = request.nextUrl.searchParams.get('key');
     const baseUrl = serverApiBaseUrl();
     if (key !== null && key.length > 0 && baseUrl !== null) {
@@ -55,7 +82,11 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
     response.headers.set(name, value);
   }
-  response.headers.set('Content-Security-Policy', contentSecurityPolicy(origins));
+  // **Only the embedded path's list ever reaches the CSP.** A hosted page is
+  // `frame-ancestors 'none'` whatever the lookup returned; the list it
+  // carries is for `postMessage`, and conflating the two would let a
+  // merchant's popup registration make its hosted page framable.
+  response.headers.set('Content-Security-Policy', contentSecurityPolicy(embedded ? origins : []));
   return response;
 }
 

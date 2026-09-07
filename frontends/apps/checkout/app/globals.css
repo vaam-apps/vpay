@@ -1,3 +1,29 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * The only hand-written CSS in this app.
+ *
+ * Everything else is a daisyUI component class or a Tailwind utility — the
+ * maintainer's "minimal custom CSS" requirement (2026-09-05), and the reason
+ * an operator can retint the whole page by setting two custom properties.
+ *
+ * daisyUI's `loading` spinner and its button focus scale animate
+ * unconditionally. A payer with vestibular sensitivity has asked their
+ * operating system not to; this is where that request is honoured, because
+ * neither Tailwind nor daisyUI carries a `prefers-reduced-motion` rule of
+ * its own. `!important` is load-bearing here rather than lazy: daisyUI's
+ * `.loading` sets `animation` in the same layer, and this rule has to beat
+ * it whatever order the layers land in.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

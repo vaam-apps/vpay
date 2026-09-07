@@ -37,22 +37,33 @@ interface Harness {
   navigated: string[];
   posted: ChildMessage[];
   states: string[];
+  /** How many times `window.close()` would have been called. */
+  closed: () => number;
 }
+
+/**
+ * `false` for a top-level hosted page, `'parent'` for an embedded one,
+ * `'opener'` for a hosted page in a popup the merchant's script opened.
+ */
+type Peer = false | 'parent' | 'opener';
 
 async function harness(
   options: Parameters<typeof startCheckoutStub>[0] = {},
-  framed = false,
+  framed: Peer = false,
+  openerState: { present: boolean; closed: boolean } = { present: true, closed: false },
 ): Promise<Harness> {
   const stub = await startCheckoutStub(options);
   open = stub;
   const navigated: string[] = [];
   const posted: ChildMessage[] = [];
   const channel: FrameChannel = {
+    peer: framed === 'opener' ? 'opener' : 'parent',
     parentOrigin: 'https://shop.example',
     post: (message) => posted.push(message),
     postHeight: () => undefined,
     dispose: () => undefined,
   };
+  let closes = 0;
   const stripe = await loadStripe(stub.publishableKey, { baseUrl: stub.url });
   const controller = new CheckoutController({
     sessionId: stub.sessionId,
@@ -60,13 +71,18 @@ async function harness(
     api: new BrowserCheckoutApi({ baseUrl: stub.url }),
     stripe,
     navigate: (url) => navigated.push(url),
-    channel: framed ? channel : null,
+    closeWindow: () => {
+      closes += 1;
+    },
+    opener: () =>
+      openerState.present ? ({ closed: openerState.closed } as unknown as Window) : null,
+    channel: framed === false ? null : channel,
     pollIntervalMs: 1,
     pollTimeoutMs: 4_000,
   });
   const states: string[] = [];
   controller.subscribe((state) => states.push(state.name));
-  return { stub, controller, navigated, posted, states };
+  return { stub, controller, navigated, posted, states, closed: () => closes };
 }
 
 describe('the MTN push, end to end', () => {
@@ -165,7 +181,7 @@ describe('the Orange redirect', () => {
   });
 
   it('asks the parent to navigate when framed, and never navigates itself', async () => {
-    const h = await harness({ paymentMethodTypes: ['orange_money'] }, true);
+    const h = await harness({ paymentMethodTypes: ['orange_money'] }, 'parent');
     await h.controller.start();
     await h.controller.startRedirect();
     expect(h.navigated).toEqual([]);
@@ -369,7 +385,7 @@ describe('sessions that cannot be paid', () => {
 
 describe('the embedded protocol', () => {
   it('posts vpay:complete with the session id and the session’s own refreshed status', async () => {
-    const h = await harness({ pollsBeforeTerminal: 0, uiMode: 'embedded' }, true);
+    const h = await harness({ pollsBeforeTerminal: 0, uiMode: 'embedded' }, 'parent');
     await h.controller.start();
     await h.controller.submitMsisdn(VALID_MSISDN);
     expect(h.posted).toEqual([
@@ -378,7 +394,7 @@ describe('the embedded protocol', () => {
   });
 
   it('never carries a secret in a vpay:complete message', async () => {
-    const h = await harness({ pollsBeforeTerminal: 0, uiMode: 'embedded' }, true);
+    const h = await harness({ pollsBeforeTerminal: 0, uiMode: 'embedded' }, 'parent');
     await h.controller.start();
     await h.controller.submitMsisdn(VALID_MSISDN);
     const serialised = JSON.stringify(h.posted);
@@ -387,7 +403,7 @@ describe('the embedded protocol', () => {
   });
 
   it('asks the parent to perform the forward rather than navigating the frame', async () => {
-    const h = await harness({ pollsBeforeTerminal: 0, uiMode: 'embedded' }, true);
+    const h = await harness({ pollsBeforeTerminal: 0, uiMode: 'embedded' }, 'parent');
     await h.controller.start();
     await h.controller.submitMsisdn(VALID_MSISDN);
     h.controller.forward('https://shop.example/done');
@@ -396,6 +412,74 @@ describe('the embedded protocol', () => {
       type: 'vpay:redirect',
       url: 'https://shop.example/done',
     });
+  });
+});
+
+describe('the popup protocol', () => {
+  it('tells the opener once, then closes the window rather than navigating it', async () => {
+    const h = await harness({ pollsBeforeTerminal: 0 }, 'opener');
+    await h.controller.start();
+    await h.controller.submitMsisdn(VALID_MSISDN);
+    // The outcome itself already told the opener.
+    expect(h.posted).toEqual([
+      { type: 'vpay:complete', session: h.stub.sessionId, status: 'complete' },
+    ]);
+
+    h.controller.forward('https://shop.example/ok');
+    // Not navigated: the merchant's own page is where the payer is going
+    // back to, and pointing this popup at `success_url` would leave that
+    // page untouched behind a second copy of itself.
+    expect(h.navigated).toEqual([]);
+    expect(h.closed()).toBe(1);
+  });
+
+  it('posts vpay:complete exactly once, however many moments could', async () => {
+    const h = await harness({ pollsBeforeTerminal: 0 }, 'opener');
+    await h.controller.start();
+    await h.controller.submitMsisdn(VALID_MSISDN);
+    h.controller.forward('https://shop.example/ok');
+    h.controller.forward('https://shop.example/ok');
+    // A merchant that treats `onComplete` as a cue to create an order would
+    // create two.
+    expect(h.posted.filter((m) => m.type === 'vpay:complete')).toHaveLength(1);
+  });
+
+  it('navigates itself when the opener has gone, so the payer is never left on a dead window', async () => {
+    for (const opener of [
+      { present: false, closed: false },
+      { present: true, closed: true },
+    ]) {
+      const h = await harness({ pollsBeforeTerminal: 0 }, 'opener', opener);
+      await h.controller.start();
+      await h.controller.submitMsisdn(VALID_MSISDN);
+      h.controller.forward('https://shop.example/ok');
+      expect(h.navigated).toEqual(['https://shop.example/ok']);
+      expect(h.closed()).toBe(0);
+      await open?.close();
+      open = null;
+    }
+  });
+
+  it('navigates itself to the rail rather than asking the opener to', async () => {
+    // The frame delegates because it may not navigate the top level. A popup
+    // IS a top-level browsing context; asking the opener would send the
+    // MERCHANT's page to Orange Money out from under the payer.
+    const h = await harness({ paymentMethodTypes: ['orange_money'] }, 'opener');
+    await h.controller.start();
+    await h.controller.startRedirect();
+    expect(h.controller.state.name).toBe('redirecting');
+    expect(h.posted.filter((m) => m.type === 'vpay:redirect')).toEqual([]);
+    expect(h.navigated).toHaveLength(1);
+  });
+
+  it('never carries a secret to an opener either', async () => {
+    const h = await harness({ pollsBeforeTerminal: 0 }, 'opener');
+    await h.controller.start();
+    await h.controller.submitMsisdn(VALID_MSISDN);
+    h.controller.forward('https://shop.example/ok');
+    const serialised = JSON.stringify(h.posted);
+    expect(serialised).not.toContain(h.stub.sessionSecret);
+    expect(serialised).not.toContain(h.stub.intentSecret);
   });
 });
 

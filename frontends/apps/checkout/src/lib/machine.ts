@@ -17,6 +17,7 @@
 import type { FailureCode, PaymentIntentStatus } from '@vaam-apps/vpay-stripe-js';
 
 import type { MessageKey } from '../i18n/index';
+import { providerReason } from './failures';
 import { railChoices, type RailChoices, type SupportedRail } from './rails';
 import type {
   CheckoutError,
@@ -40,9 +41,35 @@ export interface CheckoutContext {
    * string, or an identifier standing in for a name.
    */
   merchant: CheckoutMerchant | null;
+  /**
+   * The deployment's `checkout.allowed_methods` (`config.yaml`), or `null`
+   * for "no opinion".
+   *
+   * It is the operator's policy rather than anything about this payment, and
+   * it is carried here for one reason: this reducer is **pure**, so it
+   * cannot read a configuration file, an environment variable or a React
+   * context. The alternative — a third argument threaded through every
+   * `reduce` call — would put the policy somewhere a test could forget to
+   * pass it. It can only narrow: see `railChoices`.
+   */
+  allowedMethods: readonly string[] | null;
 }
 
 export type OutcomeKind = 'succeeded' | 'failed' | 'canceled';
+
+/**
+ * How a payment ended: the kind, the closed-vocabulary code, and the rail's
+ * own sentence where the API gave one.
+ *
+ * `reason` is **not** a substitute for `failure` and never renders on its
+ * own: `failures.ts` explains why one is translated and the other is shown
+ * as data.
+ */
+export interface Outcome {
+  kind: OutcomeKind;
+  failure: FailureCode | null;
+  reason: string | null;
+}
 
 /**
  * The browser read → the context the machine carries.
@@ -59,6 +86,7 @@ export function contextOf(
     payment_intent: PaymentIntent | PublicPaymentIntent;
     merchant?: CheckoutMerchant | undefined;
   },
+  allowedMethods: readonly string[] | null = null,
 ): CheckoutContext {
   const {
     payment_intent: intent,
@@ -73,7 +101,7 @@ export function contextOf(
   // ever serialises a state — a devtools snapshot, an error report, a
   // `postMessage` written in a hurry. `secrets.test.ts` and
   // `machine.test.ts` both pin its absence.
-  return { session, intent, merchant };
+  return { session, intent, merchant, allowedMethods };
 }
 
 /**
@@ -146,6 +174,8 @@ export type CheckoutState =
       context: CheckoutContext;
       kind: OutcomeKind;
       failure: FailureCode | null;
+      /** The rail's own words, cleaned by `providerReason`, or `null`. */
+      reason: string | null;
     }
   | { name: 'forwarding'; context: CheckoutContext; kind: OutcomeKind; url: string };
 
@@ -173,18 +203,20 @@ export const INITIAL_STATE: CheckoutState = { name: 'loading' };
  * completed" on a page the payer just opened. Same reading as
  * `@vaam-apps/vpay-stripe-js`'s `hasStoppedMoving`, deliberately.
  */
-export function intentOutcome(
-  intent: PaymentIntent | PublicPaymentIntent,
-): { kind: OutcomeKind; failure: FailureCode | null } | null {
+export function intentOutcome(intent: PaymentIntent | PublicPaymentIntent): Outcome | null {
   const status: PaymentIntentStatus = intent.status;
   if (status === 'succeeded') {
-    return { kind: 'succeeded', failure: null };
+    return { kind: 'succeeded', failure: null, reason: null };
   }
   if (status === 'canceled') {
-    return { kind: 'canceled', failure: null };
+    return { kind: 'canceled', failure: null, reason: null };
   }
   if (status === 'requires_payment_method' && intent.last_payment_error !== null) {
-    return { kind: 'failed', failure: intent.last_payment_error.code };
+    return {
+      kind: 'failed',
+      failure: intent.last_payment_error.code,
+      reason: providerReason(intent.last_payment_error.message),
+    };
   }
   return null;
 }
@@ -202,7 +234,7 @@ export function stateForContext(context: CheckoutContext): CheckoutState {
   const { session, intent } = context;
 
   if (session.status === 'complete') {
-    return { name: 'outcome', context, kind: 'succeeded', failure: null };
+    return { name: 'outcome', context, kind: 'succeeded', failure: null, reason: null };
   }
   if (session.status === 'expired') {
     if (session.payment_status === 'failed') {
@@ -212,6 +244,7 @@ export function stateForContext(context: CheckoutContext): CheckoutState {
         context,
         kind: outcome?.kind ?? 'failed',
         failure: outcome?.failure ?? null,
+        reason: outcome?.reason ?? null,
       };
     }
     return { name: 'expired', context };
@@ -219,10 +252,16 @@ export function stateForContext(context: CheckoutContext): CheckoutState {
 
   const outcome = intentOutcome(intent);
   if (outcome !== null) {
-    return { name: 'outcome', context, kind: outcome.kind, failure: outcome.failure };
+    return {
+      name: 'outcome',
+      context,
+      kind: outcome.kind,
+      failure: outcome.failure,
+      reason: outcome.reason,
+    };
   }
 
-  const rails = railChoices(intent);
+  const rails = railChoices(intent, context.allowedMethods);
 
   if (intent.status === 'processing' || intent.status === 'requires_action') {
     // Already confirmed — a reload, or a payer coming back to the tab. The
@@ -307,7 +346,11 @@ export function reduce(state: CheckoutState, event: CheckoutEvent): CheckoutStat
         // A confirm that never reached the rail returns the payer to the
         // screen they submitted from, with the reason shown there.
         return {
-          ...entryStateFor(state.context, railChoices(state.context.intent), state.rail),
+          ...entryStateFor(
+            state.context,
+            railChoices(state.context.intent, state.context.allowedMethods),
+            state.rail,
+          ),
           problem: event.problem,
         } as CheckoutState;
       }
@@ -325,7 +368,13 @@ export function reduce(state: CheckoutState, event: CheckoutEvent): CheckoutStat
       const context: CheckoutContext = { ...state.context, intent: event.intent };
       const outcome = intentOutcome(event.intent);
       if (outcome !== null) {
-        return { name: 'outcome', context, kind: outcome.kind, failure: outcome.failure };
+        return {
+          name: 'outcome',
+          context,
+          kind: outcome.kind,
+          failure: outcome.failure,
+          reason: outcome.reason,
+        };
       }
       return { name: 'waiting', context, rail: state.rail, notice: null };
     }

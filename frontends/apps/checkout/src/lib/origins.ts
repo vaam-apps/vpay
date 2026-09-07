@@ -78,6 +78,30 @@ export function normalizeOrigins(raw: readonly string[]): readonly string[] {
 }
 
 /**
+ * The merchant's origin when it has registered **exactly one**, else `null`.
+ *
+ * The return page's rule, and only its rule (2026-09-06, the maintainer's
+ * decision). After a rail's redirect, `document.referrer` is the *rail's*
+ * origin, so {@link resolveParentOrigin} has nothing to match and the page
+ * would open no channel at all — leaving a payer who paid through a popup
+ * with a merchant window that never hears. Where a merchant has registered
+ * one origin there is no ambiguity about who the message was for: it is the
+ * only party that could ever have been the recipient, so the worst case is a
+ * message delivered to its intended reader.
+ *
+ * **Two or more, and this answers `null`.** Picking one of several would be
+ * choosing a `postMessage` target by guess, on a page that has just come back
+ * from a third party. Zero is `null` for the reason it always is: an empty
+ * `checkout_origins` is the default and means no site may be talked to.
+ *
+ * Not used by the payment page, which has a real referrer to match.
+ */
+export function soleOrigin(allowed: readonly string[]): string | null {
+  const normalized = normalizeOrigins(allowed);
+  return normalized.length === 1 ? (normalized[0] as string) : null;
+}
+
+/**
  * The single origin that framed this page, or `null` when there is not
  * exactly one that is allowed.
  *
@@ -92,6 +116,10 @@ export function normalizeOrigins(raw: readonly string[]): readonly string[] {
  * An empty referrer (a `Referrer-Policy` on the embedder that strips it, a
  * direct navigation) yields `null`: this page refuses rather than guessing,
  * because the alternative is a `postMessage` with no target it can name.
+ *
+ * Also the rule a POPUP's opener is resolved by (2026-09-06) — same referrer,
+ * same list, same refusal. The return page is the one caller that cannot use
+ * it, and {@link soleOrigin} says why.
  */
 export function resolveParentOrigin(
   referrer: string | null | undefined,

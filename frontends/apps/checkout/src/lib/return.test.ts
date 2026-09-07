@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { startCheckoutStub, type CheckoutStub } from '../testing/browser-stub';
 import { makePublicIntent, makeSession } from '../testing/fixtures';
 import { BrowserCheckoutApi } from './api';
+import type { ChildMessage, FrameChannel } from './frame';
 import { ReturnController, reduceReturn, stateForReturn, type ReturnState } from './return';
 
 let open: CheckoutStub | null = null;
@@ -157,5 +158,106 @@ describe('the return controller against the stub', () => {
     });
     await controller.start();
     expect(controller.state).toMatchObject({ name: 'polling', notice: 'error.network' });
+  });
+});
+
+describe('the return page as the last screen of a popup', () => {
+  /** A popup-shaped controller over the stub, with the opener recorded. */
+  async function popup(
+    options: Parameters<typeof startCheckoutStub>[0] = {},
+    openerState: { present: boolean; closed: boolean } = { present: true, closed: false },
+  ) {
+    const stub = await startCheckoutStub(options);
+    open = stub;
+    // Put the intent in flight the way an Orange confirm does, exactly as
+    // `drive` above: this controller holds no credential that could confirm.
+    await fetch(`${stub.url}/v1/browser/payment_intents/pi_test_stub0000000000000001/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        key: stub.publishableKey,
+        client_secret: stub.intentSecret,
+        'payment_method_data[type]': 'orange_money',
+      }).toString(),
+    });
+    const navigated: string[] = [];
+    const posted: ChildMessage[] = [];
+    let closes = 0;
+    const channel: FrameChannel = {
+      peer: 'opener',
+      parentOrigin: 'https://shop.example',
+      post: (message) => posted.push(message),
+      postHeight: () => undefined,
+      dispose: () => undefined,
+    };
+    const controller = new ReturnController({
+      sessionId: stub.sessionId,
+      credentials: { key: stub.publishableKey, returnToken: stub.returnToken },
+      api: new BrowserCheckoutApi({ baseUrl: stub.url }),
+      navigate: (url) => navigated.push(url),
+      closeWindow: () => {
+        closes += 1;
+      },
+      opener: () =>
+        openerState.present ? ({ closed: openerState.closed } as unknown as Window) : null,
+      channel,
+      intervalMs: 0,
+      timeoutMs: 2_000,
+      sleep: () => Promise.resolve(),
+    });
+    return { stub, controller, navigated, posted, closed: () => closes };
+  }
+
+  it('tells the opener the payment settled, with the session id and no secret', async () => {
+    const d = await popup({ pollsBeforeTerminal: 0 });
+    await d.controller.start();
+    expect(d.posted).toEqual([
+      { type: 'vpay:complete', session: d.stub.sessionId, status: 'complete' },
+    ]);
+    const serialised = JSON.stringify(d.posted);
+    expect(serialised).not.toContain(d.stub.returnToken);
+    expect(serialised).not.toContain('_secret_');
+  });
+
+  it('posts vpay:complete exactly once, outcome and button press together', async () => {
+    const d = await popup({ pollsBeforeTerminal: 0 });
+    await d.controller.start();
+    d.controller.forward('https://shop.example/done');
+    d.controller.forward('https://shop.example/done');
+    expect(d.posted.filter((m) => m.type === 'vpay:complete')).toHaveLength(1);
+  });
+
+  it('closes the popup on the button rather than navigating it', async () => {
+    const d = await popup({ pollsBeforeTerminal: 0 });
+    await d.controller.start();
+    d.controller.forward('https://shop.example/done');
+    expect(d.navigated).toEqual([]);
+    expect(d.closed()).toBe(1);
+  });
+
+  it('navigates itself when the opener has gone', async () => {
+    for (const opener of [
+      { present: false, closed: false },
+      { present: true, closed: true },
+    ]) {
+      const d = await popup({ pollsBeforeTerminal: 0 }, opener);
+      await d.controller.start();
+      d.controller.forward('https://shop.example/done');
+      expect(d.navigated).toEqual(['https://shop.example/done']);
+      expect(d.closed()).toBe(0);
+      await open?.close();
+      open = null;
+    }
+  });
+
+  it('never posts to "*" — the target is the pinned origin on every message', async () => {
+    // The channel itself is what names the target (`frame.test.ts` pins
+    // that); what this asserts is that the return page uses the pinned
+    // channel and never reaches for `window.opener.postMessage` itself.
+    const d = await popup({ pollsBeforeTerminal: 0 });
+    await d.controller.start();
+    d.controller.forward('https://shop.example/done');
+    expect(d.posted.length).toBeGreaterThan(0);
+    expect(JSON.stringify(d.posted)).not.toContain('"*"');
   });
 });

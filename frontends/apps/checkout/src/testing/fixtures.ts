@@ -11,6 +11,8 @@
  */
 import type { PaymentIntent } from '@vaam-apps/vpay-stripe-js';
 
+import type { MemoryControls } from '../components/screens';
+import type { Branding } from '../config/settings';
 import type { CheckoutContext } from '../lib/machine';
 import type { CheckoutSession, PublicPaymentIntent } from '../lib/types';
 
@@ -61,15 +63,52 @@ export function makePublicIntent(overrides: Partial<PaymentIntent> = {}): Public
   return rest;
 }
 
-/** `merchantName: null` builds the context of a read that carried no usable name. */
+/**
+ * `merchantName: null` builds the context of a read that carried no usable
+ * name; `allowedMethods` is the deployment's `config.yaml` policy, `null`
+ * for a deployment with no opinion (which is every fixture but the ones
+ * about the allow-list itself).
+ */
 export function makeContext(
   session: Partial<CheckoutSession> = {},
   intent: Partial<PaymentIntent> = {},
   merchantName: string | null = 'Boutique Test',
+  allowedMethods: readonly string[] | null = null,
 ): CheckoutContext {
   return {
     session: makeSession(session),
     intent: makeIntent(intent),
     merchant: merchantName === null ? null : { name: merchantName },
+    allowedMethods,
+  };
+}
+
+/**
+ * `branding.yaml` as a deployment that configured nothing gets it.
+ *
+ * The default rather than a filled-in one, because that is what every
+ * screen story and most assertions are about: the page as it renders with
+ * no files mounted. The tests that are *about* branding pass overrides.
+ */
+export function makeBranding(overrides: Partial<Branding> = {}): Branding {
+  return {
+    displayName: null,
+    logoUrl: null,
+    primaryColor: null,
+    supportContact: null,
+    ...overrides,
+  };
+}
+
+/** Page memory offered, nothing remembered, box unticked — the first visit. */
+export function makeMemoryControls(overrides: Partial<MemoryControls> = {}): MemoryControls {
+  return {
+    offered: true,
+    remember: false,
+    onRememberChange: () => undefined,
+    hasRecord: false,
+    onForget: () => undefined,
+    forgotten: false,
+    ...overrides,
   };
 }

@@ -5,20 +5,30 @@
  * been to the rail. What it can show is "still waiting for the rail's
  * answer", an outcome, an expired session, or a read it could not make.
  */
+import type { Branding } from '../config/settings';
 import type { Locale, Translate } from '../i18n/index';
 import { failureMessage } from '../lib/failures';
 import { formatAmount } from '../lib/money';
 import type { ReturnState } from '../lib/return';
 import { LocaleSwitch } from './locale-switch';
-import { NoticePanel, OutcomePanel, PaymentSummary, StatusPanel, merchantLine } from './screens';
+import {
+  BrandHeader,
+  NoticePanel,
+  OutcomePanel,
+  PaymentSummary,
+  StatusPanel,
+  SupportLine,
+  merchantLine,
+} from './screens';
 
 export interface ReturnViewProps {
   state: ReturnState;
   t: Translate;
   locale: Locale;
+  branding: Branding;
   destination: string | null;
-  secondsLeft: number | null;
-  onContinue: () => void;
+  /** The outcome screen's one control. No timer runs beside it on this page either. */
+  onReturnToMerchant: () => void;
   onLocaleChange: (locale: Locale) => void;
 }
 
@@ -32,7 +42,7 @@ export function ReturnView(props: ReturnViewProps) {
   return (
     <main className="mx-auto flex w-full max-w-md flex-col gap-6 p-6">
       <header className="flex items-center justify-between gap-4">
-        <h1 className="text-lg font-semibold">{t('page.title')}</h1>
+        <BrandHeader t={t} branding={props.branding} />
         <LocaleSwitch t={t} locale={locale} onChange={props.onLocaleChange} />
       </header>
 
@@ -86,11 +96,11 @@ export function ReturnView(props: ReturnViewProps) {
                   t={t}
                   kind={state.kind}
                   failure={failureMessage(state.failure)}
+                  reason={state.reason}
                   merchant={merchant}
                   amount={amount}
                   destination={props.destination}
-                  secondsLeft={props.secondsLeft}
-                  onContinue={props.onContinue}
+                  onBack={props.onReturnToMerchant}
                 />
               );
             case 'forwarding':
@@ -98,13 +108,12 @@ export function ReturnView(props: ReturnViewProps) {
                 <StatusPanel
                   t={t}
                   screen="forwarding"
-                  title={t('outcome.continue')}
+                  title={t('state.forwarding_title')}
                   body={merchantLine(
                     t,
                     merchant,
-                    'outcome.auto_forward',
-                    'outcome.auto_forward_unnamed',
-                    { seconds: 0 },
+                    'state.forwarding_body',
+                    'state.forwarding_body_unnamed',
                   )}
                 />
               );
@@ -115,6 +124,8 @@ export function ReturnView(props: ReturnViewProps) {
           }
         })()}
       </div>
+
+      <SupportLine t={t} branding={props.branding} />
     </main>
   );
 }

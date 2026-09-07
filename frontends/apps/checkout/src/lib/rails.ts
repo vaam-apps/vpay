@@ -46,13 +46,28 @@ export interface RailChoices {
   unsupported: string[];
 }
 
-/** Splits an intent's `payment_method_types` into what this page can and cannot do. */
-export function railChoices(intent: PaymentIntent | PublicPaymentIntent): RailChoices {
+/**
+ * Splits an intent's `payment_method_types` into what this page can and
+ * cannot do, narrowed by the deployment's own allow-list.
+ *
+ * `allowed` is `checkout.allowed_methods` from the operator's `config.yaml`,
+ * or `null` for "no opinion". It can only ever **narrow**: the intent's list
+ * is what the merchant chose and the server validated, and a code an
+ * operator allows that the intent does not offer adds nothing. A rail the
+ * intent offers and the operator excludes lands in `unsupported`, so the
+ * payer is *told* rather than shown a shorter list with no explanation — the
+ * same treatment D9 gives a rail this page has no flow for, for the same
+ * reason: a payer who cannot pay must learn it before they try.
+ */
+export function railChoices(
+  intent: PaymentIntent | PublicPaymentIntent,
+  allowed: readonly string[] | null = null,
+): RailChoices {
   const supported: SupportedRail[] = [];
   const unsupported: string[] = [];
   for (const code of intent.payment_method_types) {
     const entry = RAIL_PAGE_FLOWS[code];
-    if (entry === undefined) {
+    if (entry === undefined || (allowed !== null && !allowed.includes(code))) {
       unsupported.push(code);
       continue;
     }

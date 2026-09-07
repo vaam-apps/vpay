@@ -8,6 +8,7 @@
  * drive). A screenshot of a state nobody can produce is how a page ends up
  * with a branch that has never rendered.
  */
+import type { Branding } from '../config/settings';
 import type { Locale, MessageKey, Translate } from '../i18n/index';
 import { failureMessage } from '../lib/failures';
 import type { CheckoutState } from '../lib/machine';
@@ -15,6 +16,7 @@ import { formatAmount } from '../lib/money';
 import type { SupportedRail } from '../lib/rails';
 import { LocaleSwitch } from './locale-switch';
 import {
+  BrandHeader,
   MsisdnForm,
   NoticePanel,
   OutcomePanel,
@@ -22,7 +24,9 @@ import {
   RailSelector,
   RedirectPrompt,
   StatusPanel,
+  SupportLine,
   merchantLine,
+  type MemoryControls,
 } from './screens';
 
 export interface CheckoutViewHandlers {
@@ -31,7 +35,8 @@ export interface CheckoutViewHandlers {
   onSubmitMsisdn: (msisdn: string) => void;
   onStartRedirect: () => void;
   onRetryPoll: () => void;
-  onContinue: () => void;
+  /** The outcome screen's one control. Named for what it does: there is no timer behind it. */
+  onReturnToMerchant: () => void;
   onLocaleChange: (locale: Locale) => void;
 }
 
@@ -39,10 +44,16 @@ export interface CheckoutViewProps extends CheckoutViewHandlers {
   state: CheckoutState;
   t: Translate;
   locale: Locale;
-  /** Where Continue would send the payer, or `null`. Computed by the caller from the session. */
+  /** The deployment's own `branding.yaml`, read at container start. */
+  branding: Branding;
+  /** Where the outcome screen's button sends the payer, or `null`. Computed by the caller from the session. */
   destination: string | null;
-  /** Seconds left on the auto-forward, or `null` when there is nothing to count down to. */
-  secondsLeft: number | null;
+  /** What this device remembered, already resolved. `null` for nothing. */
+  defaultMsisdn: string | null;
+  /** The rail this device last paid with, marked in the selector. Never preselected. */
+  lastRail: string | null;
+  /** The opt-in, its state, and the way to clear it. */
+  memory: MemoryControls;
 }
 
 /** The session-bearing states, so the summary is rendered once rather than per screen. */
@@ -63,7 +74,7 @@ export function CheckoutView(props: CheckoutViewProps) {
   return (
     <main className="mx-auto flex w-full max-w-md flex-col gap-6 p-6">
       <header className="flex items-center justify-between gap-4">
-        <h1 className="text-lg font-semibold">{t('page.title')}</h1>
+        <BrandHeader t={t} branding={props.branding} />
         <LocaleSwitch t={t} locale={locale} onChange={props.onLocaleChange} />
       </header>
 
@@ -85,6 +96,8 @@ export function CheckoutView(props: CheckoutViewProps) {
       <div aria-live="polite" aria-atomic="true" data-testid="live-region">
         {renderScreen(props, amount, merchant)}
       </div>
+
+      <SupportLine t={t} branding={props.branding} />
     </main>
   );
 }
@@ -138,7 +151,14 @@ function renderScreen(
       );
 
     case 'select_rail':
-      return <RailSelector t={t} rails={state.rails} onChoose={props.onChooseRail} />;
+      return (
+        <RailSelector
+          t={t}
+          rails={state.rails}
+          lastRail={props.lastRail}
+          onChoose={props.onChooseRail}
+        />
+      );
 
     case 'collect_msisdn':
       return (
@@ -148,6 +168,8 @@ function renderScreen(
           rail={state.rail}
           problem={state.problem}
           canGoBack={state.rails.supported.length > 1}
+          defaultMsisdn={props.defaultMsisdn}
+          memory={props.memory}
           onSubmit={props.onSubmitMsisdn}
           onBack={props.onBack}
         />
@@ -161,6 +183,7 @@ function renderScreen(
           rail={state.rail}
           problem={state.problem}
           canGoBack={state.rails.supported.length > 1}
+          memory={props.memory}
           onContinue={props.onStartRedirect}
           onBack={props.onBack}
         />
@@ -197,11 +220,11 @@ function renderScreen(
           t={t}
           kind={state.kind}
           failure={failureMessage(state.failure)}
+          reason={state.reason}
           merchant={merchant}
           amount={amount}
           destination={props.destination}
-          secondsLeft={props.secondsLeft}
-          onContinue={props.onContinue}
+          onBack={props.onReturnToMerchant}
         />
       );
 
@@ -210,10 +233,13 @@ function renderScreen(
         <StatusPanel
           t={t}
           screen="forwarding"
-          title={t('outcome.continue')}
-          body={merchantLine(t, merchant, 'outcome.auto_forward', 'outcome.auto_forward_unnamed', {
-            seconds: 0,
-          })}
+          title={t('state.forwarding_title')}
+          body={merchantLine(
+            t,
+            merchant,
+            'state.forwarding_body',
+            'state.forwarding_body_unnamed',
+          )}
         />
       );
 

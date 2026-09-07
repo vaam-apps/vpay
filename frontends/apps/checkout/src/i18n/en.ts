@@ -25,6 +25,15 @@ export const en = {
   'page.amount_label': 'Amount',
   'page.reference_label': 'Reference',
   'page.testmode': 'Test mode — no money moves on this deployment.',
+  /*
+   * Branding, from the deployment's own `branding.yaml` (runtime, not build
+   * time). `page.operator` is the **operator's** name — whose vpay this is —
+   * and never the merchant's: what a payer is told they are paying comes
+   * from the session, and putting the operator's name there would name the
+   * wrong party.
+   */
+  'page.operator_logo_alt': 'Logo',
+  'page.support': 'Support: {contact}',
 
   'locale.label': 'Language',
   'locale.en': 'English',
@@ -56,10 +65,25 @@ export const en = {
   'outcome.failed_title': 'Payment not completed',
   'outcome.canceled_title': 'Payment canceled',
   'outcome.canceled_body': 'This payment was canceled. Nothing was taken.',
-  'outcome.continue': 'Continue',
-  'outcome.auto_forward': 'Returning to {merchant} in {seconds} s.',
-  'outcome.auto_forward_unnamed': 'Returning in {seconds} s.',
+  /*
+   * The one control on an outcome screen, and the reason there is no
+   * countdown beside it: this page never navigates on its own. A payer
+   * reading "your payment failed" on a handset in a shop is not a payer who
+   * should be moved off it by a clock.
+   */
+  'outcome.back_to': 'Back to {merchant}',
+  'outcome.back_to_unnamed': 'Back to the shop',
   'outcome.no_destination': 'This payment is finished. You can close this page.',
+  /*
+   * The rail's own words, where the API gave any. Shown as data under the
+   * translated sentence — never instead of it: it arrives in whatever
+   * language the provider writes in, and this page does not control it.
+   */
+  'outcome.provider_said': 'What the payment provider said',
+
+  'state.forwarding_title': 'Taking you back',
+  'state.forwarding_body': 'Returning you to {merchant}.',
+  'state.forwarding_body_unnamed': 'Returning you to the shop.',
 
   'failure.insufficient_funds': 'There was not enough money in the account.',
   'failure.payer_timeout': 'You did not approve the payment in time.',
@@ -86,6 +110,19 @@ export const en = {
   'error.missing_secret': 'This link is missing the credential that unlocks the payment.',
   'error.missing_return_token': 'This return link is missing its token.',
   'error.retry': 'Try again',
+
+  /*
+   * Page memory (`src/lib/memory.ts`). `memory.warning` is on the checkbox
+   * itself, not in a tooltip: the cost of ticking it lands on whoever uses
+   * the handset next, and that is not a detail to hide behind an icon.
+   */
+  'memory.remember_number': 'Remember this number on this device',
+  'memory.remember_method': 'Remember {rail} on this device',
+  'memory.warning':
+    'Anyone else who uses this device will see it. Do not tick this on a shared or borrowed phone.',
+  'memory.forget': 'Forget what this device remembers',
+  'memory.forgotten': 'This device remembers nothing now.',
+  'memory.last_used': 'Last used',
 
   'refusal.embed_title': 'This page will not load here',
   'refusal.embed_body':

@@ -13,11 +13,13 @@
     "lint": "pnpm run deps && eslint . --max-warnings 0"
   },
   "dependencies": {
+    "@base-ui-components/react": "1.0.0-rc.0",
     "@vaam-apps/vpay-stripe-js": "workspace:*",
     "@vpay/tokens": "workspace:*",
     "next": "^15.5.25",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "@storybook/react": "^8.4.0",

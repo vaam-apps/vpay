@@ -202,11 +202,14 @@ reach twice.
                     │ poll  /v1/browser/payment_intents/{id}
                     ▼
                  outcome  (succeeded │ failed │ canceled)
-                    │
+                    │ the payer presses "Back to {merchant}"
                     ▼
                forwarding ──► success_url / cancel_url (hosted)
                               return_url + vpay:complete (embedded)
 ```
+
+**Nothing on that diagram happens on a timer.** The one arrow out of
+`outcome` is a button press. See "The outcome screens" below.
 
 The return page is its own document with its own smaller machine: it holds no
 intent secret, so it has **no confirm transition at all** — it polls the return
@@ -227,6 +230,181 @@ Three properties worth stating because each is a test:
   `Intl.NumberFormat` formats that string. `minor / 100` would be float
   arithmetic in a money path, which the Rust half of this repository denies
   workspace-wide ([money.md](money.md)).
+
+## The outcome screens
+
+*Changed 2026-09-06 (the maintainer's requirement of 2026-09-05).*
+
+Every outcome — succeeded, failed, canceled — ends in **one button, named
+"Back to {merchant}"**, and nothing else. There is no countdown, no timer,
+and no navigation this page performs on its own. Both modes render the same
+screen; what differs is what the button does, which is what already differed:
+
+| | Hosted | Embedded |
+|---|---|---|
+| The button | `location.assign(success_url \| cancel_url)`, top-level | posts `vpay:complete` to the framer, then navigates to `return_url` |
+| Where the URL comes from | `forwardKindFor` — `success_url` on a paid session, `cancel_url` otherwise | `return_url`, for every outcome |
+| Session names nowhere | no button; "This payment is finished. You can close this page." | the same |
+
+The button carries the merchant's name — `Back to Boutique Test` — and falls
+back to "Back to the shop" where the session read carried no usable name, the
+same `_unnamed` treatment every other merchant sentence on this page gets.
+
+It replaced a **five-second auto-forward** that had been here since Step 9. A
+page that navigates on its own takes the outcome away from the payer who is
+reading it, and on the failure screen it takes away the only text that says
+why — on a handset, in a shop, with someone waiting. That the button was
+always there beside the countdown did not fix it: it made the countdown a
+race a slow reader loses.
+
+**A failed outcome is red.** *Corrected 2026-09-07.* The screen took its
+colour from `@vpay/tokens`' `statusTone` through the intent status each
+outcome implies, and a failed attempt leaves the intent at
+`requires_payment_method` — which is `neutral`, because on a **dashboard**
+that status means "awaiting a payment method" rather than "this failed". The
+mapping was accurate and the screen was wrong: a payer whose payment failed
+read a grey box while a payer who cancelled read a red one. An operator's
+status palette is not a payer's outcome palette, so `@vpay/tokens` now carries
+both — `statusTone` unchanged, and `checkoutOutcomeTone` for these three
+screens. `canceled` stays red rather than becoming a softer amber; that is a
+design call left to the maintainer.
+
+**A failed outcome also shows the rail's own words** where the API gave any.
+`last_payment_error.message` is rendered as *data*, under the translated
+sentence and labelled as the provider's ("What the payment provider said"),
+never in place of it: it arrives in whatever language the rail writes in,
+it is outside the closed `FailureCode` vocabulary the page translates, and
+this page controls not a word of it. `providerReason` strips control
+characters, collapses whitespace and bounds it at 300 characters; React
+escapes the rest, so it reaches the DOM as a text node and never as markup,
+an attribute or a URL.
+
+## Runtime configuration
+
+*New 2026-09-06 (the maintainer's requirement of 2026-09-05).*
+
+**One image serves every operator.** The page's brand and its feature flags
+are two YAML files an operator mounts, read at container start — not a
+`tailwind.config.ts` edit, not a build argument, and not `NEXT_PUBLIC_*`
+inlined by `next build`.
+
+| File | Default path | Environment override |
+|---|---|---|
+| `branding.yaml` | `/etc/vpay/checkout/branding.yaml` | `VPAY_CHECKOUT_BRANDING_FILE` |
+| `config.yaml` | `/etc/vpay/checkout/config.yaml` | `VPAY_CHECKOUT_CONFIG_FILE` |
+
+Worked examples with every key commented are checked in at
+[`../../config/checkout/branding.example.yaml`](../../config/checkout/branding.example.yaml)
+and [`../../config/checkout/config.example.yaml`](../../config/checkout/config.example.yaml),
+and `compose.demo.yml` mounts both.
+
+```yaml
+# branding.yaml
+display_name: Vaam Payments          # the OPERATOR's name, never the merchant's
+logo_url: https://cdn.example/logo.svg
+primary_color: "#f3c623"             # #rrggbb, six digits
+support_contact: support@vaam.example
+```
+
+```yaml
+# config.yaml
+checkout:
+  public_base_url: https://checkout.example
+  allowed_methods: [mtn_momo, orange_money]
+  features:
+    page_memory: true
+```
+
+**Injected at startup, not fetched.** `src/config/runtime.ts` reads both files
+once, on the first import in the server process, and memoises the result; each
+server component passes the parts it needs to the client as props. A payer's
+request never reads a file, and the operator's colour arrives in the same
+response as the markup — there is no frame in which a payer sees the default
+and then watches it change. A config change is a pod restart, which is what
+ADR-0003 already says about administration.
+
+`GET /config/v1` reports exactly what the container loaded, versioned in the
+path. It is a **verification surface for an operator**, not something the page
+uses: every value on it is already visible to any payer who opens the page. The
+file paths and the problem list are deliberately *not* on it — those are in the
+container log, where the person who can act on them is looking.
+
+**A missing file is a log line and defaults, never a blank page.** Absent,
+unreadable, not YAML, a top level that is not a mapping, a key of the wrong
+type, a value that fails its rule: each costs exactly that key, prints one
+`WARN` naming the file and the key, and leaves the rest standing.
+
+```
+[vpay-checkout] configuration: no file at /etc/vpay/checkout/branding.yaml — using defaults
+[vpay-checkout] configuration: config.yaml: checkout.allowed_methods is empty — ignored, every rail stays on offer
+```
+
+Three rules are worth stating because each is a decision rather than a
+default:
+
+- **`display_name` is the operator's, and never substitutes for the
+  merchant's.** What a payer is told they are paying comes from the session
+  (`merchant: { name }`, from the API's `merchant_clients[].display_name`).
+  Where that is absent the page still says the neutral sentence; putting the
+  operator's name there would name the wrong party.
+- **`allowed_methods` can only narrow, and never silently.** A rail the intent
+  offers and the operator excludes is listed as unsupported — the same
+  treatment D9 gives a rail this page has no flow for. An **empty** list is
+  refused with a `WARN` rather than honoured, because honouring it would
+  refuse every payment on the deployment.
+- **`primary_color` retints the theme at runtime.** daisyUI compiles a theme
+  into `--p: L% C H` custom properties, so one `:root[data-theme="bumblebee"]`
+  block in `<head>` is enough. `src/config/theme.ts` converts sRGB to OKLCh
+  with Ottosson's matrices and daisyUI's own foreground rule — no colour
+  library on a payment page — and its tests assert the output against values
+  produced by **daisyUI's own converter** for six colours, so a drift is a
+  failing test rather than a page that is quietly the wrong colour. The
+  colour that goes *on* the primary is derived, not configured, so a
+  combination nobody can read text on is not one this file can produce.
+
+## Page memory, and the PIN vault that is not here
+
+*New 2026-09-06 (the maintainer's requirement of 2026-09-05).*
+
+The page may remember **two values on the payer's own device**: the canonical
+MSISDN they last paid with, and the rail they last chose. One IndexedDB
+database, one object store, one key. It never leaves the browser — not to
+vpay, not into a URL, not through `postMessage`.
+
+- **Opt-in, and written at exactly one moment**: a payer ticks the box and
+  submits an entry screen. Visiting the page, choosing a rail or reading an
+  outcome stores nothing. Unticking the box on a later payment clears the
+  record, and so does the explicit "forget" control.
+- **The remembered rail is marked, never chosen.** It shows a "Last used"
+  badge in the selector. Advancing a payer past a screen they have not read
+  is the mistake the countdown was.
+- **Ninety days**, enforced on read rather than by a sweep.
+- **A stored number is re-validated with `normalizeCameroonMsisdn` before it
+  reaches the form**, because a payer who does not re-read a prefilled field
+  would send a push to whatever was there.
+- **`page_memory: false` removes the offer entirely** — no checkbox, no read,
+  no write.
+- **The cost is stated on the checkbox**, in the payer's own language, not in
+  a tooltip: *"Anyone else who uses this device will see it. Do not tick this
+  on a shared or borrowed phone."* A household handset, a borrowed phone, a
+  phone shop's demo unit — the copy survives closing the tab, and the person
+  who pays that cost is whoever picks the device up next.
+
+**There is no PIN vault, and that is a refusal rather than an omission.** The
+maintainer's requirement asked for one: an opt-in local store for a payer's
+PIN, recalled into "the same form field the payer would type into". *This page
+has no such field, and neither does anything behind it.* MTN's flow is a push
+the payer approves on their handset; Orange's is approved on Orange's own
+page; `POST /v1/browser/payment_intents/{id}/confirm` accepts
+`payment_method_data[mtn_momo][msisdn]` and nothing else, and no
+`ProviderAdapter` in this workspace takes a PIN. Building the vault would have
+meant **adding a PIN input to vpay's checkout page that goes nowhere** — a
+control that looks like it does something and does not, which is the first
+item in this repository's own list of ways to damage it, and, on a payment
+page, a field indistinguishable from phishing. **Left to the maintainer**: if
+a rail is ever integrated that takes a PIN through the API, the store, the
+opt-in, the horizon and the clear control are all here and a `pin` member is
+the change.
 
 ## The iframe protocol
 
@@ -250,6 +428,102 @@ complete each other.
 `allow-same-origin` is required rather than a relaxation — without it the page
 runs in an opaque origin and its `/v1/browser` requests carry `Origin: null`,
 which the CORS layer refuses.
+
+## The popup, and why it is a third peer
+
+*New 2026-09-06, at the request of the `examples/shop` track.*
+
+A merchant may open the **hosted** page in a popup — `window.open(session.url)`
+— rather than framing it or navigating to it. That is a third shape, and it
+broke the protocol silently: **a popup is not a frame.** Inside one,
+`window.parent === window`, so `createFrameChannel` returned `null` and vpay
+said nothing at all to the merchant's page when the payment finished.
+
+The channel now takes a `peer`, `parent` or `opener`, and the popup case pins
+`window.opener` to an origin resolved **exactly the way a framer's is**:
+`document.referrer` matched against the merchant's `checkout_origins`, never
+used to extend them. `'*'` is still not a target anywhere.
+
+| | Framed (`/e/{id}`) | Popup (`/c/{id}`) | Top-level (`/c/{id}`) |
+|---|---|---|---|
+| Peer | `window.parent` | `window.opener` | none |
+| An unresolvable peer | **refused** — a page with no parent has no way to finish | renders, with no channel | normal |
+| `vpay:resize` | yes | **no** — a popup sizes itself | n/a |
+| `vpay:redirect` | yes — a sandboxed frame may not navigate the top level | **no** — see below | n/a |
+| `vpay:complete` | yes | yes | n/a |
+| "Back to {merchant}" does | posts `vpay:redirect` | posts `vpay:complete` (if it has not already), then `window.close()` | `location.assign` |
+
+Three of those rows are deliberate departures from what was asked for, and
+each is a decision rather than an omission:
+
+- **No `vpay:redirect` to an opener.** A popup *is* a top-level browsing
+  context and may navigate itself. Asking the opener to navigate would send
+  **the merchant's own page** to Orange Money out from under the payer, losing
+  the page they expect to come back to. So the popup navigates itself to the
+  rail, and the rail redirects back into the popup.
+- **`vpay:complete` is posted at most once per page.** Two moments can reach
+  it — the outcome first appearing, and the payer pressing the button — and a
+  second copy would fire a merchant's `onComplete` twice for one payment. A
+  merchant that treats that handler as a cue to create an order would create
+  two.
+- **An opener that does not resolve is not a refusal.** A hosted page is a
+  complete page on its own: it takes the payment and sends the payer to
+  `success_url` in this window. What it loses is the ability to *tell* the
+  opener, which is a degraded integration rather than an unsafe one. The
+  embedded case still refuses, because a framed page with no parent has no way
+  to finish at all. The commonest cause is the merchant's own
+  `Referrer-Policy: no-referrer`.
+
+If the opener has gone — the payer closed the merchant's tab while paying —
+the button navigates this window to `success_url`/`cancel_url` instead of
+closing it, so nobody is left looking at a dead popup. `Window.closed` is
+readable cross-origin, so that is a real check.
+
+`middleware.ts` now resolves the origin list for `/c/{cs_id}` as well as
+`/e/{cs_id}`, because the popup needs one. **Its CSP does not change**: the
+hosted page is `frame-ancestors 'none'` whatever the lookup returned, and the
+two uses of the list are separate expressions so that widening one cannot
+widen the other. `the hosted page > NEVER lets that list reach its CSP` is the
+test, and it was measured failing with the guard removed.
+
+**That lookup is a new cost on the hosted page, and it is worth naming.**
+Before this, `/c/{cs_id}` reached vpay's API from the server not at all: it
+rendered, and the browser did the rest. It now makes the same one call the
+embedded page makes, on every hosted page load that carries a `key`, whether
+or not the page turns out to be in a popup — the server cannot know, because
+`window.opener` is a fact only the browser has. `fetchCheckoutOrigins` catches
+every failure and answers an empty list, so a vpay API that is down or
+refusing costs the hosted page **no channel** and nothing else. *Corrected
+2026-09-07:* this paragraph used to end by naming a gap — no timeout on that
+fetch, so a hanging API would hold the payment page's first byte. There is one
+now. `ORIGINS_TIMEOUT_MS` is two seconds, overridable per call so the budget is
+a test rather than a wait, and the abort lands in the same empty list every
+other failure does. Two cases in `middleware.test.ts` drive it with a `fetch`
+that never answers; removing the signal makes the first hang.
+
+**The popup's return trip is wired by a different rule** (the maintainer's
+decision, 2026-09-06). After a redirect rail sends the payer back to
+`/c/{id}/return`, that page's referrer is the *rail's* origin, so
+`resolveParentOrigin` has nothing to match and the popup would end with the
+merchant's window hearing nothing. So the return page resolves its opener
+with `soleOrigin` instead: **when the merchant has registered exactly one
+`checkout_origins` entry, that is the target; with none or with several,
+there is no channel.**
+
+The reasoning, in the maintainer's own terms: with one registered origin the
+`postMessage` target *is* the merchant's own origin, which is the only party
+the message could ever have been for — so the worst case is a message
+delivered to its intended reader. With two or more, picking one would be
+choosing a target by guess, on a page that has just come back from a third
+party, and the page stays silent instead.
+
+Everything else about the popup holds here unchanged: `vpay:complete` at most
+once, the button closes the window, and an opener that has gone means the page
+navigates itself to `success_url`/`cancel_url` rather than closing. `soleOrigin`
+counts **after** normalising, so one malformed registered origin is none rather
+than one to pin to. `middleware.ts` resolves the list for `/c/{id}/return` as
+well, and — the third path it now does that for — **its CSP is still
+`frame-ancestors 'none'`**.
 
 ## Where the headers come from
 
@@ -311,14 +585,48 @@ content policy while forbidding nothing.
   repository enforces or checks that an operator has done it.
 - **No accessibility gate.** The screens have Storybook stories with the a11y
   addon configured, and nothing runs axe. What *is* asserted in vitest: every
-  control is a native focusable element with an accessible name, the live region
-  is mounted from first render, focus moves to the new screen's heading, and the
-  MSISDN error is tied to its field.
+  control — **native or not** — has an accessible name and is in the tab order,
+  the live region is mounted from first render, focus moves to the new screen's
+  heading, and the MSISDN error is tied to its field. *Corrected 2026-09-07:*
+  this bullet said "every control is a native focusable element", which stopped
+  being true when the memory opt-in became Base UI's checkbox — a
+  `<span role="checkbox" tabindex="0">` with a visually hidden input beside it.
+  The test asserts the property rather than the tag: role, tab index,
+  accessible name, `aria-checked`, and the label click and space key both
+  measured. **The bumblebee theme's contrast has been checked by nobody**:
+  `@vpay/ui`'s Storybook runs axe's `color-contrast` rule against `corporate`
+  and `business`, which this app does not use, and that Storybook is not part
+  of `just ci` either.
 - **`checkout_not_configured` answers `500`, not `503`.** A truthful `503`
   needs either a new `Category` or `Category::Configuration` moving — an
   ADR-level change to [ADR-0011](../adr/0011-error-modelling.md) touching every
   error in the workspace, **left to the maintainer**.
-- **The auto-forward countdown is 5 seconds and not configurable.**
+- ~~**The auto-forward countdown is 5 seconds and not configurable.**~~
+  **Retired 2026-09-06:** there is no countdown. See "The outcome screens".
+- **No POD has run the page with a mounted `branding.yaml` or `config.yaml`,
+  and the chart still cannot supply them.** The parsers, the colour conversion
+  and the filesystem layer are unit-tested (57 cases across `src/config/`).
+  *Corrected 2026-09-07:* this bullet claimed "the container was run by hand
+  with them" and cited
+  [`../plans/exp21-checkout-page-notes/opus.md`](../plans/exp21-checkout-page-notes/opus.md),
+  which says the opposite — "no container was run with the mounted files, and
+  no pod ever". What is true now is stronger than either: `compose.demo.yml`
+  mounts the two examples, and `just test-e2e` brought that stack up and drove
+  all four Cypress specs green through it, so the mounted path is the path the
+  browser tests run on. The **chart** templates no ConfigMap for either file,
+  so a Kubernetes deployment has no supported way to supply them yet.
+- **Nothing has watched a real browser's IndexedDB.** Page memory's adapter is
+  driven in vitest by a hand-written `IDBFactory` stub
+  (`src/testing/idb-stub.ts`), which models the object graph the adapter
+  walks and nothing else — no transaction lifetime, no quota, no versions
+  above 1.
+- **`@base-ui-components/react` is pinned at `1.0.0-rc.0`**, which is the
+  latest release that package has: there is no 1.0.0. A release candidate on
+  a payment page is a maintainer's call and is recorded as one.
+- **The Storybook stories are reviewed under the wrong theme.** The shared
+  Storybook (`frontends/packages/ui/.storybook`) configures `corporate` and
+  `business`; this app ships `bumblebee` alone. The stories show layout and
+  copy honestly and colour only approximately.
 
 ## What the horizon emits, and what it does not
 
@@ -416,13 +724,48 @@ session is created `ui_mode: 'hosted'` with the same `success_url` and
 the same `Idempotency-Key` — a payer whose popup is blocked falls back to a
 redirect and gets the session they already had rather than a second one.
 
-The completion signal does **not** come from vpay: a popup has no framer, so
-the child channel in `frontends/apps/checkout` returns `null` and the page
-says nothing. It comes from the merchant's own `success_url`, running inside
-the popup. The design and its limits are in
+When that paragraph was written the completion signal did **not** come from
+vpay: a popup has no framer, so the child channel in `frontends/apps/checkout`
+returned `null` and the page said nothing, and the signal came from the
+merchant's own `success_url` running inside the popup. **The entry below
+supersedes that half**: the channel now takes a `peer` and a popup is its
+third case, so vpay does post `vpay:complete` to an opener it could pin — see
+"The popup, and why it is a third peer" above. The rest still holds, and the
+design and its limits are in
 [browser-checkout.md](browser-checkout.md)'s Status; the short version is that
 26 unit cases drive it against stub windows and **no test, and nothing in
 any demo run, has opened a real popup**.
+
+**Updated 2026-09-06: the page was restyled and made runtime-configurable.**
+daisyUI's `bumblebee` theme and Base UI component defaults replace
+`corporate`/`business` and the hand-wired form markup; the outcome screens'
+five-second auto-forward is gone and a named "Back to {merchant}" button is
+the only way off them; `branding.yaml` and `config.yaml` are read at
+container start; and the page can remember a payer's number and last method
+on their own device, opt-in and clearable. The popup peer and the return
+trip's `soleOrigin` rule landed the same day, at the `examples/shop` track's
+request and by the maintainer's decision respectively. What has *not* changed:
+no rail behind this page has ever been anything but a WireMock host, and the
+four "what is not built" entries above are joined by five more.
+
+**Updated 2026-09-07: a real browser, and the defect it found.** The entry
+above was written with **no Cypress run** — the binary could not be fetched
+where it was built — and the specs were not green. The runtime theme override
+was emitted inside an explicitly written `<head>` element, and React threw #418
+(*hydration failed because the server rendered HTML did not match the client*),
+uncaught, on the hosted payment page: **all three of `shop-hosted.cy.ts`'s
+tests failed**, with the page stuck on "Loading this payment…". It reproduces
+only with a `primary_color` configured, which is why no unit case could have
+seen it. Fixed with React 19's own hoisting (`href` + `precedence`), guarded by
+`src/layout.test.tsx` on the element tree rather than on the markup. Three more
+fixes came with it: a two-second bound on the origins lookup that now holds the
+payment page's first byte, a failed outcome that is no longer neutral grey
+while a cancelled one is red, and two example values that put a broken image
+and a permanent false warning into the demo. **`just test-e2e` on this head:
+11 Cypress tests, 11 passing, 0 skipped** — `checkout.cy.ts` (1),
+`dashboard.cy.ts` (3), `shop-hosted.cy.ts` (3) and `shop-embedded.cy.ts` (4) —
+through a compose stack that mounts both YAML files. The page's own suite is
+**448 vitest cases in 23 files, 0 skipped** (was 302 in 17).
 
 See [../status.md](../status.md) for the per-feature ledger and the reasons
 several of those rows are 🟡 where this document says "built".

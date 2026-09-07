@@ -42,7 +42,14 @@ export type ReturnState =
   | { name: 'error'; error: CheckoutError }
   | { name: 'expired'; context: ReturnContext }
   | { name: 'polling'; context: ReturnContext; notice: MessageKey | null }
-  | { name: 'outcome'; context: ReturnContext; kind: OutcomeKind; failure: FailureCode | null }
+  | {
+      name: 'outcome';
+      context: ReturnContext;
+      kind: OutcomeKind;
+      failure: FailureCode | null;
+      /** The rail's own words, cleaned by `providerReason`, or `null`. */
+      reason: string | null;
+    }
   | { name: 'forwarding'; context: ReturnContext; kind: OutcomeKind; url: string };
 
 export type ReturnEvent =
@@ -65,7 +72,7 @@ export const RETURN_INITIAL_STATE: ReturnState = { name: 'loading' };
 export function stateForReturn(context: ReturnContext, previousNotice: MessageKey | null = null): ReturnState {
   const { session, intent } = context;
   if (session.status === 'complete') {
-    return { name: 'outcome', context, kind: 'succeeded', failure: null };
+    return { name: 'outcome', context, kind: 'succeeded', failure: null, reason: null };
   }
   if (session.status === 'expired') {
     if (session.payment_status === 'failed') {
@@ -75,13 +82,20 @@ export function stateForReturn(context: ReturnContext, previousNotice: MessageKe
         context,
         kind: outcome?.kind ?? 'failed',
         failure: outcome?.failure ?? null,
+        reason: outcome?.reason ?? null,
       };
     }
     return { name: 'expired', context };
   }
   const outcome = intentOutcome(intent);
   if (outcome !== null) {
-    return { name: 'outcome', context, kind: outcome.kind, failure: outcome.failure };
+    return {
+      name: 'outcome',
+      context,
+      kind: outcome.kind,
+      failure: outcome.failure,
+      reason: outcome.reason,
+    };
   }
   return { name: 'polling', context, notice: previousNotice };
 }
@@ -112,8 +126,18 @@ export interface ReturnControllerOptions {
   credentials: ReturnCredentials;
   api: BrowserCheckoutApi;
   navigate: (url: string) => void;
-  /** Non-null only when the return page is somehow framed by an allowed origin. */
+  /**
+   * The peer to report completion to.
+   *
+   * In practice always an **opener** (`peer: 'opener'`): this page is
+   * top-level in both modes, so the only window that can be on the other end
+   * is the one that opened a popup. `null` for every other shape.
+   */
   channel: FrameChannel | null;
+  /** Closes this window. `window.close` in a browser. See `CheckoutController.forward`. */
+  closeWindow?: (() => void) | undefined;
+  /** Reads the opener *now*, so "has the merchant's tab gone?" is answered at press time. */
+  opener?: (() => Window | null) | undefined;
   /** Delay between polls, milliseconds. */
   intervalMs?: number | undefined;
   /** Total polling budget, milliseconds. */
@@ -128,6 +152,8 @@ const DEFAULT_RETURN_TIMEOUT_MS = 180_000;
 
 export class ReturnController {
   #state: ReturnState = RETURN_INITIAL_STATE;
+  /** Whether `vpay:complete` has gone out. The same at-most-once rule the payment page carries. */
+  #announced = false;
   readonly #listeners = new Set<(state: ReturnState) => void>();
   readonly #options: ReturnControllerOptions;
 
@@ -184,20 +210,51 @@ export class ReturnController {
       await sleep(Math.min(interval, remaining));
     }
 
-    if (this.#state.name === 'outcome') {
-      this.#options.channel?.post({
-        type: 'vpay:complete',
-        session: this.#state.context.session.id,
-        status: this.#state.context.session.status,
-      });
-    }
+    this.#announceComplete();
   }
 
+  /**
+   * Sends the payer back to the merchant.
+   *
+   * The same three shapes `CheckoutController.forward` has, minus the framed
+   * one this page cannot be in: a popup posts `vpay:complete` (if the outcome
+   * has not already), then closes; a popup whose opener has gone, and every
+   * top-level page, navigates itself.
+   */
   forward(url: string): void {
     this.#dispatch({ type: 'forward', url });
-    if (this.#state.name === 'forwarding') {
-      this.#options.navigate(url);
+    if (this.#state.name !== 'forwarding') {
+      return;
     }
+    const channel = this.#options.channel;
+    if (channel !== null && channel.peer === 'opener') {
+      this.#announceComplete();
+      const opener = this.#options.opener?.() ?? undefined;
+      if (opener === null || opener === undefined || opener.closed) {
+        this.#options.navigate(url);
+        return;
+      }
+      this.#options.closeWindow?.();
+      return;
+    }
+    this.#options.navigate(url);
+  }
+
+  /** `vpay:complete`, at most once. See `CheckoutController.announceComplete`. */
+  #announceComplete(): void {
+    if (this.#announced) {
+      return;
+    }
+    const state = this.#state;
+    if (state.name !== 'outcome' && state.name !== 'forwarding') {
+      return;
+    }
+    this.#announced = true;
+    this.#options.channel?.post({
+      type: 'vpay:complete',
+      session: state.context.session.id,
+      status: state.context.session.status,
+    });
   }
 
   #dispatch(event: ReturnEvent): void {

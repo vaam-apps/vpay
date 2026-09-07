@@ -11,6 +11,7 @@
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ORIGINS_TIMEOUT_MS, fetchCheckoutOrigins } from './lib/api';
 import { middleware } from '../middleware';
 
 const API = 'https://api.vpay.test';
@@ -45,6 +46,32 @@ function originsFetch(origins: string[] | null, status = 200) {
   return { impl, calls };
 }
 
+/**
+ * A `fetch` that never answers and never closes the socket, and resolves only
+ * when the caller aborts it.
+ *
+ * The shape a timeout exists for. A refusal and an unreachable host both
+ * REJECT, and `fetchCheckoutOrigins` has always caught those; what it could
+ * not survive was a peer that accepted the connection and then said nothing,
+ * because `await` on that promise is `await` forever.
+ */
+function neverAnswers() {
+  const started: Array<{ signal: AbortSignal | undefined }> = [];
+  const impl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+    started.push({ signal: init?.signal ?? undefined });
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (signal === undefined || signal === null) {
+        return;
+      }
+      signal.addEventListener('abort', () => {
+        reject(new DOMException('The operation was aborted.', 'AbortError'));
+      });
+    });
+  });
+  return { impl, started };
+}
+
 beforeEach(() => {
   process.env['VPAY_API_URL'] = API;
 });
@@ -68,12 +95,57 @@ describe('every response', () => {
 });
 
 describe('the hosted page', () => {
-  it("is frame-ancestors 'none' and asks the API nothing", async () => {
+  it("is frame-ancestors 'none', and asks the API nothing without a key", async () => {
     const { impl, calls } = originsFetch(['https://shop.example']);
     vi.stubGlobal('fetch', impl);
     const response = await middleware(request('/c/cs_1'));
     expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
     expect(calls).toEqual([]);
+  });
+
+  it('resolves the origin list when the link carries a key, for the popup case', async () => {
+    // 2026-09-06: a hosted page may be running in a popup the merchant's
+    // script opened, and the origin it may `postMessage` to comes from the
+    // same server-side lookup the embedded page uses.
+    const { impl, calls } = originsFetch(['https://shop.example']);
+    vi.stubGlobal('fetch', impl);
+    const response = await middleware(request('/c/cs_1?key=pk_test_1'));
+    expect(calls).toEqual([`${API}/v1/browser/checkout/origins?key=pk_test_1`]);
+    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+  });
+
+  it('NEVER lets that list reach its CSP, however many origins came back', async () => {
+    // The decisive one. The hosted page is not framable, popup or not, and a
+    // merchant registering an origin so its popup can be talked to must not
+    // thereby make its hosted checkout embeddable. Deleting the
+    // `embedded ? origins : []` guard in `middleware.ts` fails exactly here.
+    const { impl } = originsFetch(['https://shop.example', 'https://www.shop.example']);
+    vi.stubGlobal('fetch', impl);
+    const response = await middleware(request('/c/cs_1?key=pk_test_1'));
+    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+  });
+
+  it('forwards the resolved list to the route so the page can pin an opener', async () => {
+    const { impl } = originsFetch(['https://shop.example']);
+    vi.stubGlobal('fetch', impl);
+    const response = await middleware(request('/c/cs_1?key=pk_test_1'));
+    expect(response.headers.get('x-middleware-request-x-vpay-embed-origins')).toBe(
+      'https://shop.example',
+    );
+  });
+
+  it('resolves the list for the RETURN page too, and still sends no frame-ancestors', async () => {
+    // The return page pins an opener by a different rule (`soleOrigin`),
+    // because its referrer is the RAIL's — but it needs the same list to
+    // apply that rule to. Its CSP is unchanged.
+    const { impl, calls } = originsFetch(['https://shop.example']);
+    vi.stubGlobal('fetch', impl);
+    const response = await middleware(request('/c/cs_1/return?t=tok&key=pk_test_1'));
+    expect(calls).toEqual([`${API}/v1/browser/checkout/origins?key=pk_test_1`]);
+    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+    expect(response.headers.get('x-middleware-request-x-vpay-embed-origins')).toBe(
+      'https://shop.example',
+    );
   });
 });
 
@@ -109,6 +181,21 @@ describe('the embedded page', () => {
     vi.stubGlobal('fetch', impl);
     const response = await middleware(request('/e/cs_1?key=pk_test_1'));
     expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+  });
+
+  it('gives up on a lookup that never answers, and lands in the same fail-closed list', async () => {
+    // No fake timers: the abort has to travel through a real `AbortSignal`,
+    // and the budget is a parameter precisely so this is milliseconds rather
+    // than a wait.
+    const { impl, started } = neverAnswers();
+    const origins = await fetchCheckoutOrigins('https://api.vpay.test', 'pk_test_1', impl, 20);
+    expect(origins).toEqual([]);
+    expect(started).toHaveLength(1);
+    expect(started[0]?.signal?.aborted, 'the request was aborted, not left running').toBe(true);
+  });
+
+  it('bounds the wait at two seconds by default, on a call that names no budget', () => {
+    expect(ORIGINS_TIMEOUT_MS).toBe(2_000);
   });
 
   it("is 'none' when the API refuses the key", async () => {

@@ -309,11 +309,35 @@ services:
   # listens: the first is where the page's own `/v1/browser` calls go, and
   # the second is the origin every `url` vpay mints is built on.
   # `gen-demo-keys` regenerates the overlay when `demo_checkout_port` changes.
+  #
+  # This stack also mounts the page's own runtime configuration (2026-09-06),
+  # because it is the stack meant to be looked at:
+  # `config/checkout/*.example.yaml` are the shipped examples, read once at
+  # container start and served from there.
+  #
+  # THE CYPRESS SPECS SEE THESE FILES. This comment said the opposite for one
+  # revision — that `compose.e2e.yml` mounts neither, so the specs exercise the
+  # "no files, sane defaults" path — and it was wrong in the way that matters:
+  # `just test-e2e` and CI's `e2e` job both bring the stack up with
+  # `-f compose.yml -f compose.e2e.yml -f compose.demo.yml`, this file
+  # included. That is not a loss. The mounted path is the one a real
+  # deployment runs, and it is the path that found the hydration defect fixed
+  # on 2026-09-07: with no `primary_color` there is no runtime `<style>` and
+  # the bug does not reproduce. The no-files path is covered where it can be
+  # measured rather than looked at — `src/config/runtime.test.ts` drives real
+  # temporary files, including an absent one and an unreadable one.
+  #
+  # The two files land under /etc/vpay/checkout, the paths the image defaults
+  # to. `:ro` because nothing in the container writes them; the root
+  # filesystem is read-only anyway.
   vpay-checkout:
     # 127.0.0.1 — see the header of this file.
     ports: !override ["127.0.0.1:${VPAY_DEMO_CHECKOUT_PORT:-3080}:3000"]
     environment:
       NEXT_PUBLIC_VPAY_API_URL: http://localhost:${VPAY_DEMO_PORT:-8080}
+    volumes:
+      - ./config/checkout/branding.example.yaml:/etc/vpay/checkout/branding.yaml:ro
+      - ./config/checkout/config.example.yaml:/etc/vpay/checkout/config.yaml:ro
 
   # The demo shop, republished the same way and for the same reason.
   #

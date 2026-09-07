@@ -100,6 +100,7 @@ function spyOnFetch(sink: string[]): { mockRestore: () => void } {
 
 function recordingChannel(posted: ChildMessage[]): FrameChannel {
   return {
+    peer: 'parent',
     parentOrigin: 'https://shop.example',
     post: (message) => posted.push(message),
     postHeight: () => undefined,

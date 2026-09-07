@@ -213,6 +213,16 @@ export class BrowserCheckoutApi {
 }
 
 /**
+ * How long {@link fetchCheckoutOrigins} may hold a page's first byte.
+ *
+ * Two seconds. The API is a pod away on the same network and answers this
+ * route from one indexed read; anything slower is a deployment in trouble,
+ * and a payer waiting on it learns nothing they could act on. Overridable per
+ * call so the timeout itself is a test rather than a wait.
+ */
+export const ORIGINS_TIMEOUT_MS = 2_000;
+
+/**
  * `GET /v1/browser/checkout/origins?key` — the tenant's registered embedding
  * origins.
  *
@@ -223,28 +233,59 @@ export class BrowserCheckoutApi {
  * already names the tenant.
  *
  * **Fail-closed.** A non-2xx, an unreachable API, a body that is not the
- * documented shape and an empty list all answer `[]`, which
- * {@link import('./csp.js').frameAncestors} renders as `'none'`. There is no
- * "assume it is fine" branch: an origins lookup that failed and an origins
- * list that is empty are the same instruction to the browser.
+ * documented shape, a lookup that takes too long and an empty list all answer
+ * `[]`, which {@link import('./csp.js').frameAncestors} renders as `'none'`.
+ * There is no "assume it is fine" branch: an origins lookup that failed and an
+ * origins list that is empty are the same instruction to the browser.
+ *
+ * **Bounded, and that is load-bearing since 2026-09-06.** This call is on the
+ * first byte of a page: `middleware.ts` awaits it before the response starts.
+ * It used to run for `/e/{id}` alone; it now runs for `/c/{id}` and
+ * `/c/{id}/return` as well, because a hosted page in a popup needs an origin
+ * to pin. An API that REFUSES costs those pages no channel and nothing else —
+ * that was always true — but an API that neither answers nor closes the socket
+ * would have held the payment page open for as long as the operating system's
+ * own connect timeout, which is minutes. {@link ORIGINS_TIMEOUT_MS} is the
+ * ceiling now, and the timeout lands in the same `[]` every other failure
+ * does.
  */
 export async function fetchCheckoutOrigins(
   baseUrl: string,
   key: string,
   fetchImpl: typeof fetch,
+  timeoutMs: number = ORIGINS_TIMEOUT_MS,
 ): Promise<string[]> {
   const url = `${stripTrailingSlashes(baseUrl.trim())}/v1/browser/checkout/origins?${new URLSearchParams({ key }).toString()}`;
+  // A controller rather than `AbortSignal.timeout`, because the timer has to
+  // be cleared: a two-second handle left armed on every request would keep the
+  // event loop busy for two seconds after a response that took ten
+  // milliseconds.
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
   try {
-    const response = await fetchImpl(url, { method: 'GET', credentials: 'omit' });
+    const response = await fetchImpl(url, {
+      method: 'GET',
+      credentials: 'omit',
+      signal: controller.signal,
+    });
     if (!response.ok) {
       return [];
     }
+    // Inside the try and before the timer is cleared on purpose: a body that
+    // arrives one byte at a time is the same denial as a request that never
+    // answers, and the abort reaches this read too.
     const body: unknown = await response.json();
     if (!isObject(body) || !Array.isArray(body['origins'])) {
       return [];
     }
     return (body['origins'] as unknown[]).filter((o): o is string => typeof o === 'string');
   } catch {
+    // An `AbortError` from the timeout arrives here with everything else, and
+    // answers what everything else answers.
     return [];
+  } finally {
+    clearTimeout(timer);
   }
 }
