@@ -17,19 +17,49 @@
 -- with explicit casts today —
 -- `$4::intent_status`, `'submitting'::charge_state`, `$2::failure_code`,
 -- `$4::refund_status` — and after this migration every one of those is
--- `ERROR: type "intent_status" does not exist` (SQLSTATE 42704). The reads
--- are equally affected: `COLUMNS` selects `status::TEXT AS status`, which is
--- a no-op on a `TEXT` column but names a cast the old binary emits against a
--- type that is gone.
+-- `ERROR: type "intent_status" does not exist` (SQLSTATE 42704).
 --
--- Migrations here are forward-only (no `down.sql`), and every process runs
--- `run_migrations()` at boot. So during a rolling deploy, or after a rollback
--- to the previous image, any old-version process that serves a confirm, a
--- settlement or a cancel after this has landed fails that request with a
--- storage error — and unlike 0032, which broke boot step 4 loudly, **this one
--- breaks the money path at request time**. Deploy it with the release that
--- carries the matching code, drain the previous version before it lands, and
--- do not roll that release back past it.
+-- Measured, on 2026-09-08, by building the previous release's `vpay-db`
+-- (commit 889d045) and running it against real databases this migration had
+-- been applied to. It has TWO failure modes, not one, and which one an
+-- operator sees depends on whether the old process is already running:
+--
+--   * **A process that RESTARTS — a rollback to the previous image, a pod
+--     rescheduled — does not serve at all. It fails at boot**, in
+--     `run_migrations()`, before `ConfigReconcile::reconcile` and before the
+--     listener binds:
+--         `migration 37 was previously applied but is missing in the
+--          resolved migrations`   (`sqlx::MigrateError::VersionMissing(37)`)
+--     `Migrator::validate_applied_migrations` refuses any applied version the
+--     binary does not carry, and `run_migrations` never sets `ignore_missing`
+--     (`sqlx-core-0.9.0/src/migrate/migrator.rs:363-380`). This is exactly
+--     what 0032 does on a restart too; the difference between the two
+--     migrations is NOT here.
+--   * **A process that KEEPS RUNNING — the rolling-deploy window — serves
+--     until it touches a money WRITE, and then fails that request.** Measured
+--     on the previous binary against a 0037-shaped database:
+--         `PaymentIntents::insert`        -> 42704 type "intent_status" does not exist
+--         `PaymentIntents::transition`    -> 42704 type "intent_status" does not exist
+--         `Settlement::set_live_state`    -> 42704 type "charge_state"  does not exist
+--     This is where 0037 differs from 0032, which had no in-flight failure
+--     mode of its own: an old process serving a confirm, a settlement or a
+--     cancel in that window fails that request with a storage error.
+--
+-- **The READS are NOT affected, and that is the quiet half.** An earlier
+-- draft of this header said they were "equally affected"; that was wrong and
+-- the measurement above is what corrected it. `COLUMNS` selects
+-- `status::TEXT AS status`, and `TEXT` is a built-in type this migration does
+-- not drop — the cast is a no-op, not a reference to a vanished type.
+-- Measured on the previous binary: `PaymentIntents::get_for_merchant`
+-- answered `Some("requires_payment_method")` normally on a 0037 database.
+-- So the rolling-deploy window does not look like an outage. `GET` keeps
+-- serving, dashboards keep rendering, and only the statements that move money
+-- fail. Do not wait for reads to go dark as the signal.
+--
+-- Migrations here are forward-only (no `down.sql`). Deploy this with the
+-- release that carries the matching code, **drain the previous version before
+-- it lands** — that is what closes the write window above — and do not roll
+-- that release back past it, because a rolled-back image will not boot.
 --
 -- The expand/contract alternative (add a `TEXT` column beside each enum,
 -- dual-write for a release, drop the enum a release later) would remove that

@@ -4542,14 +4542,30 @@ seven that remain. Three things it measured that the source does not give you:
   `DROP` — without `CASCADE`, so a dependency this migration did not find
   fails it loudly instead of silently dropping whatever depended on it.
 
-**⚠️ It is not backward compatible with the previous binary, and unlike
-migration 0032 it breaks the money path at *request* time rather than at
-boot.** `vpay-db` bound these columns with explicit casts (`$4::intent_status`,
-`'submitting'::charge_state`); after this migration each is
-`ERROR: type "intent_status" does not exist`. Deploy it with the release that
-carries the matching code, drain the previous version first, and do not roll
-that release back past it. The migration's own header carries the rule, which
-is where an operator looks.
+**⚠️ It is not backward compatible with the previous binary, and it has two
+failure modes rather than one.** Measured 2026-09-08 by building 889d045's
+`vpay-db` and running it against real 0037 databases:
+
+* a previous-release process that **restarts** does not serve at all — it
+  fails at boot in `run_migrations()` with
+  `migration 37 was previously applied but is missing in the resolved
+  migrations` (`sqlx::MigrateError::VersionMissing`), before boot step 4 and
+  before the listener binds. This is what 0032 does on a restart too; it is
+  **not** the difference between them, and this page said it was;
+* a previous-release process that **keeps running** — the rolling-deploy
+  window — fails money **writes** with `42704 type "intent_status" does not
+  exist` (`insert`, `transition`) and `42704 type "charge_state" does not
+  exist` (`set_live_state`). That in-flight window is what 0037 has and 0032
+  did not.
+
+**Reads are unaffected**, which is the quiet part: `status::TEXT AS status`
+casts to a built-in type this migration does not drop, and
+`PaymentIntents::get_for_merchant` answered normally on the previous binary.
+The rolling-deploy window therefore does not look like an outage — `GET` keeps
+serving and only the statements that move money fail. Deploy it with the
+release that carries the matching code, drain the previous version first, and
+do not roll that release back past it. The migration's own header carries the
+rule and the measurement, which is where an operator looks.
 
 **Why nothing on three of the four tables moved, and it is one reason rather
 than a list.** Every read and every write in `vpay_db::payment_intents`,

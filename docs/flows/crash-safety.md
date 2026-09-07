@@ -231,10 +231,16 @@ conversion would have broken first.
 
 **One ordering rule this migration adds, and it is an operator's rule rather
 than a payer's:** `0037` is not backward compatible with the previous binary,
-and unlike migration 0032 — which broke boot step 4 loudly — it breaks the
-money path at *request* time, because the old binary's casts name types that
-no longer exist. Drain the previous version before it lands and do not roll
-past it. The migration's own header carries the detail.
+in two different ways, both measured on 2026-09-08 against real databases by
+building 889d045's `vpay-db`. A previous-release process that **restarts**
+fails at boot in `run_migrations()`
+(`sqlx::MigrateError::VersionMissing(37)`) and never serves — the same thing
+0032 does on a restart. A previous-release process that **keeps running**
+serves reads normally and fails money **writes** with `42704 type
+"intent_status"/"charge_state" does not exist`; that in-flight window is what
+is new here, and it is quiet, because nothing a merchant can see goes dark.
+Drain the previous version before it lands, and do not roll past it. The
+migration's own header carries the detail and the measured statements.
 
 **Nothing in this document's behaviour changed on 2026-09-07**, and that is
 the claim the update is here to make. Issue #77 folded `vpay-worker-bin` into
