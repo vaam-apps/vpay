@@ -8,11 +8,17 @@ const ORDER_STATUS_LABEL: Readonly<Record<TestNumber["orderStatus"], string>> =
     unpaid: "Unpaid",
   };
 
-/** The badge tone per order status the demo numbers can produce. */
-const ORDER_STATUS_TONE: Readonly<Record<TestNumber["orderStatus"], string>> = {
-  paid: "success",
-  failed: "error",
-  unpaid: "warning",
+/**
+ * The badge class per order status the demo numbers can produce, written out
+ * in full for the reason `order-summary.tsx` gives at the same shape: a class
+ * Tailwind never saw in the source is a class Tailwind never generated.
+ */
+const ORDER_STATUS_BADGE_CLASS: Readonly<
+  Record<TestNumber["orderStatus"], string>
+> = {
+  paid: "badge badge-success",
+  failed: "badge badge-error",
+  unpaid: "badge badge-warning",
 };
 
 /**
@@ -86,7 +92,7 @@ export function TestNumbersPanel({ rails }: { rails: readonly string[] }) {
                     <td>{number.outcome}</td>
                     <td>
                       <span
-                        className={`badge badge-${ORDER_STATUS_TONE[number.orderStatus]}`}
+                        className={ORDER_STATUS_BADGE_CLASS[number.orderStatus]}
                       >
                         {ORDER_STATUS_LABEL[number.orderStatus]}
                       </span>

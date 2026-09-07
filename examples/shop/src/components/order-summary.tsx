@@ -10,22 +10,32 @@ const LABEL: Readonly<Record<OrderView["status"], string>> = {
 };
 
 /**
- * The badge tone per order status. `failed` and `cancelled` share `error`,
- * exactly as the pre-daisyUI CSS this replaces did (`.status-failed,
- * .status-cancelled { color: var(--bad) }`) — the two are equally "this did
- * not settle" from a buyer's point of view.
+ * The badge class per order status, **written out in full rather than
+ * assembled**. `failed` and `cancelled` share `error`, exactly as the
+ * pre-daisyUI CSS this replaces did (`.status-failed, .status-cancelled
+ * { color: var(--bad) }`) — the two are equally "this did not settle" from a
+ * buyer's point of view.
+ *
+ * The full class strings are the load-bearing part. Tailwind 4 finds the
+ * classes it must generate by **scanning source text**, so a class assembled
+ * at runtime — `` `badge badge-${tone}` `` — is never emitted into the
+ * stylesheet, and a badge rendered against a rule that was never generated
+ * looks correct in jsdom and is colourless in a browser. That is exactly the
+ * silent failure plan §6.3/§6.4 is about, and it does not error anywhere.
+ * `src/testing/no-dynamic-class-names.test.ts` fails if this shape comes
+ * back.
  */
-const TONE: Readonly<Record<OrderView["status"], string>> = {
-  unpaid: "warning",
-  paid: "success",
-  failed: "error",
-  cancelled: "error",
+const BADGE_CLASS: Readonly<Record<OrderView["status"], string>> = {
+  unpaid: "badge badge-warning",
+  paid: "badge badge-success",
+  failed: "badge badge-error",
+  cancelled: "badge badge-error",
 };
 
 /** The status badge. One place decides the word and the colour for a status. */
 export function OrderStatusBadge({ status }: { status: OrderView["status"] }) {
   return (
-    <span className={`badge badge-${TONE[status]}`} data-testid="order-status">
+    <span className={BADGE_CLASS[status]} data-testid="order-status">
       {LABEL[status]}
     </span>
   );
