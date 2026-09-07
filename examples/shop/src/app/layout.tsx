@@ -14,27 +14,29 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body>
-        <div className="banner">
-          <div className="wrap">
-            Demo shop. Nothing here ships, no money moves, and the rails behind
-            vpay are stubs. Do not deploy.
-          </div>
+    <html lang="en" data-theme="bumblebee">
+      <body className="min-h-screen bg-base-200">
+        <div className="alert alert-warning justify-center rounded-none text-sm">
+          Demo shop. Nothing here ships, no money moves, and the rails behind
+          vpay are stubs. Do not deploy.
         </div>
-        <header className="site">
-          <div className="wrap">
-            <strong>
-              <Link href="/">Marché</Link>
-            </strong>
-            <span style={{ color: "var(--muted)" }}>paid with vpay</span>
-            <nav>
-              <Link href="/">Catalogue</Link>
-              <Link href="/cart">Cart</Link>
+        <header className="navbar border-b border-base-300 bg-base-100">
+          <div className="mx-auto flex w-full max-w-5xl items-baseline gap-5 px-4">
+            <Link href="/" className="text-lg font-semibold">
+              Marché
+            </Link>
+            <span className="text-sm text-base-content/60">paid with vpay</span>
+            <nav className="ml-auto flex gap-4">
+              <Link href="/" className="link link-hover">
+                Catalogue
+              </Link>
+              <Link href="/cart" className="link link-hover">
+                Cart
+              </Link>
             </nav>
           </div>
         </header>
-        <main className="wrap">{children}</main>
+        <main className="mx-auto max-w-5xl px-4 py-6 pb-16">{children}</main>
       </body>
     </html>
   );
