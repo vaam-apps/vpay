@@ -2379,24 +2379,59 @@ on 2026-09-05**, which brought [ADR-0016](adr/0016-engineering-standards.md)'s
 branch's ten, all in `xtask` (184 → 194). `verify-toolchain` is the **tenth**
 gate after that rebase, not the eighth it was written as.
 
-### Migration manifest — applied migrations are immutable
+### Migration manifest — applied migrations are immutable (2026-09-07, issue #76)
 
-**Landed.** `backends/migrations/MANIFEST.sha256` records the SHA256 hash of each
-migration file. `verify-migrations` (the **eleventh** gate in `just verify`, new
-2026-09-07) fails the build if:
+**Landed.** `backends/migrations/MANIFEST.sha256` records the SHA-256 of every
+migration file's bytes, and `verify-migrations` is the **eleventh** gate in
+`just verify` and a step in CI's `self-checks` job. It fails when a migration
+file's hash has moved, when a `.sql` file beside the manifest has no line, and
+when a line names a file that is gone. `just migrations-manifest` **refuses**
+to rewrite an existing line or to drop a line whose file has vanished — it only
+appends — so the gate cannot be silenced by regenerating.
 
-- Any migration file has been edited (hash changed) — applied migrations cannot be
-  edited because every database that applied the original will fail boot.
-- A new migration file exists without a manifest entry.
-- The manifest lists a file that no longer exists.
+**Why:** `sqlx::migrate!` stores a SHA-384 of each file's *whole bytes*,
+comments included, in `_sqlx_migrations.checksum`. PR #39 (the `@vpay` ->
+`@vaam-apps` npm rename) reflowed one comment inside
+`0028_create-checkout-sessions.sql` after it had shipped; every job in CI stayed
+green, and every database brought up between #37 and #39 stopped booting
+(exit 78). Nothing in the workspace could have caught it: every test starts from
+an empty database and applies the current files, so the mismatch is invisible
+until a *pre-existing* database meets a new binary.
 
-`just migrations-manifest` regenerates the manifest but **refuses to change existing
-lines** — it may only append new ones. This makes the gate impossible to satisfy by
-regenerating after an accidental edit. See `docs/runbooks/migrations.md` for the
-add-and-repair rules.
+**What is proved, and by what.** Twelve unit tests in `.xtask`
+(`migration_manifest_tests`) pin each way the gate fails — an edited file, an
+unlisted file, a deleted line, a line for a file that does not exist, a
+duplicated line, a non-hex hash, and that manifest *order* does not matter.
+`the_0028_repair_in_the_runbook_fixes_a_database_that_applied_the_original`
+(`backends/tests/integration/tests/postgres_smoke.rs`) is the one that matters
+operationally: it migrates a fresh `postgres:16-alpine`, rewinds migration 28's
+checksum to the original file's SHA-384, confirms `sqlx::migrate!` then refuses
+with the message the runbook quotes, parses the `UPDATE` **out of
+`docs/runbooks/migrations.md` itself**, runs it, and confirms the migrator runs
+clean afterwards.
 
-**What was caught:** This gate exists because migration 0028 was edited by PR #39
-(the npm rename) after it shipped, breaking every database created before that commit.
+**What this gate does NOT stop, stated because the opposite would be the
+comfortable thing to write:** a contributor who edits a migration *and*
+hand-edits its line in `MANIFEST.sha256` passes. Nothing can stop that —
+a manifest whose own hash is checked has to pin that hash somewhere, and
+whoever can edit two files can edit three. The manifest makes the edit
+**visible as a reviewable one-line diff**; it does not make it impossible. It
+also says nothing about a database that is already broken; that is the
+runbook's §4.
+
+**Corrected during review (2026-09-07).** The first draft of
+`docs/runbooks/migrations.md` gave the repair as the SHA-384 of 0028's
+**original** bytes — which is precisely what a broken database already holds.
+The `UPDATE` would have reported `UPDATE 1`, changed nothing, and left the
+binary exiting 78, with the page telling an on-call operator it had worked.
+The correct value is the **current** file's
+(`6eeb31ee…07b5ec`); the original (`f4d1a8e1…8ae252`) is now stated beside it
+so an operator can tell which state their database is in, and the integration
+test above is what keeps both honest. The same draft's gate hashed *every* file
+in `backends/migrations/`, not just `*.sql`, which made
+`backends/migrations/README.md` unaddable — the gate demanded a manifest line
+for it and `just migrations-manifest` would never write one — and accepted
+duplicate manifest lines silently.
 
 ### sqlx 0.8 -> 0.9 (2026-09-05)
 
