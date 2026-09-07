@@ -335,6 +335,14 @@ addressed.
 
 The `staff_sign_in` suite specifically: **17 tests, 17 passed, 0 skipped.**
 
+`just ci` was then run a second time, on `ef2ae28` — the head after the two
+documentation commits that follow `2952fe2` — and exited **0** with the same
+numbers. The only change this file cannot claim a full `just ci` for is this
+paragraph and the commit that adds it, which are markdown; `just verify`, the
+recipe inside `just ci` that reads markdown (`verify-links` over every
+relative link in every tracked `*.md`), is green on the final head. Saying so
+rather than leaving the table to imply otherwise.
+
 ## Maintainer decisions
 
 1. **The `select.test.tsx` flake (F11).**
