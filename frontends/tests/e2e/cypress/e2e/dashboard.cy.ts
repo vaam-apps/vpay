@@ -235,7 +235,12 @@ describe("the dashboard", { testIsolation: false }, () => {
       //
       // The populated case is the next test, on a payment that has a charge.
       cy.contains("No events yet.").should("be.visible");
-      cy.screenshot("04-payment-detail", { capture: "viewport" });
+      // `fullPage`, unlike the other three: the detail page is longer than a
+      // viewport and the sections a reviewer most needs to see — the charge,
+      // the timeline, and the line naming the five event types nothing writes
+      // — are all below the fold. A committed screenshot that cannot show the
+      // part of the page under discussion is evidence of nothing.
+      cy.screenshot("04-payment-detail", { capture: "fullPage" });
     });
   });
 
