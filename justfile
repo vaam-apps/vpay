@@ -197,6 +197,72 @@ sdk-conformance-node: build-sdk-node
 #
 # Every service, not `demo_services`: the dashboard is in the file set and
 # `dashboard.cy.ts` visits it.
+# Creates the demo dashboard's staff member against a RUNNING stack.
+#
+# `vpay-server staff add` is the only way a staff member is created (ADR-0017
+# decision 1). It needs the same configuration and the same database the
+# server has, so it runs as a one-off container in the stack rather than on
+# the host — `--no-deps` because the stack is expected to be up already, and
+# `-T` so stdout is the password and nothing else.
+#
+# **The password is on stdout, alone.** A subcommand's tracing subscriber
+# writes to stderr precisely so that it is (`staff_add_creates_a_staff_member_and_prints_a_one_time_password_on_stdout`),
+# and `docker compose run`'s own chatter goes to stderr too — so the last
+# non-blank line of stdout is the credential. It is read that way rather than
+# with a `grep` for a shape, because the shape of a generated password is not
+# a thing this recipe should know.
+#
+# Idempotent in the only way it can be: a second run hits the
+# `staff_members_email_key` unique index and fails. If the password file from
+# the first run is still there that is a no-op and this says so; if it is not,
+# the password is unrecoverable — it is printed once and only its argon2id
+# hash is stored — and the honest answer is to fail and say to tear the stack
+# down.
+demo-staff:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export VPAY_DEMO_PROJECT={{demo_project}}
+    export VPAY_DEMO_PORT={{demo_port}}
+    export VPAY_DEMO_RECEIVER_PORT={{demo_receiver_port}}
+    export VPAY_DEMO_ORANGE_PORT={{demo_orange_port}}
+    export VPAY_DEMO_CHECKOUT_PORT={{demo_checkout_port}}
+    export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
+
+    out={{demo_staff_password_file}}
+    mkdir -p "$(dirname "$out")"
+    stderr=$(mktemp)
+    trap 'rm -f "$stderr"' EXIT
+
+    stdout=$(docker compose {{demo_compose}} run --rm --no-deps -T vpay-server \
+        staff add \
+        --merchant {{demo_staff_merchant}} \
+        --email {{demo_staff_email}} \
+        --name '{{demo_staff_name}}' 2>"$stderr")
+    status=$?
+
+    if [ "$status" -ne 0 ]; then
+        if [ -s "$out" ]; then
+            echo "demo-staff: {{demo_staff_email}} already exists; keeping the password in $out"
+            exit 0
+        fi
+        echo "demo-staff: FAIL — \`staff add\` exited $status and there is no password in $out." >&2
+        echo "demo-staff: a one-time password is printed ONCE and only its hash is stored, so if" >&2
+        echo "demo-staff: the account exists its password cannot be recovered. \`just demo-down\`" >&2
+        echo "demo-staff: (which deletes the volumes) and start again." >&2
+        cat "$stderr" >&2
+        exit 1
+    fi
+
+    password=$(printf '%s\n' "$stdout" | grep -v '^[[:space:]]*$' | tail -n 1)
+    if [ -z "$password" ]; then
+        echo "demo-staff: FAIL — \`staff add\` succeeded but printed nothing on stdout." >&2
+        cat "$stderr" >&2
+        exit 1
+    fi
+    printf '%s' "$password" > "$out"
+    chmod 0600 "$out"
+    echo "demo-staff: created {{demo_staff_email}} for {{demo_staff_merchant}}; the one-time password is in $out"
+
 test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
     #!/usr/bin/env bash
     set -uo pipefail
@@ -247,10 +313,25 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
         done
     done
 
-    # What the specs need, all of it a published host port or a public key.
-    # No merchant credential is exported here: `checkoutTasks.ts` reads the
-    # PEM from `.e2e/` in Node, and nothing hands one to a browser.
+    # The demo dashboard's staff member, created against the running stack.
+    # `dashboard.cy.ts` signs in as this person through the real OP: password,
+    # then a TOTP code it computes from the secret the enrolment screen shows.
+    # Without it that spec has nobody to sign in as — and it must fail loudly
+    # rather than skip, so this is checked rather than tolerated.
+    just demo-staff
+    if [ $? -ne 0 ] || [ ! -s {{demo_staff_password_file}} ]; then
+        echo "test-e2e: FAIL — no staff member for the dashboard spec" >&2
+        docker compose {{demo_compose}} down -v
+        exit 1
+    fi
+
+    # What the specs need, all of it a published host port, a public key, or —
+    # for the dashboard — a PATH to a credential rather than the credential.
+    # `dashboardTasks.ts` reads the file in Node; the password never reaches
+    # `Cypress.env`, a browser or a `cypress run` argument list.
     VPAY_BASE_URL=http://localhost:{{demo_port}} \
+      VPAY_STAFF_EMAIL={{demo_staff_email}} \
+      VPAY_STAFF_PASSWORD_FILE="$PWD/{{demo_staff_password_file}}" \
       VPAY_SHOP_URL=http://localhost:{{demo_shop_port}} \
       VPAY_CHECKOUT_URL=http://localhost:{{demo_checkout_port}} \
       VPAY_ORANGE_STUB_URL=http://localhost:{{demo_orange_port}} \
@@ -2012,6 +2093,30 @@ demo_checkout_port := "3080"
 # do not run both at once without moving one.)
 demo_shop_port := "3001"
 
+# The demo dashboard's one staff member — ADR-0017 decision 1's only way in.
+#
+# There is no self-service sign-up and no HTTP endpoint that creates a staff
+# member: `vpay-server staff add` inserts the row and prints a one-time
+# password that must be replaced at first sign-in. `just demo-staff` runs it
+# against the running stack and writes that password to a git-ignored file, so
+# `dashboard.cy.ts` and a human reading `docs/runbooks/demo.md` sign in as the
+# same person with the same credential.
+#
+# `demo_staff_merchant` must be a `merchant_id` some `merchant_clients` entry
+# registers — `staff add` refuses otherwise, before it opens the database —
+# AND the one `dashboard_client.merchant_id` is bound to, or /authorize
+# refuses to mint a code for a tenant this dashboard may not read. Both are
+# `demo-merchant-tenant` in the generated overlay.
+demo_staff_email := "ada@example.test"
+demo_staff_name := "Ada Demo"
+demo_staff_merchant := "demo-merchant-tenant"
+
+# Where the one-time password lands. Under `.e2e/<project>/` so two concurrent
+# demo stacks do not overwrite each other's, and git-ignored like everything
+# else in there — it is a credential, however throwaway.
+demo_staff_password_file := ".e2e/" + demo_project + "/staff-password.txt"
+
+
 # Everything `just demo` needs on disk before a container starts: the server's
 # own OP signing key (the `gen-e2e-signing-key` dependency above) and the demo
 # merchant's key pair plus the profile overlay that registers its PUBLIC half.
@@ -2202,6 +2307,29 @@ gen-demo-keys: gen-e2e-signing-key
             | grep -qE '^  merchant_id: demo-merchant-tenant$'
     }
 
+    # Added 2026-09-07 (exp28). The base config's redirect_uris names port
+    # 8080; the dashboard app runs on 3000 and sends this string in both OAuth
+    # legs, where authkestra matches it byte for byte. An overlay generated
+    # before this line makes every staff sign-in end in a 400 naming
+    # redirect_uri — with the server, the app and the base config all
+    # individually correct. Keyed on the exact string compose.e2e.yml sets in
+    # VPAY_DASHBOARD_REDIRECT_URI, because equality with THAT is the property
+    # that matters.
+    dashboard_redirect_present() {
+        grep -qF '    - http://localhost:3000/dash/v1/callback' "$overlay"
+    }
+
+    # Added 2026-09-07 (exp28). Without both staff_auth secrets `staff_login`
+    # is None, /dash/v1 mounts NO login at all, and every call the dashboard
+    # makes to /dash/v1/staff/login is a 404 — a deployment state ADR-0017
+    # explicitly permits for a sandbox, which is why nothing else fails. An
+    # overlay generated before this block is exactly that state.
+    staff_auth_present() {
+        grep -q '^staff_auth:$' "$overlay" \
+            && grep -qE '^  password_pepper: .+$' "$overlay" \
+            && grep -qE '^  totp_encryption_key: .+$' "$overlay"
+    }
+
     if [ -e "$key" ] && [ -e "$shop_key" ] && [ -e "$overlay" ]; then
         # ...unless the overlay predates a required field. `merchant_id`
         # became required on `merchant_clients` in Step 2, and an overlay
@@ -2229,7 +2357,9 @@ gen-demo-keys: gen-e2e-signing-key
             && shop_origin_present \
             && checkout_base_present \
             && mtn_settles_xaf \
-            && dashboard_binding_present; then
+            && dashboard_binding_present \
+            && dashboard_redirect_present \
+            && staff_auth_present; then
             echo "gen-demo-keys: $key, $shop_key and $overlay already exist, keeping them"
             exit 0
         fi
@@ -2280,6 +2410,21 @@ gen-demo-keys: gen-e2e-signing-key
             echo "gen-demo-keys: $overlay does not allow http://localhost:{{demo_shop_port}} to frame the checkout page — regenerating the pair"
         elif ! dashboard_binding_present; then
             echo "gen-demo-keys: $overlay predates the dashboard client's \`merchant_id\` binding (PR #69) — regenerating the pair"
+        elif ! dashboard_redirect_present; then
+            # Added 2026-09-07 (exp28). The base config registers port 8080;
+            # the dashboard app is published on 3000 and sends its own
+            # redirect_uri in both OAuth legs, matched byte for byte. Stale,
+            # and every staff sign-in dies at /authorize with a 400 naming
+            # redirect_uri while the server, the app and the base config are
+            # each individually right.
+            echo "gen-demo-keys: $overlay does not register the dashboard app's redirect_uri on port 3000 — regenerating the pair"
+        elif ! staff_auth_present; then
+            # Added 2026-09-07 (exp28). Without the two staff_auth secrets
+            # `vpay-server` mounts /dash/v1's READ surface and no login at all
+            # — legal for a sandbox, and it logs a warning nobody reads — so
+            # the dashboard's first call is a 404 and the login page reports
+            # it as though the address were wrong.
+            echo "gen-demo-keys: $overlay predates the \`staff_auth\` secrets, so this stack would serve no staff login — regenerating the pair"
         elif ! checkout_base_present; then
             # Added 2026-09-04 (Step 9, D3/D6). `checkout.public_base_url` is
             # the origin every payer link vpay mints is built on. Stale, and
@@ -2331,6 +2476,18 @@ gen-demo-keys: gen-e2e-signing-key
     shop_n=$(printf '%s' "$shop_jwk" | jq -er .n)
     shop_e=$(printf '%s' "$shop_jwk" | jq -er .e)
     shop_kid=$(printf '%s' "$shop_jwk" | jq -er .kid)
+
+    # ADR-0017's two staff-auth secrets, drawn from the OS CSPRNG and written
+    # only into the git-ignored overlay. base64url without padding for the
+    # AEAD key, because `secret_box::decode_key` decodes URL_SAFE_NO_PAD and
+    # refuses anything else; the pepper is an opaque string argon2 takes as
+    # bytes, so its encoding is free and the same one is used for both.
+    command -v openssl >/dev/null 2>&1 || { echo "gen-demo-keys: needs 'openssl' on PATH for the staff_auth secrets" >&2; exit 1; }
+    randb64url() {
+        openssl rand 32 | base64 | tr '+/' '-_' | tr -d '=\n'
+    }
+    staff_pepper=$(randb64url)
+    staff_totp_key=$(randb64url)
 
     # 0644, NOT the 0600 `demo-merchant`'s key gets, and the difference is the
     # whole point: unlike the demo binary — which runs on the HOST, as a
@@ -2454,12 +2611,47 @@ gen-demo-keys: gen-e2e-signing-key
 
     # The base file binds its dashboard client to \`acme-cameroon\`, a merchant
     # this overlay replaces wholesale below. figment's dict merge keeps the
-    # base block's client_id, scope and redirect_uris and overlays this one
-    # field, so /dash/v1 reads the demo tenant and boot does not refuse with
+    # base block's client_id and scope and overlays these two fields, so
+    # /dash/v1 reads the demo tenant and boot does not refuse with
     # ConfigError::DashboardUnknownMerchant (it did, in PR #69's e2e job, when
-    # this line was missing).
+    # the merchant_id line was missing).
+    #
+    # \`redirect_uris\` is a LIST, so this replaces the base file's outright —
+    # which is what it is for. The base names port 8080; the dashboard app
+    # runs on 3000 (compose.e2e.yml publishes it there, and #78 hard-codes
+    # that), and the app sends this string in BOTH OAuth legs, where
+    # authkestra matches it byte for byte. It must be the same bytes as
+    # compose.e2e.yml's VPAY_DASHBOARD_REDIRECT_URI or every sign-in ends in
+    # a 400 naming redirect_uri. Nothing ever fetches this URL: the app's own
+    # server follows the 302 (ADR-0017 decision 4).
     dashboard_client:
       merchant_id: demo-merchant-tenant
+      redirect_uris:
+        - http://localhost:3000/dash/v1/callback
+
+    # ADR-0017 decision 1's two deployment secrets. Without BOTH,
+    # \`staff_login\` is None and /dash/v1 mounts its read surface and NO login
+    # at all — a state a sandbox deployment is allowed to be in, and this one
+    # must not be, because the whole demo dashboard is behind a sign-in.
+    #
+    # THROWAWAY VALUES, regenerated per checkout into a git-ignored file, and
+    # throwaway in a way that has a consequence: losing the pepper invalidates
+    # every stored password hash and losing the AEAD key invalidates every
+    # enrolled second factor, so this recipe rewriting the overlay means every
+    # staff member on the old stack has to be created again. That is fine here
+    # and is exactly what an operator must NOT do to a real deployment — in
+    # production both belong in the same Secret as the RS256 signing key, with
+    # the same backup story.
+    #
+    # Literals rather than \`\${VAR}\` placeholders: \`livemode: false\` is what
+    # permits that, and a livemode config with a literal here is refused
+    # outright (ConfigError::LiteralSecret).
+    staff_auth:
+      password_pepper: $staff_pepper
+      # 32 bytes, base64url without padding — \`secret_box::decode_key\` takes
+      # nothing else, and a wrong length is a refusal to serve any login
+      # rather than a runtime surprise.
+      totp_encryption_key: $staff_totp_key
 
     merchant_clients:
       - client_id: demo-merchant

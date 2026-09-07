@@ -10,6 +10,11 @@ import {
   stopFrameFixtureServer,
 } from "./cypress/tasks/frameFixtureServer.js";
 import { mintCheckoutPaymentIntent } from "./cypress/tasks/checkoutTasks.js";
+import {
+  secondsLeftInStep,
+  staffPassword,
+  totpCode,
+} from "./cypress/tasks/dashboardTasks.js";
 
 /**
  * The compose stack's published ports, as a BROWSER reaches them.
@@ -32,6 +37,16 @@ const orangeStubUrl =
  */
 const shopPublishableKey =
   process.env["VPAY_SHOP_PUBLISHABLE_KEY"] ?? "pk_test_shopmerchantsandbox1";
+
+/**
+ * The demo dashboard's one staff member, as `just demo-staff` created them.
+ *
+ * The default is that recipe's `demo_staff_email`, so a `cypress run` by hand
+ * against a stack brought up the ordinary way needs no environment at all.
+ * Only the address is here: the password is a credential and reaches the spec
+ * through `cy.task`, never through `Cypress.env`.
+ */
+const staffEmail = process.env["VPAY_STAFF_EMAIL"] ?? "ada@example.test";
 
 /**
  * `shop-embedded.cy.ts` needs the browser's same-origin policy off to reach
@@ -116,6 +131,13 @@ export default defineConfig({
       // the page under test.
       on("task", {
         mintCheckoutPaymentIntent,
+        // `dashboard.cy.ts`'s three, all of them Node-side for
+        // `dashboardTasks.ts`'s reasons: the staff password is read from a
+        // file so it never enters `Cypress.env`, and the TOTP codes need a
+        // keyed hash the browser has no reason to be able to compute.
+        staffPassword,
+        totpCode,
+        secondsLeftInStep,
         dump(payload: { what: string; value: string }) {
           console.log("PROBE " + payload.what + ": " + payload.value);
           return null;
@@ -136,6 +158,9 @@ export default defineConfig({
         CHECKOUT_URL: checkoutUrl,
         ORANGE_STUB_URL: orangeStubUrl,
         SHOP_PUBLISHABLE_KEY: shopPublishableKey,
+        // The address `just demo-staff` created. The PASSWORD is deliberately
+        // absent — `cy.task('staffPassword')` reads it from a file in Node.
+        STAFF_EMAIL: staffEmail,
       };
       return config;
     },

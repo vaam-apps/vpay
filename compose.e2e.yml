@@ -241,15 +241,44 @@ services:
       # that had to change.
       target: runner
     environment:
+      # vpay as THIS SERVER reaches it. Every `/dash/v1` call the dashboard
+      # makes is server-side (ADR-0008), so this is the only API URL it needs
+      # — there is deliberately no browser-facing one, unlike `vpay-checkout`
+      # below, because no browser ever calls vpay from a dashboard page.
       VPAY_DASH_API: http://vpay-server:8080
+      # The dashboard's own OAuth client registration, as `config/application.yml`
+      # spells it and the generated demo overlay leaves untouched. All three
+      # are REQUIRED: the app fails closed without them and `/login` renders
+      # the missing variable names instead of a form (ADR-0017 decision 4 —
+      # this app is the OAuth client, so it is the party that has to know its
+      # own registration).
+      VPAY_DASHBOARD_CLIENT_ID: vpay-dashboard
+      # Byte for byte one of `dashboard_client.redirect_uris`. **No browser
+      # ever visits it** — the app's own server follows the `/authorize` 302
+      # and exchanges the code — so there is no route in the dashboard at this
+      # path and nothing is missing. It is an identifier the two OAuth legs
+      # must spell identically, and `authkestra_op` matches it exactly: no
+      # prefix, no wildcard. `just gen-demo-keys` writes the same string into
+      # the overlay, and a check in that recipe fails a stale one.
+      VPAY_DASHBOARD_REDIRECT_URI: http://localhost:3000/dash/v1/callback
+      # The single read-only scope the registration grants. Requested
+      # explicitly: an authorization request with no `scope` is granted none,
+      # and a token with no scope is refused by `/dash/v1` with a `403` that
+      # looks nothing like a configuration mistake.
+      VPAY_DASHBOARD_SCOPE: dashboard:read
     depends_on:
       # `service_started`, not `service_healthy`: `vpay-server` has no
       # healthcheck to report healthy (see the comment above it). This is a
       # boot-order guarantee only — the dashboard can still start before the
-      # server has finished binding its listener. That race is currently
-      # harmless: per docs/status.md the dashboard renders a static scaffold
-      # notice and makes no server-side call to `vpay-server` yet. Revisit
-      # this once the dashboard actually calls `/dash/v1` on render.
+      # server has finished binding its listener.
+      #
+      # Since 2026-09-07 the dashboard DOES call `/dash/v1` on render, so that
+      # race is no longer harmless in principle. What makes it survivable is
+      # that every such call is made per request rather than at boot, and a
+      # `fetch` that cannot connect is rendered as a failure with its request
+      # id rather than thrown (`src/server/api.ts`). `just test-e2e` and CI's
+      # e2e job both poll `/healthz` from outside before running Cypress,
+      # which is the actual readiness gate.
       vpay-server: { condition: service_started }
     ports: ["3000:3000"]
     restart: unless-stopped
