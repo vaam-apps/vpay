@@ -380,5 +380,39 @@ about the person?*
 
 ## Gate on the review head
 
-See the bottom of this file's commit for `just ci`, recipe by recipe, on the
-final head.
+`just ci` end to end on `1ad9cab` (the head before this section's own commit),
+same environment as the run on the delivered head.
+
+| recipe | exit | measured |
+|---|---|---|
+| `fmt-check` | 0 | |
+| `clippy` | 0 | `--workspace --all-targets -D warnings` |
+| `verify` | 0 | ten gates; `verify-docs` advisory |
+| `test-rust` | 0 | **1550 run, 1550 passed, 0 skipped** (1000 s) |
+| `test-doc` | 0 | |
+| `verify-ignored` | 0 | 0 ignored (expected 0), **46 binaries (expected 46)**, 1550 total (floor 1080) |
+| `lint-web` | 0 | |
+| `test-web` | 0 | unchanged |
+| `deny` | 0 | advisories, bans, licenses, sources all ok |
+
+**1546 → 1550, and no new binary**: `expected_suites` does not move because
+every case added here went into a suite that already existed. The four are
+`the_sign_in_rate_limit_is_per_source_address` and
+`moving_a_staff_member_to_another_merchant_refuses_their_existing_token` in
+`staff_sign_in.rs` (13 → 16 with the strengthened disabled-account case, which
+grew assertions rather than a function),
+`a_second_create_for_one_staff_id_is_refused_rather_than_overwriting` in
+`vpay-db`'s `repositories.rs`, and
+`a_token_whose_subject_names_no_staff_member_is_refused` in
+`dashboard_read_surface.rs` (15 → 16).
+
+Every fix in this review has a decisive mutation recorded against it, run on a
+clean tree and reverted:
+
+| Fix | Mutation | Result |
+|---|---|---|
+| F1 | drop the `is_active()` arm | `left: 200, right: 403` |
+| F2 | drop `into_make_service_with_connect_info` from the harness | `left: 429, right: 401` |
+| F6 | drop `&& staff.merchant_id == binding.merchant_id` | `left: 200, right: 403`, `pi_moved_a` in the body |
+| F3 | `.create(...)` → `.upsert(...)` in `vpay_db::staff` | the `expect_err` fails |
+| — | add an `Ok(None) => {}` arm | the orphan-subject test reads `200` |
