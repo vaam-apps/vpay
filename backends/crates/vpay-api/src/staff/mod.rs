@@ -369,14 +369,39 @@ pub(crate) async fn login(
 
 /// Step 2: the code, and — on a first sign-in — the enrolment it completes.
 ///
+/// # Rate limited, and it was not until the exp28 review
+///
+/// [ADR-0017](../../../../docs/adr/0017-staff-authentication.md) decision 2
+/// says "**sign-in** is rate limited per email and per IP … failing closed
+/// with `429`", and the limiter was wired to [`login`] alone. A second factor
+/// is **six digits**, [`crate::staff_auth::totp::Totp::verify`] accepts a
+/// one-step skew either side (three live codes at any instant), and nothing
+/// here costs an argon2id verification — so a caller holding one password and
+/// one `pending_totp` session could guess the second factor at whatever rate
+/// the network allowed. Measured on the real stack before this check existed:
+/// thirty consecutive wrong codes, thirty `401`s, no `429` (exp28 review,
+/// finding F3).
+///
+/// The key is `staff.email` — the row's, which migration `0035` constrains to
+/// lower case, and [`login`] lower-cases the *request's* address before using
+/// it as the same key. So the two legs of one sign-in share one budget, which
+/// is what "per email" has to mean if it is to bound guessing at an account
+/// rather than at an endpoint.
+///
+/// Checked **after** the session loads, because the email is the session's
+/// and not the caller's to name; a caller with no usable session is already
+/// refused above by [`load_session`], having spent one row read.
+///
 /// # Errors
 ///
+/// [`ApiError::StaffSignInRateLimited`] over the budget;
 /// [`ApiError::StaffSignInRefused`] for a session at the wrong stage, an
 /// expired or idle session, a disabled account, a wrong code, and a
 /// **replayed** one; [`ApiError::Db`] if Postgres fails.
 pub(crate) async fn totp_step(
     State(state): State<crate::AppState>,
     headers: HeaderMap,
+    peer: Option<axum::Extension<ConnectInfo<SocketAddr>>>,
     Form(request): Form<TotpRequest>,
 ) -> Result<Json<TotpResponse>, ApiError> {
     let login = state.staff_login()?;
@@ -388,6 +413,15 @@ pub(crate) async fn totp_step(
         // A session that has already presented a code must not present
         // another: the only caller that would try is one replaying the step.
         return Err(refused("session is not pending a second factor"));
+    }
+
+    // The same budget the password leg spends from, keyed on the same
+    // lower-cased address — see this function's header. Without it a six-digit
+    // second factor is guessable at line rate by anyone holding one password.
+    let peer_ip = peer.map(|axum::Extension(ConnectInfo(peer))| peer.ip());
+    if login.limiter.check(&staff.email, peer_ip, now) == rate_limit::Verdict::Limited {
+        tracing::warn!("a staff second-factor attempt was refused by the rate limiter");
+        return Err(ApiError::StaffSignInRateLimited);
     }
 
     // Which secret authenticates this account: the stored one if enrolled,

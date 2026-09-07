@@ -1354,6 +1354,88 @@ async fn the_sign_in_rate_limit_is_per_source_address() -> anyhow::Result<()> {
     Ok(())
 }
 
+// -------------------------------------------------------------- test 15(b)
+
+/// **The SECOND FACTOR is rate limited too**, which until the exp28 review it
+/// was not.
+///
+/// [ADR-0017](../../../../docs/adr/0017-staff-authentication.md) decision 2
+/// says "sign-in is rate limited per email and per IP … failing closed with
+/// `429`", and `SignInLimiter::check` was called from `login` and from
+/// nowhere else. A TOTP code is **six digits**, `Totp::verify` accepts a
+/// one-step skew either side — three live codes at any instant — and the
+/// `/staff/totp` path costs no argon2id verification, so a caller holding one
+/// password and one `pending_totp` session could guess the second factor at
+/// whatever rate the network allowed. Measured against a real stack before
+/// the fix: thirty consecutive wrong codes, thirty `401`s, not one `429`.
+///
+/// The decisive mutation is the fix itself: delete the `limiter.check` from
+/// `staff::totp_step` and the assertion below finds no `429` at all.
+///
+/// Its own source address, for `the_sign_in_rate_limit_is_per_source_address`'
+/// reason: the per-IP half of the same budget must not be what refuses these,
+/// and no other test's attempts must be able to refuse them either.
+///
+/// What this does NOT claim: a number. The budget is ten per five minutes per
+/// key and the `/staff/login` that produced the session already spent one of
+/// them, so the exact index of the first `429` is an implementation detail
+/// this test deliberately does not pin — what it pins is that a `429` arrives
+/// at all, and inside a number of attempts far below `10^6`.
+#[tokio::test]
+async fn the_second_factor_is_rate_limited_and_not_only_the_password() -> anyhow::Result<()> {
+    let harness = harness().await?;
+
+    let client = reqwest::Client::builder()
+        .local_address(std::net::IpAddr::from([127, 0, 0, 4]))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("a client bound to a loopback source address");
+
+    // The password leg, honestly, from this test's own address: a session at
+    // `pending_totp` is what an attacker who has phished one password holds.
+    let response = client
+        .post(format!("{}/dash/v1/staff/login", harness.base_url))
+        .form(&[("email", STAFF_EMAIL), ("password", ONE_TIME_PASSWORD)])
+        .send()
+        .await
+        .context("the password leg")?;
+    anyhow::ensure!(
+        response.status().as_u16() == 200,
+        "the password leg must succeed"
+    );
+    let body: Value = response.json().await.context("the login body")?;
+    let session = field(&body, "session")
+        .as_str()
+        .context("a session token")?
+        .to_owned();
+
+    // Wrong codes, one after another. Twelve is comfortably past a budget of
+    // ten and is still nothing next to the 10^6 an unbounded second factor
+    // costs an attacker.
+    let mut statuses = Vec::new();
+    for n in 0..12u32 {
+        let response = client
+            .post(format!("{}/dash/v1/staff/totp", harness.base_url))
+            .header(vpay_api::staff::SESSION_HEADER, session.as_str())
+            .form(&[("code", format!("{:06}", 100_000 + n).as_str())])
+            .send()
+            .await
+            .context("guessing a second factor")?;
+        statuses.push(response.status().as_u16());
+    }
+
+    assert_eq!(
+        statuses.first().copied(),
+        Some(401),
+        "the first guess is inside the budget and must be refused on the code, not the limit:          {statuses:?}"
+    );
+    assert!(
+        statuses.contains(&429),
+        "twelve consecutive wrong second factors must run into the limit. Without one, six          digits behind a phished password are guessable at line rate: {statuses:?}"
+    );
+    Ok(())
+}
+
 // ----------------------------------------------------------------- test 16
 
 /// **Moving a staff member to another merchant stops their existing token
