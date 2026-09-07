@@ -74,7 +74,14 @@ const DESCRIPTION_MAX_CHARS: usize = 1000;
 /// past this bound would be silently rounded there. The column is `BIGINT`
 /// and could hold more; agreeing with the SDKs matters more than using the
 /// column's full range for amounts no rail would accept anyway.
-const MAX_AMOUNT: i64 = (1_i64 << 53) - 1;
+///
+/// `pub(crate)` since S4b's review: `POST /v1/invoices/{id}/pay` mints its
+/// intent through [`vpay_db::PaymentIntents::insert`] rather than through
+/// this module's [`parse_amount`], so the bound has to be reachable from
+/// [`super::invoices`] or the invoice path is a second door into an `amount`
+/// this one refuses. Measured before it was: an invoice of ninety-one maximal
+/// lines finalized `200` and paid with an intent for 9,100,000,000,000,000.
+pub(crate) const MAX_AMOUNT: i64 = (1_i64 << 53) - 1;
 
 /// This resource's cursor vocabulary — `pi_…`, per `vpay_core::ids`.
 ///

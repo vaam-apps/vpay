@@ -1824,3 +1824,136 @@ async fn a_foreign_cursor_is_an_empty_page_and_never_an_oracle() -> anyhow::Resu
     harness.shutdown().await;
     Ok(())
 }
+
+/// An invoice cannot be issued for more than this API can represent exactly,
+/// and `pay` therefore cannot mint an intent above the ceiling
+/// `POST /v1/payment_intents` enforces on its own `amount`.
+///
+/// # The hole this closes, measured before it was closed
+///
+/// `vpay_api::v1::payment_intents`' `parse_amount` refuses an `amount` above
+/// `2^53 - 1` and says why: beyond it a JSON number stops round-tripping
+/// through an IEEE-754 double, which is what every JavaScript client — the
+/// `@vaam-apps/vpay-sdk` Node SDK and a merchant's own `stripe`-shaped
+/// handler alike — parses a body with. `POST /v1/invoices/{id}/pay` does not
+/// go through that function: it calls `PaymentIntents::insert` with
+/// `amount_remaining` straight off the invoice, and nothing between a line
+/// and that call bounded the total. Ninety-one lines at both parameter
+/// ceilings (`quantity` 1,000,000 x `unit_amount` 100,000,000 = 10^14 each)
+/// is 9.1 x 10^15, past `2^53 - 1 = 9,007,199,254,740,991` — so before this
+/// bound a merchant could reach, through the public API and with no special
+/// privilege, an invoice **and** a payment intent whose `amount` a merchant's
+/// own SDK silently rounds.
+///
+/// The refusal is at **finalize** rather than at `pay` or at the line write,
+/// deliberately. At `pay` it would leave an `open` invoice nobody could ever
+/// pay; on the line write the row is already committed by the time the
+/// re-summed total comes back. At finalize the draft is still editable, which
+/// is the only refusal a merchant can act on.
+///
+/// **The decisive mutation:** delete the `amount_due` ceiling check from
+/// `vpay_api::v1::invoices`' `transition_once` — the finalize below answers
+/// `200` and the `pay` after it mints an intent for 9,100,000,000,000,000.
+#[tokio::test]
+async fn an_invoice_over_the_representable_ceiling_is_refused_at_finalize() -> anyhow::Result<()> {
+    /// `vpay_api::v1::payment_intents::MAX_AMOUNT`, restated here because a
+    /// test that imported it could not tell the two apart if both moved.
+    const MAX_AMOUNT: i64 = (1_i64 << 53) - 1;
+    /// One line at both of `invoice_items`' parameter ceilings.
+    const PER_LINE: i64 = 1_000_000 * 100_000_000;
+
+    let harness = harness().await?;
+    let customer = harness.customer(CLIENT_A).await?;
+    let (status, created) = harness
+        .post(
+            CLIENT_A,
+            "/v1/invoices",
+            &[("customer", &customer), ("currency", "xaf")],
+        )
+        .await?;
+    assert_eq!(status, 201, "{created}");
+    let invoice = field(&created, "id")
+        .as_str()
+        .expect("an invoice has an id")
+        .to_owned();
+
+    // The smallest number of maximal lines that passes the ceiling.
+    let lines = (MAX_AMOUNT / PER_LINE) + 1;
+    let mut last_line = String::new();
+    for index in 0..lines {
+        let (status, body) = harness
+            .post(
+                CLIENT_A,
+                "/v1/invoice_items",
+                &[
+                    ("invoice", &invoice),
+                    ("description", "a line at both parameter ceilings"),
+                    ("quantity", "1000000"),
+                    ("unit_amount", "100000000"),
+                ],
+            )
+            .await?;
+        anyhow::ensure!(status == 201, "line {index}: {status} {body}");
+        last_line = field(&body, "id")
+            .as_str()
+            .expect("a line has an id")
+            .to_owned();
+    }
+
+    let (_, draft) = harness
+        .get(CLIENT_A, &format!("/v1/invoices/{invoice}"))
+        .await?;
+    let over = lines * PER_LINE;
+    assert_eq!(field(&draft, "amount_due"), over);
+    assert!(over > MAX_AMOUNT, "the fixture must actually be over it");
+
+    let (status, body) = harness
+        .post(CLIENT_A, &format!("/v1/invoices/{invoice}/finalize"), &[])
+        .await?;
+    assert_eq!(status, 400, "a draft past the ceiling is refused: {body}");
+    assert_eq!(at(&body, &["error", "param"]), "invoice");
+    assert_eq!(
+        harness.next_number(MERCHANT_A).await?,
+        None,
+        "a refused finalize burns no number, this one included"
+    );
+
+    // It is a ceiling and not a wall: remove one line and the document issues,
+    // and the intent `pay` mints is inside the bound `POST /v1/payment_intents`
+    // would have enforced on it.
+    let (status, body) = harness
+        .delete(CLIENT_A, &format!("/v1/invoice_items/{last_line}"))
+        .await?;
+    assert_eq!(status, 200, "{body}");
+
+    let (status, open) = harness
+        .post(CLIENT_A, &format!("/v1/invoices/{invoice}/finalize"), &[])
+        .await?;
+    assert_eq!(status, 200, "one line lighter, it issues: {open}");
+    assert_eq!(field(&open, "amount_due"), (lines - 1) * PER_LINE);
+
+    let (status, paying) = harness
+        .post(
+            CLIENT_A,
+            &format!("/v1/invoices/{invoice}/pay"),
+            &[("success_url", SUCCESS_URL), ("cancel_url", CANCEL_URL)],
+        )
+        .await?;
+    assert_eq!(status, 200, "{paying}");
+    let intent = field(&paying, "payment_intent")
+        .as_str()
+        .expect("pay attaches an intent")
+        .to_owned();
+    let (_, pi) = harness
+        .get(CLIENT_A, &format!("/v1/payment_intents/{intent}"))
+        .await?;
+    let amount = field(&pi, "amount").as_i64().expect("an amount");
+    assert!(
+        amount <= MAX_AMOUNT,
+        "`pay` minted an intent for {amount}, past the {MAX_AMOUNT} `POST /v1/payment_intents` \
+         refuses — a JSON number that no longer round-trips through a double"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}

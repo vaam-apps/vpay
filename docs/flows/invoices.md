@@ -361,3 +361,11 @@ the two compare-and-swaps an HTTP test cannot isolate);
   A merchant taking a deposit issues two invoices.
 - **The dashboard has no invoice screen.** `/dash/v1` exposes nothing about
   this resource.
+- **An invoice cannot be issued past `2^53 - 1` minor units** (2026-09-07,
+  review). `POST /v1/invoices/{id}/finalize` answers `400` naming `invoice`
+  above it, because `pay` mints its intent for `amount_remaining` without
+  going through `POST /v1/payment_intents`' own `parse_amount`, and a larger
+  number is silently rounded by every JSON client — both vpay SDKs included.
+  It is not a limit anyone will meet: 9,007,199,254,740,991 FCFA is four
+  orders of magnitude above Cameroon's money supply. It is enforced because
+  reaching it needed ninety-one lines and no privilege at all.

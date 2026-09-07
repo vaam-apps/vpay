@@ -696,17 +696,21 @@ async fn transition_once(
 
     match which {
         Transition::Finalize => {
-            if current.status == InvoiceStatus::Draft.as_wire_str()
-                && Invoices::items_for_invoice(repositories, id)
+            if current.status == InvoiceStatus::Draft.as_wire_str() {
+                if Invoices::items_for_invoice(repositories, id)
                     .await?
                     .is_empty()
-            {
-                return Err(ApiError::invalid_param(
-                    "invoice",
-                    "This invoice has no lines, so there is nothing to bill. Add at least one \
-                     line with `POST /v1/invoice_items` before finalizing, or delete the \
-                     draft.",
-                ));
+                {
+                    return Err(ApiError::invalid_param(
+                        "invoice",
+                        "This invoice has no lines, so there is nothing to bill. Add at least \
+                         one line with `POST /v1/invoice_items` before finalizing, or delete \
+                         the draft.",
+                    ));
+                }
+                if current.amount_due > super::payment_intents::MAX_AMOUNT {
+                    return Err(too_large_to_issue(current.amount_due));
+                }
             }
         }
         Transition::Void => refuse_if_being_paid(repositories, &current, "voided").await?,
@@ -1216,6 +1220,51 @@ fn not_a_draft_with_status(row: &InvoiceRow) -> ApiError {
             row.status
         ),
     }
+}
+
+/// The refusal for a draft whose total is past the largest amount this API
+/// represents exactly.
+///
+/// # Why the bound is here and not on the line, on `pay`, or in the database
+///
+/// It is the bound `POST /v1/payment_intents` already enforces on `amount`
+/// ([`super::payment_intents::MAX_AMOUNT`]) — `2^53 - 1`, the point past
+/// which a JSON number stops round-tripping through the IEEE-754 double every
+/// JavaScript client parses a body with, and the same value both merchant
+/// SDKs check client-side. `POST /v1/invoices/{id}/pay` does not go through
+/// `parse_amount`: it mints its intent for `amount_remaining` straight off
+/// the invoice. Without this check the invoice route is a second door into an
+/// `amount` the intent route refuses, and the invoice's own `amount_due` is
+/// past it too — on `GET /v1/invoices/{id}` and inside every `invoice.*`
+/// webhook body. Measured on 2026-09-07 before the check existed: ninety-one
+/// lines at both `invoice_items` ceilings finalized `200` at
+/// 9,100,000,000,000,000.
+///
+/// **At finalize** and not on the line write, because `Invoices::add_item`
+/// re-sums and commits in one transaction — by the time the new total is
+/// back, the row is written, and refusing then would mean a second statement
+/// to undo it. **At finalize** and not at `pay`, because a refusal there
+/// leaves an `open` invoice nobody can ever pay and no route can edit. A
+/// draft is still editable, so this is the only refusal a merchant can act
+/// on.
+///
+/// **Not in the statement**, unlike every transition guard in this module,
+/// and the difference is deliberate: this is a bound on how the number is
+/// *rendered*, not a state-machine edge. A line added between this read and
+/// the `UPDATE` could still carry the total past it — a race a merchant can
+/// only win against themselves, on their own draft — where a status read
+/// before a write is a race a *concurrent finalize* wins. The two are not the
+/// same kind of check and this one does not pretend to be.
+fn too_large_to_issue(amount_due: i64) -> ApiError {
+    ApiError::invalid_param(
+        "invoice",
+        format!(
+            "This invoice totals {amount_due}, which is more than this API represents exactly \
+             ({max}). Remove or reduce a line before finalizing: a larger number is silently \
+             rounded by any JSON client, including both vpay SDKs.",
+            max = super::payment_intents::MAX_AMOUNT,
+        ),
+    )
 }
 
 /// The refusal for a transition that needed an open invoice.
