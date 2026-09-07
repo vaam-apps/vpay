@@ -22,6 +22,8 @@ order, on top of that base:
 4. `17e1d6a` — `just verify-ui`, wired into `just verify` and CI.
 5. `88ec2f7` — decision D4 (`canceled` → `warning`), plus the one checkout
    test assertion it broke.
+6. `dc0e243` — `docs/status.md`, `docs/flows/hosted-checkout.md`, this file.
+7. `dc4244a` — one `verify-ui` exemption fix (see finding 6, below).
 
 Head at report time: run `git rev-parse HEAD` in the worktree — do not trust
 a pasted SHA in this file over that command.
@@ -157,6 +159,14 @@ has built the `cypress-axe` real-browser check yet.
    which is nominally Lane B's file. Done as the minimum edit to keep the
    build green — the same allowance the brief gives for Tailwind configs —
    not as a claim on the rest of Lane B's migration.
+
+6. **`verify-ui`'s own daisyUI-4-class check flagged its own doc comment**
+   (not a plan defect — a gate-implementation one, caught by re-running the
+   gate after the component set landed). `field.tsx`'s comment explains, in
+   prose, that `Field` replaces daisyUI 5's removed `form-control`/
+   `label-text` classes — and names them to say so, which the grep cannot
+   tell apart from an actual class. Fixed the same way as finding 2, above:
+   a named path exemption, not a regex rewrite (commit `dc4244a`).
 
 ## For the reviewer
 

@@ -806,8 +806,15 @@ verify-ui:
     #    docs/plans/2026-09-07-ui-revamp.md §6.3. This is the subset the
     #    plan measured this repository actually used — not the complete
     #    daisyUI 4→5 delta.
+    #
+    #    frontends/packages/ui/src/components/field.tsx is exempted: its own
+    #    doc comment NAMES form-control/label-text, in prose, to explain
+    #    why @vpay/ui's Field replaces them — it does not use either class.
+    #    Measured, not assumed: it is the only file in the tree where this
+    #    matched and had no actual offending class in it.
     if git grep -nE '\b(form-control|label-text|label-text-alt|btn-group|input-group|card-compact|tabs-bordered|tabs-lifted|tabs-boxed)\b' \
-        -- 'frontends' 'examples' ':!docs' ; then
+        -- 'frontends' 'examples' ':!docs' \
+        ':!frontends/packages/ui/src/components/field.tsx' ; then
       echo 'verify-ui: a daisyUI 4 class removed in daisyUI 5'; fail=1
     fi
     # 3. No !important, with three exemptions — measured against this repo's
