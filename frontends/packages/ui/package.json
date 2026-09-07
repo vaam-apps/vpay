@@ -6,6 +6,7 @@
   "main": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./testing": "./src/testing/axe.ts",
     "./styles.css": "./src/styles.css"
   },
   "scripts": {
