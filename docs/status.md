@@ -1982,6 +1982,22 @@ Nothing in this repo is ✅ unless a test would fail if it broke.
 > `frame-ancestors`** — Cypress strips the header, so it is proven sent and the
 > refusal a browser was seen performing is the page's own origin check — and
 > **no pod has ever run** the page. Do not deploy it.*
+>
+> *2026-09-07 (exp31, docs only): **`README.md` was rewritten against this
+> page** and no capability moved. Its banner had still read "vpay cannot take a
+> payment yet … no HTTP call to any payment rail has ever been made by this
+> code" — a sentence this section retired on 2026-09-03 (Step 3) — and it still
+> said "nothing polls the charge and no intent has ever reached `succeeded`",
+> which Step 4 closed. Its banner now reads **"vpay has never taken a real
+> payment"**, which is this section's own load-bearing sentence in the README's
+> voice. Eleven other stale claims were corrected against the rows below and
+> against the tree; every one is listed with its evidence in
+> [plans/exp31-readme-notes/opus.md](plans/exp31-readme-notes/opus.md), together
+> with six stale claims in **other** files (this page's MVP item 7,
+> `runbooks/demo.md` §6, `flows/README.md`, AGENTS.md's gate count and its
+> Headless UI line, and the `justfile`'s `ci` comment) that pass deliberately
+> did not touch. **The load-bearing sentence is unchanged: no HTTP call to a
+> real rail has ever been made.** Do not deploy it.*
 
 ---
 
