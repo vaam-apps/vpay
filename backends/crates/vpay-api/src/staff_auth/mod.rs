@@ -15,8 +15,18 @@
 //! Both secrets below are *deployment* secrets. `vpay-db` writes and reads
 //! opaque strings and never learns what they mean, which is what keeps the
 //! pepper and the AEAD key out of the crate that holds a connection pool —
-//! and out of `vpay-worker-bin`, which links `vpay-db` and has no business
-//! being able to verify a staff password.
+//! and out of anything else holding one.
+//!
+//! Until issue #77 (2026-09-07) that sentence ended "and out of
+//! `vpay-worker-bin`, which links `vpay-db`", and it was a statement about a
+//! *link* graph: the worker was a separate binary that did not link this
+//! crate's staff module. It is one binary now, so the link-level claim is
+//! gone and only the configuration-level one survives — `vpay-server worker`
+//! constructs no [`crate::staff::StaffLogin`] and reads neither secret (see
+//! `backends/apps/vpay-server/src/worker.rs`, whose `boot` builds no staff
+//! login at all). Stated rather than quietly deleted, because "the worker
+//! cannot verify a staff password" is now true for a weaker reason than it
+//! used to be.
 //!
 //! # What is deliberately not here
 //!

@@ -9,10 +9,13 @@
 //! `${ENV}` placeholders (fatal if unresolved), and validates; then each
 //! binary joins `providers` against its own linked adapters and calls
 //! `vpay_db::config_reconcile::reconcile` to make `currencies` and
-//! `providers` match. Both `vpay-server` and `vpay-worker-bin` do all of it
-//! at startup, before binding a listener — see each binary's `main.rs` for
-//! the ordering and why, and [`ConfigError::ProviderWithoutAdapter`] for the
-//! one check this crate cannot make itself.
+//! `providers` match. Both long-running modes of `vpay-server` — serving the
+//! API, and `worker` — do all of it at startup, before binding a listener.
+//! They were two binaries, `vpay-server` and `vpay-worker-bin`, until issue
+//! #77 on 2026-09-07; see `main.rs` and `worker.rs` in
+//! `backends/apps/vpay-server` for the ordering and why, and
+//! [`ConfigError::ProviderWithoutAdapter`] for the one check this crate
+//! cannot make itself.
 
 use serde::{Deserialize, Serialize};
 
