@@ -7,8 +7,10 @@ is specific to working here as an agent.
 ## Before you start
 
 ```bash
-just verify    # twelve self-checks, all of which must pass before AND after
-               # your change, plus the `verify-docs` report, which never fails
+just verify    # the self-checks the justfile's `verify` recipe lists — twelve
+               # on 2026-09-07, and the recipe echoes its own count on success
+               # — all of which must pass before AND after your change, plus
+               # the `verify-docs` report, which never fails
 cat docs/status.md
 ```
 

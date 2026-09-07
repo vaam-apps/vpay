@@ -437,9 +437,10 @@ audit-web:
 # this comment honest is someone reading the workflow beside it.
 #
 # `verify-docs` is NOT a check: it exits 0 whatever it finds, so the
-# "verify: ok" below means the eleven gates passed and says nothing about the
-# numbers `verify-docs` printed. It is last so that the report a human reads
-# is the final thing on the terminal, after every gate has had its say.
+# "verify: ok" below means every gate in the recipe passed and says nothing
+# about the numbers `verify-docs` printed. It is last so that the report a
+# human reads is the final thing on the terminal, after every gate has had
+# its say.
 #
 # `verify-links` joined the list on 2026-09-05 as the fifth gate. It is here
 # rather than only in `docs-check` because a link is a claim like any other
@@ -1542,7 +1543,16 @@ verify-ignored:
         exit 1
     fi
 
-# Everything CI runs, in CI's order.
+# What CI runs, in CI's order, MINUS two jobs — and the difference is the
+# point of this comment, because it used to say "everything".
+#
+# Covered: `self-checks` (`verify`), `rust` (`fmt-check`, `clippy`,
+# `test-rust`, `test-doc`, `verify-ignored`), `web` (`lint-web`, `test-web`)
+# and `supply chain` (`deny`). NOT covered, both by design and both needing
+# more than a checkout: `e2e (compose)` — that is `just test-e2e`, which
+# builds images and boots a stack — and `deploy (helm chart)` — that is
+# `just helm-check`, which downloads schemas over HTTPS (see its own comment
+# for why it is out).
 #
 # `test-doc` sits between `test-rust` and `verify-ignored` here and in the
 # `rust` job, because nextest runs no doctests and `verify-ignored`'s counts

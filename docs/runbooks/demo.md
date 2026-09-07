@@ -822,9 +822,17 @@ Issue #11 asks that the dashboard either show the intents the walkthrough
 created *or* that the issue state why it is out of scope. It is out of scope,
 and the reason is not that the screen is unfinished:
 
-**There is no data source to show.** Per [../status.md](../status.md) the
-dashboard renders a static scaffold notice and makes no call to `vpay-server`;
-`/dash/v1` does not exist (Phase 2b, not started). A demo that booted it would
+**There is no page to show it on.** Per [../status.md](../status.md) the
+dashboard renders a static scaffold notice and makes no call to
+`vpay-server`. ~~`/dash/v1` does not exist (Phase 2b, not started).~~
+**Corrected 2026-09-07:** `/dash/v1` has existed since 2026-09-06 — two
+authenticated read routes, `vpay_api::dash::DASH_ROUTES` — and staff sign-in
+since 2026-09-07 ([ADR-0017](../adr/0017-staff-authentication.md)). Both are
+proven over HTTP against a real Postgres
+(`backends/tests/integration/tests/dashboard_read_surface.rs`,
+`.../staff_sign_in.rs`). The reason the dashboard stays down is now entirely
+on the app's side: **nothing in it calls either surface, and it has no
+pages.** A demo that booted it would
 be inviting a reader to look at a screen that *cannot* show the six payments
 just made, which is worse than not booting it. `just demo-up` therefore starts
 eight services and not nine, and building the dashboard for it would cost

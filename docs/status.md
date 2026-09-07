@@ -1982,6 +1982,22 @@ Nothing in this repo is ✅ unless a test would fail if it broke.
 > `frame-ancestors`** — Cypress strips the header, so it is proven sent and the
 > refusal a browser was seen performing is the page's own origin check — and
 > **no pod has ever run** the page. Do not deploy it.*
+>
+> *2026-09-07 (exp31, docs only): **`README.md` was rewritten against this
+> page** and no capability moved. Its banner had still read "vpay cannot take a
+> payment yet … no HTTP call to any payment rail has ever been made by this
+> code" — a sentence this section retired on 2026-09-03 (Step 3) — and it still
+> said "nothing polls the charge and no intent has ever reached `succeeded`",
+> which Step 4 closed. Its banner now reads **"vpay has never taken a real
+> payment"**, which is this section's own load-bearing sentence in the README's
+> voice. Eleven other stale claims were corrected against the rows below and
+> against the tree; every one is listed with its evidence in
+> [plans/exp31-readme-notes/opus.md](plans/exp31-readme-notes/opus.md), together
+> with six stale claims in **other** files (this page's MVP item 7,
+> `runbooks/demo.md` §6, `flows/README.md`, AGENTS.md's gate count and its
+> Headless UI line, and the `justfile`'s `ci` comment) that pass deliberately
+> did not touch. **The load-bearing sentence is unchanged: no HTTP call to a
+> real rail has ever been made.** Do not deploy it.*
 
 ---
 
@@ -4923,7 +4939,7 @@ decides items 2, 3, 4 and 5 — and item 8 with them.*
    and it belongs to the *merchant* surface, not this one.** Tokens are
    issued and verified on `/v1` (item 4); a signing key is generated,
    loaded, announced in `oauth_signing_keys` and published at
-   `/v1/oauth/jwks.json`. **Nothing here has ever performed a login**, and
+   `/v1/oauth/jwks.json`. ~~**Nothing here has ever performed a login**, and
    the gap is not a matter of wiring the same parts to a second router:
    there is no `/login` or `/authorize` route, no `SessionStore` (
    `authkestra-engine` is pinned without its `sql-postgres` feature, so no
@@ -4931,7 +4947,20 @@ decides items 2, 3, 4 and 5 — and item 8 with them.*
    `authkestra-op`'s authorization-code handler mints `aud = <client_id>`
    with no requested-audience path, which `Surface::Dashboard`'s
    `vpay:dash/v1` would reject on every call — a design question whoever
-   builds this must answer first. See the "Dashboard auth" row. **And
+   builds this must answer first.~~ **Corrected 2026-09-07
+   ([ADR-0017](adr/0017-staff-authentication.md)): a staff member can sign
+   in.** `POST /dash/v1/staff/login`, `/totp`, `/password`, `/session`,
+   `/logout` and `GET /dash/v1/oauth/authorize` + `POST /dash/v1/oauth/token`
+   are mounted, and `backends/tests/integration/tests/staff_sign_in.rs`
+   drives thirteen cases over a real socket against a real Postgres in which
+   **every token presented came out of that token endpoint** after a
+   password, a TOTP code and a PKCE exchange — the suite mints none itself.
+   The design question above was answered rather than deferred; the audience
+   is `Surface::Dashboard`'s and the server verified it through its own
+   published JWKS. What item 7 still does **not** have is the third verb,
+   key rotation, and a browser: no page of `frontends/apps/dashboard` calls
+   any of these routes. See the "Dashboard auth" row and
+   [flows/dashboard-auth.md](flows/dashboard-auth.md) § Status. **And
    "rotating a signing key at least once" is still unmet in the sense this
    item means it:** `ensure_active_signing_key` will rotate the database
    record when a process boots with a different key, but `TokenManager`
