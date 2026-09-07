@@ -19,9 +19,11 @@ export default function CheckoutPage() {
   const config = shopConfig();
   return (
     <>
-      <h1>Checkout</h1>
+      <h1 className="mb-4 text-2xl font-bold">Checkout</h1>
       <CartTable showCheckoutLink={false} />
-      <h2 style={{ marginTop: "2rem" }}>Where to send the receipt</h2>
+      <h2 className="mt-8 mb-2 text-lg font-semibold">
+        Where to send the receipt
+      </h2>
       <CheckoutForm
         defaultMode={config.checkoutMode}
         publishableKey={config.vpayPublishableKey}

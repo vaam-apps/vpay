@@ -43,13 +43,13 @@ export default async function OrderReturnPage({
 
   return (
     <>
-      <h1>Thank you</h1>
+      <h1 className="mb-4 text-2xl font-bold">Thank you</h1>
       <PopupReturnNotifier
         sessionId={typeof sessionId === "string" ? sessionId : null}
         status="complete"
       />
       <OrderPoller initial={order} />
-      <p style={{ color: "var(--muted)", fontSize: "0.9rem" }}>
+      <p className="mt-4 text-sm text-base-content/60">
         vpay sent you back with{" "}
         <code data-testid="return-session-id">
           {typeof sessionId === "string" ? sessionId : "no session id"}

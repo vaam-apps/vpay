@@ -51,7 +51,9 @@ export default async function OrderCancelledPage({
 
   return (
     <>
-      <h1>{open ? "Payment cancelled" : "You came back without paying"}</h1>
+      <h1 className="mb-2 text-2xl font-bold">
+        {open ? "Payment cancelled" : "You came back without paying"}
+      </h1>
       {open ? (
         <p data-testid="cancelled-message">
           You came back from vpay without paying. Nothing has been charged, and
@@ -64,27 +66,32 @@ export default async function OrderCancelledPage({
           webhook said is below — this page took no decision of its own.
         </p>
       )}
-      <p>
+      <p className="mt-2">
         <OrderStatusBadge status={order.status} />
       </p>
       <OrderFailureNotice order={order} />
-      <p style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+      <p className="mt-4 flex flex-wrap gap-3">
         {open ? (
-          <Link className="button" href={`/orders/${order.id}/embedded`}>
+          <Link
+            className="btn btn-primary"
+            href={`/orders/${order.id}/embedded`}
+          >
             Try again without leaving the shop
           </Link>
         ) : null}
-        <Link className="button secondary" href={`/orders/${order.id}`}>
+        <Link className="btn btn-outline" href={`/orders/${order.id}`}>
           The order page
         </Link>
-        <Link className="button secondary" href="/">
+        <Link className="btn btn-outline" href="/">
           Back to the catalogue
         </Link>
       </p>
       {open ? (
         <>
-          <h2>Or close the order properly</h2>
-          <p style={{ color: "var(--muted)" }}>
+          <h2 className="mt-6 mb-2 text-lg font-semibold">
+            Or close the order properly
+          </h2>
+          <p className="text-sm text-base-content/60">
             Coming back here is a <em>navigation</em>, not a cancellation: this
             order is still <code>unpaid</code>, its PaymentIntent is still live
             at vpay, and a charge already submitted to a rail could still

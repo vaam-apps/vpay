@@ -88,19 +88,28 @@ export function OrderActions({
   return (
     <>
       {error !== null ? (
-        <p className="error" role="alert" data-testid="order-action-error">
+        <p
+          className="mt-4 alert alert-error"
+          role="alert"
+          data-testid="order-action-error"
+        >
           {error}
         </p>
       ) : null}
       {note !== null ? (
-        <p role="status" data-testid="order-action-note">
+        <p
+          className="mt-4 alert alert-info"
+          role="status"
+          data-testid="order-action-note"
+        >
           {note}
         </p>
       ) : null}
-      <p style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+      <p className="mt-4 flex flex-wrap gap-3">
         {retryable ? (
           <button
             type="button"
+            className="btn btn-primary"
             disabled={busy !== null}
             data-testid="order-retry"
             onClick={() => void retry()}
@@ -111,7 +120,7 @@ export function OrderActions({
         {canCancel ? (
           <button
             type="button"
-            className="secondary"
+            className="btn btn-outline"
             disabled={busy !== null}
             data-testid="order-cancel"
             onClick={() => void cancel()}
@@ -121,7 +130,7 @@ export function OrderActions({
         ) : null}
       </p>
       {retryable ? (
-        <p style={{ color: "var(--muted)", fontSize: "0.9rem" }}>
+        <p className="mt-2 text-sm text-base-content/60">
           &ldquo;Try again&rdquo; places a <strong>new order</strong> with the
           same items, at today&rsquo;s catalogue prices. It has to: vpay allows
           one charge per PaymentIntent forever, so a retry is a new intent by

@@ -14,6 +14,7 @@ export function AddToCart({
   return (
     <button
       type="button"
+      className="btn btn-primary btn-sm"
       data-testid={`add-${productId}`}
       aria-label={`Add ${name} to the cart`}
       onClick={() => {

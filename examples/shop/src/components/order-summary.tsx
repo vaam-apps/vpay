@@ -9,10 +9,33 @@ const LABEL: Readonly<Record<OrderView["status"], string>> = {
   cancelled: "Cancelled",
 };
 
+/**
+ * The badge class per order status, **written out in full rather than
+ * assembled**. `failed` and `cancelled` share `error`, exactly as the
+ * pre-daisyUI CSS this replaces did (`.status-failed, .status-cancelled
+ * { color: var(--bad) }`) — the two are equally "this did not settle" from a
+ * buyer's point of view.
+ *
+ * The full class strings are the load-bearing part. Tailwind 4 finds the
+ * classes it must generate by **scanning source text**, so a class assembled
+ * at runtime — `` `badge badge-${tone}` `` — is never emitted into the
+ * stylesheet, and a badge rendered against a rule that was never generated
+ * looks correct in jsdom and is colourless in a browser. That is exactly the
+ * silent failure plan §6.3/§6.4 is about, and it does not error anywhere.
+ * `src/testing/no-dynamic-class-names.test.ts` fails if this shape comes
+ * back.
+ */
+const BADGE_CLASS: Readonly<Record<OrderView["status"], string>> = {
+  unpaid: "badge badge-warning",
+  paid: "badge badge-success",
+  failed: "badge badge-error",
+  cancelled: "badge badge-error",
+};
+
 /** The status badge. One place decides the word and the colour for a status. */
 export function OrderStatusBadge({ status }: { status: OrderView["status"] }) {
   return (
-    <span className={`status status-${status}`} data-testid="order-status">
+    <span className={BADGE_CLASS[status]} data-testid="order-status">
       {LABEL[status]}
     </span>
   );
@@ -34,9 +57,23 @@ export function OrderFailureNotice({ order }: { order: OrderView }) {
   }
   const copy = failureCopy(order.failureCode);
   return (
-    <section className="error" data-testid="order-failure">
-      <h2 data-testid="order-failure-title">{copy.title}</h2>
-      <p data-testid="order-failure-detail">{copy.detail}</p>
+    // daisyUI 5's `alert` is a GRID with `grid-auto-flow: column`, so two
+    // element children land side by side and `flex-col`/`items-start` on it
+    // are inert (measured in a browser on 2026-09-07: the title and the
+    // detail rendered on one row, in two columns). One wrapping element
+    // means one grid cell, and the heading and the paragraph stack as
+    // blocks — left-aligned, which `alert-vertical` would not be.
+    <section
+      role="alert"
+      className="mt-4 alert alert-error"
+      data-testid="order-failure"
+    >
+      <div>
+        <h2 className="text-lg font-semibold" data-testid="order-failure-title">
+          {copy.title}
+        </h2>
+        <p data-testid="order-failure-detail">{copy.detail}</p>
+      </div>
     </section>
   );
 }
@@ -48,65 +85,74 @@ export function OrderFailureNotice({ order }: { order: OrderView }) {
 export function OrderSummary({ order }: { order: OrderView }) {
   return (
     <>
-      <p>
+      <p className="mb-4">
         <OrderStatusBadge status={order.status} />
       </p>
-      <table>
-        <thead>
-          <tr>
-            <th>Item</th>
-            <th className="num">Unit</th>
-            <th className="num">Qty</th>
-            <th className="num">Line</th>
-          </tr>
-        </thead>
-        <tbody>
-          {order.items.map((item) => (
-            <tr key={item.productId}>
-              <td>{item.name}</td>
-              <td className="num">
-                {formatMinor(item.unitMinor, order.currency)}
+      <div className="overflow-x-auto">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th className="text-right">Unit</th>
+              <th className="text-right">Qty</th>
+              <th className="text-right">Line</th>
+            </tr>
+          </thead>
+          <tbody>
+            {order.items.map((item) => (
+              <tr key={item.productId}>
+                <td>{item.name}</td>
+                <td className="text-right tabular-nums">
+                  {formatMinor(item.unitMinor, order.currency)}
+                </td>
+                <td className="text-right tabular-nums">{item.quantity}</td>
+                <td className="text-right tabular-nums">
+                  {formatMinor(item.unitMinor * item.quantity, order.currency)}
+                </td>
+              </tr>
+            ))}
+            <tr>
+              <td colSpan={3}>
+                <strong>Total</strong>
               </td>
-              <td className="num">{item.quantity}</td>
-              <td className="num">
-                {formatMinor(item.unitMinor * item.quantity, order.currency)}
+              <td className="text-right tabular-nums" data-testid="order-total">
+                <strong>{formatMinor(order.totalMinor, order.currency)}</strong>
               </td>
             </tr>
-          ))}
-          <tr>
-            <td colSpan={3}>
-              <strong>Total</strong>
-            </td>
-            <td className="num" data-testid="order-total">
-              <strong>{formatMinor(order.totalMinor, order.currency)}</strong>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <h2>For the runbook</h2>
-      <dl className="facts">
-        <dt>Order</dt>
-        <dd data-testid="order-id">{order.id}</dd>
-        <dt>E-mail</dt>
-        <dd data-testid="order-email">
+          </tbody>
+        </table>
+      </div>
+      <h2 className="mt-6 mb-2 text-lg font-semibold">For the runbook</h2>
+      <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt className="text-base-content/60">Order</dt>
+        <dd className="font-mono break-all" data-testid="order-id">
+          {order.id}
+        </dd>
+        <dt className="text-base-content/60">E-mail</dt>
+        <dd className="font-mono break-all" data-testid="order-email">
           {order.email ?? "not given — optional, see the checkout page"}
         </dd>
-        <dt>PaymentIntent</dt>
-        <dd data-testid="order-payment-intent">
+        <dt className="text-base-content/60">PaymentIntent</dt>
+        <dd className="font-mono break-all" data-testid="order-payment-intent">
           {order.paymentIntentId ?? "—"}
         </dd>
-        <dt>Checkout Session</dt>
-        <dd data-testid="order-checkout-session">
+        <dt className="text-base-content/60">Checkout Session</dt>
+        <dd
+          className="font-mono break-all"
+          data-testid="order-checkout-session"
+        >
           {order.checkoutSessionId ?? "—"}
         </dd>
-        <dt>Failure code</dt>
-        <dd data-testid="order-failure-code">{order.failureCode ?? "—"}</dd>
-        <dt>What the rail said</dt>
-        <dd data-testid="order-failure-message">
+        <dt className="text-base-content/60">Failure code</dt>
+        <dd className="font-mono break-all" data-testid="order-failure-code">
+          {order.failureCode ?? "—"}
+        </dd>
+        <dt className="text-base-content/60">What the rail said</dt>
+        <dd className="font-mono break-all" data-testid="order-failure-message">
           {order.failureMessage ?? "—"}
         </dd>
       </dl>
-      <p style={{ color: "var(--muted)", fontSize: "0.9rem" }}>
+      <p className="mt-4 text-sm text-base-content/60">
         Those two ids are identifiers, not credentials. The credentials they
         belong to (<code>pi_…_secret_…</code> and <code>cs_…_secret_…</code>)
         never leave the shop's server.

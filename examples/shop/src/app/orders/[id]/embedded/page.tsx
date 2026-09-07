@@ -37,15 +37,17 @@ export default async function OrderEmbeddedPage({
   if (order.status !== "unpaid") {
     return (
       <>
-        <h1>Nothing to pay</h1>
+        <h1 className="mb-2 text-2xl font-bold">Nothing to pay</h1>
         <p>
           Order <code>{order.id}</code> is already settled.
         </p>
-        <p>
+        <p className="mt-2">
           <OrderStatusBadge status={order.status} />
         </p>
-        <p>
-          <Link href={`/orders/${order.id}`}>The order page</Link>
+        <p className="mt-4">
+          <Link href={`/orders/${order.id}`} className="link">
+            The order page
+          </Link>
         </p>
       </>
     );
@@ -54,8 +56,10 @@ export default async function OrderEmbeddedPage({
   const config = shopConfig();
   return (
     <>
-      <h1>Pay {formatMinor(order.totalMinor, order.currency)}</h1>
-      <p style={{ color: "var(--muted)" }}>
+      <h1 className="mb-2 text-2xl font-bold">
+        Pay {formatMinor(order.totalMinor, order.currency)}
+      </h1>
+      <p className="mb-4 text-sm text-base-content/60">
         The panel below is vpay's own checkout page, in an iframe served from{" "}
         <code>{config.vpayCheckoutUrl}</code>. It is allowed to frame here
         because this shop's origin is in the merchant's{" "}
@@ -67,8 +71,10 @@ export default async function OrderEmbeddedPage({
         checkoutBaseUrl={config.vpayCheckoutUrl}
         apiBaseUrl={config.vpayBrowserApiUrl}
       />
-      <p style={{ marginTop: "1rem" }}>
-        <Link href={`/orders/${order.id}`}>The order page</Link>
+      <p className="mt-4">
+        <Link href={`/orders/${order.id}`} className="link">
+          The order page
+        </Link>
       </p>
       <TestNumbersPanel rails={allSelectedRails(config.rails)} />
     </>

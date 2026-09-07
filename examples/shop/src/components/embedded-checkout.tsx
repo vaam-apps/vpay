@@ -84,11 +84,19 @@ export function EmbeddedCheckoutPanel({
   return (
     <>
       {error !== null ? (
-        <p className="error" role="alert" data-testid="embedded-error">
+        <p
+          role="alert"
+          className="mb-4 alert alert-error"
+          data-testid="embedded-error"
+        >
           {error}
         </p>
       ) : null}
-      <div id="vpay-embedded-checkout" data-testid="embedded-mount" />
+      <div
+        id="vpay-embedded-checkout"
+        data-testid="embedded-mount"
+        className="card min-h-96 bg-base-100"
+      />
     </>
   );
 }
