@@ -59,7 +59,7 @@ export function OrderFailureNotice({ order }: { order: OrderView }) {
   return (
     <section
       role="alert"
-      className="alert alert-error mt-4 flex-col items-start"
+      className="mt-4 alert flex-col items-start alert-error"
       data-testid="order-failure"
     >
       <h2 className="text-lg font-semibold" data-testid="order-failure-title">

@@ -89,7 +89,7 @@ export function OrderActions({
     <>
       {error !== null ? (
         <p
-          className="alert alert-error mt-4"
+          className="mt-4 alert alert-error"
           role="alert"
           data-testid="order-action-error"
         >
@@ -98,7 +98,7 @@ export function OrderActions({
       ) : null}
       {note !== null ? (
         <p
-          className="alert alert-info mt-4"
+          className="mt-4 alert alert-info"
           role="status"
           data-testid="order-action-note"
         >

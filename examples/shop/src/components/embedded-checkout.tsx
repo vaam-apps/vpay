@@ -86,7 +86,7 @@ export function EmbeddedCheckoutPanel({
       {error !== null ? (
         <p
           role="alert"
-          className="alert alert-error mb-4"
+          className="mb-4 alert alert-error"
           data-testid="embedded-error"
         >
           {error}

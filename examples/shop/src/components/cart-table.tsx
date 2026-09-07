@@ -121,7 +121,7 @@ export function CartTable({ showCheckoutLink }: { showCheckoutLink: boolean }) {
                     value={line.quantity}
                     aria-label={`Quantity of ${product.name}`}
                     data-testid={`qty-${product.id}`}
-                    className="input input-sm w-20 text-right"
+                    className="input w-20 text-right input-sm"
                     onChange={(event) =>
                       setQuantity(product.id, Number(event.target.value))
                     }

@@ -74,7 +74,7 @@ export function OrderPoller({ initial }: { initial: OrderView }) {
         </p>
       )}
       {order.status === "paid" ? (
-        <p data-testid="paid-message" className="alert alert-success mb-4">
+        <p data-testid="paid-message" className="mb-4 alert alert-success">
           Paid. Thank you — the shop marked this order paid when vpay's signed
           webhook arrived, not when your browser did.
         </p>
@@ -82,7 +82,7 @@ export function OrderPoller({ initial }: { initial: OrderView }) {
       {order.status === "failed" ? (
         <p
           role="alert"
-          className="alert alert-error mb-4"
+          className="mb-4 alert alert-error"
           data-testid="failed-message"
         >
           The payment failed. Nothing has been charged.
@@ -91,7 +91,7 @@ export function OrderPoller({ initial }: { initial: OrderView }) {
       {order.status === "cancelled" ? (
         <p
           role="alert"
-          className="alert alert-error mb-4"
+          className="mb-4 alert alert-error"
           data-testid="cancelled-message"
         >
           The payment was cancelled.

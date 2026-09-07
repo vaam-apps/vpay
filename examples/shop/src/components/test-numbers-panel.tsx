@@ -63,7 +63,7 @@ export function TestNumbersPanel({ rails }: { rails: readonly string[] }) {
           {entry.caveat === undefined ? null : (
             <p
               role="alert"
-              className="alert alert-error mb-2"
+              className="mb-2 alert alert-error"
               data-testid={`test-numbers-caveat-${entry.rail}`}
             >
               <strong>Read this before you try them.</strong> {entry.caveat}

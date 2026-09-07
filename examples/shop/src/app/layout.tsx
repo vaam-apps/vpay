@@ -16,7 +16,7 @@ export default function RootLayout({
   return (
     <html lang="en" data-theme="bumblebee">
       <body className="min-h-screen bg-base-200">
-        <div className="alert alert-warning justify-center rounded-none text-sm">
+        <div className="alert justify-center rounded-none text-sm alert-warning">
           Demo shop. Nothing here ships, no money moves, and the rails behind
           vpay are stubs. Do not deploy.
         </div>

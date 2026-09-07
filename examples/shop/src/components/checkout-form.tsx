@@ -250,7 +250,7 @@ export function CheckoutForm({
               value={candidate}
               data-testid={`mode-${candidate}`}
               checked={mode === candidate}
-              className="radio radio-sm mt-1"
+              className="radio mt-1 radio-sm"
               onChange={() => setMode(candidate)}
             />
             <span>
@@ -265,7 +265,7 @@ export function CheckoutForm({
 
       {error !== null ? (
         <p
-          className="alert alert-error mt-4"
+          className="mt-4 alert alert-error"
           role="alert"
           data-testid="checkout-error"
         >
@@ -274,7 +274,7 @@ export function CheckoutForm({
       ) : null}
       {note !== null ? (
         <p
-          className="alert alert-info mt-4"
+          className="mt-4 alert alert-info"
           role="status"
           data-testid="checkout-note"
         >
