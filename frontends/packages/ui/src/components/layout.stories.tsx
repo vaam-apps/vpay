@@ -59,7 +59,7 @@ export const ListExample: Story = {
 
 export const PageShellExample: Story = {
   render: () => (
-    <PageShell className="border-base-300 border">
+    <PageShell className="border border-base-300">
       <Heading level={1}>Confirm your payment</Heading>
       <Text tone="muted">10,000 XAF to Acme Store</Text>
     </PageShell>

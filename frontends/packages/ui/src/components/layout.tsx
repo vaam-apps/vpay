@@ -16,7 +16,12 @@ import { cn } from '../cn.js';
 const stack = cva('flex', {
   variants: {
     direction: { row: 'flex-row', column: 'flex-col' },
-    align: { start: 'items-start', center: 'items-center', end: 'items-end', stretch: 'items-stretch' },
+    align: {
+      start: 'items-start',
+      center: 'items-center',
+      end: 'items-end',
+      stretch: 'items-stretch',
+    },
     justify: {
       start: 'justify-start',
       center: 'justify-center',

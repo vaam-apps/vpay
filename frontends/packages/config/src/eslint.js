@@ -28,8 +28,11 @@
  *
  * @module
  */
+import { fileURLToPath } from "node:url";
+
 import js from "@eslint/js";
 import nextPlugin from "@next/eslint-plugin-next";
+import betterTailwind from "eslint-plugin-better-tailwindcss";
 import reactHooks from "eslint-plugin-react-hooks";
 import globals from "globals";
 import tseslint from "typescript-eslint";
@@ -131,7 +134,27 @@ const TESTING_IMPORT_PATTERNS = [
  *   not `include`; type-aware rules are switched off for them. Defaults to
  *   the root-level tooling files most packages leave out.
  * @property {string[]} [ignores] Extra paths to skip entirely.
+ * @property {boolean} [tailwind] Enable the class-string rules
+ *   (`eslint-plugin-better-tailwindcss`). Requires the package to resolve
+ *   `tailwindcss` **4** — the plugin loads the Tailwind entry point below to
+ *   learn which classes exist, and throws outright in a package that only has
+ *   Tailwind 3. Off by default for exactly that reason; each app turns it on
+ *   in the commit that migrates it.
  */
+
+/**
+ * The one Tailwind 4 entry point, `@vpay/ui`'s `styles.css`.
+ *
+ * `eslint-plugin-better-tailwindcss` compiles it to learn the class universe
+ * — which is what lets `no-unknown-classes` know that `btn-primary` exists and
+ * `form-control` does not any more. Resolved from this file's own URL rather
+ * than from the linted package, because the path from here is fixed while the
+ * path from a consumer is not, and `@vpay/config` cannot depend on `@vpay/ui`
+ * without a cycle.
+ */
+const TAILWIND_ENTRY_POINT = fileURLToPath(
+  new URL("../../ui/src/styles.css", import.meta.url),
+);
 
 /**
  * Build the flat config for one workspace package.
@@ -145,6 +168,7 @@ export function vpayEslintConfig(options) {
     react = false,
     next = false,
     forbidTestingImports = false,
+    tailwind = false,
     scripts = [],
     browser = [],
     outsideTsconfig = DEFAULT_OUTSIDE_TSCONFIG,
@@ -247,6 +271,63 @@ export function vpayEslintConfig(options) {
             // entries are still eslintrc-shaped (`plugins` is an array of
             // strings) and ESLint 9 refuses them outright.
             ...reactHooks.configs.flat["recommended-latest"],
+          },
+        ]
+      : []),
+
+    // ---- The class-string rules (exp26 UI revamp, plan §7 "The class-string
+    // rules, concretely"; §3's "what elegant means here, as rules a gate can
+    // read"). The plugin was added to this package's dependencies by the
+    // implementing pass and never wired into a config, so none of these rules
+    // ran and the plan's own mutation — "a two-line `className` string is
+    // added → fail `just lint-web`" — passed. Measured before this block
+    // landed: `eslint --print-config` on a component reported 0 rules whose
+    // name contains "tailwind", and a deliberately six-line `className` in
+    // `badge.tsx` left `pnpm --filter @vpay/ui lint` at exit 0.
+    //
+    // On `tailwind`, not on `react`: the plugin compiles TAILWIND_ENTRY_POINT
+    // through the linted package's own `tailwindcss`, so it aborts ESLint
+    // entirely in `@vpay/checkout` and `@vpay/dashboard`, which are still on
+    // Tailwind 3 until lanes B and D migrate them. Measured, not assumed —
+    // enabling it for every React package fails both apps' `lint` at
+    // "@import 'tailwindcss'". Each app flips this flag in the same commit
+    // that moves it to Tailwind 4.
+    //
+    // `enforce-consistent-line-wrapping` is the maintainer's "no `className`
+    // longer than one line", expressed in the two directions the rule has:
+    // `preferSingleLine` makes an unnecessarily wrapped string an error, and
+    // `printWidth` makes a string that does not fit one line an error. The
+    // remedy for the second is to shorten the string — to reach for a `cva`
+    // variant or a layout primitive — not to accept the autofix's wrap.
+    ...(tailwind
+      ? [
+          {
+            files: ["**/*.tsx", "**/*.jsx"],
+            plugins: { "better-tailwindcss": betterTailwind },
+            settings: {
+              "better-tailwindcss": { entryPoint: TAILWIND_ENTRY_POINT },
+            },
+            rules: {
+              "better-tailwindcss/enforce-consistent-line-wrapping": [
+                "error",
+                { group: "never", preferSingleLine: true, printWidth: 100 },
+              ],
+              // A deterministic order, so a diff shows a changed class rather
+              // than a reshuffle (plan §7).
+              "better-tailwindcss/enforce-consistent-class-order": "error",
+              // Plan §7 names this `no-unregistered-classes`; that is the
+              // rule's name in an earlier major. Under the pinned 4.7.0 it is
+              // `no-unknown-classes`, and the plan is wrong on the name only.
+              // This is the rule that would have caught `form-control`.
+              "better-tailwindcss/no-unknown-classes": "error",
+              // Caught a real defect on its first run: `w-[--anchor-width]`
+              // in `select.tsx`, Tailwind 3 syntax that Tailwind 4 compiles
+              // to an invalid declaration rather than rejecting. See the
+              // commit before this one.
+              "better-tailwindcss/enforce-consistent-variable-syntax": "error",
+              "better-tailwindcss/no-conflicting-classes": "error",
+              "better-tailwindcss/no-duplicate-classes": "error",
+            },
           },
         ]
       : []),

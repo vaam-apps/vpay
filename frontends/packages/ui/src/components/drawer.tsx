@@ -28,8 +28,8 @@ export function Drawer({ open, onOpenChange, title, children, className }: Drawe
       <BaseDrawer.Portal>
         <BaseDrawer.Backdrop className="fixed inset-0 bg-black/40" />
         <BaseDrawer.Viewport className="fixed inset-x-0 bottom-0 mt-24 flex max-h-[90vh] flex-col">
-          <BaseDrawer.Popup className={cn('bg-base-100 flex flex-col rounded-t-2xl', className)}>
-            <div className="bg-base-300 mx-auto my-3 h-1.5 w-12 rounded-full" />
+          <BaseDrawer.Popup className={cn('flex flex-col rounded-t-2xl bg-base-100', className)}>
+            <div className="mx-auto my-3 h-1.5 w-12 rounded-full bg-base-300" />
             <div className="overflow-y-auto px-4 pb-8">
               <BaseDrawer.Title className="mb-2 text-lg font-semibold">{title}</BaseDrawer.Title>
               {children}

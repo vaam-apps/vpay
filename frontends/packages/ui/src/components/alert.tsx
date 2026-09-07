@@ -2,7 +2,7 @@ import { cva, type VariantProps } from 'class-variance-authority';
 
 import { cn } from '../cn.js';
 
-const alert = cva('alert mt-4', {
+const alert = cva('mt-4 alert', {
   variants: {
     tone: {
       neutral: '',

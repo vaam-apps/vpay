@@ -34,5 +34,5 @@ export function FieldDescription({ className, ...rest }: FieldDescriptionProps) 
 export type FieldErrorProps = React.ComponentPropsWithoutRef<typeof BaseField.Error>;
 
 export function FieldError({ className, ...rest }: FieldErrorProps) {
-  return <BaseField.Error className={cn('text-error text-xs', className)} {...rest} />;
+  return <BaseField.Error className={cn('text-xs text-error', className)} {...rest} />;
 }
