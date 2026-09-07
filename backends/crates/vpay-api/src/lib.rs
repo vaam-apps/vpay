@@ -931,6 +931,18 @@ where
 ///    merchant's rows. The claim is a second lock on the same door, and the
 ///    door was already locked.
 ///
+/// # And the person named by `sub` must still be allowed in
+///
+/// `sub` authorises nothing, but it *identifies* — and this function reads
+/// the `staff_members` row it names and refuses a `disabled` one, or one that
+/// has been deleted. Added by the exp24 review (finding F1): a disabled staff
+/// member's already-minted bearer token went on reading this surface for the
+/// rest of its 15-minute TTL, while `staff_members.status` was documented as
+/// the one per-person kill switch a deployment has.
+///
+/// It is one primary-key read, after every cheaper check, and it fails
+/// closed: a database that cannot answer is not read as a `yes`.
+///
 /// # The check this replaces, and why it could not stay
 ///
 /// Until 2026-09-07 this compared [`resource_auth::ResourceClaims`]' `sub` to
@@ -983,6 +995,7 @@ where
     S: Send + Sync + Clone + 'static,
     Option<DashboardJwtValidator>: FromRef<S>,
     Arc<ResourceConfig>: FromRef<S>,
+    Arc<dyn Repositories>: FromRef<S>,
 {
     let (mut parts, body) = request.into_parts();
 
@@ -1040,6 +1053,58 @@ where
             "a /dash/v1 token does not carry the dashboard registration's scope; refusing"
         );
         return ApiError::Forbidden.into_response();
+    }
+
+    // THE STAFF ROW IS RE-READ HERE, and this is a bearer token rather than a
+    // session, so it is worth saying why it is read at all.
+    //
+    // `sub` names the `stf_…` the authorization-code grant minted for. A
+    // disabled account must stop reading `/dash/v1` on its next request —
+    // that is what `staff_members.status` is *for*: ADR-0017 gives an
+    // operator no way to disable the dashboard client, and says in so many
+    // words that "what can be disabled per person is `staff_members.status`,
+    // which is the granularity that matters". Until the exp24 review
+    // (finding F1) that was true of the session routes and false of this one,
+    // which is the only credential that reads a merchant's payments:
+    // `disabling_a_staff_member_refuses_their_live_session` disabled the
+    // account and then checked `/dash/v1/staff/session`, discarding the
+    // bearer token, so a disabled staff member went on listing payment
+    // intents for the whole 15-minute access-token TTL. Break-glass has to
+    // work faster than a token expiry or it is not break-glass.
+    //
+    // Placed **after** the audience, tenant and scope checks so that the read
+    // costs only a caller who has already proved a validly signed, in-tenant,
+    // in-scope token — an unauthenticated caller cannot make this surface
+    // touch Postgres.
+    //
+    // NOT a session lookup, deliberately. Binding every `/dash/v1` read to a
+    // live `staff_sessions` row would also make sign-out a true revocation,
+    // which ADR-0017's Consequences currently accepts as a residual ("a
+    // minted token stays valid for its TTL"). Reversing an accepted decision
+    // is the maintainer's, not this middleware's — the exp24 review surfaces
+    // it rather than taking it. What is fixed here is the case the ADR never
+    // accepted and its own text contradicts.
+    let repositories = Arc::<dyn Repositories>::from_ref(&state);
+    match vpay_db::Staff::find(repositories.as_ref(), &claims.subject).await {
+        Ok(Some(staff)) if staff.is_active() => {}
+        Ok(_) => {
+            // One answer for "disabled" and for "gone": telling them apart
+            // would say which `stf_…` values name a row, and neither may
+            // read.
+            tracing::warn!(
+                subject = %claims.subject,
+                "a /dash/v1 token names a staff member who is disabled or no longer exists; \
+                 refusing rather than serving rows to a revoked account for the rest of the \
+                 token's TTL"
+            );
+            return ApiError::Forbidden.into_response();
+        }
+        Err(error) => {
+            // Fail closed. A database that cannot answer "is this person
+            // still allowed in" must not be read as "yes".
+            tracing::error!(%error, "reading the staff row behind a /dash/v1 token");
+            return ApiError::from(error).into_response();
+        }
     }
 
     // The tenant this surface reads is the *bound* one, never anything the

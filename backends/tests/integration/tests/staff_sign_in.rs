@@ -630,22 +630,47 @@ async fn a_wrong_password_and_an_unknown_address_are_the_same_refusal() -> anyho
 // ------------------------------------------------------------------ test 3
 
 /// A disabled staff member is refused — **on their next request**, not at
-/// their next login.
+/// their next login, and on **both** credentials they hold.
 ///
-/// The staff row is re-read on every session load rather than trusted from
-/// the session, which is what makes this true. The decisive mutation: cache
-/// the staff row on the session and this returns `200` for a session that was
-/// live when the account was disabled.
+/// Two credentials come out of one sign-in and they are checked in two
+/// different places, so this asserts both:
+///
+/// * the **session** (`x-vpay-staff-session`), refused by `load_session`,
+///   which re-reads the staff row on every request rather than trusting what
+///   the session recorded;
+/// * the **bearer token**, refused by `require_dashboard_token`, which reads
+///   the `staff_members` row its `sub` names.
+///
+/// **The second half is what the exp24 review added (finding F1), and the
+/// first draft of this test is why it was needed.** That draft wrote
+/// `let (session, _token)` and checked only `/dash/v1/staff/session` — so a
+/// disabled staff member went on listing their merchant's payment intents
+/// with the token they already held, for the whole 15-minute access-token
+/// TTL, while this file, `docs/status.md` and ADR-0017 all said
+/// `staff_members.status` was the per-person kill switch that "takes effect
+/// on their next request". A revocation that a payments dashboard honours a
+/// quarter of an hour late is not a revocation.
+///
+/// The decisive mutations: cache the staff row on the session (the session
+/// half returns `200`), and delete the `Staff::find` arm from
+/// `require_dashboard_token` (the bearer half returns `200`).
 #[tokio::test]
 async fn disabling_a_staff_member_refuses_their_live_session() -> anyhow::Result<()> {
     let harness = harness().await?;
-    let (session, _token) = harness.access_token().await?;
+    let (session, token) = harness.access_token().await?;
 
-    // Live before.
+    // Live before, on both credentials.
     let (status, _) = harness
         .get_json("/dash/v1/staff/session", Some(&session), None)
         .await?;
     assert_eq!(status, 200);
+    let (status, body) = harness
+        .get_json("/dash/v1/payment_intents", None, Some(&token))
+        .await?;
+    assert_eq!(
+        status, 200,
+        "the bearer token reads before the account is disabled: {body}"
+    );
 
     // Disabled directly in the table: there is no HTTP endpoint that
     // disables a staff member, deliberately (ADR-0017 gives the CLI one
@@ -662,6 +687,16 @@ async fn disabling_a_staff_member_refuses_their_live_session() -> anyhow::Result
     assert_eq!(
         status, 401,
         "a disabled account's live session must stop working at once: {body}"
+    );
+
+    // THE HALF THAT MATTERS: the bearer token is the credential that reads a
+    // merchant's rows, and it was minted before the account was disabled.
+    let (status, body) = harness
+        .get_json("/dash/v1/payment_intents", None, Some(&token))
+        .await?;
+    assert_eq!(
+        status, 403,
+        "a disabled account's already-minted /dash/v1 token must stop reading at once; a token          that outlives the disabling by its own TTL makes staff_members.status useless as the          break-glass control ADR-0017 says it is: {body}"
     );
 
     let (status, body) = harness

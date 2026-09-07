@@ -274,7 +274,9 @@ What is built, in the order a request meets it:
   client id. That check was exp23's finding F7 — right for
   `client_credentials` and wrong for every token a real login produces — and
   the maintainer decision it reserved is taken: the credential is `aud` plus
-  the merchant claim, and `sub` names the staff row.
+  the merchant claim, and `sub` names the staff row — and while `sub`
+  authorises nothing, the staff row it names must still be `active`, or the
+  request is refused (finding F1).
 - **No machine client may read `/dash/v1`.** A `client_credentials` token
   carries no merchant claim and nothing but this grant stamps one, so the
   refusal is a property of the mint. It is a tightening over what stood
@@ -296,7 +298,19 @@ What is built, in the order a request meets it:
 4. **No way to disable the dashboard client.** `disabled_clients` revokes a
    *merchant* credential; the dashboard registration can only be removed from
    YAML and the process restarted. What can be disabled per person is
-   `staff_members.status`, which is the granularity that matters.
+   `staff_members.status`, which is the granularity that matters — and which
+   now takes effect on the **next request** for both credentials a sign-in
+   produces, not just for the session.
+
+   *Corrected 2026-09-07 (exp24 review, finding F1).* As first delivered,
+   setting `status = 'disabled'` refused the session routes and left the
+   already-minted `/dash/v1` bearer token reading payment intents for the
+   rest of its 15-minute TTL. `require_dashboard_token` now reads the
+   `staff_members` row its `sub` names — one primary-key read, after every
+   cheaper check, failing closed on a database error — and
+   `disabling_a_staff_member_refuses_their_live_session` asserts both halves.
+   A break-glass control that a payments dashboard honours a quarter of an
+   hour late is not a break-glass control.
 5. **Key rotation has still never happened.** ADR-0009's fourth blocker is
    untouched. `TokenManager` holds one key for the life of the process,
    rotation is restart-based, and nothing re-reads the key file.

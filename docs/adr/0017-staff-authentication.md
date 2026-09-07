@@ -77,7 +77,10 @@ prints a one-time password that must be changed at first sign-in
 session whose staff row still carries that flag, so a printed password
 cannot become a long-lived credential by being ignored.
 
-The table is born on CrateStack: `model Staff` in `schemas/vpay.cstack`, in
+The table is born on CrateStack: `model StaffMember` in `schemas/vpay.cstack`
+— the *model* name decides the table name, because CrateStack 0.11.1 has no
+`@@map` and pluralises what it is given, so `model Staff` would read and write
+`staffs`; migration `0035`'s header records how that was found — in
 the shape CrateStack projects — no DB default on any column a writer names,
 `TEXT` + a hand-named CHECK for the status, and no `bytea`. Every one of the
 six repository methods runs through the generated data layer, which no
@@ -97,10 +100,12 @@ SHA-256 — never the token, so a dump of the table yields no usable session.
   that session issued.
 
 The row also carries the `/dash/v1` access token the code exchange minted for
-it. That is what makes deleting the row a **revocation** rather than a
-sign-out, and it is the deny-list ADR-0009's Consequences section explicitly
-left open ("which of these vpay will actually build is not decided by this
-ADR"). This ADR decides it.
+it, so deleting the row removes the only place the dashboard's own server can
+read that token from. That is the deny-list ADR-0009's Consequences section
+explicitly left open ("which of these vpay will actually build is not decided
+by this ADR"), and this ADR decides it — **as an unobtainability, not as an
+invalidation.** The JWT itself stays valid until it expires; see Consequences,
+which says so rather than letting "revocation" carry more weight than it can.
 
 **Sign-in is rate limited per email and per IP**, in-process, fixed window,
 failing closed with `429`. In-process rather than durable, and a fixed window
@@ -195,8 +200,32 @@ hidden: `/dash/v1` mounts no login at all, exactly as a deployment with no
 database dump therefore yields usable `/dash/v1` tokens until they expire.
 This is a real residual and the reason it is accepted is that the
 alternative — hashing it — does not work: the dashboard's own server has to
-present the token, so there is no one-way form of it. The mitigations are the
-access-token TTL and the fact that deleting the row revokes it.
+present the token, so there is no one-way form of it. The mitigation is the
+access-token TTL.
+
+**Signing out makes the token unobtainable, not invalid.** Deleting the
+session row removes the only place the dashboard's server reads the token
+from, and cascades away any code that session issued — but the JWT itself
+stays cryptographically valid until it expires.
+`signing_out_deletes_the_session_and_with_it_the_access_token` asserts that
+plainly. Closing it means binding every `/dash/v1` read to a live
+`staff_sessions` row, which makes the surface stateful; **that is a
+maintainer decision and this ADR does not take it.**
+
+**Disabling a staff member does take effect at once, on both credentials.**
+`staff_members.status` is the only per-person kill switch a deployment has,
+and `require_dashboard_token` reads the row its `sub` names so that a
+`disabled` account stops reading `/dash/v1` on its next request rather than
+when its token expires. That costs one primary-key read per dashboard
+request, placed after the audience, tenant and scope checks so an
+unauthenticated caller cannot make this surface touch Postgres, and it fails
+closed on a database error.
+
+*Added 2026-09-07 (exp24 review, finding F1).* As first delivered the check
+existed only on the session routes, so a disabled staff member went on
+listing their merchant's payment intents with the bearer token they already
+held for the rest of its 15-minute TTL — while this ADR, the flow document
+and `docs/status.md` all described `status` as the granularity that matters.
 
 **The rate limit is per replica.** Three replicas admit three times the
 attempts a single one does. That is the honest cost of in-process limiting,
