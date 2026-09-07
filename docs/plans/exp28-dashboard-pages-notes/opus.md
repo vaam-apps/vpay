@@ -96,7 +96,7 @@ the gate render.
 | `pnpm --filter @vpay/dashboard test` | **134 passed, 18 files, 0 skipped** (was 22 in 6) |
 | `pnpm --filter @vpay/dashboard typecheck` | clean |
 | `pnpm --filter @vpay/dashboard lint` | clean, `--max-warnings 0` |
-| `pnpm --filter @vpay/dashboard build` | clean; all seven routes dynamic, as they must be — every one reads cookies |
+| `pnpm --filter @vpay/dashboard build` | clean; all six real routes server-rendered on demand, as they must be — every one reads cookies. Next's own generated `/_not-found` is the one static entry, and this row said "all seven routes dynamic" until that was checked against the build output |
 | `pnpm --filter @vpay/e2e typecheck` / `lint` | clean |
 | `just verify-ui` | exit 0 |
 | `git grep className` under `app/`+`src/` (non-test) | **zero matches** |
@@ -170,6 +170,26 @@ replay guard admits only a strictly greater time step, so six sign-ins need six
 *different* 30-second windows — three minutes of waiting for clocks in order to
 test a payments list.
 
+## What is covered end to end and by no unit test
+
+Worth naming, because a reader counting 134 vitest cases could reasonably
+assume otherwise.
+
+`requireStaff` and the four server actions are exercised **only** by
+`dashboard.cy.ts`. They are the two files that cannot be unit tested without
+mocking `next/headers` and `next/navigation`, and mocking those would test the
+mock: `cookies()` and `redirect()` only mean anything inside a request, and a
+test that stubbed them would assert that this app calls functions it obviously
+calls. What *is* unit tested is everything they decide with — `gateFor`'s three
+branches, the cookie attributes, both OAuth legs against a stubbed `fetch`, the
+`FormData` reading — and the composition of those is what the browser run
+covers.
+
+The brief's fourth decisive mutation, "render a page without a session →
+redirected", is therefore a **Cypress** case and not a vitest one: the spec's
+first test visits `/payments` signed out and asserts it lands on `/login` and
+stays there.
+
 ## What was NOT done
 
 - **A payer column on the payments list.** See above; the detail page has it.
@@ -185,5 +205,9 @@ test a payments list.
 - **A `cypress-axe` pass against a real browser.** The axe coverage here is
   jsdom's, so it is structural only — `color-contrast` computes nothing in
   jsdom and is not checked anywhere. Unchanged from exp26's position.
+- **Unit tests for `requireStaff` and the server actions** — see the section
+  above for why, and for what covers them instead.
 - **Anything in `README.md` or `backends/apps/vpay-server/src/main.rs`**, both
-  of which other agents held during this pass.
+  of which other agents held during this pass. Nothing here needed a change in
+  either: `staff add` already existed and `just demo-staff` drives it through
+  the shipped CLI.

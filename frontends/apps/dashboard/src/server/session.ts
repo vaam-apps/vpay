@@ -147,7 +147,7 @@ export async function requireStaff(): Promise<StaffContext> {
  * tidiness.** Every export of a `'use server'` file is a callable endpoint:
  * Next registers an action id for it and a `POST` from anywhere reaches it.
  * The four things a staff member can *do* have to be endpoints; a predicate
- * three pages read during their own render does not, and giving it one widens
+ * two pages read during their own render does not, and giving it one widens
  * the app's reachable surface for nothing.
  */
 export async function alreadySignedIn(): Promise<boolean> {

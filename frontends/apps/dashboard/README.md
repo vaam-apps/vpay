@@ -160,7 +160,7 @@ point: there is no field there to be null.
 ## Testing this app
 
 ```bash
-pnpm --filter @vpay/dashboard test        # 17 files, 128 tests
+pnpm --filter @vpay/dashboard test        # 18 files, 134 tests
 pnpm --filter @vpay/dashboard typecheck
 pnpm --filter @vpay/dashboard lint
 pnpm --filter @vpay/dashboard build       # also proves the compiled CSS
