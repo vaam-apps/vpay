@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { Alert } from './alert.js';
+import { Alert } from './alert';
 
 describe('Alert', () => {
   it('renders role=alert and the tone class, defaulting to neutral', () => {

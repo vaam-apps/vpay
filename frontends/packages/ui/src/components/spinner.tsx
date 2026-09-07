@@ -1,6 +1,6 @@
 import { cva, type VariantProps } from 'class-variance-authority';
 
-import { cn } from '../cn.js';
+import { cn } from '../cn';
 
 const spinner = cva('loading loading-dots', {
   variants: { size: { xs: 'loading-xs', sm: 'loading-sm', md: 'loading-md', lg: 'loading-lg' } },

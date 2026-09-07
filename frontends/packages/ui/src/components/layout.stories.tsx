@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 
-import { Heading, List, PageShell, Stack, Text } from './layout.js';
+import { Heading, List, PageShell, Stack, Text } from './layout';
 
 const meta = {
   title: 'Primitives/Layout',

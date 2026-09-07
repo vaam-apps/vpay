@@ -877,6 +877,25 @@ verify-ui:
         ':!examples/checkout-browser/index.html' ; then
       echo 'verify-ui: !important outside the documented exemptions'; fail=1
     fi
+    # 5. No `.js`-suffixed relative import inside @vpay/ui. This is a
+    #    REGRESSION GUARD, not a style rule, and it re-runs the original
+    #    failure rather than a proxy for it: `@vpay/ui` ships TypeScript
+    #    source (`main: ./src/index.ts`), and its tsconfig sets
+    #    `moduleResolution: "bundler"`, under which `tsc` and Vitest resolve
+    #    `'./cn.js'` back to `cn.ts` and pass — while Next's webpack resolver
+    #    takes the suffix literally and fails the consuming app's build with
+    #    `Module not found: Can't resolve './cn.js'`.
+    #
+    #    So typecheck, lint and the whole vitest suite stay green while
+    #    `pnpm --filter @vpay/dashboard build` cannot build at all, and
+    #    neither `just lint-web` nor `just test-web` runs a `next build`.
+    #    This has now happened TWICE: fixed once before 2026-09-07 (recorded
+    #    by name in docs/status.md's "@vpay/ui production build" row) and
+    #    reintroduced across all 48 source files by the exp26 component set.
+    #    A gate, because a comment did not hold.
+    if git grep -nE "from '\.{1,2}/[^']*\.js'" -- 'frontends/packages/ui/src' ; then
+      echo 'verify-ui: a .js-suffixed relative import in @vpay/ui — Next cannot resolve it'; fail=1
+    fi
     # 4. No cva outside the shared library — one variant map, not one per app.
     if git grep -n 'cva(' -- 'frontends/apps' 'examples' ; then
       echo 'verify-ui: a cva variant map outside @vpay/ui'; fail=1

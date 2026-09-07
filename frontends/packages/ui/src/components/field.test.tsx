@@ -1,8 +1,8 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { Field, FieldDescription, FieldError, FieldLabel } from './field.js';
-import { Input } from './input.js';
+import { Field, FieldDescription, FieldError, FieldLabel } from './field';
+import { Input } from './input';
 
 describe('Field', () => {
   it('associates its label and description with the control via Base UI, not a manual id', () => {

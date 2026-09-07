@@ -4,7 +4,7 @@ import { Radio as BaseRadio } from '@base-ui/react/radio';
 import { RadioGroup as BaseRadioGroup } from '@base-ui/react/radio-group';
 import { cva, type VariantProps } from 'class-variance-authority';
 
-import { cn } from '../cn.js';
+import { cn } from '../cn';
 
 export type RadioGroupProps = React.ComponentPropsWithoutRef<typeof BaseRadioGroup>;
 

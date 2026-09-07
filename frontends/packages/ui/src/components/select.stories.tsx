@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 
-import { Select } from './select.js';
+import { Select } from './select';
 
 const LOCALES = [
   { value: 'en', label: 'English' },

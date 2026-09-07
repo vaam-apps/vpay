@@ -2,7 +2,7 @@
 
 import { Field as BaseField } from '@base-ui/react/field';
 
-import { cn } from '../cn.js';
+import { cn } from '../cn';
 
 export type FieldProps = React.ComponentPropsWithoutRef<typeof BaseField.Root>;
 

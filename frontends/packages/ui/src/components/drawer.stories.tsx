@@ -1,8 +1,8 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { useState } from 'react';
 
-import { Button } from './button.js';
-import { Drawer } from './drawer.js';
+import { Button } from './button';
+import { Drawer } from './drawer';
 
 const meta = {
   title: 'Primitives/Drawer',

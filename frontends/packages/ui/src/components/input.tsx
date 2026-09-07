@@ -3,7 +3,7 @@
 import { Input as BaseInput } from '@base-ui/react/input';
 import { cva, type VariantProps } from 'class-variance-authority';
 
-import { cn } from '../cn.js';
+import { cn } from '../cn';
 
 const input = cva('input w-full', {
   variants: {

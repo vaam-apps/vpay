@@ -2,22 +2,22 @@ import { render } from '@testing-library/react';
 import { PAYMENT_STATUS } from '@vpay/tokens';
 import { describe, expect, it } from 'vitest';
 
-import { Alert } from './components/alert.js';
-import { Badge } from './components/badge.js';
-import { Button } from './components/button.js';
-import { Card, CardBody } from './components/card.js';
-import { Checkbox } from './components/checkbox.js';
-import { Dialog } from './components/dialog.js';
-import { Drawer } from './components/drawer.js';
-import { Field, FieldDescription, FieldLabel } from './components/field.js';
-import { Heading, List, PageShell, Stack, Text } from './components/layout.js';
-import { Input } from './components/input.js';
-import { Radio, RadioGroup } from './components/radio.js';
-import { Select } from './components/select.js';
-import { Spinner } from './components/spinner.js';
-import { StatusBadge } from './components/status-badge.js';
-import { Table } from './components/table.js';
-import { axeViolations } from './testing/axe.js';
+import { Alert } from './components/alert';
+import { Badge } from './components/badge';
+import { Button } from './components/button';
+import { Card, CardBody } from './components/card';
+import { Checkbox } from './components/checkbox';
+import { Dialog } from './components/dialog';
+import { Drawer } from './components/drawer';
+import { Field, FieldDescription, FieldLabel } from './components/field';
+import { Heading, List, PageShell, Stack, Text } from './components/layout';
+import { Input } from './components/input';
+import { Radio, RadioGroup } from './components/radio';
+import { Select } from './components/select';
+import { Spinner } from './components/spinner';
+import { StatusBadge } from './components/status-badge';
+import { Table } from './components/table';
+import { axeViolations } from './testing/axe';
 
 /**
  * One render tree covering every `@vpay/ui` export, checked against

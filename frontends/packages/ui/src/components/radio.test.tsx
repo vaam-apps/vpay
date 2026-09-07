@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { Radio, RadioGroup } from './radio.js';
+import { Radio, RadioGroup } from './radio';
 
 describe('RadioGroup / Radio', () => {
   it('lets exactly one radio in the group become checked', () => {

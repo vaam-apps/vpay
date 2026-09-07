@@ -1,6 +1,6 @@
 import { statusLabel, statusTone, type PaymentStatus } from '@vpay/tokens';
 
-import { Badge, type BadgeProps } from './badge.js';
+import { Badge, type BadgeProps } from './badge';
 
 export interface StatusBadgeProps extends Omit<BadgeProps, 'tone' | 'children'> {
   status: PaymentStatus;

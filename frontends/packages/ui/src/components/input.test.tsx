@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { Input } from './input.js';
+import { Input } from './input';
 
 /**
  * `Input` had no test of its own — `field.test.tsx` renders one to prove

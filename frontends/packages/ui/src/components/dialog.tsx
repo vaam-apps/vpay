@@ -2,7 +2,7 @@
 
 import { Dialog as BaseDialog } from '@base-ui/react/dialog';
 
-import { cn } from '../cn.js';
+import { cn } from '../cn';
 
 /**
  * A modal dialog.

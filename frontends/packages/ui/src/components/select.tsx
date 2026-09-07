@@ -3,7 +3,7 @@
 import { Select as BaseSelect } from '@base-ui/react/select';
 import { cva, type VariantProps } from 'class-variance-authority';
 
-import { cn } from '../cn.js';
+import { cn } from '../cn';
 
 const trigger = cva('select w-full', {
   variants: {

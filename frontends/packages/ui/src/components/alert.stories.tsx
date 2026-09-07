@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 
-import { Alert } from './alert.js';
+import { Alert } from './alert';
 
 const meta = {
   title: 'Primitives/Alert',

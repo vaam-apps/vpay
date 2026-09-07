@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { Dialog } from './dialog.js';
+import { Dialog } from './dialog';
 
 describe('Dialog', () => {
   it('opens from its trigger and closes from Dialog.Close', () => {

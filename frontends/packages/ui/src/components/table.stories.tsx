@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 
-import { Table } from './table.js';
+import { Table } from './table';
 
 const meta = {
   title: 'Primitives/Table',

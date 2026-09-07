@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { Select } from './select.js';
+import { Select } from './select';
 
 const LOCALES = [
   { value: 'en', label: 'English' },

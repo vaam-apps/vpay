@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 
-import { Radio, RadioGroup } from './radio.js';
+import { Radio, RadioGroup } from './radio';
 
 const meta = {
   title: 'Primitives/Radio',

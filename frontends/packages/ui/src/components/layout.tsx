@@ -1,6 +1,6 @@
 import { cva, type VariantProps } from 'class-variance-authority';
 
-import { cn } from '../cn.js';
+import { cn } from '../cn';
 
 /**
  * Layout and typography primitives with no Base UI primitive and no daisyUI

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { Checkbox } from './checkbox.js';
+import { Checkbox } from './checkbox';
 
 describe('Checkbox', () => {
   it('renders a native button (decision D2), not a span', () => {

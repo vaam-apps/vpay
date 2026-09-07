@@ -2,7 +2,7 @@
 
 import { Drawer as BaseDrawer } from '@base-ui/react/drawer';
 
-import { cn } from '../cn.js';
+import { cn } from '../cn';
 
 export interface DrawerProps {
   open: boolean;

@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { Heading, List, PageShell, Stack, Text } from './layout.js';
+import { Heading, List, PageShell, Stack, Text } from './layout';
 
 describe('layout primitives', () => {
   it('Heading renders the requested level with the shared typography classes', () => {

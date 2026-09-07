@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { cn } from './cn.js';
+import { cn } from './cn';
 
 /**
  * One case per `classGroups` entry in `cn.ts`. Deleting any one entry from

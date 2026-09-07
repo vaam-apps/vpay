@@ -1,6 +1,6 @@
 import { cva, type VariantProps } from 'class-variance-authority';
 
-import { cn } from '../cn.js';
+import { cn } from '../cn';
 
 const card = cva('card bg-base-200', {
   variants: { size: { sm: 'card-sm', md: '', lg: 'card-lg' } },

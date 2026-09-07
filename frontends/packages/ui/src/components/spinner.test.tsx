@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { Spinner } from './spinner.js';
+import { Spinner } from './spinner';
 
 describe('Spinner', () => {
   it('is aria-hidden and renders a visually-hidden label for screen readers', () => {

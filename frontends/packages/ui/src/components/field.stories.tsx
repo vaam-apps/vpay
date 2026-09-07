@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 
-import { Field, FieldDescription, FieldError, FieldLabel } from './field.js';
-import { Input } from './input.js';
+import { Field, FieldDescription, FieldError, FieldLabel } from './field';
+import { Input } from './input';
 
 const meta = {
   title: 'Primitives/Field',

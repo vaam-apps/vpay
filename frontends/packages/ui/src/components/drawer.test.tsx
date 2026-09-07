@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { Drawer } from './drawer.js';
+import { Drawer } from './drawer';
 
 /**
  * `PayerSheet` (this component's predecessor) shipped with no test at all —

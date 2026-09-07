@@ -3,7 +3,7 @@
 import { Button as BaseButton } from '@base-ui/react/button';
 import { cva, type VariantProps } from 'class-variance-authority';
 
-import { cn } from '../cn.js';
+import { cn } from '../cn';
 
 /**
  * Every visual decision this component makes, in one map.

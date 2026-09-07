@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { Card, CardBody } from './card.js';
+import { Card, CardBody } from './card';
 
 describe('Card / CardBody', () => {
   it('composes card and card-body', () => {

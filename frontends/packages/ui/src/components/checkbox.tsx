@@ -3,7 +3,7 @@
 import { Checkbox as BaseCheckbox } from '@base-ui/react/checkbox';
 import { cva, type VariantProps } from 'class-variance-authority';
 
-import { cn } from '../cn.js';
+import { cn } from '../cn';
 
 const checkbox = cva('checkbox', {
   variants: {
