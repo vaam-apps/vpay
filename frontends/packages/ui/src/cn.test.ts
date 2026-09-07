@@ -17,12 +17,32 @@ describe('cn', () => {
     expect(cn('btn btn-primary', 'btn-ghost')).toBe('btn btn-ghost');
   });
 
+  it('daisy-btn-style: a later btn style replaces an earlier one', () => {
+    expect(cn('btn btn-outline', 'btn-soft')).toBe('btn btn-soft');
+  });
+
+  it('daisy-btn-style: a btn colour and a btn style COMPOSE, they do not conflict', () => {
+    // daisyUI 5's `.btn-outline` derives its border and text from
+    // `--btn-color`, which `.btn-primary` sets — so both classes have to
+    // survive, or a primary outline button silently loses its colour.
+    expect(cn('btn btn-primary', 'btn-outline')).toBe('btn btn-primary btn-outline');
+    expect(cn('btn btn-outline', 'btn-primary')).toBe('btn btn-outline btn-primary');
+  });
+
   it('daisy-btn-size: a later btn size replaces an earlier one', () => {
     expect(cn('btn btn-lg', 'btn-xs')).toBe('btn btn-xs');
   });
 
   it('daisy-badge-variant: a later badge colour replaces an earlier one', () => {
     expect(cn('badge badge-neutral', 'badge-success')).toBe('badge badge-success');
+  });
+
+  it('daisy-badge-style: a later badge style replaces an earlier one', () => {
+    expect(cn('badge badge-outline', 'badge-dash')).toBe('badge badge-dash');
+  });
+
+  it('daisy-badge-style: a badge tone and a badge style COMPOSE', () => {
+    expect(cn('badge badge-success', 'badge-outline')).toBe('badge badge-success badge-outline');
   });
 
   it('daisy-badge-size: a later badge size replaces an earlier one', () => {
