@@ -12,6 +12,47 @@
   logs: false;
 }
 
+/* Two of daisyUI 5's own bumblebee foregrounds do not clear WCAG AA, and one
+ * of them is on the payment-failure screen.
+ *
+ * MEASURED, twice, on 2026-09-07 (exp26 Lane B review). From the compiled
+ * stylesheet: `.alert-error` paints `--color-error-content` on
+ * `--color-error`, which in bumblebee is oklch(39% .141 25.723) on
+ * oklch(70% .191 22.216) — #801518 on #ff6266, a contrast ratio of
+ * **3.53:1** against AA's 4.5:1 for body text. Confirmed independently by
+ * sampling the committed screenshot's own pixels
+ * (docs/plans/exp26-notes/lane-b/outcomes-hosted.png): background
+ * rgb(255,98,102), darkest glyph rgb(128,21,24), 3.53:1. `.alert-info` is
+ * 4.27:1 by the same measurement.
+ *
+ * It is a REGRESSION of this revamp, not an inherited defect: under daisyUI
+ * 4 the same alert was black on #ff5861 — 6.82:1, measured from
+ * docs/plans/exp21-checkout-page-notes/outcomes-hosted.png. daisyUI 5
+ * changed how a theme's `*-content` is derived and bumblebee's error pair
+ * landed below the line. Nothing errors, nothing warns, and the only page
+ * it is visible on is the one telling a payer their money did not move.
+ *
+ * The fix is a theme token — the one place plan §3 says a colour belongs —
+ * at daisyUI's own hue and chroma, lightened only as far as AA needs:
+ * oklch(32% .13 25.723) is 4.61:1, oklch(37% .09 240.876) is 4.63:1. It is
+ * NOT bespoke CSS: it declares two custom properties in the same shape
+ * daisyUI declares them, mirroring daisyUI's own selector list. Unlayered,
+ * so it wins over daisyUI's layered theme block whatever the layer order —
+ * the same mechanism `frontends/apps/checkout/src/config/theme.ts` already
+ * uses at runtime for `--color-primary`, which the branded screenshot proves
+ * works.
+ *
+ * `src/theme-contrast.test.ts` compiles THIS file and re-measures every tone
+ * pair, so a daisyUI bump that moves a colour is a failing test rather than
+ * an unreadable screen. That test is the gate plan §7 row 6 asked for and
+ * nobody had built.
+ */
+:where(:root),
+[data-theme='bumblebee'] {
+  --color-error-content: oklch(32% 0.13 25.723);
+  --color-info-content: oklch(37% 0.09 240.876);
+}
+
 /* pnpm sets node-linker=isolated, so @vpay/ui reaches consumers through a
  * symlink into .pnpm and Tailwind does not scan node_modules by default.
  * Relative monorepo paths, not package specifiers — see plan §6.4. */
