@@ -12,10 +12,23 @@
  * Every refusal on this path is the same `401` by design
  * (`docs/flows/dashboard-auth.md`, "Every refusal is one answer"): absent,
  * expired, idle, forged, disabled, at the wrong stage. The answer to all of
- * them is the same — clear the cookie and show the form — and clearing it is
- * what stops the loop: `/login` itself never calls into this file, so a
- * browser holding a dead cookie lands on a form rather than bouncing between
- * two redirects.
+ * them is the same — forget the cookie and show the form. What stops the loop
+ * is that `/login` itself never calls into this file, so a browser holding a
+ * dead cookie lands on a form rather than bouncing between two redirects.
+ *
+ * # A page may not clear a cookie, and finding that out costs a 500
+ *
+ * `cookies().set(…)` throws outside a Server Action or a Route Handler, and a
+ * Server Component that calls it hands the browser Next's **500** rather than
+ * the redirect it was about to perform. Until the exp28 review this file did
+ * exactly that on every refusal {@link requireStaff} handles: measured against
+ * the real stack, a forged cookie, a session signed out elsewhere and a
+ * disabled account each answered `500` on `/payments`, and — the cookie never
+ * having been cleared — so did every request after it.
+ *
+ * So the clearing moved to `app/signed-out/route.ts`, which is allowed to do
+ * it, and this file redirects there. {@link clearSessionCookie} stays for the
+ * server actions, where it is legal and where it is called.
  */
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
@@ -35,6 +48,14 @@ export const TOTP_PATH = '/login/totp';
 export const PASSWORD_PATH = '/login/password';
 /** The first page a signed-in staff member sees. */
 export const HOME_PATH = '/payments';
+/**
+ * Where a page sends a browser whose session vpay refused.
+ *
+ * A Route Handler, because that is the only place in a Next app besides a
+ * server action where a cookie may be written — see this module's header. It
+ * deletes the session cookie and redirects to {@link LOGIN_PATH}.
+ */
+export const SIGNED_OUT_PATH = '/signed-out';
 
 /** Everything a protected page needs, once the gate has let it through. */
 export interface StaffContext {
@@ -59,7 +80,13 @@ export async function setSessionCookie(token: string, maxAge: number): Promise<v
   store.set(SESSION_COOKIE, token, { ...COOKIE_ATTRIBUTES, maxAge });
 }
 
-/** Removes the session cookie. */
+/**
+ * Removes the session cookie.
+ *
+ * **Callable only from a server action.** `cookies().set` throws during a
+ * page render (this module's header), so a page that has decided a session is
+ * dead redirects to {@link SIGNED_OUT_PATH} instead of calling this.
+ */
 export async function clearSessionCookie(): Promise<void> {
   const store = await cookies();
   store.set(SESSION_COOKIE, '', { ...COOKIE_ATTRIBUTES, maxAge: 0 });
@@ -110,8 +137,7 @@ export async function requireStaff(): Promise<StaffContext> {
 
   const first = await readSession(config, token);
   if (first.session === null) {
-    await clearSessionCookie();
-    redirect(LOGIN_PATH);
+    redirect(SIGNED_OUT_PATH);
   }
 
   const gate = gateFor(first.session);
@@ -124,15 +150,13 @@ export async function requireStaff(): Promise<StaffContext> {
 
   const exchanged = await completeAuthorizationCode(config, token);
   if (!exchanged.ok) {
-    await clearSessionCookie();
-    redirect(LOGIN_PATH);
+    redirect(SIGNED_OUT_PATH);
   }
 
   const second = await readSession(config, token);
   const settled = second.session === null ? null : gateFor(second.session);
   if (settled === null || settled.kind !== 'ready') {
-    await clearSessionCookie();
-    redirect(LOGIN_PATH);
+    redirect(SIGNED_OUT_PATH);
   }
   return { session: settled.session, accessToken: settled.accessToken, config };
 }

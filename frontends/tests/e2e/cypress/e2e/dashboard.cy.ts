@@ -133,6 +133,11 @@ describe("the dashboard", { testIsolation: false }, () => {
       expect(cookie, "the session cookie").to.not.equal(null);
       expect(cookie?.httpOnly, "httpOnly").to.equal(true);
       expect(cookie?.sameSite, "sameSite").to.equal("lax");
+      // Asserted HERE and not only in `cookies.test.ts`, because this is the
+      // attribute the unit test cannot observe: `Secure` is a property of
+      // what a BROWSER accepted off the wire, and the constant it is read
+      // from could be right while the cookie that reached Chrome was not.
+      expect(cookie?.secure, "secure").to.equal(true);
     });
 
     cy.visit("/payments");
@@ -146,6 +151,51 @@ describe("the dashboard", { testIsolation: false }, () => {
       .should((html: string) => {
         expect(html, "the rendered page").to.not.match(/eyJ[A-Za-z0-9_-]{10,}\./);
       });
+  });
+
+  it("shows the sign-in form — not an error page — for a cookie vpay refuses", () => {
+    // THE REFUSAL PATH, in a browser, and the one no other case here reaches.
+    //
+    // Every other test either carries no cookie (`clearCookies`, or after a
+    // sign-out that cleared it) or holds a good one. A cookie vpay REFUSES —
+    // forged, expired, idle, signed out from another browser, or belonging to
+    // an account an operator has just disabled — is one answer, `401`, and
+    // `docs/flows/dashboard-auth.md` says the app's reply to all of them is
+    // to forget the cookie and show the form.
+    //
+    // It was not. Measured against the real stack on 2026-09-07: the page
+    // tried to clear the cookie during its own render, which Next refuses
+    // ("Cookies can only be modified in a Server Action or Route Handler"),
+    // so `/payments` answered **500** — and, the cookie still being there,
+    // answered 500 on every request after it. `app/signed-out/route.ts` is
+    // the fix and this case is what would have caught it.
+    //
+    // Runs while signed in, and puts the real session back afterwards, so the
+    // sequence this spec depends on is undisturbed.
+    cy.getCookie("vpay_dash_session").then((good) => {
+      const real = good?.value ?? "";
+      expect(real, "a session to restore afterwards").to.not.equal("");
+
+      cy.setCookie("vpay_dash_session", "not-a-session-vpay-ever-minted");
+      cy.visit("/payments");
+
+      cy.location("pathname").should("eq", "/login");
+      cy.contains("h2", "Sign in").should("be.visible");
+      // And the dead cookie is gone from this browser, which is what stops
+      // the next request being refused all over again.
+      cy.getCookie("vpay_dash_session").should((cookie) => {
+        expect(cookie?.value ?? "", "the refused cookie").to.equal("");
+      });
+
+      cy.setCookie("vpay_dash_session", real, {
+        httpOnly: true,
+        secure: true,
+        sameSite: "lax",
+        path: "/",
+      });
+      cy.visit("/payments");
+      cy.contains("h2", "Payments").should("be.visible");
+    });
   });
 
   it("lists this merchant's payments and opens one of them", () => {
