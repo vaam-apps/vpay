@@ -502,6 +502,7 @@ mod tests {
             payment_method_types: serde_json::json!(["mtn_momo"]),
             metadata: serde_json::json!({}),
             description: None,
+            customer_id: None,
             client_secret_suffix: "thisisthesecretsuffix".to_owned(),
             created_at: time::OffsetDateTime::UNIX_EPOCH,
             updated_at: time::OffsetDateTime::UNIX_EPOCH,
