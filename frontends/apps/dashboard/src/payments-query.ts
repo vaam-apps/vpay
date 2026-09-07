@@ -130,14 +130,35 @@ export interface PagerHrefs {
 /**
  * The paging links for a page of `rows`.
  *
- * **`hasMore` is the only thing that decides whether there is a next page.**
- * A full page is not evidence of one: a result set of exactly `PAGE_SIZE`
- * rows would produce a "Next" link onto an empty list, which reads as data
- * having been lost.
+ * # `has_more` means "in the direction you are paging", and that inverts
  *
- * **"Previous" exists as soon as this is not the first page**, which is what
- * `after`/`before` being set means. It is not derived from `hasMore`, because
- * paging backwards is a different question from whether more rows lie ahead.
+ * `vpay_db`'s query is one statement with a direction: forward it walks
+ * `seq DESC` from `starting_after`, backward it walks `seq ASC` from
+ * `ending_before` and reverses the rows before answering. `has_more` is
+ * always "there was at least one row past the `limit` **in the direction just
+ * walked**" — so on a forward page it means *older rows exist* and on a
+ * backward page it means *newer rows exist*. The same flag gates a different
+ * link in each case.
+ *
+ * Reading it as "there is a next page" regardless is wrong in both
+ * directions at once, and this file did exactly that until the query was read
+ * rather than assumed: paged backwards, a `Next` link vanished although the
+ * page it came from certainly still existed, and a `Previous` link appeared
+ * at the newest end of the list pointing at nothing. Both produce an empty
+ * page, which is the failure this module exists to avoid — an empty list
+ * reads as data having been lost.
+ *
+ * So:
+ *
+ * | Page          | newer rows exist?          | older rows exist?  |
+ * |---------------|----------------------------|--------------------|
+ * | first         | no                         | `hasMore`          |
+ * | after a cursor| yes — we came from there   | `hasMore`          |
+ * | before a cursor| `hasMore`                 | yes — we came from there |
+ *
+ * "We came from there" is not an assumption about the data: a cursor is only
+ * ever set by one of these links, so a page reached through one had a page
+ * before it by construction.
  */
 export function pagerHrefs(
   query: PaymentsQuery,
@@ -146,16 +167,17 @@ export function pagerHrefs(
 ): PagerHrefs {
   const first = rows[0];
   const last = rows[rows.length - 1];
-  const onFirstPage = query.after.length === 0 && query.before.length === 0;
 
-  const next =
-    hasMore && last !== undefined
-      ? withCursor(query, 'after', last.id)
-      : null;
-  const previous =
-    !onFirstPage && first !== undefined ? withCursor(query, 'before', first.id) : null;
+  const pagingBackwards = query.before.length > 0;
+  const onFirstPage = !pagingBackwards && query.after.length === 0;
 
-  return { previousHref: previous, nextHref: next };
+  const hasNewer = pagingBackwards ? hasMore : !onFirstPage;
+  const hasOlder = pagingBackwards ? true : hasMore;
+
+  return {
+    previousHref: hasNewer && first !== undefined ? withCursor(query, 'before', first.id) : null,
+    nextHref: hasOlder && last !== undefined ? withCursor(query, 'after', last.id) : null,
+  };
 }
 
 /** `/payments` with the filters kept and one cursor set. */

@@ -284,7 +284,7 @@ PKCE. [dashboard-auth.md](dashboard-auth.md) owns it.
 
 **Built and proven, 2026-09-07 (exp28): the pages.** `/login`, `/login/totp`,
 `/login/password`, `/payments` and `/payments/{id}`, on `@vpay/ui`, with the
-Next.js app as the OAuth client running the code leg server-side. 134 vitest
+Next.js app as the OAuth client running the code leg server-side. 136 vitest
 cases in `frontends/apps/dashboard`, 0 skipped, covering the cookie
 attributes, PKCE against RFC 7636 Appendix B's own vector, the session gate,
 the masked-payer dash, the paging cursors and axe-core's structural rules over

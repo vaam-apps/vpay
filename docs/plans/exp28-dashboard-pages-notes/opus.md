@@ -93,7 +93,7 @@ the gate render.
 
 | Gate | Result |
 |---|---|
-| `pnpm --filter @vpay/dashboard test` | **134 passed, 18 files, 0 skipped** (was 22 in 6) |
+| `pnpm --filter @vpay/dashboard test` | **136 passed, 18 files, 0 skipped** (was 22 in 6) |
 | `pnpm --filter @vpay/dashboard typecheck` | clean |
 | `pnpm --filter @vpay/dashboard lint` | clean, `--max-warnings 0` |
 | `pnpm --filter @vpay/dashboard build` | clean; all six real routes server-rendered on demand, as they must be — every one reads cookies. Next's own generated `/_not-found` is the one static entry, and this row said "all seven routes dynamic" until that was checked against the build output |
@@ -112,6 +112,27 @@ Each one applied to the tree, the suite run, the mutation reverted.
 | `NAV_LINKS` gains `{ href: '/webhooks' }` | `layout.test.tsx` fails | **2 failed, 126 passed** — the rendered-markup case *and* the constant case |
 | the status filter's control is renamed off `status` | `payments-filters.test.tsx` fails | **1 failed, 132 passed** — "submits the status as `status`, which is the parameter vpay reads" |
 | (in a browser) — | `dashboard.cy.ts` asserts the session cookie is `httpOnly`, that `document.cookie` cannot see it, and that no JWT appears in the rendered page | see the Cypress section |
+
+### `has_more` means "in the direction you are paging", and it inverts
+
+The last defect this pass found, and it found it by reading
+`vpay_db::PaymentIntents::list_page_filtered`'s SQL rather than assuming what
+the flag meant. The query is one statement with a direction: forward it walks
+`seq DESC` from `starting_after`; backward it walks `seq ASC` from
+`ending_before` and reverses the rows before answering. So `has_more` is "there
+was a row past the `limit` **in the direction just walked**" — *older rows
+exist* going forward, *newer rows exist* going back.
+
+`pagerHrefs` read it the same way in both directions, which is wrong twice at
+once. Paged backwards, `Next` disappeared although the page it came from
+certainly still existed, and `Previous` appeared at the newest end pointing at
+nothing. Both render an empty list, which is precisely the failure this
+module's own doc comment warns about — an empty list reads as data having been
+lost.
+
+No test caught it because none paged backwards; two do now, one per half.
+Nothing in `dashboard.cy.ts` could have: the demo stack never has more than one
+page of payments.
 
 ## The screens
 
@@ -172,7 +193,7 @@ test a payments list.
 
 ## What is covered end to end and by no unit test
 
-Worth naming, because a reader counting 134 vitest cases could reasonably
+Worth naming, because a reader counting 136 vitest cases could reasonably
 assume otherwise.
 
 `requireStaff` and the four server actions are exercised **only** by

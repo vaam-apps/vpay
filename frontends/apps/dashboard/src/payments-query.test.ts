@@ -58,9 +58,35 @@ describe('the paging links', () => {
     expect(pagerHrefs(NO_QUERY, ROWS, true).previousHref).toBeNull();
   });
 
-  it('offers Previous from the first row once a cursor is set', () => {
+  it('offers Previous from the first row once a forward cursor is set', () => {
+    // We came from there, so the page above this one exists by construction —
+    // it is not derived from `has_more`, which on a forward page is about
+    // OLDER rows.
     const hrefs = pagerHrefs({ ...NO_QUERY, after: 'pi_zero' }, ROWS, false);
     expect(hrefs.previousHref).toBe('/payments?before=pi_example_1');
+  });
+
+  describe('paging backwards, where has_more means the opposite thing', () => {
+    // `vpay_db` walks `seq ASC` from `ending_before` and reverses, so
+    // `has_more` on a backward page is "more NEWER rows", not "more older
+    // ones". Reading it the same way in both directions was wrong twice over,
+    // and each of these two cases is one of the halves.
+    const BACK = { ...NO_QUERY, before: 'pi_zero' };
+
+    it('offers Next unconditionally — we came from the page below', () => {
+      // has_more false here means "no more newer rows", which says nothing at
+      // all about the older ones. Gating Next on it made the link vanish
+      // although the page it came from certainly still existed.
+      expect(pagerHrefs(BACK, ROWS, false).nextHref).toBe('/payments?after=pi_example_2');
+      expect(pagerHrefs(BACK, ROWS, true).nextHref).toBe('/payments?after=pi_example_2');
+    });
+
+    it('offers Previous only while has_more says newer rows remain', () => {
+      // At the newest end this used to render a Previous link pointing at an
+      // empty page, which reads as data having been lost.
+      expect(pagerHrefs(BACK, ROWS, false).previousHref).toBeNull();
+      expect(pagerHrefs(BACK, ROWS, true).previousHref).toBe('/payments?before=pi_example_1');
+    });
   });
 
   it('keeps the filters across a page turn', () => {
