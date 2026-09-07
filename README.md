@@ -385,8 +385,17 @@ gauge` line a minute. Whether the rail either of them reaches is MTN, Orange or
 a WireMock stub is a line in `config/application.yml`, and to date it has only
 ever been a stub.
 
-`--config`, `--database-url` and `--oauth-signing-key-file` are required and
-genuinely consumed; a missing one exits `78` before the port is bound. The URL
+`--config` and `--database-url` are required by both binaries and
+`--oauth-signing-key-file` by `vpay-server` alone (the worker issues no
+tokens and does not accept the flag); all three are genuinely consumed, and
+a missing one refuses to start before the port is bound. **Two of the three
+exit `78` and one does not:** a missing `--config` or
+`--oauth-signing-key-file` is `78` (`EX_CONFIG` — "fix your configuration"),
+but a missing `--database-url` exits **`1`**, because `main` raises a bare
+`anyhow` error there and `exit_code_for` has nothing to classify. Measured on
+this commit, both binaries. It is a known gap, recorded in
+[`docs/status.md`](docs/status.md)'s CLI row; do not build a probe or a
+systemd unit on "78 means the operator forgot something". The URL
 a merchant's tokens carry comes from `Config`'s `deployment.public_base_url` in
 the YAML, which the OP's issuer is derived from
 (`vpay_api::op::issuer_for` → `{public_base_url}/v1/oauth`). There is no
