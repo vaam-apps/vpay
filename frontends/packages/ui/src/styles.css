@@ -1,3 +1,21 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* frontends/packages/ui/src/styles.css — the one place the theme is chosen.
+ *
+ * Tailwind 4 has no `tailwind.config.ts`; this CSS entry is its replacement
+ * (docs/plans/2026-09-07-ui-revamp.md §4.4). Every app imports this file
+ * (`@import '@vpay/ui/styles.css';`) rather than carrying its own copy, so
+ * there is exactly one place the daisyUI theme is chosen.
+ */
+@import 'tailwindcss';
+
+@plugin 'daisyui' {
+  themes: bumblebee --default;
+  logs: false;
+}
+
+/* pnpm sets node-linker=isolated, so @vpay/ui reaches consumers through a
+ * symlink into .pnpm and Tailwind does not scan node_modules by default.
+ * Relative monorepo paths, not package specifiers — see plan §6.4. */
+@source '../../../apps/checkout/src';
+@source '../../../apps/checkout/app';
+@source '../../../apps/dashboard/app';
+@source './components';
