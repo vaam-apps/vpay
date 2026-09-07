@@ -21,7 +21,10 @@
 //! 6. every route answers another merchant's `in_…` and an id that never
 //!    existed with the **byte for byte** identical `404`;
 //! 7. an `Idempotency-Key` replays the stored response, and the same key with
-//!    a different body is a `422`.
+//!    a different body is the `400` `idempotency_key_in_use` envelope —
+//!    **not** a `422`, which is what this line said until the S4b review on
+//!    2026-09-07 and what the case below has never asserted
+//!    (`docs/api/README.md`'s idempotency table is the contract).
 //!
 //! `invoice.paid` is **not** here. It is emitted by the settlement
 //! transaction, which needs a rail: `backends/crates/vpay-db/tests/repositories.rs`
@@ -1292,7 +1295,7 @@ async fn another_merchants_invoice_is_byte_identical_to_one_that_never_existed()
 }
 
 /// An `Idempotency-Key` replays the stored response, and the same key with a
-/// different body is a `422`.
+/// different body is the `400` `idempotency_key_in_use` envelope.
 ///
 /// The transitions are the interesting half: a replayed `finalize` must give
 /// back the *same number* rather than taking a second one, which is the one
