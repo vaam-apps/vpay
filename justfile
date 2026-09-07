@@ -241,7 +241,10 @@ demo-staff:
     status=$?
 
     if [ "$status" -ne 0 ]; then
-        if [ -s "$out" ]; then
+        # `-f` as well as `-s`, because `-s` is true of a DIRECTORY too and
+        # this branch would then report a password kept in something that
+        # cannot hold one (exp28 review).
+        if [ -f "$out" ] && [ -s "$out" ]; then
             echo "demo-staff: {{demo_staff_email}} already exists; keeping the password in $out"
             exit 0
         fi
@@ -259,7 +262,19 @@ demo-staff:
         cat "$stderr" >&2
         exit 1
     fi
-    printf '%s' "$password" > "$out"
+    # CHECKED, because `set -uo pipefail` has no `-e` and a redirect that
+    # fails here is silent. Found by the exp28 review, by running this recipe
+    # with `demo_project` set to a value that made `$out` name a DIRECTORY:
+    # the write failed, `chmod 0600` succeeded — on the directory, which the
+    # stack bind-mounts — and this line still said "created". The password is
+    # printed once and only its argon2id hash is stored, so a credential that
+    # is claimed to be on disk and is not is unrecoverable.
+    if ! printf '%s' "$password" > "$out" || [ ! -f "$out" ] || [ ! -s "$out" ]; then
+        echo "demo-staff: FAIL — {{demo_staff_email}} was created but the password could not" >&2
+        echo "demo-staff: be written to $out, and it is printed once. \`just demo-down\` (which" >&2
+        echo "demo-staff: deletes the volumes) and start again." >&2
+        exit 1
+    fi
     chmod 0600 "$out"
     echo "demo-staff: created {{demo_staff_email}} for {{demo_staff_merchant}}; the one-time password is in $out"
 
