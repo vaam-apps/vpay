@@ -199,6 +199,18 @@ claims below were measured to be weaker than they read.
 - The axe harness's unlabelled-`<button>` sanity check was done by hand and
   left nothing behind. It is a test now, and it runs first.
 
+- **The package could not be built by any consumer.** `88b2808` reintroduced
+  the `.js` import suffix on all 48 files in `src`, which
+  `moduleResolution: "bundler"` hides from `tsc` and Vitest and Next's webpack
+  resolver does not: `pnpm --filter @vpay/dashboard build` failed outright.
+  This lane's own gate table does not list `pnpm -r build` — but the
+  `docs/status.md` row this lane edited claimed its outcome. **Run
+  `pnpm -r build` before reporting a change to `@vpay/ui`.** Fixed and gated
+  (`verify-ui` check 5).
+- The `tailwind.config.ts` lint failure reported alongside it **did not
+  reproduce**: `just lint-web` exits 0 here at `177645e` and at the reviewed
+  head. See finding 10 for the mechanism, which is real and is Lane B's.
+
 Two shipped components carried real defects (`Select`'s popup width in
 Tailwind 3 syntax; `Drawer`'s raw `bg-black/40`), and `cn()` dropped a daisyUI
 colour whenever a style class followed it. `@vpay/ui`'s own

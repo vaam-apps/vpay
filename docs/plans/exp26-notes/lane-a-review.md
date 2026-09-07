@@ -9,15 +9,39 @@ additive and renames no export.
 ## Verdict
 
 **Not safe as drafted.** Two of the three gates the lane reports as delivered
-were not doing the work they were reported as doing, and two shipped
-components carried defects of the exact class the plan is written to prevent —
-a class that still parses, still renders and quietly stops styling anything.
-Nothing found was fabricated: the numbers in `lane-a.md` reproduce, the
-component set is real, and the gate that *is* wired catches what it says it
-catches. The problem was coverage, not honesty — with one exception, noted as
-finding 8.
+were not doing the work they were reported as doing; two shipped components
+carried defects of the exact class the plan is written to prevent — a class
+that still parses, still renders and quietly stops styling anything; and the
+package could not be built by any consumer at all (finding 9), which every
+gate in the lane's own list was blind to.
 
-Six findings fixed, one open question surfaced rather than taken.
+The numbers in `lane-a.md` reproduce, the component set is real, and the gate
+that *is* wired catches what it says it catches. Mostly the problem was
+coverage rather than honesty — with two exceptions, findings 8 and 9, where a
+sentence in `docs/status.md` outlived the code it described.
+
+Seven findings fixed, one reported defect not reproduced (finding 10), one
+open question surfaced rather than taken.
+
+### Were Lane A's gate claims true on `177645e`?
+
+Recipe by recipe, re-run here on that commit:
+
+| claim | true? |
+|---|---|
+| `pnpm install --frozen-lockfile` green | **yes**, exit 0 |
+| `just lint-web` green | **yes**, exit 0 — including `frontends/apps/checkout`, contrary to the report in finding 10 |
+| `just test-web` green (checkout 448, shop 96, tokens 8, ui 46) | **yes**, every figure exact |
+| `just audit-web` clean | **yes**, exit 0 |
+| `build-storybook` green | **yes**, exit 0 |
+| `just verify-ui` red only on checkout's `form-control` | **yes**, and that is the only failing line |
+| the `verify-ui` gate's four checks each proven by mutation | **yes** for the three it kept; the colour check had four holes (finding 4) |
+| `cn()` knows daisyUI's conflict groups | **yes** for every group it declares; two of them conflated dimensions that compose (finding 5) |
+| the `@source` correction (three `../`, not four) | **yes**, proved decisively on the compiled CSS |
+| the class-string / one-line-`className` rules are part of the gate | **NO** — the plugin was never wired (finding 1) |
+| "`pnpm -r build` now compiles all packages including the dashboard's `next build`" (`docs/status.md`) | **NO** — that build was broken (finding 9); the lane did not run it, and did not claim to in `lane-a.md`, but left the sentence standing in `docs/status.md` |
+| the intermittent-failure rate, and "unmount every Base UI render" | **NO** — did not reproduce in 12 runs, and one render had no `unmount()` (finding 7) |
+| the axe harness was sanity-checked | done once by hand; nothing in the tree (finding 8) |
 
 ## Findings
 
@@ -31,6 +55,8 @@ Six findings fixed, one open question surfaced rather than taken.
 | 6 | rule-break | a11y properties the components claim and never assert |
 | 7 | misleading-claim | the intermittent failure could not be reproduced, and its fix is incomplete |
 | 8 | misleading-claim | the axe harness's negative control existed only in prose |
+| 9 | correctness | `@vpay/ui`'s `.js` import suffixes broke every consumer's `next build` — the second time |
+| 10 | not reproduced | the reported `tailwind.config.ts` lint failure in `frontends/apps/checkout` |
 
 ### 1 — `eslint-plugin-better-tailwindcss` was installed and never configured (gate-hole)
 
@@ -252,6 +278,88 @@ It is a test now (`1c47d1d`), and it runs first. Proved by mutation: making
 `axeViolations` return `[]` unconditionally fails it and leaves the
 kitchen-sink case green.
 
+### 9 — `@vpay/ui`'s `.js` import suffixes broke every consumer's build (correctness)
+
+Reported by Lane C, reproduced here on the unmodified `177645e` before fixing.
+`pnpm --filter @vpay/dashboard build`:
+
+```
+../../packages/ui/src/index.ts
+Module not found: Can't resolve './cn'
+Module not found: Can't resolve './components/button.js'
+Module not found: Can't resolve './components/card.js'
+Build failed because of webpack errors
+```
+
+`@vpay/ui` ships TypeScript source (`main: ./src/index.ts`) and its tsconfig
+sets `moduleResolution: "bundler"`, under which `tsc` and Vitest resolve
+`'./cn.js'` back to `cn.ts` and pass. Next's webpack resolver takes the suffix
+literally. Typecheck, lint and all 60 vitest cases were green over an app that
+could not be built at all.
+
+**This is the second occurrence, and the documentation had already been
+corrected past it.** `docs/status.md`'s "`@vpay/ui` production build
+(`next build`)" row records the first by name and mechanism and states
+"Suffixes were dropped from `frontends/packages/ui/src/index.ts` and every
+component file". `88b2808` put them back on all 48 files; `dc0e243` then edited
+that very row and left the sentence standing. That is the one place in this
+lane where a claim and the code disagreed rather than a claim simply reaching
+further than its evidence.
+
+**Why no gate saw it.** Neither `just lint-web` nor `just test-web` runs a
+`next build`; `pnpm -r build` and `just test-e2e` do, and neither is in
+`lane-a.md`'s gate table or in `just ci`. The lane did not claim to have run
+them — but `docs/status.md` claimed the outcome of one.
+
+Fixed in `e2a0a09`, and **gated**, because a comment had not held it:
+`verify-ui` check 5 greps for a `.js`-suffixed relative import under
+`frontends/packages/ui/src`. It re-runs the original failure's cause rather
+than a proxy. Mutation: restoring the suffix on `index.ts`'s first line alone
+makes the gate exit non-zero naming file and line.
+
+After: `pnpm --filter @vpay/dashboard build` exit 0 ("Compiled successfully",
+4/4 static pages) and `pnpm -r build` exit 0 across the workspace.
+
+### 10 — the reported checkout `tailwind.config.ts` lint failure did NOT reproduce
+
+Also reported by Lane C: `just lint-web` failing on
+`frontends/apps/checkout/tailwind.config.ts`. **Measured four times in this
+worktree — at `177645e` and at this head — `just lint-web` exits 0**, and
+`pnpm --filter @vpay/checkout typecheck` exits 0 on its own.
+
+The mechanism is real and worth writing down even though the defect is not
+present here. `tailwind.config.ts` opens `import daisyui from 'daisyui'`, and
+daisyUI **5** ships no type declarations for that import shape, so the moment
+`daisyui` resolves to 5.x in that package the file cannot typecheck. Forced
+here to confirm, by pointing the import at a 5.7.28 symlink:
+
+```
+tailwind.config.ts(1,21): error TS2307: Cannot find module … or its
+corresponding type declarations.
+```
+
+On this branch checkout still declares `daisyui ^4.12.23` / `tailwindcss
+^3.4.17` and resolves **4.12.24 / 3.4.19** — read from
+`frontends/apps/checkout/node_modules/daisyui/package.json`, and pinned that
+way in `pnpm-lock.yaml`, so a clean `pnpm install --frozen-lockfile` cannot
+produce anything else. A worktree that installed from a *modified* manifest and
+then stashed only its source diff would keep the modified `node_modules`, which
+is the most likely origin of the report.
+
+**Deliberately not "fixed" here, and the reason is not laziness.** There is
+nothing broken on this base to fix, and the correct fix is plan §4.1's —
+delete `tailwind.config.ts` — which belongs to Lane B and cannot be done alone:
+the app still uses `@tailwind base/components/utilities` and needs that file's
+`content` globs and daisyUI plugin registration, so deleting it before
+migrating the app to Tailwind 4 would ship an unstyled payment page. Pinning
+checkout's `daisyui`/`tailwindcss` to exact versions was considered and
+rejected: it rewrites `pnpm-lock.yaml`, which three lanes are about to rebase
+across, to defend against a resolution the lockfile already prevents.
+
+**Lane B must expect this**: the first thing that happens when checkout gains
+`daisyui@5` is TS2307 on `tailwind.config.ts`, and the answer is to delete the
+file in the same commit, per §4.1, not to type around the import.
+
 ## What the sabotage pass checked and found sound
 
 - **`cn()`'s daisyUI conflict groups are real, not decoration.** Every required
@@ -338,6 +446,14 @@ kitchen-sink case green.
    theme tokens are unaffected. If you hit a false positive on prose, add a path
    exemption with the reason inline — that is the gate's established style — and
    prefer rewording, because each exemption is a hole.
-5. **`verify-ui` is still red on the tree**, on `screens.tsx`'s
+5. **`@vpay/ui`'s relative imports no longer carry a `.js` suffix**, and
+   `verify-ui` check 5 fails the build if one comes back. If you add a file to
+   that package, import it as `'./thing'`. `moduleResolution: "bundler"` makes
+   the suffixed form typecheck and test green while breaking every consumer's
+   `next build`, which is how it survived a whole lane twice.
+6. **Run `pnpm --filter <your app> build` before you report.** Neither
+   `just lint-web` nor `just test-web` runs a `next build`, and that is the gap
+   finding 9 lived in.
+7. **`verify-ui` is still red on the tree**, on `screens.tsx`'s
    `form-control`/`label-text`. That is Lane B's, and it is the last thing
    standing between this branch and a green `just verify`.
