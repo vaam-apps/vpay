@@ -211,9 +211,15 @@ refusals, and the `Surface::Dashboard` audience constant moved into
 over a real booted server on a real Postgres — 13 tests, 0 ignored — and its
 own header states what it cannot claim.
 
-**Not built:** login, of any kind; the dashboard's server-side session; every
-page; every other slice; every write. See "What slice 1 did NOT build" above
-and [../status.md](../status.md) for the row-by-row picture.
+**Not built:** ~~login, of any kind;~~ **corrected 2026-09-07** — the *server*
+half of login landed with [ADR-0017](../adr/0017-staff-authentication.md) and
+is proven by thirteen cases in
+`backends/tests/integration/tests/staff_sign_in.rs`
+([dashboard-auth.md](dashboard-auth.md) § Status). What is not built is
+login *in this app*: the dashboard's server-side session; every page; every
+other slice; every write. No page here calls `/dash/v1`, with or without a
+staff token. See "What slice 1 did NOT build" above and
+[../status.md](../status.md) for the row-by-row picture.
 
 **Restyled, 2026-09-07 (exp26 Lane D):** the scaffold's `app/layout.tsx` and
 `app/page.tsx` onto `@vpay/ui`'s components — `styling_files` 2 → 0,
