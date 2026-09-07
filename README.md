@@ -319,9 +319,12 @@ Three commands, with genuinely different requirements:
 | `just test-e2e` | Docker, and Cypress's binary | builds the images, boots `compose.yml` + `compose.e2e.yml` + `compose.demo.yml`, runs the browser suite, tears the stack down. Four specs, 11 tests. This is what CI's `e2e` job does |
 
 `just verify-ignored` is the count that keeps the suite honest. Measured on
-this tree: **0 ignored, 46 test binaries, 1550 tests listed**; the recipe fails
-if any of the three moves without the recipe and `docs/status.md` moving with
-it.
+this tree, 2026-09-07: **0 ignored, 46 test binaries, 1563 tests listed**.
+Two of those three are pinned exactly — `expected_ignored` and
+`expected_suites` — and moving either fails the recipe until it and
+`docs/status.md` move with it. The third is a **floor**, not a pin
+(`min_tests`, currently 1080): the total is free to rise, and does, so read
+it as a measurement rather than a guarantee.
 
 `just ci` is what to run before opening a PR: CI's self-checks, `rust`, `web`
 and supply-chain steps, in CI's order. The two jobs it does not cover are CI's
