@@ -24,7 +24,9 @@ code expresses it belongs in `../reference/`.
 | [stripe-sdk-compat.md](stripe-sdk-compat.md) | Driving the official Stripe SDKs against vpay: the `config.authenticator` seam, what carries over, and every divergence |
 | [browser-checkout.md](browser-checkout.md) | `/v1/browser` and `@vaam-apps/vpay-stripe-js`: publishable keys, per-intent `client_secret`, the uniform-404 confidentiality property, the redirect gap and its closure |
 | [hosted-checkout.md](hosted-checkout.md) | The page vpay serves — `checkout.session`, hosted and embedded, the two payer credentials, the iframe protocol, `frame-ancestors`, and what is not proven |
+| [dashboard.md](dashboard.md) | `/dash/v1`'s read surface — the two routes, the boundary that keeps a merchant token off them, and why the app that would use them has no pages |
 | [dashboard-auth.md](dashboard-auth.md) | Staff login: vpay as its own OpenID Provider for `/dash/v1` |
+| [customers.md](customers.md) | The `Customer` object: phone-first identity, hard delete, and the twelve-month retention sweep |
 | [webhooks.md](webhooks.md) | The two-step outbox and the signature scheme |
 | [ledger.md](ledger.md) | Double-entry postings and the four invariants |
 | [errors.md](errors.md) | How an error travels from where it happens to where it is acted on: leaf/composite/boundary tiers, the `Classify` policy table, `anyhow` at the edge only |
