@@ -552,10 +552,10 @@ async fn run_command(args: &ServerArgs, command: vpay_config::ServerCommand) -> 
 /// # Errors
 ///
 /// [`anyhow::Error`] naming the step. A duplicate address is
-/// `PersistenceError::Unique` from the `staff_members_email_key` index — `create` and
-/// not `upsert`, deliberately: a second `staff add` for an existing address
-/// must fail rather than quietly rewrite that person's password hash to one
-/// an operator just printed on a terminal.
+/// `PersistenceError::Unique` from the `staff_members_email_key` index. That
+/// index is what refuses it — see `vpay_db::Staff::create`'s own doc for why
+/// the `create`-not-`upsert` choice is a guard against a *different* case and
+/// is not what makes this one fail.
 async fn staff_add(
     args: &ServerArgs,
     merchant: &str,

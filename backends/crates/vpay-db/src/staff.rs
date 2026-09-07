@@ -234,11 +234,24 @@ pub trait Staff {
     /// Inserts one staff member. The operator CLI is the only caller, and
     /// there is no HTTP endpoint that reaches this (ADR-0017 decision 1).
     ///
-    /// `create`, not `upsert`: a second `staff add` for an address that
+    /// `create`, not `upsert`. A second `staff add` for an address that
     /// already exists must **fail**, not quietly rewrite that person's
-    /// password hash to one an operator just printed on a terminal. The
-    /// unique index on `email` is what turns that into
-    /// [`crate::PersistenceError::Unique`].
+    /// password hash to one an operator just printed on a terminal.
+    ///
+    /// **What actually refuses it is measured rather than assumed**, and the
+    /// two halves are different. `staff add` mints a fresh `stf_…` every
+    /// time, so the second row's *primary key* is new and the conflict is on
+    /// the **email** — which `staff_members_email_key` refuses whichever
+    /// builder is used. Swapping this `create` for an `upsert` therefore
+    /// changes nothing observable for that case, and a mutation proved it:
+    /// `a_staff_address_is_unique_and_looked_up_exactly` stays green.
+    ///
+    /// The builder choice is what refuses the *other* case — a caller that
+    /// supplies an id already in the table — where an upsert would overwrite
+    /// silently and a create raises. No caller does that today (`staff add`
+    /// generates the id), so it is a guard against a second writer rather
+    /// than a live one, and it is stated that way instead of being claimed as
+    /// the reason the duplicate-address case fails.
     ///
     /// # Errors
     ///

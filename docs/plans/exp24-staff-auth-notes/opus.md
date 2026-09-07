@@ -188,6 +188,92 @@ the exact redirect-URI match, the per-scope check, the `response_type` check,
 the unconditional PKCE requirement and the error-redirect encoding, and every
 one of those is a check vpay would otherwise own a second copy of.
 
+## Mutations
+
+Every one applied to a **clean** tree by a harness that asserts the branch
+name and refuses a dirty tree, run, and reverted. `+` = caught, `-` = not.
+
+| # | Mutation | Result |
+|---|---|---|
+| M1 | delete the PKCE verifier check at `/token` | + `a_pkce_verifier_mismatch_is_refused` |
+| M2 | delete `last_totp_step < step` from `record_totp_step` | + `a_replayed_totp_code_is_refused` |
+| M2b | widen the same filter from `lt` to `lte` | + `the_staff_guards_are_compare_and_swaps_and_only_one_caller_wins` |
+| M3 | delete the merchant-claim check from `require_dashboard_token` | + 2 fail: `a_token_whose_merchant_claim_is_not_the_binding_is_refused` and `a_client_credentials_token_is_refused_on_dash_v1` |
+| M4 | delete `consumed_at IS NULL` from the code's compare-and-swap | + 2 fail: `an_authorization_code_cannot_be_exchanged_twice`, `a_code_redeemed_against_another_redirect_uri_is_refused` |
+| M5 | delete `totp_enrolled_at IS NULL` from `enrol_totp` | **-** then **+** — see below |
+| M6 | `model StaffMember` loses `@@allow("create", …)` | + `every_action_this_module_calls_has_an_allow_arm`, in 4 ms with no container |
+| M7 | `/authorize` accepts a password-only session | **-** then **+** — see below |
+| M8 | `/authorize` accepts a staff member of another merchant | + `a_staff_member_of_another_merchant_cannot_obtain_a_dashboard_token` |
+| M9 | drop the **absolute** session bound | + `an_idle_session_and_an_expired_one_are_both_refused` |
+| M10 | sign-out stops deleting the session row | + `signing_out_deletes_the_session_and_with_it_the_access_token` |
+| M11 | drop the **idle** session bound | + the same test — both halves are separately caught |
+| M12 | delete the printed-password gate from `/authorize` | + `the_printed_password_cannot_reach_dash_v1` |
+| M13 | delete the disabled-account check from `load_session` | + `disabling_a_staff_member_refuses_their_live_session` |
+| M14 | `verify_absent_account` replaced by a bare `false` | **-** deliberately, see below |
+| M15 | the rate limiter is consulted and ignored | + `vpay-api` unit suite |
+| M16 | `find_by_email` made case-insensitive | + `a_staff_address_is_unique_and_looked_up_exactly` |
+| M17 | `Staff::create` becomes an `upsert` | **-** and the *doc* was wrong, not the test — see below |
+
+### M7, and the test that was not decisive
+
+`a_session_that_has_not_presented_a_second_factor_cannot_authorize` **passed
+under its own mutation**. It signed in from scratch, so the session it built
+was `pending_totp` *and* belonged to a staff member who had never replaced the
+printed one-time password — and `/authorize` refuses that too. With
+`authenticated_session` swapped for `load_session`, the test went on passing,
+refusing for the second reason while the first was gone.
+
+Fixed: it now signs in fully first (clearing `password_change_required`),
+starts a second login, stops after the password, and ends with a control — the
+same session, once it has presented a code, gets its `302`. **Caught after the
+fix.**
+
+### M5, and a guard no HTTP test can reach
+
+Deleting `enrol_totp`'s guard changed nothing observable at the HTTP layer,
+and the reason is structural rather than a missing case:
+`vpay_api::staff::totp_step` computes `enrolling` from the staff row it has
+just read, so a *sequential* second caller never reaches `enrol_totp` at all —
+by then the row says enrolled and the handler takes the stored-secret path.
+The second sign-in was refused, by a secret mismatch.
+
+A test written at the HTTP layer to close it (two logins, the second
+presenting a code from its own secret one step ahead) was written, and it
+**still** did not catch the mutation, for the same reason. It is kept anyway,
+because it pins the observable property.
+
+The guard closes a real TOCTOU that only the repository layer can express: two
+requests both read the row as unenrolled *before* either writes, both compute
+"I am enrolling", both call the method, and the swap makes exactly one win.
+`the_staff_guards_are_compare_and_swaps_and_only_one_caller_wins` in
+`vpay-db/tests/repositories.rs` is where that lives. **Caught after the fix.**
+
+### M14, not caught, and deliberately
+
+Replacing `verify_absent_account(&password)?` with a no-op leaves every test
+green, and it must: the two answers are **identical by construction** — same
+status, same body — and `a_wrong_password_and_an_unknown_address_are_the_same_refusal`
+asserts exactly that. What the mutation removes is the *timing* equality, and
+a test that measured argon2id wall-clock would be flaky by nature.
+
+The partial guard is
+`staff_auth::password::tests::the_absent_account_hash_parses_and_never_matches`,
+which asserts the dummy hash **parses** — because an unparseable one makes
+`verify_password` return early and restores the very difference it exists to
+remove. It is recorded here rather than smoothed over, in the shape exp23's
+own M6 is.
+
+### M17, where the *documentation* was wrong
+
+Swapping `Staff::create` for an `upsert` left every test green, and the test
+was right. `staff add` mints a fresh `stf_…` every time, so a second account
+for one address conflicts on the **email index**, not on the primary key — and
+that index refuses it whichever builder is used. The doc comment claimed
+`create`-not-`upsert` was what made the duplicate-address case fail. It is
+not. Both doc comments now say what the builder choice actually guards (a
+caller supplying an id already in the table, which nothing does today) and
+name the index as what refuses the case that matters.
+
 ## Gate
 
 `just ci` on the final head — recipe by recipe, with counts — is in the report
