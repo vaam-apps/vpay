@@ -387,7 +387,15 @@ fn form_body(pairs: &[(&str, &str)]) -> String {
                 b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                     char::from(byte).to_string()
                 }
-                b' ' => "+".to_owned(),
+                // `%20`, not `+`. `vpay_api::form` percent-decodes and
+                // **only** percent-decodes — a `+` is a literal plus, which is
+                // the rule that keeps an MSISDN intact (see that module, and
+                // its `a_plus_is_a_plus_and_a_space_is_percent_twenty`). This
+                // helper encoded a space as `+` until the S4b review on
+                // 2026-09-07, so every description this suite sent was stored
+                // as `One+month+of+hosting`. No assertion read one back, which
+                // is why nothing said so.
+                b' ' => "%20".to_owned(),
                 other => format!("%{other:02X}"),
             })
             .collect()
@@ -515,6 +523,11 @@ async fn a_draft_is_created_listed_and_retrieved_with_its_lines() -> anyhow::Res
     );
     assert_eq!(field(&invoice, "amount_due"), 0);
     assert_eq!(field(&invoice, "amount_remaining"), 0);
+    assert_eq!(
+        field(&invoice, "description"),
+        "September hosting",
+        "a space in a merchant's description survives the wire intact"
+    );
     assert_eq!(at(&invoice, &["metadata", "order_id"]), "1234");
     assert_eq!(at(&invoice, &["lines", "object"]), "list");
     assert_eq!(
