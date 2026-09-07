@@ -493,6 +493,26 @@ describe('the controls do what the screen says', () => {
     expect(document.querySelectorAll('a[href]').length).toBe(0);
     unmount();
   });
+
+  it('names the language switch on the screen, not only to a screen reader', () => {
+    // `getByLabelText` above passes just as happily against an `aria-label`,
+    // which is how the exp26 migration removed the visible word without
+    // failing a test. This asserts the name is RENDERED TEXT: an element
+    // carrying the dictionary's `locale.label`, not visually hidden, and
+    // referenced by the combobox's `aria-labelledby`.
+    const { container, unmount } = renderState(
+      CHECKOUT_SCREENS['collect_msisdn'] as CheckoutState,
+      'fr',
+    );
+    const combobox = screen.getByRole('combobox');
+    const labelId = combobox.getAttribute('aria-labelledby');
+    expect(labelId, 'the combobox is named by a visible element').toBeTruthy();
+    const label = container.querySelector(`#${labelId as string}`);
+    expect(label?.textContent).toBe(DICTIONARIES.fr['locale.label']);
+    expect(label?.className ?? '').not.toContain('sr-only');
+    expect(combobox.getAttribute('aria-label')).toBeNull();
+    unmount();
+  });
 });
 
 describe('the return view', () => {

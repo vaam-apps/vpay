@@ -51,6 +51,12 @@ export interface SelectProps extends VariantProps<typeof trigger> {
   id?: string;
   className?: string;
   'aria-label'?: string;
+  /**
+   * The id of a VISIBLE element naming this control. Preferred over
+   * `aria-label`: a name only a screen reader can read leaves a sighted
+   * payer looking at an unlabelled combobox.
+   */
+  'aria-labelledby'?: string;
 }
 
 /**
@@ -75,6 +81,7 @@ export function Select({
   id,
   className,
   'aria-label': ariaLabel,
+  'aria-labelledby': ariaLabelledBy,
 }: SelectProps) {
   return (
     <BaseSelect.Root
@@ -94,6 +101,7 @@ export function Select({
       <BaseSelect.Trigger
         id={id}
         aria-label={ariaLabel}
+        aria-labelledby={ariaLabelledBy}
         className={cn(trigger({ size }), className)}
       >
         <BaseSelect.Value placeholder={placeholder} />
