@@ -161,6 +161,16 @@ report the pages as not done rather than stubbing them.
 So the whole of `/dash/v1` — the reads, the login and the grant — is reachable
 over HTTP and by nothing a person can click.
 
+What did change on 2026-09-07 (exp26 Lane D,
+`docs/plans/2026-09-07-ui-revamp.md` §4.2) is the styling substrate under the
+scaffold: `@base-ui/react` + Tailwind 4 + daisyUI 5 through `@vpay/ui`, in
+place of the raw Tailwind classes the scaffold used to write inline, plus four
+compiled component recipes (`frontends/apps/dashboard/README.md`) for whoever
+builds sign-in, the payments table and the detail view next — the sign-in
+recipe carries the password-then-TOTP shape ADR-0017 serves, with `pending`
+around every submit because the TOTP guard refuses a second submission of one
+code. `dashboard.cy.ts` still asserts the scaffold notice, unchanged and green.
+
 ### Two columns the list cannot show
 
 - **The payer's phone is always blank.** `charges.payer_ref_masked` is never
@@ -204,6 +214,30 @@ own header states what it cannot claim.
 **Not built:** login, of any kind; the dashboard's server-side session; every
 page; every other slice; every write. See "What slice 1 did NOT build" above
 and [../status.md](../status.md) for the row-by-row picture.
+
+**Restyled, 2026-09-07 (exp26 Lane D):** the scaffold's `app/layout.tsx` and
+`app/page.tsx` onto `@vpay/ui`'s components — `styling_files` 2 → 0,
+`class_tokens_distinct` 17 → 0 in both files (`exp26-plan-count.sh`); `Tailwind`
+4.3.3 + daisyUI 5.7.28 + `@base-ui/react` 1.8.0, replacing the `corporate`
+theme with `bumblebee`. `dashboard.cy.ts`'s three tests are unchanged in
+content and **run for real** against a live stack (isolated compose project,
+torn down after, twice, on the final head): 3/3 passing, part of a full
+`just test-e2e` run that completed 11/11 across all four specs. This is a
+styling change, not a product one —
+see "There are no pages" above for what it does not claim.
+
+**Reviewed, 2026-09-07** ([../plans/exp26-notes/lane-d-review.md](../plans/exp26-notes/lane-d-review.md)).
+Two of the four findings bear on this document's own claims. (1) The rewrite
+**dropped the `<main>` landmark** the scaffold had: axe-core's `region` rule
+went from 0 violations to 1 on the real rendered `<body>`, and every other
+gate — 9/9 vitest, lint, typecheck, `next build`, `dashboard.cy.ts` — stayed
+green. `<main>` is back and `frontends/apps/dashboard/src/a11y.test.tsx`
+gates it. (2) **This document's own nav rule** — "the navigation is only ever
+allowed to link to slices that exist" — was enforced by nothing: a
+`<a href="/payments">` in the layout left the whole suite green. It is now a
+test that resolves every internal `href` against `app/**/page.tsx` on disk.
+Neither finding changes what this app claims to do; both are cases of a rule
+this repository states being checked by nobody.
 
 **The one thing a reader must not conclude from this document:** that the
 dashboard works. Two `GET` routes exist that nobody can authenticate to.
