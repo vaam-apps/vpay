@@ -1,7 +1,13 @@
 # vpay Helm chart
 
-Renders the two shipping vpay workloads — `vpay-server` and `vpay-worker` —
+Renders the two shipping vpay workloads — the API server and the job worker —
 and the Kubernetes objects around them.
+
+Both run **one image**, `ghcr.io/<ns>/vpay-server`. The worker Deployment
+passes `args: ["worker"]` to it. There were two images and two `images.*`
+value blocks until 2026-09-07 (issue #77); `images.worker` no longer exists,
+and a values file that still sets it is refused by `values.schema.json`
+rather than silently ignored.
 
 **Read [Status](#status) before you install this.** Nothing in this chart has
 ever been applied to a cluster, and no Prometheus has ever scraped a vpay
@@ -15,7 +21,7 @@ Status for what changed and what still has no evidence behind it.
 | Object | Name | Notes |
 |---|---|---|
 | `Deployment` | `<release>-server` | `server.replicaCount` (2 by default) |
-| `Deployment` | `<release>-worker` | `worker.replicaCount` (1); `strategy: Recreate` |
+| `Deployment` | `<release>-worker` | `worker.replicaCount` (1); `strategy: Recreate`; the server image with `args: ["worker"]` |
 | `Deployment` | `<release>-checkout` | Optional (`checkout.enabled`, **false** by default) — vpay's own payment page |
 | `Service` | `<release>` | ClusterIP, ports `http` (8080) and `metrics` (9090) |
 | `Service` | `<release>-worker` | Headless, `metrics` only — exists so the worker can be scraped |
@@ -67,8 +73,9 @@ A minimal real `my-values.yaml`:
 
 ```yaml
 images:
-  server: { digest: "sha256:<64 hex>" }   # pin by digest for a real deployment
-  worker: { digest: "sha256:<64 hex>" }
+  # One image for both backend workloads — pin it by digest for a real
+  # deployment. There is no `images.worker` (issue #77, 2026-09-07).
+  server: { digest: "sha256:<64 hex>" }
 
 config:
   profile: production
@@ -134,13 +141,30 @@ Three Secrets must exist in the release namespace before install.
 
 | Value | Default name | Shape | Consequence if wrong |
 |---|---|---|---|
-| `database.existingSecret` / `.existingSecretKey` | `vpay-database` / `url` | one key holding a full `postgres://` URL | both binaries fail to start |
-| `signingKey.existingSecret` / `.key` | `vpay-oauth-signing-key` / `oauth-signing-key.pem` | PEM RSA private key (PKCS#8 or PKCS#1) | `vpay-server` exits 78 |
-| `rails.existingSecret` | `vpay-rails` | one key per `${VAR}` in the deployed image's `config/application.yml` — read it at upgrade time, the list grows | exit 78 on **both** binaries |
+| `database.existingSecret` / `.existingSecretKey` | `vpay-database` / `url` | one key holding a full `postgres://` URL | both Deployments fail to start |
+| `signingKey.existingSecret` / `.key` | `vpay-oauth-signing-key` / `oauth-signing-key.pem` | PEM RSA private key (PKCS#8 or PKCS#1) | the server Deployment exits 78 |
+| `rails.existingSecret` | `vpay-rails` | one key per `${VAR}` in the deployed image's `config/application.yml` — read it at upgrade time, the list grows | exit 78 on **both** Deployments |
 
-The signing key is mounted on the **server only**. `vpay-worker-bin` takes no
-`--oauth-signing-key-file`, issues no token, and mounting the Secret there
-would widen its blast radius for no capability.
+The signing key is mounted on the **server Deployment only**. The worker
+issues no token and reads no key, and mounting the Secret there would widen
+its blast radius for no capability.
+
+It is worth being exact about what changed on 2026-09-07 (issue #77). Two
+images ago, `vpay-worker-bin` did not accept `--oauth-signing-key-file` at
+all — the flag did not exist on that binary. Now one binary serves both
+roles, so the flag exists, and **both spellings of "hand the worker the key"
+are still refused**: `vpay-server worker --oauth-signing-key-file …` by clap
+(the flag is not on the subcommand), and `vpay-server
+--oauth-signing-key-file … worker` by `vpay_config::cli`'s `SERVE_ONLY_FLAGS`
+check, which clap's derive cannot express. The second spelling parsed and was
+read by nothing for the length of one review pass, and was closed in it.
+
+That is defence in depth and not the guarantee. `VPAY_OAUTH_SIGNING_KEY_FILE`
+in the *environment* is still ignored rather than refused, deliberately — a
+shared env block must not `CrashLoopBackOff` a worker — so a flag naming a
+path is not what keeps the key away. **The volume list in
+`deployment-worker.yaml` is**, and this chart sets no
+`VPAY_OAUTH_SIGNING_KEY_FILE` on the worker either.
 
 The rail Secret is projected with `envFrom.secretRef`, so `kubectl describe pod`
 shows the variable *names* and never the values.
@@ -303,10 +327,7 @@ the reasoning; this table is maintained by hand and can drift from it.
 | `images.pullSecrets` | `[]` | `imagePullSecrets` entries; empty is right for a public package |
 | `images.server.name` | `vpay-server` | |
 | `images.server.tag` | `""` | Empty means `.Chart.AppVersion` |
-| `images.server.digest` | `""` | When set, wins over the tag: `repo@sha256:…` |
-| `images.worker.name` | `vpay-worker` | |
-| `images.worker.tag` | `""` | |
-| `images.worker.digest` | `""` | |
+| `images.server.digest` | `""` | When set, wins over the tag: `repo@sha256:…`. **Both** backend Deployments use it |
 | `images.checkout.name` | `vpay-checkout` | Only read when `checkout.enabled` |
 | `images.checkout.tag` | `""` | |
 | `images.checkout.digest` | `""` | |
@@ -322,7 +343,7 @@ the reasoning; this table is maintained by hand and can drift from it.
 | `server.nodeSelector` / `.tolerations` / `.affinity` | empty | Scheduling pass-throughs |
 | `server.extraEnv` | `[]` | Extra core/v1 `EnvVar` objects |
 | `worker.replicaCount` | `1` | >1 is safe: jobs are leased with `FOR UPDATE SKIP LOCKED` |
-| `worker.concurrency` | `4` | `VPAY_WORKER_CONCURRENCY`; the binary refuses 0 |
+| `worker.concurrency` | `4` | `VPAY_WORKER_CONCURRENCY`; `vpay-server worker` refuses 0 |
 | `worker.resources` | as server | Same caveat |
 | `worker.podAnnotations` / `.nodeSelector` / `.tolerations` / `.affinity` / `.extraEnv` | empty | |
 | `shutdownGraceSeconds` | `25` | `VPAY_SHUTDOWN_GRACE_SECONDS` |
@@ -357,7 +378,7 @@ no HPA either — nothing has measured what would drive one.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `observability.port` | `9090` | `--observability-bind`; bound by both binaries |
+| `observability.port` | `9090` | `--observability-bind`; bound by both Deployments |
 | `observability.livenessPath` | `/livez` | Static `ok`, no database |
 | `observability.metricsPath` | `/metrics` | Prometheus text format; never scraped by anything |
 | `observability.readinessPath` | `/healthz` | Exists today; a real `SELECT 1` |
@@ -500,7 +521,7 @@ Written 2026-09-03, step 6 block B.
   objects can coexist.
 * ~~**The liveness probes point at a listener that does not exist.**~~
   **Corrected 2026-09-03, same day.** Block A landed `--observability-bind`,
-  `/livez` and the worker's first HTTP listener; both binaries' own
+  `/livez` and the worker's first HTTP listener; both Deployments' own
   `tests/cli.rs` drive the running process and assert that `/livez` and
   `/metrics` answer on that port and 404 on the traffic port. Struck through
   rather than deleted because this chart was written against the earlier

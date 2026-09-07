@@ -172,13 +172,17 @@ const TEST_ONLY: [&str; 6] = [
 ];
 
 /// Manifests that produce a shipping binary.
-const SHIPPING: [&str; 2] = [
-    "backends/apps/vpay-server/Cargo.toml",
-    "backends/apps/vpay-worker-bin/Cargo.toml",
-];
+///
+/// One since 2026-09-07 (issue #77): `vpay-worker-bin` was folded into
+/// `vpay-server` as the `worker` subcommand, so there is one manifest, one
+/// binary and one image. The arrays stay arrays rather than becoming scalars
+/// because what this gate is *about* is "every shipping binary", and a second
+/// one is a plausible future — an operator CLI that ships in the same image
+/// would be one.
+const SHIPPING: [&str; 1] = ["backends/apps/vpay-server/Cargo.toml"];
 
-/// The same two, by package name, for the `cargo metadata` walk.
-const SHIPPING_PACKAGES: [&str; 2] = ["vpay-server", "vpay-worker-bin"];
+/// The same, by package name, for the `cargo metadata` walk.
+const SHIPPING_PACKAGES: [&str; 1] = ["vpay-server"];
 
 /// Fail if a test double is reachable from a shipping binary's runtime deps.
 ///
@@ -316,7 +320,8 @@ fn cargo_metadata(root: &Path) -> Result<serde_json::Value, String> {
 /// declared the Rust `wiremock` crate under `[dependencies]` — a *runtime*
 /// dependency of a crate whose entire reason to exist is being test-only —
 /// and the gate that exists to prevent exactly that was green for months.
-/// Nothing in the manifests of `vpay-server` or `vpay-worker-bin` mentioned
+/// Nothing in the manifests of `vpay-server` (nor of `vpay-worker-bin`, which
+/// was a second shipping binary until issue #77) mentioned
 /// wiremock, and nothing ever would; the defect was in the middle of the
 /// graph. ADR-0006's rule is about *reachability*, so a check has to be
 /// too — but note that this walk does **not** catch that historical case:

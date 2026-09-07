@@ -13,15 +13,21 @@ older than that there is nothing on 9090 and the kubelet restarts both pods in
 a loop. ~~No image has been published at all yet — see §6 — so today the only
 correct value for `images.*.digest` is one that does not exist.~~ **Corrected
 2026-09-05: images have been published.** Release run `33929374661`
-(2026-09-04, head `33d6c25`) pushed and signed all four; the two this chart
-deploys are `ghcr.io/vaam-apps/vpay-server`
-`sha256:5485db5e397edd8e672737e676756ca4e9eb56a23fb117a6bc762e0532b50537` and
-`ghcr.io/vaam-apps/vpay-worker`
-`sha256:08667b03bae210802d04d59dba92820be9bccb4052f8337c74f0ea0a80d68a78`,
-both built from a commit later than 2026-09-03 and so both carrying the
-`/livez` listener this section requires. Those are real values for
-`images.*.digest` — but nobody has pulled either, so see §6 before you rely
-on one.
+(2026-09-04, head `33d6c25`) pushed and signed all four; the one this chart
+deploys is `ghcr.io/vaam-apps/vpay-server`
+`sha256:5485db5e397edd8e672737e676756ca4e9eb56a23fb117a6bc762e0532b50537`,
+built from a commit later than 2026-09-03 and so carrying the `/livez`
+listener this section requires. That is a real value for
+`images.server.digest` — but nobody has pulled it, so see §6 before you rely
+on it.
+
+**Changed 2026-09-07 (issue #77): there is one backend image, not two.** This
+paragraph named a second, `ghcr.io/vaam-apps/vpay-worker`
+`sha256:08667b03…`, and `images.worker` no longer exists — the worker
+Deployment runs the `vpay-server` image with `args: ["worker"]`. A values file
+that still sets `images.worker` fails `helm lint` rather than being ignored.
+The `vpay-worker` package is frozen at that digest and nothing publishes to
+it.
 
 ---
 
@@ -35,10 +41,15 @@ helm template <release> deploy/helm/vpay -f my-values.yaml | less   # read it
 
 Three things the tooling will not check for you:
 
-1. **Both digests are pinned, and pinned together.** `vpay-server` and
-   `vpay-worker` share a schema and a migration set; running two versions
-   against one database is not a supported configuration
-   ([release.md](release.md) §4).
+1. **The digest is pinned.** Since issue #77 (2026-09-07) there is one
+   backend image and both Deployments run it, so "pinned together" is now
+   structural rather than something you have to check: one `images.server.digest`
+   is what the server and the worker both resolve. It said "both digests are
+   pinned, and pinned together" because `vpay-server` and `vpay-worker` share a
+   schema and a migration set and running two versions against one database is
+   not a supported configuration ([release.md](release.md) §4) — that hazard is
+   gone by construction for these two, and remains for a rolling upgrade
+   spanning a migration.
 2. **The three Secrets exist in the namespace** — `database.existingSecret`,
    `signingKey.existingSecret`, `rails.existingSecret`. The chart creates
    none of them, and the guards catch an empty *value*, not a missing

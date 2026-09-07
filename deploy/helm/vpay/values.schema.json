@@ -18,7 +18,7 @@
     "images": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["registry", "namespace", "pullPolicy", "server", "worker"],
+      "required": ["registry", "namespace", "pullPolicy", "server"],
       "properties": {
         "registry": { "type": "string", "minLength": 1 },
         "namespace": { "type": "string", "minLength": 1 },
@@ -33,7 +33,6 @@
           }
         },
         "server": { "$ref": "#/definitions/imageRef" },
-        "worker": { "$ref": "#/definitions/imageRef" },
         "checkout": { "$ref": "#/definitions/imageRef" }
       }
     },

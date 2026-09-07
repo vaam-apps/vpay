@@ -1,6 +1,8 @@
 # vpay Helm chart.
 #
-# Renders the two shipping workloads — `vpay-server` and `vpay-worker` — and
+# Renders the two shipping workloads — the API server and the background
+# worker, **one image between them** since issue #77 (2026-09-07): the worker
+# Deployment runs the `vpay-server` image with `args: ["worker"]` — and
 # the objects around them. It deliberately templates **no database**: ADR-0013
 # / step-6 decision (9) puts Postgres outside this chart, reached through an
 # existing Secret. See README.md.
@@ -15,7 +17,15 @@ type: application
 
 # Chart version. Bumped by hand; there is no release automation for the chart
 # itself yet (the container images are block A's `release.yml`, this is not).
-version: 0.1.0
+#
+# 0.1.0 -> 0.2.0 on 2026-09-07 (issue #77). A minor bump rather than a patch
+# because the rendered output changes and a values file can break: the worker
+# Deployment's `image:` now resolves from `images.server` and it gained
+# `args: ["worker"]`, and `images.worker` was REMOVED from `values.yaml` and
+# from `values.schema.json` — so a values file that pinned
+# `images.worker.digest` fails `helm lint` (the schema is
+# `additionalProperties: false`) instead of pinning a digest nothing pulls.
+version: 0.2.0
 
 # The application version this chart was written against. It is NOT a pin:
 # `values.yaml`'s `images.*.tag` defaults to this string, so a chart bump and

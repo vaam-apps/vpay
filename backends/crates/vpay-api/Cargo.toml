@@ -86,10 +86,12 @@ reqwest.workspace = true
 # `chrono` feature into the graph, which nothing wanted: `vpay-db` converts
 # chrono to `time` explicitly at its one boundary (`client_assertion.rs`).
 #
-# In both binaries' graphs, not just the server's: `vpay-worker-bin` links
-# `vpay-api` (and, independently, `vpay-db`, which implements
-# `ClientAssertionStore`), so it compiles the OP although it serves no HTTP
-# — `cargo tree -p vpay-worker-bin -i authkestra-op` shows both paths.
+# In the shipping binary's graph by two independent paths — `vpay-api` and
+# `vpay-db` (which implements `ClientAssertionStore`) — so the OP is compiled
+# even for an invocation that serves no HTTP, i.e. `vpay-server worker`.
+# `cargo tree -p vpay-server -i authkestra-op` shows both. This said "in both
+# binaries' graphs" of `vpay-server` and `vpay-worker-bin` until issue #77
+# folded them into one on 2026-09-07; the two paths are the same two.
 authkestra-op.workspace = true
 # `TokenManager::new_asymmetric` — the RS256 signer the OP mints with.
 authkestra-engine.workspace = true

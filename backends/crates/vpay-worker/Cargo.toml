@@ -14,7 +14,8 @@ workspace = true
 vpay-core.workspace = true
 # The metrics facade, for the three `vpay_jobs_*` names this loop owns
 # (`run_loop.rs`). Names and descriptions come from `vpay_core::metrics`; the
-# recorder they land in is installed by `vpay-worker-bin` and by whatever
+# recorder they land in is installed by `vpay-server` (`install_recorder`,
+# once per process, ahead of the subcommand dispatch) and by whatever
 # test process drives `run_loop`. With no recorder installed every macro here
 # is a cheap no-op, which is what the integration suites that do not assert
 # on metrics get.
@@ -63,10 +64,12 @@ vpay-ledger.workspace = true
 #
 # No cycle: `vpay-api` depends on `vpay-core`/`vpay-provider`/`vpay-db`/
 # `vpay-ledger`/`vpay-config` and never on this crate (`cargo tree -p vpay-api
-# -i vpay-worker` finds nothing). No new package in either binary's graph
-# either: `vpay-worker-bin` already lists `vpay-api` (it calls
-# `vpay_api::v1::boot`), and `vpay-server` links both. This is the library-side
-# half of the step 4 design's decision 1, "the worker keeps linking vpay-api".
+# -i vpay-worker` finds nothing). No new package in the shipping binary's
+# graph either: `vpay-server` already lists `vpay-api` (both its modes call
+# `vpay_api::v1::boot`) and links this crate for the `worker` subcommand. This
+# is the library-side half of the step 4 design's decision 1, "the worker keeps
+# linking vpay-api" — which read "in either binary's graph" until issue #77
+# left one binary.
 vpay-api.workspace = true
 # `JobError::Poisoned`/`Exhausted` name the `jobs` row they refer to, and
 # that primary key is a UUID everywhere else in the schema

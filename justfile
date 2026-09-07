@@ -85,7 +85,7 @@ build-storybook:
 
 # musl static binaries, as shipped
 build-dist:
-    cargo build --profile dist --target x86_64-unknown-linux-musl -p vpay-server -p vpay-worker-bin
+    cargo build --profile dist --target x86_64-unknown-linux-musl -p vpay-server
 
 # ------------------------------------------------------------------ test ---
 
@@ -1080,7 +1080,8 @@ verify-docs:
 # `backends/tests/integration/tests/worker_kill9.rs` — the real-`SIGKILL`
 # crash test named in `docs/plans/2026-09-03-step8-production-gate.md`
 # (`docs/plans/step8-notes/lane-d.md` has the full account). It spawns the
-# shipping `vpay-worker-bin`/`vpay-server` as real OS processes and
+# shipping binary as real OS processes (`vpay-server` and, since issue #77,
+# `vpay-server worker` — it was `vpay-worker-bin` when this note was written) and
 # `Child::kill()`s them mid-request, so it is a new binary rather than a
 # case added to an existing one — its own `mod support;` and its own
 # process-spawning harness would not belong inside `worker_recovery.rs`,
@@ -1335,7 +1336,19 @@ expected_ignored := "0"
 # put "the resource server refuses the wrong credential" and "a human can
 # obtain the right one" in one file, and the first is the claim that has to
 # keep holding if the second is ever removed.
-expected_suites := "46"
+# 46 -> 44 on 2026-09-07 (issue #77): `backends/apps/vpay-worker-bin` was
+# folded into `vpay-server` as the `worker` subcommand and deleted, and it
+# contributed **two** test binaries, not one — `vpay-worker-bin::cli` (its ten
+# subprocess cases) and `vpay-worker-bin::bin/vpay-worker-bin` (the two unit
+# tests in its `main.rs`). The ten cases moved to `vpay-server`'s
+# `tests/cli.rs` under a `worker` module, keeping their names, so they are
+# reported as `vpay-server::cli worker::<name>` and add no binary — that file
+# already existed. The two unit tests did NOT move: they tested that binary's
+# own copies of `adapters`/`adapter_codes`/`install_crypto_provider`, the
+# copies are gone, and `vpay-server`'s tests of the same names cover the
+# originals the worker mode now calls. Net on `cargo nextest list
+# --workspace`: **1550 -> 1548 total, 46 -> 44 test binaries, 0 ignored**.
+expected_suites := "44"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.
@@ -1698,7 +1711,8 @@ image_namespace := "vaam-apps"
 # What `.github/workflows/release.yml` does, minus everything that needs a
 # registry — and minus one thing that needs a runner it cannot have here.
 #
-# Builds all four images for the HOST platform ONLY. The published images are
+# Builds all three images for the HOST platform ONLY (four until issue #77
+# retired `vpay-worker`). The published images are
 # multi-arch (amd64 + arm64, step-6 decision (8)), but the workflow builds each
 # architecture on a NATIVE runner — `ubuntu-latest` and `ubuntu-24.04-arm` —
 # because `backends/Dockerfile` compiles the builder's own host triple and the
@@ -1738,7 +1752,7 @@ release-dry-run:
     esac
     echo "==> building for $platform only (see this recipe's comment for why not both)"
 
-    # name:dockerfile:target — the same four the release matrix builds, from
+    # name:dockerfile:target — the same three the release matrix builds, from
     # the repository root, which is the context BOTH Dockerfiles require:
     # `backends/Dockerfile` COPYs `sdks/rust` and `examples/merchant-demo`
     # because cargo refuses to load a workspace whose `members` list names a
@@ -1751,7 +1765,6 @@ release-dry-run:
     # commit would produce a `vpay_build_info` label for an artefact nobody
     # can pull. The default (`unknown`) is the true answer for these.
     for spec in vpay-server:backends/Dockerfile:server \
-                vpay-worker:backends/Dockerfile:worker \
                 vpay-dashboard:frontends/Dockerfile:runner \
                 vpay-checkout:frontends/Dockerfile:checkout; do
         IFS=: read -r name file target <<<"$spec"
@@ -1770,7 +1783,7 @@ release-dry-run:
     echo "==> helm-check"
     just helm-check
 
-    echo "release-dry-run: ok — four images built for $platform, chart checked."
+    echo "release-dry-run: ok — three images built for $platform, chart checked."
     echo "release-dry-run: NOT covered: the other architecture, provenance/SBOM,"
     echo "release-dry-run: push-by-digest, the manifest merge, and cosign signing."
 

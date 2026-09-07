@@ -54,8 +54,14 @@ postgres-containers = { max-threads = 1 }
 
 [[profile.default.overrides]]
 # Every package whose tests start a container, not only the integration
-# crate: `vpay-db`'s repository tests and both binaries' `tests/cli.rs`
-# spawn their own `postgres:16-alpine` too. Widened on 2026-09-02 after a
+# crate: `vpay-db`'s repository tests and `vpay-server`'s `tests/cli.rs`
+# spawn their own `postgres:16-alpine` too. That said "both binaries'" until
+# 2026-09-07, when issue #77 folded `vpay-worker-bin` into `vpay-server` —
+# the worker's suite is `vpay-server`'s `cli::worker` module now, so it is
+# already covered by the `package(vpay-server)` line below and the container
+# starts it makes are still serialised. A `package(...)` naming a package
+# that does not exist is a hard nextest config error, not a no-op, so this
+# list cannot silently rot. Widened on 2026-09-02 after a
 # full-workspace run on rootless Docker (`DOCKER_HOST=unix:///run/user/1000/
 # docker.sock`, ~24 unrelated containers on the same host) failed one
 # integration test in 0.4 s — a container-start failure, the shape of
@@ -77,7 +83,6 @@ filter = '''
   | package(vpay-tests-conformance)
   | package(vpay-db)
   | package(vpay-server)
-  | package(vpay-worker-bin)
   | package(vpay-testkit)
 '''
 test-group = 'postgres-containers'

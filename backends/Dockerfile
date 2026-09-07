@@ -99,7 +99,9 @@
 #
 #  1. **The cook must run with the same flags as the build.** Same
 #     `--profile dist`, same `--target <host triple>`, same
-#     `-p vpay-server -p vpay-worker-bin`, and with `.cargo/` already copied
+#     `-p vpay-server` (both halves said `-p vpay-server -p vpay-worker-bin`
+#     until issue #77 folded the two packages into one), and with `.cargo/`
+#     already copied
 #     in so `+crt-static` applies. A cook under different flags writes
 #     fingerprints the real build rejects and caches nothing. The two halves
 #     fail differently — measured by mutation in the 2026-09-05 review pass,
@@ -237,7 +239,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     set -eu; \
     target="$(rustc -vV | sed -n 's/^host: //p')"; \
     cargo chef cook --profile dist --target "$target" \
-        -p vpay-server -p vpay-worker-bin --recipe-path recipe.json
+        -p vpay-server --recipe-path recipe.json
 
 # The commit this image is built from, surfaced at runtime as
 # `vpay_build_info{git_sha="..."}` on /metrics. `vpay_core::metrics::git_sha`
@@ -311,9 +313,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     set -eu; \
     target="$(rustc -vV | sed -n 's/^host: //p')"; \
-    cargo build --profile dist --target "$target" -p vpay-server -p vpay-worker-bin; \
+    cargo build --profile dist --target "$target" -p vpay-server; \
     mkdir -p /out; \
-    cp "target/$target/dist/vpay-server" "target/$target/dist/vpay-worker-bin" /out/
+    cp "target/$target/dist/vpay-server" /out/
 
 # No shell in `scratch` to run a `HEALTHCHECK CMD`, so none is declared here.
 # See compose.e2e.yml for how `vpay-server`'s readiness is (and isn't)
@@ -336,12 +338,19 @@ ENV VPAY_CONFIG=/config/application.yml
 # the number.
 USER 65532:65532
 EXPOSE 8080
+# **One entrypoint for both processes.** With no argument this serves the API;
+# `worker` runs the job loop. There was a second `FROM scratch AS worker`
+# stage here, and a second image built and signed from it, until 2026-09-07
+# (issue #77) — the two binaries were one `cargo` invocation and one
+# dependency graph even then, so the second image bought a second signature
+# and a second pull for the same code. `compose.e2e.yml` and
+# `compose.demo.yml` pass `command: ["worker"]` (compose `command:` IS the
+# Docker CMD, appended to this ENTRYPOINT) and the chart passes
+# `args: ["worker"]` (Kubernetes `args` is the CMD; its `command` would
+# REPLACE this line, which is why the chart does not use it).
+#
+# The stage is still called `server`, not `backend`: it is the stage
+# `release.yml`, `just release-dry-run` and both compose files name, the
+# image it produces is still `vpay-server`, and the entrypoint is still
+# `/vpay-server`. Renaming it would edit four files to say the same thing.
 ENTRYPOINT ["/vpay-server"]
-
-FROM scratch AS worker
-COPY --from=builder /out/vpay-worker-bin /vpay-worker
-# Same config layer as `server` above, for the same reasons.
-COPY config /config
-ENV VPAY_CONFIG=/config/application.yml
-USER 65532:65532
-ENTRYPOINT ["/vpay-worker"]

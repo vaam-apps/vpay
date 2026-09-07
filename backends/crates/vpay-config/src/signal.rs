@@ -1,4 +1,11 @@
-//! Shared OS shutdown-signal handling for `vpay-server` and `vpay-worker-bin`.
+//! OS shutdown-signal handling for `vpay-server`, in every mode.
+//!
+//! "Shared" between `vpay-server` and `vpay-worker-bin` until issue #77
+//! (2026-09-07) made them one binary. It is shared in a stronger sense now:
+//! `main`'s `run` installs the handler once, *before* it dispatches the
+//! subcommand, so serving traffic and `worker` cannot differ about when the
+//! handler goes in — which is what two `main`s agreeing was worth, made
+//! structural.
 //!
 //! # The race this closes
 //!

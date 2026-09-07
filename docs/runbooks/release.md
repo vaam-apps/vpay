@@ -15,7 +15,7 @@ being pushed and then signed:
 | Image | Index digest pushed to `:edge` and `:sha-33d6c25…` | Rekor tlog index |
 |---|---|---|
 | `ghcr.io/vaam-apps/vpay-server` | `sha256:5485db5e397edd8e672737e676756ca4e9eb56a23fb117a6bc762e0532b50537` | 2717616118 |
-| `ghcr.io/vaam-apps/vpay-worker` | `sha256:08667b03bae210802d04d59dba92820be9bccb4052f8337c74f0ea0a80d68a78` | 2717617767 |
+| `ghcr.io/vaam-apps/vpay-worker` (**retired 2026-09-07, issue #77 — this is its last build**) | `sha256:08667b03bae210802d04d59dba92820be9bccb4052f8337c74f0ea0a80d68a78` | 2717617767 |
 | `ghcr.io/vaam-apps/vpay-dashboard` | `sha256:ba6d6712dc143598c66c34300dffa3e38cdd5a21de98dfc9b43a13103b21a7a7` | 2717616040 |
 | `ghcr.io/vaam-apps/vpay-checkout` | `sha256:5214e408be6062123b51374d99988ef20e28081fa96e7bcb0eb4ac2b5b12e51e` | 2717615975 |
 
@@ -167,8 +167,14 @@ cosign signed. Put it in your values file:
 ```yaml
 images:
   server: { digest: "sha256:<64 hex>" }
-  worker: { digest: "sha256:<64 hex>" }
 ```
+
+This block carried a second line, `worker: { digest: … }`, until issue #77
+(2026-09-07). Copying it now is not a harmless leftover: `values.schema.json`
+is `additionalProperties: false` and `images.worker` was removed with the
+image, so a values file carrying it fails `helm lint` with `images:
+Additional property worker is not allowed` — deliberately, so that a
+pinned-but-unpulled digest cannot sit in a values file looking load-bearing.
 
 A digest wins over a tag in this chart, and the `image-digest-format` template
 guard rejects anything that is not `sha256:` + 64 hex at template time rather
@@ -178,9 +184,15 @@ than at image-pull time in the cluster. Verify the render before you install:
 helm template vpay deploy/helm/vpay -f your-values.yaml | grep -n 'image:'
 ```
 
-**The two workloads are pinned independently and must be pinned together.**
-`vpay-server` and `vpay-worker` share a database schema and a migration set;
-running two versions against one database is not a supported configuration.
+**One digest pins both workloads, and that is a change.** Until issue #77
+(2026-09-07) this read "the two workloads are pinned independently and must be
+pinned together", because `vpay-server` and `vpay-worker` were separate images
+sharing a database schema and a migration set, and running two versions
+against one database is not a supported configuration. There is one image now
+and both Deployments resolve `images.server`, so that particular hazard is
+gone by construction rather than by an instruction you have to follow. It is
+*not* gone for a rolling upgrade that spans a migration, which is §5's
+subject.
 
 ## 5. Rolling back
 
@@ -256,7 +268,7 @@ The Rust image is built in four stages:
 |---|---|---|
 | `chef` | `rust:1.98.0-alpine3.22` (was `1.95.0-alpine3.22` until 2026-09-05; the Alpine base deliberately did not move with the compiler), `apk add musl-dev pkgconfig`, `cargo install cargo-chef --locked --version 0.1.78` | the base image tag or the cargo-chef pin changes |
 | `planner` | copies the workspace, runs `cargo chef prepare` → `recipe.json` (manifests + `Cargo.lock`, **no source**) | every build; it compiles nothing and takes ~0.1 s |
-| `builder` (cook) | `cargo chef cook --profile dist --target <host triple> -p vpay-server -p vpay-worker-bin` — compiles the ~317-package dependency graph into `target/` | `recipe.json` changes (a manifest or the lockfile moved), or `.cargo/config.toml` changes |
+| `builder` (cook) | `cargo chef cook --profile dist --target <host triple> -p vpay-server` (it named `-p vpay-worker-bin` too until issue #77) — compiles the ~317-package dependency graph into `target/` | `recipe.json` changes (a manifest or the lockfile moved), or `.cargo/config.toml` changes |
 | `builder` (build) | `ARG VPAY_GIT_SHA`, copy the real source, `cargo build`, `cp` to `/out` | any source edit, or a different `VPAY_GIT_SHA` |
 
 Three properties this shape depends on. Two of the ways to break them are

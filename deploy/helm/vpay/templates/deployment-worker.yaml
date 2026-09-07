@@ -51,14 +51,31 @@ spec:
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       containers:
         - name: worker
-          image: {{ include "vpay.image" (dict "ctx" . "component" "worker") | quote }}
+          # The SAME image the server Deployment runs. There were two images,
+          # `vpay-server` and `vpay-worker`, until 2026-09-07 (issue #77);
+          # `images.worker` is gone from values.yaml and values.schema.json
+          # with it, so `component "worker"` here would now be a render-time
+          # `nil` rather than a wrong-but-plausible reference.
+          image: {{ include "vpay.image" (dict "ctx" . "component" "server") | quote }}
           imagePullPolicy: {{ .Values.images.pullPolicy }}
+          # `args`, NOT `command`. Kubernetes `command` overrides the image's
+          # ENTRYPOINT and `args` overrides its CMD, so `command: ["worker"]`
+          # would ask the kernel to exec a file called `worker` that is not in
+          # this `scratch` image, and the pod would CrashLoopBackOff with
+          # `exec: "worker": executable file not found`. `args` appends to
+          # `ENTRYPOINT ["/vpay-server"]`, which is what runs the job loop.
+          # Compose is the other way round — its `command:` IS the CMD — which
+          # is why `compose.e2e.yml` says `command: ["worker"]` and this says
+          # `args`.
+          args: ["worker"]
           securityContext:
             {{- include "vpay.containerSecurityContext" . | nindent 12 }}
           ports:
-            # The worker's only HTTP listener, and its first: block A gave
-            # `vpay-worker-bin` the same `--observability-bind` socket the
-            # server has (/livez and /metrics, nothing else).
+            # The worker's only HTTP listener, and its first: block A gave the
+            # worker the same `--observability-bind` socket the server has
+            # (/livez and /metrics, nothing else). One binary since #77, so
+            # they are now the same flag on the same code rather than two
+            # copies that happened to agree.
             - name: metrics
               containerPort: {{ .Values.observability.port }}
               protocol: TCP
@@ -74,7 +91,8 @@ spec:
                 name: {{ .Values.rails.existingSecret | quote }}
           # No readiness probe: the worker backs no Service, so readiness
           # would gate nothing. Liveness only, on the same observability
-          # listener the server probes — `vpay-worker-bin`'s own `tests/cli.rs`
+          # listener the server probes — `vpay-server`'s `tests/cli.rs`
+          # (`worker::the_worker_serves_livez_and_metrics_on_the_observability_port`)
           # proves it answers there.
           livenessProbe:
             httpGet:
@@ -99,9 +117,21 @@ spec:
               subPath: {{ include "vpay.overlayFileName" . }}
               readOnly: true
           {{- end }}
-      # The signing key is deliberately absent here: `vpay-worker-bin` takes no
-      # `--oauth-signing-key-file`, issues no token, and mounting the Secret
-      # would widen its blast radius for no capability.
+      # The signing key is deliberately absent here, and this volume list is
+      # what keeps it away from the worker. It issues no token and reads no
+      # key; mounting the Secret would widen its blast radius for no
+      # capability. Note what is also absent: `vpay.commonEnv` sets no
+      # `VPAY_OAUTH_SIGNING_KEY_FILE`, which the server Deployment adds for
+      # itself — so this container is given neither the file nor a path to it.
+      #
+      # The CLI refuses both spellings too (`vpay-server worker
+      # --oauth-signing-key-file …` by clap, `vpay-server
+      # --oauth-signing-key-file … worker` by `vpay_config::cli`'s
+      # `SERVE_ONLY_FLAGS`), but that is defence in depth and not the
+      # guarantee: the environment variable is ignored rather than refused, so
+      # "the worker cannot be handed the key" remains a statement about this
+      # list. See `vpay_config::cli::ServerArgs::oauth_signing_key_file`,
+      # which says the same thing from the other side.
       {{- if .Values.config.createOverlayConfigMap }}
       volumes:
         - name: config-overlay

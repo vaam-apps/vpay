@@ -5,10 +5,12 @@
 # two Services: the server's, and the headless one that exists only so the
 # worker can be scraped at all.
 #
-# Both binaries serve /metrics on the observability port as of 2026-09-03
-# (step-6 blocks A and C). No Prometheus has ever scraped one, so these two
-# objects have never selected a target, and `metrics.serviceMonitor.enabled`
-# is `false` by default.
+# Both workloads serve /metrics on the observability port as of 2026-09-03
+# (step-6 blocks A and C) — "both binaries" until issue #77 made them one
+# image and one binary in two modes on 2026-09-07; the listener and the flag
+# are now the same code rather than two copies that agreed. No Prometheus has
+# ever scraped one, so these two objects have never selected a target, and
+# `metrics.serviceMonitor.enabled` is `false` by default.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
