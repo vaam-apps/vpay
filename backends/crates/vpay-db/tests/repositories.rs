@@ -8522,11 +8522,20 @@ async fn a_session_read_for_the_wrong_merchant_is_indistinguishable_from_a_missi
 ///   * delete `.where_(checkout_session::status().eq(OPEN..))` from
 ///     `find_open_by_intent` — the confirm path would then treat an expired
 ///     session as live and drive a payer through a checkout that is over.
-///   * delete `.order_by(checkout_session::seq().desc())` or `.limit(1)`
-///     from `find_latest_by_intent` — "the newest session on this intent"
-///     becomes "whichever row Postgres returned first", which is stable
-///     enough in a two-row table to pass any test that does not assert
-///     *which* row came back. This one does.
+/// **What it does NOT refuse, corrected 2026-09-07 after the mutation was
+/// actually run:** deleting `.order_by(checkout_session::seq().desc())` from
+/// `latest_by_intent_query`. This test claimed to catch that and it does not
+/// — measured, it stays GREEN. The live `checkout_sessions_intent_seq_idx` is
+/// `(payment_intent_id, seq DESC)`, so Postgres answers an unordered
+/// `LIMIT 1` out of that index in seq-descending order anyway and the right
+/// row comes back for the wrong reason. That guarantee is asserted where it
+/// is made instead, on the rendered SQL, by
+/// `checkout_sessions::tests::the_latest_session_query_orders_by_seq_and_takes_one`
+/// — which is red in a millisecond under the same mutation.
+///
+/// The `find_latest_by_intent` assertions below are kept anyway, because they
+/// pin something that test cannot: that the query answers the newest session
+/// **whatever its status**, which is a behaviour and not a statement shape.
 ///
 /// The two are asserted together because the difference between them is the
 /// point: `find_latest_by_intent` answering the expired session is CORRECT
@@ -8604,8 +8613,9 @@ async fn the_open_session_read_filters_by_status_and_the_latest_read_orders_by_s
     assert_eq!(
         latest.map(|row| row.id),
         Some("cs_newer".to_owned()),
-        "find_latest_by_intent answered something other than the highest seq — the ORDER BY or \
-         the LIMIT is gone"
+        "find_latest_by_intent answered something other than the highest seq. NOTE: this \
+         assertion does NOT catch a deleted ORDER BY — see this test's doc comment and \
+         the_latest_session_query_orders_by_seq_and_takes_one, which does"
     );
 
     // The other direction, and the reason these two reads are not one method:
