@@ -52,4 +52,11 @@ describe('checkout outcome tones', () => {
     const successes = CHECKOUT_OUTCOME.filter((o) => checkoutOutcomeTone[o] === 'success');
     expect(successes).toEqual(['succeeded']);
   });
+
+  it('tones a canceled payment warning, not error — decision D4, 2026-09-07', () => {
+    // Canceled is the payer's own action; failed is not. Softening one and
+    // not the other is the point, so this asserts both sides of it.
+    expect(checkoutOutcomeTone.canceled).toBe('warning');
+    expect(checkoutOutcomeTone.failed).toBe('error');
+  });
 });

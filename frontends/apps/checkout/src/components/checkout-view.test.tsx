@@ -450,10 +450,15 @@ describe('the controls do what the screen says', () => {
     ).toContain('alert-success');
     succeeded.unmount();
 
+    // D4 (2026-09-07, docs/plans/2026-09-07-ui-revamp.md §9): a canceled
+    // payment tones warning, not error — it is the payer's own action,
+    // unlike a failure. `@vpay/tokens`' checkoutOutcomeTone changed; this
+    // assertion moved with it rather than staying pinned to the tone D4
+    // deliberately replaced.
     const canceled = renderState(CHECKOUT_SCREENS['outcome_canceled'] as CheckoutState, 'en');
     expect(
       canceled.container.querySelector('[data-outcome="canceled"] .alert')?.className,
-    ).toContain('alert-error');
+    ).toContain('alert-warning');
     canceled.unmount();
   });
 
