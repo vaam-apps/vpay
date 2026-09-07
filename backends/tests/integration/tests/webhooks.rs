@@ -1341,6 +1341,7 @@ fn events_config(base_url: &str, jwks_a: Value, jwks_b: Value, scopes: &[&str]) 
         webhooks: vpay_config::WebhookPolicy::default(),
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
+        staff_auth: vpay_config::StaffAuth::default(),
     }
 }
 

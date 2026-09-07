@@ -67,7 +67,7 @@ use testcontainers_modules::postgres::Postgres as PostgresImage;
 use uuid::Uuid;
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::LoadedSigningKey;
-use vpay_api::resource_auth::{JwtValidator, MerchantJwtValidator, Surface};
+use vpay_api::resource_auth::{JwtValidator, MerchantJwtValidator};
 use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
 use vpay_db::Repositories;
 use vpay_sdk::{
@@ -282,6 +282,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
         webhooks: vpay_config::WebhookPolicy::default(),
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
+        staff_auth: vpay_config::StaffAuth::default(),
     }
 }
 
@@ -331,7 +332,7 @@ async fn harness() -> anyhow::Result<Harness> {
             format!("{base_url}/v1/oauth/jwks.json"),
             Duration::from_secs(300),
             merchant_op.issuer(),
-            Surface::Merchant,
+            vpay_config::MERCHANT_AUDIENCE,
         )
         .expect("the vendored-roots JWKS client builds"),
     );

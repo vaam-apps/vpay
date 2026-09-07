@@ -20,7 +20,7 @@ pub mod cli;
 pub mod config;
 pub mod oauth;
 pub mod signal;
-pub use cli::{CommonArgs, LogFormat, ServerArgs, WorkerArgs};
+pub use cli::{CommonArgs, LogFormat, ServerArgs, ServerCommand, StaffCommand, WorkerArgs};
 pub use config::{
     CheckoutConfig, Config, CurrencyEntry, ProviderHost, StaffAuth, WebhookPolicy,
 };

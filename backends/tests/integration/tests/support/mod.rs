@@ -39,7 +39,7 @@ use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::LoadedSigningKey;
-use vpay_api::resource_auth::{DashboardJwtValidator, JwtValidator, MerchantJwtValidator, Surface};
+use vpay_api::resource_auth::{DashboardJwtValidator, JwtValidator, MerchantJwtValidator};
 use vpay_api::{ResourceConfig, RouterDeps};
 use vpay_config::oauth::{GrantType, MerchantClient, WebhookEndpoint};
 use vpay_config::{Config, MERCHANT_AUDIENCE};
@@ -333,6 +333,10 @@ pub(crate) fn router_deps(
             ResourceConfig::from_config(config)
                 .expect("the suite's configuration projects onto the port"),
         ),
+        // The default for every suite. `dashboard_read_surface.rs` builds
+        // its own deps when it needs a login, exactly as `serve` lets a
+        // suite override the dashboard validator.
+        staff_login: None,
     }
 }
 
@@ -354,13 +358,17 @@ pub(crate) fn dashboard_validator_for(
     issuer: &str,
     config: &Config,
 ) -> Option<DashboardJwtValidator> {
-    config.dashboard_client.as_ref().map(|_| {
+    config.dashboard_client.as_ref().map(|dashboard| {
         DashboardJwtValidator(
             JwtValidator::new(
                 format!("{base_url}/v1/oauth/jwks.json"),
                 Duration::from_secs(300),
                 issuer,
-                Surface::Dashboard,
+                // ADR-0017 decision 3: the dashboard's audience is its own
+                // registered `client_id`, because that is what the
+                // authorization-code grant mints. It was the constant
+                // `vpay:dash/v1` until 2026-09-07.
+                dashboard.client_id.as_str(),
             )
             .expect("the vendored-roots JWKS client builds"),
         )
@@ -749,7 +757,7 @@ pub(crate) async fn serve(
             format!("{base_url}/v1/oauth/jwks.json"),
             Duration::from_secs(300),
             merchant_op.issuer(),
-            Surface::Merchant,
+            vpay_config::MERCHANT_AUDIENCE,
         )
         .expect("the vendored-roots JWKS client builds"),
     );

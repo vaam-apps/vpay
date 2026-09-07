@@ -105,6 +105,9 @@ pub mod resource_auth;
 /// Staff credentials: argon2id with a deployment pepper, RFC 6238 TOTP, the
 /// AEAD that keeps a TOTP secret out of a database dump, and the opaque
 /// tokens (ADR-0017).
+/// Staff sign-in: the routes that produce the credential `/dash/v1` checks
+/// (ADR-0017).
+pub mod staff;
 pub mod staff_auth;
 #[cfg(test)]
 mod test_fixtures;
@@ -315,6 +318,18 @@ pub struct RouterDeps {
     /// same `Config` the same way, and so this crate never learns how to
     /// find a config file.
     pub resource_config: Arc<ResourceConfig>,
+    /// Everything the staff sign-in routes need, or `None` and they are not
+    /// mounted (ADR-0017).
+    ///
+    /// A second `Option` beside [`Self::dashboard_validator`], and the two
+    /// are deliberately independent. A deployment can register a
+    /// `dashboard_client` and leave the `staff_auth` secrets out — legal in
+    /// sandbox, refused at boot in livemode — and what it gets is the
+    /// `/dash/v1` read surface exp23 built, with no way to sign in. That is
+    /// exactly the state master was in before this ADR, and it stays
+    /// expressible so that "the reads are mounted" and "a human can reach
+    /// them" remain two separate claims rather than one.
+    pub staff_login: Option<Arc<staff::StaffLogin>>,
 }
 
 /// Shared state for every route in this router.
@@ -331,6 +346,31 @@ pub(crate) struct AppState {
     dashboard_validator: Option<DashboardJwtValidator>,
     adapters: Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>,
     resource_config: Arc<ResourceConfig>,
+    staff_login: Option<Arc<staff::StaffLogin>>,
+}
+
+impl AppState {
+    /// The staff sign-in state, or the honest 404.
+    ///
+    /// Every staff handler starts here. `router` only mounts them when this
+    /// is `Some`, so reaching the `Err` arm means a router was assembled by
+    /// some other caller — and the answer is the one an unmounted deployment
+    /// gives, for `require_dashboard_token`'s reason: a `500` would claim
+    /// vpay is broken when the truth is that this deployment serves no staff
+    /// login.
+    pub(crate) fn staff_login(&self) -> Result<&staff::StaffLogin, ApiError> {
+        self.staff_login.as_deref().ok_or(ApiError::NotFound {
+            resource: "route",
+            id: "/dash/v1/staff".to_owned(),
+        })
+    }
+
+    /// The repositories, for a staff handler that would otherwise need its
+    /// own `State` extractor beside this one.
+    pub(crate) fn repositories(&self) -> &dyn Repositories {
+        self.repositories.as_ref()
+    }
+
 }
 
 /// So [`op::jwks::jwks_handler`] can take `State<Arc<dyn Repositories>>` and
@@ -1062,6 +1102,7 @@ pub fn router(deps: RouterDeps) -> Router {
         dashboard_validator: deps.dashboard_validator,
         adapters: deps.adapters,
         resource_config: deps.resource_config,
+        staff_login: deps.staff_login,
     };
 
     // Unauthenticated by necessity, not by omission — see the table above.
@@ -1197,6 +1238,28 @@ pub fn router(deps: RouterDeps) -> Router {
                 state.clone(),
                 require_dashboard_token::<AppState>,
             ))
+            // **Merged AFTER the token layer, so these routes are outside
+            // it.** They have to be: they exist to produce the credential
+            // that layer checks, and a `/dash/v1/staff/login` behind a
+            // bearer-token requirement is a login nobody can reach.
+            //
+            // `Router::layer` wraps the routes *and the fallback* present
+            // when it is called, so the merge below adds unwrapped routes
+            // and leaves `dash::routes`' fallback inside the layer —
+            // which is why an unmatched `/dash/v1/...` path still answers
+            // exactly what it answered before this module existed.
+            // `staff::routes` deliberately carries no fallback of its own:
+            // two routers with fallbacks cannot be merged.
+            //
+            // Mounted whether or not `staff_login` is `Some`. A deployment
+            // with a dashboard and no `staff_auth` secrets gets these paths
+            // answering the honest 404 through `AppState::staff_login`,
+            // rather than the paths vanishing — because a 404 on
+            // `/dash/v1/staff/login` and a 404 on `/dash/v1/nonsense` are
+            // the same answer, and making the route table depend on a
+            // Secret's presence is how a deployment discovers a missing
+            // Secret by reading a route table.
+            .merge(staff::routes())
             // Outside the token check, for the `/v1` nest's reason: an
             // anonymous caller must not be able to make this process
             // buffer a body before the 401. The limit is `/v1`'s,

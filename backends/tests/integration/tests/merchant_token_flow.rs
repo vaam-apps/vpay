@@ -96,7 +96,7 @@ use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::LoadedSigningKey;
-use vpay_api::resource_auth::{JwtValidator, MerchantJwtValidator, Surface};
+use vpay_api::resource_auth::{JwtValidator, MerchantJwtValidator};
 use vpay_config::{Config, Deployment, MERCHANT_AUDIENCE};
 use vpay_sdk::Credentials;
 
@@ -113,11 +113,20 @@ const CLIENT_ID: &str = "acme-cameroon";
 /// query filtered by the wrong one cannot pass.
 const MERCHANT_ID: &str = "acme-cameroon-tenant";
 
-/// The `aud` a `/dash/v1` token would carry —
-/// `vpay_api::resource_auth::Surface::Dashboard::audience()`, which is not
-/// `pub`-reachable as a value, so it is spelled here. Case (c) exists
-/// precisely because these two strings must never be interchangeable.
-const DASHBOARD_AUDIENCE: &str = "vpay:dash/v1";
+/// The `aud` a `/dash/v1` token carries.
+///
+/// **A registered `dashboard_client.client_id` since ADR-0017**, not the
+/// retired constant `vpay:dash/v1`: the authorization-code grant mints
+/// `aud = <client_id>` and has no requested-audience path, so the validator
+/// was changed to expect what the grant produces. Spelled here rather than
+/// imported because there is no constant left to import — it is
+/// configuration — and this suite registers no dashboard client, which is
+/// exactly what makes the case below meaningful: the value is one this
+/// deployment has never heard of, and `/v1` must refuse it anyway.
+///
+/// Case (c) exists precisely because these two strings must never be
+/// interchangeable.
+const DASHBOARD_AUDIENCE: &str = "vpay-dashboard";
 
 /// A running vpay server and everything a test needs to talk to it.
 ///
@@ -238,6 +247,7 @@ async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
         webhooks: vpay_config::WebhookPolicy::default(),
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
+        staff_auth: vpay_config::StaffAuth::default(),
     };
 
     let merchant_op = Arc::new(MerchantOp::new(
@@ -250,7 +260,7 @@ async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
             format!("http://{bound}/v1/oauth/jwks.json"),
             Duration::from_secs(300),
             merchant_op.issuer(),
-            Surface::Merchant,
+            vpay_config::MERCHANT_AUDIENCE,
         )
         .expect("the vendored-roots JWKS client builds"),
     );

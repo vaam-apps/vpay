@@ -1320,8 +1320,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = envelope_of(response).await;
         assert_eq!(
-            body.get("client_id").and_then(Value::as_str),
-            Some("merchant-123")
+            body.get("subject").and_then(Value::as_str),
+            Some("merchant-123"),
+            "on `/v1` the token's `sub` IS the client id — see ResourceClaims::subject for why \
+             the field stopped being called that"
         );
         assert_eq!(
             body.get("scope"),

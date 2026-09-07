@@ -236,8 +236,76 @@ pub struct ServerArgs {
     #[arg(long, env = "VPAY_OAUTH_SIGNING_KEY_FILE")]
     pub oauth_signing_key_file: Option<PathBuf>,
 
+    /// An operator subcommand instead of serving traffic.
+    ///
+    /// `None` — no subcommand — is the ordinary case and starts the server.
+    /// A subcommand does its work and exits; it binds no listener, loads no
+    /// signing key and reconciles nothing.
+    ///
+    /// # Why these live on the server binary rather than in an `xtask`
+    ///
+    /// `cargo xtask` is a *development* tool: it needs the source tree and a
+    /// Rust toolchain, neither of which exists in the `FROM scratch` runtime
+    /// image (ADR-0004). Creating the first staff member is something an
+    /// operator does against a production database, from the same image
+    /// that serves the API — `kubectl exec` or a one-shot Job — so the
+    /// subcommand has to be in the shipped binary or it is not reachable
+    /// where it is needed.
+    #[command(subcommand)]
+    pub command: Option<ServerCommand>,
+
     #[command(flatten)]
     pub common: CommonArgs,
+}
+
+/// The operator subcommands `vpay-server` offers.
+///
+/// One today. It is a nested `Subcommand` rather than a flat `staff-add` so
+/// that a second staff operation (disable, list) is a sibling rather than
+/// another top-level verb, and so `vpay-server staff --help` is a page about
+/// staff.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum ServerCommand {
+    /// Manage the humans who may sign in to `/dash/v1`
+    /// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md)).
+    Staff {
+        /// What to do.
+        #[command(subcommand)]
+        command: StaffCommand,
+    },
+}
+
+/// `vpay-server staff …`.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum StaffCommand {
+    /// Create a staff member and print a one-time password.
+    ///
+    /// **The only way a staff member is created.** ADR-0017 decision 1: no
+    /// HTTP endpoint creates one, and there is no self-service sign-up — a
+    /// dashboard account is a decision an operator takes, not a form a
+    /// visitor fills in.
+    ///
+    /// The password is generated, printed once, and must be replaced at
+    /// first sign-in; TOTP enrolment is mandatory at the same sign-in.
+    Add {
+        /// The tenant this person may see. Must be a `merchant_id` some
+        /// `merchant_clients` entry registers — checked before the insert,
+        /// because there is no merchants table to make it a foreign key and
+        /// a typo would otherwise be an account that can never see anything.
+        #[arg(long)]
+        merchant: String,
+
+        /// Their email address. Lower-cased before it is written, and
+        /// unique across the whole deployment: sign-in names an address and
+        /// no tenant.
+        #[arg(long)]
+        email: String,
+
+        /// What the dashboard greets them by. Not an identifier and never
+        /// matched on.
+        #[arg(long)]
+        name: String,
+    },
 }
 
 /// `vpay-worker-bin` CLI.

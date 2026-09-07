@@ -33,7 +33,7 @@ use vpay_db::Repositories;
 use crate::RouterDeps;
 use crate::op::MerchantOp;
 use crate::op::keys::LoadedSigningKey;
-use crate::resource_auth::{JwtValidator, MerchantJwtValidator, Surface};
+use crate::resource_auth::{JwtValidator, MerchantJwtValidator};
 
 /// The base URL every fixture below derives its issuer and endpoints from.
 /// A real `https` URL, not `localhost`: `Config::validate_all` treats the
@@ -160,6 +160,7 @@ pub(crate) fn config_with(public_base_url: &str, merchants: Vec<MerchantClient>)
         webhooks: vpay_config::WebhookPolicy::default(),
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
+        staff_auth: vpay_config::StaffAuth::default(),
     }
 }
 
@@ -210,7 +211,7 @@ pub(crate) fn deps() -> RouterDeps {
                 "http://127.0.0.1:1/v1/oauth/jwks.json",
                 Duration::from_secs(300),
                 ISSUER,
-                Surface::Merchant,
+                vpay_config::MERCHANT_AUDIENCE,
             )
             .expect("the vendored-roots JWKS client builds"),
         ),
@@ -220,5 +221,10 @@ pub(crate) fn deps() -> RouterDeps {
         // `401` instead of the `404` an undashboarded deployment gives.
         // `crate::dash`'s own tests build their own deps.
         dashboard_validator: None,
+        // `None` for the same reason, and it is the honest fixture for a
+        // deployment with no `dashboard_client`: with one, every
+        // `/dash/v1/staff/...` path in this crate's tests would answer a
+        // refusal instead of the `404` an undashboarded deployment gives.
+        staff_login: None,
     }
 }

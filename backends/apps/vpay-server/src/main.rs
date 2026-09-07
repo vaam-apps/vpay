@@ -134,6 +134,14 @@ struct Booted {
     adapters: BTreeMap<String, Box<dyn vpay_provider::ProviderAdapter>>,
     repositories: Arc<dyn vpay_db::Repositories>,
     merchant_op: Arc<MerchantOp>,
+    /// Everything the staff sign-in routes need, or `None`.
+    ///
+    /// `None` in three configurations, and all three are legal: no
+    /// `dashboard_client`, no `staff_auth.password_pepper`, or no
+    /// `staff_auth.totp_encryption_key`. In **livemode** the last two are
+    /// refused at boot by `vpay_config` (`StaffAuthSecretMissing`), so a
+    /// production deployment that registers a dashboard always has a login.
+    staff_login: Option<Arc<vpay_api::staff::StaffLogin>>,
 }
 
 /// The whole startup, as the ordered list of steps it is.
@@ -157,6 +165,14 @@ async fn run() -> anyhow::Result<()> {
         ShutdownSignals::install().context("installing SIGINT/SIGTERM handlers")?;
 
     let metrics = install_process_defaults(&args)?;
+
+    // An operator subcommand does its work and exits. Before `boot`, because
+    // it needs neither a signing key nor a reconcile and must not bind
+    // anything — see `ServerArgs::command`.
+    if let Some(command) = args.command.clone() {
+        return run_command(&args, command).await;
+    }
+
     let booted = boot(&args).await?;
 
     // Bound *before* the validator is built, because the validator needs the
@@ -194,6 +210,7 @@ async fn run() -> anyhow::Result<()> {
             ResourceConfig::from_config(&booted.config)
                 .context("projecting the validated configuration onto the /v1 request path")?,
         ),
+        staff_login: booted.staff_login,
     };
 
     let (observability, observability_shutdown_tx) = start_observability(&args, metrics).await?;
@@ -324,6 +341,11 @@ async fn boot(args: &ServerArgs) -> anyhow::Result<Booted> {
 
     announce_signing_key(&signing_key, repositories.as_ref()).await?;
 
+    // Built before `MerchantOp::new` takes the key by value. Both halves of
+    // one OP sign with one key, and `LoadedSigningKey::token_manager` hands
+    // out an `Arc` of the same `TokenManager` either way.
+    let staff_login = staff_login(&config, &signing_key, &repositories);
+
     let merchant_op = Arc::new(MerchantOp::new(
         &config,
         signing_key,
@@ -335,6 +357,7 @@ async fn boot(args: &ServerArgs) -> anyhow::Result<Booted> {
         adapters,
         repositories,
         merchant_op,
+        staff_login,
     })
 }
 
@@ -472,6 +495,200 @@ fn loopback_validator(
 ///
 /// Whatever building the JWKS client fails with, exactly as
 /// [`loopback_validator`].
+/// Runs an operator subcommand and returns, without binding anything.
+///
+/// # Errors
+///
+/// Whatever the subcommand's own step fails with — a config that will not
+/// load, a database that will not open, a merchant that is not registered, an
+/// address that is already taken.
+async fn run_command(
+    args: &ServerArgs,
+    command: vpay_config::ServerCommand,
+) -> anyhow::Result<()> {
+    let vpay_config::ServerCommand::Staff { command } = command;
+    match command {
+        vpay_config::StaffCommand::Add {
+            merchant,
+            email,
+            name,
+        } => staff_add(args, &merchant, &email, &name).await,
+    }
+}
+
+/// `vpay-server staff add` — the only way a staff member is created
+/// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md) decision 1).
+///
+/// # The order of the checks, and why
+///
+/// Configuration, then the merchant, then the database. The merchant check is
+/// **before** the connection on purpose: a typo in `--merchant` is by far the
+/// likeliest mistake here, and it should be answered in milliseconds rather
+/// than after a pool, a migration run and an insert that a foreign key could
+/// not have refused anyway (there is no merchants table — ADR-0003).
+///
+/// # What it prints, and where
+///
+/// The one-time password goes to **stdout**, alone on its line, so an
+/// operator can pipe it. Everything else goes to the tracing subscriber,
+/// which by default is JSON on stderr. A password interleaved into a JSON log
+/// stream is a password in a log aggregator.
+///
+/// # Errors
+///
+/// [`anyhow::Error`] naming the step. A duplicate address is
+/// `PersistenceError::Unique` from the `staff_email_key` index — `create` and
+/// not `upsert`, deliberately: a second `staff add` for an existing address
+/// must fail rather than quietly rewrite that person's password hash to one
+/// an operator just printed on a terminal.
+async fn staff_add(
+    args: &ServerArgs,
+    merchant: &str,
+    email: &str,
+    display_name: &str,
+) -> anyhow::Result<()> {
+    let config = vpay_api::boot::load_config(args.common.config.as_deref(), &args.common.profile)
+        .context("loading and validating configuration (--config / VPAY_CONFIG, ADR-0003)")?;
+
+    let (pepper, totp_key) = config.staff_auth.both().context(
+        "staff_auth.password_pepper and staff_auth.totp_encryption_key are both required to \
+         create a staff member: the password is hashed with the pepper, so a row written \
+         without one could never be verified against a deployment that has one (ADR-0017)",
+    )?;
+    let credentials = vpay_api::staff_auth::StaffCredentials::new(pepper, totp_key)
+        .context("reading the staff_auth secrets")?;
+
+    // Before the database, for the reason in this function's doc.
+    anyhow::ensure!(
+        config
+            .merchant_clients
+            .iter()
+            .any(|client| client.merchant_id == merchant),
+        "--merchant {merchant} is not a merchant_id any merchant_clients entry registers; a \
+         staff member bound to it could sign in and see nothing at all"
+    );
+
+    // Lower-cased here, once, because `staff_email_is_lower_case` refuses the
+    // insert otherwise and because the sign-in lookup is a plain equality.
+    let email = email.trim().to_lowercase();
+    let password = vpay_api::staff_auth::tokens::one_time_password();
+    let password_hash = credentials
+        .hash_password(&password)
+        .context("hashing the one-time password")?;
+
+    let database_url = args.common.database_url.as_deref().context(
+        "--database-url / DATABASE_URL is required: `staff add` writes a row",
+    )?;
+    let repositories = vpay_api::boot::open_migrated_database(database_url).await?;
+
+    let id = vpay_core::ids::staff_id();
+    vpay_db::Staff::create(
+        repositories.as_ref(),
+        vpay_db::NewStaff {
+            id: id.clone(),
+            merchant_id: merchant.to_owned(),
+            email: email.clone(),
+            display_name: display_name.to_owned(),
+            password_hash,
+            now: time::OffsetDateTime::now_utc(),
+        },
+    )
+    .await
+    .with_context(|| format!("creating staff member {email}"))?;
+
+    tracing::info!(
+        staff_id = %id,
+        merchant_id = %merchant,
+        "created a staff member; the one-time password is on stdout and is not logged"
+    );
+
+    // stdout, alone, and never through `tracing`. `print_stdout` is a
+    // workspace `warn` lint precisely so that writing to stdout is a
+    // deliberate act; this is the one place in either binary where it is the
+    // right one, because the value must be pipeable and must not reach a log
+    // aggregator.
+    #[allow(
+        clippy::print_stdout,
+        reason = "the one-time password must be pipeable and must NOT go through the tracing \
+                  subscriber, which is JSON on stderr and is shipped to a log aggregator"
+    )]
+    {
+        println!("{password}");
+    }
+
+    Ok(())
+}
+
+/// Assembles the staff sign-in state, or `None` and no staff login is served
+/// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md)).
+///
+/// Three inputs, all three required, and the `None` for each is a different
+/// legal deployment:
+///
+/// * no `dashboard_client` — this deployment runs no dashboard at all, and
+///   `/dash/v1` mounts nothing;
+/// * no `staff_auth.password_pepper` or no `staff_auth.totp_encryption_key` —
+///   this deployment runs the `/dash/v1` **read** surface with no way to sign
+///   in, which is exactly the state this repository was in before ADR-0017.
+///   Legal in sandbox; refused at boot in livemode by
+///   `vpay_config::ConfigError::StaffAuthSecretMissing`.
+///
+/// A **fourth** `None` is not legal and is not silent: a `totp_encryption_key`
+/// that is not 32 bytes of base64url is a configured secret this process
+/// cannot use, so it is logged at `error` and the login is not mounted rather
+/// than mounted with a key that would fail on the first enrolment. It is
+/// deliberately not a hard boot failure: the reads are unaffected, and a
+/// deployment losing its dashboard login is a smaller outage than a deployment
+/// losing its `/v1`.
+fn staff_login(
+    config: &vpay_config::Config,
+    key: &LoadedSigningKey,
+    repositories: &Arc<dyn vpay_db::Repositories>,
+) -> Option<Arc<vpay_api::staff::StaffLogin>> {
+    let dashboard = config.dashboard_client.as_ref()?;
+    let Some((pepper, totp_key)) = config.staff_auth.both() else {
+        tracing::warn!(
+            client_id = %dashboard.client_id,
+            "a dashboard_client is registered but staff_auth is incomplete; /dash/v1 mounts its \
+             READ surface and NO staff login. Set staff_auth.password_pepper and \
+             staff_auth.totp_encryption_key to serve one (ADR-0017). A livemode deployment \
+             refuses to start in this state"
+        );
+        return None;
+    };
+
+    let credentials = match vpay_api::staff_auth::StaffCredentials::new(pepper, totp_key) {
+        Ok(credentials) => Arc::new(credentials),
+        Err(error) => {
+            tracing::error!(
+                %error,
+                "staff_auth is configured but unusable; /dash/v1 mounts its READ surface and NO \
+                 staff login"
+            );
+            return None;
+        }
+    };
+
+    tracing::info!(
+        client_id = %dashboard.client_id,
+        merchant_id = %dashboard.merchant_id,
+        "/dash/v1 serves the staff authorization-code grant (ADR-0017): password + TOTP, \
+         server-side sessions, and tokens whose audience is this client id"
+    );
+
+    Some(Arc::new(vpay_api::staff::StaffLogin {
+        credentials,
+        dashboard_op: Arc::new(vpay_api::op::dashboard::DashboardOp::new(
+            config,
+            dashboard,
+            key,
+            Arc::clone(repositories),
+        )),
+        limiter: Arc::new(vpay_api::staff::rate_limit::SignInLimiter::new()),
+        issuer_label: config.deployment.name.clone(),
+    }))
+}
+
 fn loopback_dashboard_validator(
     bound: SocketAddr,
     merchant_op: &MerchantOp,
@@ -485,12 +702,12 @@ fn loopback_dashboard_validator(
         return Ok(None);
     };
 
-    tracing::warn!(
+    tracing::info!(
         client_id = %dashboard.client_id,
         merchant_id = %dashboard.merchant_id,
-        "/dash/v1 is mounted as a READ-ONLY resource server bound to one merchant. NO GRANT \
-         THIS DEPLOYMENT SERVES CAN MINT A TOKEN FOR IT: dashboard login (authorization code + \
-         PKCE) is not built. See docs/flows/dashboard-auth.md and docs/status.md"
+        "/dash/v1 is mounted as a READ-ONLY resource server bound to one merchant. Whether any \
+         grant can mint a token for it is decided by `staff_auth`; see the line `staff_login` \
+         logs. See docs/flows/dashboard-auth.md and docs/status.md"
     );
 
     Ok(Some(DashboardJwtValidator(

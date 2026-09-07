@@ -1276,11 +1276,7 @@ fn validate_no_merchant_claims_the_dashboard_client(
     merchants: &[MerchantClient],
 ) -> Result<(), ConfigError> {
     for merchant in merchants {
-        if merchant
-            .allowed_audiences
-            .iter()
-            .any(|audience| *audience == dashboard.client_id)
-        {
+        if merchant.allowed_audiences.contains(&dashboard.client_id) {
             return Err(ConfigError::MerchantClaimsDashboardAudience {
                 client_id: merchant.client_id.clone(),
                 audience: dashboard.client_id.clone(),
@@ -4386,15 +4382,20 @@ providers:
             client_secret: None,
         };
         let mut config = valid_config();
-        config.merchant_clients[0].merchant_id = "merchant-one".to_owned();
-        config.merchant_clients[0]
+        let merchant = config
+            .merchant_clients
+            .first_mut()
+            .expect("valid_config registers one merchant");
+        merchant.merchant_id = "merchant-one".to_owned();
+        merchant
             .allowed_audiences
             .push("renamed-dashboard".to_owned());
+        let merchant_client_id = merchant.client_id.clone();
         config.dashboard_client = Some(dashboard("renamed-dashboard"));
         assert_eq!(
             config.validate_all(&RawSecrets::identity(&config)),
             Err(ConfigError::MerchantClaimsDashboardAudience {
-                client_id: config.merchant_clients[0].client_id.clone(),
+                client_id: merchant_client_id,
                 audience: "renamed-dashboard".to_owned(),
             }),
             "the forbidden value is whatever the document registers, not a constant"

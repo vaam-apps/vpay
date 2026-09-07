@@ -32,6 +32,9 @@ use crate::op::refusing_stores::{
 };
 
 pub mod clients;
+/// The `/dash/v1` half: the authorization-code grant, for the dashboard
+/// client and nothing else (ADR-0017 decision 3).
+pub mod dashboard;
 pub mod jwks;
 pub mod keys;
 pub mod refusing_stores;

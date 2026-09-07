@@ -354,6 +354,7 @@ fn config_with(base_url: &str, jwks_a: Value, mtn: &RailSetup, orange: &RailSetu
             public_base_url: Some(CHECKOUT_BASE.to_owned()),
         },
         dashboard_client: None,
+        staff_auth: vpay_config::StaffAuth::default(),
     }
 }
 

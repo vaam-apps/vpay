@@ -11,6 +11,13 @@ publish = false
 workspace = true
 
 [dependencies]
+# `staff add` stamps `staff.created_at`/`updated_at` itself — migration 0035
+# declares no DEFAULT on either, because `cratestack-macros` drops a defaulted
+# column from `CreateStaffInput` and the row would then carry whatever the DDL
+# invented. Promoted from `[dev-dependencies]`, where it was for the CLI
+# tests' sake; the workspace pin is already in this binary's graph via
+# `vpay-db`, so this adds no package.
+time.workspace = true
 vpay-core.workspace = true
 vpay-config.workspace = true
 vpay-db.workspace = true
@@ -80,6 +87,7 @@ rand.workspace = true
 # variants carry a `time::OffsetDateTime` and a `sqlx::Error` respectively.
 # Neither adds a package to any graph — `vpay-db`, which this binary already
 # links, depends on both at these same workspace pins; they are named here
-# only so the test can spell the types.
-time.workspace = true
+# only so the test can spell the types. `time` moved to `[dependencies]` when
+# `staff add` needed it (ADR-0017); a `[dependencies]` entry is visible to
+# tests, so nothing was lost.
 sqlx.workspace = true

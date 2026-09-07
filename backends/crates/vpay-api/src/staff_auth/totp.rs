@@ -68,13 +68,23 @@ pub fn step_at(unix_seconds: i64) -> i64 {
 ///
 /// Held only for the length of a verification: it is opened out of
 /// `staff.totp_secret` by [`crate::staff_auth::StaffCredentials::open_secret`],
-/// used, and dropped. It is deliberately **not** `Clone` and deliberately has
-/// no `Debug` at all — a type with no `Debug` cannot be interpolated into a
-/// `tracing` field or an `anyhow` chain by accident, which is a stronger
-/// guarantee than a redacting impl (that one can be bypassed by a caller who
-/// reaches for the field).
+/// used, and dropped. Deliberately **not** `Clone`: a second factor with two
+/// owners is a second factor somebody forgot to drop.
+///
+/// Its `Debug` prints the type name and nothing else — not even a length,
+/// which for a fixed-size secret would be a constant dressed as information.
+/// The workspace lints `missing_debug_implementations`, so "no `Debug` at
+/// all" is not available; the next best thing is one that carries nothing,
+/// and it is written by hand precisely so that a future `#[derive(Debug)]`
+/// is a visible change rather than an omission.
 pub struct Totp {
     secret: Vec<u8>,
+}
+
+impl std::fmt::Debug for Totp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Totp([redacted])")
+    }
 }
 
 impl Totp {
@@ -82,13 +92,6 @@ impl Totp {
     #[must_use]
     pub fn new(secret: Vec<u8>) -> Self {
         Self { secret }
-    }
-
-    /// The secret's bytes, for sealing at enrolment. `pub(crate)` because the
-    /// only legitimate consumer is the enrolment handler, which hands them
-    /// straight to the AEAD.
-    pub(crate) fn secret(&self) -> &[u8] {
-        &self.secret
     }
 
     /// The code for one step. Public because [`Self::verify`] is defined in

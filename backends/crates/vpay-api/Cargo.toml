@@ -147,6 +147,14 @@ hmac.workspace = true
 # `[workspace.dependencies]`: this is the only consumer, and SHA-1 belongs to
 # exactly one RFC in this codebase.
 sha1 = "0.10"
+# `authkestra_op::AuthorizationCode::expires_at` is `chrono::DateTime<Utc>`
+# (`authkestra-op-0.7.1/src/code.rs`), so the code store has to speak it at
+# that one boundary and converts to `time::OffsetDateTime` immediately, the
+# way `vpay-db`'s `client_assertion` already does. It was a dev-dependency of
+# this crate for exactly the same types; it is production now because the
+# dashboard code store is production. No new package: the workspace pin is
+# already in both binaries' graphs.
+chrono.workspace = true
 # Constant-time comparison of a TOTP code (`staff_auth::totp::Totp::verify`).
 # A `==` on two six-digit strings exits at the first differing byte, which is
 # a timing oracle over a six-digit space a caller may probe at will. Workspace
@@ -177,13 +185,6 @@ uuid.workspace = true
 # uses it: `error.rs`'s tests, which construct a `sqlx::Error` to prove a
 # driver's text reaches the log and not the response body.
 sqlx.workspace = true
-# Test-only: `op::refusing_stores`' unit tests construct an
-# `authkestra_op::AuthorizationCode` / `RefreshToken` / `DeviceCodeSession` to
-# offer the twelve refusing methods something to refuse, and those types are
-# chrono-typed (`authkestra-op-0.7.1/src/code.rs`). vpay's own convention is
-# the `time` crate; this stays test-only for that reason, and no shipping code
-# in this crate names chrono.
-chrono.workspace = true
 # Test-only, and deliberately the *shipping* exporter rather than
 # `metrics-util`'s `DebuggingRecorder`: the router tests assert on the
 # rendered Prometheus text, which is what a scrape of a pod actually
