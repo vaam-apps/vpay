@@ -346,6 +346,14 @@ that the settlement flips only the invoice its own intent is bound to);
 `vpay-db`'s own module adds three with no container; `vpay-api`'s `model`
 module pins the wire object's eighteen keys.
 
+**The merchant SDKs caught up on 2026-09-08 (exp33).** `sdks/rust` adds
+sixteen cases in `tests/resources.rs` (164 in the crate, 0 ignored) and
+`sdks/nodejs` seventeen in `src/client.test.ts` (207 in the package, 0
+skipped), asserting the exact bytes each of the thirteen methods puts on the
+wire and the decode of all eighteen keys. Both are stub-backed, deliberately:
+what proves the *server* is `invoices.rs`, and what these prove is that a
+merchant's client sends what the server documents.
+
 **Three mutations escaped the suite as delivered and are now caught**
 (2026-09-07 review, each measured by applying the mutation and re-running):
 deleting `NO_LIVE_INTENT` from `attach_intent` left every wire case green
@@ -357,13 +365,22 @@ green while a settlement paid an invoice it was never bound to.
 
 **What is not built, and is a gap rather than a decision against it:**
 
-- **Neither merchant SDK has invoice methods.** Not the Rust one, not the Node
-  one, and the Stripe-compat suite has no invoice cases. Dated ⛔/⛔ rows in
-  [../sdks/parity.md](../sdks/parity.md). This is the largest gap in this
-  change and it is why `invoices.rs` drives raw HTTP rather than a client:
-  writing the suite against an SDK that did not exist would have been the
-  "test asserts the implementation back to itself" failure
-  [../../CLAUDE.md](../../CLAUDE.md) names.
+- ~~**Neither merchant SDK has invoice methods.**~~ **Closed 2026-09-08
+  (exp33): both do.** `sdks/rust`'s `client.invoices()` /
+  `client.invoice_items()` and `sdks/nodejs`'s `client.invoices` /
+  `client.invoiceItems` each ship thirteen methods — the five CRUD, the four
+  transitions, and the four on a line — and both event unions know the four
+  `invoice.*` types. Fifteen ✅/✅ rows in
+  [../sdks/parity.md](../sdks/parity.md), where three dated ⛔/⛔ rows stood.
+  `invoices.rs` still drives raw HTTP and should: it was written before the
+  clients existed, and a suite rewritten to drive one would assert the SDK's
+  encoding rather than the server's contract.
+- **Neither SDK has been exercised against a running vpay, and the
+  Stripe-compat suite still has no invoice cases.** The remaining ⛔/⛔ row,
+  and the reason it was listed separately from the one above on 2026-09-07:
+  every server in the SDK cases is a stub, so "the stub answers the way this
+  SDK expects" is the whole of the evidence there. `invoices.rs` is what
+  proves the server, over a socket, against a real Postgres.
 - **No Cypress case renders an invoice's `hosted_invoice_url`.** The URL is
   asserted to be a real checkout-session URL by the integration suite, and the
   checkout page it points at is covered by `checkout.cy.ts` — but nothing has

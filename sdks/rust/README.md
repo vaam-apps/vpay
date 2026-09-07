@@ -439,9 +439,13 @@ Where the two type systems land differently, and why:
 mounts the merchant OP — `POST /v1/oauth/token`, `GET /v1/oauth/jwks.json`,
 `GET /v1/oauth/.well-known/openid-configuration` — and gates every other `/v1`
 path behind a merchant bearer token. Past that boundary, `payment_intents`
-(`create`/`retrieve`/`list`/`confirm`/`cancel`) and `events`
-(`list`/`retrieve`) are routed and real; `refunds` and `balance` have no route
-yet and still answer a Stripe-shaped `404 unknown_route`. **`checkout()` is
+(`create`/`retrieve`/`list`/`confirm`/`cancel`), `events`
+(`list`/`retrieve`), `checkout().sessions()`, `customers()`,
+`invoices()` and `invoice_items()` are routed and real — re-counted
+2026-09-08, when the invoice methods were added: thirty of this crate's
+thirty-two resource methods have a route. `refunds().create()` and
+`balance().retrieve()` are the two that do not, and still answer a
+Stripe-shaped `404 unknown_route`. **`checkout()` is
 newer than this paragraph and less proven than the rest**: its four methods
 are implemented and tested against `wiremock` in the shape of Step 9's wire
 contract, but `/v1/checkout/sessions` is built by lane 1 of the same step, so
@@ -453,8 +457,9 @@ drives this crate against the real router over a real Postgres); `refunds`
 and `balance` have not. See [`docs/status.md`](../../docs/status.md) and
 [`docs/flows/merchant-auth.md`](../../docs/flows/merchant-auth.md).
 
-What the tests **do** prove — 124 tests, 0 ignored, run by
-`just test-sdk-rust`:
+What the tests **do** prove — **164 tests, 0 ignored** (measured 2026-09-08;
+this line read 124 until then and had not moved through Checkout Sessions,
+customers or invoices), run by `just test-sdk-rust`:
 
 - **The assertion this SDK mints is accepted by the real verifier.**
   `tests/op_conformance.rs` generates RSA keypairs, derives their public JWKs,
@@ -533,6 +538,22 @@ What the tests **do** prove — 124 tests, 0 ignored, run by
   payload omits the key entirely, and never appears in `PaymentIntent`'s
   `Debug` output either way — `tests/debug_redaction.rs` fails this SDK the
   same way it would fail a `Credentials`/`Client` regression.
+- All thirteen invoice operations (S4b, added 2026-09-08): the exact body of
+  `invoices().create()` and of a create that supplies only a customer; the
+  `GET`s that carry the lines; the update's three states (`due_date=` is
+  *clear it*, an unmentioned field is absent); the list's two cursors and two
+  filters; the `DELETE` with its key and no body; that `finalize`, `void` and
+  `mark_uncollectible` each `POST` an **empty** body to its own path; that a
+  refused transition arrives as `Error::Api` with the server's `409` message
+  intact; that `pay()` sends both URLs and answers an invoice still `Open`
+  with a `payment_intent` and a `hosted_invoice_url`; the four
+  `invoice_items()` methods, including that neither `currency` nor `amount`
+  is ever in the body; and that a `unit_amount` outside `0..=2^53-1` is
+  refused before any request. All against `wiremock` — see the note below.
+- That the four `invoice.*` event types are known, that
+  `invoice.marked_uncollectible` and `invoice.payment_failed` are **not**
+  (vpay writes neither), and that an event body's empty `lines` and a `/v1`
+  response's populated `lines` both decode through the same `Invoice`.
 
 Each of these was checked to **fail** when the behaviour it names is broken —
 by making the change and running the suite, not by reading the test. The list
@@ -558,6 +579,9 @@ is exact, because a mutation list nobody re-ran is worth less than no list:
 | remove the `401` retry                                            | both re-auth tests                                                                                                             |
 | change the assertion's `sub`, or drop its `kid`                   | the OP-conformance tests                                                                                                       |
 | revert the escaping rule to RFC 3986's                            | the Node-parity tests                                                                                                          |
+| collapse `UpdateInvoiceParams`' `Option<Option<T>>` to `Option<T>` | `an_invoice_update_tells_leave_alone_set_and_clear_apart_on_the_wire` — `due_date=` vanishes and a due date becomes unclearable |
+| delete any `KnownEventType::Invoice*` variant                     | `the_four_invoice_event_types_are_known_and_their_payloads_decode`                                                              |
+| drop the `check_amount` call in `invoice_items().create()`        | `an_invoice_lines_unit_amount_is_refused_before_any_request`                                                                    |
 
 What this does **not** prove: **that TLS works.** Nothing in this repository
 serves TLS — `wiremock` is plaintext HTTP and no test reaches the network — so

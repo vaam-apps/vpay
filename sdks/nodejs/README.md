@@ -604,8 +604,10 @@ confirm reaches a real rail adapter over HTTP and moves the intent to
 intent does reach **`succeeded`** — `sdks/stripe-compat` watches one do so
 through `paymentIntents.retrieve` and nothing else. `/v1/events`,
 `/v1/events/{id}` (Step 5) and `GET /v1/refunds/{id}` (issue #45,
-2026-09-05) are served; `POST /v1/refunds` and `/v1/balance` are still the
-honest `404 unknown_route`. ~~**This package has no client method for any of
+2026-09-05) are served, and so are `/v1/customers` (S4a) and — since
+2026-09-07 — `/v1/invoices` and `/v1/invoice_items` (S4b), which this
+package has wrapped since 2026-09-08. `POST /v1/refunds` and `/v1/balance`
+are still the honest `404 unknown_route`. ~~**This package has no client method for any of
 that beyond the payment-intent routes it already wraps.**~~ **— corrected
 2026-09-05: it has `refunds.retrieve(id)`,** added in the same change that
 served the route, so this package can now make the refund read a
@@ -677,6 +679,25 @@ none of them touches the network:
 - That `util.inspect(client)` and `JSON.stringify(client)` never contain the
   private key, and that neither the client nor any error this SDK throws
   carries an access token into `util.inspect` output.
+- All thirteen invoice operations (S4b, added 2026-09-08): the exact body of
+  `invoices.create` and of a create that supplies only a customer; the `GET`
+  whose response carries the lines; the update's three states (`due_date=` is
+  *clear it*, an unmentioned field is absent, and a patch that mentions
+  nothing sends nothing); the list's two cursors and two filters; the
+  `DELETE` with its key and no body; that `finalize`, `void` and
+  `mark_uncollectible` each `POST` an **empty** body to its own path while
+  still sending a content type; that a refused transition arrives as a
+  `VpayApiError` carrying the server's `409` whole; that `invoices.pay` sends
+  both URLs and answers an invoice still `"open"` with a `payment_intent` and
+  a `hosted_invoice_url`; the four `invoiceItems` methods, including that
+  neither `currency` nor `amount` is ever in the body; and that a
+  `unit_amount` outside the safe-integer range throws `TypeError` before any
+  request. Every body string is the one `sdks/rust/tests/resources.rs` pins,
+  asserted as a literal on both sides.
+- That the four `invoice.*` types are in `KnownEventType` and narrow through
+  `isInvoiceEvent`, that `isPaymentIntentEvent` and `isCheckoutSessionEvent`
+  do **not** claim them, and that an event body's empty `lines` decodes
+  through the same `Invoice` type a `/v1` response's populated `lines` does.
 
 **Separately — and this is _not_ one of the tests above — the assertion has
 been checked against the real OP verifier by hand.** An assertion minted by
