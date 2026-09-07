@@ -1,3 +1,20 @@
+# SHA-256 of every migration file's bytes, one line per file, in the format
+# `sha256sum` writes. This file is what makes "an applied migration is never
+# edited" enforceable: `cargo xtask verify-migrations` (in `just verify` and in
+# CI's self-checks job) fails when a file's hash moves.
+#
+# WHY: sqlx::migrate! stores a SHA-384 of each file's whole bytes in
+# `_sqlx_migrations.checksum` and refuses to boot when a file no longer hashes
+# to what the database recorded. PR #39 rewrote a comment inside
+# 0028_create-checkout-sessions.sql after it shipped, and every database that
+# had applied the original stopped booting (issue #76).
+#
+# To add a migration: `just migrations-manifest` appends its line. That recipe
+# REFUSES to rewrite an existing line, so this file cannot be regenerated to
+# silence the gate. To fix an applied migration, write a new one.
+#
+# Order does not matter. See backends/migrations/README.md and
+# docs/runbooks/migrations.md.
 44aa2c7e879c9ac300e658f975fe5964e0b8f4489c1fa014b6915b2415077d66  0001_create-currencies.sql
 a45aae26e0015de46a50052eccc0a2e5343f99d193af5a0d49bd9d3aad073c79  0002_create-providers.sql
 299d4ade7543393c7d47747bd98c90afbbe046d5445c09e23c649aa433ca40b4  0003_create-payment-intents.sql
