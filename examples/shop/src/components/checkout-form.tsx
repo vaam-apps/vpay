@@ -207,29 +207,37 @@ export function CheckoutForm({
         void submit(mode);
       }}
     >
-      <label htmlFor="email" className="label mb-1">
-        Your e-mail <span className="text-base-content/60">(optional)</span>
-      </label>
-      <input
-        id="email"
-        name="email"
-        type="email"
-        autoComplete="email"
-        data-testid="email"
-        aria-describedby="email-why"
-        className="input w-full max-w-sm"
-        value={email}
-        onChange={(event) => setEmail(event.target.value)}
-      />
-      <p
-        id="email-why"
-        data-testid="email-why"
-        className="mt-1 text-sm text-base-content/60"
-      >
-        For your receipt only. You can pay without it: on a mobile-money rail
-        the identity is the <strong>phone number</strong> you give the rail,
-        which this shop never sees.
-      </p>
+      {/* daisyUI 5 puts a field's label INSIDE a `fieldset`: `.label` on its
+          own is an inline-flex meant to sit next to a control, so a bare
+          `<label className="label">` above an `<input>` lands beside the
+          field rather than over it, and any `mb-*` on it is inert. This is
+          the shape daisyUI's own upgrade guide gives as the replacement for
+          `form-control` + `label-text` (§6.3's two removed classes). */}
+      <fieldset className="fieldset max-w-xl">
+        <label htmlFor="email" className="label">
+          Your e-mail <span className="text-base-content/60">(optional)</span>
+        </label>
+        <input
+          id="email"
+          name="email"
+          type="email"
+          autoComplete="email"
+          data-testid="email"
+          aria-describedby="email-why"
+          className="input w-full max-w-sm"
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
+        />
+        <p
+          id="email-why"
+          data-testid="email-why"
+          className="text-sm text-base-content/60"
+        >
+          For your receipt only. You can pay without it: on a mobile-money rail
+          the identity is the <strong>phone number</strong> you give the rail,
+          which this shop never sees.
+        </p>
+      </fieldset>
 
       <fieldset
         data-testid="mode-switch"

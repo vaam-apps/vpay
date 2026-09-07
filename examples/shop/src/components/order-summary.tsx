@@ -57,15 +57,23 @@ export function OrderFailureNotice({ order }: { order: OrderView }) {
   }
   const copy = failureCopy(order.failureCode);
   return (
+    // daisyUI 5's `alert` is a GRID with `grid-auto-flow: column`, so two
+    // element children land side by side and `flex-col`/`items-start` on it
+    // are inert (measured in a browser on 2026-09-07: the title and the
+    // detail rendered on one row, in two columns). One wrapping element
+    // means one grid cell, and the heading and the paragraph stack as
+    // blocks — left-aligned, which `alert-vertical` would not be.
     <section
       role="alert"
-      className="mt-4 alert flex-col items-start alert-error"
+      className="mt-4 alert alert-error"
       data-testid="order-failure"
     >
-      <h2 className="text-lg font-semibold" data-testid="order-failure-title">
-        {copy.title}
-      </h2>
-      <p data-testid="order-failure-detail">{copy.detail}</p>
+      <div>
+        <h2 className="text-lg font-semibold" data-testid="order-failure-title">
+          {copy.title}
+        </h2>
+        <p data-testid="order-failure-detail">{copy.detail}</p>
+      </div>
     </section>
   );
 }

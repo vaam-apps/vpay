@@ -66,7 +66,13 @@ export function TestNumbersPanel({ rails }: { rails: readonly string[] }) {
               className="mb-2 alert alert-error"
               data-testid={`test-numbers-caveat-${entry.rail}`}
             >
-              <strong>Read this before you try them.</strong> {entry.caveat}
+              {/* One wrapping element, for the reason `order-summary.tsx`
+                  gives: `alert` flows its children into COLUMNS, so the
+                  bold lead sentence and the caveat that continues it end
+                  up side by side rather than as one paragraph. */}
+              <span>
+                <strong>Read this before you try them.</strong> {entry.caveat}
+              </span>
             </p>
           )}
           <div className="overflow-x-auto">
