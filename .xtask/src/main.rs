@@ -1,10 +1,14 @@
 //! Repository automation. Run via `cargo xtask <cmd>` or `just`.
 //!
-//! `just verify` runs ten gates, because a promise nothing checks is a
-//! promise that decays. Nine of them are commands here; `check-schema`
-//! (2026-09-05) is a justfile recipe rather than an xtask command because it
-//! shells out to the CrateStack CLI, a binary this workspace does not build —
-//! see the `justfile` for it. The nine here:
+//! `just verify` runs the gates its recipe lists, because a promise nothing
+//! checks is a promise that decays. **The `justfile` is the list; this
+//! module doc is a description of it, and goes stale when a gate is added.**
+//! All but one are commands here; `check-schema` (2026-09-05) is a justfile
+//! recipe rather than an xtask command because it shells out to the
+//! CrateStack CLI, a binary this workspace does not build — see the
+//! `justfile` for it, and for `verify-ui` (2026-09-07), a `git grep` gate on
+//! daisyUI 4 classes daisyUI 5 removed. On 2026-09-07 the recipe lists
+//! twelve. The xtask commands among them:
 //!
 //! * `verify-no-mocks`  — no test double is reachable from a shipping binary.
 //! * `verify-status`    — every `NotImplemented` is declared in `docs/status.md`.

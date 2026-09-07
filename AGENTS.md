@@ -10,11 +10,15 @@ writing code.
 These are not style preferences. Both are machine-enforced by `just verify`, and
 CI runs it.
 
-`just verify` is **twelve** gates and one report. The gates
-(`verify-no-mocks`, `verify-status`, `verify-errors`, `verify-sdk-parity`,
-`verify-links`, `verify-npm-scope`, `check-schema`, `verify-serde`,
-`verify-repositories`, `verify-toolchain`, `verify-migrations`) fail the
-build. The report
+`just verify` is the gates the `verify` recipe lists in the `justfile`, and
+one report. **The recipe is the list; this paragraph is a description of it,
+and it has gone stale at nearly every count it has carried** — see below. On
+this commit the gates are twelve (`verify-no-mocks`, `verify-status`,
+`verify-errors`, `verify-sdk-parity`, `verify-links`, `verify-npm-scope`,
+`check-schema`, `verify-serde`, `verify-repositories`, `verify-toolchain`,
+`verify-ui`, `verify-migrations`) and they fail the build. If that list and
+the recipe disagree, the recipe is right: read it, and fix this paragraph in
+the same commit. The report
 (`verify-docs`) never does — it prints doc-comment volume per crate, in-file
 comment volume per crate, the number of `#[doc = include_str!]` modules, the
 production functions of 80 lines or more, every ```` ```ignore ```` doctest
@@ -40,7 +44,7 @@ did, with every job in CI green.
 Ten of the twelve are `cargo xtask` commands; `check-schema` and `verify-ui` are
 justfile recipes — the first shells out to the CrateStack CLI, a binary this
 workspace does not build, and the second is a handful of `git grep`s.
-There is a thirteenth check, `cargo xtask verify-citations` (`just
+There is one more check, `cargo xtask verify-citations` (`just
 docs-check-citations`), which is a gate but **not** part of `just verify` or
 `just ci`: it needs the network and a GitHub token. Run it when you add or
 edit a document that cites a CI run id, a pull request or an issue.
@@ -180,9 +184,13 @@ status. The authenticated status query is the only thing that moves money.
 ## TypeScript conventions
 
 - TS strict, plus `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`.
-- Components: `class-variance-authority` for variants, Headless UI for
-  behaviour, daisyU/Tailwind for tokens, framer-motion for motion, vaul for
-  sheets. Do not hand-roll a component that Headless UI already solves.
+- Components: `class-variance-authority` for variants, `@base-ui/react` for
+  behaviour, daisyUI 5 on Tailwind 4 for tokens (theme `bumblebee`). Do not
+  hand-roll a component `@base-ui/react` already solves. **Corrected
+  2026-09-07:** this line named Headless UI, framer-motion and vaul, none of
+  which is a dependency of any `package.json` in this repository, and no
+  motion or sheet library is. `just verify-ui` is the gate on the daisyUI
+  half.
 - Status colour and copy come from `@vpay/tokens`. Never inline a status colour
   in a component — a status must not be green in one view and grey in another.
 - The dashboard never holds a merchant API key. It calls `/dash/v1` server-side
