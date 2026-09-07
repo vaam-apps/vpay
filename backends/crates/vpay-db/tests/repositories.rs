@@ -8316,3 +8316,90 @@ async fn a_second_create_for_one_staff_id_is_refused_rather_than_overwriting() -
 
     Ok(())
 }
+
+/// The **statement** decides which invoice a settled intent pays — not the
+/// caller's projection.
+///
+/// `apply_succeeded` takes the `invoice.paid` body as a parameter, because
+/// `vpay-db` does not know the wire shape. That parameter is the one thing in
+/// TX1 a caller supplies freely, so the question this case asks is: if the
+/// caller hands over a projection of the **wrong** invoice, which row moves?
+///
+/// `mark_paid_for_intent_in_tx`'s `WHERE payment_intent_id = $1 AND status =
+/// 'open'` is the answer: the intent's own invoice is flipped and no other
+/// invoice is touched, whatever the body says. The event is then stamped with
+/// the `merchant_id` and `object_id` of **the row the statement wrote**, so a
+/// mismatched body cannot even mislabel the event's subject.
+///
+/// **The decisive mutation:** widen that `WHERE` to anything the caller can
+/// influence — for instance keying the flip on an invoice id taken from the
+/// event body — and the second assertion below finds `in_settle_other` paid
+/// by an intent that was never bound to it.
+#[tokio::test]
+async fn a_settlement_pays_only_the_invoice_its_own_intent_is_bound_to() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+
+    live_charge(
+        repositories.as_ref(),
+        "pi_settle_bound",
+        "ch_settle_bound",
+        "processing",
+        "submitted",
+    )
+    .await?;
+    repositories
+        .insert(&fixture_intent("pi_settle_other", "XAF"))
+        .await?;
+
+    // Two open invoices of the same merchant, each bound to its own intent.
+    // The ids differ in length because `open_invoice_for` derives the invoice
+    // number from it, and `invoices_merchant_number_key` is unique per
+    // merchant — two equal-length ids would collide on the fixture itself.
+    open_invoice_for(&pool, "in_settle_bound", "pi_settle_bound").await?;
+    open_invoice_for(&pool, "in_settle_other_x", "pi_settle_other").await?;
+
+    // The caller's projection names the invoice this intent is NOT paying.
+    let wrong_body = json!({
+        "id": "in_settle_other_x",
+        "object": "invoice",
+        "status": "paid",
+    });
+    let settled = repositories
+        .apply_succeeded(
+            "ch_settle_bound",
+            None,
+            "evt_settle_bound_intent",
+            &json!({ "id": "pi_settle_bound" }),
+            Some(vpay_db::InvoicePaidEvent {
+                event_id: "evt_settle_bound_invoice",
+                data: &wrong_body,
+            }),
+        )
+        .await?;
+    assert!(settled.is_some(), "the charge settles");
+
+    assert_eq!(
+        invoice_state(&pool, "in_settle_bound").await?,
+        ("paid".to_owned(), 5000, 0),
+        "the invoice the intent is bound to is the one that is paid"
+    );
+    assert_eq!(
+        invoice_state(&pool, "in_settle_other_x").await?,
+        ("open".to_owned(), 0, 5000),
+        "no invoice but the intent's own may be moved by its settlement"
+    );
+
+    // The event names the row the statement wrote, whatever the body said.
+    let pending = repositories.pending_page(10).await?;
+    let invoice_event = pending
+        .iter()
+        .find(|event| event.event_type == "invoice.paid")
+        .context("the settlement emitted an invoice.paid")?;
+    assert_eq!(
+        invoice_event.object_id, "in_settle_bound",
+        "`object_id` comes off the flipped row, not off the caller's body"
+    );
+
+    Ok(())
+}
