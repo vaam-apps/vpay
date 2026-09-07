@@ -10,7 +10,7 @@ writing code.
 These are not style preferences. Both are machine-enforced by `just verify`, and
 CI runs it.
 
-`just verify` is **eleven** gates and one report. The gates
+`just verify` is **twelve** gates and one report. The gates
 (`verify-no-mocks`, `verify-status`, `verify-errors`, `verify-sdk-parity`,
 `verify-links`, `verify-npm-scope`, `check-schema`, `verify-serde`,
 `verify-repositories`, `verify-toolchain`, `verify-migrations`) fail the
@@ -31,16 +31,16 @@ and `verify-repositories` ([ADR-0016](docs/adr/0016-engineering-standards.md),
 day, out of the review of the 1.95.0 -> 1.98.0 toolchain bump: it fails when
 `backends/Dockerfile`'s `FROM rust:` version and `rust-toolchain.toml`'s
 `channel` disagree, a mismatch that was measured to pass every other gate.
-`verify-migrations` makes it **eleven** on 2026-09-07, out of issue #76: it
+`verify-migrations` makes it **twelve** on 2026-09-07 (after `verify-ui`, the eleventh, from the exp26 UI revamp the same day), out of issue #76: it
 fails when a migration file's SHA-256 no longer matches
 `backends/migrations/MANIFEST.sha256`, because `sqlx::migrate!` checksums a
 migration's whole bytes and a comment reflowed after the file shipped stops
 every database that applied the original from booting — which is what PR #39
 did, with every job in CI green.
-Ten of the eleven are `cargo xtask` commands; `check-schema` is a justfile
-recipe, because it shells out to the CrateStack CLI, a binary this workspace
-does not build.
-There is a twelfth check, `cargo xtask verify-citations` (`just
+Ten of the twelve are `cargo xtask` commands; `check-schema` and `verify-ui` are
+justfile recipes — the first shells out to the CrateStack CLI, a binary this
+workspace does not build, and the second is a handful of `git grep`s.
+There is a thirteenth check, `cargo xtask verify-citations` (`just
 docs-check-citations`), which is a gate but **not** part of `just verify` or
 `just ci`: it needs the network and a GitHub token. Run it when you add or
 edit a document that cites a CI run id, a pull request or an issue.

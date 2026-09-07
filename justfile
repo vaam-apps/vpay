@@ -502,9 +502,8 @@ audit-web:
 # same reason every gate above it is where it is: the list is chronological.
 #
 # The twelve self-checks, then the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-docs verify-migrations
-# The twelve self-checks, then the advisory verify-docs report.
-    @echo "verify: ok — the eleven gates above passed; the verify-docs report is advisory"
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-migrations verify-docs
+    @echo "verify: ok — the twelve gates above passed; the verify-docs report is advisory"
 
 verify-no-mocks:
     cargo xtask verify-no-mocks

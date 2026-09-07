@@ -7,7 +7,7 @@ is specific to working here as an agent.
 ## Before you start
 
 ```bash
-just verify    # eleven self-checks, all of which must pass before AND after
+just verify    # twelve self-checks, all of which must pass before AND after
                # your change, plus the `verify-docs` report, which never fails
 cat docs/status.md
 ```
