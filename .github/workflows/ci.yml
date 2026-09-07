@@ -541,11 +541,14 @@ jobs:
           docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml logs --no-color vpay-server
           exit 1
       - name: wait for the dashboard to answer on :3000
+        # Since exp28 the root redirects to /login (307) — a signed-out
+        # dashboard has no page at /. Follow the redirect and wait for the
+        # login page's 200, which is what a person's browser would see.
         run: |
           for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/ || true)
+            code=$(curl -sL -o /dev/null -w '%{http_code}' http://localhost:3000/ || true)
             if [ "$code" = "200" ]; then
-              echo "dashboard: / answered 200 after ${i}s"
+              echo "dashboard: / (followed to /login) answered 200 after ${i}s"
               exit 0
             fi
             sleep 1
