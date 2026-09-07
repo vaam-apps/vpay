@@ -10,6 +10,10 @@ import { BalanceResource } from "./resources/balance.js";
 import { CheckoutResource } from "./resources/checkout-sessions.js";
 import { CustomersResource } from "./resources/customers.js";
 import { EventsResource } from "./resources/events.js";
+import {
+  InvoiceItemsResource,
+  InvoicesResource,
+} from "./resources/invoices.js";
 import { PaymentIntentsResource } from "./resources/payment-intents.js";
 import { RefundsResource } from "./resources/refunds.js";
 
@@ -64,6 +68,10 @@ export class VpayClient {
   readonly checkout: CheckoutResource;
   /** `/v1/customers` — the merchant-owned record of a payer (S4a). */
   readonly customers: CustomersResource;
+  /** `/v1/invoices` — a merchant's bill to one customer (S4b). */
+  readonly invoices: InvoicesResource;
+  /** `/v1/invoice_items` — the lines of a draft invoice (S4b). */
+  readonly invoiceItems: InvoiceItemsResource;
   readonly refunds: RefundsResource;
   readonly events: EventsResource;
   readonly balance: BalanceResource;
@@ -91,6 +99,8 @@ export class VpayClient {
     this.paymentIntents = new PaymentIntentsResource(httpClient);
     this.checkout = new CheckoutResource(httpClient);
     this.customers = new CustomersResource(httpClient);
+    this.invoices = new InvoicesResource(httpClient);
+    this.invoiceItems = new InvoiceItemsResource(httpClient);
     this.refunds = new RefundsResource(httpClient);
     this.events = new EventsResource(httpClient);
     this.balance = new BalanceResource(httpClient);

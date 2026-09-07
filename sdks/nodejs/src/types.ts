@@ -179,7 +179,40 @@ export type KnownEventType =
    * and a `GET` afterwards is byte-identical to one for an id that never
    * existed.
    */
-  | "customer.deleted";
+  | "customer.deleted"
+  /**
+   * A draft invoice was created by `POST /v1/invoices` (S4b). The insert and
+   * this event are one transaction, so an event you received describes a row
+   * that committed. `data.object` is an {@link Invoice}.
+   */
+  | "invoice.created"
+  /**
+   * A draft was issued: it has its {@link Invoice.number}, its lines are
+   * frozen and its amounts are final. `data.object` is an {@link Invoice} in
+   * `"open"`.
+   */
+  | "invoice.finalized"
+  /**
+   * A settlement paid an invoice in full. `data.object` is an
+   * {@link Invoice} in `"paid"`.
+   *
+   * Emitted inside the settlement transaction itself, **beside** the
+   * `payment_intent.succeeded` for the same money — a handler receives both
+   * and must not read them as two payments.
+   */
+  | "invoice.paid"
+  /**
+   * The merchant cancelled an issued invoice. `data.object` is an
+   * {@link Invoice} in `"void"`, **keeping** its number.
+   *
+   * There is deliberately no `invoice.marked_uncollectible` beside this one:
+   * vpay does not write it, so a union entry would be a claim about vpay that
+   * is false. A write-off is learned from
+   * `client.invoices.list({ status: "uncollectible" })`. The same goes for
+   * Stripe's `invoice.payment_failed`, which a merchant meets as
+   * `payment_intent.payment_failed`.
+   */
+  | "invoice.voided";
 
 export interface Event {
   id: string;
@@ -230,6 +263,26 @@ export function isCheckoutSessionEvent(
   event: Event,
 ): event is Event & { data: { object: CheckoutSession } } {
   return event.type.startsWith("checkout.session.");
+}
+
+/**
+ * Narrows an {@link Invoice}-shaped value out of `event.data.object`, for one
+ * of the four `invoice.*` events (S4b).
+ *
+ * Matched on the `invoice.` prefix rather than on the four literals, as every
+ * guard above is.
+ *
+ * **The invoice on an event carries no lines.** `data.object.lines.data` is
+ * empty on every `invoice.*` body — the event is rendered inside the
+ * transition's own transaction, where the lines are not read — so
+ * {@link Invoice.lines} here is an empty {@link List}, and that is not the
+ * same statement as "this invoice has no lines". A handler that needs them
+ * calls `client.invoices.retrieve`, whose response always carries them.
+ */
+export function isInvoiceEvent(
+  event: Event,
+): event is Event & { data: { object: Invoice } } {
+  return event.type.startsWith("invoice.");
 }
 
 /**
@@ -517,6 +570,322 @@ export type ListCustomersParams = {
   starting_after?: string | undefined;
   ending_before?: string | undefined;
 };
+
+/**
+ * An invoice's lifecycle state (S4b).
+ *
+ * Exactly the five labels the server's `invoices_status_enum_check` allows,
+ * and the transitions between them are the server's: `draft → open → paid |
+ * void | uncollectible`. A closed union rather than `string`, and
+ * `sdks/rust` spells the same five as a closed `enum` — a sixth label is a
+ * schema migration and a breaking wire change, not something a merchant's
+ * deployment can meet by surprise. That is the opposite of the split
+ * {@link KnownEventType} makes, and deliberately so.
+ *
+ * `"uncollectible"` is the one a merchant filters on: a write-off emits **no
+ * event**, so `invoices.list({ status: "uncollectible" })` is how they are
+ * found.
+ */
+export type InvoiceStatus =
+  | "draft"
+  | "open"
+  | "paid"
+  | "void"
+  | "uncollectible";
+
+/**
+ * One line on an invoice — the `line_item` object.
+ *
+ * # Why the type is `InvoiceLine` and the resource is `client.invoiceItems`
+ *
+ * The wire has one object under two names and both are load-bearing: the
+ * `object` field is `"line_item"` and the route that creates, reads, changes
+ * and removes it is `/v1/invoice_items`. Stripe has two objects there
+ * (`invoiceitem` and `line_item`); vpay has one. This type is named for the
+ * object it decodes and the resource for the route it calls, so neither name
+ * is invented — `sdks/rust` spells them `InvoiceLine` and
+ * `client.invoice_items()` for the same reason.
+ *
+ * No price, no product, no proration and no period: a line is a description,
+ * a quantity and a unit amount.
+ */
+export interface InvoiceLine {
+  /** `ii_…` — the id `/v1/invoice_items/{id}` addresses. */
+  id: string;
+  /** Always `"line_item"`, and **not** `"invoice_item"`. See above. */
+  object: "line_item";
+  description: string;
+  quantity: number;
+  /** The price of one, in integer minor units. */
+  unit_amount: number;
+  /**
+   * `quantity * unit_amount`, in integer minor units.
+   *
+   * Computed and checked by the database, never sent: `amount` is not a
+   * parameter on {@link CreateInvoiceItemParams} or
+   * {@link UpdateInvoiceItemParams}, ever.
+   */
+  amount: number;
+  /** Lower-case ISO-4217, always the parent invoice's. */
+  currency: string;
+  livemode: boolean;
+}
+
+/**
+ * When each of an invoice's transitions happened, in unix **seconds**.
+ *
+ * Every field is `null` until the transition happens, and at most two are
+ * ever non-null — `finalized_at` plus whichever terminal one applies.
+ */
+export interface InvoiceStatusTransitions {
+  finalized_at: number | null;
+  paid_at: number | null;
+  voided_at: number | null;
+  marked_uncollectible_at: number | null;
+}
+
+/**
+ * An `invoice` (S4b): a merchant's bill to one customer. **Eighteen keys.**
+ *
+ * # `lines` is always expanded, and always unpaged
+ *
+ * vpay does not implement Stripe's `expand[]` at all, and an invoice without
+ * its lines is a total with no explanation — so `lines` arrives populated on
+ * every `/v1/invoices` response, with `has_more` always `false`. Its `url` is
+ * `/v1/invoice_items`, a route that exists, rather than Stripe's
+ * `/v1/invoices/{id}/lines`, which vpay does not serve.
+ *
+ * **Inside an `invoice.*` webhook body `lines.data` is empty**, and that is
+ * the one place the shape differs: the event is rendered inside the
+ * transition's own transaction. Re-read the invoice with
+ * `client.invoices.retrieve` if a handler needs the lines.
+ *
+ * # `hosted_invoice_url` is a checkout session, not an invoice page
+ *
+ * vpay has no invoice page. A payer following it meets the existing hosted
+ * checkout, and it is `null` until `client.invoices.pay` has run.
+ */
+export interface Invoice {
+  /** `in_…`. The id an API call uses; {@link Invoice.number} is the one a human quotes. */
+  id: string;
+  object: "invoice";
+  /**
+   * The `cus_…` this invoice bills.
+   *
+   * `string` and not `string | null`, unlike {@link PaymentIntent.customer},
+   * and that is the wire contract rather than an assumption: the column is
+   * `NOT NULL`, because an invoice naming no payer is one nobody can be asked
+   * to pay.
+   */
+  customer: string;
+  currency: string;
+  status: InvoiceStatus;
+  /**
+   * `{prefix}-{000001}` from this merchant's own sequence, or `null`
+   * **exactly** while the invoice is a `"draft"`.
+   *
+   * Assigned at finalize, never reused, and kept by a voided invoice.
+   */
+  number: string | null;
+  /** The total, in integer minor units. Frozen at finalize. */
+  amount_due: number;
+  /** `0`, or {@link Invoice.amount_due}. Never between the two. */
+  amount_paid: number;
+  /** `amount_due - amount_paid`, and what `pay` mints an intent for. */
+  amount_remaining: number;
+  /**
+   * Unix **seconds**, or `null`. **Advisory**: nothing in vpay reads it —
+   * there is no dunning, no reminder and no automatic transition.
+   */
+  due_date: number | null;
+  description: string | null;
+  metadata: Record<string, string>;
+  /** The `pi_…` paying, or that paid, this invoice — `null` until `pay`. */
+  payment_intent: string | null;
+  /** The checkout session for {@link Invoice.payment_intent}. See above. */
+  hosted_invoice_url: string | null;
+  /** Every line, in the order they were added. See above for when this is empty. */
+  lines: List<InvoiceLine>;
+  status_transitions: InvoiceStatusTransitions;
+  /** Unix **seconds** — not milliseconds, and not RFC 3339. */
+  created: number;
+  livemode: boolean;
+}
+
+/**
+ * What `client.invoices.del(…)` answers with — Stripe's deleted-object shape.
+ *
+ * A **draft** is deleted and an issued invoice is voided: a voided draft
+ * would be a non-draft row with no number, a state the database refuses
+ * outright.
+ */
+export interface DeletedInvoice {
+  id: string;
+  object: "invoice";
+  deleted: true;
+}
+
+/**
+ * What `client.invoiceItems.del(…)` answers with.
+ *
+ * Its `object` is `"line_item"` and not `"invoice_item"`, matching
+ * {@link InvoiceLine.object} — the route and the object are named
+ * differently and both spellings are the wire's.
+ */
+export interface DeletedInvoiceItem {
+  id: string;
+  object: "line_item";
+  deleted: true;
+}
+
+/**
+ * `POST /v1/invoices` request fields (S4b).
+ *
+ * `customer` is the only required one, and it is required for a reason worth
+ * stating: an invoice is a bill to somebody, and one that names no payer is
+ * one nobody can be asked to pay. The server answers `400` naming `customer`
+ * for an absent, unknown *or other merchant's* `cus_…` — always the same
+ * sentence, so the parameter cannot be used to discover which customers exist
+ * under some other account.
+ *
+ * A created invoice is always a `"draft"` with no number, no lines and zero
+ * amounts. Add lines with `client.invoiceItems.create`, then issue it with
+ * `client.invoices.finalize`.
+ */
+export interface CreateInvoiceParams {
+  /** The `cus_…` this invoice bills. */
+  customer: string;
+  /**
+   * Lower-cased at encode time regardless of how it was supplied, as an
+   * intent's is. Omitted from the body entirely when absent, so the server
+   * applies this deployment's own default rather than this SDK guessing it.
+   */
+  currency?: string | undefined;
+  /** At most 1000 characters, which the server checks. */
+  description?: string | undefined;
+  /**
+   * Unix **seconds**, as Stripe spells it — not milliseconds.
+   *
+   * **Advisory**: nothing in vpay reads it, so setting this changes nothing
+   * about what vpay does. It is a field the merchant's own systems may read
+   * back off {@link Invoice.due_date}.
+   */
+  due_date?: number | undefined;
+  metadata?: Record<string, string> | undefined;
+}
+
+/**
+ * `POST /v1/invoices/{id}` request fields (S4b) — **draft only**.
+ *
+ * # Three states per field, exactly as {@link UpdateCustomerParams} has
+ *
+ * `undefined` (or an absent key) leaves the field alone, a value sets it, and
+ * **`null` clears it** — which this SDK sends as `description=`. Collapsing
+ * `null` and `undefined` makes a due date set by mistake unremovable, and
+ * nothing else notices. `sdks/rust` spells the same three states
+ * `Option<Option<T>>`.
+ *
+ * `customer` and `currency` are **not** patchable and deliberately absent
+ * from this type: an invoice that changed who it bills, or what it is
+ * denominated in, is a different document.
+ *
+ * `metadata` has two states rather than three and that is the wire contract:
+ * it is merged key-wise, and a key whose value is the empty string is
+ * removed.
+ */
+export interface UpdateInvoiceParams {
+  description?: string | null | undefined;
+  /** Unix **seconds**. `null` clears it. */
+  due_date?: number | null | undefined;
+  metadata?: Record<string, string> | undefined;
+}
+
+/**
+ * `GET /v1/invoices` query parameters (S4b).
+ *
+ * A `type` alias for {@link ListParams}' index-signature reason.
+ */
+export type ListInvoicesParams = {
+  limit?: number | undefined;
+  starting_after?: string | undefined;
+  ending_before?: string | undefined;
+  customer?: string | undefined;
+  /**
+   * Only invoices in this state.
+   *
+   * Typed as the closed {@link InvoiceStatus} rather than `string`, and this
+   * is the one filter where that earns its place: the server answers `400`
+   * naming `status` for a label it does not have rather than silently
+   * returning the whole first page, so a typo would cost a round trip and
+   * read like an empty result.
+   */
+  status?: InvoiceStatus | undefined;
+};
+
+/**
+ * `POST /v1/invoices/{id}/pay` request fields (S4b).
+ *
+ * **Both URLs are required**, unlike on a checkout session where the pair is
+ * required only in hosted mode: `pay` mints a *hosted* session and there is
+ * no other mode to be in. They take the same rules a session's do — http(s),
+ * at most 2048 characters, `https` only under livemode, and `success_url` may
+ * carry the literal `{CHECKOUT_SESSION_ID}` — and this SDK deliberately does
+ * not duplicate them, for {@link CreateCheckoutSessionParams}' reason.
+ */
+export type PayInvoiceParams = {
+  success_url: string;
+  cancel_url: string;
+};
+
+/**
+ * `POST /v1/invoice_items` request fields (S4b).
+ *
+ * There is no `currency` parameter and no `amount` one, and both absences are
+ * the wire contract rather than an omission here: a line is always in its
+ * invoice's currency (copied off the parent in the statement that writes the
+ * row), and `amount` is `quantity * unit_amount` computed by the database. A
+ * merchant who could send `amount` could send one that did not match its own
+ * factors.
+ */
+export interface CreateInvoiceItemParams {
+  /**
+   * The `in_…` to add this line to, and it must be one of your **drafts** —
+   * a `400` naming `invoice` otherwise, including for a finalized invoice and
+   * for another merchant's.
+   */
+  invoice: string;
+  /** At most 1000 characters. */
+  description: string;
+  /**
+   * At least 1. Omitted from the body when absent, so the server applies its
+   * own default of 1 rather than this SDK sending one.
+   */
+  quantity?: number | undefined;
+  /**
+   * The price of one, in integer minor units. A non-integer, a negative, or
+   * anything past `Number.MAX_SAFE_INTEGER` throws `TypeError` before any
+   * request — `sdks/rust` refuses the identical set.
+   */
+  unit_amount: number;
+}
+
+/**
+ * `POST /v1/invoice_items/{id}` request fields (S4b) — **draft parent only**.
+ *
+ * # Why these are two-state and {@link UpdateInvoiceParams}' are three-state
+ *
+ * All three columns are `NOT NULL`, so there is no "clear it" state to carry:
+ * an absent key leaves the field alone and a value sets it. Sending
+ * `description=` is a `400` naming the parameter rather than a clear, which
+ * is why this type cannot express it — no `| null`.
+ *
+ * `amount` is not here, ever — see {@link CreateInvoiceItemParams}.
+ */
+export interface UpdateInvoiceItemParams {
+  description?: string | undefined;
+  quantity?: number | undefined;
+  unit_amount?: number | undefined;
+}
 
 export interface CreatePaymentIntentParams {
   /**
