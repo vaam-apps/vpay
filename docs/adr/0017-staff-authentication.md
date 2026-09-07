@@ -42,22 +42,22 @@ a default a slice may pick in passing:
 
 ## Decision
 
-### 1. Staff authenticate against a vpay-owned `staff` table
+### 1. Staff authenticate against a vpay-owned `staff_members` table
 
 Two factors, both mandatory:
 
 - **argon2id password**, OWASP's first listed parameter set (19 MiB, t=2,
   p=1), with a deployment **pepper** as argon2's secret input
   (`staff_auth.password_pepper`). The pepper is not in the database, so a
-  stolen `staff` table is not by itself an offline cracking target.
+  stolen `staff_members` table is not by itself an offline cracking target.
 - **RFC 6238 TOTP**, HMAC-SHA1, 30-second step, ±1 step. **Enrolment is
   mandatory at first sign-in**: a session never reaches `authenticated`
-  while `staff.totp_secret` is `NULL`. The secret is sealed with AES-256-GCM
+  while `staff_members.totp_secret` is `NULL`. The secret is sealed with AES-256-GCM
   under a second deployment key (`staff_auth.totp_encryption_key`) —
   encrypted rather than hashed because verification recomputes an HMAC over
   the secret itself, and there is no one-way form of it that still works.
 
-**Replay of the last accepted code is refused.** `staff.last_totp_step`
+**Replay of the last accepted code is refused.** `staff_members.last_totp_step`
 records the time step of the last accepted code and
 `Staff::record_totp_step` is a compare-and-swap that admits only a strictly
 greater one. The ±1 window and this guard are one design: the window without
@@ -73,7 +73,7 @@ tenants registers several dashboard clients, exactly as
 **No self-service sign-up, and no HTTP endpoint creates a staff member.**
 `vpay-server staff add --merchant … --email … --name …` inserts the row and
 prints a one-time password that must be changed at first sign-in
-(`staff.password_change_required`). Every authenticated route refuses a
+(`staff_members.password_change_required`). Every authenticated route refuses a
 session whose staff row still carries that flag, so a printed password
 cannot become a long-lived credential by being ignored.
 

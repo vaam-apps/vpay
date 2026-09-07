@@ -545,7 +545,7 @@ pub struct Config {
 pub struct StaffAuth {
     /// argon2id's secret input, mixed into every staff password hash.
     ///
-    /// **Losing this invalidates every `staff.password_hash` in the
+    /// **Losing this invalidates every `staff_members.password_hash` in the
     /// database.** It belongs in the same Secret as the RS256 signing key
     /// and has the same backup story; migration `0035` says so too, where an
     /// operator will look.
@@ -558,7 +558,7 @@ pub struct StaffAuth {
     #[serde(default)]
     pub password_pepper: Option<String>,
 
-    /// The AES-256-GCM key `staff.totp_secret` is sealed under, base64url
+    /// The AES-256-GCM key `staff_members.totp_secret` is sealed under, base64url
     /// (unpadded) of exactly 32 bytes.
     ///
     /// Losing it invalidates every enrolled second factor. Deliberately a

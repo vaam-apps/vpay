@@ -537,7 +537,7 @@ async fn run_command(
 /// # Errors
 ///
 /// [`anyhow::Error`] naming the step. A duplicate address is
-/// `PersistenceError::Unique` from the `staff_email_key` index — `create` and
+/// `PersistenceError::Unique` from the `staff_members_email_key` index — `create` and
 /// not `upsert`, deliberately: a second `staff add` for an existing address
 /// must fail rather than quietly rewrite that person's password hash to one
 /// an operator just printed on a terminal.
@@ -568,7 +568,7 @@ async fn staff_add(
          staff member bound to it could sign in and see nothing at all"
     );
 
-    // Lower-cased here, once, because `staff_email_is_lower_case` refuses the
+    // Lower-cased here, once, because `staff_members_email_is_lower_case` refuses the
     // insert otherwise and because the sign-in lookup is a plain equality.
     let email = email.trim().to_lowercase();
     let password = vpay_api::staff_auth::tokens::one_time_password();

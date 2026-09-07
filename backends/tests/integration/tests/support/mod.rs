@@ -321,8 +321,10 @@ pub(crate) fn router_deps(
     merchant_op: Arc<MerchantOp>,
     merchant_validator: MerchantJwtValidator,
     dashboard_validator: Option<DashboardJwtValidator>,
+    signing_key: &LoadedSigningKey,
     config: &Config,
 ) -> RouterDeps {
+    let repositories_for_login = Arc::clone(&repositories);
     RouterDeps {
         repositories,
         merchant_op,
@@ -333,11 +335,44 @@ pub(crate) fn router_deps(
             ResourceConfig::from_config(config)
                 .expect("the suite's configuration projects onto the port"),
         ),
-        // The default for every suite. `dashboard_read_surface.rs` builds
-        // its own deps when it needs a login, exactly as `serve` lets a
-        // suite override the dashboard validator.
-        staff_login: None,
+        // Derived from the configuration, exactly as `vpay-server`'s `main`
+        // derives it — so a suite gets a staff login when, and only when, it
+        // registers a `dashboard_client` **and** both `staff_auth` secrets.
+        // Every suite but `staff_sign_in.rs` gets `None`, which is what makes
+        // `/dash/v1/staff/login` a `404` in all of them.
+        staff_login: staff_login_for(config, signing_key, &repositories_for_login),
     }
+}
+
+/// `vpay-server`'s own `staff_login`, for a suite's harness.
+///
+/// Copied rather than shared, because `main.rs`'s version logs three
+/// operator-facing lines this has no business emitting into a test's output —
+/// and because a helper in `vpay-api` that both called would be a shipping
+/// function whose only caller shape is a test. What must not drift is the
+/// *condition*, and it is one line in both: a dashboard client and both
+/// secrets, or `None`.
+pub(crate) fn staff_login_for(
+    config: &Config,
+    signing_key: &LoadedSigningKey,
+    repositories: &Arc<dyn Repositories>,
+) -> Option<Arc<vpay_api::staff::StaffLogin>> {
+    let dashboard = config.dashboard_client.as_ref()?;
+    let (pepper, totp_key) = config.staff_auth.both()?;
+    let credentials = vpay_api::staff_auth::StaffCredentials::new(pepper, totp_key)
+        .expect("the suite's staff_auth secrets are usable");
+
+    Some(Arc::new(vpay_api::staff::StaffLogin {
+        credentials: Arc::new(credentials),
+        dashboard_op: Arc::new(vpay_api::op::dashboard::DashboardOp::new(
+            config,
+            dashboard,
+            signing_key,
+            Arc::clone(repositories),
+        )),
+        limiter: Arc::new(vpay_api::staff::rate_limit::SignInLimiter::new()),
+        issuer_label: config.deployment.name.clone(),
+    }))
 }
 
 /// The `/dash/v1` validator a suite's server should hold, derived from its
@@ -768,6 +803,7 @@ pub(crate) async fn serve(
         merchant_op,
         merchant_validator,
         dashboard_validator,
+        &signing_key,
         &config,
     );
     let server = tokio::spawn(async move {

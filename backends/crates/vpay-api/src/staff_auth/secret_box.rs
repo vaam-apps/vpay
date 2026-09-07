@@ -1,4 +1,4 @@
-//! AES-256-GCM, the one thing standing between a `staff` table dump and every
+//! AES-256-GCM, the one thing standing between a `staff_members` table dump and every
 //! staff member's second factor (ADR-0017 decision 1).
 //!
 //! # Why encrypted rather than hashed

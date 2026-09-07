@@ -47,7 +47,7 @@ pub mod totp;
 /// is a staff member who can never sign in again.
 pub struct StaffCredentials {
     /// argon2's secret input (`Argon2::new_with_secret`). Mixed into every
-    /// hash and every verification, so a stolen `staff` table is not by
+    /// hash and every verification, so a stolen `staff_members` table is not by
     /// itself an offline cracking target.
     ///
     /// **Losing this invalidates every `password_hash` in the database.** It
@@ -55,7 +55,7 @@ pub struct StaffCredentials {
     /// story; ADR-0017's Consequences says so in the place an operator will
     /// look.
     pepper: Vec<u8>,
-    /// The AES-256-GCM key `staff.totp_secret` is sealed under. Deliberately
+    /// The AES-256-GCM key `staff_members.totp_secret` is sealed under. Deliberately
     /// **not** the pepper: one is an argon2 secret input and the other an
     /// AEAD key, and reusing one value for both would mean rotating either
     /// forces rotating both.

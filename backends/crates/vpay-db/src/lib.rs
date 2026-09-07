@@ -57,7 +57,7 @@ pub mod refunds;
 // that tells a merchant about them. A home inside either table's module
 // would have made "settle the charge" reachable without the rest.
 pub mod settlement;
-/// Staff sign-in: the `staff` table, its two credentials and the replay
+/// Staff sign-in: the `staff_members` table, its two credentials and the replay
 /// guard (ADR-0017).
 pub mod staff;
 /// Server-side staff sessions: the two bounds, and the revocation that makes

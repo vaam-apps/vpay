@@ -64,7 +64,7 @@ pub const IDLE_TIMEOUT: Duration = Duration::minutes(30);
 /// How far a session has got through sign-in.
 ///
 /// Two states and no third. The password-change step deliberately has none:
-/// it is read off `staff.password_change_required`, so a session cannot be
+/// it is read off `staff_members.password_change_required`, so a session cannot be
 /// promoted past it by anything that writes this column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {

@@ -25,7 +25,7 @@ use std::collections::HashMap;
 
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
 use authkestra_op::handlers::authorize::{AuthorizeOutcome, AuthorizeRequest, handle_authorize};
 use base64::Engine as _;
@@ -188,9 +188,17 @@ pub(crate) async fn authorize(
     match outcome {
         AuthorizeOutcome::Redirect(url) => {
             tracing::info!(staff_id = %staff.id, "issued a dashboard authorization code");
-            // 302, which is what `Redirect::to` emits and what RFC 6749
-            // §4.1.2 specifies for the authorization response.
-            Ok(Redirect::to(&url).into_response())
+            // `302 Found`, built by hand rather than with `Redirect::to`,
+            // which emits `303 See Other`. RFC 6749 §4.1.2 specifies 302 for
+            // the authorization response, and a client that matched on it
+            // exactly — several do — would not follow a 303. The two are
+            // interchangeable for a GET; the spec is not a matter of taste
+            // here, so the spec wins.
+            Ok((
+                axum::http::StatusCode::FOUND,
+                [(axum::http::header::LOCATION, url)],
+            )
+                .into_response())
         }
         AuthorizeOutcome::DirectError(error) => {
             // An unknown client or a redirect URI that does not match the

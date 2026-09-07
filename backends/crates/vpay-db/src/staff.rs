@@ -1,4 +1,4 @@
-//! The `staff` repository (`backends/migrations/0035_create-staff-auth.sql`)
+//! The `staff_members` repository (`backends/migrations/0035_create-staff-auth.sql`)
 //! — who may sign in to `/dash/v1`, and the two credentials that prove it
 //! ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md)).
 //!
@@ -10,7 +10,7 @@
 //! column a writer names. `docs/reference/vpay-db.md` § CrateStack carries the
 //! general account; what is specific here is that the *security* properties
 //! are now carried by generated statements, so the four `@@allow` arms on
-//! `model Staff` are load-bearing in a way no previous model's were. Two of
+//! `model StaffMember` are load-bearing in a way no previous model's were. Two of
 //! the four fail **silently** (see [`Staff::record_totp_step`]), which is why
 //! [`tests::every_action_this_module_calls_has_an_allow_arm`] exists and runs
 //! without a container.
@@ -31,14 +31,14 @@ use time::OffsetDateTime;
 
 use crate::error::DbError;
 use crate::persistence::{classify_cratestack, system_context};
-use crate::schema::cratestack_schema::{self, staff};
+use crate::schema::cratestack_schema::{self, staff_member};
 
 /// The `.cstack` model these calls name, for
 /// [`crate::persistence::classify_cratestack`]'s `model` slot.
-const MODEL: &str = "Staff";
+const MODEL: &str = "StaffMember";
 
 /// The wire value of [`StaffStatus::Active`], and one of the two
-/// `staff_status_is_known` admits.
+/// `staff_members_status_is_known` admits.
 const STATUS_ACTIVE: &str = "active";
 /// The wire value of [`StaffStatus::Disabled`].
 const STATUS_DISABLED: &str = "disabled";
@@ -52,7 +52,7 @@ const STATUS_DISABLED: &str = "disabled";
 /// read (upstream #228, the defect migration 0032 had to convert
 /// `providers.flow` out of).
 ///
-/// The vocabulary is closed twice: by `staff_status_is_known` at the
+/// The vocabulary is closed twice: by `staff_members_status_is_known` at the
 /// database, and by [`StaffStatus::parse`] refusing anything else here. A
 /// value in one and not the other is a row this crate declines to decode
 /// rather than a row it guesses about.
@@ -95,7 +95,7 @@ impl StaffStatus {
     }
 }
 
-/// One `staff` row, exactly as stored.
+/// One `staff_members` row, exactly as stored.
 ///
 /// `Debug` is **hand-written** below: three of these fields are credentials
 /// or personal data, and `{:?}` on this struct reaches `tracing` fields,
@@ -122,7 +122,7 @@ pub struct StaffRow {
     /// The sealed RFC 6238 secret, or `None` before enrolment. Opaque here.
     pub totp_secret: Option<String>,
     /// When enrolment completed. `None` exactly when [`Self::totp_secret`]
-    /// is — `staff_totp_is_paired` makes that an invariant.
+    /// is — `staff_members_totp_is_paired` makes that an invariant.
     pub totp_enrolled_at: Option<OffsetDateTime>,
     /// The time step of the last accepted code; `0` before the first.
     pub last_totp_step: i64,
@@ -187,7 +187,7 @@ impl StaffRow {
 /// Every column, with no defaults anywhere — migration 0035 declares none on
 /// purpose (see its header), so this struct is the *whole* insert and a
 /// column added to the table without being added here is a compile error at
-/// the `CreateStaffInput` literal rather than a silently defaulted value.
+/// the `CreateStaffMemberInput` literal rather than a silently defaulted value.
 #[derive(Clone, PartialEq, Eq)]
 pub struct NewStaff {
     /// `stf_…`, from `vpay_core::ids::staff_id`.
@@ -195,7 +195,7 @@ pub struct NewStaff {
     /// Checked against `merchant_clients[].merchant_id` by the CLI before it
     /// gets here; there is no merchants table to make it a foreign key.
     pub merchant_id: String,
-    /// **Must already be lower-cased.** `staff_email_is_lower_case` refuses
+    /// **Must already be lower-cased.** `staff_members_email_is_lower_case` refuses
     /// the insert otherwise, deliberately loudly: the read is a plain
     /// `email = $1`, so a row written with a capital letter is an account
     /// that can never sign in and whose failure has no diagnosis.
@@ -222,7 +222,7 @@ impl fmt::Debug for NewStaff {
     }
 }
 
-/// Reads and writes of the `staff` table.
+/// Reads and writes of the `staff_members` table.
 ///
 /// Six methods, every one of them through CrateStack. There is deliberately
 /// **no** `list`, no `disable` and no `delete`: the only writer of this table
@@ -245,7 +245,7 @@ pub trait Staff {
     /// [`DbError::Persistence`] — [`crate::PersistenceError::Unique`] when
     /// the id or the address is taken, [`crate::PersistenceError::Check`]
     /// when the address is not lower-cased or a bound is exceeded,
-    /// [`crate::PersistenceError::Denied`] if `model Staff` loses its
+    /// [`crate::PersistenceError::Denied`] if `model StaffMember` loses its
     /// `@@allow("create", …)` (loud: the create path evaluates its policies
     /// in Rust before any SQL), [`crate::PersistenceError::Backend`]
     /// otherwise.
@@ -254,7 +254,7 @@ pub trait Staff {
     /// The account for an address, or `None`.
     ///
     /// **The address must already be lower-cased by the caller.** This is a
-    /// plain equality on the column, matching `staff_email_is_lower_case`;
+    /// plain equality on the column, matching `staff_members_email_is_lower_case`;
     /// there is no `lower(email)` in the statement, because a functional
     /// predicate here would let a writer store a form the database and the
     /// reader disagreed about.
@@ -267,7 +267,7 @@ pub trait Staff {
     /// # Errors
     ///
     /// [`DbError::StaffStatusUnknown`] if the stored `status` is outside the
-    /// vocabulary (only reachable if `staff_status_is_known` were dropped),
+    /// vocabulary (only reachable if `staff_members_status_is_known` were dropped),
     /// [`DbError::Persistence`] otherwise.
     async fn find_by_email(&self, email: &str) -> Result<Option<StaffRow>, DbError>;
 
@@ -371,11 +371,11 @@ impl Staff for crate::repository::PgRepositories {
         // THROUGH CRATESTACK. Every column of the table is named here, which
         // is what migration 0035's "no DEFAULT on any column a writer names"
         // buys: `cratestack-macros` drops every `@default(...)` field from
-        // `CreateStaffInput`, so a defaulted column would be one this literal
+        // `CreateStaffMemberInput`, so a defaulted column would be one this literal
         // could not set and the row would carry whatever the DDL invented.
         self.cs
-            .staff()
-            .create(cratestack_schema::CreateStaffInput {
+            .staff_member()
+            .create(cratestack_schema::CreateStaffMemberInput {
                 id: new.id,
                 merchant_id: new.merchant_id,
                 email: new.email,
@@ -412,9 +412,9 @@ impl Staff for crate::repository::PgRepositories {
         // because somebody dropped a constraint.
         let rows = self
             .cs
-            .staff()
+            .staff_member()
             .find_many()
-            .where_(staff::email().eq(email.to_owned()))
+            .where_(staff_member::email().eq(email.to_owned()))
             .limit(1)
             .run(&system_context())
             .await
@@ -425,7 +425,7 @@ impl Staff for crate::repository::PgRepositories {
 
     async fn find(&self, id: &str) -> Result<Option<StaffRow>, DbError> {
         self.cs
-            .staff()
+            .staff_member()
             .find_unique(id.to_owned())
             .run(&system_context())
             .await
@@ -445,15 +445,15 @@ impl Staff for crate::repository::PgRepositories {
         // secret the person just scanned.
         let summary = self
             .cs
-            .staff()
+            .staff_member()
             .update_many()
-            .where_(staff::id().eq(id.to_owned()))
-            .where_(staff::totp_enrolled_at().is_null())
-            .set(cratestack_schema::UpdateStaffInput {
+            .where_(staff_member::id().eq(id.to_owned()))
+            .where_(staff_member::totp_enrolled_at().is_null())
+            .set(cratestack_schema::UpdateStaffMemberInput {
                 totp_secret: Some(Some(sealed_secret.to_owned())),
                 totp_enrolled_at: Some(Some(to_chrono(now))),
                 updated_at: Some(to_chrono(now)),
-                ..cratestack_schema::UpdateStaffInput::default()
+                ..cratestack_schema::UpdateStaffMemberInput::default()
             })
             .run(&system_context())
             .await
@@ -474,14 +474,14 @@ impl Staff for crate::repository::PgRepositories {
         // so a nullable column would refuse every first code.
         let summary = self
             .cs
-            .staff()
+            .staff_member()
             .update_many()
-            .where_(staff::id().eq(id.to_owned()))
-            .where_(staff::last_totp_step().lt(step))
-            .set(cratestack_schema::UpdateStaffInput {
+            .where_(staff_member::id().eq(id.to_owned()))
+            .where_(staff_member::last_totp_step().lt(step))
+            .set(cratestack_schema::UpdateStaffMemberInput {
                 last_totp_step: Some(step),
                 updated_at: Some(to_chrono(now)),
-                ..cratestack_schema::UpdateStaffInput::default()
+                ..cratestack_schema::UpdateStaffMemberInput::default()
             })
             .run(&system_context())
             .await
@@ -498,14 +498,14 @@ impl Staff for crate::repository::PgRepositories {
     ) -> Result<bool, DbError> {
         let summary = self
             .cs
-            .staff()
+            .staff_member()
             .update_many()
-            .where_(staff::id().eq(id.to_owned()))
-            .set(cratestack_schema::UpdateStaffInput {
+            .where_(staff_member::id().eq(id.to_owned()))
+            .set(cratestack_schema::UpdateStaffMemberInput {
                 password_hash: Some(password_hash.to_owned()),
                 password_change_required: Some(false),
                 updated_at: Some(to_chrono(now)),
-                ..cratestack_schema::UpdateStaffInput::default()
+                ..cratestack_schema::UpdateStaffMemberInput::default()
             })
             .run(&system_context())
             .await
@@ -517,13 +517,13 @@ impl Staff for crate::repository::PgRepositories {
     async fn record_sign_in(&self, id: &str, now: OffsetDateTime) -> Result<bool, DbError> {
         let summary = self
             .cs
-            .staff()
+            .staff_member()
             .update_many()
-            .where_(staff::id().eq(id.to_owned()))
-            .set(cratestack_schema::UpdateStaffInput {
+            .where_(staff_member::id().eq(id.to_owned()))
+            .set(cratestack_schema::UpdateStaffMemberInput {
                 last_sign_in_at: Some(Some(to_chrono(now))),
                 updated_at: Some(to_chrono(now)),
-                ..cratestack_schema::UpdateStaffInput::default()
+                ..cratestack_schema::UpdateStaffMemberInput::default()
             })
             .run(&system_context())
             .await
@@ -538,7 +538,7 @@ impl Staff for crate::repository::PgRepositories {
 /// The one fallible step is [`StaffStatus::parse`]: a stored value outside
 /// the vocabulary is [`DbError::StaffStatusUnknown`] rather than a default,
 /// for the reason that function's doc gives.
-fn row_from_model(model: cratestack_schema::models::Staff) -> Result<StaffRow, DbError> {
+fn row_from_model(model: cratestack_schema::models::StaffMember) -> Result<StaffRow, DbError> {
     let status = StaffStatus::parse(&model.status).ok_or_else(|| DbError::StaffStatusUnknown {
         id: model.id.clone(),
         status: model.status.clone(),
@@ -598,36 +598,36 @@ mod tests {
     /// `disabled_clients`' equivalent, which this copies deliberately.
     #[test]
     fn every_action_this_module_calls_has_an_allow_arm() {
-        use cratestack_schema::models::STAFF_MODEL as descriptor;
+        use cratestack_schema::models::STAFF_MEMBER_MODEL as descriptor;
 
         assert!(
             !descriptor.read_allow_policies.is_empty(),
-            "model Staff lost @@allow(\"read\", …): find_by_email would answer `no such \
+            "model StaffMember lost @@allow(\"read\", …): find_by_email would answer `no such \
              account` for every address, because a read policy is compiled into the WHERE \
              clause and an empty allow list renders FALSE"
         );
         assert!(
             !descriptor.create_allow_policies.is_empty(),
-            "model Staff lost @@allow(\"create\", …): `vpay-server staff add` would fail with \
+            "model StaffMember lost @@allow(\"create\", …): `vpay-server staff add` would fail with \
              a Forbidden naming the model"
         );
         assert!(
             !descriptor.update_allow_policies.is_empty(),
-            "model Staff lost @@allow(\"update\", …): record_totp_step is an update_many, its \
+            "model StaffMember lost @@allow(\"update\", …): record_totp_step is an update_many, its \
              policy is part of the statement's own WHERE, and an empty allow list renders \
              FALSE — the TOTP replay guard would match zero rows and answer Ok(false) with no \
              error anywhere"
         );
         assert!(
             !descriptor.delete_allow_policies.is_empty(),
-            "model Staff lost @@allow(\"delete\", …)"
+            "model StaffMember lost @@allow(\"delete\", …)"
         );
         assert!(
             descriptor.read_deny_policies.is_empty()
                 && descriptor.create_deny_policies.is_empty()
                 && descriptor.update_deny_policies.is_empty()
                 && descriptor.delete_deny_policies.is_empty(),
-            "a @@deny arm appeared on model Staff; every deny is evaluated ahead of every \
+            "a @@deny arm appeared on model StaffMember; every deny is evaluated ahead of every \
              allow, so one added here refuses the system principal this crate runs as"
         );
     }

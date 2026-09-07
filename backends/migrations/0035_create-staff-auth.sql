@@ -5,7 +5,7 @@
 -- WHY THESE THREE AND NOT ONE
 --
 -- They answer three different questions and have three different lifetimes.
--- `staff` is who a person is and survives every session; `staff_sessions` is
+-- `staff_members` is who a person is and survives every session; `staff_sessions` is
 -- "this browser is that person, until 12 hours from now"; and
 -- `oauth_authorization_codes` is "this 60-second string may be exchanged
 -- once, by this client, for a token naming that person". Collapsing any two
@@ -29,7 +29,7 @@
 --   * NO NATIVE POSTGRES ENUM. CrateStack decodes every enum column with
 --     `try_get::<String>()` and a native enum fails to decode on every read
 --     (`emit/postgres/columns.rs`, upstream #228) — the defect migration
---     0032 had to convert `providers.flow` out of. `staff.status` and
+--     0032 had to convert `providers.flow` out of. `staff_members.status` and
 --     `staff_sessions.state` are `TEXT` with a hand-named CHECK, exactly as
 --     `events.type` and `jobs.kind` are, and for the same reason: the
 --     vocabulary moves in lockstep with the code that writes it.
@@ -53,7 +53,21 @@
 --     of service an attacker triggers by guessing at somebody else's email.
 
 -- WHO A STAFF MEMBER IS.
-CREATE TABLE staff (
+--
+-- `staff_members` AND NOT `staff`, and the name is decided by the data layer
+-- rather than by taste. CrateStack derives a table name from a model name with
+-- `cratestack_core::route_naming::pluralize`, which is
+-- `format!("{value}s")` for anything not ending in `s` or a consonant + `y` —
+-- so `model Staff` reads and writes a table called `staffs`. Renaming the
+-- MODEL is the only way to change that (0.11.1 has no `@@map`), and
+-- `StaffMember` pluralises to a word English also uses. Measured: the first
+-- draft of this migration created `staff`, every query answered
+-- `relation "staffs" does not exist`, and no gate said anything until a
+-- container-backed test ran.
+--
+-- The Rust trait is still `vpay_db::Staff`, because it is a trait about staff
+-- and not about a table.
+CREATE TABLE staff_members (
     -- `stf_…`, minted by `vpay_core::ids::staff_id` exactly as `cus_…` and
     -- `pi_…` are, before the insert.
     id TEXT PRIMARY KEY,
@@ -163,17 +177,17 @@ CREATE TABLE staff (
     -- idle-session touch look like a fresh authentication in an audit.
     last_sign_in_at TIMESTAMPTZ,
 
-    CONSTRAINT staff_id_length CHECK (char_length(id) BETWEEN 1 AND 64),
-    CONSTRAINT staff_merchant_id_length CHECK (char_length(merchant_id) BETWEEN 1 AND 128),
-    CONSTRAINT staff_email_length CHECK (char_length(email) BETWEEN 3 AND 512),
-    CONSTRAINT staff_display_name_length CHECK (char_length(display_name) BETWEEN 1 AND 256),
+    CONSTRAINT staff_members_id_length CHECK (char_length(id) BETWEEN 1 AND 64),
+    CONSTRAINT staff_members_merchant_id_length CHECK (char_length(merchant_id) BETWEEN 1 AND 128),
+    CONSTRAINT staff_members_email_length CHECK (char_length(email) BETWEEN 3 AND 512),
+    CONSTRAINT staff_members_display_name_length CHECK (char_length(display_name) BETWEEN 1 AND 256),
 
     -- The canonical form is lower case, and the database is what refuses a
     -- writer that did not canonicalise. Without it, `Staff::find_by_email`
     -- — a plain `email = $1` — would answer "no such account" for a person
     -- whose row was written with a capital letter, which is a sign-in
     -- failure with no diagnosis at all.
-    CONSTRAINT staff_email_is_lower_case CHECK (email = lower(email)),
+    CONSTRAINT staff_members_email_is_lower_case CHECK (email = lower(email)),
 
     -- MULTI-COLUMN, therefore INVISIBLE to `cratestack migrate baseline` in
     -- both directions (`introspect/postgres/constraints.rs` filters
@@ -185,33 +199,33 @@ CREATE TABLE staff (
     -- What it buys: "enrolled" is one fact with two columns, so no code path
     -- can leave a secret behind with no enrolment date or claim an enrolment
     -- with no secret. `Staff::enrol_totp` writes both in one statement.
-    CONSTRAINT staff_totp_is_paired CHECK (
+    CONSTRAINT staff_members_totp_is_paired CHECK (
         (totp_secret IS NULL) = (totp_enrolled_at IS NULL)
     ),
 
     -- The vocabulary, closed. `vpay_db::staff::StaffStatus` mirrors it
     -- exactly; a value spelled here and not there is a row no code can
     -- decode, and one spelled there and not here is refused at the insert.
-    CONSTRAINT staff_status_is_known CHECK (status IN ('active', 'disabled')),
+    CONSTRAINT staff_members_status_is_known CHECK (status IN ('active', 'disabled')),
 
     -- A step is never negative: it is `unix_seconds / 30`, and the seed is 0.
-    CONSTRAINT staff_totp_step_is_not_negative CHECK (last_totp_step >= 0)
+    CONSTRAINT staff_members_totp_step_is_not_negative CHECK (last_totp_step >= 0)
 );
 
 -- Sign-in names an email and nothing else — see the column comment.
-CREATE UNIQUE INDEX staff_email_key ON staff (email);
+CREATE UNIQUE INDEX staff_members_email_key ON staff_members (email);
 
 -- "Who can see this merchant's dashboard?", the only other way this table is
 -- ever read. Not unique: a merchant may have several staff.
-CREATE INDEX staff_merchant_idx ON staff (merchant_id);
+CREATE INDEX staff_members_merchant_idx ON staff_members (merchant_id);
 
-COMMENT ON TABLE staff IS
+COMMENT ON TABLE staff_members IS
     'A human who may sign in to /dash/v1 (ADR-0017). Created only by `vpay-server staff add`; no HTTP endpoint creates one. Belongs to exactly one merchant. Credentials: argon2id password (peppered from configuration) plus mandatory RFC 6238 TOTP.';
-COMMENT ON COLUMN staff.password_hash IS
+COMMENT ON COLUMN staff_members.password_hash IS
     'argon2id PHC string. The pepper is NOT in it: it is a deployment secret (staff_auth.password_pepper) mixed in as argon2''s secret input, so losing the pepper invalidates every row in this column.';
-COMMENT ON COLUMN staff.totp_secret IS
+COMMENT ON COLUMN staff_members.totp_secret IS
     'The RFC 6238 shared secret, AES-256-GCM sealed under staff_auth.totp_encryption_key, nonce-prefixed and base64url-rendered. Encrypted rather than hashed because verification needs the secret itself. NULL until enrolment, which is mandatory at first sign-in.';
-COMMENT ON COLUMN staff.last_totp_step IS
+COMMENT ON COLUMN staff_members.last_totp_step IS
     'The RFC 6238 time step of the last ACCEPTED code. A code is accepted only if its step is strictly greater, which is what stops the +/-1-step skew window being used to replay the same six digits.';
 
 -- THAT A BROWSER IS THAT PERSON.
@@ -224,18 +238,18 @@ CREATE TABLE staff_sessions (
     -- `idempotency_keys` established for a request hash.
     id TEXT PRIMARY KEY,
 
-    -- Whose session it is. A real FK, unlike `staff.merchant_id`, because
-    -- `staff` is a table this schema owns. ON DELETE CASCADE: a staff row
+    -- Whose session it is. A real FK, unlike `staff_members.merchant_id`, because
+    -- `staff_members` is a table this schema owns. ON DELETE CASCADE: a staff row
     -- that goes away takes its sessions with it, which is the only sane
     -- reading of "this account no longer exists".
-    staff_id TEXT NOT NULL REFERENCES staff (id) ON DELETE CASCADE,
+    staff_id TEXT NOT NULL REFERENCES staff_members (id) ON DELETE CASCADE,
 
     -- 'pending_totp' -> 'authenticated'. Two states and no third: a session
     -- that has presented a password but not a code can do exactly one thing
     -- (present a code), and `/dash/v1/oauth/authorize` refuses it.
     --
     -- The password-change step does NOT get a state of its own: it is read
-    -- off `staff.password_change_required`, so a session cannot be
+    -- off `staff_members.password_change_required`, so a session cannot be
     -- promoted past it by anything that writes this column.
     state TEXT NOT NULL,
 
@@ -268,8 +282,8 @@ CREATE TABLE staff_sessions (
     -- rather than glossed.
     access_token TEXT,
 
-    CONSTRAINT staff_sessions_id_length CHECK (char_length(id) = 64),
-    CONSTRAINT staff_sessions_state_is_known CHECK (state IN ('pending_totp', 'authenticated'))
+    CONSTRAINT staff_members_sessions_id_length CHECK (char_length(id) = 64),
+    CONSTRAINT staff_members_sessions_state_is_known CHECK (state IN ('pending_totp', 'authenticated'))
 );
 
 -- "Which sessions belong to this staff member?" — what sign-out-everywhere
@@ -313,7 +327,7 @@ CREATE TABLE oauth_authorization_codes (
     client_id TEXT NOT NULL,
 
     -- Who the code speaks for. Becomes the token's `sub`.
-    staff_id TEXT NOT NULL REFERENCES staff (id) ON DELETE CASCADE,
+    staff_id TEXT NOT NULL REFERENCES staff_members (id) ON DELETE CASCADE,
 
     -- WHICH SESSION AUTHORISED IT, and the reason this table cannot be
     -- authkestra's. A code outlives nothing: if the session that produced it
@@ -322,7 +336,7 @@ CREATE TABLE oauth_authorization_codes (
     session_id TEXT NOT NULL REFERENCES staff_sessions (id) ON DELETE CASCADE,
 
     -- The tenant that will be stamped into the token's merchant claim. A
-    -- copy of `staff.merchant_id` taken when the code was issued, so that a
+    -- copy of `staff_members.merchant_id` taken when the code was issued, so that a
     -- staff row edited between issue and exchange cannot silently move a
     -- token to another tenant.
     merchant_id TEXT NOT NULL,

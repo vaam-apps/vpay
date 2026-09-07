@@ -256,8 +256,8 @@ fn registration_for(dashboard: &DashboardClient) -> ClientRegistration {
 /// **No kill switch, and that is a gap rather than a decision.**
 /// `disabled_clients` revokes a *merchant* credential; there is nothing that
 /// disables the dashboard client short of removing it from YAML and
-/// restarting. What can be disabled per person is a `staff` row
-/// (`staff.status`), which is the granularity that matters here. Recorded in
+/// restarting. What can be disabled per person is a `staff_members` row
+/// (`staff_members.status`), which is the granularity that matters here. Recorded in
 /// `docs/status.md`.
 struct DashboardClientStore {
     registration: ClientRegistration,

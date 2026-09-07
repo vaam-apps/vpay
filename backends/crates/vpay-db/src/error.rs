@@ -245,8 +245,8 @@ pub enum DbError {
         flow: String,
     },
 
-    /// A `staff` row's `status` is outside the vocabulary
-    /// `staff_status_is_known` closes (ADR-0017).
+    /// A `staff_members` row's `status` is outside the vocabulary
+    /// `staff_members_status_is_known` closes (ADR-0017).
     ///
     /// **Only reachable if that CHECK were dropped**, which is the point of
     /// having the variant rather than a default: `StaffStatus::parse`

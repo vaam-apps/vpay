@@ -1122,7 +1122,7 @@ model Customer {
 
 // --- staff sign-in (ADR-0017) --------------------------------------------
 
-// `staff`, `staff_sessions` and `oauth_authorization_codes` (migration 0035)
+// `staff_members`, `staff_sessions` and `oauth_authorization_codes` (migration 0035)
 // — the three tables that let a human reach `/dash/v1`.
 //
 // THESE THREE ARE THE FIRST MODELS IN THIS FILE WHOSE EVERY REPOSITORY
@@ -1162,7 +1162,11 @@ model Customer {
 // vocabulary is closed by the database and mirrored by the parse, exactly as
 // `events.type` and `jobs.kind` are.
 
-model Staff {
+// `StaffMember` and not `Staff`, and the name decides the TABLE name: 0.11.1
+// derives it with `pluralize(to_snake_case(model))` and has no `@@map`, so
+// `model StaffMember` would read and write `staffs`. Migration 0035's header records
+// the measurement. The Rust trait is still `vpay_db::Staff`.
+model StaffMember {
   id String @id @length(min: 1, max: 64)
   merchant_id String @length(min: 1, max: 128)
   email String @length(min: 3, max: 512)

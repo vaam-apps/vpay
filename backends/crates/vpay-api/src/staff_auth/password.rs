@@ -21,7 +21,7 @@
 //! Each hash has its own random salt, inside the PHC string, in the database.
 //! The pepper is one deployment-wide value that is **not** in the database
 //! (`vpay_config::StaffAuth::password_pepper`, from a Secret), mixed in as
-//! argon2's `secret` input. A stolen `staff` table is therefore not by itself
+//! argon2's `secret` input. A stolen `staff_members` table is therefore not by itself
 //! an offline cracking target: an attacker needs the table *and* the Secret.
 //!
 //! The cost is stated plainly in ADR-0017's Consequences and in migration

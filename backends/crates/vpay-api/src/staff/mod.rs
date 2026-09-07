@@ -355,7 +355,7 @@ pub(crate) async fn login(
 
     // First sign-in: mint a secret, seal it, and hand back both the URI to
     // scan and the sealed form to return with the first code. Nothing is
-    // written to `staff` until that code verifies — see
+    // written to `staff_members` until that code verifies — see
     // `LoginResponse::enrolment`.
     let secret = tokens::totp_secret();
     let sealed = login.credentials.seal_secret(&secret)?;

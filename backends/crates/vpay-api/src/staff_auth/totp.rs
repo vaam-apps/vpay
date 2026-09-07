@@ -57,7 +57,7 @@ const MODULUS: u32 = 1_000_000;
 /// The RFC 6238 step a Unix timestamp falls in.
 ///
 /// A free function because both [`Totp::verify`] and the tests need it, and
-/// because it is the number the database stores — `staff.last_totp_step` is
+/// because it is the number the database stores — `staff_members.last_totp_step` is
 /// this, not a code and not an instant.
 #[must_use]
 pub fn step_at(unix_seconds: i64) -> i64 {
@@ -67,7 +67,7 @@ pub fn step_at(unix_seconds: i64) -> i64 {
 /// One staff member's TOTP secret, in the clear.
 ///
 /// Held only for the length of a verification: it is opened out of
-/// `staff.totp_secret` by [`crate::staff_auth::StaffCredentials::open_secret`],
+/// `staff_members.totp_secret` by [`crate::staff_auth::StaffCredentials::open_secret`],
 /// used, and dropped. Deliberately **not** `Clone`: a second factor with two
 /// owners is a second factor somebody forgot to drop.
 ///
