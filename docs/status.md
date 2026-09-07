@@ -4661,6 +4661,23 @@ both `attempt` and `status_code` are `int4`. They are listed here so that
 neither this page nor the reference doc reads as though they were a gap
 somebody forgot.
 
+**Reviewed 2026-09-08, and the review moved things.**
+[plans/exp34-money-tables-notes/opus-review.md](plans/exp34-money-tables-notes/opus-review.md)
+is the sabotage pass. Four guards existed only in prose and now exist:
+`the_latest_session_query_orders_by_seq_and_takes_one` (the `ORDER BY` on
+`find_latest_by_intent`, which the commit that claimed to add it did not
+touch the file for),
+`migration_0037_keeps_every_stored_label_on_a_populated_database`,
+`every_enum_check_0037_created_refuses_a_value_outside_it`,
+`the_crash_recovery_sweep_is_still_served_by_the_rebuilt_partial_index`, and
+in `schema.rs` `the_three_money_models_answer_no_rows_to_every_action` and
+`no_generated_read_on_a_money_table_can_carry_its_jsonb_column` — the last two
+because adding `@@allow("read", auth() != null)` to `model PaymentIntent`, or
+declaring `metadata Json` on `model Refund`, was green through every gate.
+The backward-compatibility note above was rewritten from a measurement rather
+than reworded; the drift numbers, the per-table table and the ten false
+foreign-key lines were all re-measured from scratch and hold exactly.
+
 **What is NOT claimed.** `@@audit` was **not** enabled on any model and the
 brief's decisive test for it was not attempted — not because it could not be
 made to fail, but because it is not applicable yet: the audit hook is on
