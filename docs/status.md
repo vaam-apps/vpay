@@ -4047,7 +4047,6 @@ dependency and one for the `23514` classification. Still the longest production
 function on `verify-docs`' advisory list, still almost all comment, and still a
 maintainer's call.
 
-<<<<<<< HEAD
 #### `customers`: the first table born with a model (2026-09-06, S4a)
 
 Migration `0034` creates `customers`, and `schemas/vpay.cstack`'s
@@ -4121,7 +4120,6 @@ forty characters before a `format!` and the assertion's own message printed
 worked around: the scanner will do it again, and the answer is to avoid
 `format!` in a test that mentions `sql`, never to widen the allowlist.
 `EXPECTED_ASSERT_SITES` 37 → 43, with the audit re-done.
-=======
 ### CrateStack 0.11.1 → 0.12.0 (2026-09-07)
 
 **Nothing in this repository had to change but the version.** The CLI and the
@@ -4187,7 +4185,6 @@ packages, 0 skipped.
 
 Review transcript, including what the draft claimed without measuring, in
 [plans/exp25-cratestack-012-notes/opus-review.md](plans/exp25-cratestack-012-notes/opus-review.md).
->>>>>>> d06e1de (docs(status): record the 0.12.0 bump, its evidence, and the gaps still open)
 
 
 ---
