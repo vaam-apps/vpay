@@ -361,7 +361,30 @@ are this review's.
 
 ## Gates on the reviewed head
 
-See `docs/status.md`'s Lane B row for the numbers, recipe by recipe.
+Measured on `4364cee`. Exit codes read from a file, never from a harness
+banner. Plan §7's list, row by row:
+
+| # | plan §7 check | result |
+|---|---|---|
+| 1 | `exp26-plan-count.sh` before vs. after | `@vpay/checkout` `styling_files` 5 → **1** (target ≤1, **met**), `class_tokens_distinct` 71 → **2** (target ≤14), `classname_sites` 59 → **1**, `class_tokens_total` 161 → **2**. Repo-wide outside `@vpay/ui`: distinct tokens 92 → **33**, `styling_files` 18 → **14**, `classname_sites` 107 → **49**, `inline_styles` 24 → 24 (Lane C's). The 80% repo-wide rows are not met and are not expected to be until Lanes C and D land |
+| 2 | `just ci` | **exit 0**. Rust equals master's, as it must with `backends/` untouched: **1466 tests run, 1466 passed, 0 skipped**; `verify-ignored` 0 ignored (expected 0), 45 test binaries (expected 45); **98 doctests** across 14 crates; `verify: ok — the eleven gates above passed`; `deny` advisories/bans/licenses/sources ok. Web: `@vpay/checkout` **507 in 24 files**, `@vpay/ui` **74 in 18**, shop 96, config 63, tokens 8, api-client 4, stripe-js 146, nodejs 190 — 0 skipped anywhere |
+| 3 | `just test-e2e` | **exit 0, 11/11 across four specs, 0 failing, 0 pending, 0 skipped** — `checkout.cy.ts` 1, `dashboard.cy.ts` 3, `shop-hosted.cy.ts` 3, `shop-embedded.cy.ts` 4 (`VPAY_E2E_FRAMED=1`). `demo_project=exp26b-review`, ports 29080/29083/29082/29081/29001, all confirmed free; stack torn down with `down -v` by the recipe |
+| 4 | `just build-storybook` | **exit 0** |
+| 5 | axe, structural | **built by this review** — 46 cases over every checkout screen in both locales, 0 violations, plus `@vpay/ui`'s own 2 |
+| 6 | axe, contrast, real browser | **partly**. The question is answered for this head and gated for every tone a component renders (`theme-contrast.test.ts`, plus a Chrome measurement of the app's own compiled stylesheet). `cypress-axe` as a reusable harness is **still not built**, by this review either |
+| 7 | `just lint-web` | **exit 0** — `pnpm -r typecheck` and `pnpm -r lint` across all 16 packages |
+| 8 | `just verify-ui` | **exit 0**, all five checks |
+| 9 | `just audit-web` | **exit 0** — "no known vulnerabilities" on both the production graph and the whole workspace including dev dependencies, after this review's lockfile change |
+| 10 | screenshots | all four regenerated on this head and looked at; the contrast figures in finding 1 were read off `outcomes-hosted.png`'s own pixels |
+| 11 | `docs/status.md` + `docs/flows/hosted-checkout.md` | updated in the same commits, with the real numbers and with the three wrong claims struck through in place |
+
+One process note worth keeping: the first attempt at row 2 was killed by
+signal 9 at test 1399/1466 on a host whose swap was exhausted. That is not a
+result — re-run, it is exit 0. And the run before that failed for real, on
+`@vpay/ui`'s `typecheck`: the new contrast test passed its own suite and its
+own lint while not compiling under `exactOptionalPropertyTypes`. Running the
+project's recipe rather than the three commands you think it contains is the
+only reason that was caught.
 
 ## What this review did NOT do
 
