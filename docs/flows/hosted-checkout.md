@@ -820,6 +820,47 @@ the full gate-by-gate record, the counted `styling_files`/token targets (one
 target missed, named there with the reason), and the four regenerated
 screenshots.
 
+**Updated 2026-09-07: `examples/shop`, the other side of every payer trip
+this document proves, is on Tailwind 4 + daisyUI 5 (Lane C, decision D1).**
+The shop adopts the same two public packages `@vpay/ui` now uses, directly —
+it imports neither `@vpay/ui` nor `@vpay/tokens`, so the trip this document
+describes stays one a merchant can reproduce from public npm packages alone,
+not from this workspace's private ones. `src/app/globals.css` — 229 lines of
+hand-written CSS — is six lines now: one `@import`, one `@plugin 'daisyui'`
+block on `bumblebee`, and a paragraph explaining why daisyUI does not
+compromise the file's original "no design system" reasoning. Every one of
+the shop's pages and components that had a bespoke class name or a
+`style={{…}}` now composes daisyUI classes directly, with zero bespoke CSS
+and zero inline styles (were 229 and 24); every `data-testid` this document's
+two Cypress specs assert on is unchanged, `#vpay-embedded-checkout` included.
+Confirmed against the compiled stylesheet, not assumed: `.btn`,
+`.badge-{success,warning,error}`, `.table-zebra`, `.fieldset-legend`,
+`.radio`, `.navbar` and `.alert-{warning,error,info}` are all present in the
+`@tailwindcss/postcss` build output. **100 vitest cases, 0 skipped** (was 96)
+— two new suites render `OrderStatusBadge` and `TestNumbersPanel` and assert
+the tone-per-status and caveat-`role="alert"` properties the plan's decisive
+mutations name, each confirmed to fail under the named mutation before being
+left passing. See `docs/status.md`'s `examples/shop` row for the full count
+and for why `styling_files` rose rather than fell under the counting
+script's own definition — the shop has no `@vpay/ui`-style layer to absorb
+classNames into, by design (D1), so eliminating every inline style could
+only ever add files to that count, not remove them.
+
+**Driven end to end in a real browser the same day.** `shop-hosted.cy.ts`
+(3 tests — MTN push, Orange redirect, a declined MTN charge to
+`cancel_url`) and `VPAY_E2E_FRAMED=1 shop-embedded.cy.ts` (4 tests — the
+frame's exact `src` and CSP, MTN inside the frame, Orange breaking out, an
+unregistered framer refused) both green, **7 passing, 0 failing**, against
+a fresh compose stack (project `exp26c`) built from this lane's own head.
+Not through the plan's own `just test-e2e` recipe: that recipe builds all
+four app images in one `docker compose … --build`, and the `dashboard`
+image fails first on an unrelated, pre-existing gap — `frontends/apps/
+dashboard`'s `next build` cannot resolve `@vpay/ui`'s `./cn.js`-suffixed
+exports through Next's webpack bundler. Neither shop spec visits the
+dashboard, so it was left out of the `docker compose up` service list and
+each spec run directly; see `docs/plans/exp26-notes/lane-c.md` for the
+exact error and why it is Lane D's gap, not this one's.
+
 See [../status.md](../status.md) for the per-feature ledger and the reasons
 several of those rows are 🟡 where this document says "built".
 
