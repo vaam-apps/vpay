@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { Heading, List, PageShell, Stack, Text } from './layout';
+import { Heading, List, Logo, PageShell, Stack, Text, VisuallyHidden } from './layout';
 
 describe('layout primitives', () => {
   it('Heading renders the requested level with the shared typography classes', () => {
@@ -45,6 +45,48 @@ describe('layout primitives', () => {
     const el = screen.getByText('Support line');
     expect(el.className).toContain('opacity-60');
     expect(el.className).toContain('text-xs');
+  });
+
+  it('Text carries the amount variants the checkout page needs, without a call-site class', () => {
+    // These exist so `screens.tsx` writes no class of its own (plan §3: raw
+    // utilities live only inside this package). The payment amount is the
+    // one number a payer checks before approving.
+    render(
+      <Text size="3xl" weight="semibold" numeric data-testid="amount">
+        5,000
+      </Text>,
+    );
+    const amount = screen.getByTestId('amount');
+    expect(amount.className).toContain('text-3xl');
+    expect(amount.className).toContain('tabular-nums');
+    // `text-lg` must NOT survive alongside `text-3xl`: two font sizes on one
+    // element is a cascade coin-flip, which is what `cn()` is for.
+    expect(amount.className).not.toContain('text-lg');
+
+    render(
+      <Text wrap="anywhere" data-testid="reference">
+        cs_test_fixture000000000001
+      </Text>,
+    );
+    expect(screen.getByTestId('reference').className).toContain('break-all');
+  });
+
+  it('VisuallyHidden is text for a screen reader and not for the eye', () => {
+    render(<VisuallyHidden data-testid="vh">Amount:</VisuallyHidden>);
+    const el = screen.getByTestId('vh');
+    expect(el.tagName).toBe('SPAN');
+    expect(el.className).toContain('sr-only');
+    // Still in the accessibility tree — `sr-only` clips, it does not hide.
+    expect(el.getAttribute('aria-hidden')).toBeNull();
+  });
+
+  it('Logo pins the operator mark to a height Tailwind preflight would otherwise drop', () => {
+    render(<Logo src="https://operator.example/mark.svg" alt="Operator" data-testid="logo" />);
+    const el = screen.getByTestId('logo');
+    expect(el.tagName).toBe('IMG');
+    expect(el.getAttribute('alt')).toBe('Operator');
+    expect(el.className).toContain('h-8');
+    expect(el.className).toContain('w-auto');
   });
 
   it('List and PageShell render their fixed layout classes', () => {

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { Checkbox } from './checkbox';
+import { Checkbox, CheckboxLabel } from './checkbox';
 
 describe('Checkbox', () => {
   it('renders a native button (decision D2), not a span', () => {
@@ -79,6 +79,27 @@ describe('Checkbox', () => {
     expect(el.getAttribute('tabindex')).toBe('0');
     fireEvent.click(el);
     expect(el.getAttribute('aria-checked')).toBe('true');
+    unmount();
+  });
+});
+
+describe('CheckboxLabel', () => {
+  it('forwards a click on the sentence to the checkbox it wraps', () => {
+    // The box is a 16-pixel target on a phone; the sentence is most of what
+    // a thumb can hit. A `<button>` is a labelable element, so the wrapping
+    // `<label>` is the association — measured here rather than assumed.
+    const onCheckedChange = vi.fn();
+    const { unmount } = render(
+      <CheckboxLabel data-testid="wrap">
+        <Checkbox onCheckedChange={onCheckedChange} />
+        <span>Remember this number on this device</span>
+      </CheckboxLabel>,
+    );
+    const wrap = screen.getByTestId('wrap');
+    expect(wrap.tagName).toBe('LABEL');
+    expect(wrap.className).toContain('cursor-pointer');
+    fireEvent.click(screen.getByText('Remember this number on this device'));
+    expect(onCheckedChange).toHaveBeenCalledTimes(1);
     unmount();
   });
 });

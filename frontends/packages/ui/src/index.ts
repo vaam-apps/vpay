@@ -4,7 +4,12 @@ export { Alert, type AlertProps } from './components/alert';
 export { Badge, type BadgeProps } from './components/badge';
 export { Button, type ButtonProps } from './components/button';
 export { Card, CardBody, type CardBodyProps, type CardProps } from './components/card';
-export { Checkbox, type CheckboxProps } from './components/checkbox';
+export {
+  Checkbox,
+  CheckboxLabel,
+  type CheckboxLabelProps,
+  type CheckboxProps,
+} from './components/checkbox';
 export {
   Dialog,
   DialogClose,
@@ -36,12 +41,16 @@ export {
   type HeadingProps,
   List,
   type ListProps,
+  Logo,
+  type LogoProps,
   PageShell,
   type PageShellProps,
   Stack,
   type StackProps,
   Text,
   type TextProps,
+  VisuallyHidden,
+  type VisuallyHiddenProps,
 } from './components/layout';
 export { Radio, RadioGroup, type RadioGroupProps, type RadioProps } from './components/radio';
 export { Select, type SelectItem, type SelectProps } from './components/select';

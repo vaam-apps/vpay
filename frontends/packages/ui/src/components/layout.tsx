@@ -62,10 +62,24 @@ export function Stack({
 const text = cva('', {
   variants: {
     tone: { default: '', muted: 'opacity-60', error: 'text-error' },
-    size: { xs: 'text-xs', sm: 'text-sm', md: 'text-base', lg: 'text-lg' },
+    // `3xl` is the payment amount on the checkout page — the single number a
+    // payer checks before approving. It is a size the product needs, so it
+    // is a variant here rather than a `text-3xl` written at the call site.
+    size: { xs: 'text-xs', sm: 'text-sm', md: 'text-base', lg: 'text-lg', '3xl': 'text-3xl' },
     weight: { normal: '', medium: 'font-medium', semibold: 'font-semibold' },
+    // Lining figures, for amounts and any other column of digits.
+    numeric: { true: 'tabular-nums', false: '' },
+    // `anywhere` lets a long unbroken id (a session reference) wrap inside
+    // its card instead of overflowing it.
+    wrap: { normal: '', anywhere: 'break-all' },
   },
-  defaultVariants: { tone: 'default', size: 'md', weight: 'normal' },
+  defaultVariants: {
+    tone: 'default',
+    size: 'md',
+    weight: 'normal',
+    numeric: false,
+    wrap: 'normal',
+  },
 });
 
 export interface TextProps extends React.ComponentPropsWithoutRef<'p'>, VariantProps<typeof text> {
@@ -73,8 +87,56 @@ export interface TextProps extends React.ComponentPropsWithoutRef<'p'>, VariantP
 }
 
 /** Inline or block copy. `tone="muted"` / `tone="error"` replace ad hoc `opacity-*` / `text-error`. */
-export function Text({ as: Tag = 'p', tone, size, weight, className, ...rest }: TextProps) {
-  return <Tag className={cn(text({ tone, size, weight }), className)} {...rest} />;
+export function Text({
+  as: Tag = 'p',
+  tone,
+  size,
+  weight,
+  numeric,
+  wrap,
+  className,
+  ...rest
+}: TextProps) {
+  return (
+    <Tag className={cn(text({ tone, size, weight, numeric, wrap }), className)} {...rest} />
+  );
+}
+
+export type VisuallyHiddenProps = React.ComponentPropsWithoutRef<'span'>;
+
+/**
+ * Text for a screen reader and not for the eye.
+ *
+ * `sr-only` is in plan §3's permitted set and, like every utility in it,
+ * belongs inside this package rather than at a call site. Every visually
+ * hidden label on the checkout page goes through here.
+ */
+export function VisuallyHidden({ className, ...rest }: VisuallyHiddenProps) {
+  return <span className={cn('sr-only', className)} {...rest} />;
+}
+
+export interface LogoProps extends Omit<React.ComponentPropsWithoutRef<'img'>, 'src' | 'alt'> {
+  src: string;
+  /** Required: the operator's mark is often the only place their name appears. */
+  alt: string;
+}
+
+/**
+ * An operator's mark, at the one height this product renders it.
+ *
+ * `h-8 w-auto` is load-bearing rather than decorative: Tailwind's own
+ * preflight resets `img { height: auto }`, so without an explicit height an
+ * operator's logo renders at its intrinsic size, whatever that is. Owning it
+ * here means the app does not write a class to get a predictable header.
+ *
+ * `next/image` is deliberately not used by the consumer: the checkout app is
+ * `output: 'standalone'` with no image-optimisation loader, and the URL is an
+ * operator's own absolute one.
+ */
+export function Logo({ className, ...rest }: LogoProps) {
+  // `alt` is a REQUIRED prop on `LogoProps`, so a caller cannot omit it; it
+  // arrives through the spread rather than being written out here.
+  return <img className={cn('h-8 w-auto', className)} {...rest} />;
 }
 
 export interface HeadingProps extends React.ComponentPropsWithoutRef<'h1'> {

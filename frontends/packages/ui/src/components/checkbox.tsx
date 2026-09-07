@@ -45,3 +45,26 @@ export function Checkbox({ tone, size, className, ...rest }: CheckboxProps) {
     </BaseCheckbox.Root>
   );
 }
+
+export type CheckboxLabelProps = React.ComponentPropsWithoutRef<'label'>;
+
+/**
+ * The clickable sentence beside a {@link Checkbox}.
+ *
+ * A `<button>` is a labelable element, so a wrapping `<label>` forwards a
+ * click on the words to the control — which on a phone-sized page is most of
+ * the target. `cursor-pointer` says so before the tap: without it the pointer
+ * over the sentence is a text caret, which reads as "not clickable".
+ *
+ * It exists as a component because the utility does not belong at a call site
+ * (plan §3), and because a bare `<label>` around a `role="checkbox"` button is
+ * the kind of markup that gets rewritten by someone who does not know the
+ * forwarding is load-bearing.
+ */
+export function CheckboxLabel({ className, ...rest }: CheckboxLabelProps) {
+  // No `htmlFor`: the control is the `Checkbox` this wraps, and the wrapping
+  // IS the association (HTML's "labeled control" is the first labelable
+  // descendant). An id here would have to be threaded through two components
+  // for no gain.
+  return <label className={cn('cursor-pointer', className)} {...rest} />;
+}

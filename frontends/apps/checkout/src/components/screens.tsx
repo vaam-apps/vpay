@@ -8,23 +8,25 @@
  *
  * **Styling is `@vpay/ui`'s components — daisyUI's `bumblebee` theme and
  * Base UI's behaviour, composed through `cva` — and nothing else** (the
- * maintainer's requirement, 2026-09-05). This file writes almost no class
- * name of its own: `Card`, `Alert`, `Badge`, `Button`, `Field`, `Input`,
- * `Checkbox`, `Spinner`, and the layout primitives `Stack`/`Text`/`Heading`/
- * `List`/`PageShell` own every daisyUI component class and every layout
- * utility between them (`docs/plans/2026-09-07-ui-revamp.md` §3, §4.1). The
- * handful of literal `className` strings still here are functional, not
- * decorative, and none of them is a colour: `h-8 w-auto` overrides
- * Tailwind's own `img{height:auto}` preflight reset so an operator's logo
- * renders at a fixed height; `text-3xl tabular-nums` keeps the payment
- * amount — the single most important number on this page — legible at the
- * size a payer glances at it, which `Text`'s largest size (`text-lg`) does
- * not reach; `break-all` stops a long session reference id from overflowing
- * its card; `sr-only` and `cursor-pointer` have no `@vpay/ui` primitive
- * behind them at all. Colour is never written down — it comes from the
- * theme's own variables, which `src/config/theme.ts` lets an operator
- * retint at runtime, and status tone still comes from `@vpay/tokens`
- * (AGENTS.md).
+ * maintainer's requirement, 2026-09-05). This file writes **no** class name
+ * of its own, which is what plan §3 asks for in as many words: raw
+ * utilities live only inside `frontends/packages/ui/src/`. `Card`, `Alert`,
+ * `Badge`, `Button`, `Field`, `Input`, `Checkbox`, `Spinner` and the layout
+ * primitives `Stack`/`Text`/`Heading`/`List`/`PageShell`/`Logo`/
+ * `VisuallyHidden`/`CheckboxLabel` own every daisyUI component class and
+ * every layout utility between them
+ * (`docs/plans/2026-09-07-ui-revamp.md` §3, §4.1).
+ *
+ * The five utilities this file did keep for one revision were functional
+ * rather than decorative, and each is now a named variant or a component
+ * instead: the payment amount is `<Text size="3xl" numeric>`, the session
+ * reference `<Text wrap="anywhere">`, the operator's mark `<Logo>` (whose
+ * `h-8 w-auto` overrides Tailwind's own `img{height:auto}` preflight
+ * reset), the visually hidden labels `<VisuallyHidden>`, and the memory
+ * opt-in's clickable sentence `<CheckboxLabel>`. Colour is never written
+ * down — it comes from the theme's own variables, which
+ * `src/config/theme.ts` lets an operator retint at runtime, and status tone
+ * still comes from `@vpay/tokens` (AGENTS.md).
  *
  * Accessibility is structural here, not decorative:
  *
@@ -58,6 +60,7 @@ import {
   Card,
   CardBody,
   Checkbox,
+  CheckboxLabel,
   Field,
   FieldDescription,
   FieldError,
@@ -65,9 +68,11 @@ import {
   Heading,
   Input,
   List,
+  Logo,
   Spinner,
   Stack,
   Text,
+  VisuallyHidden,
 } from '@vpay/ui';
 import { checkoutOutcomeTone } from '@vpay/tokens';
 
@@ -144,11 +149,9 @@ export function BrandHeader({ t, branding }: { t: Translate; branding: Branding 
   return (
     <Stack gap="md">
       {branding.logoUrl === null ? null : (
-        // eslint-disable-next-line @next/next/no-img-element -- `next/image` optimises through a route this app does not serve (no image optimisation in `output: 'standalone'` without a loader), and the URL is an operator's own absolute one.
-        <img
+        <Logo
           src={branding.logoUrl}
           alt={branding.displayName ?? t('page.operator_logo_alt')}
-          className="h-8 w-auto"
           data-testid="brand-logo"
         />
       )}
@@ -208,13 +211,11 @@ export function PaymentSummary({
         <Text size="sm" tone="muted" data-testid="pay-to">
           {merchantLine(t, merchant, 'page.pay_to', 'page.pay_to_unnamed')}
         </Text>
-        <Text size="lg" weight="semibold" className="text-3xl tabular-nums" data-testid="amount">
-          <Text as="span" className="sr-only">
-            {t('page.amount_label')}:{' '}
-          </Text>
+        <Text size="3xl" weight="semibold" numeric data-testid="amount">
+          <VisuallyHidden>{t('page.amount_label')}: </VisuallyHidden>
           {amount}
         </Text>
-        <Text size="xs" tone="muted" className="break-all" data-testid="reference">
+        <Text size="xs" tone="muted" wrap="anywhere" data-testid="reference">
           {t('page.reference_label')}: {reference}
         </Text>
       </CardBody>
@@ -344,7 +345,7 @@ export function MemoryOptIn({
         `ready_redirect` are different states of one machine. Two of these
         rendered together would be two elements sharing an id.
       */}
-      <label className="cursor-pointer">
+      <CheckboxLabel>
         <Stack align="start" gap="md">
           <Checkbox
             checked={controls.remember}
@@ -362,7 +363,7 @@ export function MemoryOptIn({
             </Text>
           </Stack>
         </Stack>
-      </label>
+      </CheckboxLabel>
       {controls.hasRecord ? (
         <Button type="button" variant="ghost" size="xs" data-testid="forget" onClick={controls.onForget}>
           {t('memory.forget')}
@@ -654,9 +655,7 @@ export function NoticePanel({
         <Alert tone="warning">
           <span data-testid="notice-body">{body}</span>
         </Alert>
-        <Text as="span" className="sr-only">
-          {t('error.title')}
-        </Text>
+        <VisuallyHidden>{t('error.title')}</VisuallyHidden>
       </Stack>
     </section>
   );
