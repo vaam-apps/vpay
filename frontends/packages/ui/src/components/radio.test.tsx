@@ -6,7 +6,7 @@ import { Radio, RadioGroup } from './radio.js';
 describe('RadioGroup / Radio', () => {
   it('lets exactly one radio in the group become checked', () => {
     const onValueChange = vi.fn();
-    render(
+    const { unmount } = render(
       <RadioGroup aria-label="Surface" onValueChange={onValueChange}>
         <Radio value="hosted" aria-label="Hosted" />
         <Radio value="embedded" aria-label="Embedded" />
@@ -20,5 +20,6 @@ describe('RadioGroup / Radio', () => {
     expect(onValueChange).toHaveBeenCalledWith('embedded', expect.anything());
     expect(embedded.getAttribute('aria-checked')).toBe('true');
     expect(hosted.getAttribute('aria-checked')).toBe('false');
+    unmount();
   });
 });

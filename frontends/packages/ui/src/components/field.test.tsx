@@ -6,7 +6,7 @@ import { Input } from './input.js';
 
 describe('Field', () => {
   it('associates its label and description with the control via Base UI, not a manual id', () => {
-    render(
+    const { unmount } = render(
       <Field className="gap-1">
         <FieldLabel>MSISDN</FieldLabel>
         <Input name="msisdn" />
@@ -15,10 +15,11 @@ describe('Field', () => {
     );
     const input = screen.getByRole('textbox', { name: 'MSISDN' });
     expect(input.getAttribute('aria-describedby')).toBeTruthy();
+    unmount();
   });
 
   it('shows a validation error via Field.Error, not a manually rendered <p>', () => {
-    render(
+    const { unmount } = render(
       <Field className="gap-1" invalid>
         <FieldLabel>MSISDN</FieldLabel>
         <Input name="msisdn" required />
@@ -26,5 +27,6 @@ describe('Field', () => {
       </Field>,
     );
     expect(screen.getByText('Enter a valid number')).toBeTruthy();
+    unmount();
   });
 });

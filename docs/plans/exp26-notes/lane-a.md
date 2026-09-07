@@ -23,7 +23,16 @@ order, on top of that base:
 5. `88ec2f7` — decision D4 (`canceled` → `warning`), plus the one checkout
    test assertion it broke.
 6. `dc0e243` — `docs/status.md`, `docs/flows/hosted-checkout.md`, this file.
-7. `dc4244a` — one `verify-ui` exemption fix (see finding 6, below).
+7. `ef39ec2` — one `verify-ui` exemption fix (see finding 6, below).
+8. `49d5e29` — `unmount()` added to every `@vpay/ui` test that mounts a
+   Base UI component and had not called it. Found by re-running
+   `pnpm --filter @vpay/ui test` for a final check: an intermittent
+   `ReferenceError: window is not defined`, from react-dom's scheduler,
+   caught after `field.test.tsx`'s jsdom environment had already torn
+   down — scheduled work (Base UI's debounced validation / focus-guard
+   bookkeeping) outliving a test that never cancelled it. Run five times
+   in a row after the fix, 46/46 green each time, 0 unhandled errors —
+   the failure had surfaced at least once in roughly ten runs before.
 
 Head at report time: run `git rev-parse HEAD` in the worktree — do not trust
 a pasted SHA in this file over that command.

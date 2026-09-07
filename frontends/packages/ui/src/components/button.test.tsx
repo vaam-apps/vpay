@@ -5,14 +5,15 @@ import { Button } from './button.js';
 
 describe('Button', () => {
   it('defaults to btn btn-primary, type=button', () => {
-    render(<Button>Pay</Button>);
+    const { unmount } = render(<Button>Pay</Button>);
     const el = screen.getByRole('button', { name: 'Pay' });
     expect(el.className.split(' ')).toEqual(expect.arrayContaining(['btn', 'btn-primary']));
     expect(el.getAttribute('type')).toBe('button');
+    unmount();
   });
 
   it('variant and size compose without dropping either class', () => {
-    render(
+    const { unmount } = render(
       <Button variant="outline" size="sm">
         Back
       </Button>,
@@ -21,10 +22,11 @@ describe('Button', () => {
     expect(el.className).toContain('btn-outline');
     expect(el.className).toContain('btn-sm');
     expect(el.className).not.toContain('btn-primary');
+    unmount();
   });
 
   it('render composes another element (the shop "pay without leaving" link)', () => {
-    render(
+    const { unmount } = render(
       <Button render={<a href="/orders/1/embedded" />} nativeButton={false} variant="outline">
         Pay this order without leaving the shop
       </Button>,
@@ -35,5 +37,6 @@ describe('Button', () => {
     expect(el.tagName).toBe('A');
     expect(el.getAttribute('href')).toBe('/orders/1/embedded');
     expect(el.className).toContain('btn-outline');
+    unmount();
   });
 });

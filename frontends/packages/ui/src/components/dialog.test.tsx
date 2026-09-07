@@ -6,7 +6,7 @@ import { Dialog } from './dialog.js';
 describe('Dialog', () => {
   it('opens from its trigger and closes from Dialog.Close', () => {
     const onOpenChange = vi.fn();
-    render(
+    const { unmount } = render(
       <Dialog.Root onOpenChange={onOpenChange}>
         <Dialog.Trigger>Open</Dialog.Trigger>
         <Dialog.Portal>
@@ -25,5 +25,6 @@ describe('Dialog', () => {
 
     fireEvent.click(screen.getByText('Dismiss'));
     expect(onOpenChange).toHaveBeenCalledWith(false, expect.anything());
+    unmount();
   });
 });

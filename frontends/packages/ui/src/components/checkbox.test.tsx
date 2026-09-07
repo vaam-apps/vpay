@@ -13,10 +13,11 @@ describe('Checkbox', () => {
   });
 
   it('toggles aria-checked on click, which daisyUI 5 styles directly', () => {
-    render(<Checkbox aria-label="Remember this number" />);
+    const { unmount } = render(<Checkbox aria-label="Remember this number" />);
     const el = screen.getByRole('checkbox', { name: 'Remember this number' });
     expect(el.getAttribute('aria-checked')).toBe('false');
     fireEvent.click(el);
     expect(el.getAttribute('aria-checked')).toBe('true');
+    unmount();
   });
 });

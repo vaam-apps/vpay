@@ -118,8 +118,9 @@ function KitchenSink() {
 
 describe('@vpay/ui structural accessibility', () => {
   it('has zero violations for label, button-name, aria-*, region and list', async () => {
-    render(<KitchenSink />);
+    const { unmount } = render(<KitchenSink />);
     const violations = await axeViolations(document.body);
     expect(violations).toEqual([]);
+    unmount();
   });
 });

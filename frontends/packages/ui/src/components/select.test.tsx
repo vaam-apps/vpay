@@ -11,7 +11,7 @@ const LOCALES = [
 describe('Select', () => {
   it('opens the popup and reports the chosen item', () => {
     const onValueChange = vi.fn();
-    render(
+    const { unmount } = render(
       <Select items={LOCALES} defaultValue="en" onValueChange={onValueChange} aria-label="Locale" />,
     );
     const trigger = screen.getByRole('combobox', { name: 'Locale' });
@@ -25,5 +25,6 @@ describe('Select', () => {
     fireEvent.pointerDown(option, { pointerType: 'mouse' });
     fireEvent.click(option, { detail: 1 });
     expect(onValueChange).toHaveBeenCalledWith('fr');
+    unmount();
   });
 });
