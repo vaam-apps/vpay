@@ -971,23 +971,7 @@ impl CheckoutSessions for crate::repository::PgRepositories {
         &self,
         payment_intent_id: &str,
     ) -> Result<Option<CheckoutSessionRow>, DbError> {
-        // No `status` predicate at all — that is the whole difference from
-        // `find_open_by_intent`, and it is what lets the caller tell "no
-        // session was ever created" from "the session that was created is
-        // over".
-        //
-        // `seq` descending, not `created_at`: two sessions on one intent
-        // created inside the same microsecond would tie on the timestamp, and
-        // "the newest" would then be whichever Postgres felt like returning.
-        // `checkout_sessions_intent_seq_idx` (migration 0030) is the index
-        // this exact order and limit were added for.
-        let rows = self
-            .cs
-            .checkout_session()
-            .find_many()
-            .where_(checkout_session::payment_intent_id().eq(payment_intent_id.to_owned()))
-            .order_by(checkout_session::seq().desc())
-            .limit(1)
+        let rows = latest_by_intent_query(&self.cs, payment_intent_id)
             .run(&system_context())
             .await
             .map_err(|error| DbError::from(classify_cratestack(MODEL, "read", error)))?;
@@ -1158,6 +1142,48 @@ impl CheckoutSessions for crate::repository::PgRepositories {
 
         Ok(Some(expired))
     }
+}
+
+/// The builder [`CheckoutSessions::find_latest_by_intent`] runs, extracted so
+/// a test can render **the query itself** rather than a copy of it.
+///
+/// # Why this is a function and not an inline chain
+///
+/// Deleting the `.order_by(...)` below leaves
+/// `the_open_session_read_filters_by_status_and_the_latest_read_orders_by_seq`
+/// — a container test that seeds two sessions and asserts *which* one comes
+/// back — **green**. Measured, not reasoned: `checkout_sessions_intent_seq_idx`
+/// (migration 0030) is `(payment_intent_id, seq DESC)`, so Postgres answers an
+/// unordered `LIMIT 1` out of that index in seq-descending order anyway. The
+/// right row comes back for the wrong reason, and would keep doing so until a
+/// planner choice, that index, or the row count changed.
+///
+/// So the guarantee is asserted where it is made, on the rendered SQL, by
+/// [`tests::the_latest_session_query_orders_by_seq_and_takes_one`]. A test that
+/// rebuilt this chain itself would assert the generator's behaviour back to
+/// itself and catch nothing — which is the whole reason the chain lives here
+/// instead of in the method body.
+///
+/// # Why `seq` and not `created_at`
+///
+/// Two sessions on one intent created inside the same microsecond tie on the
+/// timestamp, and "the newest" would then be whichever Postgres felt like
+/// returning. `seq` is `GENERATED ALWAYS AS IDENTITY` and cannot tie.
+///
+/// # Why no `status` predicate
+///
+/// That is the whole difference from [`CheckoutSessions::find_open_by_intent`],
+/// and it is what lets a caller tell "no session was ever created" from "the
+/// session that was created is over".
+fn latest_by_intent_query<'a>(
+    cs: &'a cratestack_schema::Cratestack,
+    payment_intent_id: &str,
+) -> cratestack::FindMany<'a, cratestack_schema::models::CheckoutSession, String> {
+    cs.checkout_session()
+        .find_many()
+        .where_(checkout_session::payment_intent_id().eq(payment_intent_id.to_owned()))
+        .order_by(checkout_session::seq().desc())
+        .limit(1)
 }
 
 /// The generated model row, in vpay's own types.
@@ -1406,6 +1432,109 @@ mod tests {
             descriptor.read_deny_policies.is_empty(),
             "model CheckoutSession grew an @@deny(\"read\", …) arm: it would be ANDed into \
              every read's WHERE clause and refuse rows without raising"
+        );
+    }
+
+    /// A pool that has never opened a connection, and cannot: the port is
+    /// unroutable. `connect_lazy` does no I/O, and neither does
+    /// `preview_sql`. [`crate::disabled_clients`]' device, used here for the
+    /// same reason — this is a question about a *rendered statement*, not
+    /// about a database.
+    fn lazy_cratestack() -> cratestack_schema::Cratestack {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+            .expect("a lazy pool parses its URL and connects to nothing");
+        cratestack_schema::Cratestack::builder(pool).build()
+    }
+
+    /// `find_latest_by_intent` orders by `seq DESC` **in the statement**, and
+    /// this is the only thing in the repository that says so.
+    ///
+    /// THE MUTATION THIS REFUSES: delete
+    /// `.order_by(checkout_session::seq().desc())` from
+    /// [`super::latest_by_intent_query`].
+    ///
+    /// `the_open_session_read_filters_by_status_and_the_latest_read_orders_by_seq`
+    /// in `tests/repositories.rs` seeds two sessions on one intent and
+    /// asserts which one comes back, and it stays **GREEN** under that
+    /// mutation — measured, twice. `checkout_sessions_intent_seq_idx`
+    /// (migration 0030) is `(payment_intent_id, seq DESC)`, so Postgres
+    /// answers an unordered `LIMIT 1` out of that index in seq-descending
+    /// order anyway. Behaviour that is right by accident is right until a
+    /// planner choice, an index or a row count changes, and on the confirm
+    /// path "the newest session on this intent" being wrong means a payer is
+    /// shown a checkout that is over.
+    ///
+    /// It previews [`super::latest_by_intent_query`] — the same builder
+    /// `find_latest_by_intent` runs — rather than rebuilding the chain here.
+    /// A rebuilt chain would assert the generator's behaviour back to itself
+    /// and could not fail for the reason this test exists.
+    ///
+    /// No database and no container: it fails in a millisecond on a laptop
+    /// with no Docker.
+    #[tokio::test]
+    async fn the_latest_session_query_orders_by_seq_and_takes_one() {
+        let cs = lazy_cratestack();
+        let sql = latest_by_intent_query(&cs, "pi_00000000000000000000000y").preview_sql();
+
+        assert!(
+            sql.contains("FROM checkout_sessions"),
+            "this test is no longer looking at a checkout_sessions read: {sql}"
+        );
+        assert!(
+            sql.contains("payment_intent_id ="),
+            "the intent predicate left the statement, so this read would answer the newest \
+             session of ANY intent: {sql}"
+        );
+        assert!(
+            sql.contains("ORDER BY seq DESC"),
+            "`find_latest_by_intent` lost its ORDER BY. The container case that seeds two \
+             sessions does NOT catch this — checkout_sessions_intent_seq_idx answers an \
+             unordered LIMIT 1 in seq-descending order anyway — so the confirm path would \
+             keep working until a planner choice changed and then show a payer a checkout \
+             that is over: {sql}"
+        );
+        assert!(
+            sql.contains("LIMIT "),
+            "the LIMIT left the statement: this read would materialise every session on the \
+             intent to answer with one: {sql}"
+        );
+
+        // The order of the two clauses matters as much as their presence: an
+        // `ORDER BY` after a `LIMIT` is not the same query, and a substring
+        // search alone would accept it.
+        let order_at = sql.find("ORDER BY").expect("the ORDER BY is present");
+        let limit_at = sql.find("LIMIT ").expect("the LIMIT is present");
+        assert!(
+            order_at < limit_at,
+            "the LIMIT is applied before the ORDER BY, so the row that comes back is not the \
+             newest: {sql}"
+        );
+    }
+
+    /// The scoped render of the same read carries the model's `read` policy,
+    /// and this is where "a missing @@allow is silent" stops being a claim
+    /// about upstream source and becomes an assertion about vpay's statement.
+    ///
+    /// [`every_action_this_module_calls_has_an_allow_arm`] asks the
+    /// *descriptor* whether the slot is occupied. This asks the *rendered
+    /// statement* whether the policy reached it — different failures, and
+    /// only the second is what a database executes.
+    #[tokio::test]
+    async fn the_read_policy_is_compiled_into_the_statement_rather_than_checked_beside_it() {
+        let cs = lazy_cratestack();
+        let sql = latest_by_intent_query(&cs, "pi_00000000000000000000000y")
+            .preview_scoped_sql(&system_context());
+
+        assert!(
+            !sql.contains("FALSE"),
+            "the scoped read renders the literal FALSE, which is what \
+             `push_allow_policy_query` emits for an EMPTY allow list. Every checkout session \
+             would read as absent, silently, through all four of this module's reads: {sql}"
+        );
+        assert!(
+            sql.contains("ORDER BY seq DESC"),
+            "this test is no longer looking at the latest-session read: {sql}"
         );
     }
 }
