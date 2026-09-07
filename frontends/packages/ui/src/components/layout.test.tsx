@@ -21,6 +21,21 @@ describe('layout primitives', () => {
     expect(el.className).toContain('gap-6');
   });
 
+  it('Stack renders the element it is asked for, so a landmark survives', () => {
+    // A stack that IS the page header is a `banner` landmark. Rendering it
+    // as a `<div>` removes that landmark with no test and no lint failing,
+    // which is how `checkout-view.tsx` and `return-view.tsx` lost theirs.
+    render(
+      <Stack as="header" justify="between" data-testid="header">
+        <span>a</span>
+      </Stack>,
+    );
+    const el = screen.getByTestId('header');
+    expect(el.tagName).toBe('HEADER');
+    expect(screen.getByRole('banner')).toBe(el);
+    expect(el.className).toContain('justify-between');
+  });
+
   it('Text applies tone and size without ever writing a raw opacity/text-error inline', () => {
     render(
       <Text tone="muted" size="xs">

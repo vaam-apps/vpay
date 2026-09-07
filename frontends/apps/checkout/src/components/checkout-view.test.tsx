@@ -494,6 +494,19 @@ describe('the controls do what the screen says', () => {
     unmount();
   });
 
+  it('keeps the brand-and-language row a banner landmark on both views', () => {
+    // The migration turned `<header className="flex items-center
+    // justify-between gap-4">` into a `<Stack>`, which renders a `<div>`:
+    // the banner landmark left the accessibility tree and nothing failed.
+    // Plan §4.1 deletes that header's CLASSES, not the element.
+    const checkout = renderState(CHECKOUT_SCREENS['collect_msisdn'] as CheckoutState, 'en');
+    expect(within(checkout.container).getByRole('banner').tagName).toBe('HEADER');
+    checkout.unmount();
+    const ret = renderReturn(RETURN_SCREENS['outcome_succeeded']!, 'en');
+    expect(within(ret.container).getByRole('banner').tagName).toBe('HEADER');
+    ret.unmount();
+  });
+
   it('names the language switch on the screen, not only to a screen reader', () => {
     // `getByLabelText` above passes just as happily against an `aria-label`,
     // which is how the exp26 migration removed the visible word without

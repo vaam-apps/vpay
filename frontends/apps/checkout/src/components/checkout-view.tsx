@@ -76,7 +76,7 @@ export function CheckoutView(props: CheckoutViewProps) {
   return (
     <main>
       <PageShell>
-        <Stack justify="between" gap="md">
+        <Stack as="header" justify="between" gap="md">
           <BrandHeader t={t} branding={props.branding} />
           <LocaleSwitch t={t} locale={locale} onChange={props.onLocaleChange} />
         </Stack>
