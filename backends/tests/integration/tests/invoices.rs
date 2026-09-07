@@ -1644,3 +1644,107 @@ async fn an_invoiced_customer_is_never_offered_to_the_sweep() -> anyhow::Result<
     harness.shutdown().await;
     Ok(())
 }
+
+// ------------------------------------------------------ review attacks (S4b)
+
+/// Two `POST /v1/invoices/{id}/pay` in flight at once attach **exactly one**
+/// intent.
+///
+/// # Why this case is not the one the suite already had
+///
+/// `an_invoice_being_paid_refuses_void_write_off_and_a_second_payment` pays
+/// twice *in sequence*, so the second request reads the first one's committed
+/// intent and `vpay_api::v1::invoices::pay`'s own `refuse_if_being_paid` is
+/// what answers. That is the guard a mutation can delete without any wire
+/// test noticing — the implementer measured exactly that and added
+/// `attaching_a_second_intent_to_an_invoice_is_refused_by_the_statement` at
+/// the repository seam for it.
+///
+/// This case is the third thing neither of those two says: that the whole
+/// **handler**, run twice concurrently over a socket, cannot produce an
+/// invoice with two intents. Both requests get past the read (they are in
+/// flight together), both mint a `pi_…` and a checkout session, and then both
+/// reach `Invoices::attach_intent`'s compare-and-swap on the same row. Under
+/// `READ COMMITTED` the loser blocks on the winner's row lock and
+/// re-evaluates `NO_LIVE_INTENT` against the committed row, so it matches
+/// nothing and answers `409`.
+///
+/// The loser's intent is left unattached and unconfirmed, which is the
+/// failure mode `pay`'s own doc names and prefers: an orphan `pi_…` nobody
+/// paid, versus an invoice pointing at an intent that does not exist. This
+/// case pins that it stays `requires_payment_method` and that it is not on
+/// the invoice.
+#[tokio::test]
+async fn two_concurrent_pays_attach_exactly_one_intent() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let invoice = harness.draft_with_a_line(CLIENT_A).await?;
+    let (status, body) = harness
+        .post(CLIENT_A, &format!("/v1/invoices/{invoice}/finalize"), &[])
+        .await?;
+    assert_eq!(status, 200, "{body}");
+
+    // Built before the join so no `format!` temporary is borrowed across an
+    // await point — `two_concurrent_finalizes_take_consecutive_numbers`' rule.
+    let path = format!("/v1/invoices/{invoice}/pay");
+    let form = [("success_url", SUCCESS_URL), ("cancel_url", CANCEL_URL)];
+    let (left, right) = tokio::join!(
+        harness.post(CLIENT_A, &path, &form),
+        harness.post(CLIENT_A, &path, &form),
+    );
+    let (left_status, left_body) = left?;
+    let (right_status, right_body) = right?;
+
+    let mut statuses = [left_status.as_u16(), right_status.as_u16()];
+    statuses.sort_unstable();
+    assert_eq!(
+        statuses,
+        [200, 409],
+        "one payment at a time: {left_body} | {right_body}"
+    );
+
+    // Exactly one intent is bound to the invoice, and it is the winner's.
+    let attached: Vec<String> = sqlx::query_scalar(
+        "SELECT payment_intent_id FROM invoices \
+         WHERE payment_intent_id IS NOT NULL",
+    )
+    .fetch_all(&harness.pool)
+    .await
+    .context("reading which intents are bound to an invoice")?;
+    let attached = only(&attached, "invoice with an intent attached");
+
+    let winner = if left_status == 200 {
+        &left_body
+    } else {
+        &right_body
+    };
+    assert_eq!(
+        field(winner, "payment_intent"),
+        attached.as_str(),
+        "the request that answered 200 is the one whose intent is on the row"
+    );
+
+    // Every other intent this pair minted is an orphan: unattached, never
+    // confirmed, and cancellable. It is not a second way to pay this bill.
+    let orphans: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id, status::TEXT FROM payment_intents \
+         WHERE merchant_id = $1 AND id <> $2",
+    )
+    .bind(MERCHANT_A)
+    .bind(attached)
+    .fetch_all(&harness.pool)
+    .await
+    .context("reading the intents the losing request minted")?;
+    assert!(
+        orphans.len() <= 1,
+        "two pay requests cannot mint more than two intents: {orphans:?}"
+    );
+    for (id, status) in &orphans {
+        assert_eq!(
+            status, "requires_payment_method",
+            "the orphan {id} was never confirmed"
+        );
+    }
+
+    harness.shutdown().await;
+    Ok(())
+}
