@@ -220,14 +220,15 @@ because they were checked rather than assumed:
 | `fmt-check` | exit 0 |
 | `clippy` `-D warnings` | exit 0, workspace + all targets |
 | `verify` | **all eleven gates**; `verify-status` 1 declared unimplemented item; `verify-errors` 18 types; `verify-sdk-parity` 407 proving tests, 35 dated gaps; `verify-links` 920 links in 167 tracked files; `verify-npm-scope` 2 publishable packages; `check-schema` 19 declarations (see caveat); `verify-serde` 73 types, 16 exempted; `verify-repositories` 4 impls, 80 outside files; `verify-toolchain` 1.98.0; **`verify-migrations` 35 files matching**; `verify-docs` advisory |
-| `test-rust` | **1563 run, 1563 passed, 0 skipped**, 953.9 s, 46 binaries |
+| `test-rust` | **1563 run, 1563 passed, 0 skipped**, 936.9 s, 46 binaries |
 | `test-doc` | **99 passed, 1 ignored** |
 | `verify-ignored` | 0 ignored (expected 0), 46 binaries (expected 46), 1563 total (floor 1080) |
 | `lint-web` | exit 0 |
 | `test-web` | checkout 448, nodejs SDK 190, stripe-js SDK 146, shop 96, api-client 4, ui 3 |
 | `deny` | advisories, bans, licenses, sources all ok |
 
-`just ci` **exit 0**, read from `exp29-review-ci.exit`, not from a banner.
+`just ci` **exit 0**, read from `exp29-review-ci.exit`, not from a banner, at
+commit `02445b8` — the head, but for the commit that writes these numbers down.
 
 **Caveat, because a warning is not a pass.** `check-schema` printed
 `WARNING — cratestack 0.11.1 on PATH, this repository pins 0.12.0` and
@@ -237,7 +238,7 @@ justfile, and nothing here touches `schemas/vpay.cstack`. Not fixed, because
 `cargo install` into the shared `~/.cargo/bin` is forbidden by the brief.
 
 An earlier run of the same branch was also exit 0 but took **2251 s**; F9
-above is why, and the final run is 953.9 s.
+above is why, and the final run is 936.9 s.
 
 ## Not checked
 

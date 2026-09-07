@@ -500,10 +500,12 @@ network, a database or a binary this workspace does not build.
   [`docs/plans/exp10-notes/opus.md`](plans/exp10-notes/opus.md).
 
 
-Last verified: 2026-09-07, on branch `claude/exp29-migration-manifest` at the
-head of the sabotage review — **the migration manifest gate (issue #76), and
-the runbook repair it shipped with corrected**. `just ci` **exit 0**, recipe by
-recipe, exit code read from a file rather than a banner:
+Last verified: 2026-09-07, on branch `claude/exp29-migration-manifest` at
+commit `02445b8` — **the migration manifest gate (issue #76), and the runbook
+repair it shipped with corrected**. `just ci` **exit 0**, recipe by recipe,
+exit code read from a file rather than a banner. (`02445b8` is the head this
+was measured at; the only commit after it is the one that writes this
+paragraph, which no gate here reads differently.)
 
 - `fmt-check`; `clippy` `-D warnings`.
 - `verify`, **all eleven gates**: `verify-no-mocks`; `verify-status` 1 declared
@@ -515,7 +517,7 @@ recipe, exit code read from a file rather than a banner:
   implementations named by none of 80 outside files; `verify-toolchain`
   1.98.0; **`verify-migrations` 35 migration files all matching the
   manifest**. `verify-docs` advisory.
-- `test-rust` **1563 tests run, 1563 passed, 0 skipped** in 953.9 s across 46
+- `test-rust` **1563 tests run, 1563 passed, 0 skipped** in 936.9 s across 46
   binaries against a real Postgres and real WireMock rails; `test-doc` **99
   passed, 1 ignored**; `verify-ignored` **0 ignored (expected 0), 46 binaries
   (expected 46), 1563 total (floor 1080)**.
