@@ -103,7 +103,9 @@ the gate render.
 
 ## Decisive mutations
 
-Each one applied to the tree, the suite run, the mutation reverted.
+Each one applied to the tree, the suite run, the mutation reverted. The
+"measured" totals are the suite size **at the time each was run**, which grew
+from 128 to 136 across the pass.
 
 | Mutation | Expected | Measured |
 |---|---|---|
@@ -111,7 +113,10 @@ Each one applied to the tree, the suite run, the mutation reverted.
 | token exchange sends `createPkce().verifier` (a *fresh* pair) instead of the one the challenge came from | `oauth.test.ts` fails | **1 failed, 127 passed** — "carries the verifier the challenge was derived from — THE decisive case" |
 | `NAV_LINKS` gains `{ href: '/webhooks' }` | `layout.test.tsx` fails | **2 failed, 126 passed** — the rendered-markup case *and* the constant case |
 | the status filter's control is renamed off `status` | `payments-filters.test.tsx` fails | **1 failed, 132 passed** — "submits the status as `status`, which is the parameter vpay reads" |
+| `pagerHrefs` reads `has_more` the same way in both directions (the bug as it was) | `payments-query.test.ts` fails | **2 failed, 134 passed** — one per half of the inversion |
 | (in a browser) — | `dashboard.cy.ts` asserts the session cookie is `httpOnly`, that `document.cookie` cannot see it, and that no JWT appears in the rendered page | see the Cypress section |
+
+## The last defect, and how it was found
 
 ### `has_more` means "in the direction you are paging", and it inverts
 
@@ -160,7 +165,7 @@ object to it. The section is `Summary` now, and
 `payment-detail.test.tsx` pins it. That is the entire argument for "render it
 and look at it" in one finding.
 
-## Two things this pass got wrong first, and what they cost
+## Four things this pass got wrong first, and what they cost
 
 **`just demo-staff` addressed the wrong stack.** `test-e2e` called it as a bare
 `just demo-staff`, which inherits the exported environment but **not** the
@@ -170,6 +175,10 @@ never brought up and which belonged to somebody else. It failed instantly
 (that stack's image predates the `staff` subcommand) and `--rm` removed the
 container, so nothing was left behind. The fix repeats all six overrides on the
 sub-invocation, with a comment saying why.
+
+**The pager read `has_more` one way** — see the section above. Not in this
+list originally; it belongs here, because it was a defect this pass shipped
+into four commits before reading the SQL it depended on.
 
 **The spec asserted an event type nothing writes.** Its first real run failed
 on `payment_intent.created` in the timeline of a just-minted intent — and that
