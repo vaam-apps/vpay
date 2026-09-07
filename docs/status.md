@@ -500,6 +500,98 @@ network, a database or a binary this workspace does not build.
   [`docs/plans/exp10-notes/opus.md`](plans/exp10-notes/opus.md).
 
 
+Last verified: 2026-09-07, on branch `claude/exp30-single-binary` (code in
+`adc99da` and `27c03da`, base `30fb8f1` = `master`, which carries #80's
+`vpay-server staff add`) — **one binary and one backend image: issue #77
+folded `vpay-worker-bin` into `vpay-server` as the `worker` subcommand.**
+
+`just ci` **exit 0**, recipe by recipe, exit code read from a file rather
+than a banner. Run **three times** — on the code above, and twice more on the
+head carrying this entry, because a status page written after the gate is a
+status page the gate did not read. Every count below is identical in all
+three; only the wall clock moved (1005.0 s, 934.5 s, 950.3 s for `test-rust`,
+on a machine also running the maintainer's `vpay-demo` stack), which is why
+this paragraph quotes counts and not a stopwatch:
+`fmt-check`; `clippy` `-D warnings`; `verify`, all ten gates (`verify-links`
+over **920 links in 165 tracked files** — 915 in 164 on the first run, before
+this entry's own notes file existed, `verify-status` 1 declared
+unimplemented item, `verify-errors` **18 error types, 16 `#[from]` variants**,
+`verify-serde` 73 types / 16 exemptions, `verify-repositories` 4
+implementations named by none of 80 files outside `vpay-db`,
+`verify-toolchain` 1.98.0); `test-rust` **1548 tests run, 1548 passed, 0
+skipped** across **44** binaries against a real Postgres and real
+WireMock rails; `test-doc` **99 passed, 1 ignored** (the ignored one is
+`sdks/rust`'s README block and is pre-existing); `verify-ignored` **0 ignored
+(expected 0), 44 binaries (expected 44), 1548 total (floor 1080)**;
+`lint-web`; `test-web`; `deny` (advisories, bans, licenses, sources all ok).
+
+**44 binaries, down from 46 — two, not the one the issue predicted.**
+`vpay-worker-bin` contributed `vpay-worker-bin::cli` (ten subprocess cases)
+*and* `vpay-worker-bin::bin/vpay-worker-bin` (two unit tests in its
+`main.rs`). The ten cases moved into `vpay-server/tests/cli.rs` under a
+`worker` module keeping their names, so they add no binary and are reported
+as `vpay-server::cli worker::<name>`; the two unit tests did not move,
+because they tested that binary's own copies of
+`adapters`/`adapter_codes`/`install_crypto_provider` and the copies are gone.
+Total 1550 -> 1548.
+
+**Beyond `just ci`, on a throwaway compose project (`exp30`, ports
+18190-18194, torn down; the maintainer's `vpay-demo` stack was not
+touched):**
+
+- `just helm-check` — **17 guards all fired by name, kubeconform 23 resources
+  valid, 0 invalid**. The rendered worker Deployment carries
+  `image: ghcr.io/vaam-apps/vpay-server:0.1.0`, `args: ["worker"]` and an
+  **empty `volumes` list** (the server's is `['signing-key']`), which is the
+  thing that keeps the OAuth signing key away from the worker now that one
+  binary accepts the flag.
+- `just test-e2e` — **11 Cypress tests, 11 passing, 0 failing** through a
+  stack whose `vpay-worker` container runs `command: ["worker"]` against the
+  same image the server runs: `checkout.cy.ts` (1), `dashboard.cy.ts` (3),
+  `shop-hosted.cy.ts` (3), `shop-embedded.cy.ts` (4).
+- `just demo-up` + `just demo-walk` — exit 0, **6 payments on 2 rails, every
+  one settled by the worker asking the rail and evidenced by a signed webhook
+  the receiver recorded and `vpay-sdk` verified**, plus a hosted and an
+  embedded Checkout Session. That is the end-to-end proof that settlement and
+  webhook delivery still happen through the subcommand, not merely that the
+  process starts.
+
+**The two mutations, run and reverted.**
+
+- **`worker` made a no-op** (`worker::run` returns `Ok(())` before `boot`):
+  `worker_kill9` **both scenarios FAIL** (`worker-1 (to be killed) never
+  reached 'job loop running' within 60s`), and **9 of the 10** moved
+  `vpay-server::cli worker::*` cases FAIL. The tenth,
+  `an_invalid_log_format_env_var_is_read_and_rejected`, passes by design — it
+  asserts a clap parse failure that happens before dispatch. **`worker_recovery`
+  is 23/23 GREEN under this mutation**, which corrects the expectation the
+  issue and the task brief both carried: that suite drives
+  `vpay_worker::run_once`/`run_loop` **in-process** and never spawns a binary,
+  so it is a test of the loop and not of the entrypoint. What holds the
+  *subcommand* honest is `worker_kill9` (which had to be edited to spawn
+  `vpay-server` + `worker`) and the ten CLI cases.
+- **The default-to-`serve` dropped** (`subcommand_required = true` on
+  `ServerArgs`): the e2e `vpay-server` container goes to
+  `Restarting (2)` and `http://localhost:18190/healthz` refuses the
+  connection, with `error: 'vpay-server' requires a subcommand but one was not
+  provided` in `docker compose logs`. The `vpay-worker` container in the same
+  stack stays `Up`, because it passes `command: ["worker"]` — which
+  independently confirms that container really is driving the subcommand.
+
+**What this pass did NOT do**, spelled out because the change touches the
+release path: `release.yml`'s reduced three-image matrix **has not run** — no
+push to `master` happened on this branch, so it is evidenced by
+`just release-dry-run`'s shape and by `actionlint`, not by a workflow run; and
+**`args: ["worker"]` has never been applied to a Kubernetes cluster**, exactly
+like every other line of this chart. The spelling that *was* exercised is
+compose's `command:`, and it is not the same key — Docker's `command` is the
+CMD, Kubernetes' `command` is the ENTRYPOINT and `args` is the CMD — so the
+one running in a cluster is the one nothing has run. See
+[flows/deployment.md](flows/deployment.md) Status and
+[plans/exp30-single-binary-notes/opus.md](plans/exp30-single-binary-notes/opus.md).
+
+*Superseded, kept for the record — 2026-09-07, on branch `claude/exp21-checkout-page` at the head
+
 Last verified: 2026-09-07, on branch `claude/exp29-migration-manifest` at
 commit `02445b8` — **the migration manifest gate (issue #76), and the runbook
 repair it shipped with corrected**. `just ci` **exit 0**, recipe by recipe,
@@ -556,9 +648,9 @@ and real WireMock rails; `test-doc` **96 passed, 1 ignored**; `verify-ignored`
 `lint-web`; `test-web`, of which `@vpay/checkout` is **448 cases in 23 files, 0
 skipped** (was 302 in 17) and `@vpay/tokens` **7 in 1**; `deny` (advisories,
 bans, licenses, sources all ok). **Nothing under `backends/` was touched**, so
-every Rust number is `master`'s.
+every Rust number is `master`'s.*
 
-**And, for the first time on this branch, a real browser.** `just test-e2e`
+**And, for the first time on that branch, a real browser.** `just test-e2e`
 against a compose stack of the review's own — **11 Cypress tests, 11 passing, 0
 failing, 0 skipped**: `checkout.cy.ts` (1), `dashboard.cy.ts` (3),
 `shop-hosted.cy.ts` (3), `shop-embedded.cy.ts` (4), through a stack that mounts
