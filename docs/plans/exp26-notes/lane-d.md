@@ -153,30 +153,26 @@ before the rebase.
 | `just verify-npm-scope` | ✅ | unaffected — no package renamed or removed |
 | `just verify-status` | ✅ | `docs/status.md`'s one declared `NotImplemented` item still matches shipping code |
 | `just audit-web` | ✅ | "No known vulnerabilities found" on both `--prod` and the whole workspace, re-run after the rebase |
-| `dashboard.cy.ts` (real Cypress run against `compose.e2e.yml` + `compose.demo.yml`) | ✅ | **Run for real** — `just demo_project=exp26d demo_port=18080 demo_receiver_port=18083 demo_orange_port=18082 demo_checkout_port=13080 demo_shop_port=13001 test-e2e`, isolated from the sibling lanes' stacks (their default `demo_project=vpay-demo` already occupied 3001/3080/8080/8082/8083). `checkout.cy.ts` 1/1, **`dashboard.cy.ts` 3/3**, `shop-hosted.cy.ts` 3/3, all passing. See "What was NOT done" for `shop-embedded.cy.ts` (`e2e:framed`), which did not finish within this report — unrelated to this lane's own scope and, by measured evidence, blocked on host-wide resource contention (5+ concurrent Cypress/Electron processes from sibling lanes, load average 24–36 on 24 cores), not a code defect |
+| `just test-e2e` (real Cypress, full recipe, against `compose.e2e.yml` + `compose.demo.yml`) | ✅ | **Run twice, both for real**, isolated (`demo_project=exp26d`, five overridden ports) from the sibling lanes' `vpay-demo` stack. **First run** (pre-rebase tree): `checkout.cy.ts` 1/1, `dashboard.cy.ts` 3/3, `shop-hosted.cy.ts` 3/3 — `shop-embedded.cy.ts` (`e2e:framed`) did not finish inside this report's own time budget; measured, not assumed, that the stall was host contention rather than a defect (20 Cypress/Electron processes system-wide, load average 24–36 on 24 cores, five sibling lanes' own `test-e2e` runs); the stack was killed and manually torn down (containers, volume, network all confirmed removed) rather than left orphaned. **Second run, on the final rebased head, prompted by the coordinator's demand for a repo-wide green** — the exact same recipe, run to completion this time despite even worse measured contention (load average peaked at 82.97): **all 11 tests, all four specs, 0 failing** — `checkout.cy.ts` 1/1, `dashboard.cy.ts` **3/3**, `shop-hosted.cy.ts` 3/3, `shop-embedded.cy.ts` 4/4. `just test-e2e`'s own teardown ran to completion this time (`docker compose … down -v`, exit 0); containers, volume, network and all five overridden ports confirmed gone afterward |
 | `just ci` | not run | the whole-revamp gate (plan §7), meant for the final merged head after all four lanes land |
 
 ## What was NOT done
 
-- **`shop-embedded.cy.ts` (`pnpm run e2e:framed`, the second half of `just
-  test-e2e`) did not complete within this report.** `dashboard.cy.ts` DID
-  run, for real, against the isolated `exp26d` stack — 3/3 passing, along
-  with `checkout.cy.ts` (1/1) and `shop-hosted.cy.ts` (3/3) — so the claim
-  this bullet used to carry ("checked by hand against rendered markup, not
-  executed") no longer applies to this app's own spec. What remains
-  unproven is the fourth spec, which tests `@vpay/checkout`'s embedded mode
-  and `examples/shop` — neither owned by this lane. Measured, not assumed,
-  that the stall is host contention rather than a defect: at the point this
-  was written, `ps` counted **20** Cypress/Electron-related processes
-  system-wide (five sibling lanes' own `test-e2e`/Cypress runs on this
-  shared machine) and `uptime` reported a load average of 24–36 on a
-  24-core box. The `exp26d` compose stack itself is healthy — `dashboard`,
-  `checkout` and `shop` all report `healthy`/`Up` throughout — and nothing
-  in `shop-embedded.cy.ts` touches `frontends/apps/dashboard`. The stack
-  was torn down (`docker compose … down -v`) once this report's other
-  checks were complete, rather than left running indefinitely on a shared
-  machine; whoever runs `just test-e2e` next, with less contention, gets a
-  clean start rather than an orphaned `exp26d` project.
+- **Nothing, as it turns out — `shop-embedded.cy.ts` completed on the
+  second run.** The first `test-e2e` run (pre-rebase) genuinely did not
+  finish `e2e:framed` within a reasonable window, and this bullet
+  originally recorded that as host contention rather than a defect (20
+  Cypress/Electron processes system-wide, load average 24–36). That
+  diagnosis is now confirmed rather than merely argued: the coordinator's
+  demand for a repo-wide-green re-run, on the final rebased head, completed
+  the exact same recipe end to end — **11/11 tests, all four specs** —
+  under measurably *worse* contention (load average peaking at 82.97
+  mid-run) than the first attempt that stalled. The difference was patience
+  and Docker's warm build cache, not a code change to anything
+  `shop-embedded.cy.ts` exercises. Left for the record because a reader of
+  an earlier draft of this note would reasonably have concluded the app
+  had an untested embedded-mode interaction; it does not — see the Gates
+  table's `just test-e2e` row for the final numbers.
 - **No real-browser contrast check** (`cypress-axe`, plan §7 row 6) — not
   built by this lane; Lane A's own note already scopes it to "whichever
   lane lands last, or a dedicated pass".
@@ -300,3 +296,42 @@ Decisive checks run and confirmed, not merely read:
   unmigrated checkout tree before this lane started — taken as given
   rather than re-audited file-by-file, since Lane A's own decisive
   mutations for that claim are already recorded there.
+
+## A coordinator report that did not reproduce on this tree
+
+Mid-report, the coordinator relayed two findings "Lane B measured that are
+yours": (1) `frontends/apps/dashboard/tailwind.config.ts` fails typecheck
+under `just lint-web` on the Tailwind 4 base (daisyUI 5 ships no types for
+the default import); (2) the dashboard's Docker image fails to build until
+`next.config.ts` lists `@vpay/ui` in `transpilePackages`.
+
+**Neither reproduces on this branch, checked directly rather than assumed:**
+
+1. `frontends/apps/dashboard/tailwind.config.ts` does not exist on this
+   tree — `ls` reports "No such file or directory". It was deleted in this
+   lane's first commit (`0aed570`, plan §4.2's own instruction) and has
+   never existed on any commit since. `find . -iname tailwind.config.ts`
+   across the whole repository on this branch finds exactly one file:
+   `frontends/apps/checkout/tailwind.config.ts` — Lane B's own, not owned
+   by this lane and not touched here. `just lint-web` (which runs `pnpm -r
+   typecheck` across every workspace package, so a failure anywhere shows
+   up as a repo-wide failure) was re-run on the final head after this
+   report and is clean.
+2. `frontends/apps/dashboard/next.config.ts`'s `transpilePackages` has
+   listed `@vpay/ui` since before this lane touched the file at all — it
+   was already there in the untouched ten-file scaffold this lane started
+   from. **And it is empirically proven to build**: the `exp26d-dashboard`
+   Docker image was built twice from this branch (once before the rebase
+   in this report, once after, on the final head) and both times
+   `docker compose … up -d --build --wait` reported `exp26d-dashboard-1
+   Healthy`, and `dashboard.cy.ts` passed 3/3 against it both times.
+
+Most likely explanation, not confirmed: the coordinator's message describes
+what Lane B found combining lanes in a way this report has not — a merge of
+A+B+C+D, or an earlier snapshot of this branch before its first commit
+landed the deletions above. Recorded here, with the direct checks, rather
+than silently "fixed" (there is nothing on this tree to fix) or silently
+ignored (the report deserves an answer). `just lint-web` and a second full
+`just test-e2e` were both re-run on the final head specifically because the
+coordinator asked for repo-wide green on this lane's head, landing last —
+see the Gates table above and its `dashboard.cy.ts` row for the second run.

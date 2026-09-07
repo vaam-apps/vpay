@@ -221,7 +221,9 @@ and [../status.md](../status.md) for the row-by-row picture.
 4.3.3 + daisyUI 5.7.28 + `@base-ui/react` 1.8.0, replacing the `corporate`
 theme with `bumblebee`. `dashboard.cy.ts`'s three tests are unchanged in
 content and **run for real** against a live stack (isolated compose project,
-torn down after): 3/3 passing. This is a styling change, not a product one —
+torn down after, twice, on the final head): 3/3 passing, part of a full
+`just test-e2e` run that completed 11/11 across all four specs. This is a
+styling change, not a product one —
 see "There are no pages" above for what it does not claim.
 
 **The one thing a reader must not conclude from this document:** that the
