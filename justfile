@@ -794,12 +794,52 @@ verify-ui:
     #!/usr/bin/env bash
     set -euo pipefail
     fail=0
-    # 1. No palette colour utility outside @vpay/ui. Theme tokens only
-    #    (AGENTS.md's "never inline a status colour" rule, generalised to
-    #    every colour a daisyUI theme already names).
-    if git grep -nE 'className=.*\b(bg|text|border)-(red|green|blue|amber|yellow|slate|gray|zinc|neutral|stone|emerald|teal|sky|indigo|violet|rose|orange|lime|cyan|fuchsia|pink)-[0-9]' \
-        -- 'frontends/apps' 'examples/shop' ; then
-      echo 'verify-ui: a palette colour outside @vpay/ui — use a theme token'; fail=1
+    # 1. No hard-coded colour. Theme tokens only (AGENTS.md's "never inline a
+    #    status colour" rule, generalised to every colour a daisyUI theme
+    #    already names).
+    #
+    #    Three holes were measured in the first version of this check on
+    #    2026-09-07 and each is closed here, with the mutation that found it:
+    #
+    #      - It required `className=` earlier on the SAME LINE, so a class
+    #        held in a lookup object was invisible — and that is not a
+    #        hypothetical shape: `TONE_CLASS` in the checkout's `screens.tsx`
+    #        is exactly it, and the plan's own counting script names it as its
+    #        one known blind spot (plan §2). Mutation:
+    #        `const TONE_CLASS = { failed: 'bg-red-500 text-white' };` in an
+    #        app passed the gate. The `className=` prefix is gone; the utility
+    #        name is the whole signal.
+    #      - The palette list had no `black`/`white`, and required a numeric
+    #        suffix. Mutation: `bg-black/40` in an app passed — and one was
+    #        live in `@vpay/ui`'s own `Drawer` (fixed in the commit before
+    #        this one).
+    #      - An arbitrary colour value was not matched at all. Mutation:
+    #        `text-[#ff0000]` in an app passed, though plan §3 bans "a colour
+    #        literal, a hex value" in as many words.
+    #
+    #    `frontends/packages/ui/src` is in scope now too. Colour utilities are
+    #    meant to live inside `@vpay/ui` — but plan §3's exhaustive list of
+    #    what may be written there is layout, spacing, non-colour typography,
+    #    position, `sr-only` and opacity, and it ends "every colour utility
+    #    without exception is a bug report against this list". A daisyUI theme
+    #    token (`bg-base-100`, `text-error`) is not a palette colour and never
+    #    matches.
+    #
+    #    frontends/packages/ui/src/cn.ts is exempted by path: its doc comment
+    #    uses `bg-red-500 bg-blue-500` in prose, as the example of a Tailwind
+    #    conflict group. Same false positive the other two checks already
+    #    carry named exemptions for; measured to be the only file in the tree
+    #    that matches without an actual offending class.
+    if git grep -nE '\b(bg|text|border|ring|fill|stroke|from|via|to|decoration|outline|shadow|accent|caret|divide|placeholder)-((red|green|blue|amber|yellow|slate|gray|zinc|neutral|stone|emerald|teal|sky|indigo|violet|rose|orange|lime|cyan|fuchsia|pink)-[0-9]{2,3}|black|white)(/[0-9]+)?\b' \
+        -- 'frontends/apps' 'examples/shop' 'frontends/packages/ui/src' \
+        ':!frontends/packages/ui/src/cn.ts' ; then
+      echo 'verify-ui: a palette colour outside a theme token — use a daisyUI theme token'; fail=1
+    fi
+    # 1b. No arbitrary colour value either — plan §3 bans "a colour literal, a
+    #     hex value" in a component, and a `bg-[#ff0000]` is both.
+    if git grep -nE '\b(bg|text|border|ring|fill|stroke|from|via|to|decoration|outline|shadow|accent|caret|divide|placeholder)-\[(#|rgb|hsl|oklch|color-mix)' \
+        -- 'frontends/apps' 'examples/shop' 'frontends/packages/ui/src' ; then
+      echo 'verify-ui: a hard-coded colour value — use a daisyUI theme token'; fail=1
     fi
     # 2. No daisyUI 4 class that daisyUI 5 removed. These do not error; they
     #    silently stop styling anything. See

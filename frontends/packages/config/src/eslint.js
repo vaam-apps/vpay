@@ -146,8 +146,9 @@ const TESTING_IMPORT_PATTERNS = [
  * The one Tailwind 4 entry point, `@vpay/ui`'s `styles.css`.
  *
  * `eslint-plugin-better-tailwindcss` compiles it to learn the class universe
- * — which is what lets `no-unknown-classes` know that `btn-primary` exists and
- * `form-control` does not any more. Resolved from this file's own URL rather
+ * — which is what lets `no-unknown-classes` know that `btn-primary` exists
+ * and that the classes daisyUI 5 removed do not. Resolved from this file's
+ * own URL rather
  * than from the linted package, because the path from here is fixed while the
  * path from a consumer is not, and `@vpay/config` cannot depend on `@vpay/ui`
  * without a cycle.
@@ -318,7 +319,10 @@ export function vpayEslintConfig(options) {
               // Plan §7 names this `no-unregistered-classes`; that is the
               // rule's name in an earlier major. Under the pinned 4.7.0 it is
               // `no-unknown-classes`, and the plan is wrong on the name only.
-              // This is the rule that would have caught `form-control`.
+              // This is the rule plan §6.3 says would have caught the daisyUI
+              // 4 classes daisyUI 5 removed — `just verify-ui`'s check 2
+              // names them; this comment deliberately does not, because that
+              // grep reads comments too.
               "better-tailwindcss/no-unknown-classes": "error",
               // Caught a real defect on its first run: `w-[--anchor-width]`
               // in `select.tsx`, Tailwind 3 syntax that Tailwind 4 compiles
