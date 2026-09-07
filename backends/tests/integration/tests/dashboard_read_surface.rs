@@ -75,8 +75,8 @@ use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_api::op::keys::LoadedSigningKey;
 use vpay_config::{
-    Config, CurrencyEntry, DashboardClient, Deployment, HostEntry,
-    DASHBOARD_MERCHANT_CLAIM, MERCHANT_AUDIENCE, ProviderHost,
+    Config, CurrencyEntry, DASHBOARD_MERCHANT_CLAIM, DashboardClient, Deployment, HostEntry,
+    MERCHANT_AUDIENCE, ProviderHost,
 };
 use vpay_db::{NewPaymentIntent, Repositories, UnitOfWork as _};
 
@@ -655,8 +655,7 @@ async fn a_dashboard_token_without_the_registered_scope_is_refused() -> anyhow::
     // but a *populated, wrong* scope is what a real misconfiguration looks
     // like, and it is the case a naive "the token has some scope" check
     // would let through.
-    let wrong_scope =
-        harness.staff_token(DASHBOARD_CLIENT, "payments:write", Some(MERCHANT_A));
+    let wrong_scope = harness.staff_token(DASHBOARD_CLIENT, "payments:write", Some(MERCHANT_A));
     let (status, body) = harness
         .get("/dash/v1/payment_intents", Some(&wrong_scope))
         .await?;

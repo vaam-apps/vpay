@@ -282,8 +282,8 @@ CREATE TABLE staff_sessions (
     -- rather than glossed.
     access_token TEXT,
 
-    CONSTRAINT staff_members_sessions_id_length CHECK (char_length(id) = 64),
-    CONSTRAINT staff_members_sessions_state_is_known CHECK (state IN ('pending_totp', 'authenticated'))
+    CONSTRAINT staff_sessions_id_length CHECK (char_length(id) = 64),
+    CONSTRAINT staff_sessions_state_is_known CHECK (state IN ('pending_totp', 'authenticated'))
 );
 
 -- "Which sessions belong to this staff member?" — what sign-out-everywhere

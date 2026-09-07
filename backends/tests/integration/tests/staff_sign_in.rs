@@ -67,7 +67,9 @@ use vpay_db::{NewPaymentIntent, NewStaff, Repositories};
 
 mod support;
 
-use support::{ensure_crypto_provider_installed, generate_key, merchant_client, migrated_postgres, serve};
+use support::{
+    ensure_crypto_provider_installed, generate_key, merchant_client, migrated_postgres, serve,
+};
 
 const CLIENT_A: &str = "acme-cameroon";
 const MERCHANT_A: &str = "acme-cameroon-tenant";
@@ -218,8 +220,14 @@ impl Harness {
             .await?;
         anyhow::ensure!(status == 200, "login: {status} {body}");
 
-        let session = body["session"].as_str().context("a session token")?.to_owned();
-        let sealed = body["enrolment"].as_str().context("an enrolment blob")?.to_owned();
+        let session = field(&body, "session")
+            .as_str()
+            .context("a session token")?
+            .to_owned();
+        let sealed = field(&body, "enrolment")
+            .as_str()
+            .context("an enrolment blob")?
+            .to_owned();
         let secret = self
             .credentials
             .open_secret(&sealed)
@@ -236,7 +244,7 @@ impl Harness {
             .await?;
         anyhow::ensure!(status == 200, "totp: {status} {body}");
         anyhow::ensure!(
-            body["password_change_required"] == Value::Bool(true),
+            field(&body, "password_change_required") == &Value::Bool(true),
             "a freshly created staff member must be told to replace the printed password: {body}"
         );
 
@@ -261,7 +269,10 @@ impl Harness {
 
         let (status, body) = self.exchange(&code, VERIFIER).await?;
         anyhow::ensure!(status == 200, "token: {status} {body}");
-        let token = body["access_token"].as_str().context("an access token")?.to_owned();
+        let token = field(&body, "access_token")
+            .as_str()
+            .context("an access token")?
+            .to_owned();
         Ok((signed_in.session, token))
     }
 }
@@ -277,6 +288,16 @@ fn code_in_query(location: &str) -> Option<String> {
         .1
         .split('&')
         .find_map(|pair| pair.strip_prefix("code=").map(str::to_owned))
+}
+
+/// One field of a JSON body, or `Null`.
+///
+/// Not `body["field"]`: `clippy::indexing_slicing` is denied in these suites,
+/// and `serde_json::Value`'s `Index` impl panics on a type mismatch — so a
+/// handler that answered an array where a test expects an object would fail
+/// as a panic rather than as an assertion naming the field.
+fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
+    value.get(key).unwrap_or(&Value::Null)
 }
 
 /// Lower-case hex, the spelling `staff_sessions.id` carries.
@@ -475,14 +496,17 @@ async fn a_staff_member_signs_in_and_reads_their_own_merchants_payments() -> any
         .get_json("/dash/v1/staff/session", Some(&session), None)
         .await?;
     assert_eq!(status, 200, "{body}");
-    assert_eq!(body["merchant_id"], Value::String(MERCHANT_A.to_owned()));
     assert_eq!(
-        body["password_change_required"],
-        Value::Bool(false),
+        field(&body, "merchant_id"),
+        &Value::String(MERCHANT_A.to_owned())
+    );
+    assert_eq!(
+        field(&body, "password_change_required"),
+        &Value::Bool(false),
         "the printed password was replaced: {body}"
     );
     assert_eq!(
-        body["access_token"].as_str(),
+        field(&body, "access_token").as_str(),
         Some(token.as_str()),
         "the session is where the dashboard reads its token from: {body}"
     );
@@ -625,9 +649,12 @@ async fn a_replayed_totp_code_is_refused() -> anyhow::Result<()> {
         )
         .await?;
     assert_eq!(status, 200, "{body}");
-    let second = body["session"].as_str().context("a session token")?.to_owned();
+    let second = field(&body, "session")
+        .as_str()
+        .context("a session token")?
+        .to_owned();
     assert!(
-        body["enrolment"].is_null(),
+        field(&body, "enrolment").is_null(),
         "an enrolled account must not be offered a fresh secret: {body}"
     );
 
@@ -678,7 +705,7 @@ async fn a_pkce_verifier_mismatch_is_refused() -> anyhow::Result<()> {
     let (status, body) = harness.exchange(&code, other).await?;
     assert_eq!(status, 401, "{body}");
     assert!(
-        body["access_token"].is_null(),
+        field(&body, "access_token").is_null(),
         "a refused exchange must not carry a token: {body}"
     );
     Ok(())
@@ -707,8 +734,14 @@ async fn an_authorization_code_cannot_be_exchanged_twice() -> anyhow::Result<()>
     assert_eq!(first, 200, "{first_body}");
 
     let (second, second_body) = harness.exchange(&code, VERIFIER).await?;
-    assert_eq!(second, 401, "a spent code must not mint a second token: {second_body}");
-    assert!(second_body["access_token"].is_null(), "{second_body}");
+    assert_eq!(
+        second, 401,
+        "a spent code must not mint a second token: {second_body}"
+    );
+    assert!(
+        field(&second_body, "access_token").is_null(),
+        "{second_body}"
+    );
     Ok(())
 }
 
@@ -763,8 +796,8 @@ async fn a_code_redeemed_against_another_redirect_uri_is_refused() -> anyhow::Re
 /// still refused by `require_dashboard_token`'s merchant claim, which is what
 /// makes the two checks two checks.
 #[tokio::test]
-async fn a_staff_member_of_another_merchant_cannot_obtain_a_dashboard_token()
--> anyhow::Result<()> {
+async fn a_staff_member_of_another_merchant_cannot_obtain_a_dashboard_token() -> anyhow::Result<()>
+{
     let harness = harness().await?;
 
     // A second staff member, bound to the merchant the dashboard is NOT
@@ -795,8 +828,14 @@ async fn a_staff_member_of_another_merchant_cannot_obtain_a_dashboard_token()
         )
         .await?;
     assert_eq!(status, 200, "their password is fine: {body}");
-    let session = body["session"].as_str().context("a session")?.to_owned();
-    let sealed = body["enrolment"].as_str().context("an enrolment")?.to_owned();
+    let session = field(&body, "session")
+        .as_str()
+        .context("a session")?
+        .to_owned();
+    let sealed = field(&body, "enrolment")
+        .as_str()
+        .context("an enrolment")?
+        .to_owned();
     let secret = harness.credentials.open_secret(&sealed)?;
     let code = totp::Totp::new(secret)
         .code_at_step(totp::step_at(OffsetDateTime::now_utc().unix_timestamp()));
@@ -932,8 +971,7 @@ async fn signing_out_deletes_the_session_and_with_it_the_access_token() -> anyho
 /// The decisive mutation: use `load_session` instead of
 /// `authenticated_session` in `authorize` and this returns a `302`.
 #[tokio::test]
-async fn a_session_that_has_not_presented_a_second_factor_cannot_authorize()
--> anyhow::Result<()> {
+async fn a_session_that_has_not_presented_a_second_factor_cannot_authorize() -> anyhow::Result<()> {
     let harness = harness().await?;
 
     let (status, body) = harness
@@ -944,7 +982,10 @@ async fn a_session_that_has_not_presented_a_second_factor_cannot_authorize()
         )
         .await?;
     assert_eq!(status, 200, "{body}");
-    let session = body["session"].as_str().context("a session")?.to_owned();
+    let session = field(&body, "session")
+        .as_str()
+        .context("a session")?
+        .to_owned();
 
     let (status, code) = harness.authorize(&session, CHALLENGE).await?;
     assert_eq!(status, 401, "a password alone is not a sign-in");
@@ -969,8 +1010,14 @@ async fn the_printed_password_cannot_reach_dash_v1() -> anyhow::Result<()> {
         )
         .await?;
     assert_eq!(status, 200, "{body}");
-    let session = body["session"].as_str().context("a session")?.to_owned();
-    let sealed = body["enrolment"].as_str().context("an enrolment")?.to_owned();
+    let session = field(&body, "session")
+        .as_str()
+        .context("a session")?
+        .to_owned();
+    let sealed = field(&body, "enrolment")
+        .as_str()
+        .context("an enrolment")?
+        .to_owned();
     let secret = harness.credentials.open_secret(&sealed)?;
     let code = totp::Totp::new(secret)
         .code_at_step(totp::step_at(OffsetDateTime::now_utc().unix_timestamp()));

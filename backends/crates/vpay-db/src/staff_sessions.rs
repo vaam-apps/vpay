@@ -336,9 +336,7 @@ impl StaffSessions for crate::repository::PgRepositories {
             .staff_session()
             .update_many()
             .where_(staff_session::id().eq(id.to_owned()))
-            .where_(
-                staff_session::state().eq(SessionState::PendingTotp.as_wire_str().to_owned()),
-            )
+            .where_(staff_session::state().eq(SessionState::PendingTotp.as_wire_str().to_owned()))
             .set(cratestack_schema::UpdateStaffSessionInput {
                 state: Some(SessionState::Authenticated.as_wire_str().to_owned()),
                 last_seen_at: Some(to_chrono(now)),

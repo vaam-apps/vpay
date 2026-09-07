@@ -106,11 +106,7 @@ impl StaffCredentials {
     ///
     /// [`StaffAuthError::Password`] only if the *parameters* are impossible,
     /// which is a deployment fault and cannot depend on the input.
-    pub fn verify_password(
-        &self,
-        password: &str,
-        stored: &str,
-    ) -> Result<bool, StaffAuthError> {
+    pub fn verify_password(&self, password: &str, stored: &str) -> Result<bool, StaffAuthError> {
         let hasher = self.hasher()?;
         let Ok(parsed) = PasswordHash::new(stored) else {
             return Ok(false);

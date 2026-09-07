@@ -13,10 +13,20 @@
 //! ([`crate::dash::DASH_ROUTES`]), and `vpay-server`'s `main` builds one
 //! whenever the deployment registers a `dashboard_client`.
 //!
-//! What is still true, and is the sentence that matters: **no grant this
+//! ~~What is still true, and is the sentence that matters: **no grant this
 //! deployment serves can mint a token for that surface**, so it is a resource
-//! server with no issuer. See `crate::dash`'s module header and
-//! `docs/flows/dashboard.md`.
+//! server with no issuer.~~ **Corrected 2026-09-07**
+//! ([ADR-0017](../../../docs/adr/0017-staff-authentication.md)): the
+//! authorization-code grant is served for the dashboard client,
+//! [`crate::staff`] is what produces the `Identity` for it, and
+//! `staff_sign_in.rs` obtains a token over a real socket. It has an issuer.
+//!
+//! What ADR-0017 changed *here*: [`Surface::audience()`] is gone.
+//! [`JwtValidator::new`] takes the audience as a value, because for the
+//! dashboard it is the registered `dashboard_client.client_id` — which is
+//! configuration, and is what `default_handle_authorization_code` actually
+//! mints. See [`Surface`] for the full account. See also `crate::dash`'s
+//! module header and `docs/flows/dashboard.md`.
 //!
 //! [`AuthenticatedDashboard`], the *extractor*, is genuinely mounted on
 //! nothing and remains so — `/dash/v1` validates once in middleware, for
@@ -1073,11 +1083,7 @@ mod tests {
         let token = mint_token(
             encoding_key,
             "test-key-1",
-            &valid_claims(
-                DASHBOARD_CLIENT_ID,
-                "staff-oidc-session",
-                "dash:read",
-            ),
+            &valid_claims(DASHBOARD_CLIENT_ID, "staff-oidc-session", "dash:read"),
         );
 
         let error = validator
@@ -1096,11 +1102,7 @@ mod tests {
         let token = mint_token(
             encoding_key,
             "test-key-1",
-            &valid_claims(
-                DASHBOARD_CLIENT_ID,
-                "staff-oidc-session",
-                "dash:read",
-            ),
+            &valid_claims(DASHBOARD_CLIENT_ID, "staff-oidc-session", "dash:read"),
         );
 
         let claims = validator

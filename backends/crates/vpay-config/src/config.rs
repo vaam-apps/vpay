@@ -82,10 +82,7 @@ use serde::{Deserialize, Serialize};
 use vpay_core::Currency;
 use vpay_provider::ProviderConfig;
 
-use crate::oauth::{
-    DashboardClient, MERCHANT_AUDIENCE, MerchantClient,
-    jwks_has_at_least_one_key,
-};
+use crate::oauth::{DashboardClient, MERCHANT_AUDIENCE, MerchantClient, jwks_has_at_least_one_key};
 use crate::{
     ConfigError, Deployment, GrantType, HostEntry, validate_host, validate_secret,
     validate_webhook_url,
@@ -900,10 +897,7 @@ impl Config {
             // The second whole-document dashboard rule, here for the reason
             // above and because ADR-0017 made its forbidden value the
             // dashboard client's own id.
-            validate_no_merchant_claims_the_dashboard_client(
-                dashboard,
-                &self.merchant_clients,
-            )?;
+            validate_no_merchant_claims_the_dashboard_client(dashboard, &self.merchant_clients)?;
             // Third and last: a livemode dashboard with no staff secrets is
             // a dashboard nobody can sign in to. Checked only when a
             // dashboard is registered, because without one the secrets have
@@ -1128,7 +1122,10 @@ impl RawSecrets {
     fn identity(config: &Config) -> Self {
         Self {
             staff_auth: [
-                ("password_pepper", config.staff_auth.password_pepper.as_deref()),
+                (
+                    "password_pepper",
+                    config.staff_auth.password_pepper.as_deref(),
+                ),
                 (
                     "totp_encryption_key",
                     config.staff_auth.totp_encryption_key.as_deref(),

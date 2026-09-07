@@ -500,7 +500,9 @@ pub(crate) async fn change_password(
     }
 
     tracing::info!(staff_id = %staff.id, "a staff member replaced their password");
-    Ok(Json(serde_json::json!({ "password_change_required": false })))
+    Ok(Json(
+        serde_json::json!({ "password_change_required": false }),
+    ))
 }
 
 /// Who is signed in, and the token to present to `/dash/v1`.
@@ -552,8 +554,7 @@ pub(crate) async fn logout(
     let Some(token) = session_token(&headers) else {
         return Ok(Json(serde_json::json!({ "signed_out": true })));
     };
-    let deleted =
-        StaffSessions::delete(state.repositories(), &tokens::digest(&token)).await?;
+    let deleted = StaffSessions::delete(state.repositories(), &tokens::digest(&token)).await?;
     if deleted {
         tracing::info!("a staff session was signed out and its access token revoked with it");
     }
@@ -731,7 +732,11 @@ mod tests {
         assert_eq!(session_token(&headers), None);
 
         headers.insert(SESSION_HEADER, HeaderValue::from_static("   "));
-        assert_eq!(session_token(&headers), None, "a blank value is not a token");
+        assert_eq!(
+            session_token(&headers),
+            None,
+            "a blank value is not a token"
+        );
 
         headers.insert(SESSION_HEADER, HeaderValue::from_static(" abc "));
         assert_eq!(

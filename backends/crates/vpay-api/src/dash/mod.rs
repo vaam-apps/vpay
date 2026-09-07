@@ -3,22 +3,32 @@
 //!
 //! # STATUS, before anything else
 //!
-//! **No client of this deployment can obtain a token for this surface.**
-//! `/dash/v1` requires an access token whose `aud` is
-//! [`vpay_config::DASHBOARD_AUDIENCE`], and the only grant vpay serves is
-//! `client_credentials` on `/v1/oauth`, which is registered for merchant
-//! clients alone and now *refuses* to be registered for this audience
-//! (`vpay_config::ConfigError::MerchantClaimsDashboardAudience`). The
-//! authorization-code grant that would mint one is **not served**: it needs a
-//! decision about how a human staff member authenticates that this
-//! repository has never taken. See `docs/flows/dashboard-auth.md`'s Status
-//! section and `docs/status.md`.
+//! ~~**No client of this deployment can obtain a token for this surface.**~~
+//! **Corrected 2026-09-07**
+//! ([ADR-0017](../../../../../docs/adr/0017-staff-authentication.md)). The
+//! authorization-code grant *is* served, for the dashboard client and nothing
+//! else: [`crate::staff`] is the seven unauthenticated routes that produce the
+//! `Identity` `authkestra_op::handlers::authorize::handle_authorize` takes as
+//! a parameter and authenticates nobody for, and
+//! `backends/tests/integration/tests/staff_sign_in.rs` drives password ->
+//! TOTP -> PKCE -> `/dash/v1` end to end without minting a token of its own.
 //!
-//! So what is mounted here is a *resource server with no issuer*. That is a
-//! deliberate half, not an oversight, and the half it is matters: the
-//! tenancy boundary — which rows a dashboard credential may read — is the
-//! part that has to be right before a login exists, not after. Nothing here
-//! fabricates a session, a token or a row.
+//! Two things a reader must still not conclude from that.
+//!
+//! **There are no pages.** `frontends/apps/dashboard` is the scaffold. Every
+//! route here and every route in [`crate::staff`] is reachable over HTTP and
+//! by nothing a person can click.
+//!
+//! **No machine client may read this surface**, and that is a *tightening*
+//! ADR-0017 made rather than something that was always true: a
+//! `client_credentials` token was the only thing `/dash/v1` accepted until
+//! 2026-09-07 and is now refused, because it carries no merchant claim and
+//! nothing but the staff grant stamps one.
+//!
+//! What this module was built as, and still is: the tenancy boundary. It was
+//! written before a login existed on purpose — which rows a dashboard
+//! credential may read has to be right *before* one can be obtained, not
+//! after.
 //!
 //! # The boundary, stated once
 //!
@@ -32,10 +42,14 @@
 //! 1. the token validates against vpay's own JWKS for
 //!    [`crate::resource_auth::Surface::Dashboard`] — signature, expiry,
 //!    issuer and audience ([`crate::resource_auth::JwtValidator`]);
-//! 2. its `client_id` is the registered dashboard client's. The audience
-//!    alone is not enough: `aud` says which *surface*, `sub` says which
-//!    *credential*, and a deployment that ever registers two dashboard
-//!    clients must not let one read the other's tenant;
+//! 2. it carries a `vpay_config::DASHBOARD_MERCHANT_CLAIM` claim equal to the
+//!    bound `merchant_id`. The audience alone is not enough: since ADR-0017
+//!    the audience *is* the dashboard client id, so it says which credential
+//!    — and this says which tenant that credential was minted for, which is
+//!    the thing nothing but the staff grant can stamp. It was a comparison of
+//!    the token's `sub` to the client id until 2026-09-07, which was right
+//!    under `client_credentials` and wrong for every token a real login
+//!    produces;
 //! 3. it carries the registration's single scope
 //!    (`docs/flows/dashboard-auth.md`'s "Scope");
 //! 4. every query filters by the bound `merchant_id`, through the same
@@ -78,9 +92,10 @@ pub mod payment_intents;
 /// The path [`crate::router`] mounts this surface at.
 ///
 /// `/dash/v1`, not `/dashboard/v1`: it is the spelling ADR-0008 and ADR-0009
-/// fix, the one `vpay_config::DASHBOARD_AUDIENCE` (`vpay:dash/v1`) is built
-/// from, and the one every `dashboard_client.redirect_uris` in
-/// `config/application.yml` already points at. A prefix is cheap to change
+/// fix, and the one every `dashboard_client.redirect_uris` in
+/// `config/application.yml` already points at. (It was also the spelling the
+/// retired `vpay:dash/v1` audience was built from; ADR-0017 retired that
+/// constant, and the prefix outlived it.) A prefix is cheap to change
 /// and expensive to change *twice*, so it is named here once and nowhere
 /// else.
 pub const DASH_NEST: &str = "/dash/v1";

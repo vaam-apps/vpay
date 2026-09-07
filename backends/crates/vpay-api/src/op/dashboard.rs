@@ -265,10 +265,7 @@ struct DashboardClientStore {
 
 #[async_trait]
 impl ClientStore for DashboardClientStore {
-    async fn find_client(
-        &self,
-        client_id: &str,
-    ) -> Result<Option<ClientRegistration>, OpError> {
+    async fn find_client(&self, client_id: &str) -> Result<Option<ClientRegistration>, OpError> {
         Ok((client_id == self.registration.client_id).then(|| self.registration.clone()))
     }
 }
@@ -330,10 +327,7 @@ impl AuthorizationCodeStore for PgAuthorizationCodeStore {
                     // `NOT NULL` plus `method_is_s256` refuse a writer that
                     // reached here another way.
                     code_challenge: code.code_challenge.clone().unwrap_or_default(),
-                    code_challenge_method: code
-                        .code_challenge_method
-                        .clone()
-                        .unwrap_or_default(),
+                    code_challenge_method: code.code_challenge_method.clone().unwrap_or_default(),
                     redirect_uri: code.redirect_uri.clone(),
                     nonce: code.nonce.clone(),
                     expires_at,
@@ -520,7 +514,10 @@ mod tests {
     fn the_token_identity_carries_no_attributes_and_no_personal_data() {
         let in_code = identity_for("stf_1", &"a".repeat(64), "acme-tenant");
         assert_eq!(
-            in_code.attributes.get(ATTRIBUTE_SESSION).map(String::as_str),
+            in_code
+                .attributes
+                .get(ATTRIBUTE_SESSION)
+                .map(String::as_str),
             Some("a".repeat(64).as_str())
         );
         assert_eq!(

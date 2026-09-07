@@ -169,8 +169,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 34,
-        "all thirty-four migrations under backends/migrations should be recorded as applied \
+        applied, 35,
+        "all thirty-five migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -212,7 +212,14 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          writes carries a DB DEFAULT and 0033's problem cannot recur -- \
          makes payment_intents.customer real with a NO ACTION foreign key \
          on it and on checkout_sessions, and reopens the events and jobs \
-         vocabularies for customer.deleted and sweep_idle_customers)"
+         vocabularies for customer.deleted and sweep_idle_customers, \
+         and ADR-0017's 0035, which creates staff_members, staff_sessions \
+         and oauth_authorization_codes -- the three tables that turn \
+         /dash/v1 from a resource server with no issuer into a surface a \
+         human can sign in to, all three born with a schemas/vpay.cstack \
+         model and shaped so that EVERY repository method runs through \
+         CrateStack: no jsonb, no bytea, no native enum, no DEFAULT on any \
+         column a writer names, and no seq cursor)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -376,6 +383,263 @@ async fn partial_refunds_without_refunds_is_rejected_by_the_database() -> anyhow
 }
 
 // --- migration 0034 (customers) --------------------------------------------
+
+// --- migration 0035 (staff sign-in, ADR-0017) -------------------------------
+
+/// `staff_members_totp_is_paired` fires against a real Postgres.
+///
+/// **This is the only thing that can check it**, for
+/// `a_customer_with_no_name_email_or_phone_is_refused_by_the_database`'s
+/// reason: the constraint is multi-column, and `cratestack migrate baseline`
+/// skips every multi-column CHECK in both directions, so
+/// `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` would
+/// not move by one if it were deleted.
+///
+/// What it says is that "enrolled" is one fact with two columns. Without it a
+/// writer could leave a sealed TOTP secret behind with no enrolment date, or
+/// claim an enrolment with no secret — and the second is the dangerous
+/// direction, because `StaffRow::is_totp_enrolled` reads the *secret* while
+/// `Staff::enrol_totp`'s compare-and-swap guards on the *date*.
+///
+/// Both halves are load-bearing: the refusals, and that a row with **neither**
+/// is legal — which is what every staff member looks like between
+/// `vpay-server staff add` and their first sign-in.
+#[tokio::test]
+async fn a_half_enrolled_staff_member_is_refused_by_the_database() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    let insert = |suffix: &str, columns: &str, values: &str| {
+        let sql = format!(
+            "INSERT INTO staff_members (id, merchant_id, email, display_name, password_hash, \
+             password_change_required, last_totp_step, status, created_at, updated_at{columns}) \
+             VALUES ('stf_{suffix}', 'merchant_a', '{suffix}@example.test', 'Ada', 'hash', \
+             true, 0, 'active', now(), now(){values})"
+        );
+        sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&pool)
+    };
+
+    for (suffix, columns, values) in [
+        ("secretonly", ", totp_secret", ", 'sealed'"),
+        ("dateonly", ", totp_enrolled_at", ", now()"),
+    ] {
+        let err = insert(suffix, columns, values)
+            .await
+            .expect_err("half an enrolment is not an enrolment");
+        let db_err = err.as_database_error().expect("a database-level error");
+        eprintln!("observed rejection: {db_err}");
+        assert_eq!(
+            db_err.constraint(),
+            Some("staff_members_totp_is_paired"),
+            "the rejection must come from the pair CHECK specifically"
+        );
+    }
+
+    // Neither: the shape every staff member has between `staff add` and their
+    // first sign-in. Legal, and the assertion that stops the CHECK above from
+    // being read as "a secret is required".
+    insert("unenrolled", "", "")
+        .await
+        .context("an unenrolled staff member is a legal row")?;
+
+    // Both: the shape after enrolment.
+    insert(
+        "enrolled",
+        ", totp_secret, totp_enrolled_at",
+        ", 'sealed', now()",
+    )
+    .await
+    .context("an enrolled staff member is a legal row")?;
+
+    Ok(())
+}
+
+/// The two single-column CHECKs on `staff_members` that a *writer* could
+/// break, asserted directly.
+///
+/// `staff_members_email_is_lower_case` is the important one and it is not
+/// obviously a constraint at all. `Staff::find_by_email` is a plain
+/// `email = $1` — no `lower(email)`, deliberately, because a functional
+/// predicate would let a writer store a form the database and the reader
+/// disagreed about. So a row written with a capital letter is an **account
+/// that can never sign in**, and its failure has no diagnosis anywhere: the
+/// login form says "sign-in failed" and the log says "no such staff account".
+///
+/// `staff_members_status_is_known` is the vocabulary `vpay_db::StaffStatus`
+/// mirrors. A value outside it is `DbError::StaffStatusUnknown` rather than a
+/// default, because the first variant is `Active` and a default would read a
+/// row the database stopped constraining as *permitted to sign in*.
+///
+/// Both are single-column, so the drift report *does* see them — as `[safe]
+/// … is not declared` lines, which say a constraint exists and nothing about
+/// what it does. `EXPECTED_DRIFT_CHANGES` falling by one is not a signal a
+/// reader can act on; this test is.
+#[tokio::test]
+async fn a_mixed_case_address_and_an_unknown_status_are_refused_by_the_database()
+-> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    let insert = |suffix: &str, email: &str, status: &str| {
+        let sql = format!(
+            "INSERT INTO staff_members (id, merchant_id, email, display_name, password_hash, \
+             password_change_required, last_totp_step, status, created_at, updated_at) \
+             VALUES ('stf_{suffix}', 'merchant_a', '{email}', 'Ada', 'hash', true, 0, \
+             '{status}', now(), now())"
+        );
+        sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&pool)
+    };
+
+    for (suffix, email, status, constraint) in [
+        (
+            "mixedcase",
+            "Ada@Example.Test",
+            "active",
+            "staff_members_email_is_lower_case",
+        ),
+        (
+            "badstatus",
+            "ada@example.test",
+            "suspended",
+            "staff_members_status_is_known",
+        ),
+    ] {
+        let err = insert(suffix, email, status)
+            .await
+            .expect_err("the database refuses a writer that did not canonicalise");
+        let db_err = err.as_database_error().expect("a database-level error");
+        eprintln!("observed rejection: {db_err}");
+        assert_eq!(db_err.constraint(), Some(constraint));
+    }
+
+    // The canonical form of both, so the assertions above are about the
+    // values and not about the statement.
+    insert("good", "ada@example.test", "active")
+        .await
+        .context("a lower-cased address with a known status is a legal row")?;
+    insert("disabled", "grace@example.test", "disabled")
+        .await
+        .context("`disabled` is the other half of the vocabulary")?;
+
+    Ok(())
+}
+
+/// `staff_sessions` and `oauth_authorization_codes` cascade from the rows they
+/// belong to, which is what makes signing out kill a code in flight.
+///
+/// Two foreign keys and one behaviour. `oauth_authorization_codes.session_id`
+/// is `ON DELETE CASCADE` onto `staff_sessions`, so
+/// `POST /dash/v1/staff/logout` — one `DELETE` — also removes any code that
+/// session issued and has not exchanged. Without it, a sign-out during a login
+/// race would leave a code that could still be exchanged for a token.
+///
+/// The FK itself is single-column and the drift report sees it; what it does
+/// **not** see is `ON DELETE CASCADE`, which is the half this asserts.
+#[tokio::test]
+async fn signing_out_cascades_onto_a_code_in_flight() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    sqlx::query(
+        "INSERT INTO staff_members (id, merchant_id, email, display_name, password_hash, \
+         password_change_required, last_totp_step, status, created_at, updated_at) \
+         VALUES ('stf_cascade', 'merchant_a', 'cascade@example.test', 'Ada', 'hash', true, 0, \
+         'active', now(), now())",
+    )
+    .execute(&pool)
+    .await
+    .context("seeding a staff member")?;
+
+    let session = "a".repeat(64);
+    sqlx::query(
+        "INSERT INTO staff_sessions (id, staff_id, state, created_at, expires_at, last_seen_at) \
+         VALUES ($1, 'stf_cascade', 'authenticated', now(), now() + interval '12 hours', now())",
+    )
+    .bind(&session)
+    .execute(&pool)
+    .await
+    .context("seeding a session")?;
+
+    sqlx::query(
+        "INSERT INTO oauth_authorization_codes (code_hash, client_id, staff_id, session_id, \
+         merchant_id, scope, code_challenge, code_challenge_method, redirect_uri, created_at, \
+         expires_at) \
+         VALUES ($1, 'vpay-dashboard', 'stf_cascade', $2, 'merchant_a', 'dashboard:read', \
+         'challenge', 'S256', 'https://dash.example.test/cb', now(), now() + interval '60 seconds')",
+    )
+    .bind("b".repeat(64))
+    .bind(&session)
+    .execute(&pool)
+    .await
+    .context("seeding a code in flight")?;
+
+    let deleted = sqlx::query("DELETE FROM staff_sessions WHERE id = $1")
+        .bind(&session)
+        .execute(&pool)
+        .await
+        .context("signing out")?;
+    assert_eq!(deleted.rows_affected(), 1);
+
+    let codes: i64 = sqlx::query("SELECT COUNT(*) AS n FROM oauth_authorization_codes")
+        .fetch_one(&pool)
+        .await
+        .context("counting codes")?
+        .get("n");
+    assert_eq!(
+        codes, 0,
+        "signing out must take an unexchanged code with it, or a sign-out during a login race \
+         leaves a code that can still be exchanged for a token"
+    );
+
+    Ok(())
+}
+
+/// The PKCE method column admits `S256` and nothing else.
+///
+/// `default_handle_authorization_code` refuses a stored code whose method is
+/// not `S256` with `server_error`, so a row carrying `plain` is a row that can
+/// only ever produce a 500 — and `plain` is what OAuth 2.1 §7.5.2 forbids. The
+/// CHECK is what stops a writer other than `/authorize` creating one.
+#[tokio::test]
+async fn an_authorization_code_with_a_plain_pkce_method_is_refused_by_the_database()
+-> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    sqlx::query(
+        "INSERT INTO staff_members (id, merchant_id, email, display_name, password_hash, \
+         password_change_required, last_totp_step, status, created_at, updated_at) \
+         VALUES ('stf_plain', 'merchant_a', 'plain@example.test', 'Ada', 'hash', true, 0, \
+         'active', now(), now())",
+    )
+    .execute(&pool)
+    .await?;
+    let session = "c".repeat(64);
+    sqlx::query(
+        "INSERT INTO staff_sessions (id, staff_id, state, created_at, expires_at, last_seen_at) \
+         VALUES ($1, 'stf_plain', 'authenticated', now(), now() + interval '12 hours', now())",
+    )
+    .bind(&session)
+    .execute(&pool)
+    .await?;
+
+    let err = sqlx::query(
+        "INSERT INTO oauth_authorization_codes (code_hash, client_id, staff_id, session_id, \
+         merchant_id, scope, code_challenge, code_challenge_method, redirect_uri, created_at, \
+         expires_at) \
+         VALUES ($1, 'vpay-dashboard', 'stf_plain', $2, 'merchant_a', 'dashboard:read', \
+         'challenge', 'plain', 'https://dash.example.test/cb', now(), now())",
+    )
+    .bind("d".repeat(64))
+    .bind(&session)
+    .execute(&pool)
+    .await
+    .expect_err("`plain` is what OAuth 2.1 forbids");
+
+    let db_err = err.as_database_error().expect("a database-level error");
+    eprintln!("observed rejection: {db_err}");
+    assert_eq!(
+        db_err.constraint(),
+        Some("oauth_authorization_codes_method_is_s256")
+    );
+    Ok(())
+}
 
 /// `at_least_one_identifier` fires against a real Postgres.
 ///
@@ -1693,7 +1957,44 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 /// **nothing in either direction**, like the ten before it, which is why
 /// `a_customer_with_no_name_email_or_phone_is_refused_by_the_database`
 /// exists.
-const EXPECTED_DRIFT_CHANGES: u32 = 113;
+/// **113 -> 130 on 2026-09-07** (ADR-0017, migration `0035` and its three
+/// models), measured against a freshly migrated database rather than
+/// inferred. The +17 is exactly:
+///
+///   * **9 lines on `staff_members`** — seven hand-named CHECKs
+///     (`id_length`, `merchant_id_length`, `email_length`,
+///     `display_name_length`, `email_is_lower_case`, `status_is_known`,
+///     `totp_step_is_not_negative`) and two indexes
+///     (`staff_members_email_key`, `staff_members_merchant_idx`);
+///   * **4 on `staff_sessions`** — two CHECKs and two indexes;
+///   * **4 on `oauth_authorization_codes`** — two CHECKs and two indexes.
+///
+/// **What is NOT in that list is the part worth reading.** Not one
+/// `column … type differs`, not one `column … default value differs`, not
+/// one `column … is declared in the schema but does not exist`, and no
+/// `table … is not declared` line for any of the three. Every previous
+/// modelled table has at least one of those: `customers` carries a `seq`
+/// default line, `charges` and `ledger_entries` carry enum-type lines that
+/// **no migration can remove**, and `events` carries an identity default.
+///
+/// That is what "shaped so the data layer can write every column" buys, and
+/// it is measurable rather than a claim: no `bytea` (so
+/// `EXPECTED_UNMAPPABLE_COLUMNS` does not move either), no native enum, and
+/// no `DEFAULT` on any column a writer names — migration 0035's header says
+/// why each of the three was avoided, and this constant is the evidence.
+///
+/// The seventeen that remain are the two kinds 0.11.1 structurally cannot
+/// close: a hand-named CHECK (`@db_enforce` would emit a drop-and-add
+/// **pair**, exp17 §1a) and an index (`@@index([...])` emits an unordered
+/// index over the listed columns, and every index here is either unique or
+/// single-column-but-not-declared — declaring one adds a `[blocking]` line
+/// beside the `[safe]` one rather than closing it).
+///
+/// `staff_members_totp_is_paired` and the multi-column CHECKs beside it
+/// contribute **nothing in either direction**, like the eleven before them,
+/// which is why `postgres_smoke` asserts them against a real database
+/// directly.
+const EXPECTED_DRIFT_CHANGES: u32 = 130;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -1728,7 +2029,16 @@ const EXPECTED_DRIFT_CHANGES: u32 = 113;
 /// every previous move was a table changing category. `checkout_sessions`
 /// gained a column in the same migration and did not move, because it was
 /// already here as an undeclared table.
-const EXPECTED_DRIFTED_RELATIONS: u32 = 17;
+/// **17 -> 20 on 2026-09-07** (ADR-0017): `staff_members`, `staff_sessions`
+/// and `oauth_authorization_codes` all join the list, each declared and
+/// differing, in the shape `customers` joined it in.
+///
+/// Three tables for +17 changes is the ratio worth noticing beside
+/// `customers`' one table for +10: these three carry only hand-named CHECKs
+/// and undeclared indexes, and none of the *column*-level lines every earlier
+/// modelled table carries. See `EXPECTED_DRIFT_CHANGES` for the full account
+/// of what is absent and why.
+const EXPECTED_DRIFTED_RELATIONS: u32 = 20;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
 /// Postgres type onto a `.cstack` scalar, which it reports as a trailing
@@ -2134,6 +2444,12 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // The refund-capability coherence rule.
             ("providers", "partial_refunds_imply_refunds"),
             ("refunds", "failure_paired"),
+            // ADR-0017. "Enrolled" is one fact with two columns, so no code
+            // path can leave a sealed TOTP secret behind with no enrolment
+            // date, or claim an enrolment with no secret. Multi-column, so
+            // the drift report is blind to it in both directions — which is
+            // exactly why this list is read from the live database.
+            ("staff_members", "staff_members_totp_is_paired"),
         ],
         "the multi-column CHECK constraints backends/migrations builds. This list is read from \
          the live database rather than from the report precisely because the report cannot see \

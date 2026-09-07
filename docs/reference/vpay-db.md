@@ -1394,7 +1394,8 @@ work, and each binary installs the provider at boot
 `vpay-db` compiles `schemas/vpay.cstack` with
 [CrateStack](https://cratestack.dev)'s `include_server_schema!` macro
 (`cratestack = { package = "cratestack-pg", version = "=0.12.0" }`) and runs
-**eight** queries through the generated data layer, spread over five tables.
+**twenty** queries through the generated data layer, spread over eight
+tables.
 This section says which eight, what deliberately did not move, and which of
 CrateStack's behaviours vpay has had to work around rather than adopt. It is
 the application's side of `schemas/vpay.cstack`'s own header, which carries
@@ -1405,8 +1406,47 @@ writes followed the read; "**three**" until later the same day, when migration
 0032 made `currencies` modellable and `ConfigReconcile::reconcile`'s currency
 pass moved; and "**five**" until migration 0033 dropped the `providers`
 capability defaults and the provider pass moved with them. It said "**six**"
-until the outbox landed, and "**eight** over five tables" since 2026-09-06,
+until the outbox landed, and "**eight** over five tables" from 2026-09-06,
 when S4a's `customers` added `touch_last_used` and `delete`.
+
+**"Twenty over eight" since 2026-09-07** ([ADR-0017](../adr/0017-staff-authentication.md)),
+and the +12 is different in kind from every increment before it: it is not a
+method here and a method there, it is **three whole tables whose every
+repository method runs through the generated layer**. `staff_members` (six),
+`staff_sessions` (six) and `oauth_authorization_codes` (two hand-written
+queries' worth of work in two generated calls) have no raw `sqlx` statement
+between them.
+
+That is a property of migration `0035` rather than of ambition. Everything
+this section records as a reason for staying on raw `sqlx` was designed out
+of those three tables before they were created: no `jsonb` (which is what
+keeps five of `Customer`'s seven hand-written and `Event`'s insert blocked),
+no `bytea`, no native enum (the defect migration 0032 had to convert
+`providers.flow` out of), no `DEFAULT` on any column a writer names (0033's
+problem), and no `seq` cursor (whose correlated sub-select no delegate
+expresses). The cost is stated where it is paid: the encrypted TOTP secret is
+base64url `TEXT` rather than `BYTEA`, and `staff_members.last_totp_step` is
+`NOT NULL` seeded to 0 because `NULL < step` is NULL in SQL and a nullable
+column would refuse every staff member's *first* TOTP code forever.
+
+**The measured drift is the evidence.** The three tables cost 17 lines
+(`EXPECTED_DRIFT_CHANGES` 113 -> 130) and every one of them is a hand-named
+CHECK or an undeclared index — the two kinds 0.11.1 structurally cannot close.
+Not one `column ... type differs`, not one `column ... default value differs`,
+not one `column ... is declared in the schema but does not exist`, and
+`EXPECTED_UNMAPPABLE_COLUMNS` does not move at all. Every earlier modelled
+table carries at least one of those.
+
+One more thing worth carrying: **the table name is decided by the model
+name.** 0.11.1 derives it with
+`cratestack_core::route_naming::pluralize(to_snake_case(model))` and has no
+`@@map`, so `model Staff` reads and writes a table called `staffs`. The first
+draft of migration 0035 created `staff`, every query answered `relation
+"staffs" does not exist`, and **no gate said anything** — not `cargo build`,
+not `just check-schema`, not `clippy`, not any of the ten `just verify` gates —
+until a container-backed test ran. The model is `StaffMember` and the table is
+`staff_members`; the Rust trait is still `vpay_db::Staff`, because it is a
+trait about staff and not about a table.
 
 Everything here was measured against the 0.11.1 sources on 2026-09-06;
 `docs/plans/exp14-notes/opus.md`, `docs/plans/exp16-notes/opus.md` and

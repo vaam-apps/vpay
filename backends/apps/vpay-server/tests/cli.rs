@@ -129,6 +129,19 @@ fn valid_config_path() -> &'static str {
     )
 }
 
+/// The configuration `vpay-server staff add` needs: a merchant to validate
+/// `--merchant` against, a dashboard client, and both `staff_auth` secrets.
+///
+/// A second fixture rather than fields on [`valid_config_path`]'s, because
+/// every other test in this file boots the *server* against that one and a
+/// registered `dashboard_client` would change what those boots mount.
+fn staff_config_path() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/staff-config.yml"
+    )
+}
+
 /// A real RSA private key on disk, generated once per run of this test
 /// binary, standing in for the Kubernetes Secret mount `vpay-server` reads
 /// at boot.
@@ -1523,4 +1536,213 @@ fn sigterm_immediately_after_startup_still_triggers_graceful_shutdown() {
                 .join("\n")
         );
     });
+}
+
+// ------------------------------------------------------- `staff add` (ADR-0017)
+
+/// `vpay-server staff add` creates a staff member and prints a one-time
+/// password **on stdout, alone**.
+///
+/// The subprocess half of `backends/tests/integration/tests/staff_sign_in.rs`,
+/// which exercises every line of this subcommand *except* the ones only a
+/// process has: that the binary accepts the flags at all, that it needs no
+/// signing key and binds no listener, and that the password does not go
+/// through the tracing subscriber — which is JSON on stderr and is shipped to
+/// a log aggregator.
+///
+/// **This test found a real defect on the first draft.** The subcommand
+/// printed the password to stdout correctly — and the tracing subscriber
+/// defaults to stdout too, so the password arrived as the fifth line of a
+/// JSON log and `> password.txt` would have written the log to the file and
+/// left the password on the terminal. `install_process_defaults` now points a
+/// *subcommand's* logs at stderr; the server's stay on stdout, where a
+/// container log collector reads them.
+///
+/// Two decisive assertions, therefore. Move the `println!` to
+/// `tracing::info!` and stdout is empty; put the subcommand's logs back on
+/// stdout and the line count is five.
+#[test]
+fn staff_add_creates_a_staff_member_and_prints_a_one_time_password_on_stdout() {
+    with_live_postgres(|database_url| {
+        let output = bin()
+            .args([
+                "staff",
+                "add",
+                "--merchant",
+                "acme-cameroon-tenant",
+                "--email",
+                "Ada@Example.Test",
+                "--name",
+                "Ada Lovelace",
+            ])
+            .env("VPAY_CONFIG", staff_config_path())
+            .env("DATABASE_URL", &database_url)
+            .env("VPAY_LOG_FORMAT", "json")
+            // Deliberately NOT set: this subcommand must need no signing key.
+            // A server that cannot sign cannot serve, but creating a staff
+            // member is not serving, and requiring the Secret here would mean
+            // mounting it into a one-shot Job that has no use for it.
+            .env_remove("VPAY_OAUTH_SIGNING_KEY_FILE")
+            .output()
+            .expect("running `vpay-server staff add`");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "staff add exited {:?}\nstdout: {stdout}\nstderr: {stderr}",
+            output.status.code()
+        );
+
+        let lines: Vec<&str> = stdout.lines().filter(|line| !line.is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "the password must be alone on stdout so an operator can pipe it: {stdout:?}"
+        );
+        let password = lines.first().expect("exactly one line, asserted above");
+        assert_eq!(
+            password.len(),
+            26,
+            "26 characters of Crockford base32 is 130 bits: {password:?}"
+        );
+        assert!(
+            password
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()),
+            "the alphabet is `vpay_core::ids`', so nothing in it can be misread off a \
+             terminal: {password:?}"
+        );
+
+        assert!(
+            !stderr.contains(password),
+            "the password must NOT reach the tracing subscriber, which is JSON on stderr and \
+             is shipped to a log aggregator: {stderr}"
+        );
+        assert!(
+            stderr.contains("created a staff member"),
+            "the creation itself is logged, without the password: {stderr}"
+        );
+    });
+}
+
+/// The same address twice is refused, and the second run does **not** print a
+/// password.
+///
+/// `Staff::create` is a `create` and not an `upsert`, deliberately: a second
+/// `staff add` for an existing address must fail rather than quietly rewrite
+/// that person's password hash to one an operator just printed on a terminal.
+/// The unique index on `email` is what turns that into a refusal.
+///
+/// It also proves the address is lower-cased before the insert — the two runs
+/// below differ only in case, and the second is refused by an index over a
+/// column the first wrote in lower case.
+#[test]
+fn staff_add_refuses_a_second_account_for_one_address_whatever_its_case() {
+    with_live_postgres(|database_url| {
+        let add = |email: &str| {
+            bin()
+                .args([
+                    "staff",
+                    "add",
+                    "--merchant",
+                    "acme-cameroon-tenant",
+                    "--email",
+                    email,
+                    "--name",
+                    "Ada Lovelace",
+                ])
+                .env("VPAY_CONFIG", staff_config_path())
+                .env("DATABASE_URL", &database_url)
+                .output()
+                .expect("running `vpay-server staff add`")
+        };
+
+        let first = add("ada@example.test");
+        assert!(first.status.success(), "the first one succeeds");
+
+        let second = add("ADA@EXAMPLE.TEST");
+        let stdout = String::from_utf8_lossy(&second.stdout);
+        assert!(
+            !second.status.success(),
+            "the same address in another case must not create a second account: {stdout}"
+        );
+        assert!(
+            stdout.trim().is_empty(),
+            "a refused run must print no password at all: {stdout:?}"
+        );
+    });
+}
+
+/// A `--merchant` no `merchant_clients` entry registers is refused **before**
+/// the database is opened.
+///
+/// There is no merchants table (ADR-0003), so no foreign key could refuse it —
+/// and a staff member bound to a tenant nobody registers could sign in and see
+/// an empty dashboard, which is indistinguishable from a merchant with no
+/// payments. The check is in `staff_add` for exactly that reason.
+///
+/// No `DATABASE_URL` is supplied, which is what makes "before the database"
+/// an assertion rather than a claim: with the check moved after the
+/// connection, this would fail on a missing `--database-url` instead.
+#[test]
+fn staff_add_refuses_an_unregistered_merchant_before_it_opens_the_database() {
+    let output = bin()
+        .args([
+            "staff",
+            "add",
+            "--merchant",
+            "no-such-tenant",
+            "--email",
+            "ada@example.test",
+            "--name",
+            "Ada Lovelace",
+        ])
+        .env("VPAY_CONFIG", staff_config_path())
+        .env_remove("DATABASE_URL")
+        .output()
+        .expect("running `vpay-server staff add`");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("no-such-tenant") && stderr.contains("merchant_clients"),
+        "the refusal names the flag's value and where a registration lives: {stderr}"
+    );
+    assert!(
+        !stderr.contains("DATABASE_URL"),
+        "the merchant check must run before the database is needed at all: {stderr}"
+    );
+}
+
+/// A configuration with no `staff_auth` secrets refuses to create a staff
+/// member.
+///
+/// A password hashed without the pepper could never be verified by a
+/// deployment that has one, so the row would be an account nobody can sign in
+/// to — and the refusal names the missing key rather than producing one.
+#[test]
+fn staff_add_refuses_a_configuration_with_no_staff_auth() {
+    let output = bin()
+        .args([
+            "staff",
+            "add",
+            "--merchant",
+            "acme-cameroon-tenant",
+            "--email",
+            "ada@example.test",
+            "--name",
+            "Ada Lovelace",
+        ])
+        .env("VPAY_CONFIG", valid_config_path())
+        .env_remove("DATABASE_URL")
+        .output()
+        .expect("running `vpay-server staff add`");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("staff_auth"),
+        "the refusal names what is missing: {stderr}"
+    );
 }

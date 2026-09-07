@@ -23,11 +23,11 @@
 
 use std::collections::HashMap;
 
+use authkestra_op::handlers::authorize::{AuthorizeOutcome, AuthorizeRequest, handle_authorize};
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
-use authkestra_op::handlers::authorize::{AuthorizeOutcome, AuthorizeRequest, handle_authorize};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
@@ -167,7 +167,9 @@ pub(crate) async fn authorize(
             "a staff member signed in against a deployment whose dashboard is bound to another \
              merchant; refusing to mint a code for a tenant they may not read"
         );
-        return Err(refused("staff merchant does not match the dashboard binding"));
+        return Err(refused(
+            "staff merchant does not match the dashboard binding",
+        ));
     }
 
     // The identity carries the session and the tenant as attributes, because
@@ -240,10 +242,7 @@ fn authorize_request(query: AuthorizeQuery) -> AuthorizeRequest {
     fields.insert("scope", query.scope.into());
     fields.insert("state", query.state.into());
     fields.insert("code_challenge", query.code_challenge.into());
-    fields.insert(
-        "code_challenge_method",
-        query.code_challenge_method.into(),
-    );
+    fields.insert("code_challenge_method", query.code_challenge_method.into());
     fields.insert("nonce", query.nonce.into());
 
     // Infallible in practice — every field above is a `String` or a
@@ -340,14 +339,18 @@ pub(crate) async fn token(
         .consume_code(&tokens::digest(&form.code), now)
         .await?
     else {
-        return Err(refused("authorization code absent, expired or already spent"));
+        return Err(refused(
+            "authorization code absent, expired or already spent",
+        ));
     };
 
     if code.client_id != form.client_id {
         return Err(refused("code was issued to another client"));
     }
     if code.redirect_uri != form.redirect_uri {
-        return Err(refused("redirect_uri does not match the authorization request"));
+        return Err(refused(
+            "redirect_uri does not match the authorization request",
+        ));
     }
     if code.code_challenge_method != PKCE_METHOD {
         // Unreachable through `/authorize` — `handle_authorize` refuses any

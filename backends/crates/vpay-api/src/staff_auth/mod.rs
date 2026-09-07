@@ -70,7 +70,10 @@ pub struct StaffCredentials {
 impl fmt::Debug for StaffCredentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StaffCredentials")
-            .field("pepper", &format_args!("[{} bytes redacted]", self.pepper.len()))
+            .field(
+                "pepper",
+                &format_args!("[{} bytes redacted]", self.pepper.len()),
+            )
             .field(
                 "totp_key",
                 &format_args!("[{} bytes redacted]", self.totp_key.len()),

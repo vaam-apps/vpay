@@ -94,9 +94,7 @@ mod signing_keys;
 #[cfg(test)]
 mod sql_audit;
 
-pub use authorization_codes::{
-    AuthorizationCodeRow, AuthorizationCodes, NewAuthorizationCode,
-};
+pub use authorization_codes::{AuthorizationCodeRow, AuthorizationCodes, NewAuthorizationCode};
 pub use charges::{ChargeAsOf, ChargeRow, Charges, NewCharge};
 pub use checkout_sessions::{
     CheckoutSessionRow, CheckoutSessions, NewCheckoutSession, SessionListPage,

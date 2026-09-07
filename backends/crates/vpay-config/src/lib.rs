@@ -21,9 +21,7 @@ pub mod config;
 pub mod oauth;
 pub mod signal;
 pub use cli::{CommonArgs, LogFormat, ServerArgs, ServerCommand, StaffCommand, WorkerArgs};
-pub use config::{
-    CheckoutConfig, Config, CurrencyEntry, ProviderHost, StaffAuth, WebhookPolicy,
-};
+pub use config::{CheckoutConfig, Config, CurrencyEntry, ProviderHost, StaffAuth, WebhookPolicy};
 pub use oauth::{
     DASHBOARD_MERCHANT_CLAIM, DashboardClient, GrantType, MERCHANT_AUDIENCE, MerchantClient,
     WebhookEndpoint,

@@ -370,7 +370,6 @@ impl AppState {
     pub(crate) fn repositories(&self) -> &dyn Repositories {
         self.repositories.as_ref()
     }
-
 }
 
 /// So [`op::jwks::jwks_handler`] can take `State<Arc<dyn Repositories>>` and

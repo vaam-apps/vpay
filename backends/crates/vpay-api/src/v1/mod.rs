@@ -1030,7 +1030,7 @@ mod tests {
             webhooks: vpay_config::WebhookPolicy::default(),
             checkout: vpay_config::CheckoutConfig::default(),
             dashboard_client: None,
-        staff_auth: vpay_config::StaffAuth::default(),
+            staff_auth: vpay_config::StaffAuth::default(),
         }
     }
 

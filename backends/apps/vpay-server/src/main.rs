@@ -257,7 +257,25 @@ async fn run() -> anyhow::Result<()> {
 fn install_process_defaults(args: &ServerArgs) -> anyhow::Result<PrometheusHandle> {
     install_crypto_provider();
     let metrics = install_recorder().context("installing the Prometheus metrics recorder")?;
-    init_tracing(&args.common.log_filter, args.common.log_format);
+    // **An operator subcommand logs to stderr; the server logs to stdout.**
+    //
+    // Not a style choice, and it was found by a test rather than reasoned
+    // out. `tracing_subscriber::fmt()` defaults to *stdout*, which is right
+    // for the server — a container log collector reads stdout — and wrong for
+    // `staff add`, whose whole output is a one-time password an operator has
+    // to be able to pipe. With one stream, the password arrives as the fifth
+    // line of a JSON log and every line of that log is then a line an
+    // operator has to strip. Worse, a naive `> password.txt` would write the
+    // log to the file and leave the password on the terminal.
+    //
+    // So the split is by *what this invocation is*, not by log level: a
+    // subcommand's structured output is stdout and its diagnostics are
+    // stderr, which is the ordinary Unix contract.
+    init_tracing(
+        &args.common.log_filter,
+        args.common.log_format,
+        args.command.is_some(),
+    );
     Ok(metrics)
 }
 
@@ -502,10 +520,7 @@ fn loopback_validator(
 /// Whatever the subcommand's own step fails with — a config that will not
 /// load, a database that will not open, a merchant that is not registered, an
 /// address that is already taken.
-async fn run_command(
-    args: &ServerArgs,
-    command: vpay_config::ServerCommand,
-) -> anyhow::Result<()> {
+async fn run_command(args: &ServerArgs, command: vpay_config::ServerCommand) -> anyhow::Result<()> {
     let vpay_config::ServerCommand::Staff { command } = command;
     match command {
         vpay_config::StaffCommand::Add {
@@ -547,8 +562,9 @@ async fn staff_add(
     email: &str,
     display_name: &str,
 ) -> anyhow::Result<()> {
-    let config = vpay_api::boot::load_config(args.common.config.as_deref(), &args.common.profile)
-        .context("loading and validating configuration (--config / VPAY_CONFIG, ADR-0003)")?;
+    let config =
+        vpay_api::boot::load_config(args.common.config.as_deref(), &args.common.profile)
+            .context("loading and validating configuration (--config / VPAY_CONFIG, ADR-0003)")?;
 
     let (pepper, totp_key) = config.staff_auth.both().context(
         "staff_auth.password_pepper and staff_auth.totp_encryption_key are both required to \
@@ -576,9 +592,11 @@ async fn staff_add(
         .hash_password(&password)
         .context("hashing the one-time password")?;
 
-    let database_url = args.common.database_url.as_deref().context(
-        "--database-url / DATABASE_URL is required: `staff add` writes a row",
-    )?;
+    let database_url = args
+        .common
+        .database_url
+        .as_deref()
+        .context("--database-url / DATABASE_URL is required: `staff add` writes a row")?;
     let repositories = vpay_api::boot::open_migrated_database(database_url).await?;
 
     let id = vpay_core::ids::staff_id();
@@ -605,12 +623,17 @@ async fn staff_add(
     // stdout, alone, and never through `tracing`. `print_stdout` is a
     // workspace `warn` lint precisely so that writing to stdout is a
     // deliberate act; this is the one place in either binary where it is the
-    // right one, because the value must be pipeable and must not reach a log
-    // aggregator.
+    // right one, because the value must be pipeable.
+    //
+    // "Alone" is what `install_process_defaults` arranges: on a subcommand it
+    // points the tracing subscriber at **stderr**, so this line is the whole
+    // of stdout. Without that, the password is the fifth line of a JSON log —
+    // measured, by the test named below, on the first draft of this
+    // subcommand.
     #[allow(
         clippy::print_stdout,
-        reason = "the one-time password must be pipeable and must NOT go through the tracing \
-                  subscriber, which is JSON on stderr and is shipped to a log aggregator"
+        reason = "the one-time password must be pipeable and must be the whole of stdout; \
+                  `install_process_defaults` puts a subcommand's logs on stderr so it is"
     )]
     {
         println!("{password}");
@@ -962,16 +985,29 @@ fn install_crypto_provider() {
 ///
 /// The two formats produce differently-typed subscriber builders, so this is
 /// a match over independent `.init()` calls rather than one shared pipeline.
-fn init_tracing(log_filter: &str, log_format: LogFormat) {
-    match log_format {
-        LogFormat::Json => {
+fn init_tracing(log_filter: &str, log_format: LogFormat, to_stderr: bool) {
+    match (log_format, to_stderr) {
+        (LogFormat::Json, false) => {
             tracing_subscriber::fmt()
                 .json()
                 .with_env_filter(env_filter(log_filter))
                 .init();
         }
-        LogFormat::Text => {
+        (LogFormat::Json, true) => {
             tracing_subscriber::fmt()
+                .json()
+                .with_writer(std::io::stderr)
+                .with_env_filter(env_filter(log_filter))
+                .init();
+        }
+        (LogFormat::Text, false) => {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter(log_filter))
+                .init();
+        }
+        (LogFormat::Text, true) => {
+            tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
                 .with_env_filter(env_filter(log_filter))
                 .init();
         }

@@ -125,11 +125,7 @@ impl Totp {
             selected.get(3).copied().unwrap_or(0),
         ]);
 
-        format!(
-            "{:0width$}",
-            binary % MODULUS,
-            width = DIGITS as usize
-        )
+        format!("{:0width$}", binary % MODULUS, width = DIGITS as usize)
     }
 
     /// Which step `code` is the code for, at `unix_seconds`, or `None`.
