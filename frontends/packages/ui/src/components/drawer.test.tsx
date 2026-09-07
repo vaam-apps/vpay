@@ -47,10 +47,11 @@ describe('Drawer', () => {
         </Drawer>
       );
     }
-    render(<Controlled />);
+    const { unmount } = render(<Controlled />);
 
     expect(screen.getByText('Charge detail')).toBeTruthy();
     fireEvent.keyDown(document, { key: 'Escape', code: 'Escape' });
     expect(onOpenChange).toHaveBeenCalledWith(false);
+    unmount();
   });
 });
