@@ -7,13 +7,12 @@
  * other fails the "covers each state the machine can be in" assertion.
  *
  * Picked up by `frontends/packages/ui/.storybook/main.ts`, which is where
- * the a11y addon and the daisyUI themes are already configured; CI's `web`
- * job builds that Storybook. **The theme this app itself ships is
- * `bumblebee` and only that one** (`tailwind.config.ts`), which the shared
- * Storybook does not know about — a story here is reviewed under whatever
- * theme that config lists, so it shows the layout and the copy honestly and
- * the *colour* only approximately. Saying so beats a screenshot nobody
- * questions.
+ * the a11y addon and the daisyUI theme are already configured; CI's `web`
+ * job builds that Storybook. **The theme this app ships is `bumblebee` and
+ * only that one**, and since this app's own styling is now entirely
+ * `@vpay/ui` classes reached through `@vpay/ui/styles.css` — the exact file
+ * `.storybook/preview.ts` imports — a story here is reviewed under the same
+ * compiled CSS the real page ships, not an approximation of it.
  */
 import type { Meta, StoryObj } from '@storybook/react';
 

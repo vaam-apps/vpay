@@ -5,6 +5,8 @@
  * been to the rail. What it can show is "still waiting for the rail's
  * answer", an outcome, an expired session, or a read it could not make.
  */
+import { PageShell, Stack } from '@vpay/ui';
+
 import type { Branding } from '../config/settings';
 import type { Locale, Translate } from '../i18n/index';
 import { failureMessage } from '../lib/failures';
@@ -40,23 +42,24 @@ export function ReturnView(props: ReturnViewProps) {
   const merchant = context?.merchant?.name ?? null;
 
   return (
-    <main className="mx-auto flex w-full max-w-md flex-col gap-6 p-6">
-      <header className="flex items-center justify-between gap-4">
-        <BrandHeader t={t} branding={props.branding} />
-        <LocaleSwitch t={t} locale={locale} onChange={props.onLocaleChange} />
-      </header>
+    <main>
+      <PageShell>
+        <Stack justify="between" gap="md">
+          <BrandHeader t={t} branding={props.branding} />
+          <LocaleSwitch t={t} locale={locale} onChange={props.onLocaleChange} />
+        </Stack>
 
-      {context === null ? null : (
-        <PaymentSummary
-          t={t}
-          merchant={merchant}
-          amount={amount}
-          reference={context.session.id}
-          livemode={context.session.livemode}
-        />
-      )}
+        {context === null ? null : (
+          <PaymentSummary
+            t={t}
+            merchant={merchant}
+            amount={amount}
+            reference={context.session.id}
+            livemode={context.session.livemode}
+          />
+        )}
 
-      <div aria-live="polite" aria-atomic="true" data-testid="live-region">
+        <div aria-live="polite" aria-atomic="true" data-testid="live-region">
         {(() => {
           switch (state.name) {
             case 'loading':
@@ -123,9 +126,10 @@ export function ReturnView(props: ReturnViewProps) {
             }
           }
         })()}
-      </div>
+        </div>
 
-      <SupportLine t={t} branding={props.branding} />
+        <SupportLine t={t} branding={props.branding} />
+      </PageShell>
     </main>
   );
 }

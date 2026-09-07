@@ -1,13 +1,12 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import '@vpay/ui/styles.css';
 
 /*
  * The only hand-written CSS in this app.
  *
- * Everything else is a daisyUI component class or a Tailwind utility — the
- * maintainer's "minimal custom CSS" requirement (2026-09-05), and the reason
- * an operator can retint the whole page by setting two custom properties.
+ * Everything else is a daisyUI component class or a Tailwind utility, all
+ * of it reached through `@vpay/ui` — the maintainer's "minimal custom CSS"
+ * requirement (2026-09-05), and the reason an operator can retint the whole
+ * page by setting one custom property (`src/config/theme.ts`).
  *
  * daisyUI's `loading` spinner and its button focus scale animate
  * unconditionally. A payer with vestibular sensitivity has asked their

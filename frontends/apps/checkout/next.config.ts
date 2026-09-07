@@ -20,7 +20,10 @@ import type { NextConfig } from 'next';
  */
 const config: NextConfig = {
   reactStrictMode: true,
-  transpilePackages: ['@vpay/tokens'],
+  // `@vpay/ui` ships raw `.ts` source (no build step, `main: './src/index.ts'`)
+  // the same way `@vpay/tokens` does — added 2026-09-07 (exp26 UI revamp)
+  // when this app started importing it.
+  transpilePackages: ['@vpay/tokens', '@vpay/ui'],
   output: 'standalone',
   /**
    * The monorepo root, so the standalone bundle is laid out relative to it.

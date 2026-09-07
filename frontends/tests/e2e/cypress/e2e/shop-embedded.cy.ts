@@ -225,7 +225,8 @@ describe("the shop, paid inside an iframe on its own page", () => {
     inFrame('[data-screen="select_rail"]').should("be.visible");
     inFrame('button[data-rail="orange_money"]').click();
     inFrame('[data-screen="ready_redirect"]').should("be.visible");
-    inFrame("button.btn-primary").click();
+    // `data-testid`, not `button.btn-primary` — see shop-hosted.cy.ts.
+    inFrame('[data-testid="continue"]').click();
 
     cy.window()
       .its("__vpayRedirects", { timeout: 60_000 })

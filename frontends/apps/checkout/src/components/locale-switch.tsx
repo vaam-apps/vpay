@@ -12,6 +12,8 @@
  */
 'use client';
 
+import { Select } from '@vpay/ui';
+
 import { LOCALES, type Locale, type Translate } from '../i18n/index';
 
 export function LocaleSwitch({
@@ -25,22 +27,16 @@ export function LocaleSwitch({
 }) {
   const id = 'vpay-locale';
   return (
-    <div className="flex items-center gap-2">
-      <label className="text-sm opacity-70" htmlFor={id}>
-        {t('locale.label')}
-      </label>
-      <select
-        id={id}
-        className="select select-bordered select-sm"
-        value={locale}
-        onChange={(event) => onChange(event.target.value as Locale)}
-      >
-        {LOCALES.map((candidate) => (
-          <option key={candidate} value={candidate}>
-            {t(candidate === 'fr' ? 'locale.fr' : 'locale.en')}
-          </option>
-        ))}
-      </select>
-    </div>
+    <Select
+      id={id}
+      size="sm"
+      aria-label={t('locale.label')}
+      value={locale}
+      onValueChange={(next) => onChange(next as Locale)}
+      items={LOCALES.map((candidate) => ({
+        value: candidate,
+        label: t(candidate === 'fr' ? 'locale.fr' : 'locale.en'),
+      }))}
+    />
   );
 }
