@@ -78,6 +78,7 @@ nothing on this page runs a path the one-liner does not:
 | `just demo-status` | what is running, under which project, on which host ports |
 | `just demo-down` | stop the stack and delete its volumes |
 | `just demo` | `demo-up` then `demo-walk` |
+| `just demo-staff` | create the dashboard's staff member against a **running** stack and write the one-time password to `.e2e/<demo_project>/staff-password.txt` ([§6](#6-signing-in-to-the-dashboard)) |
 
 `demo-walk` is separately re-runnable, which is what you want while reading its
 output: each run mints fresh idempotency keys and fresh intents.
@@ -816,35 +817,97 @@ edited back to EUR, which is the one state the check exists to catch.
   `just stripe-compat`, which drives the official `stripe` package against the
   same stack.
 
-## 6. The dashboard is out of scope, and why
+## 6. Signing in to the dashboard
 
-Issue #11 asks that the dashboard either show the intents the walkthrough
-created *or* that the issue state why it is out of scope. It is out of scope,
-and the reason is not that the screen is unfinished:
+~~The dashboard is out of scope, and why~~ — **rewritten 2026-09-07 (exp28).**
+This section said "there is no data source to show", and that was true right up
+to the moment `/dash/v1` and the staff sign-in landed. The dashboard is a real
+screen now, it shows the payments the walkthrough just created, and this
+section says how to get into it.
 
-**There is no page to show it on.** Per [../status.md](../status.md) the
-dashboard renders a static scaffold notice and makes no call to
-`vpay-server`. ~~`/dash/v1` does not exist (Phase 2b, not started).~~
-**Corrected 2026-09-07:** `/dash/v1` has existed since 2026-09-06 — two
-authenticated read routes, `vpay_api::dash::DASH_ROUTES` — and staff sign-in
-since 2026-09-07 ([ADR-0017](../adr/0017-staff-authentication.md)). Both are
-proven over HTTP against a real Postgres
-(`backends/tests/integration/tests/dashboard_read_surface.rs`,
-`.../staff_sign_in.rs`). The reason the dashboard stays down is now entirely
-on the app's side: **nothing in it calls either surface, and it has no
-pages.** A demo that booted it would
-be inviting a reader to look at a screen that *cannot* show the six payments
-just made, which is worse than not booting it. `just demo-up` therefore starts
-eight services and not nine, and building the dashboard for it would cost
-minutes the demo does not buy anything with.
+### Create the staff member
 
-The other two Next.js images in this stack — `vpay-checkout` and `vpay-shop` —
-**are** built and started, and the difference is exactly the one above: both
-have something to show. The checkout page renders a session step 5 created;
-the shop renders a catalogue and can create its own.
+There is **no sign-up**. ADR-0017 decision 1: a dashboard account is a
+decision an operator takes, not a form a visitor fills in, and
+`vpay-server staff add` is the only thing that creates one. Against a stack
+that is already up:
 
-`docker compose -f compose.yml -f compose.e2e.yml up` still starts it if you
-want to look at the scaffold.
+```bash
+just demo-staff
+```
+
+It runs `staff add` as a one-off container inside the stack — same
+configuration, same database — and writes the **one-time password** it printed
+to `.e2e/<demo_project>/staff-password.txt`, mode 0600 and git-ignored.
+
+```console
+$ just demo-staff
+demo-staff: created ada@example.test for demo-merchant-tenant; the one-time password is in .e2e/vpay-demo/staff-password.txt
+$ cat .e2e/vpay-demo/staff-password.txt
+```
+
+> **The password is printed once.** Only its argon2id hash is stored, so if you
+> lose the file the account cannot be recovered — `just demo-down` (which
+> deletes the volumes) and start again. Running `just demo-staff` twice hits
+> the `staff_members_email_key` unique index; the recipe says so and keeps the
+> file from the first run.
+
+If you moved ports, the sub-invocation needs them too — `just
+demo_project=vpay-demo-b demo_port=18088 demo-staff`.
+
+### Sign in
+
+The dashboard is on **http://localhost:3000**. That port is fixed, not a
+variable: `compose.e2e.yml` hard-codes `3000:3000` and the dashboard client's
+registered `redirect_uri` names it, so two demo stacks cannot both serve a
+dashboard (see [§7](#7-two-demos-on-one-machine)).
+
+1. **Work email and password.** `ada@example.test` and the contents of the
+   file above.
+2. **Set up your authenticator.** This is a *first* sign-in, and enrolment is
+   mandatory — a session never reaches `authenticated` while
+   `staff_members.totp_secret` is `NULL`. Scan the QR with any TOTP app, or
+   type the base32 key shown beneath it. Nothing is written to your account
+   until the next step succeeds, so a failed scan is not a lockout: go back to
+   `/login` and start again for a fresh secret.
+3. **Enter the six-digit code.** This is what commits the enrolment.
+4. **Choose a password.** The printed one is refused by every authenticated
+   route until it is replaced, `/oauth/authorize` included, so there is no
+   `/dash/v1` token at all until this is done. Twelve characters minimum;
+   length is the only rule.
+5. You land on **/payments**, listing the intents `just demo-walk` created for
+   `demo-merchant-tenant`. Click an id for the charge, the refunds, the last
+   error and the event timeline.
+
+**"Sign out" is a real revocation**, not a cookie clear: it deletes the
+`staff_sessions` row, which is the only place the dashboard's server can read
+the `/dash/v1` access token from. The JWT itself stays cryptographically valid
+until it expires — ADR-0017's Consequences says so rather than letting
+"revocation" carry more weight than it can.
+
+### What you will see that looks wrong and is not
+
+- **The payer column is an em dash.** `charges.payer_ref_masked` is never
+  written by anything (`docs/status.md`), so the detail page renders the column
+  as null rather than deriving a mask from the payer's unmasked number. The day
+  the column is written the value appears.
+- **The list has a "Methods" column and no "Rail" column.**
+  `GET /dash/v1/payment_intents` returns no charge, so the only rail-shaped
+  value there is the set of rails the intent *may* be confirmed against. The
+  rail that actually took it is on the detail page.
+- **There is no page count.** The API serves cursors and a `has_more`, and no
+  count anywhere.
+
+### Two things it still cannot do
+
+**Anything at all to a payment.** `/dash/v1` refuses every non-`GET` method at
+the boundary, before the router matches. There is no re-poll, no replay, no
+refund and no annotation — and therefore no `audit_log`, because there is
+nothing yet to audit (ADR-0008 wants one row per dashboard write).
+
+**Any other slice.** Webhooks, checkout sessions, balances, settings and rail
+health are not built, and the navigation does not link to them —
+`frontends/apps/dashboard/src/layout.test.tsx` fails if it ever does.
 
 ## 7. Two demos on one machine
 

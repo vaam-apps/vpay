@@ -318,7 +318,21 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
     # then a TOTP code it computes from the secret the enrolment screen shows.
     # Without it that spec has nobody to sign in as — and it must fail loudly
     # rather than skip, so this is checked rather than tolerated.
-    just demo-staff
+    #
+    # Every port override is repeated on this sub-invocation, and that is not
+    # ceremony: `just demo-staff` inherits the ENVIRONMENT exported above but
+    # NOT this recipe's variable overrides, so a bare call resolves
+    # `demo_project` to its default and addresses `vpay-demo` — somebody
+    # else's stack, on somebody else's machine, with somebody else's data.
+    # Measured on the first run of this recipe: it created a one-off container
+    # in a stack this run had never brought up.
+    just demo_project={{demo_project}} \
+         demo_port={{demo_port}} \
+         demo_receiver_port={{demo_receiver_port}} \
+         demo_orange_port={{demo_orange_port}} \
+         demo_checkout_port={{demo_checkout_port}} \
+         demo_shop_port={{demo_shop_port}} \
+         demo-staff
     if [ $? -ne 0 ] || [ ! -s {{demo_staff_password_file}} ]; then
         echo "test-e2e: FAIL — no staff member for the dashboard spec" >&2
         docker compose {{demo_compose}} down -v
@@ -1920,12 +1934,24 @@ down:
 # `down -v` against a different file set leaves volumes behind.
 demo_compose := "-f compose.yml -f compose.e2e.yml -f compose.demo.yml"
 
-# The eight services `just demo-up` starts, named rather than left to
-# compose's "everything in the file set". The ninth is `dashboard`, and
-# leaving it out is a statement, not an optimisation: per docs/status.md it
-# renders a static scaffold notice and makes no call to `vpay-server`, so
-# there is no data source that could show the payments this walkthrough makes
-# — see docs/runbooks/demo.md's "what this does not prove".
+# The NINE services `just demo-up` starts, named rather than left to compose's
+# "everything in the file set".
+#
+# `dashboard` was the one deliberately left out, and the reason was recorded
+# here as "a statement, not an optimisation": it rendered a static scaffold
+# notice and made no call to `vpay-server`, so there was no data source that
+# could show the payments the walkthrough makes. **That stopped being true on
+# 2026-09-07 (exp28)** — the dashboard signs a staff member in and lists this
+# merchant's payment intents — so it joins the list, and
+# `docs/runbooks/demo.md` §6 is how to sign in to it.
+#
+# One consequence, stated because it is the kind that is discovered at the
+# worst moment: `compose.e2e.yml` publishes the dashboard on host port **3000**
+# and that port is NOT one of the `demo_*` variables — the dashboard client's
+# registered `redirect_uri` names it, and a redirect URI is matched byte for
+# byte. So two demo stacks cannot both serve a dashboard, and the second
+# `demo-up` fails on the port bind. Everything else in "two demos on one
+# machine" is unaffected.
 #
 # `vpay-checkout` and `vpay-shop` joined the list in Step 9 and had to: a
 # service that is in the file set but not in this list does not start, and the
@@ -1935,7 +1961,7 @@ demo_compose := "-f compose.yml -f compose.e2e.yml -f compose.demo.yml"
 # `just stripe-compat` still brings up its own SIX — it drives `/v1` and needs
 # no browser surface, and building two Next.js images for it would cost
 # minutes it does not buy anything with.
-demo_services := "postgres wiremock-mtn wiremock-orange wiremock-webhook vpay-server vpay-worker vpay-checkout vpay-shop"
+demo_services := "postgres wiremock-mtn wiremock-orange wiremock-webhook vpay-server vpay-worker vpay-checkout vpay-shop dashboard"
 
 # The six `just stripe-compat` brings up. Spelled separately from
 # `demo_services` above rather than derived from it, because the difference is

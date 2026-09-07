@@ -27,7 +27,7 @@ lie as an empty table.
 
 | Slice | What it is                                 | State                                                                |
 | ----- | ------------------------------------------ | -------------------------------------------------------------------- |
-| 1     | Payments — list and detail                 | **This slice.** The API half is built; the pages are not — see below |
+| 1     | Payments — list and detail                 | **Built.** The two `/dash/v1` reads, the sign-in, and the pages       |
 | 2     | Webhooks — deliveries, retries, signatures | Not started                                                          |
 | 3     | Checkout sessions                          | Not started                                                          |
 | 4     | Balances and the ledger                    | Not started                                                          |
@@ -142,34 +142,86 @@ with no issuer.**~~ They have an issuer now. What was true and stays true is
 why the tenancy boundary was built first: it has to be right *before* a login
 exists, not after.
 
-### There are still no pages, and the reason changed
+### ~~There are still no pages~~ — corrected 2026-09-07 (exp28)
 
-`frontends/apps/dashboard` is unchanged: still the scaffold, still saying so
-on screen, still zero tests, and `dashboard.cy.ts` still asserts the scaffold
-notice.
+**This section said `frontends/apps/dashboard` was "still the scaffold, still
+saying so on screen, still zero tests", and it is no longer true.** The pages
+exist and a person can click them:
 
-Slice 1's reason — "a dashboard whose session cannot exist is a set of pages
-that cannot be reached, screenshotted, or tested end to end" — **stopped
-being true on 2026-09-07**. A session can exist now, and the pages were in
-ADR-0017's own scope. They were not built in that pass either, and the honest
-statement of why is scope rather than a blocker: the backend slice
-(three tables, the credential primitives, seven routes, the audience change
-and two test suites) was as much as one pass delivered, and the brief it was
-written to said in so many words to deliver the grant end to end first and
-report the pages as not done rather than stubbing them.
+| Page               | What it is                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------- |
+| `/login`           | Work email and argon2id password — leg one of ADR-0017's two factors                       |
+| `/login/totp`      | The six-digit code. A **first** sign-in renders the `otpauth://` QR and the base32 secret, and requires one valid code before the enrolment is committed |
+| `/login/password`  | Replacing the one-time password `vpay-server staff add` printed. Not optional and not a nag: a session carrying `password_change_required` is refused by every authenticated route, `/oauth/authorize` included, so no `/dash/v1` token can exist until this is done |
+| `/payments`        | The bound merchant's intents, newest first. Status and created-range filters, cursor paging |
+| `/payments/{id}`   | The intent, the charge, the refunds, the last error with its failure code, and the event timeline |
 
-So the whole of `/dash/v1` — the reads, the login and the grant — is reachable
-over HTTP and by nothing a person can click.
+`/` redirects to whichever of `/login` and `/payments` applies. It used to be
+the whole app — a scaffold notice plus a legend of every status badge — and
+that legend is gone with it: it was a reference for a payments list nobody had
+written, and the list exists.
 
-What did change on 2026-09-07 (exp26 Lane D,
-`docs/plans/2026-09-07-ui-revamp.md` §4.2) is the styling substrate under the
-scaffold: `@base-ui/react` + Tailwind 4 + daisyUI 5 through `@vpay/ui`, in
-place of the raw Tailwind classes the scaffold used to write inline, plus four
-compiled component recipes (`frontends/apps/dashboard/README.md`) for whoever
-builds sign-in, the payments table and the detail view next — the sign-in
-recipe carries the password-then-TOTP shape ADR-0017 serves, with `pending`
-around every submit because the TOTP guard refuses a second submission of one
-code. `dashboard.cy.ts` still asserts the scaffold notice, unchanged and green.
+**The app is the OAuth client, and it runs the code leg server-side.** That is
+[ADR-0017](../adr/0017-staff-authentication.md) decision 4 rather than an
+implementation choice, and it has one consequence a reader will go looking for
+and not find: **there is no route at `redirect_uri`.** The app's own server
+requests the code, follows the `302` and exchanges it, all inside one function
+call, so `http://localhost:3000/dash/v1/callback` is a string the two OAuth
+legs must spell identically and not a page. A browser never sees a code, a
+verifier or a token.
+
+The `/dash/v1` access token is not kept in the app either. The token endpoint
+writes it to the `staff_sessions` row, and every render reads it back from
+`GET /dash/v1/staff/session` — which is exactly what makes signing out a
+revocation: delete the row and there is nowhere left to read it from.
+
+**What the pages deliberately do not show:**
+
+- **No "Rail" column on the list.** `GET /dash/v1/payment_intents` returns no
+  charge at all, so the only rail-shaped value in that response is
+  `payment_method_types` — the rails an intent *may* be confirmed against. The
+  column is headed **Methods**, because that is what it is; a "Rail" heading
+  over it would be wrong for every intent that offers two and was taken by
+  one. The detail page has a real `Rail`, from `charge.provider_code`.
+- **No payer column on the list**, for that reason and a second one — see the
+  next section.
+- **No page count.** `/dash/v1` serves cursors and a `has_more`, and no count
+  anywhere. "Page 3 of 12" would be either a `COUNT(*)` this API does not
+  offer or a number this app made up. `Next` appears only when `has_more` said
+  so — never because a page came back full, which would put a link onto an
+  empty list and read as data having been lost.
+- **A status this build cannot name renders as text, not as a coloured pill.**
+  A green badge on an unfamiliar status is a claim.
+
+**Configuration is read at container start and fails closed.** The API base
+URL, the dashboard `client_id`, its `redirect_uri` and its scope come from the
+environment through bracket notation, so `next build` cannot inline one
+deployment's values into the image. A missing one is not defaulted: `/login`
+renders the variable names an operator has to set, and offers no form.
+Nobody types a password into a page that could not have used it.
+
+The **merchant** is not configured in the app at all — it is read from
+`GET /dash/v1/staff/session`, which answers from the session row. It is
+rendered on every signed-in page beside the staff member's address, because an
+operator looking at an empty payments list has to be able to tell "this
+merchant has no payments" from "I am looking at the wrong merchant", and
+nothing else on the page answers that.
+
+**The nav rule is a gate, twice over.** `NAV_LINKS` is an exported constant
+and `src/layout.test.tsx` resolves every entry against `app/**/page.tsx` on
+disk *and* checks the rendered markup for a dangling internal `href` — the
+constant catches a link rendered only in a branch a test never exercises, and
+the markup catches a link written straight into the JSX. Adding
+`{ href: '/webhooks' }` fails both.
+
+**Styling substrate** (exp26 Lane D, `docs/plans/2026-09-07-ui-revamp.md`
+§4.2): `@base-ui/react` + Tailwind 4 + daisyUI 5 through `@vpay/ui`, theme
+`bumblebee`. Every page and every component composes `@vpay/ui`; there is not
+one `className` string anywhere under `app/` or `src/` outside the tests.
+The four "recipes" that lane compiled are now the components the pages render
+(`src/recipes/` → `src/components/`), and the sign-in recipe — one leg, no
+password control, because the auth decision was open when it was written — is
+replaced by the real two-leg forms.
 
 ### Two columns the list cannot show
 
@@ -179,6 +231,20 @@ code. `dashboard.cy.ts` still asserts the scaffold notice, unchanged and green.
   renders the column rather than deriving a mask from the unmasked
   `payer_ref`, so the field appears the day the column is written and not
   before. `docs/status.md` carries the gap.
+
+  **The page renders it as an em dash, `—`, and that dash is a real `null`
+  rather than a hard-coded string**: it comes from the column, on a payment
+  that *has* a charge, and `dashboard.cy.ts` walks the list until it finds one
+  before asserting it — a dash on an intent nobody confirmed would prove
+  nothing. The row exists rather than being omitted so that the day the column
+  is written the value appears, instead of a field having to be added then.
+  What must not happen is this quietly becoming the *unmasked* value because
+  the masked one was empty, and `payment-detail.test.tsx` pins both directions.
+
+  The **list** has no payer column at all, which is a second and stronger
+  reason: `GET /dash/v1/payment_intents` does not return a charge, so there is
+  no `payer_ref_masked` in that response to be null. A column there would be
+  sourced from nothing.
 - **There is no search by phone**, for the same reason: a filter over a
   column that is always `NULL` answers "no results" for every payer who ever
   paid, which reads as an answer.
@@ -211,26 +277,41 @@ refusals, and the `Surface::Dashboard` audience constant moved into
 over a real booted server on a real Postgres — 13 tests, 0 ignored — and its
 own header states what it cannot claim.
 
-**Not built:** ~~login, of any kind;~~ **corrected 2026-09-07** — the *server*
-half of login landed with [ADR-0017](../adr/0017-staff-authentication.md) and
-is proven by thirteen cases in
-`backends/tests/integration/tests/staff_sign_in.rs`
-([dashboard-auth.md](dashboard-auth.md) § Status). What is not built is
-login *in this app*: the dashboard's server-side session; every page; every
-other slice; every write. No page here calls `/dash/v1`, with or without a
-staff token. See "What slice 1 did NOT build" above and
+**Built and proven, 2026-09-07 (ADR-0017):** the staff sign-in — a
+`staff_members` table, argon2id with a deployment pepper, mandatory TOTP with
+a replay guard, server-side sessions, and the authorization-code grant with
+PKCE. [dashboard-auth.md](dashboard-auth.md) owns it.
+
+**Built and proven, 2026-09-07 (exp28): the pages.** `/login`, `/login/totp`,
+`/login/password`, `/payments` and `/payments/{id}`, on `@vpay/ui`, with the
+Next.js app as the OAuth client running the code leg server-side. 128 vitest
+cases in `frontends/apps/dashboard`, 0 skipped, covering the cookie
+attributes, PKCE against RFC 7636 Appendix B's own vector, the session gate,
+the masked-payer dash, the paging cursors and axe-core's structural rules over
+every screen. `dashboard.cy.ts` signs in through the real OP against the real
+stack — password, mandatory enrolment, a code the spec computes from the
+secret the enrolment screen displayed, the forced password change, then the
+code exchange — lists this merchant's payments, opens one, signs out and is
+refused afterwards.
+
+Four decisive mutations, each measured: drop `httpOnly` from the session
+cookie and `cookies.test.ts` fails; exchange a freshly generated PKCE verifier
+instead of the one the challenge was derived from and `oauth.test.ts` fails;
+add a nav link to a page nobody wrote and `layout.test.tsx` fails twice; and
+in the browser, `dashboard.cy.ts` asserts the session cookie is `httpOnly`,
+that `document.cookie` cannot see it, and that no JWT appears anywhere in the
+rendered page.
+
+**Not built:** every other slice (2–6); every write, and therefore no
+`audit_log`; no sweep of expired sessions or authorization codes; no key
+rotation. See "What slice 1 did NOT build" above and
 [../status.md](../status.md) for the row-by-row picture.
 
 **Restyled, 2026-09-07 (exp26 Lane D):** the scaffold's `app/layout.tsx` and
 `app/page.tsx` onto `@vpay/ui`'s components — `styling_files` 2 → 0,
-`class_tokens_distinct` 17 → 0 in both files (`exp26-plan-count.sh`); `Tailwind`
+`class_tokens_distinct` 17 → 0 in both files (`exp26-plan-count.sh`); Tailwind
 4.3.3 + daisyUI 5.7.28 + `@base-ui/react` 1.8.0, replacing the `corporate`
-theme with `bumblebee`. `dashboard.cy.ts`'s three tests are unchanged in
-content and **run for real** against a live stack (isolated compose project,
-torn down after, twice, on the final head): 3/3 passing, part of a full
-`just test-e2e` run that completed 11/11 across all four specs. This is a
-styling change, not a product one —
-see "There are no pages" above for what it does not claim.
+theme with `bumblebee`.
 
 **Reviewed, 2026-09-07** ([../plans/exp26-notes/lane-d-review.md](../plans/exp26-notes/lane-d-review.md)).
 Two of the four findings bear on this document's own claims. (1) The rewrite
@@ -239,11 +320,17 @@ went from 0 violations to 1 on the real rendered `<body>`, and every other
 gate — 9/9 vitest, lint, typecheck, `next build`, `dashboard.cy.ts` — stayed
 green. `<main>` is back and `frontends/apps/dashboard/src/a11y.test.tsx`
 gates it. (2) **This document's own nav rule** — "the navigation is only ever
-allowed to link to slices that exist" — was enforced by nothing: a
+allowed to link to slices that exist" — was enforced by nothing: an
 `<a href="/payments">` in the layout left the whole suite green. It is now a
-test that resolves every internal `href` against `app/**/page.tsx` on disk.
-Neither finding changes what this app claims to do; both are cases of a rule
-this repository states being checked by nobody.
+test that resolves every internal `href` against `app/**/page.tsx` on disk,
+and since exp28 it checks the `NAV_LINKS` constant as well, so a
+conditionally-rendered link cannot slip past it. Neither finding changes what
+this app claims to do; both are cases of a rule this repository states being
+checked by nobody.
 
 **The one thing a reader must not conclude from this document:** that the
-dashboard works. Two `GET` routes exist that nobody can authenticate to.
+dashboard is finished. ~~Two `GET` routes exist that nobody can authenticate
+to.~~ *Corrected 2026-09-07.* A staff member can sign in and read this
+merchant's payments. What the dashboard still cannot do is anything at all to
+them: there is no write path, no other slice, and no audit log — because
+there is nothing yet to audit.
