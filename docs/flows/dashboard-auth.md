@@ -122,6 +122,28 @@ shared counter in Postgres — puts a write on the unauthenticated path, which
 is a denial-of-service amplifier of a different kind. It is the first thing to
 revisit for a deployment that runs many replicas.
 
+**The IP the limiter counts is the transport peer, and nothing else.** vpay
+reads no `X-Forwarded-For` and no `Forwarded`, deliberately: both are
+caller-supplied on an unauthenticated route, and honouring either without an
+authenticated trusted-proxy list hands an attacker a fresh bucket per request.
+The consequence is stated rather than hidden — **behind a reverse proxy or an
+Ingress, every staff member shares one per-IP budget**, because the peer is
+the proxy. The per-email budget still binds per account, and closing the rest
+needs a trusted-proxy allow-list that this slice does not have. It is recorded
+in ADR-0017's Consequences.
+
+*Corrected 2026-09-07 (exp24 review, finding F2).* Until that review the
+per-IP half **did not exist**: axum supplies the peer address through
+`ConnectInfo`, `ConnectInfo` is present only when the service is built with
+`into_make_service_with_connect_info`, and neither `vpay-server` nor the test
+harness did that. Every attempt in the process was counted under the
+limiter's one `ip:unknown` key, so ten requests from anywhere locked every
+staff member out of the dashboard for five minutes — the deployment-wide
+version of exactly the lockout the design refuses to build. Both call sites
+now build the service with connect info, and
+`the_sign_in_rate_limit_is_per_source_address` burns one loopback source's
+budget and asserts a second source's first attempt is still served.
+
 ## Scope
 
 The dashboard's client registration requests exactly **one** OAuth2 scope,

@@ -870,8 +870,25 @@ async fn serve_with_bounded_drain(
     // `axum::serve(..).with_graceful_shutdown(..)` returns a builder that
     // implements `IntoFuture`, not `Future` directly — `tokio::select!`
     // needs the latter, hence the explicit `.into_future()`.
-    let serve_fut = axum::serve(listener, vpay_api::router(deps))
-        .with_graceful_shutdown(async move {
+    // `into_make_service_with_connect_info`, NOT `router(deps)` on its own,
+    // and it is a security property rather than a nicety. `ConnectInfo` is
+    // the ONLY thing that puts a peer address into request extensions;
+    // without this call `vpay_api::staff::login`'s
+    // `Option<Extension<ConnectInfo<SocketAddr>>>` is `None` on every
+    // request, and `SignInLimiter::check` counts the whole deployment under
+    // its one `ip:unknown` key. The per-IP half of ADR-0017 decision 2 then
+    // does not exist, and ten requests from anywhere lock every staff member
+    // out of the dashboard for five minutes.
+    //
+    // Measured, 2026-09-07 (exp24 review, finding F2): before this call,
+    // `attack_a13`/`the_sign_in_rate_limit_is_per_source_address` burned the
+    // budget from 127.0.0.2 and a first-ever attempt from 127.0.0.3 with a
+    // fresh address answered `429`.
+    let serve_fut = axum::serve(
+        listener,
+        vpay_api::router(deps).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
             shutdown.await;
             // A closed receiver just means the grace-period clock below
             // already lost interest — the drain itself already won the race.

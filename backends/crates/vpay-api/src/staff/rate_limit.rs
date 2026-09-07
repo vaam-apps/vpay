@@ -34,6 +34,32 @@
 //! choosing how much the database writes. ADR-0017's Consequences records
 //! this as the first thing to revisit for a deployment that runs many
 //! replicas.
+//!
+//! # Where the IP comes from, and the bug that made this module a lie
+//!
+//! [`SignInLimiter::check`] takes an `Option<IpAddr>` and counts a `None`
+//! under one shared `ip:unknown` key rather than exempting it — the
+//! fail-closed reading, and the right one. What supplies the `Some` is axum's
+//! `ConnectInfo`, which is in request extensions **only** when the service
+//! was built with `into_make_service_with_connect_info`.
+//!
+//! Until the exp24 review (2026-09-07, finding F2) neither `vpay-server`'s
+//! `serve_with_bounded_drain` nor the integration harness did that, so the
+//! peer was `None` on every request and this whole module was one global
+//! ten-per-five-minute bucket: ten requests from anywhere refused every
+//! sign-in in the deployment for five minutes. Every unit test below passed
+//! throughout, because they call `check` directly and pass a `Some`. The
+//! guard that can catch it is therefore an end-to-end one and lives in
+//! `staff_sign_in.rs`
+//! (`the_sign_in_rate_limit_is_per_source_address`), which drives two
+//! loopback source addresses through a real socket.
+//!
+//! **The address is the transport peer.** No `X-Forwarded-For`, no
+//! `Forwarded`: both are caller-supplied on an unauthenticated route, and
+//! trusting either without an authenticated proxy allow-list would hand an
+//! attacker a fresh bucket per request. Behind a reverse proxy the peer is
+//! the proxy, so the per-IP budget is shared by every staff member — stated
+//! in ADR-0017's Consequences rather than left for someone to discover.
 
 use std::collections::HashMap;
 use std::net::IpAddr;

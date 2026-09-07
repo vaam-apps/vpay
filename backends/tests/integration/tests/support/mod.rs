@@ -807,7 +807,19 @@ pub(crate) async fn serve(
         &config,
     );
     let server = tokio::spawn(async move {
-        let _ = axum::serve(listener, vpay_api::router(deps)).await;
+        // `into_make_service_with_connect_info`, exactly as
+        // `vpay-server`'s own `serve_with_bounded_drain` does it. Without it
+        // no request carries a `ConnectInfo`, the sign-in rate limiter counts
+        // every caller under one `ip:unknown` key, and a suite here would
+        // prove the limiter works while the binary's per-IP budget did not
+        // exist (exp24 review, finding F2). A harness that boots the router
+        // differently from the binary stops proving anything about the
+        // binary — this module's own header says so.
+        let _ = axum::serve(
+            listener,
+            vpay_api::router(deps).into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await;
     });
 
     Ok(Served {

@@ -205,6 +205,26 @@ unauthenticated path, which is a denial-of-service amplifier of a different
 kind. It is recorded in `docs/flows/dashboard-auth.md` and is the first thing
 to revisit if a deployment runs many replicas.
 
+**The per-IP budget counts the transport peer, so behind a proxy every staff
+member shares one.** vpay reads no `X-Forwarded-For` and no `Forwarded`
+header: both are caller-supplied on an unauthenticated route, and honouring
+either without an authenticated trusted-proxy list is a fresh bucket per
+request for an attacker. Under an Ingress the peer is the Ingress, and the
+per-IP half then bounds the deployment rather than the caller. The per-email
+half is unaffected and still bounds guessing at one account. Closing it needs
+a trusted-proxy allow-list, which this slice does not have.
+
+*Corrected 2026-09-07 (exp24 review, finding F2).* As first delivered the
+per-IP half did not exist at all: the peer address reaches a handler only
+through axum's `ConnectInfo`, and neither `vpay-server` nor the test harness
+built its service with `into_make_service_with_connect_info`. Every attempt
+was counted under the limiter's one `ip:unknown` key, so ten unauthenticated
+requests locked every staff member out of the dashboard for five minutes.
+Both call sites are fixed and
+`the_sign_in_rate_limit_is_per_source_address` is the end-to-end guard; the
+module's own unit tests could not catch it, because they call `check`
+directly with an address the router never supplied.
+
 **Nothing sweeps `staff_sessions` or `oauth_authorization_codes`.** Expired
 rows are refused on read and removed by the sign-out cascade; there is no
 periodic delete. The indexes a sweep would need exist; the sweep does not,

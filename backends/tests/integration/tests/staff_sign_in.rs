@@ -1235,3 +1235,86 @@ async fn a_deployment_without_staff_auth_serves_no_login() -> anyhow::Result<()>
     );
     Ok(())
 }
+
+// ----------------------------------------------------------------- test 14
+
+/// **The per-IP half of the sign-in rate limit is per IP**, which until the
+/// exp24 review it was not.
+///
+/// `SignInLimiter::check` takes an `Option<IpAddr>` and counts a `None` under
+/// one shared `ip:unknown` key, deliberately, so that removing whatever
+/// supplies the address cannot buy an unlimited bucket. The address is
+/// supplied by axum's `ConnectInfo`, and `ConnectInfo` is present only when
+/// the service is built with `into_make_service_with_connect_info` — which
+/// neither `vpay-server` nor this suite's harness did. Every attempt in the
+/// process therefore shared **one** ten-per-five-minute budget: ten requests
+/// from anywhere locked every staff member out of the dashboard, which is
+/// precisely the denial of service `rate_limit`'s own header says a lockout
+/// would be, at deployment scale rather than per account.
+///
+/// The decisive mutation is the fix itself: drop
+/// `.into_make_service_with_connect_info::<SocketAddr>()` from
+/// `support::serve` and the last assertion below reads `429`.
+///
+/// Two loopback source addresses against a server bound on `127.0.0.1`. Every
+/// burning attempt uses its own address so that the *email* budget can never
+/// be what refuses the control.
+#[tokio::test]
+async fn the_sign_in_rate_limit_is_per_source_address() -> anyhow::Result<()> {
+    let harness = harness().await?;
+
+    let from = |ip: [u8; 4]| {
+        reqwest::Client::builder()
+            .local_address(std::net::IpAddr::from(ip))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("a client bound to a loopback source address")
+    };
+
+    // Exactly the budget, from one source, on ten distinct addresses.
+    for n in 0..10 {
+        let response = from([127, 0, 0, 2])
+            .post(format!("{}/dash/v1/staff/login", harness.base_url))
+            .form(&[
+                ("email", format!("burner-{n}@example.test").as_str()),
+                ("password", "wrong"),
+            ])
+            .send()
+            .await
+            .context("burning one source address's budget")?;
+        assert_eq!(
+            response.status().as_u16(),
+            401,
+            "attempt {n} is inside the budget and must be refused on the credential, not the limit"
+        );
+    }
+
+    // A different source, a different address, its first ever attempt.
+    let response = from([127, 0, 0, 3])
+        .post(format!("{}/dash/v1/staff/login", harness.base_url))
+        .form(&[("email", "innocent@example.test"), ("password", "wrong")])
+        .send()
+        .await
+        .context("the control attempt from a second source address")?;
+    assert_eq!(
+        response.status().as_u16(),
+        401,
+        "one source address exhausting its budget must not refuse another: a 429 here means \
+         every caller in the deployment shares one bucket and the login is trivially DoS-able"
+    );
+
+    // And the exhausted source is still exhausted — the control must not have
+    // passed because the limiter stopped working altogether.
+    let response = from([127, 0, 0, 2])
+        .post(format!("{}/dash/v1/staff/login", harness.base_url))
+        .form(&[("email", "burner-0@example.test"), ("password", "wrong")])
+        .send()
+        .await
+        .context("the eleventh attempt from the exhausted source")?;
+    assert_eq!(
+        response.status().as_u16(),
+        429,
+        "the source that spent its budget is still over it"
+    );
+    Ok(())
+}
