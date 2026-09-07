@@ -5,8 +5,15 @@ refuses each move, and what a merchant is told when it does.
 
 This is S4b of the data-layer work, built on S4a's
 [Customer](customers.md). (The plan document itself is not in this repository
-— migration `0034`'s header cites `docs/plans/2026-09-06-data-layer.md` and no
-such file is tracked. That citation is wrong there and is not repeated here.) It is Stripe's `invoice`, narrowed to the
+— `docs/plans/2026-09-06-data-layer.md` is cited by the first line of migration
+`0034`'s header **and by the first line of `0036`'s**, and no such file is
+tracked or on disk. This paragraph named only `0034`'s until the S4b review on
+2026-09-07 and said the citation "is not repeated here", which was true of this
+document and not of the migration the same commit wrote. Neither `.sql` can be
+corrected in place — `sqlx::migrate!` checksums a migration's whole bytes and
+`just verify-migrations` pins them, which is why `0006`, `0013` and `0017`
+carry their corrections here too rather than in the file. `verify-links` does
+not read `.sql`, so nothing but a reader was ever going to catch it.) It is Stripe's `invoice`, narrowed to the
 subset a Cameroon merchant needs to bill a phone — there is no PDF, no e-mail,
 no tax, no credit note, no dunning and no subscription. Every one of those is
 listed under [What is not built](#what-is-not-built) with a date, because a
@@ -177,6 +184,17 @@ the rails that already exist ([hosted-checkout.md](hosted-checkout.md)).
 Building an invoice page would be a second payer surface to keep correct, and
 the one that exists is the one the browser tests already drive.
 
+**The payer is not shown the invoice number, and that is a gap rather than a
+decision** (recorded by the S4b review, 2026-09-07). `pay` writes
+`Invoice {number}` into the intent's `description`, so the number *reaches*
+the payer's browser — `GET /v1/browser/checkout/sessions/{id}` expands the
+intent and `description` is one of its keys — and
+`frontends/apps/checkout` renders the amount and the merchant name and
+nothing else. So a payer following a `hosted_invoice_url` from an e-mail sees
+a bill they cannot tie to the document that asked for it. Closing it is a
+change to the checkout screens, not to this resource; nothing here forecloses
+it, and the number is already on the wire the page reads.
+
 ### It takes `success_url` and `cancel_url`, and Stripe's `pay` does not
 
 Stripe's `pay` charges a payment method the merchant already has on file, so
@@ -317,11 +335,25 @@ pair. Migration 0032 had to rename `providers.flow`'s after the fact.
 ## Status
 
 **Built and proven against a real Postgres and the shipping router (2026-09-07,
-S4b).** `backends/tests/integration/tests/invoices.rs` is twelve cases;
-`vpay-db`'s `tests/repositories.rs` adds five (the settlement transaction and
-the two compare-and-swaps an HTTP test cannot isolate);
+S4b, amended the same day by review).**
+`backends/tests/integration/tests/invoices.rs` is **fifteen** cases (twelve as
+delivered, plus three from the review: two concurrent `pay` requests attaching
+exactly one intent, a foreign list cursor, and the representable ceiling);
+`vpay-db`'s `tests/repositories.rs` adds **six** (the settlement transaction,
+the two compare-and-swaps an HTTP test cannot isolate, and — from the review —
+that the settlement flips only the invoice its own intent is bound to);
 `postgres_smoke.rs` pins the drift and the multi-column CHECK inventory;
-`vpay-db`'s own module adds three with no container.
+`vpay-db`'s own module adds three with no container; `vpay-api`'s `model`
+module pins the wire object's eighteen keys.
+
+**Three mutations escaped the suite as delivered and are now caught**
+(2026-09-07 review, each measured by applying the mutation and re-running):
+deleting `NO_LIVE_INTENT` from `attach_intent` left every wire case green
+while two concurrent `pay` requests minted two intents and two hosted URLs for
+one bill; unscoping either list cursor left every case green while another
+merchant's `in_…` paged the caller's own rows; and keying the settlement's
+invoice flip on anything but its intent left all seven delivered invoice cases
+green while a settlement paid an invoice it was never bound to.
 
 **What is not built, and is a gap rather than a decision against it:**
 
@@ -361,6 +393,21 @@ the two compare-and-swaps an HTTP test cannot isolate);
   A merchant taking a deposit issues two invoices.
 - **The dashboard has no invoice screen.** `/dash/v1` exposes nothing about
   this resource.
+- **The payer's checkout page does not show the invoice number** (2026-09-07).
+  See [Paying](#paying): the number is in the intent's `description` and on
+  the wire the page reads; the page renders the amount and the merchant name
+  only.
+- **A refund does not move an invoice** (2026-09-07). Nothing in this
+  repository writes a `refunds` row yet — `POST /v1/refunds` is unrouted,
+  `mtn_momo::refund` is `NotImplemented` and Orange Money answers
+  `Unsupported` ([../status.md](../status.md)) — so a refunded paid invoice is
+  not a state this system can reach today. It is written down because that
+  will change and the answer is not obvious: `paid_means_nothing_remaining`
+  makes a `paid` invoice with anything remaining unstorable, so a refund
+  cannot simply decrement `amount_paid`, and Stripe's own answer is a credit
+  note, which vpay does not have. **Whether a refunded invoice stays `paid`
+  with a credit note beside it, or gains a sixth status, is a maintainer's
+  decision** and is deliberately not taken here.
 - **An invoice cannot be issued past `2^53 - 1` minor units** (2026-09-07,
   review). `POST /v1/invoices/{id}/finalize` answers `400` naming `invoice`
   above it, because `pay` mints its intent for `amount_remaining` without
