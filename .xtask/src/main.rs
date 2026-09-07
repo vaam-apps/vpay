@@ -4864,8 +4864,8 @@ fn verify_toolchain(root: &Path) -> Result<(), String> {
 /// satisfied by regenerating after an edit.
 fn verify_migrations(root: &Path) -> Result<(), String> {
     let manifest_path = root.join(MIGRATIONS_MANIFEST);
-    let manifest_text = fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("{MIGRATIONS_MANIFEST}: {e}"))?;
+    let manifest_text =
+        fs::read_to_string(&manifest_path).map_err(|e| format!("{MIGRATIONS_MANIFEST}: {e}"))?;
 
     let migrations_dir = root.join(MIGRATIONS_DIR);
 
@@ -4878,12 +4878,15 @@ fn verify_migrations(root: &Path) -> Result<(), String> {
             continue;
         }
         let parts: Vec<&str> = line.split("  ").collect();
-        if parts.len() != 2 {
-            problems.push(format!("{MIGRATIONS_MANIFEST}: malformed line (expected '<hash>  <filename>'): {line}"));
-            continue;
-        }
-        let hash = parts[0];
-        let filename = parts[1];
+        let [hash, filename] = match parts.as_slice() {
+            [h, f] => [*h, *f],
+            _ => {
+                problems.push(format!(
+                    "{MIGRATIONS_MANIFEST}: malformed line (expected '<hash>  <filename>'): {line}"
+                ));
+                continue;
+            }
+        };
 
         if hash.len() != 64 {
             problems.push(format!(
@@ -4900,54 +4903,55 @@ fn verify_migrations(root: &Path) -> Result<(), String> {
     if let Ok(entries) = fs::read_dir(&migrations_dir) {
         let mut found_files = std::collections::BTreeSet::new();
 
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                if path.is_file() {
-                    let filename = path.file_name().unwrap().to_string_lossy().to_string();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                let Some(name) = path.file_name() else {
+                    continue;
+                };
+                let filename = name.to_string_lossy().to_string();
 
-                    // Skip the manifest file itself
-                    if filename == "MANIFEST.sha256" {
-                        continue;
-                    }
+                // Skip the manifest file itself
+                if filename == "MANIFEST.sha256" {
+                    continue;
+                }
 
-                    found_files.insert(filename.clone());
+                found_files.insert(filename.clone());
 
-                    // Check if file is in manifest
-                    if let Some(expected_hash) = manifest_entries.get(&filename) {
-                        // Verify the hash matches
-                        let file_text = match fs::read(&path) {
-                            Ok(text) => text,
-                            Err(e) => {
-                                problems.push(format!("{}:  cannot read: {e}", path.display()));
-                                continue;
-                            }
-                        };
-
-                        let actual_hash = sha256(&file_text);
-
-                        if actual_hash != *expected_hash {
-                            problems.push(format!(
-                                "{}/{}: file has been edited (hash changed). Applied migrations are immutable. Do not edit migration files; if you must fix a typo, create a new migration that corrects it.",
-                                MIGRATIONS_DIR,
-                                filename
-                            ));
+                // Check if file is in manifest
+                if let Some(expected_hash) = manifest_entries.get(&filename) {
+                    // Verify the hash matches
+                    let file_text = match fs::read(&path) {
+                        Ok(text) => text,
+                        Err(e) => {
+                            problems.push(format!("{}:  cannot read: {e}", path.display()));
+                            continue;
                         }
-                    } else {
+                    };
+
+                    let actual_hash = sha256(&file_text);
+
+                    if actual_hash != *expected_hash {
                         problems.push(format!(
-                            "{}/{}: file exists but is not in {MIGRATIONS_MANIFEST} — add this line to the manifest:\n  {}  {}",
+                            "{}/{}: file has been edited (hash changed). Applied migrations are immutable. Do not edit migration files; if you must fix a typo, create a new migration that corrects it.",
                             MIGRATIONS_DIR,
-                            filename,
-                            sha256(&fs::read(&path).unwrap_or_default()),
                             filename
                         ));
                     }
+                } else {
+                    problems.push(format!(
+                        "{}/{}: file exists but is not in {MIGRATIONS_MANIFEST} — add this line to the manifest:\n  {}  {}",
+                        MIGRATIONS_DIR,
+                        filename,
+                        sha256(&fs::read(&path).unwrap_or_default()),
+                        filename
+                    ));
                 }
             }
         }
 
         // Check that every manifest entry exists as a file
-        for (filename, _hash) in &manifest_entries {
+        for filename in manifest_entries.keys() {
             if !found_files.contains(filename) {
                 problems.push(format!(
                     "{MIGRATIONS_MANIFEST}: entry for {filename} does not exist in {MIGRATIONS_DIR}/"
@@ -4974,7 +4978,7 @@ fn verify_migrations(root: &Path) -> Result<(), String> {
 
 /// Compute SHA256 hash of the given bytes and return it as a hex string.
 fn sha256(data: &[u8]) -> String {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
     hasher.update(data);
