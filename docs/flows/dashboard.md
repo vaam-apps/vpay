@@ -226,5 +226,18 @@ torn down after, twice, on the final head): 3/3 passing, part of a full
 styling change, not a product one —
 see "There are no pages" above for what it does not claim.
 
+**Reviewed, 2026-09-07** ([../plans/exp26-notes/lane-d-review.md](../plans/exp26-notes/lane-d-review.md)).
+Two of the four findings bear on this document's own claims. (1) The rewrite
+**dropped the `<main>` landmark** the scaffold had: axe-core's `region` rule
+went from 0 violations to 1 on the real rendered `<body>`, and every other
+gate — 9/9 vitest, lint, typecheck, `next build`, `dashboard.cy.ts` — stayed
+green. `<main>` is back and `frontends/apps/dashboard/src/a11y.test.tsx`
+gates it. (2) **This document's own nav rule** — "the navigation is only ever
+allowed to link to slices that exist" — was enforced by nothing: a
+`<a href="/payments">` in the layout left the whole suite green. It is now a
+test that resolves every internal `href` against `app/**/page.tsx` on disk.
+Neither finding changes what this app claims to do; both are cases of a rule
+this repository states being checked by nobody.
+
 **The one thing a reader must not conclude from this document:** that the
 dashboard works. Two `GET` routes exist that nobody can authenticate to.
