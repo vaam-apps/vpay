@@ -2819,13 +2819,15 @@ gen-demo-keys: gen-e2e-signing-key
 # Boot the demo stack and run the merchant walkthrough against it.
 demo: demo-up demo-walk
 
-# Generate the keys, build the images, bring the EIGHT services of
+# Generate the keys, build the images, bring the NINE services of
 # `demo_services` up, and return only once the server answers: postgres, both
 # WireMock rails, the merchant webhook receiver, `vpay-server`, `vpay-worker`,
-# vpay's own checkout page and the demo shop. (It said six until 2026-09-04;
-# lane 3 added `vpay-checkout` and lane 7 `vpay-shop` to `demo_services`
-# without the sentence following. The dashboard is the one service of the
-# file set this recipe deliberately leaves down — see compose.demo.yml.)
+# vpay's own checkout page, the demo shop and the dashboard. (It said six
+# until 2026-09-04; lane 3 added `vpay-checkout` and lane 7 `vpay-shop` to
+# `demo_services` without the sentence following. It then said EIGHT until
+# 2026-09-07, when exp28 added `dashboard` — and left both this sentence and
+# compose.demo.yml's "`just demo-up` does not start it" behind, which is the
+# same drift twice. docs/runbooks/demo.md §6 is how to sign in to it.)
 #
 # Split out of `demo` so the walkthrough is re-runnable against a stack that
 # is already up (`just demo-walk`), which is what you want while reading its
