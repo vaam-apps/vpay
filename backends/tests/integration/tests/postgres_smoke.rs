@@ -169,8 +169,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 33,
-        "all thirty-three migrations under backends/migrations should be recorded as applied \
+        applied, 34,
+        "all thirty-four migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -206,7 +206,13 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          native enum column therefore fails to decode on every read, \
          and 0033, which drops the column DEFAULTs on providers' five \
          capability booleans so that CrateStack's generated upsert input \
-         can carry them -- the maintainer's D7, 2026-09-06)"
+         can carry them -- the maintainer's D7, 2026-09-06, \
+         and S4a's 0034, which creates `customers` -- the first vpay table \
+         born with a schemas/vpay.cstack model, so no column CrateStack \
+         writes carries a DB DEFAULT and 0033's problem cannot recur -- \
+         makes payment_intents.customer real with a NO ACTION foreign key \
+         on it and on checkout_sessions, and reopens the events and jobs \
+         vocabularies for customer.deleted and sweep_idle_customers)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -252,6 +258,10 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         // so listing it here proves the table the code queries is the table
         // the migration creates.
         "checkout_sessions",
+        // S4a's. Like `checkout_sessions` and unlike `refunds`/`events`, it
+        // has both a reader and a writer from the day it landed
+        // (`vpay_db::customers`, `vpay_api::v1::customers`).
+        "customers",
     ] {
         // sqlx 0.9 (sqlx#3723) wants the injection audit written down. The
         // only interpolation is `table`, bound by the `for` above to one of
@@ -360,6 +370,187 @@ async fn partial_refunds_without_refunds_is_rejected_by_the_database() -> anyhow
         db_err.constraint(),
         Some("partial_refunds_imply_refunds"),
         "the rejection must come from the coherence CHECK specifically"
+    );
+
+    Ok(())
+}
+
+// --- migration 0034 (customers) --------------------------------------------
+
+/// `at_least_one_identifier` fires against a real Postgres.
+///
+/// **This is the only thing that can check it.** The constraint is
+/// multi-column, and `cratestack migrate baseline` skips every multi-column
+/// CHECK in both directions
+/// (`introspect/postgres/constraints.rs:62`, `array_length(c.conkey, 1) = 1`),
+/// so `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`
+/// would not move by one if this constraint were deleted — measured for the
+/// other ten multi-column CHECKs in the same file, and true of this one by
+/// the same mechanism. `vpay_api::v1::customers` refuses the same request with
+/// a `400` naming all three parameters, but that is the API's rule, and a
+/// second writer (a backfill, a repair script, a future handler) reaches this
+/// table without passing through it.
+///
+/// The two halves are both load-bearing. The first is the refusal; the second
+/// is that the constraint is not simply refusing *everything* — a phone-only
+/// customer is legal, which is the maintainer's decision of 2026-09-05 and the
+/// direction a "require all three" CHECK would break silently.
+#[tokio::test]
+async fn a_customer_with_no_name_email_or_phone_is_refused_by_the_database() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    let err = sqlx::query(
+        "INSERT INTO customers (id, merchant_id, livemode, metadata, last_used_at) \
+         VALUES ('cus_nobody0000000000000000', 'merchant_a', false, '{}'::jsonb, now())",
+    )
+    .execute(&pool)
+    .await
+    .expect_err("a customer with no name, email or phone names nobody");
+
+    let db_err = err.as_database_error().expect("a database-level error");
+    eprintln!("observed rejection: {db_err}");
+    assert_eq!(
+        db_err.constraint(),
+        Some("at_least_one_identifier"),
+        "the rejection must come from the one-of CHECK specifically, not from a NOT NULL"
+    );
+
+    // The other direction, and the one that makes the assertion above mean
+    // something: a customer whose *only* identifier is a phone number is
+    // accepted. The maintainer's decision of 2026-09-05, at the database.
+    sqlx::query(
+        "INSERT INTO customers (id, merchant_id, livemode, phone, metadata, last_used_at) \
+         VALUES ('cus_phoneonly000000000000', 'merchant_a', false, '237600000200', \
+                 '{}'::jsonb, now())",
+    )
+    .execute(&pool)
+    .await
+    .context("a phone-only customer is a complete customer")?;
+
+    Ok(())
+}
+
+/// A customer an intent references cannot be deleted, and the refusal is the
+/// **foreign key** rather than anything in Rust.
+///
+/// This is the property `DELETE /v1/customers/{id}` and the twelve-month
+/// retention sweep both answer to, and it is what "vpay keeps a payment
+/// attached to the payer it was taken from" actually means. Migration 0034
+/// leaves `ON DELETE` unspecified — `NO ACTION` — deliberately;
+/// `ON DELETE SET NULL` would let the delete succeed and silently detach a
+/// payment from its payer, which is the record a dispute is settled with.
+///
+/// Asserted at the database because that is the only layer where it holds for
+/// *every* writer: a count-then-delete in a handler has a window in which a
+/// concurrent `POST /v1/payment_intents` can commit a reference.
+#[tokio::test]
+async fn a_customer_a_payment_intent_references_cannot_be_deleted() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    sqlx::query("INSERT INTO currencies (code, exponent) VALUES ('XAF', 0) ON CONFLICT DO NOTHING")
+        .execute(&pool)
+        .await
+        .context("seeding the currency the intent references")?;
+    sqlx::query(
+        "INSERT INTO customers (id, merchant_id, livemode, phone, metadata, last_used_at) \
+         VALUES ('cus_referenced0000000000', 'merchant_a', false, '237600000200', \
+                 '{}'::jsonb, now())",
+    )
+    .execute(&pool)
+    .await
+    .context("the customer the intent will name")?;
+    sqlx::query(
+        "INSERT INTO payment_intents \
+            (id, merchant_id, livemode, amount, currency_code, status, \
+             payment_method_types, metadata, customer_id, client_secret_suffix) \
+         VALUES ('pi_referencing00000000000', 'merchant_a', false, 5000, 'XAF', \
+                 'requires_payment_method', '[\"mtn_momo\"]'::jsonb, '{}'::jsonb, \
+                 'cus_referenced0000000000', '00000000000000000000000000000000')",
+    )
+    .execute(&pool)
+    .await
+    .context("the intent that pins the customer")?;
+
+    let err = sqlx::query("DELETE FROM customers WHERE id = 'cus_referenced0000000000'")
+        .execute(&pool)
+        .await
+        .expect_err("a customer with payment history must not be deletable");
+
+    let db_err = err.as_database_error().expect("a database-level error");
+    eprintln!("observed rejection: {db_err}");
+    assert_eq!(
+        db_err.code().as_deref(),
+        Some("23503"),
+        "the refusal is a foreign key violation, which is what vpay_api::v1::customers::delete \
+         turns into a 409 rather than a 500"
+    );
+
+    // And the row is still there. `DELETE` reporting an error and having
+    // deleted anyway is not a thing Postgres does — but this is the assertion
+    // that would fail if `ON DELETE SET NULL` were ever added, because then
+    // the delete would *succeed* and the intent would silently lose its payer.
+    let survivors: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM customers WHERE id = 'cus_referenced0000000000'")
+            .fetch_one(&pool)
+            .await
+            .context("counting the customer that must have survived")?;
+    assert_eq!(survivors, 1);
+    let attached: Option<String> = sqlx::query_scalar(
+        "SELECT customer_id FROM payment_intents WHERE id = 'pi_referencing00000000000'",
+    )
+    .fetch_one(&pool)
+    .await
+    .context("reading the intent's customer back")?;
+    assert_eq!(
+        attached.as_deref(),
+        Some("cus_referenced0000000000"),
+        "an intent must never be detached from its payer"
+    );
+
+    Ok(())
+}
+
+/// `metadata` is `NOT NULL` with **no DEFAULT**, which is the tripwire under
+/// `model Customer`'s decision not to declare the column.
+///
+/// If a `DEFAULT '{}'::jsonb` were ever added, a generated `INSERT` that
+/// omitted `metadata` would silently write an empty object over a merchant's
+/// data instead of failing `23502`. `vpay-db`'s
+/// `a_generated_customer_insert_cannot_carry_metadata` pins the *statement*;
+/// this pins the column that makes that statement's omission loud.
+#[tokio::test]
+async fn customers_metadata_has_no_default_so_an_omitted_insert_is_loud() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    // Read `pg_attrdef` first, so a rename of the column cannot make this
+    // test vacuous.
+    let default_expr: Option<String> = sqlx::query_scalar(
+        "SELECT pg_get_expr(d.adbin, d.adrelid) \
+         FROM pg_attribute a \
+         LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+         WHERE a.attrelid = 'customers'::regclass AND a.attname = 'metadata'",
+    )
+    .fetch_one(&pool)
+    .await
+    .context("customers.metadata exists and its default is readable")?;
+    assert_eq!(
+        default_expr, None,
+        "customers.metadata must carry no column DEFAULT: it is what makes a generated INSERT \
+         that omits the column a loud 23502 rather than a silent `{{}}` over a merchant's data"
+    );
+
+    let err = sqlx::query(
+        "INSERT INTO customers (id, merchant_id, livemode, phone, last_used_at) \
+         VALUES ('cus_nometadata0000000000', 'merchant_a', false, '237600000200', now())",
+    )
+    .execute(&pool)
+    .await
+    .expect_err("an insert that omits metadata must fail");
+    let db_err = err.as_database_error().expect("a database-level error");
+    assert_eq!(
+        db_err.code().as_deref(),
+        Some("23502"),
+        "the refusal is a not-null violation on `metadata`: {db_err}"
     );
 
     Ok(())
@@ -1456,7 +1647,39 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 /// mean the schema had caught up — it would mean the report stopped finding
 /// things, which is the failure mode `--strict` is easiest to misread as
 /// success in.
-const EXPECTED_DRIFT_CHANGES: u32 = 101;
+///
+/// **101 -> 113 on 2026-09-06** (S4a, migration `0034` and `model Customer`),
+/// measured against a freshly migrated database rather than inferred. The +12
+/// is exactly:
+///
+///   * **10 lines on `customers`**, a new relation. Six `[safe] CHECK …
+///     exists in the live database but is not declared`
+///     (`id_length`, `merchant_id_length`, `name_length`, `email_length`,
+///     `phone_is_a_canonical_msisdn`, `metadata_is_object`), three the same
+///     for its indexes, and one `[safe] column `seq` default value differs`.
+///     Every one is a deliberate choice recorded on `model Customer`: the
+///     CHECKs are hand-named and `@db_enforce` would make each a drop-and-add
+///     **pair** (exp17 §1a); `@@index([merchant_id])` cannot express
+///     `(merchant_id, seq DESC)` and declaring it would add a `[blocking]`
+///     line *beside* the `[safe]` one rather than closing it; and `seq`'s
+///     line is `model Event.seq`'s known trade, an identity column carrying
+///     no `pg_attrdef` default.
+///   * **2 lines on `payment_intents`** — the undeclared `customer_id` column
+///     and the undeclared `payment_intents_customer_idx`.
+///
+/// **What cost nothing, and is worth knowing:** `checkout_sessions` gained
+/// the identical column and index and contributed **zero**, because it is an
+/// undeclared *table* and the report collapses the whole thing to one line.
+/// So the marginal drift of a column depends on whether its table is
+/// modelled, which is the opposite of the intuition that modelling a table
+/// reduces drift. `model Customer` is what makes `customers` cost ten lines;
+/// not declaring it at all would have cost one.
+///
+/// `at_least_one_identifier` — 0034's multi-column CHECK — contributes
+/// **nothing in either direction**, like the ten before it, which is why
+/// `a_customer_with_no_name_email_or_phone_is_refused_by_the_database`
+/// exists.
+const EXPECTED_DRIFT_CHANGES: u32 = 113;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -1483,7 +1706,15 @@ const EXPECTED_DRIFT_CHANGES: u32 = 101;
 /// so far to leave. So this number moving and
 /// `EXPECTED_DRIFT_CHANGES` moving mean different things, which is the whole
 /// reason both are pinned.
-const EXPECTED_DRIFTED_RELATIONS: u32 = 16;
+///
+/// **16 -> 17 on 2026-09-06** (S4a): `customers` is a new table, declared and
+/// differing, so it joins the list in the shape `events` and
+/// `webhook_deliveries` are in rather than the shape `refunds` is. It is the
+/// first relation ever *added* to this list rather than moved within it —
+/// every previous move was a table changing category. `checkout_sessions`
+/// gained a column in the same migration and did not move, because it was
+/// already here as an undeclared table.
+const EXPECTED_DRIFTED_RELATIONS: u32 = 17;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
 /// Postgres type onto a `.cstack` scalar, which it reports as a trailing
@@ -1520,7 +1751,13 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 16;
 /// separately: those four columns are unmeasured drift sitting inside two
 /// otherwise-compared tables, and nothing in `EXPECTED_DRIFT_CHANGES` would
 /// ever say so.
-const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 17;
+/// **17 -> 18 on 2026-09-06** (S4a): `customers.metadata` is `jsonb`, which
+/// `map_scalar` deliberately does not read back, so the live column is
+/// invisible to the comparison in both directions and lands here instead.
+/// That invisibility is the *first* of the two reasons `model Customer` does
+/// not declare it — see that model's GAP note for the second, which is the
+/// one that decides it.
+const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 18;
 
 /// The `--out-dir` handed to `migrate baseline`, removed when it goes out of
 /// scope.
@@ -1866,6 +2103,12 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         observed,
         [
             ("checkout_sessions", "urls_match_ui_mode"),
+            // S4a's one-of rule: a customer must have at least one of `name`,
+            // `email` and `phone`. The eleventh, and the one whose invisibility
+            // to the report is *most* consequential, because it is a table
+            // `schemas/vpay.cstack` genuinely models — so a reader of the
+            // report could reasonably believe `customers` is fully compared.
+            ("customers", "at_least_one_identifier"),
             ("idempotency_keys", "complete_has_a_response"),
             ("jobs", "lock_is_paired"),
             ("oauth_signing_keys", "active_key_has_no_expiry"),
@@ -1884,7 +2127,7 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
          and the drift count below cannot"
     );
 
-    // None of the ten reaches the report.
+    // None of the eleven reaches the report.
     //
     // Matched as the shape the report renders a CHECK in — ``CHECK `name` ``,
     // from `cratestack-cli` 0.11.1's `src/migrate/drift_report.rs::describe`,
@@ -1901,14 +2144,15 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         assert!(
             !stdout.contains(&rendered),
             "`{table}.{name}` is a multi-column CHECK that `migrate baseline` did not mention on \
-             2026-09-05, at cratestack 0.11.1. It does now. That is a change in what the tool \
+             2026-09-05 (and, for `customers.at_least_one_identifier`, on 2026-09-06), at \
+             cratestack 0.11.1. It does now. That is a change in what the tool \
              can see — very likely the cross-column CHECK support this repository has been \
              asking for — and it wants recording in docs/status.md and schemas/vpay.cstack's \
              header rather than a constant bump: {stdout}"
         );
     }
 
-    // Two of the ten sit on tables the schema *does* model, so their absence
+    // Three of the eleven sit on tables the schema *does* model, so their absence
     // is not the table being skipped: a single-column CHECK on each of those
     // very tables is reported, and pinning both lines is what separates "the
     // tool cannot see cross-column CHECKs" from "the tool said nothing about

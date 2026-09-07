@@ -924,6 +924,173 @@ model WebhookDelivery {
   // to a persistence-layer swap.
 }
 
+// --- customers -----------------------------------------------------------
+
+// `customers` (migration 0034) — the FIRST vpay table born with a model
+// rather than acquiring one afterwards, and the only place in this file
+// where the ordering ran that way.
+//
+// WHAT THAT BOUGHT, MEASURED RATHER THAN CLAIMED
+//
+// Migration 0033 exists because `providers` was modelled *after* it was
+// built: `cratestack-macros` drops every `@default(...)` field from
+// `Create{Model}Input` and from `upsert_update_columns`
+// (`model/inputs.rs:20-26`, `model/descriptor/columns.rs:92-101`), so the
+// five capability booleans could not be written through the generated input
+// until their column DEFAULTs came off. 0034 pays that cost up front: no
+// column CrateStack writes carries a `DEFAULT`, and the two that do —
+// `created_at` and `updated_at` — are declared `@default(now())` here for
+// `DisabledClient.disabled_at`'s measured reason (introspection reads the
+// live default as `ColumnDefault::Function("now()")`, which `@default(now())`
+// converts to exactly and `@default(dbgenerated())` never equals).
+//
+// WHAT ACTUALLY RUNS THROUGH THIS MODEL, AND WHAT DELIBERATELY DOES NOT
+//
+//   Customers::touch_last_used  -> update_many(..).set(..)   THROUGH CRATESTACK
+//   Customers::delete           -> delete_many(..)           THROUGH CRATESTACK
+//   Customers::{create, update, get_for_merchant, list_page,
+//               idle_since, delete_idle}                     RAW sqlx
+//
+// The split is decided by ONE column, `metadata JSONB NOT NULL`, and by the
+// two measurements in the GAP note at the end of this model. Every operation
+// that has to read or write `metadata` stays a hand-written statement;
+// the two that do not are the two that go through the generated data layer.
+//
+// That is not a consolation prize. `touch_last_used` is the write the
+// twelve-month retention sweep reads: get it wrong and vpay deletes a
+// merchant's live customer. `delete` is the hard delete of personal data.
+// They are the two operations on this table where being wrong costs
+// something irreversible, and they are the two the policy engine now guards.
+//
+// WHY `read` IS GRANTED WHEN NOTHING CALLS `find_unique`
+//
+// It is NOT granted. There is no `@@allow("read", ...)` below, and that is
+// the rule `model Provider` states and `model Event` follows: an arm no call
+// site uses is a permission nothing can measure. `Customers::get_for_merchant`
+// is raw sqlx (it must render `metadata`), so a `read` arm here would be
+// dead grant. Add it in the commit that moves a read.
+model Customer {
+  id String @id @length(min: 1, max: 64)
+  // `GENERATED ALWAYS AS IDENTITY` (migration 0034), and `model Event.seq`'s
+  // trade applies unchanged: an identity column carries no `pg_attrdef`
+  // default, introspection reads only that, so this line costs exactly one
+  // permanent `column `seq` default value differs` drift line. Dropping the
+  // `@default(...)` would close that line and make `seq` a REQUIRED field of
+  // `CreateCustomerInput` — an explicit value for a `GENERATED ALWAYS`
+  // column, which Postgres refuses outright.
+  seq Int @default(dbgenerated())
+  merchant_id String @length(min: 1, max: 128)
+  livemode Boolean
+  // The three identifiers. `@sensitive` on all three, which is what
+  // `cratestack-macros`' `is_sensitive_field` reads to redact a value from
+  // the audit log — nothing in vpay audits today (`@@audit` is not declared
+  // and `ensure_audit_table` is therefore never reached), so this is a
+  // property of the model for the day one does, not a live behaviour. It is
+  // declared now because the alternative is deciding retroactively which of
+  // a merchant's payer identifiers were safe to have written to a log.
+  //
+  // The bounds mirror migration 0034's `name_length` / `email_length` CHECKs
+  // and carry NO `@db_enforce`, for `model Event`'s measured reason: the
+  // live CHECKs are hand-named, `@db_enforce` would generate
+  // `customers_name_length_check`, `diff/checks.rs` matches by name first, so
+  // promoting them would emit a drop-and-add PAIR where declaring them
+  // without `@db_enforce` emits nothing. The validators are not inert
+  // either: `inputs.rs::validate_impl_tokens` generates `input.validate()`
+  // from the validator list regardless, and every write path calls it before
+  // any SQL runs.
+  //
+  // `phone` carries no `@length` at all, deliberately, because migration
+  // 0034's `phone_is_a_canonical_msisdn` is a *regex* and not a length bound:
+  // a `@length(min: 8, max: 15)` here would be a second, weaker copy of it
+  // that accepts `not-a-phone!` and would read as though the shape were
+  // checked in-process when it is not. The shape is
+  // `vpay_api::v1::customers`' job on the way in and the CHECK's on the way
+  // down; this file claims neither.
+  name String? @sensitive
+  email String? @sensitive
+  phone String? @sensitive
+  // The twelve-month sweep's whole input (the maintainer's decision of
+  // 2026-09-05). NO `@default(...)`: `touch_last_used` is the only writer
+  // that goes through this model, and `Update{Model}Input`'s field for a
+  // required column is `Option<OffsetDateTime>` — outer `None` meaning "this
+  // patch does not touch the column", which is exactly what every other
+  // field of that input is left at.
+  last_used_at DateTime
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now())
+
+  // The live index is `customers_merchant_seq_idx ON (merchant_id, seq DESC)`
+  // — two columns and a direction, neither of which this grammar's
+  // `@@index([...])` can express (0.11.1 emits an unordered index over the
+  // listed columns). Declaring `@@index([merchant_id])` would therefore be a
+  // claim about an index the database does not have, in a file whose whole
+  // discipline is not to make those: it would add a `[blocking] index ... is
+  // declared in the schema but does not exist in the live database` line and
+  // a `[safe] index customers_merchant_seq_idx exists in the live database
+  // but is not declared` line beside it — TWO drift lines to describe one
+  // index, neither of them true. The three indexes migration 0034 creates
+  // are named in that migration and nowhere else.
+
+  // `update` and `delete`, and NOTHING else, because those are the two
+  // actions this crate calls. Each can be deleted on its own and the two
+  // runtime effects are not alike — the asymmetry `model DisabledClient`
+  // records, applied here:
+  //
+  //   update -> SILENT. `touch_last_used` is `update_many(..)`, whose policy
+  //             is compiled into the statement's own `WHERE`
+  //             (`update_many_exec.rs`), so a missing arm matches zero rows
+  //             and returns `BatchSummary { ok: 0 }`. Nothing errors. Every
+  //             customer's `last_used_at` then freezes at creation, and the
+  //             retention sweep deletes live customers twelve months later —
+  //             a merchant's personal-data records destroyed with every log
+  //             line saying the sweep ran normally. This is the single most
+  //             dangerous line in this file.
+  //   delete -> SILENT the same way (`delete_many`'s policy is also part of
+  //             the `WHERE`), and dangerous in the opposite direction:
+  //             `DELETE /v1/customers/{id}` answers `{deleted: true}` while
+  //             the row stays, so a merchant is told personal data was
+  //             erased and it was not.
+  //
+  // Because both failures are silent in the error channel, the tests that
+  // catch them catch them by effect and by declaration:
+  // `every_action_this_module_calls_has_an_allow_arm` in
+  // `vpay-db/src/customers.rs` fails in milliseconds with no container, and
+  // the container cases in `vpay-db/tests/repositories.rs` fail on the row.
+  @@allow("update", auth().isSystem())
+  @@allow("delete", auth().isSystem())
+
+  // GAP — `metadata JSONB NOT NULL` is not declared, and that is what keeps
+  // create, update and every read of this table on raw sqlx.
+  //
+  // Exactly `model Event.data`'s situation and the same two measured costs,
+  // restated because the consequence here is different (there it blocked one
+  // insert; here it blocks five of seven repository methods):
+  //
+  //   1. `introspect/postgres/types.rs::map_scalar` does not map `jsonb` back
+  //      to any `.cstack` scalar. An UNdeclared `jsonb` column is invisible
+  //      to the comparison in both directions; a DECLARED `metadata Json`
+  //      would leave the live column invisible while making the declared one
+  //      a `[blocking] column `metadata` is declared in the schema but does
+  //      not exist in the live database` line.
+  //   2. The one that decides it. `cratestack::Value` is not
+  //      `serde_json::Value`: `Value::from_plain_json`
+  //      (`cratestack-core/src/value.rs:99-102`) maps a JSON number through
+  //      `Number::as_i64()` and falls back to `as_f64().unwrap_or_default()`,
+  //      so any number outside `i64` is silently demoted to a float.
+  //      `customers.metadata` is merchant-authored and is echoed back
+  //      verbatim on every read and inside every `customer.*` webhook body.
+  //      vpay's own form decoder only ever produces strings today, which
+  //      makes the demotion unreachable *today* — and that is an argument
+  //      for not relying on it: the column would silently start corrupting
+  //      values the day anything wrote a number into it.
+  //
+  // The migration is what makes this a tripwire rather than a note.
+  // `metadata` is `NOT NULL` with **no DEFAULT**, so a generated INSERT that
+  // omitted it fails `23502` at once instead of writing `{}` over a
+  // merchant's data. `a_generated_customer_insert_cannot_carry_metadata` in
+  // `vpay-db/src/customers.rs` pins the rendered statement.
+}
+
 // --- intentionally not modeled ------------------------------------------
 //
 // The following are named in docs/flows/*.md and marked ⛔ "not started" in

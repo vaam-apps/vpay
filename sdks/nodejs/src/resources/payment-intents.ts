@@ -34,6 +34,9 @@ export class PaymentIntentsResource {
     if (params.description !== undefined) {
       body["description"] = params.description;
     }
+    if (params.customer !== undefined) {
+      body["customer"] = params.customer;
+    }
     return this.#http.request<PaymentIntent>(
       "POST",
       "/payment_intents",

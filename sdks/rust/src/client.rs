@@ -23,7 +23,7 @@ use crate::auth::{self, CLIENT_ASSERTION_TYPE_JWT_BEARER, Credentials};
 use crate::error::{ConfigError, Error};
 use crate::form::FormValue;
 use crate::resources::{
-    AccountHoldersResource, BalanceResource, CheckoutResource, EventsResource,
+    AccountHoldersResource, BalanceResource, CheckoutResource, CustomersResource, EventsResource,
     PaymentIntentsResource, RefundsResource, RequestOptions,
 };
 
@@ -294,6 +294,12 @@ impl Client {
     #[must_use]
     pub fn checkout(&self) -> CheckoutResource<'_> {
         CheckoutResource { client: self }
+    }
+
+    /// `/v1/customers` — the merchant-owned record of a payer (S4a).
+    #[must_use]
+    pub fn customers(&self) -> CustomersResource<'_> {
+        CustomersResource { client: self }
     }
 
     /// `/v1/refunds`.
@@ -591,6 +597,32 @@ impl Client {
             .idempotency_key
             .unwrap_or_else(|| Uuid::new_v4().to_string());
         self.send_authenticated(Method::POST, path, Some(body), None, Some(idempotency_key))
+            .await
+    }
+
+    /// The one `DELETE` this API has: `DELETE /v1/customers/{id}` (S4a).
+    ///
+    /// It carries an `Idempotency-Key` like a `POST`, and **no body**. Both
+    /// halves are the server's contract rather than this SDK being generous:
+    /// `/v1` requires the header on every write regardless of verb
+    /// (`docs/flows/merchant-auth.md`), and a `DELETE` is the write where a
+    /// replay is most confusing without one — the second call would otherwise
+    /// answer `404` for a deletion that succeeded, which a merchant retrying
+    /// a timed-out request cannot tell from "somebody else deleted it".
+    ///
+    /// `None` and not `Some(String::new())` for the body: an empty
+    /// `application/x-www-form-urlencoded` body and no body are different
+    /// requests to some proxies, and the request hash the server stores
+    /// against the idempotency key is taken over the bytes.
+    pub(crate) async fn delete<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        opts: RequestOptions,
+    ) -> Result<T, Error> {
+        let idempotency_key = opts
+            .idempotency_key
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        self.send_authenticated(Method::DELETE, path, None, None, Some(idempotency_key))
             .await
     }
 }

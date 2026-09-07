@@ -1271,7 +1271,12 @@ async fn the_session_read_carries_the_intents_secret_and_the_return_read_does_no
         !intent.contains_key("client_secret"),
         "the return read must not render the intent's credential: {body:#}"
     );
-    assert_eq!(intent.len(), 12, "the twelve documented keys: {body:#}");
+    assert_eq!(
+        intent.len(),
+        13,
+        "the thirteen documented keys — twelve until 2026-09-06, when S4a added `customer`: \
+         {body:#}"
+    );
     // The outcome the return page renders is there.
     assert_eq!(intent.get("status"), Some(&Value::from("processing")));
 
@@ -1819,15 +1824,17 @@ async fn an_intent_may_have_only_one_open_session() -> anyhow::Result<()> {
         success_url: Some(CANCEL_URL.to_owned()),
         cancel_url: Some(CANCEL_URL.to_owned()),
         return_url: None,
+        customer_id: None,
         publishable_key: PK_A.to_owned(),
         client_secret_suffix: vpay_core::ids::client_secret_suffix(),
         return_token: vpay_core::ids::return_token(),
         expires_at: time::OffsetDateTime::now_utc() + time::Duration::hours(24),
         created_at: time::OffsetDateTime::now_utc(),
     };
-    let error = h
-        .repositories
-        .create(&new)
+    // Through the trait: `Customers` (S4a) also declares a `create`, so a
+    // bare method call is ambiguous — and naming the trait is what ADR-0016
+    // standard 5 asks for anyway.
+    let error = vpay_db::CheckoutSessions::create(h.repositories.as_ref(), &new)
         .await
         .expect_err("a second open session on one intent must be refused by the index");
     assert!(

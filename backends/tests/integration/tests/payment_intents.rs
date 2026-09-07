@@ -370,6 +370,7 @@ fn create_params() -> CreatePaymentIntentParams {
         payment_method_types: vec![PaymentMethodType::MtnMomo],
         metadata: BTreeMap::from([("order_id".to_owned(), "1234".to_owned())]),
         description: Some("Order #42 (rush)".to_owned()),
+        customer: None,
     }
 }
 
@@ -1053,6 +1054,16 @@ async fn every_registered_v1_path_answers_401_without_a_token() -> anyhow::Resul
                     .header("Idempotency-Key", "unauthenticated")
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(""),
+                // S4a's `DELETE /v1/customers/{id}` is the first non-GET/POST
+                // verb this table has ever carried. It sends an
+                // `Idempotency-Key` like every other write and **no body**,
+                // which is what `vpay_api::v1::customers::delete` expects —
+                // but that is not what this case is asserting: the boundary
+                // must answer `401` before any handler sees the request, so
+                // the shape here only has to be a legal request.
+                "DELETE" => http
+                    .delete(&url)
+                    .header("Idempotency-Key", "unauthenticated"),
                 other => panic!("this test does not know how to send {other}"),
             };
             let response = request

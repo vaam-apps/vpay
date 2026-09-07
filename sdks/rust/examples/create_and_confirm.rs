@@ -83,6 +83,12 @@ async fn run() -> Result<(), String> {
                 payment_method_types: vec![PaymentMethodType::MtnMomo],
                 metadata,
                 description: Some("Example order".to_string()),
+                // `..Default::default()` is deliberately not used here: this
+                // example is the one a merchant copies, and spelling every
+                // field is what makes a new one visible to them rather than
+                // silently defaulted. `customer` is S4a's — attach a `cus_…`
+                // and the payment is recorded against that payer.
+                customer: None,
             },
             // Supplying the key explicitly ties it to the merchant's own
             // order id, so a retry of *this* example cannot double-create.

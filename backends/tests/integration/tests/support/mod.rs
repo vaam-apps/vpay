@@ -512,6 +512,7 @@ pub(crate) async fn confirmed_intent(
             payment_method_types: json!([rail]),
             metadata: json!({}),
             description: None,
+            customer_id: None,
             // The same generator `vpay_api`'s `create` uses, not a literal: a
             // fixture with a hand-written suffix would be a fixture whose
             // intents are addressable by a value no real intent ever carries.

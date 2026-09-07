@@ -154,6 +154,16 @@ struct CreateParams {
     /// unregistered key would mint a link whose page answers the uniform 404
     /// to every payer, with nothing in the response saying why.
     publishable_key: Option<String>,
+    /// The `cus_…` this session is for (S4a), or absent to inherit the
+    /// intent's.
+    ///
+    /// Optional and almost always omitted: a merchant who attached a customer
+    /// to the intent does not repeat themselves, and the session copies it.
+    /// Sending one is for the case where the intent has none — and sending
+    /// one that *disagrees* with the intent's is refused, because a session
+    /// and the intent it drives naming two different payers is a
+    /// contradiction vpay would otherwise store.
+    customer: Option<String>,
 }
 
 /// The two `ui_mode` values, and which URLs each one requires.
@@ -222,6 +232,9 @@ struct ValidCreate {
     success_url: Option<String>,
     cancel_url: Option<String>,
     return_url: Option<String>,
+    /// Resolved in [`prepare_create`], where the intent is in hand: either
+    /// the merchant's own `customer`, or the intent's.
+    customer_id: Option<String>,
     /// Carried separately from the URLs because it is resolved against the
     /// *deployment's* registrations rather than checked for shape — see
     /// [`chosen_publishable_key`].
@@ -298,6 +311,7 @@ pub(crate) async fn create(
         success_url: validated.success_url,
         cancel_url: validated.cancel_url,
         return_url: validated.return_url,
+        customer_id: validated.customer_id,
         publishable_key: validated.publishable_key,
         // Minted here, once, and never again — there is no rotation
         // endpoint, for the reason a payment intent has none: a retry is a
@@ -310,8 +324,12 @@ pub(crate) async fn create(
         created_at,
     };
 
-    let outcome = repositories
-        .create(&new)
+    // `CheckoutSessions::create(..)`, spelled through the trait rather than
+    // as an inherent-looking method call. Both this trait and `Customers`
+    // (S4a) declare a `create`, so `repositories.create(&new)` became
+    // ambiguous — and naming the trait is what ADR-0016 standard 5 asks for
+    // anyway: the *method* is what says which table was touched.
+    let outcome = CheckoutSessions::create(repositories.as_ref(), &new)
         .await
         .map_err(|error| create_error(error, &new.payment_intent_id))
         .and_then(|row| {
@@ -357,7 +375,10 @@ async fn prepare_create(
         params.publishable_key.as_deref(),
     )?;
 
-    let validated = validate_create(params, config.livemode(), publishable_key)?;
+    // Kept before `validate_create` consumes `params`: the customer is
+    // resolved after the intent is in hand, which is below.
+    let params_customer = params.customer.clone();
+    let mut validated = validate_create(params, config.livemode(), publishable_key)?;
 
     // The intent, scoped. `get_for_merchant` and not `get_by_id`: the tenant
     // is a parameter of the lookup, so a foreign intent is indistinguishable
@@ -410,6 +431,43 @@ async fn prepare_create(
     if let Some(open) = CheckoutSessions::find_open_by_intent(repositories, &intent.id).await? {
         return Err(open_session_conflict(&open.id));
     }
+
+    // The customer (S4a), last, because it is the rule that needs the intent.
+    //
+    // Three cases, and the third is the one worth writing down. A merchant
+    // who sent nothing inherits the intent's customer, so the two rows always
+    // agree; a merchant who sent one when the intent has none gets it
+    // resolved and stamped like an intent's own; and a merchant who sent one
+    // that *disagrees* with the intent's is refused rather than having either
+    // value silently win. A session and the intent it drives naming two
+    // different payers is not a preference between two answers — it is a
+    // contradiction, and the merchant is the only one who knows which they
+    // meant.
+    validated.customer_id = match params_customer.as_deref() {
+        None => intent.customer_id.clone(),
+        Some(_) => {
+            let resolved = crate::v1::customers::resolve_for_attachment(
+                repositories,
+                scope,
+                params_customer.as_deref(),
+            )
+            .await?;
+            if let (Some(on_intent), Some(sent)) =
+                (intent.customer_id.as_deref(), resolved.as_deref())
+                && on_intent != sent
+            {
+                return Err(ApiError::invalid_param(
+                    "customer",
+                    format!(
+                        "This session's PaymentIntent is already for customer {on_intent}. \
+                         Omit `customer` to use it, or create a new PaymentIntent for \
+                         {sent}."
+                    ),
+                ));
+            }
+            resolved
+        }
+    };
 
     Ok((validated, base_url))
 }
@@ -483,6 +541,10 @@ fn validate_create(
                 success_url: Some(success_url),
                 cancel_url: Some(cancel_url),
                 return_url: None,
+                // Filled in by `prepare_create`, which is the only place the
+                // intent is in hand. `None` here is "not decided yet", never
+                // "no customer".
+                customer_id: None,
                 publishable_key,
             })
         }
@@ -502,6 +564,7 @@ fn validate_create(
                 success_url: None,
                 cancel_url: None,
                 return_url: Some(return_url),
+                customer_id: None,
                 publishable_key,
             })
         }
@@ -1006,6 +1069,7 @@ mod tests {
             success_url: Some(OK_URL.to_owned()),
             cancel_url: Some(OK_URL.to_owned()),
             return_url: None,
+            customer_id: None,
             publishable_key: PK.to_owned(),
             client_secret_suffix: "neverlogthissessioncredential000".to_owned(),
             return_token: "neverlogthisreturntoken000000000".to_owned(),
@@ -1027,6 +1091,9 @@ mod tests {
             success_url: success.map(str::to_owned),
             cancel_url: cancel.map(str::to_owned),
             return_url: ret.map(str::to_owned),
+            // Resolved in `prepare_create`, where the intent is in hand, so
+            // `validate_create` never reads it either.
+            customer: None,
             // The key is resolved before `validate_create` runs (see
             // `prepare_create`), so it is never read from these params by the
             // function under test — `chosen_publishable_key` has its own.

@@ -2238,3 +2238,254 @@ describe("a merchant server that reaches vpay by an internal URL", () => {
     expect(server.url).not.toBe("http://localhost:8080");
   });
 });
+
+/**
+ * `/v1/customers` — S4a's five merchant operations.
+ *
+ * These mirror `sdks/rust/tests/resources.rs`'s customer cases one for one,
+ * down to the body strings, for the reason the checkout-session block above
+ * states: ADR-0015's parity is about *wire semantics*, and two SDKs that both
+ * "support customers" while encoding a cleared field differently are not at
+ * parity.
+ */
+describe("customers", () => {
+  const sampleCustomer = (
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> => ({
+    id: "cus_123",
+    object: "customer",
+    name: null,
+    email: null,
+    // Canonical, as the server stores and renders it — not the `+237 6 …` a
+    // merchant would have typed.
+    phone: "237600000200",
+    metadata: { order_id: "1234" },
+    created: 1_700_000_000,
+    livemode: false,
+    ...overrides,
+  });
+
+  it("customers.create: exact path, method, Idempotency-Key, and body", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 201, body: sampleCustomer() }),
+    });
+    const client = makeClient(server);
+
+    const customer = await client.customers.create(
+      {
+        name: "Ada Ngo",
+        email: "ada@example.com",
+        phone: "+237 6 00 00 02 00",
+        metadata: { order_id: "1234" },
+      },
+      { idempotencyKey: "idem_cus" },
+    );
+
+    const req = server.requests.find((r) => r.url === "/v1/customers")!;
+    expect(req.method).toBe("POST");
+    expect(req.headers["idempotency-key"]).toBe("idem_cus");
+    // The phone number goes out **as the merchant typed it**: canonicalising
+    // is the server's job, and a client-side copy of a market rule would
+    // refuse offline a number a later vpay accepts. `+` is `%2B` because a
+    // bare `+` is a space in a form body.
+    expect(req.body).toBe(
+      "name=Ada%20Ngo&email=ada%40example.com&phone=%2B237%206%2000%2000%2002%2000&metadata[order_id]=1234",
+    );
+    expect(customer.id).toBe("cus_123");
+    expect(customer.object).toBe("customer");
+  });
+
+  it("a phone number alone is a complete customer, and every other field is omitted", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 201, body: sampleCustomer() }),
+    });
+    const client = makeClient(server);
+
+    const customer = await client.customers.create({
+      phone: "237600000200",
+    });
+
+    // The fixture is phone-only too, so the decode proves the object is
+    // representable with two of its three identifiers null — the maintainer's
+    // decision of 2026-09-05, at the SDK boundary.
+    expect(customer.phone).toBe("237600000200");
+    expect(customer.name).toBeNull();
+    expect(customer.email).toBeNull();
+
+    const req = server.requests.find((r) => r.url === "/v1/customers")!;
+    expect(req.body).toBe("phone=237600000200");
+  });
+
+  it("customers.retrieve: exact GET path, no body, no Idempotency-Key", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: sampleCustomer() }),
+    });
+    const client = makeClient(server);
+
+    const customer = await client.customers.retrieve("cus_123");
+    expect(customer.id).toBe("cus_123");
+
+    const req = server.requests.find((r) => r.url === "/v1/customers/cus_123")!;
+    expect(req.method).toBe("GET");
+    expect(req.body).toBe("");
+    expect(req.headers["idempotency-key"]).toBeUndefined();
+  });
+
+  it("customers.update tells leave-alone, set and clear apart on the wire", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: sampleCustomer({ name: "Ada Ngo" }),
+      }),
+    });
+    const client = makeClient(server);
+
+    await client.customers.update(
+      "cus_123",
+      {
+        // set
+        name: "Ada Ngo",
+        // clear
+        email: null,
+        // leave alone — `phone` is simply not mentioned
+        metadata: { order_id: "5678", tier: "" },
+      },
+      { idempotencyKey: "idem_upd" },
+    );
+
+    const req = server.requests.find((r) => r.url === "/v1/customers/cus_123")!;
+    expect(req.method).toBe("POST");
+    // `email=` is "clear it"; `phone` is absent because the patch did not
+    // mention it. Collapsing `null` and `undefined` — the obvious
+    // simplification — makes a payer's email unclearable, and this is the
+    // assertion that fails when somebody does it.
+    expect(req.body).toBe(
+      "name=Ada%20Ngo&email=&metadata[order_id]=5678&metadata[tier]=",
+    );
+    expect(req.headers["idempotency-key"]).toBe("idem_upd");
+  });
+
+  it("customers.list: exact query string", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: {
+          object: "list",
+          data: [sampleCustomer()],
+          has_more: true,
+          url: "/v1/customers",
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    const page = await client.customers.list({
+      limit: 2,
+      starting_after: "cus_0",
+    });
+    expect(page.has_more).toBe(true);
+    expect(page.data).toHaveLength(1);
+
+    const req = server.requests.find((r) => r.url.startsWith("/v1/customers"))!;
+    expect(req.url).toBe("/v1/customers?limit=2&starting_after=cus_0");
+    expect(req.method).toBe("GET");
+  });
+
+  it("customers.del: a DELETE with an Idempotency-Key and no body", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: { id: "cus_123", object: "customer", deleted: true },
+      }),
+    });
+    const client = makeClient(server);
+
+    const deleted = await client.customers.del("cus_123", {
+      idempotencyKey: "idem_del",
+    });
+    expect(deleted.deleted).toBe(true);
+    expect(deleted.id).toBe("cus_123");
+
+    const req = server.requests.find((r) => r.url === "/v1/customers/cus_123")!;
+    expect(req.method).toBe("DELETE");
+    // No body: an empty form body and no body are different requests, and the
+    // server hashes the bytes against the idempotency key.
+    expect(req.body).toBe("");
+    // The key is what makes a retried delete answer the original
+    // `{deleted: true}` rather than a 404 for a deletion that succeeded.
+    expect(req.headers["idempotency-key"]).toBe("idem_del");
+    expect(req.headers["content-type"]).toBeUndefined();
+  });
+
+  it("customers.del generates an Idempotency-Key when the caller supplies none", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: { id: "cus_123", object: "customer", deleted: true },
+      }),
+    });
+    const client = makeClient(server);
+
+    await client.customers.del("cus_123");
+
+    const req = server.requests.find((r) => r.url === "/v1/customers/cus_123")!;
+    expect(req.headers["idempotency-key"]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+  });
+
+  it("a payment intent's customer decodes, and survives a server that omits it", async () => {
+    const withCustomer = {
+      ...makeSamplePaymentIntent(),
+      customer: "cus_123",
+    } as Record<string, unknown>;
+    const older = makeSamplePaymentIntent() as unknown as Record<
+      string,
+      unknown
+    >;
+    delete older["customer"];
+
+    const server = await withServer({
+      resource: (_req, index) => ({
+        status: 200,
+        body: index === 1 ? withCustomer : older,
+      }),
+    });
+    const client = makeClient(server);
+
+    const attached = await client.paymentIntents.retrieve("pi_123");
+    expect(attached.customer).toBe("cus_123");
+
+    // A vpay predating 2026-09-06 omits the key entirely. `customer?:` is
+    // what makes that a decode rather than a type error at the boundary.
+    const legacy = await client.paymentIntents.retrieve("pi_456");
+    expect(legacy.customer).toBeUndefined();
+  });
+
+  it("paymentIntents.create sends a customer when given one, and omits it otherwise", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+    const client = makeClient(server);
+
+    await client.paymentIntents.create({
+      amount: 5000,
+      currency: "xaf",
+      payment_method_types: ["mtn_momo"],
+      customer: "cus_123",
+    });
+    await client.paymentIntents.create({
+      amount: 5000,
+      currency: "xaf",
+      payment_method_types: ["mtn_momo"],
+    });
+
+    const reqs = server.requests.filter((r) => r.url === "/v1/payment_intents");
+    expect(reqs[0]!.body).toBe(
+      "amount=5000&currency=xaf&payment_method_types[0]=mtn_momo&customer=cus_123",
+    );
+    expect(reqs[1]!.body).toBe(
+      "amount=5000&currency=xaf&payment_method_types[0]=mtn_momo",
+    );
+  });
+});

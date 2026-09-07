@@ -9286,6 +9286,15 @@ export class HolderResource {
             "checkout.sessions.expire",
             "checkout.sessions.list",
             "checkout.sessions.retrieve",
+            // S4a, 2026-09-06. Five methods, both SDKs, in one PR — so this
+            // list moves for the ordinary reason rather than the alarming
+            // one: a capability landed in both columns, not an enumerator
+            // going quiet.
+            "customers.create",
+            "customers.del",
+            "customers.list",
+            "customers.retrieve",
+            "customers.update",
             "events.list",
             "payment_intents.cancel",
             "payment_intents.confirm",

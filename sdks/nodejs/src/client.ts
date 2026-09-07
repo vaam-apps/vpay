@@ -8,6 +8,7 @@ import { HttpClient } from "./http.js";
 import { AccountHoldersResource } from "./resources/account-holders.js";
 import { BalanceResource } from "./resources/balance.js";
 import { CheckoutResource } from "./resources/checkout-sessions.js";
+import { CustomersResource } from "./resources/customers.js";
 import { EventsResource } from "./resources/events.js";
 import { PaymentIntentsResource } from "./resources/payment-intents.js";
 import { RefundsResource } from "./resources/refunds.js";
@@ -61,6 +62,8 @@ export class VpayClient {
 
   readonly paymentIntents: PaymentIntentsResource;
   readonly checkout: CheckoutResource;
+  /** `/v1/customers` — the merchant-owned record of a payer (S4a). */
+  readonly customers: CustomersResource;
   readonly refunds: RefundsResource;
   readonly events: EventsResource;
   readonly balance: BalanceResource;
@@ -87,6 +90,7 @@ export class VpayClient {
 
     this.paymentIntents = new PaymentIntentsResource(httpClient);
     this.checkout = new CheckoutResource(httpClient);
+    this.customers = new CustomersResource(httpClient);
     this.refunds = new RefundsResource(httpClient);
     this.events = new EventsResource(httpClient);
     this.balance = new BalanceResource(httpClient);

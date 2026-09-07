@@ -15,8 +15,8 @@ use serde::de::DeserializeOwned;
 use crate::client::Client;
 use crate::form::FormValue;
 use crate::model::{
-    AccountHolder, Balance, CheckoutSession, CheckoutUiMode, Event, List, PaymentIntent,
-    PaymentMethodType, Refund,
+    AccountHolder, Balance, CheckoutSession, CheckoutUiMode, Customer, DeletedCustomer, Event,
+    List, PaymentIntent, PaymentMethodType, Refund,
 };
 use crate::validate::check_amount;
 
@@ -114,6 +114,16 @@ pub struct CreatePaymentIntentParams {
     /// body entirely when `None` — `description=` and no `description` are
     /// different requests.
     pub description: Option<String>,
+    /// The `cus_…` this intent is for (S4a).
+    ///
+    /// Accepted and **dropped** by any vpay predating 2026-09-06, which is
+    /// worth knowing before relying on it: an older server answers `200` with
+    /// `customer: null` rather than refusing. Check the response.
+    ///
+    /// A `cus_…` that is not this account's is a `400` naming `customer` —
+    /// never a `404`, so the field cannot be used to discover which customers
+    /// exist under some other account.
+    pub customer: Option<String>,
 }
 
 impl CreatePaymentIntentParams {
@@ -137,6 +147,10 @@ impl CreatePaymentIntentParams {
             (
                 "description".to_string(),
                 FormValue::from(self.description.clone()),
+            ),
+            (
+                "customer".to_string(),
+                FormValue::from(self.customer.clone()),
             ),
         ])
     }
@@ -346,6 +360,130 @@ impl ListCheckoutSessionsParams {
             (
                 "payment_intent".to_string(),
                 FormValue::from(self.payment_intent.clone()),
+            ),
+        ])
+    }
+}
+
+/// `POST /v1/customers` request fields (S4a).
+///
+/// **At least one of `name`, `email` and `phone` must be present**, and this
+/// SDK deliberately does not check that: which identifiers a customer needs
+/// is a *product* rule vpay owns and may widen, exactly as the MSISDN rule
+/// [`RetrieveAccountHolderParams::msisdn`] describes is, and a copy here
+/// would refuse offline a customer a later server version accepts. The
+/// server answers `400` naming the parameter, which is the same information
+/// one round trip later. `sdks/nodejs` takes the identical line.
+///
+/// A phone number **alone** is a complete customer — the whole point of the
+/// object on a mobile money rail — so an all-`None` struct is the one shape
+/// this SDK will happily send and the server will refuse.
+#[derive(Debug, Clone, Default)]
+pub struct CreateCustomerParams {
+    /// The payer's name.
+    pub name: Option<String>,
+    /// The payer's email.
+    pub email: Option<String>,
+    /// The payer's phone number, in any spelling vpay's canonicaliser
+    /// accepts (`+237 6 …`, `237600000200`, `600000200`). It is stored and
+    /// echoed back **canonical**, so what comes back may not be what was
+    /// sent — see [`crate::Customer::phone`].
+    pub phone: Option<String>,
+    /// Merchant-owned key/value pairs, encoded as `metadata[key]=value`.
+    pub metadata: BTreeMap<String, String>,
+}
+
+impl CreateCustomerParams {
+    pub(crate) fn to_form(&self) -> FormValue {
+        FormValue::Object(vec![
+            ("name".to_string(), FormValue::from(self.name.clone())),
+            ("email".to_string(), FormValue::from(self.email.clone())),
+            ("phone".to_string(), FormValue::from(self.phone.clone())),
+            ("metadata".to_string(), metadata_form(&self.metadata)),
+        ])
+    }
+}
+
+/// `POST /v1/customers/{id}` request fields (S4a).
+///
+/// # Why every field is an `Option<Option<String>>`
+///
+/// An update has three answers per field and a merchant depends on all
+/// three: *leave it alone* (`None`), *set it* (`Some(Some(v))`), and
+/// **clear it** (`Some(None)`, which this SDK sends as `name=`). A plain
+/// `Option<String>` collapses the first and the third, and a payer's email
+/// would then be unclearable through the API that documents how to clear it.
+///
+/// It is the same three-state shape `vpay_db::CustomerPatch` carries on the
+/// server and the same one TypeScript spells `string | null | undefined`, so
+/// all three layers express the distinction rather than two of them
+/// preserving it and one losing it.
+///
+/// `metadata` has two states rather than three, and that is the wire
+/// contract: it is **merged** key-wise by the server, and a key sent empty is
+/// removed. So "leave metadata alone" is an empty map, and there is no
+/// separate "clear all metadata" — send each key empty.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateCustomerParams {
+    /// `None` leaves the name alone; `Some(None)` clears it.
+    pub name: Option<Option<String>>,
+    /// See [`Self::name`].
+    pub email: Option<Option<String>>,
+    /// See [`Self::name`].
+    pub phone: Option<Option<String>>,
+    /// Keys to merge. A key whose value is the empty string is **removed**
+    /// from the stored metadata, which is Stripe's own per-key delete.
+    pub metadata: BTreeMap<String, String>,
+}
+
+impl UpdateCustomerParams {
+    /// `Some(None)` becomes the empty string, which is what "clear this" is
+    /// on a form-encoded wire; `None` is omitted from the body entirely.
+    fn patch(field: Option<&Option<String>>) -> FormValue {
+        match field {
+            None => FormValue::Skip,
+            Some(None) => FormValue::from(""),
+            Some(Some(value)) => FormValue::from(value.as_str()),
+        }
+    }
+
+    pub(crate) fn to_form(&self) -> FormValue {
+        FormValue::Object(vec![
+            ("name".to_string(), Self::patch(self.name.as_ref())),
+            ("email".to_string(), Self::patch(self.email.as_ref())),
+            ("phone".to_string(), Self::patch(self.phone.as_ref())),
+            ("metadata".to_string(), metadata_form(&self.metadata)),
+        ])
+    }
+}
+
+/// `GET /v1/customers` query parameters. All optional; an unset field is
+/// omitted from the query string entirely.
+///
+/// There is no `email` filter, and that is the server's shape rather than an
+/// omission here: a filter on a payer identifier turns the list into a
+/// lookup. See `docs/flows/customers.md`.
+#[derive(Debug, Clone, Default)]
+pub struct ListCustomersParams {
+    /// Page size. The server's own default and ceiling apply when unset.
+    pub limit: Option<u32>,
+    /// Cursor: return customers *after* this id (the next page).
+    pub starting_after: Option<String>,
+    /// Cursor: return customers *before* this id (the previous page).
+    pub ending_before: Option<String>,
+}
+
+impl ListCustomersParams {
+    pub(crate) fn to_form(&self) -> FormValue {
+        FormValue::Object(vec![
+            ("limit".to_string(), FormValue::from(self.limit)),
+            (
+                "starting_after".to_string(),
+                FormValue::from(self.starting_after.clone()),
+            ),
+            (
+                "ending_before".to_string(),
+                FormValue::from(self.ending_before.clone()),
             ),
         ])
     }
@@ -686,6 +824,109 @@ impl CheckoutSessionsResource<'_> {
             opts,
         )
         .await
+    }
+}
+
+/// `client.customers()` — the five merchant operations on `/v1/customers`
+/// (S4a).
+///
+/// `del` and not `delete`: `delete` is not a Rust keyword, but
+/// `sdks/nodejs`' method is `client.customers.del(…)` — named around
+/// `delete` being reserved in older JavaScript — and that is Stripe's own
+/// spelling in both of its SDKs. Matching it is what keeps a merchant who
+/// read one SDK's docs able to use the other (ADR-0015's parity is per
+/// capability, and the *name* is what a reader looks up).
+#[derive(Debug, Clone, Copy)]
+pub struct CustomersResource<'a> {
+    pub(crate) client: &'a Client,
+}
+
+impl CustomersResource<'_> {
+    /// `POST /v1/customers`.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`]. In particular a `400` naming `name` when
+    /// none of `name`, `email` and `phone` was sent — this SDK does not
+    /// check that locally; see [`CreateCustomerParams`].
+    pub async fn create(
+        &self,
+        params: CreateCustomerParams,
+        opts: RequestOptions,
+    ) -> Result<Customer, crate::Error> {
+        post(self.client, "/customers", params.to_form(), opts).await
+    }
+
+    /// `GET /v1/customers/{id}`.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`].
+    pub async fn retrieve(&self, id: &str) -> Result<Customer, crate::Error> {
+        get(
+            self.client,
+            &format!("/customers/{}", path_segment(id)),
+            None,
+        )
+        .await
+    }
+
+    /// `POST /v1/customers/{id}` — the update.
+    ///
+    /// A `POST` and not a `PUT`/`PATCH`, because that is what the API is:
+    /// Stripe has neither verb, and a merchant's existing client sends a
+    /// `POST`.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`]. A patch that would clear the customer's
+    /// **last** identifier is a `400` naming `name`.
+    pub async fn update(
+        &self,
+        id: &str,
+        params: UpdateCustomerParams,
+        opts: RequestOptions,
+    ) -> Result<Customer, crate::Error> {
+        post(
+            self.client,
+            &format!("/customers/{}", path_segment(id)),
+            params.to_form(),
+            opts,
+        )
+        .await
+    }
+
+    /// `GET /v1/customers`.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`].
+    pub async fn list(&self, params: ListCustomersParams) -> Result<List<Customer>, crate::Error> {
+        get(self.client, "/customers", query_string(&params.to_form())).await
+    }
+
+    /// `DELETE /v1/customers/{id}` — a **hard** delete.
+    ///
+    /// The row is removed, not flagged: a subsequent [`Self::retrieve`]
+    /// answers the same 404 as an id that never existed, and the only record
+    /// of what was deleted is the `customer.deleted` event
+    /// ([`crate::KnownEventType::CustomerDeleted`]).
+    ///
+    /// A customer any PaymentIntent or Checkout Session references **cannot**
+    /// be deleted and answers `409`: vpay keeps a payment attached to the
+    /// payer it was taken from. Clear `name`, `email` and `phone` with
+    /// [`Self::update`] instead if the payer's details have to go.
+    ///
+    /// Carries an `Idempotency-Key` like every other write on this API, which
+    /// is what makes a retried `DELETE` answer the original `{deleted: true}`
+    /// rather than a `404`.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`].
+    pub async fn del(
+        &self,
+        id: &str,
+        opts: RequestOptions,
+    ) -> Result<DeletedCustomer, crate::Error> {
+        self.client
+            .delete(&format!("/customers/{}", path_segment(id)), opts)
+            .await
     }
 }
 

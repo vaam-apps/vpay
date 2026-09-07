@@ -116,6 +116,10 @@ let intent = client
             payment_method_types: vec![PaymentMethodType::MtnMomo],
             metadata,
             description: Some("Order 1234".to_string()),
+            // A `cus_…` from `client.customers()`, or `None`. The payment is
+            // recorded against that payer, and the customer's twelve-month
+            // retention clock is stamped by the create.
+            customer: None,
         },
         RequestOptions::new().with_idempotency_key("order_1234_attempt_1"),
     )

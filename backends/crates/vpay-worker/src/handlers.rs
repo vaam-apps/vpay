@@ -139,6 +139,38 @@ const SCAN_BATCH: i64 = 500;
 /// rather than waiting an hour for the next one.
 const EXPIRY_PAGE: i64 = 100;
 
+/// How long a customer may go unused before the retention sweep deletes it —
+/// the maintainer's decision of 2026-09-05, in code.
+///
+/// **Twelve months, expressed as 365 days**, and the approximation is
+/// deliberate rather than an oversight. A calendar year would need a
+/// month-arithmetic library to be exact across leap years, and the difference
+/// it buys is at most one day at the end of a twelve-month horizon — while
+/// the thing that actually decides whether a customer survives a pass is
+/// whether a merchant used it, which is measured in weeks, not hours. What
+/// the constant must NOT be is configurable: a retention period is a promise
+/// vpay makes to a *payer*, and a deployment that could shorten it from a
+/// YAML file would be one where that promise depends on an operator nobody
+/// audits (ADR-0003 draws the same line for the checkout session's 24 hours).
+///
+/// It lives here rather than in `vpay-db` for
+/// `vpay_api::v1::checkout_sessions::SESSION_LIFETIME`'s reason: it is a
+/// product rule, and `Customers::idle_since`/`delete_idle` take the horizon
+/// as a parameter so that both sides of the comparison belong to the layer
+/// that owns the rule — and so a test can sweep a horizon in the future
+/// rather than back-dating a stored timestamp.
+const CUSTOMER_IDLE_AFTER: time::Duration = time::Duration::days(365);
+
+/// How many idle customers one retention pass may delete.
+///
+/// [`EXPIRY_PAGE`]'s number and its reasoning exactly: each row costs a
+/// render and its own transaction, and each produces a `customer.deleted`
+/// event that the fan-out turns into one delivery per configured endpoint.
+/// The page is also what bounds how much personal data is materialised into
+/// this process's memory at once, which the session sweep's page is not about
+/// and this one is.
+const CUSTOMER_PAGE: i64 = 100;
+
 /// Added to a [`RecoveryAction::Wait`]'s remaining time before the job is
 /// rescheduled.
 ///
@@ -227,6 +259,7 @@ async fn dispatch(
         // delivery's job been outstanding longer than a claim may legitimately
         // be?", and that is the same number the reaper compares against.
         JobKind::ScanDeliveries => handle_scan_deliveries(repositories, policy.lease, job).await,
+        JobKind::SweepIdleCustomers => sweep_idle_customers(repositories, job).await,
     }
 }
 
@@ -1064,6 +1097,125 @@ async fn expire_one_session(
         .expire_due(&row.id, now, &ids::event_id(), &data)
         .await?
         .is_some())
+}
+
+/// Deletes every customer nothing has used for [`CUSTOMER_IDLE_AFTER`] and
+/// which no payment intent or checkout session references, emitting one
+/// `customer.deleted` per deletion in the same transaction as the delete.
+///
+/// The maintainer's decision of 2026-09-05 — "retention is twelve months" —
+/// is this job. `docs/flows/customers.md` carries the privacy argument;
+/// migration `0034` carries the definition of "used".
+///
+/// # Why this is not a fifth statement inside `sweep_expired`
+///
+/// It runs on the same hourly schedule and its healthy answer is zero too,
+/// which is the argument that put checkout-session expiry inside that job.
+/// What separates this one is what a failure means. `sweep_expired`'s three
+/// deletes are vpay's own bookkeeping; this one erases a merchant's
+/// personal-data records and tells them about it. Sharing a job would report
+/// a failing customer sweep as "the housekeeping sweep is unhealthy", with an
+/// idempotency-key count it has nothing to do with in the same log line, and
+/// would put a merchant-visible event behind the same lease as an internal
+/// delete. `JobKind::SweepIdleCustomers` says the same thing at more length.
+///
+/// # One customer's failure does not stop the page
+///
+/// `expire_due_sessions`' shape, for its reason: one customer whose event
+/// will not render must not hold up every other merchant's deletions behind
+/// it. The failure is logged at `WARN` naming the customer and its merchant
+/// **and no identifier of the payer's** — `CustomerRow`'s `Debug` redacts
+/// all three, which is why this logs `%row.id` rather than `?row` — and the
+/// pass moves on; the customer stays, so the next pass retries it.
+///
+/// # Errors
+///
+/// [`JobError::Db`] only for a failure to **read** the page. A per-customer
+/// failure is logged and counted, never returned.
+async fn sweep_idle_customers(
+    repositories: &dyn Repositories,
+    job: &vpay_db::JobRow,
+) -> Result<Outcome, JobError> {
+    // The instant is this process's, not Postgres's, because the column it is
+    // compared against is written from Rust too — see
+    // `vpay_db::Customers::touch_last_used`. Taken once and used for both
+    // halves, so a customer that was due for the read cannot be undue for the
+    // write a few milliseconds later.
+    let horizon = OffsetDateTime::now_utc().saturating_sub(CUSTOMER_IDLE_AFTER);
+    let due = repositories.idle_since(horizon, CUSTOMER_PAGE).await?;
+
+    let page = due.len();
+    let page_was_full = i64::try_from(page).unwrap_or(i64::MAX) >= CUSTOMER_PAGE;
+    let mut deleted: u64 = 0;
+
+    for row in &due {
+        match delete_one_customer(repositories, job, row, horizon).await {
+            Ok(true) => deleted = deleted.saturating_add(1),
+            // The guard matched nothing: a concurrent sweep, a merchant who
+            // deleted it by hand, an intent created for it between the read
+            // and the write, or a use that stamped it. All four are normal,
+            // and none of them emits an event.
+            Ok(false) => {}
+            Err(error) => tracing::warn!(
+                job_id = %job.id,
+                customer_id = %row.id,
+                merchant_id = %row.merchant_id,
+                %error,
+                "an idle customer could not be deleted; it stays and the next sweep \
+                 retries it"
+            ),
+        }
+    }
+
+    tracing::info!(
+        customers_deleted = deleted,
+        customers_page = page,
+        horizon_days = CUSTOMER_IDLE_AFTER.whole_days(),
+        "customer retention sweep"
+    );
+
+    // `sweep_expired`'s conditional immediate reschedule, for its reason: a
+    // deployment with more than one page of idle customers would otherwise
+    // drain at `CUSTOMER_PAGE` an hour. Conditional on progress, because a
+    // full page that deleted nothing is a page every row of which lost its
+    // guard, and rescheduling on that is a tight loop against Postgres.
+    Ok(Outcome::RescheduleAfter(if page_was_full && deleted > 0 {
+        Duration::ZERO
+    } else {
+        SWEEP_INTERVAL
+    }))
+}
+
+/// One customer: render what the merchant is about to be told, then delete it
+/// and emit that in one transaction. `Ok(false)` means it was no longer
+/// eligible.
+async fn delete_one_customer(
+    repositories: &dyn Repositories,
+    job: &vpay_db::JobRow,
+    row: &vpay_db::CustomerRow,
+    horizon: OffsetDateTime,
+) -> Result<bool, JobError> {
+    // Rendered through `vpay_api::model::CustomerObject`, the same type
+    // `GET /v1/customers/{id}` returns, because `events.data` is a snapshot
+    // *of the object* (migration 0018). A second hand-written copy of that
+    // shape is how a webhook body and an API response start disagreeing about
+    // a field.
+    //
+    // The body therefore carries the payer's name, email and phone — which is
+    // the point rather than a leak: a merchant whose customer vpay has just
+    // erased needs to know *which* payer it was, and after the delete there is
+    // nothing left to read. It is the same personal data the merchant gave
+    // vpay and could read from `GET /v1/customers/{id}` a moment earlier, sent
+    // to endpoints they configured, over a signed body. `docs/flows/customers.md`
+    // states it plainly so nobody has to infer it.
+    let object = vpay_api::model::CustomerObject::try_from(row)
+        .map_err(|error| poisoned(job, format!("a customer row would not render: {error}")))?;
+    let data = encode(job, &object)?;
+
+    repositories
+        .delete_idle(&row.id, horizon, &ids::event_id(), &data)
+        .await
+        .map_err(JobError::from)
 }
 
 /// Enqueues a poll for every live charge nothing appears to be driving.

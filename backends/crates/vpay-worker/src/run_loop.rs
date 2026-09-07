@@ -36,7 +36,7 @@ use crate::error::{Decision, JobError};
 use crate::handlers::{Adapters, RailConfigs, WebhookContext, handle};
 use crate::jobs::{
     FANOUT_DEDUPE_KEY, JobKind, Outcome, SCAN_DEDUPE_KEY, SCAN_DELIVERIES_DEDUPE_KEY,
-    SWEEP_DEDUPE_KEY,
+    SWEEP_CUSTOMERS_DEDUPE_KEY, SWEEP_DEDUPE_KEY,
 };
 use crate::recovery::RecoveryPolicy;
 use crate::webhooks::EndpointRegistry;
@@ -459,16 +459,17 @@ fn log_disposition(settled: &Settled) {
     }
 }
 
-/// Seeds the four singleton jobs this deployment always wants running.
+/// Seeds the five singleton jobs this deployment always wants running.
 ///
-/// `sweep_expired`, `scan_live_charges`, `fan_out_events` and
-/// `scan_deliveries` are not enqueued by anything that creates work, so they
+/// `sweep_expired`, `scan_live_charges`, `fan_out_events`,
+/// `scan_deliveries` and `sweep_idle_customers` are not enqueued by anything
+/// that creates work, so they
 /// are seeded at boot and reschedule themselves for as long as the deployment
 /// lives. `ON CONFLICT (dedupe_key) DO NOTHING` is what makes N workers doing
 /// this produce one row each, and what stops a restart dragging a job already
 /// scheduled an hour out back to now.
 ///
-/// One transaction for all four, because a partial seed is worse than none: a
+/// One transaction for all five, because a partial seed is worse than none: a
 /// deployment without `fan_out_events` settles payments and tells no merchant
 /// about any of them, which looks exactly like a healthy deployment until
 /// somebody reads the backlog.
@@ -521,6 +522,22 @@ pub async fn seed_singletons(repositories: &dyn Repositories) -> Result<(), DbEr
                 tx.enqueue_in_tx(
                     JobKind::ScanDeliveries.as_wire_str(),
                     SCAN_DELIVERIES_DEDUPE_KEY,
+                    &empty,
+                    now,
+                )
+                .await?;
+                // The twelve-month customer retention sweep (S4a, migration
+                // 0034). Seeded like the rest, and it is the one whose
+                // absence is *invisible*: a deployment that dropped this seed
+                // keeps every customer for ever, which looks exactly like a
+                // healthy deployment and is a promise to a payer that vpay
+                // has stopped keeping. `run_at = now` for `fan_out_events`'
+                // reason — a customer already twelve months idle when this
+                // process starts has been waiting, and the first pass finds
+                // it rather than an hour's worth of new ones.
+                tx.enqueue_in_tx(
+                    JobKind::SweepIdleCustomers.as_wire_str(),
+                    SWEEP_CUSTOMERS_DEDUPE_KEY,
                     &empty,
                     now,
                 )

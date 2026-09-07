@@ -291,6 +291,17 @@ fn count(outcome: &'static str) {
 
 /// The canonical `2376XXXXXXXX` — twelve digits, no `+` — or `None`.
 ///
+/// # Why it is `pub(crate)`, and what the second caller is
+///
+/// `vpay_api::v1::customers` canonicalises `phone` through this same
+/// function, deliberately and not by copying it: a customer's phone number is
+/// the value a rail is eventually given (the maintainer's decision of
+/// 2026-09-05 makes it the customer identity), so a customer created from
+/// `+237 6 00 00 02 00` and an account-holder lookup for `600000200` have to
+/// resolve to one string or vpay holds two spellings of one payer. Widening
+/// the market rule — a second country code, a second mobile prefix — then
+/// moves both surfaces at once, which is the property that matters.
+///
 /// # Why this is not shared with the checkout page's validator
 ///
 /// `frontends/apps/checkout/src/lib/msisdn.ts` implements the identical
@@ -315,7 +326,7 @@ fn count(outcome: &'static str) {
 /// The **twelve-digit, no-`+`** form is what the rail receives:
 /// `payer.partyId` is `237600000000` in `vpay-adapter-mtn-momo` and in every
 /// conformance mapping.
-fn canonical_msisdn(input: &str) -> Option<String> {
+pub(crate) fn canonical_msisdn(input: &str) -> Option<String> {
     /// Separators a caller may send, matching the checkout page's set: ASCII
     /// space, tab, hyphen, dot, parentheses, and the two spaces a phone
     /// keypad or a French locale inserts (U+00A0, U+202F). Written as

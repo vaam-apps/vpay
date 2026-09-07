@@ -52,6 +52,15 @@ pub const EVENT_PREFIX: &str = "evt_";
 /// the two credentials on their page they are holding.
 pub const CHECKOUT_SESSION_PREFIX: &str = "cs_";
 
+/// The prefix on a Customer id.
+///
+/// Stripe's own spelling, for [`CHECKOUT_SESSION_PREFIX`]'s reason and one
+/// more that is specific to this object: a `cus_…` is the value a merchant
+/// stores against their *own* user record and sends back on every later
+/// intent, so it outlives every other id vpay mints and is the one most
+/// likely to be read by a human comparing two systems.
+pub const CUSTOMER_PREFIX: &str = "cus_";
+
 /// Whether `id` is shaped like an id this module would have minted under
 /// `prefix`: the prefix, then exactly 24 characters, every one of them in the
 /// alphabet.
@@ -196,6 +205,23 @@ pub fn event_id() -> String {
 #[must_use]
 pub fn checkout_session_id() -> String {
     new_id(CHECKOUT_SESSION_PREFIX)
+}
+
+/// A new Customer id, `cus_…`.
+///
+/// ```
+/// use vpay_core::ids::{self, CHECKOUT_SESSION_PREFIX, CUSTOMER_PREFIX};
+///
+/// let id = ids::customer_id();
+/// assert!(ids::is_well_formed(CUSTOMER_PREFIX, &id));
+/// // `cus_` and `cs_` share their first two characters, which is exactly
+/// // why the shape check compares the whole prefix and not a prefix of it:
+/// // a customer id must never page a merchant through checkout sessions.
+/// assert!(!ids::is_well_formed(CHECKOUT_SESSION_PREFIX, &id));
+/// ```
+#[must_use]
+pub fn customer_id() -> String {
+    new_id(CUSTOMER_PREFIX)
 }
 
 /// What joins an object id to its secret suffix: `pi_…` + this + the suffix.
@@ -344,12 +370,13 @@ mod tests {
     /// being listed here is a generator none of the properties below hold of
     /// — the length, the alphabet, the id-column CHECK and the
     /// percent-encoding identity are claims about *every* id vpay mints.
-    const GENERATORS: [Generator; 5] = [
+    const GENERATORS: [Generator; 6] = [
         (payment_intent_id as fn() -> String, PAYMENT_INTENT_PREFIX),
         (charge_id, CHARGE_PREFIX),
         (refund_id, REFUND_PREFIX),
         (event_id, EVENT_PREFIX),
         (checkout_session_id, CHECKOUT_SESSION_PREFIX),
+        (customer_id, CUSTOMER_PREFIX),
     ];
 
     /// `sdks/rust/src/form.rs`'s `is_safe_byte`, copied verbatim rather than

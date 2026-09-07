@@ -330,6 +330,7 @@ fn create_params() -> CreatePaymentIntentParams {
         payment_method_types: vec![PaymentMethodType::MtnMomo],
         metadata: BTreeMap::new(),
         description: None,
+        customer: None,
     }
 }
 
@@ -1036,8 +1037,9 @@ async fn the_client_secret_is_on_create_and_retrieve_and_never_on_the_list() -> 
         );
         assert_eq!(
             item.as_object().map(serde_json::Map::len),
-            Some(12),
-            "the listed object is the twelve documented keys: {item:#}"
+            Some(13),
+            "the listed object is the thirteen documented keys — twelve until 2026-09-06, \
+             when S4a added `customer`: {item:#}"
         );
     }
     // Not merely absent as a key — absent as a *value* anywhere in the page.
@@ -1116,8 +1118,9 @@ async fn no_event_body_carries_a_client_secret() -> anyhow::Result<()> {
         );
         assert_eq!(
             data.as_object().map(serde_json::Map::len),
-            Some(12),
-            "{event_type}: events.data is the twelve documented keys: {data:#}"
+            Some(13),
+            "{event_type}: events.data is the thirteen documented keys — twelve until \
+             2026-09-06, when S4a added `customer`: {data:#}"
         );
         assert!(
             !serde_json::to_string(data)?.contains(&secret),

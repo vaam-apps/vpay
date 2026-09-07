@@ -64,6 +64,20 @@ export interface PaymentIntent {
   last_payment_error: LastPaymentError | null;
   metadata: Record<string, string>;
   description: string | null;
+  /**
+   * The `cus_…` this intent is for, or `null` (S4a).
+   *
+   * The **id**, never the expanded object: vpay does not implement `expand`,
+   * and rendering the customer unasked would put a payer's name, email and
+   * phone number into every `payment_intent.*` webhook body. Read it with
+   * `client.customers.retrieve`.
+   *
+   * `?` because a vpay predating 2026-09-06 omits the key entirely — the
+   * same reason `Refund.fee` carries one, and with a *weaker* consequence:
+   * unlike `fee`, `undefined` and `null` mean the same thing here ("no
+   * customer"), so nothing is lost by conflating them.
+   */
+  customer?: string | null;
   /** Unix seconds. */
   created: number;
   livemode: boolean;
@@ -156,7 +170,16 @@ export type KnownEventType =
   | "payment_intent.canceled"
   | "charge.refunded"
   | "charge.refund.updated"
-  | "checkout.session.expired";
+  | "checkout.session.expired"
+  /**
+   * A Customer was deleted — by `DELETE /v1/customers/{id}` or by vpay's
+   * twelve-month retention sweep (S4a). `data.object` is a
+   * {@link Customer} as it stood immediately before the delete, which is the
+   * **only** way to learn its `name`, `email` and `phone`: the row is gone,
+   * and a `GET` afterwards is byte-identical to one for an id that never
+   * existed.
+   */
+  | "customer.deleted";
 
 export interface Event {
   id: string;
@@ -264,6 +287,12 @@ export interface CheckoutSession {
   return_url: string | null;
   /** The page to send the payer to, hosted mode only; `null` when embedded. */
   url: string | null;
+  /**
+   * The `cus_…` this session is for, or `null` (S4a). Copied from the
+   * session's intent at create when the intent has one. The id, never the
+   * expanded object — {@link PaymentIntent.customer}'s reason, unchanged.
+   */
+  customer?: string | null;
   /** Unix seconds. 24 h from create. */
   expires_at: number;
   /** Unix seconds. */
@@ -383,6 +412,112 @@ export type ListParams = {
   ending_before?: string | undefined;
 };
 
+/**
+ * A `customer` — the merchant-owned record of a payer they expect to see
+ * again (S4a).
+ *
+ * Seven keys and no more. `last_used_at` — the clock vpay's twelve-month
+ * retention sweep reads — is deliberately **not** on the wire.
+ *
+ * At least one of `name`, `email` and `phone` is always present. A phone
+ * number **alone** is a complete customer, which is what the object is for
+ * on a mobile money rail.
+ */
+export interface Customer {
+  id: string;
+  object: "customer";
+  name: string | null;
+  email: string | null;
+  /**
+   * Echoed back **canonicalised** (`2376XXXXXXXX`, no `+`) rather than as it
+   * was sent, which is a wire contract and not a quirk: it is the value a
+   * rail is given, so a merchant comparing this against a charge's payer
+   * reference is comparing the same string.
+   */
+  phone: string | null;
+  metadata: Record<string, string>;
+  /** Unix seconds. */
+  created: number;
+  livemode: boolean;
+}
+
+/**
+ * What `client.customers.del(…)` answers with — Stripe's deleted-object
+ * shape.
+ *
+ * Deliberately **not** the customer that was removed: a merchant confirming
+ * an erasure is the caller most likely to log the whole response, and
+ * returning the payer's details in it would write them into a log *because*
+ * they were deleted.
+ */
+export interface DeletedCustomer {
+  id: string;
+  object: "customer";
+  deleted: true;
+}
+
+export interface CreateCustomerParams {
+  /**
+   * At least one of `name`, `email` and `phone` must be present, and this
+   * SDK deliberately does not check that: which identifiers a customer needs
+   * is a *market* rule vpay owns and may widen — the same line
+   * `RetrieveAccountHolderParams.msisdn` takes on the MSISDN — so a copy here
+   * would refuse offline a customer a later server version accepts. The
+   * server answers `400` naming the parameter. `sdks/rust` takes the
+   * identical line.
+   */
+  name?: string | undefined;
+  email?: string | undefined;
+  /**
+   * In any spelling vpay's canonicaliser accepts (`+237 6 …`,
+   * `237600000200`, `600000200`). Stored and echoed back **canonical**, so
+   * what comes back may not be what was sent — see {@link Customer.phone}.
+   */
+  phone?: string | undefined;
+  metadata?: Record<string, string> | undefined;
+}
+
+/**
+ * `POST /v1/customers/{id}` request fields (S4a).
+ *
+ * # Why the three scalars are `string | null | undefined`
+ *
+ * An update has three answers per field and a merchant depends on all three:
+ * *leave it alone* (`undefined`, or the key absent), *set it* (a string), and
+ * **clear it** (`null`, which this SDK sends as `name=`). A `string |
+ * undefined` field collapses the first and the third, and a payer's email
+ * would then be unclearable through the API that documents how to clear it.
+ *
+ * It is the same three-state shape `UpdateCustomerParams` carries in
+ * `sdks/rust` (`Option<Option<String>>`) and `vpay_db::CustomerPatch` carries
+ * on the server, so all three layers express the distinction rather than two
+ * of them preserving it and one losing it.
+ *
+ * `metadata` has two states rather than three, and that is the wire contract:
+ * it is **merged** key-wise by the server, and a key whose value is the empty
+ * string is removed. So there is no separate "clear all metadata" — send each
+ * key empty.
+ */
+export interface UpdateCustomerParams {
+  name?: string | null | undefined;
+  email?: string | null | undefined;
+  phone?: string | null | undefined;
+  metadata?: Record<string, string> | undefined;
+}
+
+/**
+ * `GET /v1/customers` query parameters.
+ *
+ * There is no `email` filter, and that is the server's shape rather than an
+ * omission here: a filter on a payer identifier turns the list into a lookup.
+ * See `docs/flows/customers.md`.
+ */
+export type ListCustomersParams = {
+  limit?: number | undefined;
+  starting_after?: string | undefined;
+  ending_before?: string | undefined;
+};
+
 export interface CreatePaymentIntentParams {
   /**
    * Integer minor units. A non-integer, a negative, or anything past
@@ -393,6 +528,14 @@ export interface CreatePaymentIntentParams {
   payment_method_types: PaymentMethodType[];
   metadata?: Record<string, string> | undefined;
   description?: string | undefined;
+  /**
+   * The `cus_…` this intent is for (S4a).
+   *
+   * Accepted and **dropped** by any vpay predating 2026-09-06, which is worth
+   * knowing before relying on it: an older server answers `200` with
+   * `customer: null` rather than refusing. Check the response.
+   */
+  customer?: string | undefined;
 }
 
 /** A `type` alias for the same index-signature reason as {@link ListParams}. */

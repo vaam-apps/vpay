@@ -323,6 +323,7 @@ async fn seed_intent(
             payment_method_types: serde_json::json!([PUSH_RAIL]),
             metadata: serde_json::json!({}),
             description: None,
+            customer_id: None,
             last_payment_error_code: None,
             last_payment_error_message: None,
             // A recognisable literal, unlike `support::confirmed_intent`'s

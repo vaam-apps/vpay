@@ -71,12 +71,17 @@ else `403` `forbidden`
 ### Served today
 
 `vpay_api::v1::V1_ROUTES` is the router's source, not a copy of it.
-**Thirteen methods across eleven paths**, re-counted from `V1_ROUTES` on
-2026-09-06 after `GET /v1/refunds/{id}` (issue #45) landed on top of
-`GET /v1/account_holders` (issue #47): eleven across nine after Step 9,
-twelve across ten with issue #47, thirteen across eleven now. Each of the two
-changes was written against a tree without the other, and each said "twelve
-across ten"; neither number survives them both.
+**Eighteen methods across thirteen paths**, re-counted from `V1_ROUTES` on
+2026-09-06 after S4a mounted `/v1/customers` (two paths, five methods) on top
+of `GET /v1/refunds/{id}` (issue #45) and `GET /v1/account_holders` (issue
+#47): eleven across nine after Step 9, twelve across ten with issue #47,
+thirteen across eleven with issue #45, eighteen across thirteen now. Each
+change was written against a tree without the others, and the first two each
+said "twelve across ten"; no number here has survived two changes yet, which
+is why it is re-counted rather than incremented.
+
+`/v1/customers/{id}` is the only path answering three methods, and
+`DELETE /v1/customers/{id}` is the only `DELETE` on this surface.
 
 | Method | Path | Request params | Answer |
 |---|---|---|---|
@@ -93,6 +98,11 @@ across ten"; neither number survives them both.
 | GET | `/v1/checkout/sessions` | `limit`, `starting_after`, `ending_before`, `payment_intent` | `200` + `list` envelope, **no secrets** (Step 9) |
 | POST | `/v1/checkout/sessions/{id}/expire` | | `200` + the session in `expired`, or `409` when its intent has a charge a rail may still act on (Step 9) |
 | GET | `/v1/account_holders` | `msisdn` (**required**, a Cameroon mobile number as `+2376XXXXXXXX`, `2376XXXXXXXX` or the national `6XXXXXXXX`), `payment_method_type` (**required**, a rail code this deployment offers *and* whose rail exposes an account-holder API) | `200` + `account_holder`; `400` naming `msisdn` or `payment_method_type`; `502 provider_unavailable` when the rail could not be asked — **never a `200` with a null name** (issue #47) |
+| POST | `/v1/customers` | `name` (≤256), `email` (≤512), `phone` (a Cameroon mobile number in any of the three spellings above), `metadata[…]` — **at least one of `name`/`email`/`phone` is required, and `phone` alone is enough** | `201` + `customer`; `400` naming all three when none was sent (S4a) |
+| GET | `/v1/customers/{id}` | | `200` + `customer`, or `404 resource_missing` — **including for another merchant's id**, byte for byte (`a_foreign_customer_and_a_missing_one_are_the_identical_404`) |
+| POST | `/v1/customers/{id}` | as `POST /v1/customers`, plus: a field sent **empty** is *cleared*, which is a different request from omitting it | `200` + `customer`; `400` naming `name` when the patch would clear the customer's last identifier; the uniform `404` (S4a) |
+| GET | `/v1/customers` | `limit`, `starting_after`, `ending_before` (`cus_…` ids; not both) | `200` + `list` envelope of `customer`, newest first. **No `email` filter**, deliberately — see [../flows/customers.md](../flows/customers.md) |
+| DELETE | `/v1/customers/{id}` | | `200` + `{"id", "object": "customer", "deleted": true}` — a **hard** delete; `409` when any payment intent or checkout session references the customer; the uniform `404` (S4a) |
 
 **`GET /v1/events` renders an event through the same code the webhook
 deliverer signs** (`vpay_api::model::EventObject`). That is deliberate: this
@@ -112,18 +122,19 @@ would let it answer a different question from the one the webhook asked. The
 ```
 
 `created` is unix **seconds**, like every other `created` on this surface.
-`type` is one of the eight in [../flows/webhooks.md](../flows/webhooks.md); only
-`payment_intent.succeeded`, `payment_intent.payment_failed` and
-`checkout.session.expired` are ever written today, and the CHECK
-`type_is_a_documented_event` (migrations `0018` and `0029`) closes the
-vocabulary at the database. `livemode` comes off the stored row, not from
+`type` is one of the nine in [../flows/webhooks.md](../flows/webhooks.md); only
+`payment_intent.succeeded`, `payment_intent.payment_failed`,
+`checkout.session.expired` and `customer.deleted` are ever written today, and
+the CHECK `type_is_a_documented_event` (migrations `0018`, `0029` and `0034`)
+closes the vocabulary at the database. `livemode` comes off the stored row, not from
 configuration read at render time, so redeploying does not change what a
 delivered event says about itself.
 
-**`data.object` is the same 12-key `payment_intent`
+**`data.object` is the same 13-key `payment_intent`
 `GET /v1/payment_intents/{id}` returns** — `id`, `object`, `amount`, `currency`,
 `status`, `payment_method_types`, `next_action`, `last_payment_error`,
-`metadata`, `description`, `created`, `livemode` — rendered by
+`metadata`, `description`, `customer`, `created`, `livemode` — twelve until
+2026-09-06, when S4a's `customer` made thirteen; rendered by
 `vpay_api::model::PaymentIntentObject` at the moment the transition happened and
 stored verbatim. It is a **snapshot, not a re-read**: an intent that changed
 afterwards still shows what was true when the event was emitted. Neither the
@@ -132,8 +143,9 @@ so an SDK version that predates a future object type can still receive the
 event rather than failing to decode it.
 
 **Except on `checkout.session.expired`, whose `data.object` is a
-`checkout.session`** — the only type whose payload is not a `payment_intent` or
-a refund. It is the 13-key object documented below, with `status` already
+`checkout.session`, and `customer.deleted`, whose `data.object` is a
+`customer`** — the two types whose payload is not a `payment_intent` or a
+refund. The session is the 14-key object documented below, with `status` already
 `expired`, `payment_status` whatever the money did, and **`url` always
 `null`**: a hosted session's `url` carries its `client_secret` in the fragment,
 and a webhook body is stored, delivered at-least-once and replayed. So `url:
@@ -143,6 +155,53 @@ sweep expires a session past its horizon, and **only** then: a session the
 settlement finished already produced a `payment_intent.*` event for the same
 thing, and `POST /v1/checkout/sessions/{id}/expire` emits nothing because you
 asked for it.
+
+**`customer.deleted`'s `data.object` is the customer as it stood immediately
+before the delete**, and it carries the payer's `name`, `email` and `phone`.
+That is the point rather than an oversight: a hard delete is unobservable by
+polling — the object is gone, and a `GET` afterwards is byte-identical to a
+`GET` for an id that never existed — so this body is the only record of who
+was erased. It is emitted by the twelve-month retention sweep. **It is not
+emitted by `DELETE /v1/customers/{id}`**, for the reason
+`POST /v1/checkout/sessions/{id}/expire` emits nothing: you asked for it. And
+there is no `customer.created` or `customer.updated`; both are real Stripe
+types and neither is in the vocabulary, because nothing writes them — see
+[../flows/customers.md](../flows/customers.md), "What is not built".
+
+### The `customer` object (S4a)
+
+The merchant-owned record of a payer you expect to see again. **Seven keys**,
+and the object whose *rules* matter more than its shape —
+[../flows/customers.md](../flows/customers.md) is the whole of them.
+
+```json
+{
+  "id": "cus_…", "object": "customer",
+  "name": null, "email": null, "phone": "237600000200",
+  "metadata": { "order_id": "1234" },
+  "created": 1753401600, "livemode": false
+}
+```
+
+**At least one of `name`, `email` and `phone` is always present, and `phone`
+alone is enough** — the example above is a complete customer, and that is the
+maintainer's decision of 2026-09-05 rather than an accident of the sample.
+On a mobile money rail the phone number *is* the payer.
+
+`phone` is echoed back **canonicalised** — `2376XXXXXXXX`, twelve digits, no
+`+` — whatever spelling was sent, because it is the value a rail is given.
+`+237 6 00 00 02 00` and `600000200` both read back as the number above.
+
+There is no `address`, and there is no `last_used_at`. The first is a gap; the
+second is deliberate — it is the twelve-month retention sweep's clock, vpay
+moves it for its own reasons, and putting it on the wire would invite an
+integration to build on it. Both are recorded in the flow doc.
+
+**A customer is deleted, not flagged**, and a customer any payment intent or
+checkout session references cannot be deleted at all (`409`). So "delete this
+customer" is not a complete erasure of the payer: the payment record survives.
+Clearing `name`, `email` and `phone` with an update is the other half of the
+answer, and is why an update can clear a field.
 
 ### The `account_holder` object (issue #47)
 
@@ -198,6 +257,7 @@ Amount, currency and the rails on offer stay on the intent.
   "success_url": "https://shop/ok?sid={CHECKOUT_SESSION_ID}",
   "cancel_url": "https://shop/cancel", "return_url": null,
   "url": "https://checkout.example/c/cs_…?key=pk_…#cs_…_secret_…",
+  "customer": null,
   "expires_at": 1757000000, "created": 1756913600,
   "client_secret": "cs_…_secret_…"
 }
@@ -423,11 +483,20 @@ each a `400` naming the field, on both POST bodies. vpay has no authorise-now
 settle a merchant's money at a time, or to an account, they neither asked for
 nor can see in the response. Everything else Stripe sends and vpay does not
 implement — `setup_future_usage`, `confirmation_method`, `receipt_email`,
-`statement_descriptor`, `customer`, `expand` — is accepted and ignored,
+`statement_descriptor`, `expand` — is accepted and ignored,
 because none of it changes the payment that results. `metadata` is accepted
 on both bodies too, but it is not on that list: `metadata` is stored; the
 rest are dropped — it is persisted on the intent and comes back on every
 read.
+
+**`customer` left the dropped list on 2026-09-06** (S4a) and joined
+`metadata`: it is accepted, **stored**, and rendered on every read of the
+intent. It was on that list honestly for as long as there was nothing to
+point at — a merchant who sent one got the payment they asked for, from the
+payer they asked, for the amount they asked — and migration `0034` is what
+gave it somewhere to point. The consequence for a client is worth stating:
+a `cus_…` that is not this account's is now a `400` naming `customer`, where
+an older vpay answered `200` and dropped it.
 
 **A replayed response carries the advisory the original carried.** Migration
 `0025` stores the header's own value beside the status and body
