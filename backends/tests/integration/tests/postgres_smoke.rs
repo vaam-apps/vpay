@@ -2724,7 +2724,7 @@ async fn a_negative_refund_fee_is_rejected_by_the_database() -> anyhow::Result<(
 #[tokio::test]
 async fn the_0028_repair_in_the_runbook_fixes_a_database_that_applied_the_original()
 -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
 
     let runbook_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../docs/runbooks/migrations.md");
@@ -2754,13 +2754,53 @@ async fn the_0028_repair_in_the_runbook_fixes_a_database_that_applied_the_origin
         .context("rewinding migration 28's checksum to the original file's")?;
     assert_eq!(checksum_28(&pool).await?, ORIGINAL_0028_SHA384);
 
-    // The negative control, and the reason this whole page exists: the
-    // migrator now refuses, exactly as the runbook's trigger says.
-    let refusal = sqlx::migrate!("../../migrations")
-        .run(&pool)
+    // The negative control, and the reason this whole page exists: the migrator
+    // now refuses, exactly as the runbook's trigger says.
+    //
+    // On its OWN pool, which is closed immediately afterwards, and that is not
+    // tidiness. `Migrator::run_direct` takes a Postgres advisory lock
+    // (`conn.lock()`) and returns `Err(VersionMismatch)` *before* reaching its
+    // `conn.unlock()` — read it in sqlx-core 0.9.0
+    // `src/migrate/migrator.rs`. A refused migration therefore hands its
+    // connection back to the pool still holding the lock, and the next
+    // `run()` — which gets a different connection — blocks in Postgres until
+    // the leaking connection is reaped at `idle_timeout` (10 minutes by
+    // default). Measured before this was understood: this one test took
+    // **1201 s**, against 1.5-2.0 s for every other test in this file.
+    //
+    // In production the process exits 78 on that error, which closes the
+    // connection and releases the lock, so this is a test-harness problem
+    // rather than an operational one. It is written down here because the
+    // symptom — a migration that hangs instead of failing — looks nothing like
+    // its cause.
+    let refusal = {
+        let solo = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .context("a dedicated pool for the refused migration")?;
+        let refusal = sqlx::migrate!("../../migrations")
+            .run(&solo)
+            .await
+            .expect_err("a database holding the original 0028 checksum must be refused");
+
+        // The lock is observed rather than asserted from the source above.
+        let held: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted",
+        )
+        .fetch_one(&pool)
         .await
-        .expect_err("a database holding the original 0028 checksum must be refused");
-    let refusal = refusal.to_string();
+        .context("counting advisory locks while the refused connection is still open")?;
+        assert_eq!(
+            held, 1,
+            "a refused migration leaves sqlx's advisory lock held on its connection; if this \
+             is 0, sqlx has started unlocking on the error path and the dedicated pool below \
+             can be dropped"
+        );
+
+        solo.close().await;
+        refusal.to_string()
+    };
     assert!(
         refusal.contains("28") && refusal.contains("modified"),
         "the refusal must be the one the runbook's trigger quotes, not some other failure: \
