@@ -10,15 +10,27 @@ MTN MoMo and Orange Money are the first two adapters. Neither is the architectur
 
 ---
 
-> ## ⚠️ vpay cannot take a payment yet
+> ## ⚠️ vpay has never taken a real payment
 >
-> This repository is a **scaffold**. It compiles, lints clean and its tests pass,
-> but **no HTTP call to any payment rail has ever been made by this code**.
+> **What works, against stub rails.** A payment goes end to end: a merchant
+> authenticates, creates a PaymentIntent, confirms it, `vpay-worker` polls the
+> charge, settlement commits, and a signed webhook is delivered. `just demo`
+> walks six of those on both rails to every outcome each rail documents, and a
+> real browser has driven the hosted and the embedded checkout page
+> (`just test-e2e`). Every rail in every one of those runs is a
+> `wiremock/wiremock` container reached over HTTP.
 >
-> Read [`docs/status.md`](docs/status.md) before forming any expectation of what
-> works. That page is machine-checked: `cargo xtask verify-status` fails the
-> build if the code contains an unimplemented path that the status page does not
-> declare.
+> **What has never happened.** No HTTP call to MTN's or Orange's own
+> endpoints — not production, not even their sandboxes. No payer has been
+> prompted on a handset and no money has moved. No cluster has ever run vpay.
+> And there is no dashboard a person can use: `/dash/v1`'s two read routes and
+> staff sign-in answer over HTTP, but the app has no pages.
+>
+> Read [`docs/status.md`](docs/status.md) before forming any expectation of
+> what works. It is machine-checked in both directions: `cargo xtask
+> verify-status` fails the build if the code carries an unimplemented path that
+> page does not declare, **and** if that page declares one no shipping code
+> carries any more.
 
 ---
 
@@ -29,39 +41,39 @@ integrate Stripe — same object model, same idempotency semantics, same webhook
 signature scheme — while it talks underneath to mobile money rails that behave
 nothing like cards.
 
-**Authentication is the one place this comparison does not hold.** `/v1`
-does not accept an `sk_live_`/`sk_test_`-style API key. It authenticates
-merchants with OAuth2 `client_credentials` + `private_key_jwt` (RFC 7523):
-each merchant is a statically registered client, holding its own private
-key, configured directly in vpay's YAML — vpay stores only the public half.
+**Authentication is the one place this comparison does not hold.** `/v1` does
+not accept an `sk_live_`/`sk_test_`-style API key. It authenticates merchants
+with OAuth2 `client_credentials` + `private_key_jwt` (RFC 7523): each merchant
+is a statically registered client, holding its own private key, configured
+directly in vpay's YAML — vpay stores only the public half
+([ADR-0010](docs/adr/0010-merchant-auth-private-key-jwt.md),
+[`docs/flows/merchant-auth.md`](docs/flows/merchant-auth.md)).
+
 A Stripe SDK cannot do that handshake by itself, but it does not have to:
 `stripe-node` takes an arbitrary `config.authenticator`, and
 [`@vaam-apps/vpay-sdk/stripe`](sdks/nodejs/) supplies one, so `new Stripe("", {
-authenticator, host, port, protocol })` reaches vpay with an empty key —
+authenticator, host, port, protocol })` reaches vpay with an empty key. That is
 proven by [`sdks/stripe-compat`](sdks/stripe-compat/), which drives the real
-`stripe` package against a real stack in CI. *(This corrects "no Stripe SDK
-can authenticate against vpay", which this README and
-[ADR-0010](docs/adr/0010-merchant-auth-private-key-jwt.md) both said until
-2026-09-03; see that ADR's amendment.)* See
-[`docs/flows/stripe-sdk-compat.md`](docs/flows/stripe-sdk-compat.md) for
-what does and does not carry over, and
-[`examples/merchant-curl`](examples/merchant-curl/) for the underlying
-two-step flow. vpay ships its own merchant SDKs that do that handshake —
-[`sdks/rust`](sdks/rust/) (`vpay-sdk`) and [`sdks/nodejs`](sdks/nodejs/)
-(`@vaam-apps/vpay-sdk`) — implementing the wire contract in
-[`docs/flows/merchant-auth.md`](docs/flows/merchant-auth.md). The Rust one
-has completed a real handshake against a running `vpay-server` — that is
-what [`examples/merchant-demo`](examples/merchant-demo/) and `just demo`
-below exist to show — and, since 2026-09-03, has created, retrieved, listed
-and cancelled real payment intents through `/v1/payment_intents` — and,
-since Step 3 the same day, confirmed one and watched the intent move to
-`processing`. **It has still never taken a payment:** the rail behind that
-confirm is a WireMock container, nothing polls the charge, and no intent has
-ever reached `succeeded`. The Node SDK is still tested only against stubs of
-the contract. The two SDKs are held to the same capability matrix, checked
-on every `just verify` — see [`docs/sdks/parity.md`](docs/sdks/parity.md)
-(record: [ADR-0015](docs/adr/0015-sdk-parity.md)) for where they agree and
-the dated, owned list of where they still don't.
+`stripe` package against a live compose stack in CI's `e2e (compose)` job — as
+far as a confirmed intent polling through to `succeeded` and a delivered
+webhook verifying with `stripe.webhooks.constructEvent`. See
+[`docs/flows/stripe-sdk-compat.md`](docs/flows/stripe-sdk-compat.md) for every
+divergence, and [`examples/merchant-curl`](examples/merchant-curl/) for the
+underlying two-step flow.
+
+vpay also ships its own merchant SDKs — [`sdks/rust`](sdks/rust/) (`vpay-sdk`)
+and [`sdks/nodejs`](sdks/nodejs/) (`@vaam-apps/vpay-sdk`) — plus a browser
+client, [`sdks/stripe-js`](sdks/stripe-js/) (`@vaam-apps/vpay-stripe-js`), for
+the payer-facing surface. The Rust SDK is what
+[`examples/merchant-demo`](examples/merchant-demo/) and `just demo` drive
+against a running `vpay-server`. **No test inside `sdks/nodejs` itself has ever
+spoken to a vpay** — every server in that package's own tests is a `node:http`
+stub; what has driven a live stack from Node is `sdks/stripe-compat` and
+[`examples/shop`](examples/shop/). The two merchant SDKs are held to the same
+capability matrix, machine-checked in both directions on every `just verify` —
+see [`docs/sdks/parity.md`](docs/sdks/parity.md)
+([ADR-0015](docs/adr/0015-sdk-parity.md)) for where they agree and the dated,
+owned list of where they still don't.
 
 Two rails ship in the MVP, and they have genuinely different payer journeys:
 
@@ -82,34 +94,84 @@ promise that decays.
 **1. No test doubles in shipping processes.** No mock, fake or stub may be
 reachable from `vpay-server` (either mode). A stub rail is a *WireMock
 host in configuration* — the same mechanism production uses to reach a real
-rail. `cargo xtask verify-no-mocks` enforces it.
+rail. `cargo xtask verify-no-mocks` walks `cargo metadata`'s dependency graph
+from each shipping binary and fails the build otherwise.
 ([ADR-0006](docs/adr/0006-no-mocks-in-main-processes.md))
 
 **2. Never claim a feature is done when it is not.** Unwritten code returns
-`ProviderError::NotImplemented` — it never fabricates a success. Every such path
-must appear in `docs/status.md`, and `cargo xtask verify-status` fails the build
-otherwise. Tests for unbuilt features are `#[ignore]`d with a reason, so a green
-run never overstates coverage.
+`ProviderError::NotImplemented` — it never fabricates a success. Every such
+path must appear in `docs/status.md`, and `cargo xtask verify-status` fails the
+build otherwise, in both directions. Tests for unbuilt features are
+`#[ignore]`d with a reason; `just verify-ignored` pins the workspace at **0**
+of them, so a green run never overstates coverage.
+
+## What is served on `/v1` today
+
+`GET /healthz`, the merchant OP (`POST /v1/oauth/token`,
+`GET /v1/oauth/.well-known/openid-configuration`, `GET /v1/oauth/jwks.json`),
+and behind a merchant bearer token and a scope check:
+
+| Resource | Methods |
+|---|---|
+| `/v1/payment_intents` | `POST`, `GET`, `GET {id}`, `POST {id}/confirm`, `POST {id}/cancel` |
+| `/v1/checkout/sessions` | `POST`, `GET`, `GET {id}`, `POST {id}/expire` |
+| `/v1/customers` | `POST`, `GET`, `GET {id}`, `POST {id}`, `DELETE {id}` |
+| `/v1/events` | `GET`, `GET {id}` |
+| `/v1/refunds/{id}` | `GET` |
+| `/v1/account_holders` | `GET` |
+
+An `Idempotency-Key` is required on every `POST`. The table is the constant
+`vpay_api::V1_ROUTES`, and a boundary test walks it — it does not list paths of
+its own — asserting every entry answers `401` without a token
+(`every_registered_v1_path_answers_401_without_a_token`,
+`backends/tests/integration/tests/payment_intents.rs`).
+
+**`POST /v1/refunds` and `GET /v1/balance` are routed nowhere** and answer the
+honest 404 from the nest's fallback. Creating a refund will keep doing so until
+a rail can refund: `mtn_momo::refund` is `NotImplemented` (MTN refunds are the
+Disbursements product, and no deployment holds those credentials) and
+`orange_money` declares `supports_refunds: false`, which is a permanent
+capability answer rather than unbuilt work. So `GET /v1/refunds/{id}` is a read
+with no writer: **nothing in this repository creates a `refunds` row**, and
+every row its tests read was inserted by the suite itself.
+
+Two other surfaces exist: `/v1/browser`, which a payer's own page calls with a
+publishable key and an intent's `client_secret` instead of a bearer token
+([`docs/flows/browser-checkout.md`](docs/flows/browser-checkout.md)), and
+`POST /provider/{code}/callback`, the one route a rail calls — proven against
+WireMock, never called by MTN or Orange.
 
 ## Layout
 
 ```
 backends/
-  crates/       vpay-core, -config, -ledger, -provider, adapters, -api, -worker, -testkit
+  crates/       vpay-core, -config, -db, -ledger, -provider, adapters, -api, -worker, -testkit
   apps/         vpay-server                    (one musl → scratch image; `worker` is a subcommand)
-  tests/        integration (testcontainers) · conformance (shared adapter suite)
+  tests/        integration (testcontainers) · conformance (shared adapter suite) · webhook-receiver
 frontends/
   packages/     @vpay/tokens · @vpay/ui (design system) · @vpay/api-client · @vpay/config
-  apps/         dashboard (Next.js)
+  apps/         checkout (the payment page vpay serves) · dashboard (a scaffold, see below)
   tests/        e2e (Cypress)
 sdks/
-  rust/         vpay-sdk              — merchant SDK (workspace crate; private_key_jwt handshake, /v1 resources, webhooks)
-  nodejs/       @vaam-apps/vpay-sdk   — the same, zero-dependency Node ≥ 22 ESM
-examples/       merchant-demo (runnable: `just demo`) · merchant-curl · merchant-node · webhook-receiver
-docs/           adr/ · rfc/ · flows/ · runbooks/ · api/ · status.md
-schemas/        *.cstack   (syntax verified, design sketch, excluded from the build — see docs/status.md)
-.xtask/         repo automation and the two self-checks
+  rust/         vpay-sdk                   — merchant SDK (workspace crate)
+  nodejs/       @vaam-apps/vpay-sdk        — the same, zero-dependency Node ≥ 22 ESM
+  stripe-js/    @vaam-apps/vpay-stripe-js  — the browser client for a payer's page
+  stripe-compat/                           — the official `stripe` package, driven against a real stack
+examples/       merchant-demo (`just demo`) · shop · checkout-browser · merchant-curl
+                merchant-node · merchant-stripe-node · webhook-receiver
+docs/           adr/ · rfc/ · flows/ · reference/ · runbooks/ · sdks/ · api/ · plans/ · status.md
+schemas/        vpay.cstack   (compiled by vpay-db and gated by `just check-schema` — see docs/status.md)
+deploy/         helm/vpay   (rendered and schema-validated; never applied to a cluster)
+.xtask/         repo automation and the verify gates
 ```
+
+`schemas/vpay.cstack` is no longer outside the build: `vpay-db` compiles it
+(`include_server_schema!`) and `just check-schema` runs `cratestack check`
+against the pinned CLI inside `just verify`. Four table families —
+`disabled_clients`, `staff_members`, `staff_sessions`,
+`oauth_authorization_codes` — run their statements through it; the rest is a
+design sketch a compiler now type-checks, and `backends/migrations` remains the
+authoritative schema. See `docs/status.md` § CrateStack.
 
 ## Stack
 
@@ -118,9 +180,9 @@ schemas/        *.cstack   (syntax verified, design sketch, excluded from the bu
 `FROM scratch`. Tests with `cargo nextest` and testcontainers.
 
 **Frontend** — Next.js 15, React 19, TypeScript strict. Design system on
-Tailwind + daisyUI + `class-variance-authority` + Headless UI, with
-framer-motion and vaul for motion and sheets. Storybook with the a11y addon.
-Vitest for units, Cypress for e2e.
+Tailwind 4 + daisyUI 5 (`bumblebee`) + `class-variance-authority` +
+`@base-ui/react`. Storybook 10 with the a11y addon. Vitest for units, Cypress
+for e2e.
 
 ## Getting started
 
@@ -133,52 +195,33 @@ just up               # Postgres + a WireMock host per rail
 
 ### Try it locally
 
-**Prerequisites:** Docker (with Compose v2.24+ — the demo overlay uses `!reset`),
-the Rust toolchain `rust-toolchain.toml` pins, `just`, `jq`, `curl` and
-`openssl`. `pnpm` is needed only if you want to work on the dashboard; the demo
-does not start it (see below). The Node baseline is `.nvmrc` — `22.23.2`, the
-current 22 LTS — and `.npmrc` sets `engine-strict=true`, so `pnpm install`
-**fails** rather than warns on an older Node. It moved up from `22.11.0` on
-2026-09-05; see the `install-node` recipe in the `justfile` for why.
+**Prerequisites:** Docker (with Compose v2.24+ — the demo overlay uses
+`!reset`), the Rust toolchain `rust-toolchain.toml` pins, `just`, `jq`, `curl`
+and `openssl`. `pnpm` is needed only to work on the web packages; `just demo`
+builds every image it needs in Docker. The Node baseline is `.nvmrc` —
+`22.23.2` — and `.npmrc` sets `engine-strict=true`, so `pnpm install` **fails**
+rather than warns on an older Node.
 
 ```bash
 just demo
 ```
 
-**If port 8080 is taken on your machine** — another project's compose stack, a
-local Postgres proxy, anything — pass a different one; nothing else needs
-changing:
-
-```bash
-just demo_port=18080 demo_receiver_port=18083 demo
-just demo_project=vpay-demo demo-down          # teardown needs no port
-```
-
-Those are three `just` variables — `demo_project`, `demo_port`,
-`demo_receiver_port` — and between them **two demos can run on one machine at
-once**, sharing nothing: a different `demo_project` is a different Compose
-project, so different containers, a different network and a different `pgdata`
-volume. `demo_port`/`demo_receiver_port` are *host* ports only; the server
-still binds 8080 inside its container. `just demo` propagates `demo_port` to
-the three places that must agree — the published port, the demo profile's
-`deployment.public_base_url` (which the OP turns into the `issuer` on every
-token), and `VPAY_BASE_URL` for the demo binary — and regenerates the profile
-overlay if you change it. `compose.e2e.yml` and CI are untouched by the
-override; they keep 8080.
-
 `just demo` is `just demo-up` then `just demo-walk`, and both exist separately
 so the walkthrough is re-runnable against a stack that is already up. `just
-demo-status` says what is running and under which project.
+demo-status` says what is running and under which project; `just demo-down`
+removes the containers and their volumes.
 
 It generates a throwaway RS256 key for the server's OAuth provider and a second
 one for a demo merchant (`.e2e/`, git-ignored, both discarded with the stack),
-registers the merchant's **public** JWK in a `demo` profile overlay, brings up
-Postgres + both WireMock rail stubs + the merchant webhook receiver +
-`vpay-server` + `vpay-worker`, waits on their healthchecks (`up --wait`, not a
-sleep), and then runs [`examples/merchant-demo`](examples/merchant-demo/) — a
-small Rust binary built on the real merchant SDK ([`sdks/rust`](sdks/rust/)).
+registers the merchant's **public** JWK in a `demo` profile overlay, and brings
+up **eight** services with `up --wait` rather than a sleep: Postgres, both
+WireMock rail stubs, the WireMock webhook receiver, `vpay-server`,
+`vpay-worker`, `vpay-checkout` (the payment page) and `vpay-shop` (the demo
+merchant's storefront). It then runs
+[`examples/merchant-demo`](examples/merchant-demo/), a Rust binary built on the
+real merchant SDK.
 
-What you will see, four steps, the last of which is a table:
+Six steps, the fourth of which is a table:
 
 1. the OP's discovery document and JWKS — its issuer and the `kid` it signs with;
 2. an access token obtained with `client_credentials` + `private_key_jwt`, shown
@@ -200,6 +243,11 @@ What you will see, four steps, the last of which is a table:
    | 5 | `orange_money` | the hosted page expires → `requires_payment_method` | `payer_timeout` | `payment_intent.payment_failed` |
    | 6 | `orange_money` | the rail refuses → `requires_payment_method` | `provider_error` | `payment_intent.payment_failed` |
 
+5. one hosted and one embedded Checkout Session, on a fresh intent each, read
+   back and printed as a merchant would use them. It stops there — the program
+   has no browser, and both sessions are still `open` when it exits;
+6. `GET /v1/account_holders` — the three-way answer a name lookup has.
+
 **Every outcome is chosen at the rail stub, never in the demo.** MTN's is
 selected by the payer's MSISDN (a documentation number in the `2376000000xx`
 block) and Orange's by the amount, because those are the only fields of each
@@ -213,41 +261,42 @@ anyone paid.
 
 **Every payment above is XAF, on both rails**, and that is a property of the
 *demo overlay* alone — `.e2e/application-demo.yml`, the file `just
-gen-demo-keys` writes. It settles `mtn_momo` in XAF because the demo shop
-prices its catalogue in XAF, offers a payer both rails, and `/v1` refuses a
-confirm whose intent currency is not the rail's settlement currency; one
-currency for both rails is what makes the shop's MTN button payable. What
-that stack talks to is a WireMock host whose mappings match on no currency at
-all.
+gen-demo-keys` writes. The demo shop prices its catalogue in XAF, offers a
+payer both rails, and `/v1` refuses a confirm whose intent currency is not the
+rail's settlement currency; one currency for both rails is what makes the
+shop's MTN button payable. **Do not read that as "MTN accepts XAF".** It does
+not: **MTN's real sandbox rejects XAF**, which is why
+`config/application.yml` still puts `mtn_momo` on `currency: EUR` and why
+`application-sandbox.yml` inherits it. Configuration either way — never a code
+branch.
 
-**Do not read that as "MTN accepts XAF".** It does not. **MTN's real sandbox
-rejects XAF**, which is why `config/application.yml` still puts `mtn_momo` on
-`currency: EUR` and why `application-sandbox.yml` inherits it. Configuration
-either way — never a code branch. Until Step 9 the MTN intents here were EUR
-and the Orange ones XAF; the reason they were is unchanged.
+**The dashboard is the one service of the demo file set that stays down**, and
+that is a statement rather than an optimisation: it renders a scaffold notice
+and a status-badge reference, makes no call to `vpay-server` and has no login,
+so there is no screen that could show the six payments the walkthrough just
+made. `/dash/v1`'s two read routes and staff sign-in do exist and are proven
+over HTTP against a real Postgres
+(`backends/tests/integration/tests/dashboard_read_surface.rs`,
+`…/staff_sign_in.rs`) — nothing in the app calls them yet. `docker compose -f
+compose.yml -f compose.e2e.yml up` still starts the scaffold if you want to
+look at it.
 
-**The dashboard is deliberately not started**, and that is a statement rather
-than an optimisation: per [`docs/status.md`](docs/status.md) it renders a static
-scaffold notice and makes no call to `vpay-server`, so there is no data source
-that could show the six payments the walkthrough just made.
-
-Then:
+**Running two demos on one machine** is what the `just` variables are for:
+`demo_project` picks the Compose project (so different containers, network and
+`pgdata` volume) and `demo_port`, `demo_receiver_port`, `demo_orange_port`,
+`demo_checkout_port` and `demo_shop_port` are the published *host* ports; the
+server still binds 8080 inside its container.
 
 ```bash
-just demo-down        # containers and volumes
+just demo_port=18080 demo_receiver_port=18083 demo
+just demo_project=vpay-demo demo-down          # teardown needs no port
 ```
 
 **[`docs/runbooks/demo.md`](docs/runbooks/demo.md) is the full procedure** — the
 exact commands, the real output of a real run, what that run proves and what it
-does not, and the two hazards it does not close.
-
-> **Note on the runtime image.** The first `just demo` run on 2026-09-02
-> found that `vpay-server` could not boot inside its own `FROM scratch`
-> image: the JWKS validator's HTTP client loaded trust roots from the OS
-> store, which that image does not have. Fixed the same day — the client is
-> now built on vendored `webpki-roots` (`vpay_api::http_client`) and pinned
-> by a subprocess test that boots the server with an empty trust store. See
-> the "Resource-server JWT validation" row in [`docs/status.md`](docs/status.md).
+does not, and the hazards it does not close.
+[`docs/runbooks/checkout.md`](docs/runbooks/checkout.md) is where to start if
+you want to buy something from the demo shop in a browser.
 
 ### Testing
 
@@ -255,12 +304,19 @@ Three commands, with genuinely different requirements:
 
 | Command | Needs | Runs |
 |---|---|---|
-| `just verify` | nothing but Rust; seconds | the three self-checks — no test double reachable from a shipping binary, every unimplemented path declared in `docs/status.md`, every error type classified |
-| `just test` | **Docker** | `cargo nextest run --workspace` + `pnpm -r test`. The Postgres-backed suites use testcontainers and **fail loudly** without a reachable daemon — they never skip, so a green run is a real one. Since 2026-09-03 the adapter conformance suite needs Docker too: it starts a real `wiremock/wiremock` container per rail rather than an in-process HTTP double, because a stub rail is a host reached over HTTP (ADR-0006). `just verify-ignored` pins the suite at **0 `#[ignore]`d tests**, so a green run cannot be quietly shrinking |
-| `just test-e2e` | Docker, and Cypress's binary | builds the images, boots `compose.yml` + `compose.e2e.yml`, runs the browser suite, tears the stack down. This is what CI's `e2e` job does |
+| `just verify` | Rust, and the pinned `cratestack` CLI on `PATH`; seconds | eleven gates and one advisory report — see [AGENTS.md](AGENTS.md) for the list of gates and what each one refuses. `check-schema` **fails** rather than skips when the CLI is missing, because a skipped check checked nothing |
+| `just test` | **Docker**, and Node | `cargo nextest run --workspace`, `cargo test --doc --workspace` and `pnpm -r test`. The Postgres-backed suites use testcontainers and **fail loudly** without a reachable daemon — they never skip, so a green run is a real one. The adapter conformance suite needs Docker too: it starts a real `wiremock/wiremock` container per rail rather than an in-process HTTP double, because a stub rail is a host reached over HTTP (ADR-0006) |
+| `just test-e2e` | Docker, and Cypress's binary | builds the images, boots `compose.yml` + `compose.e2e.yml` + `compose.demo.yml`, runs the browser suite, tears the stack down. Four specs, 11 tests. This is what CI's `e2e` job does |
 
-`just ci` runs everything CI runs, in CI's order, and is what to run before
-opening a PR.
+`just verify-ignored` is the count that keeps the suite honest. Measured on
+this tree: **0 ignored, 46 test binaries, 1550 tests listed**; the recipe fails
+if any of the three moves without the recipe and `docs/status.md` moving with
+it.
+
+`just ci` is what to run before opening a PR: CI's self-checks, `rust`, `web`
+and supply-chain steps, in CI's order. The two jobs it does not cover are CI's
+`e2e (compose)` (`just test-e2e`) and `deploy (helm chart)` (`just
+helm-check`).
 
 ### Running the binaries directly
 
@@ -302,65 +358,40 @@ cargo run -p vpay-server -- \
   --database-url postgres://vpay:vpay@localhost:5432/vpay \
   --oauth-signing-key-file ./secrets/oauth-signing-key.pem \
   --bind 127.0.0.1:8080 --log-format text
-
-# or drive it by env, as compose.e2e.yml does
-VPAY_CONFIG=config/application.yml \
-DATABASE_URL=postgres://vpay:vpay@localhost:5432/vpay \
-VPAY_OAUTH_SIGNING_KEY_FILE=./secrets/oauth-signing-key.pem \
-VPAY_BIND=127.0.0.1:8080 VPAY_LOG_FORMAT=text cargo run -p vpay-server
 ```
 
-The Postgres those URLs point at is the one `just up` starts.
+Every one of those flags has an env var — `VPAY_CONFIG`, `DATABASE_URL`,
+`VPAY_OAUTH_SIGNING_KEY_FILE`, `VPAY_BIND`, `VPAY_LOG_FORMAT` — which is how
+`compose.e2e.yml` drives the same binary; a test fails if one is renamed or
+dropped. The Postgres those URLs point at is the one `just up` starts.
 
-`vpay-server` calls a payment rail when a merchant confirms an intent, and
-`vpay-server worker` calls one on every poll the job loop drives. (This
-sentence read "`vpay-worker-bin` calls none, because it has no job loop" until
-2026-09-07 — a claim that had been false since Step 4 landed the loop, and
-which the issue-#77 rewrite of this paragraph is correcting rather than
-carrying forward.) `vpay-server`
-connects to Postgres, runs migrations, and serves `/healthz` plus the
-merchant OP —
-`POST /v1/oauth/token` (`client_credentials` + `private_key_jwt`),
-`GET /v1/oauth/.well-known/openid-configuration` and
-`GET /v1/oauth/jwks.json`. Every other path under `/v1` is behind a merchant
-bearer token and a scope check. Since 2026-09-03 that boundary has four
-payment-intent paths behind it — `POST`/`GET /v1/payment_intents`,
-`GET /v1/payment_intents/{id}`, `POST …/confirm` and `POST …/cancel`, with an
-`Idempotency-Key` required on every `POST`. **`confirm` calls the rail
-adapter over HTTP and moves the intent** — `processing` on a push rail,
-`requires_action` with a redirect on a redirect rail, `409 charge_declined`
-when the rail refuses, `502` when it cannot be reached. Whether that rail is
-MTN or a WireMock stub is a line in `config/application.yml`, and to date it
-has only ever been a stub. `GET /v1/events`, `GET /v1/events/{id}` (Step 5,
-2026-09-03), `GET /v1/account_holders` (issue #47) and
-`GET /v1/refunds/{id}` (issue #45) are served too; `POST /v1/refunds` and `GET /v1/balance` still answer the honest 404,
-and creating a refund will keep doing so until a rail can refund. This
-sentence named all three of `/v1/refunds`, `/v1/events` and `/v1/balance` as
-unrouted, and had been wrong about `/v1/events` since Step 5.
-`vpay-server worker` claims jobs from the `jobs` table, drives live charges to
-a terminal state against the configured rails, sweeps what has expired and
-delivers webhooks. (This sentence said the loop "is not implemented" and
-described a heartbeat log line that Step 4 removed; corrected 2026-09-07 with
-the rest of this paragraph.) It binds one socket, `--observability-bind`, for
-`/livez` and `/metrics` and nothing else.
+**Both binaries call a payment rail.** `vpay-server` calls one when a merchant
+confirms an intent; `vpay-worker-bin` runs the job loop
+(`vpay_worker::run_loop`) that claims the `poll_charge` job the confirm
+committed, asks the rail for the charge's status on a poll ladder, and commits
+the charge, the intent and one event in a single transaction. It reaps leases
+stranded by a crash at boot and on its own timer, and prints one `job loop
+gauge` line a minute. Whether the rail either of them reaches is MTN, Orange or
+a WireMock stub is a line in `config/application.yml`, and to date it has only
+ever been a stub.
 
 `--config`, `--database-url` and `--oauth-signing-key-file` are required and
-genuinely consumed; a missing one exits `78` before the port is bound.
-`--public-base-url` **was removed on 2026-09-03**: it had been accepted, parsed
-and read by nothing, and the second spelling was a trap rather than a feature.
-The URL a merchant's tokens carry has always come from `Config`'s
-`deployment.public_base_url` in the YAML — a *different* value — which the OP's
-issuer is derived from (`vpay_api::op::issuer_for` → `{public_base_url}/v1/oauth`)
-and which is unchanged. A deployment that set the flag now fails to start rather
-than ignoring it.
+genuinely consumed; a missing one exits `78` before the port is bound. The URL
+a merchant's tokens carry comes from `Config`'s `deployment.public_base_url` in
+the YAML, which the OP's issuer is derived from
+(`vpay_api::op::issuer_for` → `{public_base_url}/v1/oauth`). There is no
+`--public-base-url` flag: it was accepted, parsed and read by nothing, and was
+removed on 2026-09-03, so a deployment that sets it now fails to start rather
+than being silently ignored.
 
-`--observability-bind` (`VPAY_OBSERVABILITY_BIND`, default `0.0.0.0:9090`) is new
-on **both** binaries: a second listener serving `GET /livez` (a static `ok`, the
-liveness probe) and `GET /metrics` (Prometheus text). Neither is on the `--bind`
-port, because that one is fronted by an Ingress and `/metrics` is an operational
-map of the deployment. `/healthz` stays on 8080 and stays the readiness probe.
-Nothing has ever scraped `/metrics`. See
-[`docs/status.md`](docs/status.md) and
+`--observability-bind` (`VPAY_OBSERVABILITY_BIND`, default `0.0.0.0:9090`) is a
+second listener on **both** binaries, serving `GET /livez` (a static `ok`, the
+liveness probe) and `GET /metrics` (Prometheus text). Neither is on the
+`--bind` port, because that one is fronted by an Ingress and `/metrics` is an
+operational map of the deployment. `/healthz` stays on 8080 and stays the
+readiness probe. **Nothing has ever scraped `/metrics`** — every series it
+exports is one a scrape *would* find, never one anyone has watched over time.
+See [`docs/status.md`](docs/status.md) and
 [`docs/flows/configuration.md`](docs/flows/configuration.md).
 
 ### Known environment gotchas
@@ -378,10 +409,13 @@ Nothing has ever scraped `/metrics`. See
   it: `DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock cargo nextest run
   --workspace`. The Postgres-backed suites need `postgres:16-alpine` pulled.
 - **musl target.** `rustup target add x86_64-unknown-linux-musl` before
-  `just build-dist`. `backends/Dockerfile` now builds the host's *implicit*
-  musl target rather than hardcoding the x86_64 triple, but the Dockerfiles
-  themselves have not been built in this repo's own development environment —
-  see [`docs/status.md`](docs/status.md)'s Infrastructure section for why.
+  `just build-dist`. `backends/Dockerfile` builds the host's *implicit* musl
+  target rather than hardcoding the x86_64 triple
+  ([ADR-0014](docs/adr/0014-builder-host-musl-triple.md)).
+- **A stale `pgdata` volume.** The demo shop's database is created once, from
+  Postgres's entrypoint, on an empty data directory. A volume from before the
+  shop landed has no `shop` database and `vpay-shop` dies in `zen migrate
+  deploy`. `just demo-down` removes volumes, which is the fix.
 
 ## Documentation
 
@@ -389,12 +423,21 @@ Start with [`docs/status.md`](docs/status.md), then:
 
 - [Roadmap](docs/roadmap.md) — the phases from scaffold to a deployable
   gateway, and where the project stands in that sequence
-- [Flows](docs/flows/) — one document per process, with invariants
+- [Flows](docs/flows/) — one document per process, with invariants, each
+  ending in a **Status** section stating what is actually built
 - [ADRs](docs/adr/) — decisions and what they cost
 - [RFCs](docs/rfc/) — proposals not yet decided
+- [Reference](docs/reference/) — why the code that implements a flow is shaped
+  the way it is
+- [SDK parity](docs/sdks/parity.md) — the cross-SDK capability matrix, and
+  every dated gap
 - [Runbooks](docs/runbooks/) — what to do when an alert fires, including
-  [demo.md](docs/runbooks/demo.md), the one procedure whose output is a real
-  run rather than a design
+  [demo.md](docs/runbooks/demo.md) and
+  [checkout.md](docs/runbooks/checkout.md), the two procedures whose output is
+  a real run rather than a design
+
+Contributors: [AGENTS.md](AGENTS.md) is the source of truth for how to work
+here.
 
 ## Licence
 
