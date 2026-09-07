@@ -4879,7 +4879,7 @@ fn verify_toolchain(root: &Path) -> Result<(), String> {
 /// whoever can edit two files can edit three. What the manifest buys is that
 /// the edit becomes **visible in the diff**: a one-line change to
 /// `MANIFEST.sha256` is exactly the thing review is for, where a comment
-/// reflowed inside a 400-line `.sql` file is not. `just migrations-manifest`
+/// reflowed inside a 292-line `.sql` file is not. `just migrations-manifest`
 /// refuses to rewrite an existing line for the same reason, so the honest
 /// path never produces that diff by accident.
 ///

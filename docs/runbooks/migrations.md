@@ -37,8 +37,9 @@ is by construction, and hashing the manifest would not fix it: a manifest whose
 own hash is checked has to pin that hash somewhere, and whoever can edit two
 files can edit three. The manifest was not added to make the edit impossible —
 it was added to make it **visible**, as a one-line diff on a file whose only
-purpose is to be reviewed. A comment reflowed inside a 400-line `.sql` file is
-not visible; that is how issue #76 happened. Review the manifest line.
+purpose is to be reviewed. A comment reflowed inside a 292-line `.sql` file is
+not visible — that is how issue #76 happened, and the diff that caused it was
+two lines. Review the manifest line.
 
 ---
 
