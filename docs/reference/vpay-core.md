@@ -231,8 +231,12 @@ lifecycle. Two things about how it is modelled are worth a paragraph.
 
 Each status's wire label is written out in `as_wire_str` *beside* the `serde`
 rename, and the duplication is deliberate: the two paths that need it do not go
-through `serde`. The `intent_status` Postgres enum is read and written as a
-`String` (`vpay-db` binds strings, this crate parses them — Step 2's D4), and
+through `serde`. `payment_intents.status` is read and written as a `String`
+(`vpay-db` binds strings, this crate parses them — Step 2's D4) — as the
+`intent_status` Postgres enum until migration `0037` converted the column to
+`TEXT` + `payment_intents_status_enum_check`, and as that CHECK's closed
+vocabulary since; the column's type changed and this paragraph did not need
+to, which is the point of D4. And
 `vpay-api`'s repository calls pass the *expected* and *new* label into a
 compare-and-swap `UPDATE`.
 
@@ -242,7 +246,7 @@ renders one way to a merchant and matches another way in a `WHERE` clause, so
 variant.
 
 `from_wire` returns `Option` rather than implementing `FromStr` with an error
-type: the only caller is the boundary reading a Postgres enum back, where an
+type: the only caller is the boundary reading that column back, where an
 unparseable label is not a caller's mistake but a schema/code mismatch that the
 HTTP layer answers `500` for. Returning `None` lets that layer say so in its own
 vocabulary instead of forcing a new public error type into this crate for a case

@@ -1667,9 +1667,10 @@ relations / 17 unmappable columns**.
 | `items_for_invoice` | `find_many().where_(invoice_id).order_by(seq.asc()).run(ctx)` | `read` |
 
 | `get_for_merchant` (checkout sessions) | `find_many().where_(id).where_(merchant_id).limit(1)` | `read` |
+| `get_for_merchant` (checkout sessions) | `find_many().where_(id).where_(merchant_id).limit(1).run(ctx)` | `read` |
 | `get_by_id_unscoped` (checkout sessions) | `find_unique(id).run(ctx)` | `read` |
-| `find_open_by_intent` (checkout sessions) | `find_many().where_(payment_intent_id).where_(status).limit(1)` | `read` |
-| `find_latest_by_intent` (checkout sessions) | `find_many().where_(payment_intent_id).order_by(seq.desc()).limit(1)` | `read` |
+| `find_open_by_intent` (checkout sessions) | `find_many().where_(payment_intent_id).where_(status).limit(1).run(ctx)` | `read` |
+| `find_latest_by_intent` (checkout sessions) | `latest_by_intent_query(..).run(ctx)` — `find_many().where_(payment_intent_id).order_by(seq.desc()).limit(1)`, extracted so `the_latest_session_query_orders_by_seq_and_takes_one` previews the builder the method runs | `read` |
 
 Plus one that is **test-only and says so**: `vpay-db`'s own
 `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` reads a
