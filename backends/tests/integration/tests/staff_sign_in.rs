@@ -1377,13 +1377,32 @@ async fn the_sign_in_rate_limit_is_per_source_address() -> anyhow::Result<()> {
 /// and no other test's attempts must be able to refuse them either.
 ///
 /// What this does NOT claim: a number. The budget is ten per five minutes per
-/// key and the `/staff/login` that produced the session already spent one of
-/// them, so the exact index of the first `429` is an implementation detail
-/// this test deliberately does not pin — what it pins is that a `429` arrives
-/// at all, and inside a number of attempts far below `10^6`.
+/// key, the enrolment and the `/staff/login` that produced the session have
+/// already spent from the email half of it, and only a *wrong* code spends
+/// from it here — so the exact index of the first `429` is an implementation
+/// detail this test deliberately does not pin. What it pins is that a `429`
+/// arrives at all, and inside a number of attempts far below `10^6`.
 #[tokio::test]
 async fn the_second_factor_is_rate_limited_and_not_only_the_password() -> anyhow::Result<()> {
     let harness = harness().await?;
+
+    // Enrol the account first, honestly, so that this test attacks the state a
+    // real one is in. An UNENROLLED account refuses `/staff/totp` before the
+    // code is ever verified ("enrolment secret absent on a first sign-in"),
+    // which would be a green test that never reached the check it is about.
+    let enrolling = harness.begin_enrolment().await?;
+    let step = totp::step_at(OffsetDateTime::now_utc().unix_timestamp());
+    let (status, body) = harness
+        .post_form(
+            "/dash/v1/staff/totp",
+            Some(&enrolling.session),
+            &[
+                ("code", &enrolling.totp.code_at_step(step)),
+                ("enrolment", &enrolling.sealed),
+            ],
+        )
+        .await?;
+    anyhow::ensure!(status == 200, "enrolling the account: {status} {body}");
 
     let client = reqwest::Client::builder()
         .local_address(std::net::IpAddr::from([127, 0, 0, 4]))
@@ -1409,11 +1428,11 @@ async fn the_second_factor_is_rate_limited_and_not_only_the_password() -> anyhow
         .context("a session token")?
         .to_owned();
 
-    // Wrong codes, one after another. Twelve is comfortably past a budget of
+    // Wrong codes, one after another. Fifteen is comfortably past a budget of
     // ten and is still nothing next to the 10^6 an unbounded second factor
     // costs an attacker.
     let mut statuses = Vec::new();
-    for n in 0..12u32 {
+    for n in 0..15u32 {
         let response = client
             .post(format!("{}/dash/v1/staff/totp", harness.base_url))
             .header(vpay_api::staff::SESSION_HEADER, session.as_str())

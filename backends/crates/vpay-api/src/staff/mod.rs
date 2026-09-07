@@ -388,9 +388,16 @@ pub(crate) async fn login(
 /// is what "per email" has to mean if it is to bound guessing at an account
 /// rather than at an endpoint.
 ///
-/// Checked **after** the session loads, because the email is the session's
-/// and not the caller's to name; a caller with no usable session is already
-/// refused above by [`load_session`], having spent one row read.
+/// **Only a WRONG code spends from it**, and that is the one place this
+/// differs from [`login`]. The budget is shared, and behind a reverse proxy
+/// the per-IP half of it is shared by every staff member in the deployment
+/// (ADR-0017's Consequences) — so a second factor that spent a second unit on
+/// every *successful* sign-in would have halved how many people can sign in
+/// per window, to close a hole that only wrong codes exploit. [`login`]
+/// checks first because an attempt over budget must not cost an argon2id
+/// verification; there is no argon2id on this path, only one HMAC-SHA1, so
+/// the same reason does not apply and the check can wait until the answer is
+/// known.
 ///
 /// # Errors
 ///
@@ -413,15 +420,6 @@ pub(crate) async fn totp_step(
         // A session that has already presented a code must not present
         // another: the only caller that would try is one replaying the step.
         return Err(refused("session is not pending a second factor"));
-    }
-
-    // The same budget the password leg spends from, keyed on the same
-    // lower-cased address — see this function's header. Without it a six-digit
-    // second factor is guessable at line rate by anyone holding one password.
-    let peer_ip = peer.map(|axum::Extension(ConnectInfo(peer))| peer.ip());
-    if login.limiter.check(&staff.email, peer_ip, now) == rate_limit::Verdict::Limited {
-        tracing::warn!("a staff second-factor attempt was refused by the rate limiter");
-        return Err(ApiError::StaffSignInRateLimited);
     }
 
     // Which secret authenticates this account: the stored one if enrolled,
@@ -458,6 +456,16 @@ pub(crate) async fn totp_step(
 
     let totp = totp::Totp::new(secret);
     let Some(step) = totp.verify(request.code.trim(), now.unix_timestamp()) else {
+        // A wrong code is what the budget exists for, and it is the only thing
+        // that spends from it here — see this function's header. Counted
+        // after the verification rather than before it because the
+        // verification is one HMAC and the reason `login` checks first (not
+        // spending an argon2id on an attempt over budget) does not apply.
+        let peer_ip = peer.map(|axum::Extension(ConnectInfo(peer))| peer.ip());
+        if login.limiter.check(&staff.email, peer_ip, now) == rate_limit::Verdict::Limited {
+            tracing::warn!("a staff second-factor attempt was refused by the rate limiter");
+            return Err(ApiError::StaffSignInRateLimited);
+        }
         return Err(refused("totp code"));
     };
 
