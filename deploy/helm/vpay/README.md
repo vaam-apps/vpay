@@ -149,14 +149,22 @@ The signing key is mounted on the **server Deployment only**. The worker
 issues no token and reads no key, and mounting the Secret there would widen
 its blast radius for no capability.
 
-Since 2026-09-07 (issue #77) that mount is the *whole* of the guarantee, and
-it is worth being exact about the change. Two images ago, `vpay-worker-bin`
-did not accept `--oauth-signing-key-file` at all — the flag did not exist on
-that binary. Now one binary serves both roles, so the flag exists; `vpay-server
-worker --oauth-signing-key-file …` is a parse error, but `vpay-server
---oauth-signing-key-file … worker` parses and reads nothing. A flag naming a
-path that is not in the container was never the risk. **The volume list in
-`deployment-worker.yaml` is.**
+It is worth being exact about what changed on 2026-09-07 (issue #77). Two
+images ago, `vpay-worker-bin` did not accept `--oauth-signing-key-file` at
+all — the flag did not exist on that binary. Now one binary serves both
+roles, so the flag exists, and **both spellings of "hand the worker the key"
+are still refused**: `vpay-server worker --oauth-signing-key-file …` by clap
+(the flag is not on the subcommand), and `vpay-server
+--oauth-signing-key-file … worker` by `vpay_config::cli`'s `SERVE_ONLY_FLAGS`
+check, which clap's derive cannot express. The second spelling parsed and was
+read by nothing for the length of one review pass, and was closed in it.
+
+That is defence in depth and not the guarantee. `VPAY_OAUTH_SIGNING_KEY_FILE`
+in the *environment* is still ignored rather than refused, deliberately — a
+shared env block must not `CrashLoopBackOff` a worker — so a flag naming a
+path is not what keeps the key away. **The volume list in
+`deployment-worker.yaml` is**, and this chart sets no
+`VPAY_OAUTH_SIGNING_KEY_FILE` on the worker either.
 
 The rail Secret is projected with `envFrom.secretRef`, so `kubectl describe pod`
 shows the variable *names* and never the values.

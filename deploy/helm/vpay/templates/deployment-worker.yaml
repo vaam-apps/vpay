@@ -117,15 +117,21 @@ spec:
               subPath: {{ include "vpay.overlayFileName" . }}
               readOnly: true
           {{- end }}
-      # The signing key is deliberately absent here, and since #77 this is the
-      # ONLY thing that keeps it away from the worker. `vpay-server worker`
-      # rejects `--oauth-signing-key-file` at parse time, but the flag exists
-      # on the binary (it has to: the same binary serves the API), so "the
-      # worker cannot be handed the key" is a statement about this volume list
-      # and not about the CLI. It issues no token and reads no key; mounting
-      # the Secret would widen its blast radius for no capability. See
-      # `vpay_config::cli::ServerArgs::oauth_signing_key_file`, which says the
-      # same thing from the other side.
+      # The signing key is deliberately absent here, and this volume list is
+      # what keeps it away from the worker. It issues no token and reads no
+      # key; mounting the Secret would widen its blast radius for no
+      # capability. Note what is also absent: `vpay.commonEnv` sets no
+      # `VPAY_OAUTH_SIGNING_KEY_FILE`, which the server Deployment adds for
+      # itself — so this container is given neither the file nor a path to it.
+      #
+      # The CLI refuses both spellings too (`vpay-server worker
+      # --oauth-signing-key-file …` by clap, `vpay-server
+      # --oauth-signing-key-file … worker` by `vpay_config::cli`'s
+      # `SERVE_ONLY_FLAGS`), but that is defence in depth and not the
+      # guarantee: the environment variable is ignored rather than refused, so
+      # "the worker cannot be handed the key" remains a statement about this
+      # list. See `vpay_config::cli::ServerArgs::oauth_signing_key_file`,
+      # which says the same thing from the other side.
       {{- if .Values.config.createOverlayConfigMap }}
       volumes:
         - name: config-overlay

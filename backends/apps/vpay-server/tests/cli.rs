@@ -1835,6 +1835,84 @@ mod worker {
         cmd
     }
 
+    /// The **shipping binary** refuses a serve-only flag typed before
+    /// `worker`, in both spellings.
+    ///
+    /// `vpay_config::cli`'s
+    /// `a_serve_only_flag_written_before_the_worker_subcommand_is_refused`
+    /// proves the check; this proves `main` *calls* it. The two are not the
+    /// same claim, and the gap between them is a one-word edit:
+    /// `ServerArgs::parse_checked()` back to clap's `ServerArgs::parse()`
+    /// leaves every unit test in `vpay-config` green and puts the flag back
+    /// to accepted-and-read-by-nothing. Measured, 2026-09-07: that edit
+    /// fails exactly this case and nothing else in the workspace.
+    ///
+    /// No `DATABASE_URL` and no `VPAY_CONFIG`: the refusal is a parse
+    /// failure, so it must happen before either is looked at.
+    #[test]
+    fn a_serve_only_flag_before_the_worker_subcommand_is_refused_by_the_binary() {
+        for (spelling, value) in [
+            ("--bind", "0.0.0.0:8080"),
+            ("--oauth-signing-key-file", "/secrets/oauth-signing-key.pem"),
+        ] {
+            let output = super::bin()
+                .args([spelling, value, "worker"])
+                .output()
+                .expect("spawn vpay-server");
+
+            assert!(
+                !output.status.success(),
+                "`vpay-server {spelling} {value} worker` must not be accepted and ignored"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains(spelling),
+                "the refusal must name the flag to delete, got: {stderr}"
+            );
+        }
+    }
+
+    /// `VPAY_OAUTH_SIGNING_KEY_FILE` in the environment is **ignored**, not
+    /// refused — and this is the case that says so out loud, because the
+    /// asymmetry with the flag above looks like an oversight until it is
+    /// written down.
+    ///
+    /// `vpay-worker-bin` behaved this way for the same mechanical reason:
+    /// clap reads an environment variable only for a flag the parser
+    /// declares, and that binary declared none. Keeping it means a
+    /// deployment that hands both containers one env block — a shared
+    /// ConfigMap, a `.env` file — starts the worker instead of putting it in
+    /// `CrashLoopBackOff`. Somebody who *typed* the flag beside `worker` is
+    /// confused and gets told; a shared env block is not.
+    ///
+    /// Exit `69` and not `78` is the whole assertion: the process got past
+    /// parsing, past the config, and died where every other worker start
+    /// dies without a database. A `2` here would mean the env var had become
+    /// a parse error; a `78` would mean it had become a startup error. The
+    /// path names a file that does not exist, so nothing can have read it.
+    /// Needs no container (see [`UNREACHABLE_DATABASE_URL`]).
+    #[test]
+    fn the_signing_key_env_var_is_ignored_rather_than_refused() {
+        let output = bin()
+            .env(
+                "VPAY_OAUTH_SIGNING_KEY_FILE",
+                "/nonexistent/oauth-signing-key.pem",
+            )
+            .env("VPAY_LOG_FORMAT", "text")
+            .env("VPAY_CONFIG", valid_config_path())
+            .env("DATABASE_URL", UNREACHABLE_DATABASE_URL)
+            .output()
+            .expect("spawn vpay-server worker");
+
+        assert_eq!(
+            output.status.code(),
+            Some(69),
+            "a signing-key path in the ENVIRONMENT must be ignored by the worker, exactly as \
+             `vpay-worker-bin` ignored it — not refused, and not read; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn an_invalid_log_format_env_var_is_read_and_rejected() {
         // No `--log-format` flag is passed at all, so a parse failure can only

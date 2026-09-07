@@ -199,16 +199,46 @@ a *mode* requires is likewise a property of that mode, and the CLI still says
 so: `vpay-server worker --oauth-signing-key-file …` is a parse error, and
 `vpay-server --worker-concurrency …` with no subcommand is too.
 
-One thing genuinely weakened when the two binaries became one, and it is worth
-stating rather than leaving to be discovered. `vpay-worker-bin` could not be
-handed the signing key *at all* — the flag did not exist on it. `vpay-server`
-accepts `--oauth-signing-key-file` because it must, so `vpay-server
---oauth-signing-key-file … worker` now parses (and reads nothing). The
-guarantee that matters is unchanged and lives where it always did: the worker
-Deployment mounts no `signingKey` volume
-(`deploy/helm/vpay/templates/deployment-worker.yaml`) and the compose worker
-service mounts no key file. A flag naming a path that is not in the container
-was never the risk.
+### serve-only flags are refused beside `worker`, in both positions
+
+`vpay-worker-bin` could not be handed the signing key *at all* — the flag did
+not exist on that binary. `vpay-server` accepts `--oauth-signing-key-file`
+because it must, so folding the two binaries into one (issue #77) put the
+flag within reach of the worker's command line. Two positions, two
+mechanisms, one outcome:
+
+| Command line | Refused by |
+|---|---|
+| `vpay-server worker --oauth-signing-key-file …` | clap — the flag is on `ServerArgs`, is not `global`, and so is not on the subcommand |
+| `vpay-server --oauth-signing-key-file … worker` | `vpay_config::cli`'s `SERVE_ONLY_FLAGS`, checked in `ServerArgs::parse_checked` |
+
+`--bind` is the second entry in that table and behaves identically: the job
+loop routes no traffic, so a `--bind` on its command line would open a port
+nothing serves.
+
+The second row is not clap's doing and cannot be. `args_conflicts_with_subcommands`
+would express it declaratively and is unusable here — it conflicts *every*
+top-level argument with every subcommand, and `--config` working on either
+side of `worker` is precisely what `CommonArgs`' `global = true` exists for.
+So the check reads `ArgMatches::value_source` after the parse and refuses
+only `ValueSource::CommandLine`. This spelling parsed and was read by nothing
+between #77 landing on 2026-09-07 and the review of the same day; it is the
+`--public-base-url` trap described above, and it gets the same answer.
+
+**`VPAY_OAUTH_SIGNING_KEY_FILE` and `VPAY_BIND` in the environment stay
+ignored, not refused** — exactly as `VPAY_PUBLIC_BASE_URL` is, and exactly as
+`vpay-worker-bin` ignored them (clap reads an environment variable only for a
+flag its parser declares). Somebody who typed the flag beside `worker` is
+confused and is told; a deployment that hands both containers one env block
+is not, and must not become a `CrashLoopBackOff`.
+
+**None of this is the guarantee, and the CLI is the wrong place to look for
+one.** What keeps the key away from the worker is where it is *mounted*: the
+worker Deployment templates no `signingKey` volume and sets no
+`VPAY_OAUTH_SIGNING_KEY_FILE` (`deploy/helm/vpay/templates/deployment-worker.yaml`,
+verified on the rendered output — its `volumes` list is empty where the
+server's is `['signing-key']`), and the compose worker service mounts no key
+file. A flag naming a path that is not in the container was never the risk.
 
 A payment gateway that boots with no validated deployment configuration, or with
 no database, is exactly the half-configured process

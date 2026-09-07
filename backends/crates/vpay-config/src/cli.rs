@@ -272,18 +272,34 @@ pub struct ServerArgs {
     ///
     /// **It is a top-level flag and it is deliberately NOT `global`**, so
     /// `vpay-server worker --oauth-signing-key-file …` is a parse error —
-    /// the worker issues no token and reads no key. Be exact about what that
-    /// does and does not buy now that the worker is a subcommand of this
-    /// binary rather than a binary of its own: `vpay-server
-    /// --oauth-signing-key-file … worker` *parses*, because the flag is
-    /// taken before the subcommand word, and its value is then read by
-    /// nothing. So the CLI no longer refuses every spelling of "hand the
-    /// worker the key" the way `WorkerArgs`-as-its-own-parser did. What
-    /// actually keeps the Secret away from the worker is where it is
-    /// **mounted** — `deploy/helm/vpay/templates/deployment-worker.yaml`
-    /// mounts no `signingKey` volume and `compose.e2e.yml`'s worker service
-    /// mounts no key file — and that was always the load-bearing half: a
-    /// flag naming a path that is not in the container is not a leak.
+    /// the worker issues no token and reads no key.
+    ///
+    /// `vpay-server --oauth-signing-key-file … worker` is a parse error too,
+    /// and *that* half is not clap's doing: the flag is written before the
+    /// subcommand word, so clap accepts it, and [`SERVE_ONLY_FLAGS`] is what
+    /// refuses it afterwards. It was accepted-and-read-by-nothing for the
+    /// length of one review pass, between issue #77 (2026-09-07) folding
+    /// `vpay-worker-bin` into this binary and the review of the same day.
+    /// A flag a process accepts and never reads is the trap this module's
+    /// header already describes for `--public-base-url`, and the answer is
+    /// the same one: fail at parse time, loudly.
+    ///
+    /// **`VPAY_OAUTH_SIGNING_KEY_FILE` in the environment is still ignored,
+    /// deliberately** — again exactly as `VPAY_PUBLIC_BASE_URL` is. It is
+    /// what `vpay-worker-bin` did (clap read no env for a flag that binary
+    /// did not declare), and a deployment that hands both containers one
+    /// env block must not be a `CrashLoopBackOff`. The refusal is scoped to
+    /// [`clap::parser::ValueSource::CommandLine`] for that reason: somebody
+    /// who *typed* the flag beside `worker` is confused and should be told,
+    /// where a shared ConfigMap is not.
+    ///
+    /// None of this is what keeps the Secret away from the worker. That is
+    /// where the key is **mounted** —
+    /// `deploy/helm/vpay/templates/deployment-worker.yaml` mounts no
+    /// `signingKey` volume and sets no `VPAY_OAUTH_SIGNING_KEY_FILE`, and
+    /// `compose.e2e.yml`'s worker service mounts no key file — and that was
+    /// always the load-bearing half: a flag naming a path that is not in the
+    /// container is not a leak.
     ///
     /// **The path is not redacted from `Debug`, deliberately**: a filesystem
     /// path is not secret, and "which file did it try" is the first thing an
@@ -315,6 +331,108 @@ pub struct ServerArgs {
 
     #[command(flatten)]
     pub common: CommonArgs,
+}
+
+/// The flags only the serve mode reads, as `(clap arg id, what an operator
+/// typed)`.
+///
+/// Both are declared on [`ServerArgs`] and neither is `global`, so clap
+/// already refuses them *after* the word `worker`. What clap cannot express
+/// is that they are equally meaningless *before* it: `--bind` opens a port
+/// the job loop does not route and `--oauth-signing-key-file` names a key it
+/// does not sign with, and a flag a process accepts and never reads is a
+/// trap — an operator who sets it and watches nothing change has no way to
+/// find out why. `Command::args_conflicts_with_subcommands` would say this
+/// declaratively and cannot be used: it conflicts *every* top-level arg with
+/// every subcommand, which would take `--config` with it, and `--config`
+/// working on either side of `worker` is the whole reason [`CommonArgs`] is
+/// `global` (see this module's header).
+///
+/// Adding a row here is a decision about one flag. Do not add a `CommonArgs`
+/// field to it — those are read by every mode by construction.
+const SERVE_ONLY_FLAGS: [(&str, &str); 2] = [
+    ("bind", "--bind"),
+    ("oauth_signing_key_file", "--oauth-signing-key-file"),
+];
+
+impl ServerArgs {
+    /// Parses this process's argv, or prints the failure and exits.
+    ///
+    /// **`main` must call this rather than `clap::Parser::parse`**, which is
+    /// otherwise available on this type and does everything except the
+    /// [`SERVE_ONLY_FLAGS`] check. The check is not expressible in clap's
+    /// derive, so it lives one layer out; putting it in a function `main`
+    /// calls is what makes the difference between the two entry points a
+    /// single line rather than a rule to remember.
+    ///
+    /// # Panics
+    ///
+    /// Never returns on a parse failure, on `--help` or on `--version`: it
+    /// exits the process the way `clap::Parser::parse` does, with clap's own
+    /// exit code (`0` for help, `2` for a usage error).
+    #[must_use]
+    pub fn parse_checked() -> Self {
+        match Self::try_parse_checked_from(std::env::args_os()) {
+            Ok(args) => args,
+            Err(error) => error.exit(),
+        }
+    }
+
+    /// [`Self::parse_checked`] over an explicit argv, returning the error.
+    ///
+    /// Public and separate so the refusal is exercised by a unit test over a
+    /// literal command line rather than only by a subprocess — and so the
+    /// check cannot be bypassed by a caller that merely wanted a testable
+    /// parse: this is the only entry point that both parses *and* checks.
+    ///
+    /// # Errors
+    ///
+    /// Any clap parse failure, plus [`clap::error::ErrorKind::ArgumentConflict`]
+    /// when a [`SERVE_ONLY_FLAGS`] entry was written on the command line
+    /// beside the `worker` subcommand.
+    pub fn try_parse_checked_from<I, T>(argv: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        let mut command = <Self as clap::CommandFactory>::command();
+        let mut matches = command.clone().try_get_matches_from(argv)?;
+        refuse_serve_only_flags_before_worker(&mut command, &matches)?;
+        <Self as clap::FromArgMatches>::from_arg_matches_mut(&mut matches)
+            .map_err(|error| error.format(&mut command))
+    }
+}
+
+/// Refuses a [`SERVE_ONLY_FLAGS`] entry typed beside `worker`.
+///
+/// Reads [`clap::ArgMatches::value_source`] rather than "is the value
+/// present": `--bind` carries a `default_value`, so it is *always* present,
+/// and an environment variable must stay ignored (see
+/// [`ServerArgs::oauth_signing_key_file`] for why that is the deliberate
+/// half). `ValueSource::CommandLine` is the only source that means a human
+/// wrote the flag on the line that also says `worker`.
+fn refuse_serve_only_flags_before_worker(
+    command: &mut clap::Command,
+    matches: &clap::ArgMatches,
+) -> Result<(), clap::Error> {
+    if matches.subcommand_name() != Some("worker") {
+        return Ok(());
+    }
+    for (id, spelling) in SERVE_ONLY_FLAGS {
+        if matches.value_source(id) != Some(clap::parser::ValueSource::CommandLine) {
+            continue;
+        }
+        return Err(command.error(
+            clap::error::ErrorKind::ArgumentConflict,
+            format!(
+                "`{spelling}` is read only when serving the API, and this command line says \
+                 `worker`. It parses in that position because it was written before the \
+                 subcommand word, but the job loop routes no traffic and signs no token, so \
+                 the value would be read by nothing. Drop `{spelling}`, or drop `worker`."
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The subcommands `vpay-server` offers, other than serving traffic.
@@ -757,6 +875,105 @@ mod tests {
         }
     }
 
+    /// A serve-only flag typed beside `worker` is refused, in the position
+    /// clap accepts it.
+    ///
+    /// The pair this guards is asymmetric and that is the whole point.
+    /// `vpay-server worker --bind …` is clap's own error, because `bind` is
+    /// not on the subcommand and is not `global`
+    /// (`the_worker_subcommand_binds_only_the_observability_listener`).
+    /// `vpay-server --bind … worker` parses — clap sees a top-level flag
+    /// followed by a subcommand and has no way to be told that this
+    /// particular top-level flag means nothing to that particular
+    /// subcommand. For one review pass it therefore parsed and was read by
+    /// nothing, which is the `--public-base-url` trap this module's header
+    /// describes, re-created by issue #77.
+    ///
+    /// Both flags, both orders, and the message names the flag — an
+    /// operator's whole fix is knowing which word to delete.
+    #[test]
+    fn a_serve_only_flag_written_before_the_worker_subcommand_is_refused() {
+        for (spelling, value) in [
+            ("--bind", "0.0.0.0:8080"),
+            ("--oauth-signing-key-file", "/secrets/oauth-signing-key.pem"),
+        ] {
+            let error =
+                ServerArgs::try_parse_checked_from(["vpay-server", spelling, value, "worker"])
+                    .expect_err(
+                        "a serve-only flag before `worker` must be refused, not parsed and ignored",
+                    );
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+            assert!(
+                error.to_string().contains(spelling),
+                "the refusal must name the flag to delete, got: {error}"
+            );
+
+            // The same flag after the subcommand is clap's own refusal, and
+            // it must stay one: this check exists so that "refused" cannot
+            // quietly become "refused only in the position we remembered".
+            assert!(
+                ServerArgs::try_parse_checked_from(["vpay-server", "worker", spelling, value])
+                    .is_err(),
+                "`vpay-server worker {spelling}` must still be a parse error"
+            );
+        }
+    }
+
+    /// The refusal is scoped to `worker`, and to flags typed on the line.
+    ///
+    /// Three negatives, each of which a too-broad check would break: serving
+    /// traffic still takes both flags; `staff add` is not `worker` and is
+    /// left exactly as issue #80 shipped it; and a `worker` line carrying
+    /// only `CommonArgs` flags before the subcommand word still parses —
+    /// that last one is what `global = true` buys and what this check must
+    /// not cost.
+    ///
+    /// The fourth case, `VPAY_OAUTH_SIGNING_KEY_FILE` in the *environment*
+    /// staying ignored rather than refused, cannot be written here: setting a
+    /// real environment variable needs `unsafe` (see this module's note
+    /// above). It is
+    /// `worker::the_signing_key_env_var_is_ignored_rather_than_refused` in
+    /// `backends/apps/vpay-server/tests/cli.rs`, over a child process.
+    #[test]
+    fn the_serve_only_refusal_touches_nothing_else() {
+        for argv in [
+            vec![
+                "vpay-server",
+                "--bind",
+                "0.0.0.0:8080",
+                "--oauth-signing-key-file",
+                "/secrets/k.pem",
+            ],
+            vec![
+                "vpay-server",
+                "--oauth-signing-key-file",
+                "/secrets/k.pem",
+                "staff",
+                "add",
+                "--merchant",
+                "acme",
+                "--email",
+                "ops@acme.example",
+                "--name",
+                "Ops",
+            ],
+            vec![
+                "vpay-server",
+                "--config",
+                "/config/application.yml",
+                "--observability-bind",
+                "127.0.0.1:19090",
+                "worker",
+            ],
+        ] {
+            assert!(
+                ServerArgs::try_parse_checked_from(argv.clone()).is_ok(),
+                "`{}` must still parse",
+                argv.join(" ")
+            );
+        }
+    }
+
     /// The same property for `staff add`, which is the other subcommand and
     /// the one an operator runs by hand — `kubectl exec … -- vpay-server
     /// staff add --config /config/application.yml …` is the shape the
@@ -847,13 +1064,17 @@ mod tests {
     /// fails if the flag is ever made `global = true` for symmetry with
     /// `CommonArgs`.
     ///
-    /// **What it does not claim**, and the field's own doc comment says so at
-    /// length: `vpay-server --oauth-signing-key-file … worker` parses, and
-    /// nothing reads the value. Since 2026-09-07 one binary contains both
-    /// modes, so "the worker cannot be handed the key" is a property of the
-    /// **mount** (`deployment-worker.yaml` has no `signingKey` volume), not of
-    /// this parser. Asserting otherwise here would be a test that overstates
-    /// what it proves.
+    /// This case covers clap's half — the flag is not on the subcommand's
+    /// `Command` at all. The other spelling, `vpay-server
+    /// --oauth-signing-key-file … worker`, parses at the clap level and is
+    /// refused a layer out; that is
+    /// `a_serve_only_flag_written_before_the_worker_subcommand_is_refused`.
+    ///
+    /// **What neither case claims**: that this is what keeps the Secret away
+    /// from the worker. That is the **mount** — `deployment-worker.yaml`
+    /// templates no `signingKey` volume and sets no
+    /// `VPAY_OAUTH_SIGNING_KEY_FILE` — and the environment variable is still
+    /// read by nothing rather than refused (see the field's doc comment).
     #[test]
     fn the_worker_subcommand_is_not_handed_the_signing_key() {
         let worker = worker_subcommand();
@@ -1022,9 +1243,10 @@ mod tests {
     /// anything else notices the worker started answering `/v1`.
     ///
     /// `--bind` is not `global`, so this is a parse error rather than an
-    /// ignored flag; `vpay-server --bind … worker` still parses and is still
-    /// read by nothing, exactly as `--oauth-signing-key-file` is, and for the
-    /// same reason (see that field's doc).
+    /// ignored flag. `vpay-server --bind … worker` is refused too, one layer
+    /// out — see
+    /// `a_serve_only_flag_written_before_the_worker_subcommand_is_refused`,
+    /// which covers both flags in both positions.
     #[test]
     fn the_worker_subcommand_binds_only_the_observability_listener() {
         let worker = worker_subcommand();

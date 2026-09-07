@@ -25,7 +25,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use clap::Parser as _;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use mimalloc::MiMalloc;
 use vpay_api::op::MerchantOp;
@@ -193,7 +192,12 @@ struct Booted {
 /// process gets.
 #[tokio::main]
 async fn run() -> anyhow::Result<()> {
-    let args = ServerArgs::parse();
+    // `parse_checked`, not clap's `parse`: it is the same parse plus the one
+    // refusal clap's derive cannot express — a serve-only flag (`--bind`,
+    // `--oauth-signing-key-file`) typed *before* the word `worker`, where
+    // clap accepts it and nothing would ever read it. See
+    // `vpay_config::cli::SERVE_ONLY_FLAGS`.
+    let args = ServerArgs::parse_checked();
 
     // Installed before anything else — including tracing init — so the
     // SIGTERM/SIGINT handlers are live for this process's entire lifetime, not

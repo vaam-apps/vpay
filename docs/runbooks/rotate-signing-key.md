@@ -95,10 +95,14 @@ there. There is nothing to restart on the worker side.
 
 This paragraph said "`vpay-worker-bin` takes no `--oauth-signing-key-file`"
 until 2026-09-07. Since issue #77 there is one binary, so the flag exists on
-it: `vpay-server worker --oauth-signing-key-file …` is refused at parse time,
-but `vpay-server --oauth-signing-key-file … worker` parses and reads nothing.
-**The guarantee is the mount, not the flag** — `deployment-worker.yaml`
-templates no `signingKey` volume — which is what it always actually rested on.
+it — and both spellings of "hand the worker the key" are refused anyway:
+`vpay-server worker --oauth-signing-key-file …` by clap, and `vpay-server
+--oauth-signing-key-file … worker` by the `SERVE_ONLY_FLAGS` check in
+`vpay_config::cli` (`docs/reference/vpay-config.md`). The environment
+variable is still ignored rather than refused, deliberately, so a shared env
+block does not stop a worker. **The guarantee is the mount, not the flag** —
+`deployment-worker.yaml` templates no `signingKey` volume and sets no
+`VPAY_OAUTH_SIGNING_KEY_FILE` — which is what it always actually rested on.
 
 ### Confirming it took
 
