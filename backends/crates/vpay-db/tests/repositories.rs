@@ -32,7 +32,8 @@ use sqlx::PgPool;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_db::{
-    Charges, Events, Idempotency, Jobs, PaymentIntents, Repositories, TxOutcome, UnitOfWork as _,
+    Charges, Events, Idempotency, Jobs, NewStaff, PaymentIntents, Repositories, Staff, TxOutcome,
+    UnitOfWork as _,
 };
 
 /// Starts a fresh, migrated Postgres 16 container and returns the
@@ -7644,6 +7645,165 @@ async fn events_get_by_id_is_merchant_scoped() -> anyhow::Result<()> {
     assert_eq!(
         Events::get_by_id(repositories.as_ref(), "merchant_b", &theirs.id).await?,
         Some(theirs)
+    );
+
+    Ok(())
+}
+
+// ------------------------------------------------ staff (ADR-0017)
+
+/// The three compare-and-swaps `vpay_db::staff` uses as security guards, each
+/// asserted at the repository — because that is the only layer where two
+/// callers racing is expressible.
+///
+/// `vpay_api::staff` reaches `enrol_totp` only when the staff row it just
+/// read says unenrolled, so an HTTP test cannot make the second caller reach
+/// it at all: by the time the second request runs, the row says enrolled and
+/// the handler takes the *stored secret* path. **That is what made the
+/// mutation of the enrolment guard invisible to
+/// `staff_sign_in.rs`** — the second sign-in was refused, but by a secret
+/// mismatch rather than by the guard, and deleting the guard changed nothing
+/// observable there.
+///
+/// The guard is not therefore decoration. It closes a real TOCTOU: two
+/// requests can both read the row as unenrolled *before* either writes, both
+/// compute "I am enrolling", and both call this method. The swap is what
+/// makes exactly one win, and this test is what makes deleting it red.
+///
+/// The decisive mutations, one per assertion:
+///
+/// * delete `.where_(staff_member::totp_enrolled_at().is_null())` from
+///   `enrol_totp` — the second enrolment returns `true` and the stored secret
+///   becomes the loser's;
+/// * delete `.where_(staff_member::last_totp_step().lt(step))` from
+///   `record_totp_step` — a spent step is accepted again;
+/// * change that filter to `lte` — the same, one step wider.
+#[tokio::test]
+async fn the_staff_guards_are_compare_and_swaps_and_only_one_caller_wins() -> anyhow::Result<()> {
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+
+    Staff::create(
+        repositories.as_ref(),
+        NewStaff {
+            id: "stf_guards".to_owned(),
+            merchant_id: "merchant_a".to_owned(),
+            email: "guards@example.test".to_owned(),
+            display_name: "Ada".to_owned(),
+            password_hash: "irrelevant-to-this-test".to_owned(),
+            now,
+        },
+    )
+    .await
+    .context("creating the staff member")?;
+
+    // --- enrolment happens once -------------------------------------------
+    assert!(
+        Staff::enrol_totp(repositories.as_ref(), "stf_guards", "first-secret", now).await?,
+        "the first enrolment wins"
+    );
+    assert!(
+        !Staff::enrol_totp(repositories.as_ref(), "stf_guards", "second-secret", now).await?,
+        "the second must LOSE — otherwise whoever reaches the enrolment screen second \
+         replaces an enrolled staff member's second factor, with nothing but the password in \
+         front of it"
+    );
+    let row = Staff::find(repositories.as_ref(), "stf_guards")
+        .await?
+        .context("the staff row is there")?;
+    assert_eq!(
+        row.totp_secret.as_deref(),
+        Some("first-secret"),
+        "the stored secret is the winner's, which is what `did not replace` means"
+    );
+
+    // --- a TOTP step is spent once ----------------------------------------
+    assert_eq!(
+        row.last_totp_step, 0,
+        "seeded, so `NULL < step` cannot bite"
+    );
+    assert!(
+        Staff::record_totp_step(repositories.as_ref(), "stf_guards", 100, now).await?,
+        "a fresh step is accepted"
+    );
+    assert!(
+        !Staff::record_totp_step(repositories.as_ref(), "stf_guards", 100, now).await?,
+        "the SAME step must be refused — this is the whole of the replay defence"
+    );
+    assert!(
+        !Staff::record_totp_step(repositories.as_ref(), "stf_guards", 99, now).await?,
+        "and so must an EARLIER one: the +/-1 skew window admits three codes at any instant, \
+         and a guard that only refused equality would leave the older two replayable"
+    );
+    assert!(
+        Staff::record_totp_step(repositories.as_ref(), "stf_guards", 101, now).await?,
+        "a later step is a different code, or nobody could ever sign in twice"
+    );
+
+    // --- an absent staff member moves nothing -----------------------------
+    assert!(
+        !Staff::record_totp_step(repositories.as_ref(), "stf_nobody", 200, now).await?,
+        "a compare-and-swap against a row that does not exist matches nothing"
+    );
+    assert!(!Staff::set_password(repositories.as_ref(), "stf_nobody", "hash", now).await?);
+    assert!(!Staff::record_sign_in(repositories.as_ref(), "stf_nobody", now).await?);
+
+    Ok(())
+}
+
+/// The one-of-a-kind rules on `staff_members`, at the repository: an address
+/// is unique deployment-wide and is looked up **exactly**.
+///
+/// The exactness is the half worth pinning. `find_by_email` is a plain
+/// `email = $1` with no `lower(...)`, deliberately — a functional predicate
+/// would let a writer store a form the database and the reader disagreed
+/// about — so the canonicalisation is the *caller's* job and
+/// `staff_members_email_is_lower_case` is the backstop that refuses one who
+/// forgot. This asserts the reader's half: a mixed-case lookup finds nothing.
+#[tokio::test]
+async fn a_staff_address_is_unique_and_looked_up_exactly() -> anyhow::Result<()> {
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+
+    let new = |id: &str, email: &str| NewStaff {
+        id: id.to_owned(),
+        merchant_id: "merchant_a".to_owned(),
+        email: email.to_owned(),
+        display_name: "Ada".to_owned(),
+        password_hash: "hash".to_owned(),
+        now,
+    };
+
+    Staff::create(repositories.as_ref(), new("stf_one", "ada@example.test")).await?;
+
+    let err = Staff::create(repositories.as_ref(), new("stf_two", "ada@example.test"))
+        .await
+        .expect_err("a second account for one address must fail, not overwrite the first");
+    eprintln!("observed rejection: {err}");
+    assert!(
+        matches!(
+            vpay_core::Classify::category(&err),
+            vpay_core::Category::Conflict
+        ),
+        "a duplicate address is a conflict, not an outage: {err}"
+    );
+
+    assert!(
+        Staff::find_by_email(repositories.as_ref(), "ada@example.test")
+            .await?
+            .is_some()
+    );
+    assert!(
+        Staff::find_by_email(repositories.as_ref(), "Ada@Example.Test")
+            .await?
+            .is_none(),
+        "the lookup is exact; canonicalising is the caller's job and \
+         staff_members_email_is_lower_case is the backstop"
+    );
+    assert!(
+        Staff::find_by_email(repositories.as_ref(), "nobody@example.test")
+            .await?
+            .is_none()
     );
 
     Ok(())
