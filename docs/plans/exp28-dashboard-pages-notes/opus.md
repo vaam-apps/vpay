@@ -100,6 +100,7 @@ the gate render.
 | `pnpm --filter @vpay/e2e typecheck` / `lint` | clean |
 | `just verify-ui` | exit 0 |
 | `git grep className` under `app/`+`src/` (non-test) | **zero matches** |
+| `just ci` | **exit 0** — `fmt-check`, `clippy`, `verify` (eleven gates), `test-rust` (**1550 tests run, 1550 passed, 0 skipped**; `verify-ignored`: 0 ignored, expected 0; 46 test binaries, expected 46), `test-doc`, `lint-web`, `test-web` (**1230 across nine projects**, of which `frontends/apps/dashboard` 136), `deny` (advisories, bans, licenses, sources all ok) |
 | `just test-e2e` (isolated project, non-default ports) | **exit 0 — 15 Cypress tests across four specs, 15 passing, 0 failing, 0 skipped**: `checkout.cy.ts` 1, `dashboard.cy.ts` **7**, `shop-hosted.cy.ts` 3 in pass 1; `shop-embedded.cy.ts` 4 in pass 2. Stack torn down by `down -v`, zero containers and zero volumes left |
 
 Run from nothing on `54a0939` — **the branch's last code-bearing commit; every
