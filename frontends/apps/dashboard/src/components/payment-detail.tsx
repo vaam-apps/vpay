@@ -39,7 +39,13 @@ export function PaymentDetailView({ detail }: PaymentDetailViewProps) {
   return (
     <Stack direction="column" gap="lg">
       <section>
-        <Heading level={2}>Payment</Heading>
+        {/*
+          "Summary" and not "Payment": the page around this view already
+          heads itself "Payment", and two <h2>Payment</h2> on one screen was
+          visible in the first committed screenshot of it. Sections here are
+          named for what they contain, not for the object they are about.
+        */}
+        <Heading level={2}>Summary</Heading>
         <Table>
           <tbody>
             <tr>

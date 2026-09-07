@@ -69,6 +69,15 @@ describe('the payment detail', () => {
     expect(screen.queryByRole('heading', { name: 'Refunds' })).toBeNull();
   });
 
+  it('heads its first section "Summary", not "Payment"', () => {
+    // The page around this view already heads itself "Payment", and two
+    // <h2>Payment</h2> on one screen was visible in the first committed
+    // screenshot of it — the kind of thing only looking at the render finds.
+    render(<PaymentDetailView detail={DETAIL} />);
+    expect(screen.getByRole('heading', { name: 'Summary' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Payment' })).toBeNull();
+  });
+
   it('renders refunds when there are some', () => {
     render(
       <PaymentDetailView

@@ -2644,12 +2644,12 @@ gen-demo-keys: gen-e2e-signing-key
     #
     # \`redirect_uris\` is a LIST, so this replaces the base file's outright —
     # which is what it is for. The base names port 8080; the dashboard app
-    # runs on 3000 (compose.e2e.yml publishes it there, and #78 hard-codes
-    # that), and the app sends this string in BOTH OAuth legs, where
-    # authkestra matches it byte for byte. It must be the same bytes as
-    # compose.e2e.yml's VPAY_DASHBOARD_REDIRECT_URI or every sign-in ends in
-    # a 400 naming redirect_uri. Nothing ever fetches this URL: the app's own
-    # server follows the 302 (ADR-0017 decision 4).
+    # runs on 3000 (compose.e2e.yml publishes it there, on a literal rather
+    # than on one of the demo_* variables), and the app sends this string in
+    # BOTH OAuth legs, where authkestra matches it byte for byte. It must be
+    # the same bytes as compose.e2e.yml's VPAY_DASHBOARD_REDIRECT_URI, or
+    # every sign-in ends in a 400 naming redirect_uri. Nothing ever fetches
+    # this URL: the app's own server follows the 302 (ADR-0017 decision 4).
     dashboard_client:
       merchant_id: demo-merchant-tenant
       redirect_uris:

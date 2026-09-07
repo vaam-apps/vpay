@@ -43,7 +43,7 @@ export default async function PaymentDetailPage({
     <Stack direction="column" gap="lg">
       <SignedInBar email={session.email} merchantId={session.merchant_id} signOut={signOut} />
 
-      <Stack justify="between" align="center" gap="md" wrap>
+      <Stack as="header" justify="between" align="center" gap="md" wrap>
         <Heading level={2}>Payment</Heading>
         <Link href="/payments">Back to payments</Link>
       </Stack>
