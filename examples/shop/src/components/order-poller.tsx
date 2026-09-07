@@ -62,31 +62,46 @@ export function OrderPoller({ initial }: { initial: OrderView }) {
   return (
     <>
       {settled ? null : (
-        <p data-testid="confirming" role="status" aria-live="polite">
+        <p
+          data-testid="confirming"
+          role="status"
+          aria-live="polite"
+          className="mb-4"
+        >
           We are confirming your payment. This page updates itself every{" "}
           {POLL_INTERVAL_MS / 1000} seconds and needs no refresh. ({polls}{" "}
           checks so far.)
         </p>
       )}
       {order.status === "paid" ? (
-        <p data-testid="paid-message">
+        <p data-testid="paid-message" className="alert alert-success mb-4">
           Paid. Thank you — the shop marked this order paid when vpay's signed
           webhook arrived, not when your browser did.
         </p>
       ) : null}
       {order.status === "failed" ? (
-        <p className="error" data-testid="failed-message">
+        <p
+          role="alert"
+          className="alert alert-error mb-4"
+          data-testid="failed-message"
+        >
           The payment failed. Nothing has been charged.
         </p>
       ) : null}
       {order.status === "cancelled" ? (
-        <p className="error" data-testid="cancelled-message">
+        <p
+          role="alert"
+          className="alert alert-error mb-4"
+          data-testid="cancelled-message"
+        >
           The payment was cancelled.
         </p>
       ) : null}
       <OrderSummary order={order} />
-      <p>
-        <Link href={`/orders/${order.id}`}>The order page</Link>
+      <p className="mt-4">
+        <Link href={`/orders/${order.id}`} className="link">
+          The order page
+        </Link>
       </p>
     </>
   );

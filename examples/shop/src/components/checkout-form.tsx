@@ -207,52 +207,55 @@ export function CheckoutForm({
         void submit(mode);
       }}
     >
-      <p>
-        <label htmlFor="email">
-          Your e-mail <span style={{ color: "var(--muted)" }}>(optional)</span>
-        </label>
-        <input
-          id="email"
-          name="email"
-          type="email"
-          autoComplete="email"
-          data-testid="email"
-          aria-describedby="email-why"
-          value={email}
-          onChange={(event) => setEmail(event.target.value)}
-        />
-      </p>
+      <label htmlFor="email" className="label mb-1">
+        Your e-mail <span className="text-base-content/60">(optional)</span>
+      </label>
+      <input
+        id="email"
+        name="email"
+        type="email"
+        autoComplete="email"
+        data-testid="email"
+        aria-describedby="email-why"
+        className="input w-full max-w-sm"
+        value={email}
+        onChange={(event) => setEmail(event.target.value)}
+      />
       <p
         id="email-why"
         data-testid="email-why"
-        style={{ color: "var(--muted)", fontSize: "0.9rem" }}
+        className="mt-1 text-sm text-base-content/60"
       >
         For your receipt only. You can pay without it: on a mobile-money rail
         the identity is the <strong>phone number</strong> you give the rail,
         which this shop never sees.
       </p>
 
-      <fieldset data-testid="mode-switch">
-        <legend>How to pay</legend>
-        <p style={{ color: "var(--muted)", fontSize: "0.9rem" }}>
+      <fieldset
+        data-testid="mode-switch"
+        className="fieldset rounded-box border border-base-300 bg-base-100 p-4"
+      >
+        <legend className="fieldset-legend">How to pay</legend>
+        <p className="mb-2 text-sm text-base-content/60">
           A real shop picks one of these once, in its own configuration (
           <code>SHOP_CHECKOUT_MODE</code>, currently{" "}
           <code data-testid="configured-mode">{defaultMode}</code>), and never
           shows a switch. This one shows all three so you can see each.
         </p>
         {MODES.map((candidate) => (
-          <label key={candidate} className="mode-option">
+          <label key={candidate} className="flex cursor-pointer gap-3 py-2">
             <input
               type="radio"
               name="mode"
               value={candidate}
               data-testid={`mode-${candidate}`}
               checked={mode === candidate}
+              className="radio radio-sm mt-1"
               onChange={() => setMode(candidate)}
             />
             <span>
               <strong>{MODE_COPY[candidate].label}</strong>{" "}
-              <span style={{ color: "var(--muted)" }}>
+              <span className="text-sm text-base-content/60">
                 {MODE_COPY[candidate].blurb}
               </span>
             </span>
@@ -261,21 +264,34 @@ export function CheckoutForm({
       </fieldset>
 
       {error !== null ? (
-        <p className="error" role="alert" data-testid="checkout-error">
+        <p
+          className="alert alert-error mt-4"
+          role="alert"
+          data-testid="checkout-error"
+        >
           {error}
         </p>
       ) : null}
       {note !== null ? (
-        <p role="status" data-testid="checkout-note">
+        <p
+          className="alert alert-info mt-4"
+          role="status"
+          data-testid="checkout-note"
+        >
           {note}
         </p>
       ) : null}
-      <p>
-        <button type="submit" disabled={!ready} data-testid="pay">
+      <p className="mt-4">
+        <button
+          type="submit"
+          className="btn btn-primary"
+          disabled={!ready}
+          data-testid="pay"
+        >
           {busy ? "Working…" : MODE_COPY[mode].button}
         </button>
       </p>
-      <p style={{ color: "var(--muted)", fontSize: "0.9rem" }}>
+      <p className="mt-2 text-sm text-base-content/60">
         Whichever you pick, the shop creates the PaymentIntent and the Checkout
         Session on its own server, with its own credentials. Your browser never
         holds one.

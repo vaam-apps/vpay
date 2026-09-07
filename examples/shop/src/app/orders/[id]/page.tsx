@@ -26,8 +26,8 @@ export default async function OrderPage({
 
   return (
     <>
-      <h1>Order {order.id}</h1>
-      <p style={{ color: "var(--muted)" }}>
+      <h1 className="mb-2 text-2xl font-bold">Order {order.id}</h1>
+      <p className="mb-4 text-sm text-base-content/60">
         This page reads the shop's database and nothing else. It says{" "}
         <em>paid</em> only once vpay's webhook has been received, verified and
         written — not because a payer came back through a redirect.
@@ -35,9 +35,9 @@ export default async function OrderPage({
       <OrderFailureNotice order={order} />
       <OrderSummary order={order} />
       {order.status === "unpaid" && order.paymentIntentId !== null ? (
-        <p>
+        <p className="mt-4">
           <Link
-            className="button secondary"
+            className="btn btn-outline"
             href={`/orders/${order.id}/embedded`}
           >
             Pay this order without leaving the shop

@@ -61,7 +61,11 @@ export function CartTable({ showCheckoutLink }: { showCheckoutLink: boolean }) {
   }, []);
 
   if (error !== null) {
-    return <p className="error">{error}</p>;
+    return (
+      <p role="alert" className="alert alert-error">
+        {error}
+      </p>
+    );
   }
   if (products === null) {
     return <p>Loading the catalogue…</p>;
@@ -69,7 +73,11 @@ export function CartTable({ showCheckoutLink }: { showCheckoutLink: boolean }) {
   if (lines.length === 0) {
     return (
       <p data-testid="cart-empty">
-        The cart is empty. <Link href="/">Back to the catalogue</Link>.
+        The cart is empty.{" "}
+        <Link href="/" className="link">
+          Back to the catalogue
+        </Link>
+        .
       </p>
     );
   }
@@ -87,58 +95,64 @@ export function CartTable({ showCheckoutLink }: { showCheckoutLink: boolean }) {
 
   return (
     <>
-      <table data-testid="cart-table">
-        <thead>
-          <tr>
-            <th>Item</th>
-            <th className="num">Unit</th>
-            <th className="num">Qty</th>
-            <th className="num">Line</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(({ line, product }) => (
-            <tr key={product.id}>
-              <td>{product.name}</td>
-              <td className="num">
-                {formatMinor(product.priceMinor, product.currency)}
+      <div className="overflow-x-auto">
+        <table data-testid="cart-table" className="table table-zebra">
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th className="text-right">Unit</th>
+              <th className="text-right">Qty</th>
+              <th className="text-right">Line</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(({ line, product }) => (
+              <tr key={product.id}>
+                <td>{product.name}</td>
+                <td className="text-right tabular-nums">
+                  {formatMinor(product.priceMinor, product.currency)}
+                </td>
+                <td className="text-right tabular-nums">
+                  <input
+                    type="number"
+                    min={0}
+                    max={10}
+                    step={1}
+                    value={line.quantity}
+                    aria-label={`Quantity of ${product.name}`}
+                    data-testid={`qty-${product.id}`}
+                    className="input input-sm w-20 text-right"
+                    onChange={(event) =>
+                      setQuantity(product.id, Number(event.target.value))
+                    }
+                  />
+                </td>
+                <td className="text-right tabular-nums">
+                  {formatMinor(
+                    product.priceMinor * line.quantity,
+                    product.currency,
+                  )}
+                </td>
+              </tr>
+            ))}
+            <tr>
+              <td colSpan={3}>
+                <strong>Total</strong>
               </td>
-              <td className="num">
-                <input
-                  type="number"
-                  min={0}
-                  max={10}
-                  step={1}
-                  value={line.quantity}
-                  aria-label={`Quantity of ${product.name}`}
-                  data-testid={`qty-${product.id}`}
-                  style={{ width: "5rem" }}
-                  onChange={(event) =>
-                    setQuantity(product.id, Number(event.target.value))
-                  }
-                />
-              </td>
-              <td className="num">
-                {formatMinor(
-                  product.priceMinor * line.quantity,
-                  product.currency,
-                )}
+              <td className="text-right tabular-nums" data-testid="cart-total">
+                <strong>{formatMinor(total, currency)}</strong>
               </td>
             </tr>
-          ))}
-          <tr>
-            <td colSpan={3}>
-              <strong>Total</strong>
-            </td>
-            <td className="num" data-testid="cart-total">
-              <strong>{formatMinor(total, currency)}</strong>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+          </tbody>
+        </table>
+      </div>
       {showCheckoutLink ? (
-        <p style={{ marginTop: "1.25rem" }}>
-          <Link className="button" href="/checkout" data-testid="to-checkout">
+        <p className="mt-5">
+          <Link
+            className="btn btn-primary"
+            href="/checkout"
+            data-testid="to-checkout"
+          >
             Checkout
           </Link>
         </p>
