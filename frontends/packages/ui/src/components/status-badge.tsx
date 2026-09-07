@@ -1,40 +1,22 @@
-import { cva, type VariantProps } from 'class-variance-authority';
 import { statusLabel, statusTone, type PaymentStatus } from '@vpay/tokens';
 
-import { cn } from '../cn';
+import { Badge, type BadgeProps } from './badge';
 
-const badge = cva('badge gap-1 whitespace-nowrap', {
-  variants: {
-    tone: {
-      neutral: 'badge-neutral',
-      info: 'badge-info',
-      warning: 'badge-warning',
-      success: 'badge-success',
-      error: 'badge-error',
-    },
-    size: { sm: 'badge-sm', md: '', lg: 'badge-lg' },
-  },
-  defaultVariants: { tone: 'neutral', size: 'md' },
-});
-
-export interface StatusBadgeProps extends Omit<VariantProps<typeof badge>, 'tone'> {
+export interface StatusBadgeProps extends Omit<BadgeProps, 'tone' | 'children'> {
   status: PaymentStatus;
-  className?: string;
 }
 
 /**
  * Renders a PaymentIntent status.
  *
  * Tone and copy both come from `@vpay/tokens`, so a status can never be
- * coloured green in one view and grey in another.
+ * coloured green in one view and grey in another. Composes {@link Badge}
+ * rather than carrying its own `cva` map — one badge variant map, not two.
  */
-export function StatusBadge({ status, size, className }: StatusBadgeProps) {
+export function StatusBadge({ status, size, className, ...rest }: StatusBadgeProps) {
   return (
-    <span
-      className={cn(badge({ tone: statusTone[status], size }), className)}
-      data-status={status}
-    >
+    <Badge tone={statusTone[status]} size={size} className={className} data-status={status} {...rest}>
       {statusLabel[status]}
-    </span>
+    </Badge>
   );
 }

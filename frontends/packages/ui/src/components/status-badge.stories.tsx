@@ -1,7 +1,7 @@
-import type { Meta, StoryObj } from '@storybook/react';
+import type { Meta, StoryObj } from '@storybook/react-vite';
 import { PAYMENT_STATUS } from '@vpay/tokens';
 
-import { StatusBadge } from './status-badge.js';
+import { StatusBadge } from './status-badge';
 
 const meta = {
   title: 'Payments/StatusBadge',

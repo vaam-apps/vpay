@@ -21,7 +21,7 @@ export const statusTone: Record<PaymentStatus, 'neutral' | 'info' | 'warning' | 
   requires_action: 'warning',
   processing: 'info',
   succeeded: 'success',
-  canceled: 'error',
+  canceled: 'warning',
 };
 
 /**
@@ -51,10 +51,12 @@ export type CheckoutOutcome = (typeof CHECKOUT_OUTCOME)[number];
  * defect; `statusTone` itself is right for what it is for and is unchanged,
  * so the dashboard is untouched.
  *
- * `canceled` stays `error` rather than becoming a softer amber. Making a
- * payer's own cancellation less alarming than a failure is defensible and is
- * NOT taken here: it is a design call for the maintainer, and the narrow fix
- * — a failure is not neutral — is the one the evidence forces.
+ * **`canceled` moved from `error` to `warning` on 2026-09-07 (decision D4,
+ * docs/plans/2026-09-07-ui-revamp.md §9), taken by the maintainer's
+ * delegate.** The design call this comment used to defer — whether a
+ * payer's own cancellation should read less alarming than a payment that
+ * failed for a reason outside their control — is now taken: `canceled` is
+ * the payer's own action, and `failed` is not. `failed` stays `error`.
  */
 export const checkoutOutcomeTone: Record<
   CheckoutOutcome,
@@ -62,7 +64,7 @@ export const checkoutOutcomeTone: Record<
 > = {
   succeeded: 'success',
   failed: 'error',
-  canceled: 'error',
+  canceled: 'warning',
 };
 
 /**

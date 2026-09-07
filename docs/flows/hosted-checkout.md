@@ -266,8 +266,18 @@ mapping was accurate and the screen was wrong: a payer whose payment failed
 read a grey box while a payer who cancelled read a red one. An operator's
 status palette is not a payer's outcome palette, so `@vpay/tokens` now carries
 both — `statusTone` unchanged, and `checkoutOutcomeTone` for these three
-screens. `canceled` stays red rather than becoming a softer amber; that is a
-design call left to the maintainer.
+screens. *Updated 2026-09-07 (decision D4,
+[2026-09-07-ui-revamp.md](../plans/2026-09-07-ui-revamp.md) §9):* `canceled`
+now tones `warning`, not `error` — the design call this paragraph used to
+defer is taken, on the reasoning that a payer's own cancellation is not the
+same event as a payment that failed for a reason outside their control.
+`failed` still tones `error`. The token moved in `@vpay/tokens`
+(`frontends/packages/tokens/src/index.ts`); `OutcomePanel`
+(`frontends/apps/checkout/src/components/screens.tsx`) already carries a
+`warning` entry in its `TONE_CLASS` lookup, so the colour renders correctly
+with no change to this app — the migration of that lookup onto `@vpay/ui`'s
+`Alert` component is separate work, not yet done (`docs/plans/2026-09-07-ui-
+revamp.md` §4.1).
 
 **A failed outcome also shows the rail's own words** where the API gave any.
 `last_payment_error.message` is rendered as *data*, under the translated
@@ -767,5 +777,87 @@ and a permanent false warning into the demo. **`just test-e2e` on this head:
 through a compose stack that mounts both YAML files. The page's own suite is
 **448 vitest cases in 23 files, 0 skipped** (was 302 in 17).
 
+**Updated 2026-09-07: the shared UI library moved; this page has not, yet.**
+`docs/plans/2026-09-07-ui-revamp.md` Lane A landed `@vpay/ui` on
+`@base-ui/react@1.8.0` (the deprecated `@base-ui-components/react@1.0.0-rc.0`
+this page still imports was **renamed**, not superseded — a different
+package, a real 1.0 release nine months old), Tailwind 4 and daisyUI 5, and
+took decision D4 above. **This app is unchanged**: it still imports the old
+package, still has its own `tailwind.config.ts`, and its `Field`/`Checkbox`
+still write `form-control`/`label-text` — daisyUI 4 classes daisyUI 5 removed,
+caught by the new `just verify-ui` gate, which is red on this file until the
+migration lands. That migration (Lane B) is not yet started.
+
+**Updated 2026-09-07: the migration landed, and `just verify-ui` is green on
+this app.** `screens.tsx`, `checkout-view.tsx`, `return-view.tsx` and
+`locale-switch.tsx` compose `@vpay/ui`'s components (`Alert`, `Badge`,
+`Button`, `Card`, `Checkbox`, `Field`, `Input`, `Select`, `Spinner`, `Stack`,
+`Text`, `PageShell`, `Heading`, `List`) instead of writing daisyUI classes or
+importing `@base-ui-components/react` directly; `tailwind.config.ts` is
+deleted (Tailwind 4 is CSS-first); `globals.css` is one `@import` plus the
+`prefers-reduced-motion` block. `OutcomePanel` now passes
+`checkoutOutcomeTone[kind]` straight into `Alert`'s `tone` prop — the
+`TONE_CLASS` lookup map and the template literal assembling a class string
+that this document's own earlier entries traced the 2026-09-07 outcome-colour
+defect to are both gone. `src/config/theme.ts` collapses from 176 to 97
+lines: daisyUI 5's `--color-primary` takes any CSS colour directly, so the
+sRGB→OKLCh conversion this module used to do by hand is dead code under
+daisyUI 5; what remains derives the foreground with the platform's own
+`color-mix()`, and `theme.test.ts` verifies that computation holds WCAG AA
+contrast (≥4.5:1) for six colours via an independent re-implementation, not by
+importing from `theme.ts`. `just test-e2e`'s three specs this app's own
+scope covers — `checkout.cy.ts`, `shop-hosted.cy.ts`, `shop-embedded.cy.ts` —
+are **8/8, 0 skipped**, including the two lines in the shop specs that used to
+select the redirect-continue button by its daisyUI class
+(`button.btn-primary`) and now use `data-testid="continue"`.
+`dashboard.cy.ts` did not run: `docker compose`'s `dashboard` image build is
+broken by an unrelated, pre-existing, out-of-scope defect (`frontends/apps/
+dashboard`'s own `next.config.ts` has no `@vpay/ui` in `transpilePackages`,
+and its scaffold already imports `@vpay/ui`'s `StatusBadge`) — Lane D's job,
+not this migration's. The page's own suite is **459 vitest cases in 23
+files, 0 skipped** (was 448). See `docs/status.md`'s "exp26 Lane B" row for
+the full gate-by-gate record, the counted `styling_files`/token targets (one
+target missed, named there with the reason), and the four regenerated
+screenshots.
+
 See [../status.md](../status.md) for the per-feature ledger and the reasons
 several of those rows are 🟡 where this document says "built".
+
+**Reviewed 2026-09-07 (`docs/plans/exp26-notes/lane-b-review.md`), and three
+things about this page changed as a result.**
+
+*The failure screen is readable again.* `OutcomePanel`'s `failed` branch
+renders `.alert-error`, and daisyUI 5's bumblebee paints it at **3.53:1** —
+below WCAG AA's 4.5:1 for body text, and down from the **6.82:1** the same
+alert had under daisyUI 4. That is the one screen on this page that tells a
+payer their money did not move. `@vpay/ui/src/styles.css` now corrects
+`--color-error-content` (and `--color-info-content`) as a theme token,
+unlayered so it beats daisyUI's own `@layer base` block — the same mechanism
+`src/config/theme.ts` uses at runtime for `--color-primary`. Measured in
+Chrome from the app's own compiled stylesheet: `.alert-error` **4.62:1**,
+`.alert-success` 5.12:1, `.alert-warning` 5.24:1, `.btn-primary` 5.51:1.
+`frontends/packages/ui/src/theme-contrast.test.ts` re-measures every tone from
+the compiled sheet on every run, so a daisyUI bump that moves a colour is a
+failing test rather than an unreadable screen.
+
+*The language switch has a label a payer can see again.* The migration
+replaced the visible `<label>` with an `aria-label`, which kept the accessible
+name and took the word off the screen. `LocaleSwitch` now names the control
+with a visible `<Text>` through `Select`'s `aria-labelledby`.
+
+*The brand-and-language row is a `<header>` again* on both `CheckoutView` and
+`ReturnView`, so a screen-reader user can still skip it by landmark.
+
+Also on this page and unchanged by any of it: the hydration guard
+(`layout.test.tsx`'s "renders NO explicit `<head>` element", `href`/
+`precedence` hoisting) is untouched, the popup peer and sole-origin rules are
+untouched, and the CSP header is untouched — `git diff 08d9b8e..HEAD` over
+`*frame*` and `*channel*` is empty. `just test-e2e` is **11/11 across all four
+specs**, `shop-hosted.cy.ts` — §6.5's own decisive check for the hydration
+fix — among them at 3/3.
+
+Not covered by any test, and named here rather than left implied: **Space or
+Enter on the memory opt-in's checkbox**. jsdom does not simulate a native
+`<button>`'s keyboard default action, and no Cypress spec touches this
+control. The label-click path IS measured (`@vpay/ui`'s `CheckboxLabel`
+case clicks the sentence and expects the handler).

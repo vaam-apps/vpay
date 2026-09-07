@@ -5,7 +5,9 @@
   "type": "module",
   "main": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/axe.ts",
+    "./styles.css": "./src/styles.css"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit",
@@ -16,37 +18,35 @@
     "build-storybook": "storybook build -o storybook-static"
   },
   "dependencies": {
-    "@headlessui/react": "^2.2.0",
+    "@base-ui/react": "1.8.0",
     "@vpay/tokens": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "framer-motion": "^11.15.0",
-    "tailwind-merge": "^2.6.0",
-    "vaul": "^1.1.2"
+    "tailwind-merge": "3.6.0"
   },
   "peerDependencies": {
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@storybook/addon-a11y": "^8.4.0",
-    "@storybook/addon-essentials": "^8.4.0",
-    "@storybook/react": "^8.4.0",
-    "@storybook/react-vite": "^8.4.0",
+    "@storybook/addon-a11y": "10.6.0",
+    "@storybook/addon-docs": "10.6.0",
+    "@storybook/react-vite": "10.6.0",
+    "@tailwindcss/postcss": "4.3.3",
     "@testing-library/jest-dom": "^6.6.0",
     "@testing-library/react": "^16.1.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vpay/config": "workspace:*",
-    "autoprefixer": "^10.4.20",
-    "daisyui": "^4.12.23",
+    "axe-core": "4.13.0",
+    "daisyui": "5.7.28",
     "eslint": "9.39.5",
     "jsdom": "^25.0.1",
     "postcss": "^8.5.28",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "storybook": "^8.4.0",
-    "tailwindcss": "^3.4.17",
+    "storybook": "10.6.0",
+    "tailwindcss": "4.3.3",
     "typescript": "^5.7.0",
     "vitest": "^3.2.7"
   }

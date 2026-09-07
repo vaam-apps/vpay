@@ -214,6 +214,14 @@ jobs:
       # itself is `verify_toolchain` in `.xtask/src/main.rs` either way.
       - name: verify-toolchain (the image pin matches rust-toolchain.toml)
         run: just verify-toolchain
+      # New 2026-09-07 (exp26 UI revamp). Pure `git grep` — no pnpm install,
+      # no Node — so it needs nothing this job does not already have. See
+      # docs/plans/2026-09-07-ui-revamp.md §6.3 and §9 for what each of its
+      # four checks catches and why a grep, not a lint rule, is the tool for
+      # the daisyUI 4→5 class-rename check specifically: a removed class
+      # still parses and still renders, so nothing else in `just ci` notices.
+      - name: verify-ui (colour tokens, daisyUI 4→5 renames, !important, cva)
+        run: just verify-ui
       # A report, not a gate — it exits 0 whatever it finds (Step 7,
       # decision (4)). It is here so `justfile`'s claim that this job runs
       # exactly what `just verify` runs stays true, and so the doc-volume,

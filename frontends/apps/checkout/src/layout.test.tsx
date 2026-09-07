@@ -86,8 +86,10 @@ describe('the root layout', () => {
     const html = await markup();
     expect(html).toContain(`href="${THEME_OVERRIDE_HREF}"`);
     expect(html).toContain(`precedence="${THEME_OVERRIDE_PRECEDENCE}"`);
-    // And it is still the colour the mounted file asked for, converted.
-    expect(html).toContain('--p:84.2251% 0.165456 91.330667');
+    // And it is still the colour the mounted file asked for — daisyUI 5's
+    // --color-primary takes a CSS colour directly, so this is the operator's
+    // #rrggbb re-emitted rather than converted.
+    expect(html).toContain('--color-primary:#f3c623;');
   });
 
   it('renders the theme this app is themed with, and the negotiated language', async () => {

@@ -8,6 +8,8 @@
  * drive). A screenshot of a state nobody can produce is how a page ends up
  * with a branch that has never rendered.
  */
+import { PageShell, Stack } from '@vpay/ui';
+
 import type { Branding } from '../config/settings';
 import type { Locale, MessageKey, Translate } from '../i18n/index';
 import { failureMessage } from '../lib/failures';
@@ -72,32 +74,34 @@ export function CheckoutView(props: CheckoutViewProps) {
   const merchant = context?.merchant?.name ?? null;
 
   return (
-    <main className="mx-auto flex w-full max-w-md flex-col gap-6 p-6">
-      <header className="flex items-center justify-between gap-4">
-        <BrandHeader t={t} branding={props.branding} />
-        <LocaleSwitch t={t} locale={locale} onChange={props.onLocaleChange} />
-      </header>
+    <main>
+      <PageShell>
+        <Stack as="header" justify="between" gap="md">
+          <BrandHeader t={t} branding={props.branding} />
+          <LocaleSwitch t={t} locale={locale} onChange={props.onLocaleChange} />
+        </Stack>
 
-      {context === null ? null : (
-        <PaymentSummary
-          t={t}
-          merchant={merchant}
-          amount={amount}
-          reference={context.session.id}
-          livemode={context.session.livemode}
-        />
-      )}
+        {context === null ? null : (
+          <PaymentSummary
+            t={t}
+            merchant={merchant}
+            amount={amount}
+            reference={context.session.id}
+            livemode={context.session.livemode}
+          />
+        )}
 
-      {/*
-        Present from first render and never unmounted, so a status written
-        into it is announced. A live region created together with its own
-        text is not.
-      */}
-      <div aria-live="polite" aria-atomic="true" data-testid="live-region">
-        {renderScreen(props, amount, merchant)}
-      </div>
+        {/*
+          Present from first render and never unmounted, so a status written
+          into it is announced. A live region created together with its own
+          text is not.
+        */}
+        <div aria-live="polite" aria-atomic="true" data-testid="live-region">
+          {renderScreen(props, amount, merchant)}
+        </div>
 
-      <SupportLine t={t} branding={props.branding} />
+        <SupportLine t={t} branding={props.branding} />
+      </PageShell>
     </main>
   );
 }

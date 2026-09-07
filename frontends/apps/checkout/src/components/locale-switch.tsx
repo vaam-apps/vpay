@@ -12,6 +12,8 @@
  */
 'use client';
 
+import { Select, Stack, Text } from '@vpay/ui';
+
 import { LOCALES, type Locale, type Translate } from '../i18n/index';
 
 export function LocaleSwitch({
@@ -24,23 +26,35 @@ export function LocaleSwitch({
   onChange: (locale: Locale) => void;
 }) {
   const id = 'vpay-locale';
+  const labelId = 'vpay-locale-label';
   return (
-    <div className="flex items-center gap-2">
-      <label className="text-sm opacity-70" htmlFor={id}>
+    <Stack gap="sm">
+      {/*
+        A VISIBLE label, `aria-labelledby`, not `aria-label`. The exp26
+        migration replaced this element with an `aria-label` on the trigger,
+        which keeps the accessible name and takes the word off the screen:
+        a sighted payer was left with a bare "English"/"Français" combobox
+        beside the page title, with nothing saying it chooses a language.
+        Plan §4.1's row for this file deletes the label's CLASSES
+        (`text-sm opacity-70`), not the label. It is on the committed
+        screenshots either way — `docs/plans/exp21-checkout-page-notes/
+        entry-screens.png` has the word, `docs/plans/exp26-notes/lane-b/
+        entry-screens.png` does not.
+      */}
+      <Text as="span" id={labelId} size="sm" tone="muted">
         {t('locale.label')}
-      </label>
-      <select
+      </Text>
+      <Select
         id={id}
-        className="select select-bordered select-sm"
+        size="sm"
+        aria-labelledby={labelId}
         value={locale}
-        onChange={(event) => onChange(event.target.value as Locale)}
-      >
-        {LOCALES.map((candidate) => (
-          <option key={candidate} value={candidate}>
-            {t(candidate === 'fr' ? 'locale.fr' : 'locale.en')}
-          </option>
-        ))}
-      </select>
-    </div>
+        onValueChange={(next) => onChange(next as Locale)}
+        items={LOCALES.map((candidate) => ({
+          value: candidate,
+          label: t(candidate === 'fr' ? 'locale.fr' : 'locale.en'),
+        }))}
+      />
+    </Stack>
   );
 }

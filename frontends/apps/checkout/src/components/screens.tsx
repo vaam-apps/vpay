@@ -6,14 +6,27 @@
  * be a Storybook story, a vitest assertion in both locales, and the page
  * itself — rather than three descriptions of one design that drift.
  *
- * **Styling is daisyUI's `bumblebee` theme and Base UI's component
- * defaults, and nothing else** (the maintainer's requirement, 2026-09-05).
- * There is no bespoke CSS in this file and none in `globals.css` beyond one
- * `prefers-reduced-motion` block: a class here is either a daisyUI component
- * class (`card`, `btn`, `alert`, `input`, `checkbox`, `badge`) or a Tailwind
- * utility. Colour is never written down — it comes from the theme's own
- * variables, which `src/config/theme.ts` lets an operator retint at runtime,
- * and status tone still comes from `@vpay/tokens` (AGENTS.md).
+ * **Styling is `@vpay/ui`'s components — daisyUI's `bumblebee` theme and
+ * Base UI's behaviour, composed through `cva` — and nothing else** (the
+ * maintainer's requirement, 2026-09-05). This file writes **no** class name
+ * of its own, which is what plan §3 asks for in as many words: raw
+ * utilities live only inside `frontends/packages/ui/src/`. `Card`, `Alert`,
+ * `Badge`, `Button`, `Field`, `Input`, `Checkbox`, `Spinner` and the layout
+ * primitives `Stack`/`Text`/`Heading`/`List`/`PageShell`/`Logo`/
+ * `VisuallyHidden`/`CheckboxLabel` own every daisyUI component class and
+ * every layout utility between them
+ * (`docs/plans/2026-09-07-ui-revamp.md` §3, §4.1).
+ *
+ * The five utilities this file did keep for one revision were functional
+ * rather than decorative, and each is now a named variant or a component
+ * instead: the payment amount is `<Text size="3xl" numeric>`, the session
+ * reference `<Text wrap="anywhere">`, the operator's mark `<Logo>` (whose
+ * `h-8 w-auto` overrides Tailwind's own `img{height:auto}` preflight
+ * reset), the visually hidden labels `<VisuallyHidden>`, and the memory
+ * opt-in's clickable sentence `<CheckboxLabel>`. Colour is never written
+ * down — it comes from the theme's own variables, which
+ * `src/config/theme.ts` lets an operator retint at runtime, and status tone
+ * still comes from `@vpay/tokens` (AGENTS.md).
  *
  * Accessibility is structural here, not decorative:
  *
@@ -29,18 +42,38 @@
  * - every control has a real accessible name and is in the tab order.
  *
  * That last point used to read "every control is a **native** `button`,
- * `input` or `input[type=radio]`", and it is no longer true: Base UI's
- * checkbox renders a `<span role="checkbox" tabindex="0">` with a visually
- * hidden native input beside it for the form value. The property the old
- * sentence was defending — a keyboard-only payer can reach and operate
- * everything — is still held and still tested, but it is now held by an ARIA
- * role and a `tabindex` rather than by the platform, so the test asserts the
- * role, the tab index, the accessible name and `aria-checked` explicitly.
- * Both the label click and the space key were **measured**, not assumed.
+ * `input` or `input[type=radio]`", and it is no longer exactly true — but
+ * Base UI 1.8.0 gets it closer than the rc it replaces: decision D2
+ * (2026-09-07) renders the checkbox as a real `<button role="checkbox">`
+ * rather than the `<span role="checkbox">` `@vpay/ui`'s own rc-era default
+ * would have produced, so a keyboard-only payer reaches it exactly as they
+ * reach every other button on the page. It is still an ARIA role rather
+ * than the native `input[type=checkbox]` the sentence originally promised,
+ * so the test still asserts the role, the tab index, the accessible name
+ * and `aria-checked` explicitly rather than assuming the platform.
  */
-import { Checkbox } from '@base-ui-components/react/checkbox';
-import { Field } from '@base-ui-components/react/field';
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardBody,
+  Checkbox,
+  CheckboxLabel,
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldLabel,
+  Heading,
+  Input,
+  List,
+  Logo,
+  Spinner,
+  Stack,
+  Text,
+  VisuallyHidden,
+} from '@vpay/ui';
 import { checkoutOutcomeTone } from '@vpay/tokens';
 
 import type { MessageKey, Translate } from '../i18n/index';
@@ -54,29 +87,29 @@ import type { RailChoices, SupportedRail } from '../lib/rails';
  * Focus moves here whenever `screen` changes. `preventScroll` is not used:
  * a payer whose viewport does not currently show the heading should be
  * scrolled to it.
+ *
+ * Focused via `document.querySelector('[data-screen]')` rather than a
+ * `ref` on `Heading`: `Heading`'s own props type is
+ * `React.ComponentPropsWithoutRef<'h1'>`, which — by design, the same way
+ * every other `@vpay/ui` component works — does not accept a `ref`. Exactly
+ * one screen is ever mounted at a time (`checkout-view.tsx`'s `switch`
+ * renders one branch), so the query is unambiguous, and this is the same
+ * property Cypress already relies on when it selects `[data-screen="…"]`.
  */
 export function ScreenHeading({
   screen,
   children,
-  className,
 }: {
   screen: string;
   children: React.ReactNode;
-  className?: string;
 }) {
-  const ref = useRef<HTMLHeadingElement | null>(null);
   useEffect(() => {
-    ref.current?.focus();
+    document.querySelector<HTMLElement>(`[data-screen="${screen}"]`)?.focus();
   }, [screen]);
   return (
-    <h2
-      ref={ref}
-      tabIndex={-1}
-      data-screen={screen}
-      className={className ?? 'text-xl font-semibold outline-none'}
-    >
+    <Heading level={2} tabIndex={-1} data-screen={screen}>
       {children}
-    </h2>
+    </Heading>
   );
 }
 
@@ -114,20 +147,18 @@ export function merchantLine(
  */
 export function BrandHeader({ t, branding }: { t: Translate; branding: Branding }) {
   return (
-    <div className="flex items-center gap-3">
+    <Stack gap="md">
       {branding.logoUrl === null ? null : (
-        // eslint-disable-next-line @next/next/no-img-element -- `next/image` optimises through a route this app does not serve (no image optimisation in `output: 'standalone'` without a loader), and the URL is an operator's own absolute one.
-        <img
+        <Logo
           src={branding.logoUrl}
           alt={branding.displayName ?? t('page.operator_logo_alt')}
-          className="h-8 w-auto"
           data-testid="brand-logo"
         />
       )}
-      <h1 className="text-lg font-semibold" data-testid="brand-name">
+      <Heading level={1} data-testid="brand-name">
         {branding.displayName ?? t('page.title')}
-      </h1>
-    </div>
+      </Heading>
+    </Stack>
   );
 }
 
@@ -137,9 +168,9 @@ export function SupportLine({ t, branding }: { t: Translate; branding: Branding 
     return null;
   }
   return (
-    <p className="text-xs opacity-60" data-testid="support-contact">
+    <Text tone="muted" size="xs" data-testid="support-contact">
       {t('page.support', { contact: branding.supportContact })}
-    </p>
+    </Text>
   );
 }
 
@@ -163,8 +194,8 @@ export function PaymentSummary({
   livemode: boolean;
 }) {
   return (
-    <div className="card bg-base-200">
-      <div className="card-body gap-1 p-4">
+    <Card>
+      <CardBody>
         {/*
           A paragraph, not a daisyUI `badge`. It was a badge for one
           revision and the screenshot showed why that was wrong: `.badge` is
@@ -173,22 +204,22 @@ export function PaymentSummary({
           out of the card. A badge is for a word.
         */}
         {!livemode ? (
-          <p className="text-xs font-semibold uppercase tracking-wide" data-testid="testmode">
+          <Text size="xs" weight="semibold" data-testid="testmode">
             {t('page.testmode')}
-          </p>
+          </Text>
         ) : null}
-        <p className="text-sm opacity-70" data-testid="pay-to">
+        <Text size="sm" tone="muted" data-testid="pay-to">
           {merchantLine(t, merchant, 'page.pay_to', 'page.pay_to_unnamed')}
-        </p>
-        <p className="text-3xl font-semibold tabular-nums" data-testid="amount">
-          <span className="sr-only">{t('page.amount_label')}: </span>
+        </Text>
+        <Text size="3xl" weight="semibold" numeric data-testid="amount">
+          <VisuallyHidden>{t('page.amount_label')}: </VisuallyHidden>
           {amount}
-        </p>
-        <p className="break-all text-xs opacity-60" data-testid="reference">
+        </Text>
+        <Text size="xs" tone="muted" wrap="anywhere" data-testid="reference">
           {t('page.reference_label')}: {reference}
-        </p>
-      </div>
-    </div>
+        </Text>
+      </CardBody>
+    </Card>
   );
 }
 
@@ -198,13 +229,11 @@ export function UnsupportedRails({ t, codes }: { t: Translate; codes: readonly s
     return null;
   }
   return (
-    <ul className="mt-3 space-y-1" data-testid="unsupported-rails">
+    <List data-testid="unsupported-rails">
       {codes.map((code) => (
-        <li key={code} className="text-sm opacity-70">
-          {t('rail.unsupported', { rail: code })}
-        </li>
+        <li key={code}>{t('rail.unsupported', { rail: code })}</li>
       ))}
-    </ul>
+    </List>
   );
 }
 
@@ -232,26 +261,28 @@ export function RailSelector({
 }) {
   return (
     <section>
-      <ScreenHeading screen="select_rail">{t('rail.legend')}</ScreenHeading>
-      <div className="mt-4 flex flex-col gap-2">
-        {rails.supported.map((rail) => (
-          <button
-            key={rail.code}
-            type="button"
-            className="btn btn-outline justify-start"
-            data-rail={rail.code}
-            onClick={() => onChoose(rail)}
-          >
-            {t(rail.label)}
-            {rail.code === lastRail ? (
-              <span className="badge badge-ghost badge-sm" data-testid="last-used">
-                {t('memory.last_used')}
-              </span>
-            ) : null}
-          </button>
-        ))}
-      </div>
-      <UnsupportedRails t={t} codes={rails.unsupported} />
+      <Stack direction="column" align="stretch" gap="md">
+        <ScreenHeading screen="select_rail">{t('rail.legend')}</ScreenHeading>
+        <Stack direction="column" align="stretch" gap="sm">
+          {rails.supported.map((rail) => (
+            <Button
+              key={rail.code}
+              type="button"
+              variant="outline"
+              data-rail={rail.code}
+              onClick={() => onChoose(rail)}
+            >
+              {t(rail.label)}
+              {rail.code === lastRail ? (
+                <Badge tone="ghost" size="sm" data-testid="last-used">
+                  {t('memory.last_used')}
+                </Badge>
+              ) : null}
+            </Button>
+          ))}
+        </Stack>
+        <UnsupportedRails t={t} codes={rails.unsupported} />
+      </Stack>
     </section>
   );
 }
@@ -296,60 +327,54 @@ export function MemoryOptIn({
     return null;
   }
   return (
-    <div className="mt-1 flex flex-col gap-2">
+    <Stack direction="column" align="start" gap="sm">
       {/*
         `aria-labelledby`/`aria-describedby` rather than a wrapping `<label>`
-        alone. Base UI 1.0.0-rc.0's checkbox renders a `<span
-        role="checkbox" tabindex="0">` with a visually hidden native input
-        beside it for the form value — measured, not assumed — and a
-        `<label>` names a native checkbox reliably and a `span` not at all,
-        so the association is written down. The `<label>` stays for the
-        pointer behaviour: tapping the sentence toggles the box, which on a
-        phone-sized page is most of the target, and that too was measured.
+        alone. Decision D2's checkbox renders a native `<button
+        role="checkbox">` — measured against `@vpay/ui`'s own tests, not
+        assumed — and while a `<label>` names it as reliably as it names any
+        native control, the association is written down explicitly rather
+        than left to a browser to notice a single text child. The
+        `<label>` stays for the pointer behaviour: tapping the sentence
+        toggles the box, which on a phone-sized page is most of the target,
+        and a `<button>` is a labelable element so the browser's own
+        label-click forwarding still applies — measured, not assumed.
 
         The two ids are constants rather than `useId` values because exactly
         one entry screen is on the page at a time — `collect_msisdn` and
         `ready_redirect` are different states of one machine. Two of these
         rendered together would be two elements sharing an id.
       */}
-      <label className="flex cursor-pointer items-start gap-3">
-        <Checkbox.Root
-          className="checkbox checkbox-sm mt-1 shrink-0"
-          checked={controls.remember}
-          onCheckedChange={controls.onRememberChange}
-          aria-labelledby={labelId}
-          aria-describedby={warningId}
-          data-testid="remember"
-        >
-          <Checkbox.Indicator />
-        </Checkbox.Root>
-        <span className="text-sm">
-          <span id={labelId}>{label}</span>
-          <span
-            id={warningId}
-            className="mt-1 block text-xs opacity-70"
-            data-testid="remember-warning"
-          >
-            {t('memory.warning')}
-          </span>
-        </span>
-      </label>
+      <CheckboxLabel>
+        <Stack align="start" gap="md">
+          <Checkbox
+            checked={controls.remember}
+            onCheckedChange={controls.onRememberChange}
+            aria-labelledby={labelId}
+            aria-describedby={warningId}
+            data-testid="remember"
+          />
+          <Stack direction="column" gap="xs">
+            <Text as="span" id={labelId}>
+              {label}
+            </Text>
+            <Text as="span" id={warningId} tone="muted" size="xs" data-testid="remember-warning">
+              {t('memory.warning')}
+            </Text>
+          </Stack>
+        </Stack>
+      </CheckboxLabel>
       {controls.hasRecord ? (
-        <button
-          type="button"
-          className="btn btn-ghost btn-xs self-start"
-          data-testid="forget"
-          onClick={controls.onForget}
-        >
+        <Button type="button" variant="ghost" size="xs" data-testid="forget" onClick={controls.onForget}>
           {t('memory.forget')}
-        </button>
+        </Button>
       ) : null}
       {controls.forgotten ? (
-        <p className="text-xs opacity-70" role="status" data-testid="forgotten">
+        <Text size="xs" tone="muted" role="status" data-testid="forgotten">
           {t('memory.forgotten')}
-        </p>
+        </Text>
       ) : null}
-    </div>
+    </Stack>
   );
 }
 
@@ -391,55 +416,50 @@ export function MsisdnForm({
   const inputId = 'vpay-msisdn';
   return (
     <section>
-      <ScreenHeading screen="collect_msisdn">{t(rail.label)}</ScreenHeading>
-      <form
-        className="mt-4 flex flex-col gap-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const data = new FormData(event.currentTarget);
-          // `FormData.get` is `string | File | null`. A non-string entry is
-          // not something this form can produce, but stringifying one would
-          // hand the MSISDN validator the text "[object File]" rather than
-          // an empty field.
-          const raw = data.get('msisdn');
-          onSubmit(typeof raw === 'string' ? raw : '');
-        }}
-      >
-        <Field.Root className="form-control gap-1" invalid={problem !== null}>
-          <Field.Label className="label-text font-medium" htmlFor={inputId}>
-            {t('msisdn.label')}
-          </Field.Label>
-          <Field.Control
-            id={inputId}
-            name="msisdn"
-            type="tel"
-            inputMode="tel"
-            autoComplete="tel"
-            className="input input-bordered w-full"
-            defaultValue={defaultMsisdn ?? ''}
-          />
-          <Field.Description className="text-sm opacity-70">{t('msisdn.hint')}</Field.Description>
-          {problem === null ? null : (
-            <Field.Error
-              match
-              role="alert"
-              className="text-sm font-medium text-error"
-              data-testid="msisdn-problem"
-            >
-              {t(problem)}
-            </Field.Error>
-          )}
-        </Field.Root>
-        <MemoryOptIn t={t} controls={memory} label={t('memory.remember_number')} />
-        <button type="submit" className="btn btn-primary btn-block">
-          {t('msisdn.submit', { amount })}
-        </button>
-        {canGoBack ? (
-          <button type="button" className="btn btn-ghost btn-sm" onClick={onBack}>
-            {t('msisdn.back')}
-          </button>
-        ) : null}
-      </form>
+      <Stack direction="column" align="stretch" gap="md">
+        <ScreenHeading screen="collect_msisdn">{t(rail.label)}</ScreenHeading>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            const data = new FormData(event.currentTarget);
+            // `FormData.get` is `string | File | null`. A non-string entry
+            // is not something this form can produce, but stringifying one
+            // would hand the MSISDN validator the text "[object File]"
+            // rather than an empty field.
+            const raw = data.get('msisdn');
+            onSubmit(typeof raw === 'string' ? raw : '');
+          }}
+        >
+          <Stack direction="column" align="stretch" gap="sm">
+            <Field invalid={problem !== null}>
+              <FieldLabel htmlFor={inputId}>{t('msisdn.label')}</FieldLabel>
+              <Input
+                id={inputId}
+                name="msisdn"
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                defaultValue={defaultMsisdn ?? ''}
+              />
+              <FieldDescription>{t('msisdn.hint')}</FieldDescription>
+              {problem === null ? null : (
+                <FieldError match role="alert" data-testid="msisdn-problem">
+                  {t(problem)}
+                </FieldError>
+              )}
+            </Field>
+            <MemoryOptIn t={t} controls={memory} label={t('memory.remember_number')} />
+            <Button type="submit" block>
+              {t('msisdn.submit', { amount })}
+            </Button>
+            {canGoBack ? (
+              <Button type="button" variant="ghost" size="sm" onClick={onBack}>
+                {t('msisdn.back')}
+              </Button>
+            ) : null}
+          </Stack>
+        </form>
+      </Stack>
     </section>
   );
 }
@@ -466,22 +486,24 @@ export function RedirectPrompt({
 }) {
   return (
     <section>
-      <ScreenHeading screen="ready_redirect">{t(rail.label)}</ScreenHeading>
-      <p className="mt-3 opacity-80">{t('state.redirecting_body')}</p>
-      {problem === null ? null : (
-        <p role="alert" className="mt-3 text-sm font-medium text-error" data-testid="redirect-problem">
-          {t(problem)}
-        </p>
-      )}
-      <MemoryOptIn t={t} controls={memory} label={t('memory.remember_method', { rail: t(rail.label) })} />
-      <button type="button" className="btn btn-primary btn-block mt-4" onClick={onContinue}>
-        {t('msisdn.submit', { amount })}
-      </button>
-      {canGoBack ? (
-        <button type="button" className="btn btn-ghost btn-sm mt-2" onClick={onBack}>
-          {t('msisdn.back')}
-        </button>
-      ) : null}
+      <Stack direction="column" align="stretch" gap="md">
+        <ScreenHeading screen="ready_redirect">{t(rail.label)}</ScreenHeading>
+        <Text tone="muted">{t('state.redirecting_body')}</Text>
+        {problem === null ? null : (
+          <Alert tone="error" role="alert" data-testid="redirect-problem">
+            {t(problem)}
+          </Alert>
+        )}
+        <MemoryOptIn t={t} controls={memory} label={t('memory.remember_method', { rail: t(rail.label) })} />
+        <Button type="button" block data-testid="continue" onClick={onContinue}>
+          {t('msisdn.submit', { amount })}
+        </Button>
+        {canGoBack ? (
+          <Button type="button" variant="ghost" size="sm" onClick={onBack}>
+            {t('msisdn.back')}
+          </Button>
+        ) : null}
+      </Stack>
     </section>
   );
 }
@@ -504,21 +526,23 @@ export function StatusPanel({
 }) {
   return (
     <section>
-      <ScreenHeading screen={screen}>{title}</ScreenHeading>
-      {body === null ? null : <p className="mt-3 opacity-80">{body}</p>}
-      <span className="loading loading-dots loading-md mt-4" aria-hidden="true" />
-      {notice ? (
-        <div className="mt-4">
-          <p className="text-sm font-medium" data-testid="poll-notice">
-            {t(notice)}
-          </p>
-          {onRetry === undefined ? null : (
-            <button type="button" className="btn btn-outline btn-sm mt-2" onClick={onRetry}>
-              {t('error.retry')}
-            </button>
-          )}
-        </div>
-      ) : null}
+      <Stack direction="column" align="stretch" gap="md">
+        <ScreenHeading screen={screen}>{title}</ScreenHeading>
+        {body === null ? null : <Text tone="muted">{body}</Text>}
+        <Spinner />
+        {notice ? (
+          <Stack direction="column" align="start" gap="sm">
+            <Text weight="semibold" data-testid="poll-notice">
+              {t(notice)}
+            </Text>
+            {onRetry === undefined ? null : (
+              <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+                {t('error.retry')}
+              </Button>
+            )}
+          </Stack>
+        ) : null}
+      </Stack>
     </section>
   );
 }
@@ -535,29 +559,13 @@ export function StatusPanel({
  * payment had failed read a GREY box while a payer who cancelled read a red
  * one. It is on the committed screenshot. The operator's status palette is
  * not the payer's outcome palette, and `@vpay/tokens` now says both.
- */
-
-const TONE_CLASS: Record<string, string> = {
-  success: 'alert-success',
-  error: 'alert-error',
-  warning: 'alert-warning',
-  info: 'alert-info',
-  neutral: '',
-};
-
-/**
- * The end of a payment: what happened, and one button back.
  *
- * **There is no countdown and no timer** (the maintainer's requirement,
- * 2026-09-05; it was five seconds and not configurable until then). A page
- * that navigates on its own takes the outcome away from a payer who is
- * reading it, and on the failure screen it takes away the only text that
- * says *why* — on a handset, in a shop, with someone waiting. The button is
- * the whole mechanism: `destination === null` means the session named
- * nowhere to go, and the payer is told the payment is finished instead.
- *
- * `reason` is the rail's own sentence where the API gave one, rendered as
- * data under the translated message. See `failures.ts`.
+ * `checkoutOutcomeTone[kind]` is passed straight into `Alert`'s `tone` prop
+ * — there is no intermediate class map in this file any more (there was,
+ * `TONE_CLASS`, and a template literal building `` `alert mt-4 ${tone}` ``;
+ * both are gone). `@vpay/tokens`' own type already lines up with `Alert`'s
+ * `tone` variant, so there is nothing left here that could reintroduce the
+ * defect the constant existed to fix.
  */
 export function OutcomePanel({
   t,
@@ -596,28 +604,31 @@ export function OutcomePanel({
       : kind === 'canceled'
         ? t('outcome.canceled_body')
         : t(failure ?? 'failure.unknown');
-  const tone = TONE_CLASS[checkoutOutcomeTone[kind]] ?? '';
   return (
     <section data-outcome={kind}>
-      <ScreenHeading screen="outcome">{title}</ScreenHeading>
-      <div className={`alert mt-4 ${tone}`.trim()} role="status">
-        <span data-testid="outcome-body">{body}</span>
-      </div>
-      {reason === null ? null : (
-        <p className="mt-3 text-sm opacity-70" data-testid="provider-reason">
-          <span className="font-medium">{t('outcome.provider_said')}: </span>
-          {reason}
-        </p>
-      )}
-      {destination === null ? (
-        <p className="mt-4 opacity-80" data-testid="no-destination">
-          {t('outcome.no_destination')}
-        </p>
-      ) : (
-        <button type="button" className="btn btn-primary btn-block mt-4" onClick={onBack}>
-          {merchantLine(t, merchant, 'outcome.back_to', 'outcome.back_to_unnamed')}
-        </button>
-      )}
+      <Stack direction="column" align="stretch" gap="md">
+        <ScreenHeading screen="outcome">{title}</ScreenHeading>
+        <Alert tone={checkoutOutcomeTone[kind]} role="status">
+          <span data-testid="outcome-body">{body}</span>
+        </Alert>
+        {reason === null ? null : (
+          <Text size="sm" tone="muted" data-testid="provider-reason">
+            <Text as="span" weight="semibold">
+              {t('outcome.provider_said')}:{' '}
+            </Text>
+            {reason}
+          </Text>
+        )}
+        {destination === null ? (
+          <Text tone="muted" data-testid="no-destination">
+            {t('outcome.no_destination')}
+          </Text>
+        ) : (
+          <Button type="button" block onClick={onBack}>
+            {merchantLine(t, merchant, 'outcome.back_to', 'outcome.back_to_unnamed')}
+          </Button>
+        )}
+      </Stack>
     </section>
   );
 }
@@ -639,11 +650,13 @@ export function NoticePanel({
 }) {
   return (
     <section data-error-code={code}>
-      <ScreenHeading screen={screen}>{title}</ScreenHeading>
-      <div className="alert alert-warning mt-4" role="alert">
-        <span data-testid="notice-body">{body}</span>
-      </div>
-      <span className="sr-only">{t('error.title')}</span>
+      <Stack direction="column" align="stretch" gap="md">
+        <ScreenHeading screen={screen}>{title}</ScreenHeading>
+        <Alert tone="warning">
+          <span data-testid="notice-body">{body}</span>
+        </Alert>
+        <VisuallyHidden>{t('error.title')}</VisuallyHidden>
+      </Stack>
     </section>
   );
 }

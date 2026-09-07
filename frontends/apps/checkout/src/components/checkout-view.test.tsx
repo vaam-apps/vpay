@@ -450,10 +450,15 @@ describe('the controls do what the screen says', () => {
     ).toContain('alert-success');
     succeeded.unmount();
 
+    // D4 (2026-09-07, docs/plans/2026-09-07-ui-revamp.md §9): a canceled
+    // payment tones warning, not error — it is the payer's own action,
+    // unlike a failure. `@vpay/tokens`' checkoutOutcomeTone changed; this
+    // assertion moved with it rather than staying pinned to the tone D4
+    // deliberately replaced.
     const canceled = renderState(CHECKOUT_SCREENS['outcome_canceled'] as CheckoutState, 'en');
     expect(
       canceled.container.querySelector('[data-outcome="canceled"] .alert')?.className,
-    ).toContain('alert-error');
+    ).toContain('alert-warning');
     canceled.unmount();
   });
 
@@ -473,12 +478,52 @@ describe('the controls do what the screen says', () => {
     const { unmount } = renderState(CHECKOUT_SCREENS['collect_msisdn'] as CheckoutState, 'fr', {
       onLocaleChange,
     });
-    fireEvent.change(screen.getByLabelText(DICTIONARIES.fr['locale.label']), {
-      target: { value: 'en' },
-    });
+    // `@base-ui/react/select` is a button trigger plus a portalled popup
+    // listbox, not a native `<select>` — `fireEvent.change` has nothing to
+    // act on, so this opens the popup and picks the option the way a payer
+    // actually would. Base UI's `Select.Item` only commits a click preceded
+    // by a `pointerdown` on the same item, the same pattern `@vpay/ui`'s own
+    // `select.test.tsx` uses.
+    fireEvent.click(screen.getByLabelText(DICTIONARIES.fr['locale.label']));
+    const option = screen.getByRole('option', { name: DICTIONARIES.fr['locale.en'] });
+    fireEvent.pointerDown(option, { pointerType: 'mouse' });
+    fireEvent.click(option, { detail: 1 });
     expect(onLocaleChange).toHaveBeenCalledWith('en');
     // No anchor anywhere: a link to `?lang=en` would drop `location.hash`.
     expect(document.querySelectorAll('a[href]').length).toBe(0);
+    unmount();
+  });
+
+  it('keeps the brand-and-language row a banner landmark on both views', () => {
+    // The migration turned `<header className="flex items-center
+    // justify-between gap-4">` into a `<Stack>`, which renders a `<div>`:
+    // the banner landmark left the accessibility tree and nothing failed.
+    // Plan §4.1 deletes that header's CLASSES, not the element.
+    const checkout = renderState(CHECKOUT_SCREENS['collect_msisdn'] as CheckoutState, 'en');
+    expect(within(checkout.container).getByRole('banner').tagName).toBe('HEADER');
+    checkout.unmount();
+    const ret = renderReturn(RETURN_SCREENS['outcome_succeeded']!, 'en');
+    expect(within(ret.container).getByRole('banner').tagName).toBe('HEADER');
+    ret.unmount();
+  });
+
+  it('names the language switch on the screen, not only to a screen reader', () => {
+    // `getByLabelText` above passes just as happily against an `aria-label`,
+    // which is how the exp26 migration removed the visible word without
+    // failing a test. This asserts the name is RENDERED TEXT: an element
+    // carrying the dictionary's `locale.label`, not visually hidden, and
+    // referenced by the combobox's `aria-labelledby`.
+    const { container, unmount } = renderState(
+      CHECKOUT_SCREENS['collect_msisdn'] as CheckoutState,
+      'fr',
+    );
+    const combobox = screen.getByRole('combobox');
+    const labelId = combobox.getAttribute('aria-labelledby');
+    expect(labelId, 'the combobox is named by a visible element').toBeTruthy();
+    const label = container.querySelector(`#${labelId as string}`);
+    expect(label?.textContent).toBe(DICTIONARIES.fr['locale.label']);
+    expect(label?.className ?? '').not.toContain('sr-only');
+    expect(combobox.getAttribute('aria-label')).toBeNull();
     unmount();
   });
 });
@@ -649,11 +694,13 @@ describe('page memory, on the entry screens', () => {
     unmount();
   });
 
-  it('toggles from the sentence and from the keyboard, not only from the box', () => {
-    // The box is a 16-pixel target on a phone. Both of these are measured
-    // rather than assumed: Base UI's checkbox is a `<span role="checkbox">`,
-    // so neither the label association nor the space key is something the
-    // platform gives for free.
+  it('toggles from the sentence and reaches the keyboard, not only the box', () => {
+    // The box is a 16-pixel target on a phone. The label association is
+    // measured rather than assumed: a `<button>` is a labelable element
+    // (decision D2 — `@vpay/ui`'s `Checkbox` renders one, not the
+    // `<span role="checkbox">` an earlier Base UI release would have), so a
+    // click anywhere in the wrapping `<label>` forwards to it, the same as
+    // it would for any other button on this page.
     const onRememberChange = vi.fn();
     const { container, unmount } = renderState(mtnState(), 'en', {
       memory: makeMemoryControls({ onRememberChange }),
@@ -661,8 +708,18 @@ describe('page memory, on the entry screens', () => {
     fireEvent.click(container.querySelector('#vpay-remember-label') as HTMLElement);
     expect(onRememberChange).toHaveBeenCalledTimes(1);
     const box = screen.getByRole('checkbox');
-    fireEvent.keyDown(box, { key: ' ' });
-    fireEvent.keyUp(box, { key: ' ' });
+    // Reachable by keyboard, not *activated* by this line: a real `<button>`
+    // answers Space/Enter through the browser's own default action, which
+    // jsdom's `fireEvent` does not simulate (unlike Base UI's own span-based
+    // keyboard handling under the rc this decision replaced, which a
+    // `keydown`/`keyup` pair genuinely exercised). Base UI still writes
+    // `tabindex="0"` explicitly rather than relying on the button's own
+    // implicit focusability — measured, not assumed — so this asserts the
+    // property that carries over: the control sits in the tab order, and
+    // pressing it activates the same handler the click above proved wired.
+    expect(box.tagName).toBe('BUTTON');
+    expect(box.getAttribute('tabindex')).toBe('0');
+    fireEvent.click(box);
     expect(onRememberChange).toHaveBeenCalledTimes(2);
     unmount();
   });

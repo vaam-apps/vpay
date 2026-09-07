@@ -1,6 +1,6 @@
 # vpay task runner. `just` with no argument lists everything.
 #
-# Ten invariants this repo enforces on itself, all wired into `just verify`:
+# Eleven invariants this repo enforces on itself, all wired into `just verify`:
 #   * no test double is reachable from a shipping binary
 #   * every unimplemented item is declared in docs/status.md
 #   * every error type is classified (ADR-0011) and anyhow stays in the binaries
@@ -22,8 +22,11 @@
 #     (`verify-repositories`, 2026-09-05)
 #   * backends/Dockerfile's `FROM rust:<version>` names the compiler
 #     rust-toolchain.toml pins (`verify-toolchain`, 2026-09-05)
+#   * no palette colour, no daisyUI 4 class daisyUI 5 removed, no
+#     `!important` outside the one documented exception, and no `cva` call
+#     outside `@vpay/ui` (`verify-ui`, 2026-09-07 — exp26 UI revamp)
 #
-# `just verify` prints an eleventh thing that is NOT an invariant and never
+# `just verify` prints a twelfth thing that is NOT an invariant and never
 # fails the build: `verify-docs`, a report on doc-comment volume, in-file
 # comment volume, externalised module docs, long functions, ```ignore fences
 # and #[allow]s (Step 7 decision 4; ADR-0016 standard 6 keeps it a report).
@@ -420,7 +423,8 @@ audit-web:
 # `self-checks` job runs exactly this list, in this order:
 # verify-no-mocks, verify-status, verify-errors, verify-sdk-parity,
 # verify-links, verify-npm-scope, check-schema, verify-serde,
-# verify-repositories, verify-toolchain, and then verify-docs last.
+# verify-repositories, verify-toolchain, verify-ui, and then verify-docs
+# last.
 #
 # That sentence was false until 2026-09-04: `verify-sdk-parity` ran here but
 # had no step in `.github/workflows/ci.yml`, so ADR-0015's decision 3 ("CI
@@ -430,7 +434,7 @@ audit-web:
 # this comment honest is someone reading the workflow beside it.
 #
 # `verify-docs` is NOT a check: it exits 0 whatever it finds, so the
-# "verify: ok" below means the ten gates passed and says nothing about the
+# "verify: ok" below means the eleven gates passed and says nothing about the
 # numbers `verify-docs` printed. It is last so that the report a human reads
 # is the final thing on the terminal, after every gate has had its say.
 #
@@ -484,9 +488,19 @@ audit-web:
 # written down elsewhere — "check-schema is the seventh gate", which four
 # other files say — stays true when a gate is added.
 #
-# The ten self-checks, then the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-docs
-    @echo "verify: ok — the ten gates above passed; the verify-docs report is advisory"
+# `verify-ui` joined on 2026-09-07 as the eleventh, from the exp26 UI
+# revamp (docs/plans/2026-09-07-ui-revamp.md §9). It is a `git grep` gate
+# rather than a lint rule or a `cargo xtask` for a reason specific to its
+# highest-risk check: a daisyUI 4 class daisyUI 5 removed (`form-control`,
+# `label-text`, …) still parses and still renders — it just stops styling
+# anything, silently, and every test keeps passing. Nothing else in `just
+# ci` would notice. It is after `verify-toolchain` rather than beside
+# `verify-npm-scope` (its nearest relative in subject, not in date) for the
+# same reason every gate above it is where it is: the list is chronological.
+#
+# The eleven self-checks, then the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-docs
+    @echo "verify: ok — the eleven gates above passed; the verify-docs report is advisory"
 
 verify-no-mocks:
     cargo xtask verify-no-mocks
@@ -769,6 +783,124 @@ verify-repositories:
 # for the mutation that motivated it and for what this does not cover.
 verify-toolchain:
     cargo xtask verify-toolchain
+
+# Four things ESLint cannot express cheaply — a `git grep` is the honest
+# tool here rather than a `cargo xtask verify-ui` matching this repo's other
+# gates, which is more ceremony than four greps deserve (plan
+# docs/plans/2026-09-07-ui-revamp.md §7, "the class-string rules,
+# concretely"). Each has a decisive mutation: add the offending line,
+# confirm this exits non-zero, remove it.
+verify-ui:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    fail=0
+    # 1. No hard-coded colour. Theme tokens only (AGENTS.md's "never inline a
+    #    status colour" rule, generalised to every colour a daisyUI theme
+    #    already names).
+    #
+    #    Three holes were measured in the first version of this check on
+    #    2026-09-07 and each is closed here, with the mutation that found it:
+    #
+    #      - It required `className=` earlier on the SAME LINE, so a class
+    #        held in a lookup object was invisible — and that is not a
+    #        hypothetical shape: `TONE_CLASS` in the checkout's `screens.tsx`
+    #        is exactly it, and the plan's own counting script names it as its
+    #        one known blind spot (plan §2). Mutation:
+    #        `const TONE_CLASS = { failed: 'bg-red-500 text-white' };` in an
+    #        app passed the gate. The `className=` prefix is gone; the utility
+    #        name is the whole signal.
+    #      - The palette list had no `black`/`white`, and required a numeric
+    #        suffix. Mutation: `bg-black/40` in an app passed — and one was
+    #        live in `@vpay/ui`'s own `Drawer` (fixed in the commit before
+    #        this one).
+    #      - An arbitrary colour value was not matched at all. Mutation:
+    #        `text-[#ff0000]` in an app passed, though plan §3 bans "a colour
+    #        literal, a hex value" in as many words.
+    #
+    #    `frontends/packages/ui/src` is in scope now too. Colour utilities are
+    #    meant to live inside `@vpay/ui` — but plan §3's exhaustive list of
+    #    what may be written there is layout, spacing, non-colour typography,
+    #    position, `sr-only` and opacity, and it ends "every colour utility
+    #    without exception is a bug report against this list". A daisyUI theme
+    #    token (`bg-base-100`, `text-error`) is not a palette colour and never
+    #    matches.
+    #
+    #    frontends/packages/ui/src/cn.ts is exempted by path: its doc comment
+    #    uses `bg-red-500 bg-blue-500` in prose, as the example of a Tailwind
+    #    conflict group. Same false positive the other two checks already
+    #    carry named exemptions for; measured to be the only file in the tree
+    #    that matches without an actual offending class.
+    if git grep -nE '\b(bg|text|border|ring|fill|stroke|from|via|to|decoration|outline|shadow|accent|caret|divide|placeholder)-((red|green|blue|amber|yellow|slate|gray|zinc|neutral|stone|emerald|teal|sky|indigo|violet|rose|orange|lime|cyan|fuchsia|pink)-[0-9]{2,3}|black|white)(/[0-9]+)?\b' \
+        -- 'frontends/apps' 'examples/shop' 'frontends/packages/ui/src' \
+        ':!frontends/packages/ui/src/cn.ts' ; then
+      echo 'verify-ui: a palette colour outside a theme token — use a daisyUI theme token'; fail=1
+    fi
+    # 1b. No arbitrary colour value either — plan §3 bans "a colour literal, a
+    #     hex value" in a component, and a `bg-[#ff0000]` is both.
+    if git grep -nE '\b(bg|text|border|ring|fill|stroke|from|via|to|decoration|outline|shadow|accent|caret|divide|placeholder)-\[(#|rgb|hsl|oklch|color-mix)' \
+        -- 'frontends/apps' 'examples/shop' 'frontends/packages/ui/src' ; then
+      echo 'verify-ui: a hard-coded colour value — use a daisyUI theme token'; fail=1
+    fi
+    # 2. No daisyUI 4 class that daisyUI 5 removed. These do not error; they
+    #    silently stop styling anything. See
+    #    docs/plans/2026-09-07-ui-revamp.md §6.3. This is the subset the
+    #    plan measured this repository actually used — not the complete
+    #    daisyUI 4→5 delta.
+    #
+    #    frontends/packages/ui/src/components/field.tsx is exempted: its own
+    #    doc comment NAMES form-control/label-text, in prose, to explain
+    #    why @vpay/ui's Field replaces them — it does not use either class.
+    #    Measured, not assumed: it is the only file in the tree where this
+    #    matched and had no actual offending class in it.
+    if git grep -nE '\b(form-control|label-text|label-text-alt|btn-group|input-group|card-compact|tabs-bordered|tabs-lifted|tabs-boxed)\b' \
+        -- 'frontends' 'examples' ':!docs' \
+        ':!frontends/packages/ui/src/components/field.tsx' ; then
+      echo 'verify-ui: a daisyUI 4 class removed in daisyUI 5'; fail=1
+    fi
+    # 3. No !important, with three exemptions — measured against this repo's
+    #    actual tree rather than copied from the plan unchecked (plan §7's
+    #    own snippet named only the first and would have failed this gate
+    #    the moment it landed):
+    #      - frontends/apps/checkout/app/globals.css: the
+    #        prefers-reduced-motion block, whose own comment explains why it
+    #        is load-bearing (plan §3 rule 5).
+    #      - frontends/apps/checkout/src/config/theme.ts: a doc comment that
+    #        USES the word to explain the code deliberately avoids needing
+    #        one ("… so it wins without an `!important`") — prose, not CSS.
+    #      - examples/checkout-browser/index.html: `[hidden]{display:none
+    #        !important}`, a plain-HTML demo page with no framework and no
+    #        Tailwind, explicitly out of scope for this revamp (plan §4.1,
+    #        "Out of scope, do not touch") and predating it.
+    if git grep -n '!important' -- 'frontends' 'examples' \
+        ':!frontends/apps/checkout/app/globals.css' \
+        ':!frontends/apps/checkout/src/config/theme.ts' \
+        ':!examples/checkout-browser/index.html' ; then
+      echo 'verify-ui: !important outside the documented exemptions'; fail=1
+    fi
+    # 5. No `.js`-suffixed relative import inside @vpay/ui. This is a
+    #    REGRESSION GUARD, not a style rule, and it re-runs the original
+    #    failure rather than a proxy for it: `@vpay/ui` ships TypeScript
+    #    source (`main: ./src/index.ts`), and its tsconfig sets
+    #    `moduleResolution: "bundler"`, under which `tsc` and Vitest resolve
+    #    `'./cn.js'` back to `cn.ts` and pass — while Next's webpack resolver
+    #    takes the suffix literally and fails the consuming app's build with
+    #    `Module not found: Can't resolve './cn.js'`.
+    #
+    #    So typecheck, lint and the whole vitest suite stay green while
+    #    `pnpm --filter @vpay/dashboard build` cannot build at all, and
+    #    neither `just lint-web` nor `just test-web` runs a `next build`.
+    #    This has now happened TWICE: fixed once before 2026-09-07 (recorded
+    #    by name in docs/status.md's "@vpay/ui production build" row) and
+    #    reintroduced across all 48 source files by the exp26 component set.
+    #    A gate, because a comment did not hold.
+    if git grep -nE "from '\.{1,2}/[^']*\.js'" -- 'frontends/packages/ui/src' ; then
+      echo 'verify-ui: a .js-suffixed relative import in @vpay/ui — Next cannot resolve it'; fail=1
+    fi
+    # 4. No cva outside the shared library — one variant map, not one per app.
+    if git grep -n 'cva(' -- 'frontends/apps' 'examples' ; then
+      echo 'verify-ui: a cva variant map outside @vpay/ui'; fail=1
+    fi
+    exit $fail
 
 verify-docs:
     cargo xtask verify-docs

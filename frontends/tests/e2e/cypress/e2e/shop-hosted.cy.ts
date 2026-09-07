@@ -129,7 +129,11 @@ describe("the shop, paid on vpay's hosted page", () => {
       cy.get('button[data-rail="orange_money"]').click();
       // No form: a redirect rail collects nothing here.
       cy.get('[data-screen="ready_redirect"]').should("be.visible");
-      cy.get("button.btn-primary").click();
+      // `data-testid`, not `button.btn-primary`: exp26 (2026-09-07) made
+      // `Button` a `@vpay/ui` component whose primary look is a `cva`
+      // variant default rather than a class this spec should know the name
+      // of — see docs/plans/2026-09-07-ui-revamp.md §4.1.
+      cy.get('[data-testid="continue"]').click();
       // The confirm answers `next_action.redirect_to_url` and the page
       // navigates top-level to the rail. `cy.origin` for the rail follows.
     });
