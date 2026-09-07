@@ -379,7 +379,7 @@ Every one of those flags has an env var — `VPAY_CONFIG`, `DATABASE_URL`,
 dropped. The Postgres those URLs point at is the one `just up` starts.
 
 **Both binaries call a payment rail.** `vpay-server` calls one when a merchant
-confirms an intent; `vpay-worker-bin` runs the job loop
+confirms an intent; `vpay-server worker` runs the job loop
 (`vpay_worker::run_loop`) that claims the `poll_charge` job the confirm
 committed, asks the rail for the charge's status on a poll ladder, and commits
 the charge, the intent and one event in a single transaction. It reaps leases
