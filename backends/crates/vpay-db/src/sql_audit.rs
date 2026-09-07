@@ -276,7 +276,18 @@ mod tests {
     /// already-allowed `if backwards { "ASC" } else { "DESC" }`. No caller
     /// value reaches a `format!` in this crate, which is what the sibling
     /// test proves and what this count keeps reviewable.
-    const EXPECTED_ASSERT_SITES: usize = 59;
+    ///
+    /// **45 → 41 on 2026-09-07** (S5), and it is the first time this number
+    /// has gone DOWN. Four `checkout_sessions` reads —
+    /// `get_for_merchant`, `get_by_id_unscoped`, `find_open_by_intent` and
+    /// `find_latest_by_intent` — now run through CrateStack and build no
+    /// string, so four places the compiler's `&'static str` check was
+    /// switched off are gone. A falling count is the one direction this
+    /// constant welcomes without argument; a rising one still needs the
+    /// sentence above.
+    /// **59 → 55 after the S5 rebase over S4b**: S4b's fourteen invoice sites
+    /// stay, and S5's four `checkout_sessions` reads no longer build a string.
+    const EXPECTED_ASSERT_SITES: usize = 55;
 
     /// **The gate.** No `format!` that becomes a statement interpolates
     /// anything but a crate constant.
