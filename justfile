@@ -1923,6 +1923,21 @@ gen-demo-keys: gen-e2e-signing-key
         ' "$overlay"
     }
 
+    # Added 2026-09-07 (exp23 → PR #69). The base config binds its dashboard
+    # client to `acme-cameroon`, a merchant this overlay replaces wholesale,
+    # so an overlay without its own `dashboard_client.merchant_id` line makes
+    # the merged document name a tenant no `merchant_clients` entry registers
+    # and the server exits 78 on every restart with
+    # `DashboardUnknownMerchant`. Measured on the maintainer's own demo stack
+    # the morning after the binding landed: this recipe answered "already
+    # exist, keeping them" and `just demo-up` left server and worker in a
+    # restart loop. Keyed on the top-level block header and the one line it
+    # carries, so a `merchant_id:` under `merchant_clients` cannot satisfy it.
+    dashboard_binding_present() {
+        grep -A1 '^dashboard_client:$' "$overlay" \
+            | grep -qE '^  merchant_id: demo-merchant-tenant$'
+    }
+
     if [ -e "$key" ] && [ -e "$shop_key" ] && [ -e "$overlay" ]; then
         # ...unless the overlay predates a required field. `merchant_id`
         # became required on `merchant_clients` in Step 2, and an overlay
@@ -1949,7 +1964,8 @@ gen-demo-keys: gen-e2e-signing-key
             && shop_client_present \
             && shop_origin_present \
             && checkout_base_present \
-            && mtn_settles_xaf; then
+            && mtn_settles_xaf \
+            && dashboard_binding_present; then
             echo "gen-demo-keys: $key, $shop_key and $overlay already exist, keeping them"
             exit 0
         fi
@@ -1998,6 +2014,8 @@ gen-demo-keys: gen-e2e-signing-key
             # console message on the payer's machine and nothing at all in any
             # server log.
             echo "gen-demo-keys: $overlay does not allow http://localhost:{{demo_shop_port}} to frame the checkout page — regenerating the pair"
+        elif ! dashboard_binding_present; then
+            echo "gen-demo-keys: $overlay predates the dashboard client's \`merchant_id\` binding (PR #69) — regenerating the pair"
         elif ! checkout_base_present; then
             # Added 2026-09-04 (Step 9, D3/D6). `checkout.public_base_url` is
             # the origin every payer link vpay mints is built on. Stale, and
