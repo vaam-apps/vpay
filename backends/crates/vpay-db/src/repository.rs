@@ -33,6 +33,7 @@ use crate::error::DbError;
 use crate::events::Events;
 use crate::health::Health;
 use crate::idempotency::Idempotency;
+use crate::invoices::Invoices;
 use crate::jobs::Jobs;
 use crate::migrations::Migrations;
 use crate::payment_intents::PaymentIntents;
@@ -254,6 +255,64 @@ pub trait TxRepositories: Send {
     /// [`DbError::Query`] otherwise.
     async fn insert_in_tx(&mut self, new: &crate::NewEvent) -> Result<crate::EventRow, DbError>;
 
+    /// `invoices`: creates a draft invoice.
+    ///
+    /// Transactional, and it is the only shape this write has, because
+    /// `invoice.created` is emitted beside it. The transaction is opened by
+    /// `vpay-api` rather than by `vpay-db` so the handler can render the wire
+    /// object **from the row this returns** and append the event with
+    /// [`TxRepositories::insert_in_tx`] — `vpay_db::invoices`' module header
+    /// says why an invoice's event data cannot be projected the way a
+    /// settlement's can.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Persistence`] wrapping [`crate::PersistenceError::ForeignKey`]
+    /// for an unknown `customer_id` or `currency_code`;
+    /// [`DbError::UniqueViolation`] on a replayed `in_…`; [`DbError::Query`]
+    /// otherwise.
+    async fn insert_invoice_in_tx(
+        &mut self,
+        new: &crate::NewInvoice,
+    ) -> Result<crate::InvoiceRow, DbError>;
+
+    /// `invoices`: assigns the number, freezes the lines and opens a draft.
+    ///
+    /// `Ok(None)` means this merchant has no such **draft** invoice — the
+    /// compare-and-swap matched nothing. A `None` that the caller does not
+    /// commit is what makes a refused finalize burn no number; see
+    /// `vpay_db::invoices`' `finalize_in_tx`.
+    ///
+    /// `prefix` is used only the first time a merchant ever finalizes
+    /// anything; afterwards the stored prefix wins.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Query`] if any statement fails.
+    async fn finalize_invoice_in_tx(
+        &mut self,
+        merchant_id: &str,
+        id: &str,
+        prefix: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<Option<crate::InvoiceRow>, DbError>;
+
+    /// `invoices`: voids an **open** invoice.
+    ///
+    /// `Ok(None)` means no such open invoice for this merchant, or one whose
+    /// payment intent has not been canceled. A draft is deleted rather than
+    /// voided (`vpay_db::Invoices::delete_draft`).
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Query`] if the statement fails.
+    async fn void_invoice_in_tx(
+        &mut self,
+        merchant_id: &str,
+        id: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<Option<crate::InvoiceRow>, DbError>;
+
     /// `jobs`: enqueues work, `ON CONFLICT (dedupe_key) DO NOTHING`.
     ///
     /// `false` means the key was already taken and nothing was written,
@@ -379,6 +438,32 @@ impl TxRepositories for PendingTransaction {
 
     async fn insert_in_tx(&mut self, new: &crate::NewEvent) -> Result<crate::EventRow, DbError> {
         crate::events::insert_in_tx(self.conn(), new).await
+    }
+
+    async fn insert_invoice_in_tx(
+        &mut self,
+        new: &crate::NewInvoice,
+    ) -> Result<crate::InvoiceRow, DbError> {
+        crate::invoices::insert_in_tx(self.conn(), new).await
+    }
+
+    async fn finalize_invoice_in_tx(
+        &mut self,
+        merchant_id: &str,
+        id: &str,
+        prefix: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<Option<crate::InvoiceRow>, DbError> {
+        crate::invoices::finalize_in_tx(self.conn(), merchant_id, id, prefix, now).await
+    }
+
+    async fn void_invoice_in_tx(
+        &mut self,
+        merchant_id: &str,
+        id: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<Option<crate::InvoiceRow>, DbError> {
+        crate::invoices::void_in_tx(self.conn(), merchant_id, id, now).await
     }
 
     async fn enqueue_in_tx(
@@ -567,6 +652,7 @@ pub trait Repositories:
     + Events
     + Health
     + Idempotency
+    + Invoices
     + Jobs
     + Migrations
     + PaymentIntents

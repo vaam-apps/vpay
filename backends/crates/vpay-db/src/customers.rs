@@ -400,7 +400,8 @@ pub trait Customers: Send + Sync {
     /// # This is the write the retention sweep reads
     ///
     /// "Used" is defined by migration `0034`'s column comment and means:
-    /// created, updated, or named by a payment intent or a checkout session.
+    /// created, updated, or named by a payment intent, a checkout session or
+    /// an invoice (migration `0036` added the third).
     /// Every one of those call sites ends here, and a call site that is
     /// missing does not fail — it makes a live customer *look* idle, and the
     /// sweep deletes it twelve months later with nothing in any log saying
@@ -513,7 +514,8 @@ pub trait Customers: Send + Sync {
     ///
     /// # It carries the same reference guard the delete does
     ///
-    /// `NOT EXISTS` over `payment_intents` and `checkout_sessions`.
+    /// `NOT EXISTS` over `payment_intents`, `checkout_sessions` and — since
+    /// migration `0036` — `invoices`.
     /// Duplicated rather than left to the delete alone so a referenced
     /// customer is never *rendered* either: rendering it would mint an
     /// `evt_…` and build an object claiming a payer's record had been erased,
@@ -641,10 +643,23 @@ fn to_chrono(at: OffsetDateTime) -> chrono::DateTime<chrono::Utc> {
 /// no alias to parameterise anyway; the first draft took one, and the gate is
 /// what pointed out that it did not need to.
 ///
-/// Invoices are the third object that would belong here and do not exist; see
-/// `docs/flows/customers.md`, "What is not built".
+/// **Invoices joined this list on 2026-09-07** (migration `0036`), and they
+/// are the reason to re-read this constant rather than skim it. This comment
+/// said "invoices are the third object that would belong here and do not
+/// exist" while that was true; the clause below is what makes it stop being
+/// a comment.
+///
+/// Without the third `NOT EXISTS`, nothing breaks *loudly*:
+/// `invoices.customer_id` is a `NO ACTION` foreign key, so `delete_idle`
+/// would still be refused by Postgres. What would happen instead is that
+/// [`Customers::idle_since`] would keep handing the sweep a customer it can
+/// never delete — minting an `evt_…` and building a `customer.deleted` object
+/// for a payer whose record is not going anywhere, once an hour, forever,
+/// with the failure arriving as a `23503` inside a transaction that rolls
+/// back. `an_invoiced_customer_is_never_offered_to_the_sweep` is the test.
 const UNREFERENCED: &str = "NOT EXISTS (SELECT 1 FROM payment_intents WHERE customer_id = customers.id) \
-     AND NOT EXISTS (SELECT 1 FROM checkout_sessions WHERE customer_id = customers.id)";
+     AND NOT EXISTS (SELECT 1 FROM checkout_sessions WHERE customer_id = customers.id) \
+     AND NOT EXISTS (SELECT 1 FROM invoices WHERE customer_id = customers.id)";
 
 #[async_trait::async_trait]
 impl Customers for crate::repository::PgRepositories {
@@ -1227,8 +1242,8 @@ mod tests {
         }
     }
 
-    /// The sweep's guard names both referencing tables, and correlates to the
-    /// alias its caller uses.
+    /// The sweep's guard names **every** referencing table, and correlates to
+    /// the alias its caller uses.
     ///
     /// One function rather than two copies because
     /// [`super::Customers::idle_since`] and
@@ -1238,18 +1253,21 @@ mod tests {
     /// delete, and a table in the write's and not the read's would make the
     /// sweep spend a transaction per pass on rows it can never remove.
     ///
-    /// Invoices are the third table that belongs here the day they exist —
-    /// `docs/flows/customers.md` records that gap, and this assertion is
-    /// where a reader finds out the set is closed at two.
+    /// **This is the assertion that caught the invoice omission.** It said
+    /// "two referencing tables today. A third — invoices, when they exist —
+    /// belongs here" until 2026-09-07, and migration `0036` is when that
+    /// stopped being a forecast. The set is closed at three now, and the
+    /// count is what a fourth referencing table has to walk past.
     #[test]
     fn the_sweep_guard_names_every_table_that_can_reference_a_customer() {
         assert!(UNREFERENCED.contains("FROM payment_intents WHERE customer_id = customers.id"));
         assert!(UNREFERENCED.contains("FROM checkout_sessions WHERE customer_id = customers.id"));
+        assert!(UNREFERENCED.contains("FROM invoices WHERE customer_id = customers.id"));
         assert_eq!(
             UNREFERENCED.matches("NOT EXISTS").count(),
-            2,
-            "two referencing tables today. A third — invoices, when they exist — belongs \
-             here and in migration 0034's foreign keys, in the same change: {UNREFERENCED}"
+            3,
+            "three referencing tables since migration 0036. A fourth belongs here and in that \
+             migration's foreign keys, in the same change: {UNREFERENCED}"
         );
     }
 

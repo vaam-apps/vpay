@@ -71,6 +71,59 @@ pub enum RefundStatus {
     Canceled,
 }
 
+/// Where an invoice is in its lifecycle — the status a merchant reads on the
+/// `invoice` object (S4b).
+///
+/// # Why this is not [`IntentStatus`] and does not borrow its vocabulary
+///
+/// An invoice is a *document*; an intent is an *attempt to move money*. The
+/// two share not one state: an invoice is `draft` for as long as the merchant
+/// is still editing it, `open` for as long as it is unpaid — days or months,
+/// while nothing at all is happening — and `void`/`uncollectible` describe
+/// decisions a human made about a document, which no payment state has an
+/// equivalent for. Overloading `IntentStatus` here would put "somebody wrote
+/// this off" in the same type as "the rail is thinking about it".
+///
+/// # The transitions, and why they are not encoded here
+///
+/// ```text
+/// draft ──finalize──> open ──> paid | void | uncollectible
+///   └────void────> void        (also: DELETE, which removes it entirely)
+/// ```
+///
+/// There is deliberately **no** `can_transition_to` on this type. A method
+/// here would be a second copy of a rule that has to be enforced in the
+/// statement to be enforced at all: every transition in `vpay_db::invoices`
+/// is a compare-and-swap `UPDATE ... WHERE status = '<from>'`, and a Rust
+/// guard beside it would be the thing a future writer calls *instead of*
+/// taking the lock. `vpay_core::settlement::settle` is the counter-example
+/// that earns its place — it decides something no `UPDATE` can express.
+///
+/// The five labels are migration `0036`'s `invoices_status_enum_check`,
+/// `schemas/vpay.cstack`'s `enum InvoiceStatus` and both merchant SDKs' own
+/// `InvoiceStatus`, which is why they are written out beside the `serde`
+/// rename — see [`IntentStatus::as_wire_str`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvoiceStatus {
+    /// Being edited. Lines may be added, changed and removed; the invoice has
+    /// no number and cannot be paid.
+    Draft,
+    /// Issued. It has a number, its lines are frozen, and it is waiting to be
+    /// paid.
+    Open,
+    /// Paid in full. Terminal — and, by migration `0036`'s
+    /// `paid_means_nothing_remaining`, only reachable with
+    /// `amount_remaining = 0`.
+    Paid,
+    /// Cancelled by the merchant. Terminal. The document still exists and
+    /// keeps its number, because a number that vanished would be a hole an
+    /// accountant reads as a destroyed document.
+    Void,
+    /// Written off by the merchant: still owed, never expected. Terminal.
+    Uncollectible,
+}
+
 /// Where a charge is in its life on the rail — an operator-facing state, not
 /// a merchant-facing one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,6 +321,82 @@ impl RefundStatus {
         Self::ALL
             .into_iter()
             .find(|status| status.as_wire_str() == label)
+    }
+}
+
+impl InvoiceStatus {
+    /// Every invoice status, in lifecycle order. Read by
+    /// [`InvoiceStatus::from_wire`] so the parse side is written once.
+    pub const ALL: [Self; 5] = [
+        Self::Draft,
+        Self::Open,
+        Self::Paid,
+        Self::Void,
+        Self::Uncollectible,
+    ];
+
+    /// The exact label this status carries on the wire *and* in Postgres —
+    /// see [`IntentStatus::as_wire_str`] for why it is written out beside the
+    /// `serde` rename.
+    ///
+    /// ```
+    /// use vpay_core::InvoiceStatus;
+    ///
+    /// assert_eq!(InvoiceStatus::Uncollectible.as_wire_str(), "uncollectible");
+    /// for status in InvoiceStatus::ALL {
+    ///     assert_eq!(InvoiceStatus::from_wire(status.as_wire_str()), Some(status));
+    /// }
+    /// ```
+    #[must_use]
+    pub const fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Open => "open",
+            Self::Paid => "paid",
+            Self::Void => "void",
+            Self::Uncollectible => "uncollectible",
+        }
+    }
+
+    /// Parses a label produced by [`Self::as_wire_str`], or `None` — see
+    /// [`IntentStatus::from_wire`] for why this is not a `FromStr`.
+    ///
+    /// It is what `GET /v1/invoices?status=` refuses an unknown filter with:
+    /// a status vpay does not have must be a `400` naming the parameter, not
+    /// an empty page that reads as "you have no invoices like that".
+    ///
+    /// ```
+    /// use vpay_core::InvoiceStatus;
+    ///
+    /// assert_eq!(InvoiceStatus::from_wire("void"), Some(InvoiceStatus::Void));
+    /// // Stripe's own spelling is `void`, not `voided`. The event type is
+    /// // `invoice.voided`; the status is not.
+    /// assert_eq!(InvoiceStatus::from_wire("voided"), None);
+    /// ```
+    #[must_use]
+    pub fn from_wire(label: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|status| status.as_wire_str() == label)
+    }
+
+    /// Whether this invoice can still change — i.e. whether it is `draft` or
+    /// `open`.
+    ///
+    /// The complement is terminal, and the three terminal states are terminal
+    /// in the strong sense: nothing in vpay moves an invoice out of `paid`,
+    /// `void` or `uncollectible`, and there is no route that tries.
+    ///
+    /// ```
+    /// use vpay_core::InvoiceStatus;
+    ///
+    /// assert!(InvoiceStatus::Draft.is_live());
+    /// assert!(InvoiceStatus::Open.is_live());
+    /// assert!(!InvoiceStatus::Void.is_live());
+    /// ```
+    #[must_use]
+    pub const fn is_live(self) -> bool {
+        matches!(self, Self::Draft | Self::Open)
     }
 }
 

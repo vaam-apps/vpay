@@ -257,7 +257,26 @@ mod tests {
     /// added (`create`, `get_for_merchant`, `update`, `list_page`,
     /// `idle_since`, `delete_idle`); `touch_last_used` and `delete` go
     /// through CrateStack and build no string.
-    const EXPECTED_ASSERT_SITES: usize = 45;
+    /// **45 → 59 on 2026-09-07** with the fourteen `invoices` statements S4b
+    /// added, which is the largest single jump this constant has taken and is
+    /// worth accounting for rather than absorbing: `get_for_merchant`,
+    /// `list_page`, `update_draft`, `get_item_for_merchant`, `add_item`,
+    /// `update_item`, `delete_item`, `attach_intent`, `find_open_by_intent`,
+    /// `resum_draft`, `insert_in_tx`, `finalize_in_tx`, `void_in_tx` and
+    /// `mark_paid_for_intent_in_tx`. **Three of the module's statements are
+    /// NOT here**, and each for a different reason worth knowing:
+    /// `mark_uncollectible` and `items_for_invoice` go through CrateStack and
+    /// build no string at all; `delete_draft` and `next_number_in_tx` are
+    /// plain `&'static str` literals with nothing to interpolate, which sqlx
+    /// 0.9 accepts directly.
+    ///
+    /// Every one of the fourteen interpolates crate constants only —
+    /// `COLUMNS`, `QUALIFIED_COLUMNS`, `ITEM_COLUMNS`, `PARENT_IS_A_DRAFT`,
+    /// `NO_LIVE_INTENT`, and `list_page`'s `direction`, which is the
+    /// already-allowed `if backwards { "ASC" } else { "DESC" }`. No caller
+    /// value reaches a `format!` in this crate, which is what the sibling
+    /// test proves and what this count keeps reviewable.
+    const EXPECTED_ASSERT_SITES: usize = 59;
 
     /// **The gate.** No `format!` that becomes a statement interpolates
     /// anything but a crate constant.

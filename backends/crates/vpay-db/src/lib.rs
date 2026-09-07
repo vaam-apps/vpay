@@ -32,7 +32,14 @@ pub mod config_reconcile;
 // twelve-month retention sweep all belong beside the code they constrain.
 pub mod customers;
 pub mod events;
+// The merchant's bill to a payer, and the lines it is made of (S4b). One
+// module for both tables rather than two, because the pair is one aggregate:
+// a line has no meaning without its invoice, every write to `invoice_items`
+// is guarded on its parent's status, and the invoice's totals are rewritten
+// by the same transaction that changes a line. Splitting them would put the
+// guard and the thing it guards in different files.
 pub mod idempotency;
+pub mod invoices;
 pub mod jobs;
 // `pub` for the same reason the repository modules are, plus one of its own:
 // a test that wants to prove a writer actually takes its lock has to be able
@@ -107,6 +114,10 @@ pub use error::DbError;
 pub use events::{EventRow, Events, NewEvent};
 pub use health::Health;
 pub use idempotency::{Idempotency, IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome};
+pub use invoices::{
+    InvoiceItemPatch, InvoiceItemRow, InvoiceListPage, InvoicePatch, InvoiceRow, Invoices,
+    NewInvoice, NewInvoiceItem,
+};
 pub use jobs::{JobRow, Jobs};
 pub use migrations::Migrations;
 pub use payment_intents::{
@@ -125,7 +136,7 @@ pub use repository::{
     PendingTransaction, Repositories, TransactionSource, TxFuture, TxOutcome, TxRepositories,
     UnitOfWork,
 };
-pub use settlement::{AttemptRow, Settlement};
+pub use settlement::{AttemptRow, InvoicePaidEvent, Settlement};
 pub use signing_keys::{ActivationOutcome, SigningKey, SigningKeys};
 pub use staff::{NewStaff, Staff, StaffRow, StaffStatus};
 pub use staff_sessions::{

@@ -23,6 +23,8 @@
 
 use std::sync::Arc;
 
+use std::ops::Not as _;
+
 use anyhow::Context;
 use authkestra_op::client_assertion::ClientAssertionStore;
 use authkestra_op::error::OpError;
@@ -5140,6 +5142,417 @@ async fn get_by_provider_reference_finds_the_charge_and_only_under_its_own_rail(
     Ok(())
 }
 
+/// An open invoice, its customer and one line, bound to `intent_id` — the
+/// fixture the two `invoice.paid` cases below settle.
+///
+/// Built through the repository seam and one raw statement for the parts no
+/// repository method exposes (`invoice_number_sequences` is advanced by
+/// `finalize_in_tx` alone, and a test that wanted a *specific* number would
+/// have to fight it). Stated rather than hidden: the row this produces is the
+/// row `POST /v1/invoices/{id}/finalize` followed by `/pay` produces, and
+/// `backends/tests/integration/tests/invoices.rs` is what proves that at the
+/// wire.
+async fn open_invoice_for(pool: &PgPool, invoice_id: &str, intent_id: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO customers \
+            (id, merchant_id, livemode, phone, metadata, last_used_at) \
+         VALUES ($1, 'merchant_a', false, '237600000200', '{}'::jsonb, now()) \
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(format!("cus_for_{invoice_id}"))
+    .execute(pool)
+    .await
+    .context("seeding the invoice's customer")?;
+
+    sqlx::query(
+        "INSERT INTO invoices \
+            (id, merchant_id, livemode, customer_id, currency_code, status, number, \
+             amount_due, amount_paid, amount_remaining, metadata, payment_intent_id, \
+             finalized_at) \
+         VALUES ($1, 'merchant_a', false, $2, 'XAF', 'open', $3, 5000, 0, 5000, \
+                 '{}'::jsonb, $4, now())",
+    )
+    .bind(invoice_id)
+    .bind(format!("cus_for_{invoice_id}"))
+    .bind(format!("TESTPFX1-{:06}", invoice_id.len()))
+    .bind(intent_id)
+    .execute(pool)
+    .await
+    .context("seeding the open invoice")?;
+
+    Ok(())
+}
+
+/// One invoice's stored status and amounts, read straight out of the table so
+/// an assertion about what was **committed** cannot be satisfied by whatever
+/// the writer returned.
+async fn invoice_state(pool: &PgPool, id: &str) -> anyhow::Result<(String, i64, i64)> {
+    sqlx::query_as::<_, (String, i64, i64)>(
+        "SELECT status, amount_paid, amount_remaining FROM invoices WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .context("reading the invoice back")
+}
+
+/// `attach_intent` is a compare-and-swap, and it is the enforcer — not the
+/// `409` `vpay_api::v1::invoices::pay` answers first.
+///
+/// This case exists because the API's own read *also* refuses a second
+/// payment, which means an integration test over HTTP cannot tell the two
+/// apart: delete `NO_LIVE_INTENT` from the statement and every wire-level
+/// case still passes. Reaching the repository directly is the only way to
+/// exercise the guard that actually runs when two `pay` requests race.
+///
+/// **The decisive mutation:** remove `AND {NO_LIVE_INTENT}` from
+/// `vpay_db::invoices`' `attach_intent` — the second call below returns
+/// `Some`, and one invoice has two live payment intents.
+#[tokio::test]
+async fn attaching_a_second_intent_to_an_invoice_is_refused_by_the_statement() -> anyhow::Result<()>
+{
+    use vpay_db::Invoices as _;
+
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+
+    // Two intents that could each pay it, and an invoice attached to neither.
+    for id in ["pi_first_try", "pi_second_try"] {
+        repositories.insert(&fixture_intent(id, "XAF")).await?;
+    }
+    open_invoice_for(&pool, "in_racing", "pi_first_try").await?;
+    sqlx::query("UPDATE invoices SET payment_intent_id = NULL WHERE id = 'in_racing'")
+        .execute(&pool)
+        .await
+        .context("detaching so the first attach is a real one")?;
+
+    let now = time::OffsetDateTime::now_utc();
+    let first = repositories
+        .attach_intent("merchant_a", "in_racing", "pi_first_try", now)
+        .await?;
+    assert!(first.is_some(), "the first attach wins");
+    assert_eq!(
+        first.expect("checked above").payment_intent_id.as_deref(),
+        Some("pi_first_try")
+    );
+
+    let second = repositories
+        .attach_intent("merchant_a", "in_racing", "pi_second_try", now)
+        .await?;
+    assert!(
+        second.is_none(),
+        "a second intent for an invoice already being paid is how one bill gets charged twice"
+    );
+
+    // Cancelling the first is the documented way back, and it works at this
+    // layer too — the guard is `canceled`, not "not processing".
+    sqlx::query("UPDATE payment_intents SET status = 'canceled' WHERE id = 'pi_first_try'")
+        .execute(&pool)
+        .await
+        .context("cancelling the first intent")?;
+    let third = repositories
+        .attach_intent("merchant_a", "in_racing", "pi_second_try", now)
+        .await?;
+    assert!(
+        third.is_some(),
+        "a cancelled intent releases the invoice for another attempt"
+    );
+
+    // And another merchant cannot attach anything at all.
+    assert!(
+        repositories
+            .attach_intent("merchant_b", "in_racing", "pi_first_try", now)
+            .await?
+            .is_none(),
+        "the tenant filter is in the statement"
+    );
+
+    Ok(())
+}
+
+/// `mark_uncollectible` is a compare-and-swap on `status = 'open'`, run
+/// through CrateStack.
+///
+/// The API refuses the same cases first, so — exactly as with
+/// `attach_intent` above — only a direct call can tell whether the statement
+/// is doing the work. It also exercises the one CrateStack write this module
+/// has, whose `@@allow("update")` arm fails **silently** if it is deleted.
+///
+/// **The decisive mutation:** delete `@@allow("update", auth().isSystem())`
+/// from `model Invoice` — the first call below returns `Ok(false)` with no
+/// error, which is the failure `vpay_db::invoices`' own unit test exists to
+/// catch before a container ever runs.
+#[tokio::test]
+async fn marking_uncollectible_moves_an_open_invoice_and_nothing_else() -> anyhow::Result<()> {
+    use vpay_db::Invoices as _;
+
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    repositories
+        .insert(&fixture_intent("pi_unc", "XAF"))
+        .await?;
+    open_invoice_for(&pool, "in_unc", "pi_unc").await?;
+
+    let now = time::OffsetDateTime::now_utc();
+    assert!(
+        repositories
+            .mark_uncollectible("merchant_b", "in_unc", now)
+            .await?
+            .not(),
+        "another merchant's invoice is not theirs to write off"
+    );
+    assert!(
+        repositories
+            .mark_uncollectible("merchant_a", "in_unc", now)
+            .await?,
+        "an open invoice of this merchant's is written off"
+    );
+    assert_eq!(
+        invoice_state(&pool, "in_unc").await?,
+        ("uncollectible".to_owned(), 0, 5000),
+        "written off is still owed — it is just never expected"
+    );
+    assert!(
+        repositories
+            .mark_uncollectible("merchant_a", "in_unc", now)
+            .await?
+            .not(),
+        "uncollectible is terminal"
+    );
+
+    // No event, ever. `invoice.marked_uncollectible` is Stripe's own type and
+    // deliberately outside migration `0036`'s vocabulary because nothing
+    // writes it — this is the assertion that says so.
+    assert_eq!(event_count(&pool, "in_unc").await?, 0);
+
+    Ok(())
+}
+
+/// A settlement that is paying an invoice marks it paid and emits
+/// `invoice.paid` — **in the settlement's own transaction**.
+///
+/// This is the whole of "marked paid in TX1". The intent event and the
+/// invoice event are both in the backlog after one call, and the invoice row
+/// is `paid` with nothing remaining.
+#[tokio::test]
+async fn apply_succeeded_pays_the_invoice_the_intent_was_for() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    live_charge(
+        repositories.as_ref(),
+        "pi_invoiced",
+        "ch_invoiced",
+        "processing",
+        "submitted",
+    )
+    .await?;
+    open_invoice_for(&pool, "in_paid", "pi_invoiced").await?;
+
+    let intent_data = json!({ "id": "pi_invoiced", "object": "payment_intent" });
+    let invoice_data = json!({ "id": "in_paid", "object": "invoice", "status": "paid" });
+
+    let settled = repositories
+        .apply_succeeded(
+            "ch_invoiced",
+            Some("MTN-TXN-INV"),
+            "evt_intent_paid",
+            &intent_data,
+            Some(vpay_db::InvoicePaidEvent {
+                event_id: "evt_invoice_paid",
+                data: &invoice_data,
+            }),
+        )
+        .await
+        .context("settling must succeed")?;
+    assert!(settled.is_some(), "a live charge must settle");
+
+    assert_eq!(
+        invoice_state(&pool, "in_paid").await?,
+        ("paid".to_owned(), 5000, 0),
+        "the invoice is paid in full, committed"
+    );
+
+    // Both events, in the backlog, from one call.
+    let pending = repositories.pending_page(10).await?;
+    let types: Vec<&str> = pending
+        .iter()
+        .map(|event| event.event_type.as_str())
+        .collect();
+    assert!(
+        types.contains(&"payment_intent.succeeded") && types.contains(&"invoice.paid"),
+        "one settlement, two events: {types:?}"
+    );
+
+    let invoice_event = pending
+        .iter()
+        .find(|event| event.event_type == "invoice.paid")
+        .context("the invoice event must be in the backlog")?;
+    assert_eq!(invoice_event.object_id, "in_paid");
+    assert_eq!(
+        invoice_event.merchant_id, "merchant_a",
+        "stamped from the invoice row the transaction wrote, not from the intent"
+    );
+    assert_eq!(invoice_event.data, invoice_data);
+
+    // A second settlement of the same charge writes neither — the charge's
+    // compare-and-swap answers `None` before `flip_invoice` is reached.
+    let again = repositories
+        .apply_succeeded(
+            "ch_invoiced",
+            None,
+            "evt_intent_again",
+            &intent_data,
+            Some(vpay_db::InvoicePaidEvent {
+                event_id: "evt_invoice_again",
+                data: &invoice_data,
+            }),
+        )
+        .await?;
+    assert!(again.is_none(), "an already-settled charge settles nothing");
+    assert_eq!(
+        event_count(&pool, "in_paid").await?,
+        1,
+        "a repeat settlement emits no second invoice.paid"
+    );
+
+    Ok(())
+}
+
+/// A settlement that fails **after** the invoice flip leaves the invoice
+/// `open` and writes no `invoice.paid`.
+///
+/// This is the mutation the brief names: move the invoice flip out of TX1 —
+/// into a second write after the commit, or onto the pool — and this case
+/// goes red, because the invoice would be `paid` on a transaction that never
+/// committed.
+///
+/// The failure is induced by replaying an `event_id` that is already taken,
+/// which trips `events_pkey` on the **intent's** event — the statement after
+/// `flip_invoice` in the transaction. It is a real error path (an at-least-once
+/// worker retrying with a stored id) rather than a fault injected through a
+/// seam that only exists for tests.
+#[tokio::test]
+async fn an_aborted_settlement_leaves_the_invoice_open_and_emits_nothing() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    live_charge(
+        repositories.as_ref(),
+        "pi_aborted",
+        "ch_aborted",
+        "processing",
+        "submitted",
+    )
+    .await?;
+    open_invoice_for(&pool, "in_aborted", "pi_aborted").await?;
+
+    // Take the id the settlement is about to use for the intent's event.
+    sqlx::query(
+        "INSERT INTO events (id, merchant_id, livemode, type, object_id, data) \
+         VALUES ('evt_taken', 'merchant_a', false, 'payment_intent.processing', 'pi_other', \
+                 '{}'::jsonb)",
+    )
+    .execute(&pool)
+    .await
+    .context("taking the event id")?;
+
+    let invoice_data = json!({ "id": "in_aborted", "object": "invoice", "status": "paid" });
+    let failed = repositories
+        .apply_succeeded(
+            "ch_aborted",
+            None,
+            "evt_taken",
+            &json!({ "id": "pi_aborted" }),
+            Some(vpay_db::InvoicePaidEvent {
+                event_id: "evt_invoice_aborted",
+                data: &invoice_data,
+            }),
+        )
+        .await;
+    assert!(
+        failed.is_err(),
+        "a replayed event id must abort the settlement"
+    );
+
+    assert_eq!(
+        invoice_state(&pool, "in_aborted").await?,
+        ("open".to_owned(), 0, 5000),
+        "the invoice flip rolled back with the transaction it was in"
+    );
+    assert_eq!(
+        event_count(&pool, "in_aborted").await?,
+        0,
+        "no invoice.paid describes a payment that did not commit"
+    );
+    assert_eq!(
+        charge_state(&pool, "ch_aborted").await?,
+        "submitted",
+        "the charge is where a retry expects it"
+    );
+
+    Ok(())
+}
+
+/// A settlement whose invoice is no longer `open` writes **no**
+/// `invoice.paid`, and the settlement itself still commits.
+///
+/// The compare-and-swap inside the transaction is what decides this — not the
+/// worker's read, which is by then out of date. It is the fail-closed
+/// direction: vpay would rather say nothing about an invoice than claim a
+/// payment the row does not agree with.
+#[tokio::test]
+async fn a_settlement_whose_invoice_moved_emits_no_invoice_event() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    live_charge(
+        repositories.as_ref(),
+        "pi_moved",
+        "ch_moved",
+        "processing",
+        "submitted",
+    )
+    .await?;
+    open_invoice_for(&pool, "in_moved", "pi_moved").await?;
+
+    // Something voided it between the worker's read and the settlement.
+    sqlx::query("UPDATE invoices SET status = 'void', voided_at = now() WHERE id = $1")
+        .bind("in_moved")
+        .execute(&pool)
+        .await
+        .context("voiding the invoice under the settlement")?;
+
+    let settled = repositories
+        .apply_succeeded(
+            "ch_moved",
+            None,
+            "evt_moved",
+            &json!({ "id": "pi_moved" }),
+            Some(vpay_db::InvoicePaidEvent {
+                event_id: "evt_invoice_moved",
+                data: &json!({ "id": "in_moved", "object": "invoice", "status": "paid" }),
+            }),
+        )
+        .await?;
+    assert!(settled.is_some(), "the charge still settles");
+
+    assert_eq!(
+        invoice_state(&pool, "in_moved").await?.0,
+        "void",
+        "the invoice is left exactly as it was"
+    );
+    assert_eq!(
+        event_count(&pool, "in_moved").await?,
+        0,
+        "no invoice.paid for an invoice that is not open"
+    );
+    assert_eq!(
+        event_count(&pool, "pi_moved").await?,
+        1,
+        "the intent's own event is unaffected"
+    );
+
+    Ok(())
+}
+
 /// The push-rail settlement: a `submitted` charge on a `processing` intent.
 /// Charge and intent both reach `succeeded`, `amount_received` becomes the
 /// full amount, and **one** `payment_intent.succeeded` event is queued for
@@ -5159,7 +5572,13 @@ async fn apply_succeeded_settles_a_submitted_charge_and_emits_one_event() -> any
 
     let data = json!({ "id": "pi_push", "object": "payment_intent", "status": "succeeded" });
     let (charge, intent) = repositories
-        .apply_succeeded("ch_push", Some("MTN-TXN-4242"), "evt_push_succeeded", &data)
+        .apply_succeeded(
+            "ch_push",
+            Some("MTN-TXN-4242"),
+            "evt_push_succeeded",
+            &data,
+            None,
+        )
         .await
         .context("settling must succeed")?
         .context("a live charge must settle")?;
@@ -5270,7 +5689,7 @@ fn a_settlement_counts_the_transition_it_actually_made() -> anyhow::Result<()> {
     let settled = metrics::with_local_recorder(&recorder, || {
         runtime.block_on(async {
             repositories
-                .apply_succeeded("ch_from_submitted", None, "evt_from_submitted", &data)
+                .apply_succeeded("ch_from_submitted", None, "evt_from_submitted", &data, None)
                 .await?;
             repositories
                 .apply_failed(
@@ -5469,6 +5888,7 @@ async fn apply_succeeded_settles_a_pending_charge_from_a_requires_action_intent(
             None,
             "evt_redirect_succeeded",
             &json!({ "id": "pi_redirect" }),
+            None,
         )
         .await?
         .context("a pending charge on a requires_action intent must settle")?;
@@ -5507,6 +5927,7 @@ async fn a_second_apply_succeeded_returns_none_and_writes_no_second_event() -> a
             Some("TXN-1"),
             "evt_first",
             &json!({ "id": "pi_twice" }),
+            None,
         )
         .await?
         .context("the first settlement must fire")?;
@@ -5517,6 +5938,7 @@ async fn a_second_apply_succeeded_returns_none_and_writes_no_second_event() -> a
             Some("TXN-2"),
             "evt_second",
             &json!({ "id": "pi_twice" }),
+            None,
         )
         .await
         .context("a re-run must not error — it is a normal outcome, not a failure")?;
@@ -5666,6 +6088,7 @@ async fn a_settlement_after_a_crashed_confirm_still_moves_the_intent() -> anyhow
             Some("TXN-CRASHED"),
             "evt_crashed",
             &json!({ "id": "pi_crashed", "status": "succeeded" }),
+            None,
         )
         .await
         .context("a crashed confirm's charge must be settleable, not a WriteMatchedNoRow")?
@@ -5781,6 +6204,7 @@ async fn apply_succeeded_refuses_a_canceled_intent_and_commits_nothing() -> anyh
             Some("TXN-BROKEN"),
             "evt_broken",
             &json!({ "id": "pi_broken" }),
+            None,
         )
         .await
         .expect_err("settling against a canceled intent must not report success");
@@ -6114,6 +6538,7 @@ async fn provider_txn_id_round_trips_and_its_check_refuses_empty_and_over_long()
                 Some(bad),
                 "evt_txn_bad",
                 &json!({ "id": "pi_txn" }),
+                None,
             )
             .await
             .expect_err("the CHECK must refuse this transaction id");
@@ -6135,6 +6560,7 @@ async fn provider_txn_id_round_trips_and_its_check_refuses_empty_and_over_long()
             Some("0123456789"),
             "evt_txn_ok",
             &json!({ "id": "pi_txn" }),
+            None,
         )
         .await?
         .context("a well-formed transaction id must settle")?;

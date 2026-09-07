@@ -1309,3 +1309,159 @@ model OauthAuthorizationCode {
   @@allow("update", auth().isSystem())
   @@allow("delete", auth().isSystem())
 }
+
+// --- invoices (S4b) -------------------------------------------------------
+
+// `invoices` and `invoice_items` (migration 0036) — the merchant's bill to a
+// payer, and the lines it is made of.
+//
+// THE FIRST MODEL IN THIS FILE WHOSE ENUM COLUMN WAS BORN WITH THE GENERATED
+// CHECK NAME. Migration 0032 had to *rename* `providers.flow`'s hand-named
+// CHECK to `providers_flow_enum_check` after the fact, because
+// `diff/checks.rs` matches checks by name first. Migration 0036 creates
+// `invoices_status_enum_check` under that name from the start, so
+// `InvoiceStatus` below and the live constraint are one object to the diff
+// engine rather than a drop-and-add pair.
+//
+// What that does NOT buy, and it is worth saying because the expectation is
+// natural: the `column status type differs (live: Scalar("String"), schema:
+// Enum("InvoiceStatus"))` line is permanent, exactly as `providers.flow`'s
+// is. `introspect/postgres/enums.rs`' own doc comment calls it documented
+// lossiness — a TEXT column has no catalog representation that recovers the
+// enum's NAME — so no migration can close it. The measured net cost of both
+// tables is in `docs/reference/vpay-db.md` §"Migration 0036".
+//
+// TWO METHODS RUN THROUGH THESE MODELS AND THE REST DO NOT, which is
+// `model Customer`'s split for `model Customer`'s reason plus one that is new:
+//
+//   * `Invoices::mark_uncollectible` -> `Invoice.update`. It is the ONLY
+//     transition with no event (Stripe's `invoice.marked_uncollectible` is
+//     deliberately not in migration 0036's vocabulary), so it is the only one
+//     that is a single statement rather than a transaction, and a
+//     compare-and-swap `update_many` expresses it exactly.
+//   * `Invoices::items_for_invoice` -> `InvoiceItem.read`. Every column of
+//     `invoice_items` is declared, so the generated row carries the whole
+//     line.
+//
+// Everything else is hand-written `sqlx`, and there are three distinct
+// reasons rather than one:
+//
+//   1. `invoices.metadata` is `JSONB NOT NULL` and undeclared — `model
+//      Customer`'s GAP note's two measured costs, unchanged. Any read of
+//      `invoices` has to carry `metadata`, and the generated row has no field
+//      for it, so every read of this table stays raw.
+//   2. Three transitions (`create`, `finalize`, `void`) write an `events` row
+//      in the same transaction, and `Events`' insert is itself blocked on
+//      `events.data` (see `model Event`).
+//   3. Every write to `invoice_items` carries a guard on a DIFFERENT table —
+//      `EXISTS (SELECT 1 FROM invoices WHERE id = $1 AND status = 'draft')`,
+//      which is what freezes an issued document. `cratestack::Filter`
+//      compares columns of the model's own table, and there is no relation
+//      that side-loads a parent's status into a child's `WHERE`.
+enum InvoiceStatus {
+  draft
+  open
+  paid
+  void
+  uncollectible
+}
+
+model Invoice {
+  id String @id @length(min: 1, max: 64)
+  // `GENERATED ALWAYS AS IDENTITY` (migration 0036). `model Customer.seq`'s
+  // trade applies unchanged: one permanent `column `seq` default value
+  // differs` line, and dropping the `@default(...)` would make `seq` a
+  // REQUIRED field of `CreateInvoiceInput` — an explicit value for a
+  // `GENERATED ALWAYS` column, which Postgres refuses outright.
+  seq Int @default(dbgenerated())
+  merchant_id String @length(min: 1, max: 128)
+  livemode Boolean
+  customer_id String @length(min: 1, max: 64)
+  currency_code String @length(min: 3, max: 3)
+  // The state machine. See this section's header for why the live CHECK is
+  // named `invoices_status_enum_check` and what that does and does not buy.
+  status InvoiceStatus
+  // NULL exactly while the invoice is a draft (migration 0036's
+  // `number_is_assigned_at_finalize`, a multi-column CHECK this grammar
+  // cannot express and `migrate baseline` cannot see).
+  //
+  // No `@db_enforce` on the `@length`, for `model Customer`'s measured
+  // reason: the live CHECK is hand-named `number_length`, `@db_enforce` would
+  // generate `invoices_number_length_check`, and promoting it would emit a
+  // drop-and-add PAIR where declaring it without `@db_enforce` emits nothing.
+  // The validator is not inert — `inputs.rs::validate_impl_tokens` generates
+  // `input.validate()` and every write path calls it before any SQL runs.
+  number String? @length(min: 1, max: 64)
+  amount_due Int
+  amount_paid Int
+  amount_remaining Int
+  due_date DateTime?
+  description String? @length(min: 1, max: 1000)
+  payment_intent_id String? @length(min: 1, max: 64)
+  finalized_at DateTime?
+  paid_at DateTime?
+  voided_at DateTime?
+  marked_uncollectible_at DateTime?
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now())
+
+  // `update`, and NOTHING else, because `mark_uncollectible` is the one
+  // action this crate calls through this model.
+  //
+  // ITS LOSS IS SILENT, exactly as `model Customer`'s `update` arm's is:
+  // `update_many`'s policy is compiled into the statement's own `WHERE`
+  // (`update_many_exec.rs`), so a missing arm matches zero rows and returns
+  // `BatchSummary { ok: 0 }` with no error. The observable effect is a
+  // `POST /v1/invoices/{id}/mark_uncollectible` that answers `404` for an
+  // invoice that is sitting there `open` — a merchant told their write-off
+  // did not apply to an invoice that exists. `every_action_this_module_calls_has_an_allow_arm`
+  // in `vpay-db/src/invoices.rs` fails in milliseconds with no container.
+  @@allow("update", auth().isSystem())
+
+  // GAP — `metadata JSONB NOT NULL` is not declared, and that is what keeps
+  // every read and every write of this table except `mark_uncollectible` on
+  // raw sqlx. `model Customer`'s GAP note carries the two measured costs
+  // verbatim (`map_scalar` does not read `jsonb` back, so a declared column
+  // would be a blocking drift line; and `Value::from_plain_json` demotes a
+  // JSON number outside `i64` to `f64`, on a column that is
+  // merchant-authored and echoed back inside every `invoice.*` webhook body).
+  //
+  // Migration 0036 leaves the column `NOT NULL` with **no DEFAULT** so the
+  // omission is a loud `23502` rather than a silent `{}` over a merchant's
+  // data. `a_generated_invoice_insert_cannot_carry_metadata` in
+  // `vpay-db/src/invoices.rs` pins the rendered statement.
+}
+
+model InvoiceItem {
+  id String @id @length(min: 1, max: 64)
+  // See `model Invoice.seq`.
+  seq Int @default(dbgenerated())
+  invoice_id String @length(min: 1, max: 64)
+  merchant_id String @length(min: 1, max: 128)
+  livemode Boolean
+  description String @length(min: 1, max: 1000)
+  quantity Int
+  unit_amount Int
+  amount Int
+  currency_code String @length(min: 3, max: 3)
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now())
+
+  // `read`, and NOTHING else. `items_for_invoice` is a `find_many`, and every
+  // write to this table carries the parent-status guard described in this
+  // section's header.
+  //
+  // ITS LOSS IS *NOT* SILENT, which is the opposite of `model Invoice`'s
+  // `update` arm and is worth stating because the asymmetry is what decides
+  // how each is tested. `find_many` without a matching arm is a
+  // `CratestackError::Forbidden` (`find_many_exec.rs` authorises before the
+  // statement), so losing it turns every invoice read into a `500` — loud,
+  // immediate, and caught by any container test that renders an invoice with
+  // a line on it.
+  @@allow("read", auth().isSystem())
+
+  // NO GAP NOTE, and that is the point: every column of `invoice_items` is
+  // declared above. The table was shaped so it could be — no `jsonb`, no
+  // `bytea`, no native enum, no `int4` — which is migration 0035's discipline
+  // applied to a table that also had to be readable through this layer.
+}
