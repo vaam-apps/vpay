@@ -276,12 +276,28 @@ name the index as what refuses the case that matters.
 
 ## Gate
 
-`just ci` on the final head — recipe by recipe, with counts — is in the report
-that accompanies this branch. The numbers that moved:
+`just ci` run end to end on `1a29ec7` (the head before this file's own
+commit), `CARGO_BUILD_JOBS=4`, Node 22.23.2 (`.nvmrc`), `pnpm install
+--frozen-lockfile`, rootless Docker.
+
+| recipe | exit | note |
+|---|---|---|
+| `fmt-check` | 0 | |
+| `clippy` | 0 | |
+| `verify` | 0 | ten gates; `verify-docs` advisory. `verify-status` still 1 unimplemented item, all declared. `verify-links`: 894 links over 159 files |
+| `test-rust` | 0 | **1546 run, 1546 passed, 0 skipped, 0 ignored** (1106 s) |
+| `test-doc` | 0 | |
+| `verify-ignored` | 0 | 0 ignored (expected 0), **46 binaries (expected 46)**, 1546 total (floor 1080) |
+| `lint-web` | 0 | |
+| `test-web` | 0 | 807 vitest cases across eight packages, unchanged |
+| `deny` | 0 | advisories, bans, licenses, sources all ok — `sha1` 0.10 beside the graph's existing 0.11 is a `multiple-versions` **warn**, which is the policy |
+
+The numbers that moved:
 
 | Constant | Before | After | Why |
 |---|---|---|---|
 | `expected_suites` | 45 | 46 | `staff_sign_in.rs` is a new binary |
+| test count | 1421 | 1546 | +125, none ignored |
 | migration count | 34 | 35 | `0035` |
 | `EXPECTED_DRIFT_CHANGES` | 113 | 130 | 17 lines over three new relations, every one a hand-named CHECK or an undeclared index |
 | `EXPECTED_DRIFTED_RELATIONS` | 17 | 20 | the three new tables |
