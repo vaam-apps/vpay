@@ -219,9 +219,10 @@ and [../status.md](../status.md) for the row-by-row picture.
 `app/page.tsx` onto `@vpay/ui`'s components — `styling_files` 2 → 0,
 `class_tokens_distinct` 17 → 0 in both files (`exp26-plan-count.sh`); `Tailwind`
 4.3.3 + daisyUI 5.7.28 + `@base-ui/react` 1.8.0, replacing the `corporate`
-theme with `bumblebee`. `dashboard.cy.ts`'s three tests are unchanged. This is
-a styling change, not a product one — see "There are no pages" above for what
-it does not claim.
+theme with `bumblebee`. `dashboard.cy.ts`'s three tests are unchanged in
+content and **run for real** against a live stack (isolated compose project,
+torn down after): 3/3 passing. This is a styling change, not a product one —
+see "There are no pages" above for what it does not claim.
 
 **The one thing a reader must not conclude from this document:** that the
 dashboard works. Two `GET` routes exist that nobody can authenticate to.
