@@ -72,9 +72,12 @@ pub(crate) fn record_transition(provider_code: &str, from: &str, to: &str) {
 /// Every column of `charges`, shared by both queries so they cannot drift
 /// on what [`ChargeRow`] decodes.
 ///
-/// `state` and `failure_code` are cast to `TEXT` for the same reason
-/// `payment_intents`' enums are: this crate carries Postgres enums as
-/// `String` and `vpay-core` parses them (D4).
+/// `state` and `failure_code` are selected without a cast. Both were
+/// native Postgres enums (`charge_state`, `failure_code`) until migration
+/// `0037` made them `TEXT` + a membership CHECK, and every statement here
+/// had to spell `state::TEXT AS state` to decode one into a `String`. The
+/// vocabularies are still carried as `String` and parsed by `vpay-core`
+/// (D4) — only the cast is gone, along with the type it named.
 ///
 /// `pub(crate)` because the settlement transaction
 /// ([`crate::Settlement::apply_succeeded`]) writes this table too, and a
@@ -83,8 +86,8 @@ pub(crate) fn record_transition(provider_code: &str, from: &str, to: &str) {
 /// prevent.
 pub(crate) const COLUMNS: &str = "id, payment_intent_id, provider_code, provider_reference_id, \
                        provider_ref_extra, provider_txn_id, redirect_url, return_url, \
-                       state::TEXT AS state, amount, currency_code, payer_ref, payer_ref_masked, \
-                       failure_code::TEXT AS failure_code, failure_raw, created_at, updated_at";
+                       state, amount, currency_code, payer_ref, payer_ref_masked, \
+                       failure_code, failure_raw, created_at, updated_at";
 
 /// One `charges` row, exactly as stored.
 #[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
@@ -116,7 +119,9 @@ pub struct ChargeRow {
     /// rail material — see the migration for why it is a column and not one
     /// more key inside `provider_ref_extra`.
     pub return_url: Option<String>,
-    /// `charge_state` as text (D4). A charge starts at `submitting`.
+    /// The charge's state label (D4). A charge starts at `submitting`, and
+    /// the vocabulary is closed by `charges_state_enum_check` (migration
+    /// `0037`, which replaced the `charge_state` type).
     pub state: String,
     /// Integer minor units, carried verbatim from the intent (D2 of this
     /// step: no conversion, ever).
@@ -252,7 +257,7 @@ pub(crate) async fn insert_for_intent(
         "INSERT INTO charges (id, payment_intent_id, provider_code, provider_reference_id, \
          provider_ref_extra, redirect_url, return_url, state, amount, currency_code, payer_ref, \
          payer_ref_masked) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::charge_state, $9, $10, $11, $12) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
          RETURNING {COLUMNS}"
     );
 
@@ -308,14 +313,14 @@ pub(crate) async fn mark_submitted(
 ) -> Result<ChargeRow, DbError> {
     let sql = format!(
         "UPDATE charges \
-         SET state = $2::charge_state, \
+         SET state = $2, \
              provider_ref_extra = CASE \
                  WHEN $3::JSONB IS NULL THEN provider_ref_extra \
                  ELSE COALESCE(provider_ref_extra, '{{}}'::JSONB) || $3::JSONB \
              END, \
              redirect_url = COALESCE($4, redirect_url), \
              updated_at = now() \
-         WHERE id = $1 AND state = 'submitting'::charge_state \
+         WHERE id = $1 AND state = 'submitting' \
          RETURNING {COLUMNS}"
     );
 
@@ -342,9 +347,11 @@ pub(crate) async fn mark_submitted(
 /// function with an `Option<FailureCode>` — see `docs/reference/vpay-db.md`
 /// §"`mark_submitted` merges rather than assigns".
 ///
-/// `failure_code` is the closed vocabulary: the column is the `failure_code`
-/// Postgres enum, so a value outside it is refused by the database and not by
-/// a convention. `failure_raw` is the rail's own words, kept because
+/// `failure_code` is the closed vocabulary: `charges_failure_code_enum_check`
+/// refuses a value outside it, so the closure is the database's and not a
+/// convention. That constraint is what migration `0037` put in place of the
+/// `failure_code` native enum; the set of accepted labels is identical, and
+/// so is the refusal. `failure_raw` is the rail's own words, kept because
 /// `docs/flows/failures.md` requires the unmapped reason to survive; the
 /// database truncates nothing, so the caller bounds it against the
 /// `failure_raw_length` CHECK.
@@ -361,11 +368,11 @@ pub(crate) async fn mark_failed(
 ) -> Result<ChargeRow, DbError> {
     let sql = format!(
         "UPDATE charges \
-         SET state = 'failed'::charge_state, \
-             failure_code = $2::failure_code, \
+         SET state = 'failed', \
+             failure_code = $2, \
              failure_raw = $3, \
              updated_at = now() \
-         WHERE id = $1 AND state = 'submitting'::charge_state \
+         WHERE id = $1 AND state = 'submitting' \
          RETURNING {COLUMNS}"
     );
 

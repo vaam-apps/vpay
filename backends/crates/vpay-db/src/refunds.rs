@@ -45,10 +45,12 @@ use crate::error::DbError;
 /// The columns [`RefundRow`] decodes, table-qualified because the one query
 /// below joins.
 ///
-/// `status::TEXT` for the reason `payment_intents`' own column list gives: `status`
-/// is a Postgres `ENUM` (`refund_status`), and without the cast `sqlx`
-/// refuses to decode a user-defined type into `String` at runtime — a failure
-/// this crate would only discover against a real database.
+/// `r.status` is selected without a cast. It was `refund_status`, a native
+/// Postgres enum, until migration `0037` made it `TEXT` +
+/// `refunds_status_enum_check`, and this list had to spell
+/// `r.status::TEXT AS status` because `sqlx` refuses to decode a
+/// user-defined type into a `String`. The vocabulary is unchanged and still
+/// carried as text (D4); only the cast and the type it named are gone.
 ///
 /// `r.fee` is here because it *is* on the wire object — the tenth key, added
 /// by migration `0031` for issue #46. It is `NULL` on every row this
@@ -67,7 +69,7 @@ use crate::error::DbError;
 /// does not exist yet, so guessing at its shape now would be a claim about
 /// code nobody has written.
 const COLUMNS: &str = "r.id, r.payment_intent_id, r.amount, r.currency_code, \
-                       r.status::TEXT AS status, r.reason, r.metadata, r.fee, \
+                       r.status, r.reason, r.metadata, r.fee, \
                        r.created_at";
 
 /// One `refunds` row, as the merchant read needs it.
@@ -90,8 +92,9 @@ pub struct RefundRow {
     /// Carried verbatim from the intent, never converted
     /// (`docs/flows/money.md`).
     pub currency_code: String,
-    /// `pending`, `succeeded`, `failed` or `canceled` — the `refund_status`
-    /// enum, decoded as text.
+    /// `pending`, `succeeded`, `failed` or `canceled` — the vocabulary
+    /// `refunds_status_enum_check` closes (migration `0037`, which replaced
+    /// the `refund_status` type), decoded as text.
     ///
     /// A `String` and not a typed enum for [`crate::events::EventRow`]'s
     /// reason: the vocabulary is closed by Postgres *where it is written*, and

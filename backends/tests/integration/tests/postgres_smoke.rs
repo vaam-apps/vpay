@@ -124,7 +124,7 @@ async fn insert_payment_intent(
         // these inserts depend on a Rust function agreeing with a CHECK.
         "INSERT INTO payment_intents \
             (id, merchant_id, livemode, amount, amount_refunded, amount_refund_pending, currency_code, status, payment_method_types, client_secret_suffix) \
-         VALUES ($1, 'merchant_1', false, $2, $3, $4, 'XAF', 'requires_payment_method'::intent_status, '[]'::jsonb, \
+         VALUES ($1, 'merchant_1', false, $2, $3, $4, 'XAF', 'requires_payment_method', '[]'::jsonb, \
                  replace(gen_random_uuid()::text, '-', ''))",
     )
     .bind(id)
@@ -143,7 +143,7 @@ async fn insert_charge(
     sqlx::query(
         "INSERT INTO charges \
             (id, payment_intent_id, provider_code, provider_reference_id, state, amount, currency_code) \
-         VALUES ($1, $2, 'mtn_momo', $3, 'submitting'::charge_state, 5000, 'XAF')",
+         VALUES ($1, $2, 'mtn_momo', $3, 'submitting', 5000, 'XAF')",
     )
     .bind(id)
     .bind(payment_intent_id)
@@ -219,7 +219,20 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          human can sign in to, all three born with a schemas/vpay.cstack \
          model and shaped so that EVERY repository method runs through \
          CrateStack: no jsonb, no bytea, no native enum, no DEFAULT on any \
-         column a writer names, and no seq cursor)"
+         column a writer names, and no seq cursor, \
+         and S5's 0037, which converts the LAST FOUR of vpay's native enums \
+         that sit on a money table -- intent_status, charge_state, \
+         refund_status and the failure_code shared by three columns across \
+         three tables -- to TEXT plus a <table>_<column>_enum_check, for \
+         0032's reason: CrateStack's generated row decoders read an enum \
+         column with try_get::<String>(), so a native enum column fails to \
+         decode on every read and no query on payment_intents, charges or \
+         refunds could ever have moved. It drops charges_live_idx and \
+         rebuilds it unchanged, because Postgres refuses to alter a column \
+         a PARTIAL index predicate depends on; it drops no column DEFAULT \
+         and renames no hand-written CHECK, and 0037's own header says why \
+         for each. account_kind and direction, on the ledger tables, are \
+         the two native enums left)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -2685,7 +2698,7 @@ async fn insert_refund(
     sqlx::query(
         "INSERT INTO refunds \
             (id, payment_intent_id, amount, currency_code, status, fee) \
-         VALUES ($1, $2, 1000, 'XAF', 'pending'::refund_status, $3)",
+         VALUES ($1, $2, 1000, 'XAF', 'pending', $3)",
     )
     .bind(id)
     .bind(payment_intent_id)
@@ -2718,7 +2731,7 @@ async fn an_unreported_refund_fee_stays_null_and_never_becomes_zero() -> anyhow:
     // `DEFAULT 0` to migration 0031 left every other assertion here green.
     sqlx::query(
         "INSERT INTO refunds (id, payment_intent_id, amount, currency_code, status) \
-         VALUES ('re_omitted', 'pi_fee', 1000, 'XAF', 'pending'::refund_status)",
+         VALUES ('re_omitted', 'pi_fee', 1000, 'XAF', 'pending')",
     )
     .execute(&pool)
     .await

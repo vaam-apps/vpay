@@ -55,7 +55,7 @@ const FAILURE_RAW_MAX_CHARS: usize = 2000;
 /// than failing a settlement" says why it is a sub-select and why it is
 /// aliased away from `state`.
 const PREVIOUS_STATE: &str =
-    "(SELECT prev.state::TEXT FROM charges prev WHERE prev.id = charges.id) AS previous_state";
+    "(SELECT prev.state FROM charges prev WHERE prev.id = charges.id) AS previous_state";
 
 /// The `from` label used when [`PREVIOUS_STATE`] came back `NULL`.
 ///
@@ -417,8 +417,15 @@ pub trait Settlement: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::Query`] if the write fails, including a label outside
-    /// the `charge_state` enum.
+    /// Returns [`DbError::Query`] if the write fails, including a `new`
+    /// outside the vocabulary `charges_state_enum_check` closes.
+    ///
+    /// `expected` outside that vocabulary is `Ok(false)` rather than an
+    /// error since migration `0037`: it used to be bound as
+    /// `$2::charge_state` and a bad label was a Postgres error. Both
+    /// spellings mean "a vpay bug"; see
+    /// [`crate::PaymentIntents::transition`] for the same note on the
+    /// intent's half of this pair.
     async fn set_live_state(
         &self,
         charge_id: &str,
@@ -492,7 +499,7 @@ impl Settlement for crate::repository::PgRepositories {
 
         let sql = format!(
             "UPDATE charges \
-         SET state = 'succeeded'::charge_state, \
+         SET state = 'succeeded', \
              provider_txn_id = COALESCE($2, provider_txn_id), \
              updated_at = now() \
          WHERE id = $1 AND state IN ({LIVE_CHARGE_STATES}) \
@@ -560,8 +567,8 @@ impl Settlement for crate::repository::PgRepositories {
 
         let sql = format!(
             "UPDATE charges \
-         SET state = 'failed'::charge_state, \
-             failure_code = $2::failure_code, \
+         SET state = 'failed', \
+             failure_code = $2, \
              failure_raw = $3, \
              updated_at = now() \
          WHERE id = $1 AND state IN ({LIVE_CHARGE_STATES}) \
@@ -616,8 +623,8 @@ impl Settlement for crate::repository::PgRepositories {
         new: &str,
     ) -> Result<bool, DbError> {
         let moved = sqlx::query(
-            "UPDATE charges SET state = $3::charge_state, updated_at = now() \
-         WHERE id = $1 AND state = $2::charge_state \
+            "UPDATE charges SET state = $3, updated_at = now() \
+         WHERE id = $1 AND state = $2 \
          RETURNING provider_code",
         )
         .bind(charge_id)

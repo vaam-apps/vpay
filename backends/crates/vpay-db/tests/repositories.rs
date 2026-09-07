@@ -1595,7 +1595,7 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
 
     // Every live state blocks it, not just the one a confirm starts in.
     for state in ["submitted", "pending", "unresolved"] {
-        sqlx::query("UPDATE charges SET state = $1::charge_state WHERE id = 'ch_live'")
+        sqlx::query("UPDATE charges SET state = $1 WHERE id = 'ch_live'")
             .bind(state)
             .execute(&pool)
             .await
@@ -1609,7 +1609,7 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
 
     // Terminal: nothing is in flight, and the intent can never get another
     // charge, so a cancel is the only thing left that can move it.
-    sqlx::query("UPDATE charges SET state = 'failed'::charge_state WHERE id = 'ch_live'")
+    sqlx::query("UPDATE charges SET state = 'failed' WHERE id = 'ch_live'")
         .execute(&pool)
         .await
         .context("failing the charge must succeed")?;

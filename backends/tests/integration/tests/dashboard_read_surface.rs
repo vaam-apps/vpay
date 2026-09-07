@@ -1082,7 +1082,7 @@ async fn the_detail_read_renders_the_timeline_and_the_refunds_it_has() -> anyhow
     ] {
         sqlx::query(
             "INSERT INTO refunds (id, payment_intent_id, amount, currency_code, status, metadata) \
-             VALUES ($1, $2, $3, 'XAF', 'pending'::refund_status, '{}'::jsonb)",
+             VALUES ($1, $2, $3, 'XAF', 'pending', '{}'::jsonb)",
         )
         .bind(id)
         .bind(intent)
