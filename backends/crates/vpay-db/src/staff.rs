@@ -253,6 +253,14 @@ pub trait Staff {
     /// than a live one, and it is stated that way instead of being claimed as
     /// the reason the duplicate-address case fails.
     ///
+    /// **That case is now asserted**, by
+    /// `a_second_create_for_one_staff_id_is_refused_rather_than_overwriting`
+    /// in `vpay-db/tests/repositories.rs` — two writes with one id and two
+    /// different addresses, so the email index cannot be what refuses the
+    /// second and the builder is the only thing left. It was added by the
+    /// exp24 review, whose mutation M17 (`create` -> `upsert`) was recorded
+    /// as *not caught*; with that test it is.
+    ///
     /// # Errors
     ///
     /// [`DbError::Persistence`] — [`crate::PersistenceError::Unique`] when

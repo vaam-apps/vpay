@@ -7808,3 +7808,82 @@ async fn a_staff_address_is_unique_and_looked_up_exactly() -> anyhow::Result<()>
 
     Ok(())
 }
+
+/// **`Staff::create` is a `create` and not an `upsert`**, and this is the case
+/// where the difference is observable.
+///
+/// `Staff::create`'s own doc is careful about this and was written that way
+/// after a mutation: swapping the builder for an `upsert` leaves
+/// `a_staff_address_is_unique_and_looked_up_exactly` above green, because
+/// `staff add` mints a fresh `stf_…` every time, so a second account for one
+/// address conflicts on `staff_members_email_key` whichever builder is used.
+/// The doc named the *other* case — a caller supplying an id already in the
+/// table, where an upsert overwrites silently and a create raises — and
+/// nothing asserted it, so the exp24 review's mutation M17 stayed uncaught.
+/// This is that assertion.
+///
+/// It is a guard against a **second writer**, not a live one: nothing today
+/// supplies its own id. That is exactly why it is worth pinning — the day
+/// something does (an import, a restore, a second `staff add` shape), the
+/// silent-overwrite failure is a staff member's password hash and TOTP secret
+/// replaced by another account's, and no other check in this file would say a
+/// word about it.
+///
+/// The decisive mutation: change `.create(...)` to
+/// `.upsert(...)`/`.create_or_update(...)` in `vpay_db::staff` and the
+/// `expect_err` below fails.
+#[tokio::test]
+async fn a_second_create_for_one_staff_id_is_refused_rather_than_overwriting() -> anyhow::Result<()>
+{
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+
+    let new = |email: &str, hash: &str| NewStaff {
+        // The SAME id both times. Two different addresses, so the email index
+        // cannot be what refuses the second write and the builder choice is
+        // the only thing left.
+        id: "stf_collide".to_owned(),
+        merchant_id: "merchant_a".to_owned(),
+        email: email.to_owned(),
+        display_name: "Ada".to_owned(),
+        password_hash: hash.to_owned(),
+        now,
+    };
+
+    Staff::create(repositories.as_ref(), new("ada@example.test", "the-real-hash")).await?;
+
+    let err = Staff::create(
+        repositories.as_ref(),
+        new("grace@example.test", "an-operators-fresh-hash"),
+    )
+    .await
+    .expect_err(
+        "a second create for an id already in the table must raise; an upsert here would          silently rewrite one person's password hash, email and second factor to another's",
+    );
+    eprintln!("observed rejection: {err}");
+    assert!(
+        matches!(
+            vpay_core::Classify::category(&err),
+            vpay_core::Category::Conflict
+        ),
+        "a duplicate primary key is a conflict, not an outage: {err}"
+    );
+
+    // The first row is untouched — the half an `Ok(())` would not have proved.
+    let row = Staff::find(repositories.as_ref(), "stf_collide")
+        .await?
+        .expect("the original row is still there");
+    assert_eq!(row.email, "ada@example.test", "the address was not rewritten");
+    assert_eq!(
+        row.password_hash, "the-real-hash",
+        "the password hash was not rewritten — this is the whole point of the builder choice"
+    );
+    assert!(
+        Staff::find_by_email(repositories.as_ref(), "grace@example.test")
+            .await?
+            .is_none(),
+        "and the refused write left nothing behind"
+    );
+
+    Ok(())
+}
