@@ -22,10 +22,11 @@ three more are operator-facing claims that measurement contradicts. The
 design is sound and the migration is correct; the gap is between what the
 branch says it checks and what it checks.
 
-Six commits fix every confirmed finding. Two of the four proofs the
-implementer could not give are now given in full; a third is given in full and
-is the strongest evidence on the branch; the fourth is still not given, and
-why is stated rather than worked around.
+Seven commits fix every confirmed finding. Three of the four proofs the
+implementer could not give are now given in full; the fourth — `just test-e2e`
+as a recipe — is blocked by issue #78 on a port the user's own stack holds,
+and its specs were run another way, all eleven passing, with the single
+deviation stated.
 
 ---
 
@@ -197,15 +198,46 @@ report.
 
 ### `just test-e2e`
 
-**Not given, and not worked around.** `compose.e2e.yml` publishes the
-dashboard on `3000:3000` and `justfile`'s `test-e2e` probes
-`http://localhost:3000/` — both hard-coded, which is issue #78. The user's own
-`vpay-demo` project has `vpay-demo-dashboard-1` bound to `127.0.0.1:3000`
-throughout this review. Running the recipe would have required either stopping
-the user's stack or editing the recipe, and neither is this reviewer's to do.
-See the report for what was waited for and for how long. Cypress'
-`baseUrl` is already `VPAY_DASHBOARD_URL ?? http://localhost:3000`; the two
-hard-codings that remain are the compose publication and the probe.
+**The recipe itself: not run.** `compose.e2e.yml` publishes the dashboard on a
+hard-coded `3000:3000` and `justfile`'s `test-e2e` probes
+`http://localhost:3000/`, also hard-coded — issue #78. The user's own
+`vpay-demo` project held `127.0.0.1:3000` for the whole of this review
+(polled, still held after a 15-minute wait). Running the recipe would have
+required stopping the user's stack or editing the recipe, and neither is a
+reviewer's to do.
+
+**The specs: run, and all of them pass.** One deviation, stated so it can be
+discounted: the dashboard was republished on `13000` by a one-service compose
+override kept in the scratchpad, and `VPAY_DASHBOARD_URL` was set to match —
+Cypress' own `baseUrl` is already `VPAY_DASHBOARD_URL ?? http://localhost:3000`,
+so nothing else changed. Everything after that is the recipe's own command
+(`pnpm --filter @vpay/e2e e2e`) with the recipe's own environment, on compose
+project `exp34-review` with the branch's images built from this head:
+
+```
+✔  checkout.cy.ts       1  passing
+✔  dashboard.cy.ts      3  passing
+✔  shop-hosted.cy.ts    3  passing
+✔  shop-embedded.cy.ts  4  passing   (the framed run, its own cypress run)
+   11 passing, 0 failing, 0 pending, 0 skipped, exit 0
+```
+
+And from that stack's database afterwards: `payment_intents.status` 5
+`succeeded` / 5 `requires_payment_method`, `charges.state` 5 `succeeded` / 1
+`failed`, `checkout_sessions.status` 4 `complete` / 1 `expired` / 3 `open`,
+and **0** of the four enum types alive. Browser-driven payments settling
+through 0037's TEXT columns.
+
+**The first attempt failed, and the reason was mine.** `checkout.cy.ts` and
+`shop-hosted.cy.ts` failed with `invalid_client: Client authentication
+failed`; the server logged `InvalidAudience`. Cause: a bare `just
+gen-demo-keys` regenerated `.e2e/application-demo.yml` with
+`public_base_url: http://localhost:8080` — the recipe bakes `demo_port` into
+the overlay and I had not passed the override to *that* invocation, only to
+`demo-up`. Regenerated with `just demo_port=18080 … gen-demo-keys`, stack
+recreated, all four specs green. Recorded because a first-attempt failure on
+the money path that is silently dropped from a report is exactly the thing
+this review exists to find.
 
 ### `just demo-up` + `just demo-walk`
 
