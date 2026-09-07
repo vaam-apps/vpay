@@ -184,7 +184,8 @@ constraints CrateStack's grammar cannot express. See `docs/status.md`
 (native-tls is banned in `deny.toml`), mimalloc, static musl binaries into
 `FROM scratch`. Tests with `cargo nextest` and testcontainers.
 
-**Frontend** — Next.js 15, React 19, TypeScript strict. Design system on
+**Frontend** — Next.js 15 in `frontends/apps` (`examples/shop` is on 16),
+React 19, TypeScript strict. Design system on
 Tailwind 4 + daisyUI 5 (`bumblebee`) + `class-variance-authority` +
 `@base-ui/react`. Storybook 10 with the a11y addon. Vitest for units, Cypress
 for e2e.
