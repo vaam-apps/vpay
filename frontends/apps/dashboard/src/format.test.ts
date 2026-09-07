@@ -85,7 +85,13 @@ describe('a date filter', () => {
     // at both ends, so rolling over would include the following day first
     // second.
     expect(startOfDayUtc('2026-09-07')).toBe('2026-09-07T00:00:00Z');
-    expect(endOfDayUtc('2026-09-07')).toBe('2026-09-07T23:59:59Z');
+    expect(endOfDayUtc('2026-09-07')).toBe('2026-09-07T23:59:59.999999Z');
+    // `.999999` and not `:59Z`: `created_at` is a TIMESTAMPTZ and the
+    // predicate is `<=`, so a payment created at 23:59:59.4 is greater than
+    // 23:59:59.0 and a whole second of the range an operator asked for
+    // vanishes. Microseconds because that is the column resolution.
+    expect(endOfDayUtc('2026-09-07')).not.toBe('2026-09-07T23:59:59Z');
+    expect(endOfDayUtc('2026-09-07') ?? '').toMatch(/\.999999Z$/);
   });
 
   it('is null for anything that is not a real calendar date', () => {

@@ -150,12 +150,28 @@ export function startOfDayUtc(date: string): string | null {
 /**
  * The same, as the **inclusive** upper bound `created_lte` takes.
  *
- * `23:59:59`, not the next midnight: the bound is inclusive at both ends
+ * Not the next midnight: the bound is inclusive at both ends
  * (`IntentFilter`), so rolling over to the following day would include
- * payments created in that day's first second.
+ * payments created in that day's first instant.
+ *
+ * # `.999999`, and the second this used to lose
+ *
+ * It read `23:59:59Z` until the exp28 review. `payment_intents.created_at` is
+ * a `TIMESTAMPTZ` — Postgres keeps microseconds — and the predicate is
+ * `created_at <= $7`, so a payment created at `23:59:59.4` is **greater** than
+ * `23:59:59.0` and was silently dropped from a filter whose whole meaning is
+ * "up to and including this day". One second of every filtered range, at the
+ * end an operator is most likely to be asking about, answering as though
+ * nothing had happened there — and an empty list reads as data having been
+ * lost, which is the failure `payments-query.ts` exists to avoid.
+ *
+ * `999999` and not `999`: microseconds are the resolution the column stores,
+ * and a millisecond bound would lose the last 999 microseconds for the same
+ * reason. `vpay_api::dash::payment_intents::parse_timestamp` is
+ * `OffsetDateTime::parse(_, Rfc3339)`, which takes a fractional second.
  */
 export function endOfDayUtc(date: string): string | null {
-  return isPlainDate(date) ? `${date}T23:59:59Z` : null;
+  return isPlainDate(date) ? `${date}T23:59:59.999999Z` : null;
 }
 
 /** `YYYY-MM-DD`, and a date that exists. */

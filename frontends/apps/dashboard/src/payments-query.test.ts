@@ -14,7 +14,7 @@ describe('the API query', () => {
       apiQueryString({ ...NO_QUERY, createdFrom: '2026-09-01', createdTo: '2026-09-07' }),
     );
     expect(search.get('created_gte')).toBe('2026-09-01T00:00:00Z');
-    expect(search.get('created_lte')).toBe('2026-09-07T23:59:59Z');
+    expect(search.get('created_lte')).toBe('2026-09-07T23:59:59.999999Z');
   });
 
   it('drops a date it cannot parse rather than forwarding it', () => {
