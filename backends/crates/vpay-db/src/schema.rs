@@ -165,35 +165,41 @@ mod tests {
     async fn no_generated_read_on_a_money_table_can_carry_its_jsonb_column() {
         let cs = lazy_cratestack();
 
-        for (table, sql, columns) in [
+        // The `FROM` clauses are literals rather than `format!("FROM {table}")`
+        // — `crate::sql_audit`'s scanner reads every `format!` in this crate
+        // as a statement being built and refuses an interpolation that is not
+        // a crate constant. It is right to: the cheapest way past it is to
+        // widen its allowlist, and docs/status.md records that the answer is
+        // to stop using `format!` here instead.
+        for (from_clause, sql, columns) in [
             (
-                "payment_intents",
+                "FROM payment_intents",
                 cs.payment_intent().find_many().preview_sql(),
                 ["metadata", "payment_method_types"].as_slice(),
             ),
             (
-                "charges",
+                "FROM charges",
                 cs.charge().find_many().preview_sql(),
                 ["provider_ref_extra"].as_slice(),
             ),
             (
-                "refunds",
+                "FROM refunds",
                 cs.refund().find_many().preview_sql(),
                 ["metadata"].as_slice(),
             ),
         ] {
             assert!(
-                sql.contains(&format!("FROM {table}")),
-                "this test is no longer looking at a {table} read: {sql}"
+                sql.contains(from_clause),
+                "this test is no longer looking at a read with `{from_clause}`: {sql}"
             );
             for column in columns {
                 assert!(
                     !sql.contains(column),
-                    "`{column}` is in the generated {table} projection now, so the row struct \
-                     this crate returns could be built from a generated read. Before moving \
-                     any query on this table, read the second assertion in this test and the \
-                     GAP note in schemas/vpay.cstack: mapping the type is not the same as \
-                     round-tripping the values: {sql}"
+                    "`{column}` is in the generated projection of the read with \
+                     `{from_clause}` now, so the row struct this crate returns could be built \
+                     from a generated read. Before moving any query on this table, read the \
+                     second assertion in this test and the GAP note in schemas/vpay.cstack: \
+                     mapping the type is not the same as round-tripping the values: {sql}"
                 );
             }
         }
