@@ -102,8 +102,11 @@ the gate render.
 | `git grep className` under `app/`+`src/` (non-test) | **zero matches** |
 | `just test-e2e` (isolated project, non-default ports) | **exit 0 — 15 Cypress tests across four specs, 15 passing, 0 failing, 0 skipped**: `checkout.cy.ts` 1, `dashboard.cy.ts` **7**, `shop-hosted.cy.ts` 3 in pass 1; `shop-embedded.cy.ts` 4 in pass 2. Stack torn down by `down -v`, zero containers and zero volumes left |
 
-Run from nothing on the branch's final head. Earlier runs on earlier heads are
-in this file's "what went wrong" section, because each of them found something.
+Run from nothing on `54a0939` — **the branch's last code-bearing commit; every
+commit after it changes only `docs/`**, which is the exact form of "on the
+final head" and stays true however many documentation commits follow. Earlier
+runs on earlier heads are in this file's "what went wrong" section, because
+each of them found something.
 
 ## Decisive mutations
 
