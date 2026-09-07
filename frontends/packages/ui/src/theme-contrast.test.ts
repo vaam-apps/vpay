@@ -94,11 +94,13 @@ function themeColours(root: postcss.Root): Map<string, [number, number, number]>
       Number(match[3]),
     );
     let inLayer = false;
-    for (let node: postcss.Container | undefined = decl.parent; node; node = node.parent) {
+    let node: postcss.Node | undefined = decl.parent;
+    while (node !== undefined) {
       if (node.type === 'atrule' && (node as postcss.AtRule).name === 'layer') {
         inLayer = true;
         break;
       }
+      node = node.parent;
     }
     (inLayer ? layered : unlayered).set(name, rgb);
   });
