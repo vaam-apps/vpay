@@ -222,6 +222,24 @@ jobs:
       # still parses and still renders, so nothing else in `just ci` notices.
       - name: verify-ui (colour tokens, daisyUI 4→5 renames, !important, cva)
         run: just verify-ui
+      # The ELEVENTH gate, new 2026-09-07 (issue #76), and — like
+      # `verify-toolchain` above — one this job is the only place to catch:
+      # nothing in `rust` compiles `backends/migrations/*.sql`, and a migration
+      # file edited after it shipped passes `cargo nextest run --workspace`
+      # outright, because every test starts from an EMPTY database and applies
+      # the current files. The failure it prevents only appears against a
+      # database that applied the earlier bytes — i.e. in production. That is
+      # not a hypothesis about this workflow: PR #39 made exactly this edit and
+      # merged with every job here green, and the breakage surfaced only when a
+      # stack that predated it was restarted (issue #76).
+      #
+      # Through the justfile rather than `cargo xtask`, like the four steps
+      # above it: the recipe carries the reasoning a contributor reads locally
+      # — in this case why only `*.sql` is hashed, and what the gate
+      # deliberately does not stop — and running it here is what stops the
+      # recipe and this workflow from drifting.
+      - name: verify-migrations (applied migrations are immutable)
+        run: just verify-migrations
       # A report, not a gate — it exits 0 whatever it finds (Step 7,
       # decision (4)). It is here so `justfile`'s claim that this job runs
       # exactly what `just verify` runs stays true, and so the doc-volume,

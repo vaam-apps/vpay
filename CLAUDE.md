@@ -7,12 +7,13 @@ is specific to working here as an agent.
 ## Before you start
 
 ```bash
-just verify    # ten self-checks, all of which must pass before AND after your
-               # change, plus the `verify-docs` report, which never fails
+just verify    # twelve self-checks, all of which must pass before AND after
+               # your change, plus the `verify-docs` report, which never fails
 cat docs/status.md
 ```
 
-*(This said "three" until 2026-09-06 and had been wrong since 2026-09-03.
+*(This said "three" until 2026-09-06 and had been wrong since 2026-09-03; it
+said "ten" until `verify-migrations` landed on 2026-09-07.
 [AGENTS.md](AGENTS.md) carries the count and the history of every gate that
 moved it; that is the copy to trust, and this one now agrees with it.)*
 

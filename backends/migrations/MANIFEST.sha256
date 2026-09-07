@@ -1,0 +1,52 @@
+# SHA-256 of every migration file's bytes, one line per file, in the format
+# `sha256sum` writes. This file is what makes "an applied migration is never
+# edited" enforceable: `cargo xtask verify-migrations` (in `just verify` and in
+# CI's self-checks job) fails when a file's hash moves.
+#
+# WHY: sqlx::migrate! stores a SHA-384 of each file's whole bytes in
+# `_sqlx_migrations.checksum` and refuses to boot when a file no longer hashes
+# to what the database recorded. PR #39 rewrote a comment inside
+# 0028_create-checkout-sessions.sql after it shipped, and every database that
+# had applied the original stopped booting (issue #76).
+#
+# To add a migration: `just migrations-manifest` appends its line. That recipe
+# REFUSES to rewrite an existing line, so this file cannot be regenerated to
+# silence the gate. To fix an applied migration, write a new one.
+#
+# Order does not matter. See backends/migrations/README.md and
+# docs/runbooks/migrations.md.
+44aa2c7e879c9ac300e658f975fe5964e0b8f4489c1fa014b6915b2415077d66  0001_create-currencies.sql
+a45aae26e0015de46a50052eccc0a2e5343f99d193af5a0d49bd9d3aad073c79  0002_create-providers.sql
+299d4ade7543393c7d47747bd98c90afbbe046d5445c09e23c649aa433ca40b4  0003_create-payment-intents.sql
+526b6788273ff96fb65233760dbdec6a1d574802966c72491c2d4e1324a672dd  0004_create-charges.sql
+d6c3e18328f431e6751e2f34318f838d4fde9c79d4cc9e5a8fab9a4ba0817a97  0005_create-ledger.sql
+d548c05b8ec8022168a78aa3faf05a93d1a3d0808b0ecb6e5e3d7aa944bbb430  0006_create-authkestra-op-tables.sql
+5d5a8c58cd98a3bc606bf9c91d3cce5fc41d665fc596f38afe44b1009368a43a  0007_create-oauth-signing-keys.sql
+31994a9dece6152c97df0f3487c48114d9ed9e13eb31c79e78d51450dea88cfc  0008_create-merchant-api-keys.sql
+3efea840965120188f90f21ef721b1d25695572693831425800eb81becfdcfc3  0009_drop-merchant-api-keys.sql
+a4f26f5c3a55aa3525354e6e428919b4f003949dd56902b5ac10f422bb9f5059  0010_reshape-oauth-signing-keys.sql
+016463bc12c6af6287e8fee5898c96c39a468729d2640c5986ba3597d21e72b5  0011_create-oauth-client-assertion-jtis.sql
+9fdc4aefbe7a17018e7242fe4c7ed05396a188da50f5371b57cb4c5b1c691d88  0012_create-disabled-clients.sql
+2bceb0df349ce535a875d5be34e828f499f8233b62fed15f4274f8fe16c4999a  0013_add-authkestra-op-0-7-columns.sql
+c8375f34c219c7459d6a15193cd2a6117a53c316f221df2506551465e13419df  0014_payment-intent-api-fields.sql
+f0bd6394b9755a1941b7a3285acc723a460eff0a235587d8a3263c77370c3899  0015_create-idempotency-keys.sql
+d622bb4adf711f0a14e50851d296ba300f404d554bbb3f15aabc5bf6e6704de6  0016_create-provider-requests.sql
+ed24ff78bbf33ba893e50e40e7b19623f781a5e210f354720947e397506638fe  0017_create-refunds.sql
+d64f38a078c22bb5eb04ab59b5f4bad5b885db8aae4e68a1574a5ca52917e8ac  0018_create-events.sql
+fbe18234cd06e05149bf4b9a50d18cf5df66d2b87c58e2fdfcf616136996405d  0019_charges-return-url.sql
+b1ce2edf5ec5aa4e9c7a3c8ec85da3a5e29e4b8bee2d86a9fe02ff9e1efa248d  0020_provider-requests-status-code-comment.sql
+b0e2b7cda0645b7d170af6db99f5fac4fd0f85e710dd21bf387ddd2664af1245  0021_create-jobs.sql
+04495aa8b1abfe1a7464901e6758fef714617c7e08c4e42ff222702abd2a308d  0022_create-webhook-deliveries.sql
+54eb5c613f674dbc166a584ca669e74c6a38980c5af33f4e427aff15c745da04  0023_jobs-scan-deliveries.sql
+f4196be42c1d597cb2f7b3a8671027ba2487ae5fda73651bee79a6a355b3e2d7  0024_events-fanout-attempts.sql
+ed7f51e3881e0a691b38389be3352cbf916abad0a8d7826630ec386d9268df5f  0025_idempotency-keys-retry-advice.sql
+6257ad96fec03ef4190187b7604079ab0df599c23842e9c51233fc4146904a15  0026_payment-intent-client-secret.sql
+4ffd81cb59e3f8f8ff191bc4b194278f2e8983414bae7acaf7cb2c370c70150d  0027_charges-provider-reference-idx.sql
+b9c463bb16111d58c00303f4f8fa7aeb6995f1485a96325d3093fc91e23bdc45  0028_create-checkout-sessions.sql
+d6f40009dd94f84963e0701fa062160ace6dd176cf25814b0365d6c13b50a1a2  0029_events-checkout-session-expired.sql
+4316198aca1b458558e28e428f599b180e278d61508121192ef0846f24d4c854  0030_checkout-sessions-latest-by-intent-idx.sql
+78537dde8d5b5b88775346f1280bb559480dce0e9ccf001c78946e663a8c475f  0031_refunds-fee.sql
+e7e42e875a4e5260147c9fdcc51155187ccb86e58532688624e4026750df00f5  0032_currencies-providers-cratestack-shape.sql
+76c310ad7ab1171ea22889126039c92714d58e5ce87317096b33fe13c0031c99  0033_providers-drop-capability-defaults.sql
+00ac2aedceb73cce722559d1039dd11e8f930a0491711a16f5330db493a02716  0034_create-customers.sql
+1c243fa94e2e9ecf67e62e4245ab0abc9f5c13b8c1ece03bddc8b10a269f3362  0035_create-staff-auth.sql

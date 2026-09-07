@@ -107,6 +107,7 @@ fn main() -> ExitCode {
         "verify-serde" => verify_serde(&root),
         "verify-repositories" => verify_repositories(&root),
         "verify-toolchain" => verify_toolchain(&root),
+        "verify-migrations" => verify_migrations(&root),
         "verify-citations" => verify_citations(&root),
         // `verify-citations` is deliberately absent from `verify-all`: it
         // needs the network, and `verify-all` is what an offline gate list
@@ -119,7 +120,8 @@ fn main() -> ExitCode {
             .and_then(|()| verify_npm_scope(&root))
             .and_then(|()| verify_serde(&root))
             .and_then(|()| verify_repositories(&root))
-            .and_then(|()| verify_toolchain(&root)),
+            .and_then(|()| verify_toolchain(&root))
+            .and_then(|()| verify_migrations(&root)),
         // Not `Result`-shaped like the three gates above, and that is the
         // point: there is nothing here for a caller to fail on. See
         // `verify_docs`.
@@ -133,7 +135,7 @@ fn main() -> ExitCode {
                 "usage: cargo xtask \
                  <verify-no-mocks|verify-status|verify-errors|verify-sdk-parity|verify-links\
                  |verify-npm-scope|verify-serde|verify-repositories\
-                 |verify-toolchain|verify-all>\n\
+                 |verify-toolchain|verify-migrations|verify-all>\n\
                  \x20      cargo xtask verify-citations   (a gate; needs `gh` and the network)\n\
                  \x20      cargo xtask verify-docs        (a report; never fails)\n\
                  \x20      cargo xtask gen-signing-key --out <dir>"
@@ -4745,6 +4747,14 @@ const TOOLCHAIN_FILE: &str = "rust-toolchain.toml";
 /// build context exists.
 const TOOLCHAIN_IMAGE_FILE: &str = "backends/Dockerfile";
 
+/// The directory where migration files are stored.
+const MIGRATIONS_DIR: &str = "backends/migrations";
+
+/// The manifest file that lists the SHA256 hashes of all migration files.
+/// Applied migrations are immutable; a changed hash means the file was edited
+/// after it shipped, and every database that applied the original fails boot.
+const MIGRATIONS_MANIFEST: &str = "backends/migrations/MANIFEST.sha256";
+
 /// `backends/Dockerfile`'s builder image is the compiler `rust-toolchain.toml`
 /// pins, and nothing else.
 ///
@@ -4840,6 +4850,201 @@ fn verify_toolchain(root: &Path) -> Result<(), String> {
         agreed.join(", ")
     );
     Ok(())
+}
+
+/// Migration files are immutable: an applied migration cannot be edited.
+///
+/// `sqlx::migrate!` stores a SHA-384 of each migration file's whole bytes,
+/// comments included, in `_sqlx_migrations.checksum`, and refuses to boot when
+/// a file no longer hashes to what the database recorded. So editing a file
+/// that has shipped is not a style question — it bricks every database that
+/// applied the original, and the only fix is a hand-written `UPDATE` against
+/// the migrator's own bookkeeping table. Issue #76 is the one that happened:
+/// the `@vpay` -> `@vaam-apps` npm rename rewrote a *comment* inside
+/// `0028_create-checkout-sessions.sql` after it shipped, and every stack
+/// brought up before it exited 78 on the next boot.
+///
+/// This gate is the thing that would have caught that rename, and it catches
+/// it at the level a reviewer can act on — a diff, not a production boot:
+///
+/// 1. every migration file's SHA-256 matches its line in the manifest,
+/// 2. no migration file exists that the manifest does not list,
+/// 3. no manifest line names a file that does not exist.
+///
+/// # What this gate does NOT stop
+///
+/// A contributor who edits a migration *and* hand-edits its manifest line
+/// passes. That is by construction and cannot be fixed by hashing harder — a
+/// manifest whose own hash is checked has to pin that hash somewhere, and
+/// whoever can edit two files can edit three. What the manifest buys is that
+/// the edit becomes **visible in the diff**: a one-line change to
+/// `MANIFEST.sha256` is exactly the thing review is for, where a comment
+/// reflowed inside a 292-line `.sql` file is not. `just migrations-manifest`
+/// refuses to rewrite an existing line for the same reason, so the honest
+/// path never produces that diff by accident.
+///
+/// # Why only `*.sql`
+///
+/// `sqlx::migrate!` reads `*.sql` at the top level of the directory and
+/// nothing else, so a `README.md` sitting beside them is not a migration and
+/// no database ever hashed it. An earlier draft of this gate hashed every
+/// file in the directory, which made `backends/migrations/README.md`
+/// unaddable: the gate demanded a manifest line for it and
+/// `just migrations-manifest` — which globs `*.sql`, as it must — would never
+/// write one.
+fn verify_migrations(root: &Path) -> Result<(), String> {
+    let manifest_path = root.join(MIGRATIONS_MANIFEST);
+    let manifest_text =
+        fs::read_to_string(&manifest_path).map_err(|e| format!("{MIGRATIONS_MANIFEST}: {e}"))?;
+
+    let migrations_dir = root.join(MIGRATIONS_DIR);
+    let entries = fs::read_dir(&migrations_dir)
+        .map_err(|e| format!("{MIGRATIONS_DIR}: cannot read directory: {e}"))?;
+
+    let mut on_disk = BTreeMap::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{MIGRATIONS_DIR}: cannot read entry: {e}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.ends_with(".sql") {
+            continue;
+        }
+        // Bytes, not text: the checksum sqlx stores is over the file as it
+        // sits on disk, so a CRLF checkout is a different migration from an
+        // LF one and this gate must say so rather than normalise it away.
+        let bytes =
+            fs::read(&path).map_err(|e| format!("{MIGRATIONS_DIR}/{name}: cannot read: {e}"))?;
+        on_disk.insert(name.to_string(), sha256(&bytes));
+    }
+
+    match check_migrations(&manifest_text, &on_disk) {
+        Ok(counted) => {
+            println!(
+                "verify-migrations: ok — {counted} migration file(s) in {MIGRATIONS_DIR}/ all \
+                 match their entries in {MIGRATIONS_MANIFEST}"
+            );
+            Ok(())
+        }
+        Err(problems) => Err(format!(
+            "migrations not immutable:\n  - {}",
+            problems.join("\n  - ")
+        )),
+    }
+}
+
+/// The whole of [`verify_migrations`]' judgement, with no filesystem in it, so
+/// every way it can fail is a unit test rather than a manual mutation someone
+/// ran once.
+///
+/// `on_disk` maps a migration file's name to the SHA-256 of its bytes. Returns
+/// the number of migrations checked, or every problem found — all of them, so
+/// a contributor who has drifted three files is told about three.
+fn check_migrations(
+    manifest_text: &str,
+    on_disk: &BTreeMap<String, String>,
+) -> Result<usize, Vec<String>> {
+    let mut problems = Vec::new();
+    let mut listed: BTreeMap<String, String> = BTreeMap::new();
+
+    for (number, line) in manifest_text.lines().enumerate() {
+        let number = number + 1;
+        // Blank lines and `#` comments carry the rule itself at the top of the
+        // manifest — the first place a contributor adding a migration looks.
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let Some((hash, filename)) = line.split_once("  ") else {
+            problems.push(format!(
+                "{MIGRATIONS_MANIFEST}:{number}: malformed line \
+                 (expected '<sha256>  <filename>'): {line}"
+            ));
+            continue;
+        };
+        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            problems.push(format!(
+                "{MIGRATIONS_MANIFEST}:{number}: {filename} has an invalid hash \
+                 (expected 64 hex characters): {hash}"
+            ));
+            continue;
+        }
+        // A second line for the same file is not harmless: a `BTreeMap` insert
+        // silently keeps the last one, so a stale line above a fresh one would
+        // pass while the manifest recorded two different truths.
+        if listed
+            .insert(filename.to_string(), hash.to_string())
+            .is_some()
+        {
+            problems.push(format!(
+                "{MIGRATIONS_MANIFEST}:{number}: {filename} is listed more than once"
+            ));
+        }
+    }
+
+    for (filename, actual) in on_disk {
+        match listed.get(filename) {
+            Some(expected) if expected == actual => {}
+            Some(_) => problems.push(format!(
+                "{MIGRATIONS_DIR}/{filename}: file has been edited (its SHA-256 no longer \
+                 matches {MIGRATIONS_MANIFEST}). Applied migrations are immutable: every \
+                 database that applied the original refuses to boot once the bytes change \
+                 (issue #76). Revert this file and write a NEW migration that corrects it — \
+                 see docs/runbooks/migrations.md."
+            )),
+            None => problems.push(format!(
+                "{MIGRATIONS_DIR}/{filename}: file exists but is not in \
+                 {MIGRATIONS_MANIFEST} — run `just migrations-manifest`, or add this line \
+                 by hand:\n      {actual}  {filename}"
+            )),
+        }
+    }
+
+    for filename in listed.keys() {
+        if !on_disk.contains_key(filename) {
+            problems.push(format!(
+                "{MIGRATIONS_MANIFEST}: lists {filename}, which does not exist in \
+                 {MIGRATIONS_DIR}/. A migration that has shipped is never deleted; if it \
+                 never shipped, drop its manifest line in the same commit."
+            ));
+        }
+    }
+
+    if problems.is_empty() {
+        Ok(on_disk.len())
+    } else {
+        Err(problems)
+    }
+}
+
+/// The SHA-256 of `data`, lowercase hex — the same digest and spelling
+/// `sha256sum` writes, so a manifest line can be checked by hand with
+/// `sha256sum backends/migrations/*.sql`.
+///
+/// Deliberately NOT the SHA-384 `sqlx` stores in `_sqlx_migrations.checksum`:
+/// this manifest is read by people and by `sha256sum`, and the two hashes are
+/// kept distinct so nobody pastes one where the other belongs.
+/// `docs/runbooks/migrations.md` carries the SHA-384 values, and
+/// `the_0028_repair_in_the_runbook_is_the_checksum_a_fresh_database_stores`
+/// (backends/tests/integration/tests/postgres_smoke.rs) pins them to a real
+/// database.
+fn sha256(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        // `write!` to a `String` is infallible; the `Result` is discarded
+        // rather than unwrapped because `unwrap` is denied in this crate.
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }
 
 /// The `channel` value, read the way `.github/workflows/ci.yml` reads it.
@@ -11148,5 +11353,187 @@ FROM scratch AS server
     #[test]
     fn the_repository_itself_passes() {
         verify_toolchain(&repo_root()).expect("this repository's own pin and image agree");
+    }
+}
+
+/// Every way `verify-migrations` can fail, as a test rather than as a mutation
+/// somebody ran by hand once and wrote down.
+///
+/// Each case here was first run against the real gate as a mutation of the
+/// real tree (edit a byte in `0001`, add an unlisted `0099_x.sql`, delete a
+/// manifest line, and so on); these are those mutations pinned, so deleting a
+/// branch of [`check_migrations`] fails the build.
+#[cfg(test)]
+mod migration_manifest_tests {
+    use super::{BTreeMap, check_migrations, sha256, verify_migrations};
+
+    /// `sha256sum` of the empty input, so the fixture hashes below are
+    /// checkable against the coreutils tool the manifest is written for.
+    const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    fn on_disk(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(n, h)| ((*n).to_string(), (*h).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn the_empty_digest_is_the_one_sha256sum_writes() {
+        assert_eq!(sha256(b""), EMPTY_SHA256);
+    }
+
+    #[test]
+    fn a_manifest_that_matches_the_tree_passes() {
+        let manifest = format!("{EMPTY_SHA256}  0001_a.sql\n{EMPTY_SHA256}  0002_b.sql\n");
+        let counted = check_migrations(
+            &manifest,
+            &on_disk(&[("0001_a.sql", EMPTY_SHA256), ("0002_b.sql", EMPTY_SHA256)]),
+        )
+        .expect("manifest and tree agree");
+        assert_eq!(counted, 2);
+    }
+
+    /// Mutation: edit a byte in an applied migration. The message must name
+    /// the file — an operator reading CI output should not have to diff to
+    /// find out which one.
+    #[test]
+    fn an_edited_migration_fails_and_names_the_file() {
+        let manifest = format!("{EMPTY_SHA256}  0001_a.sql\n");
+        let problems = check_migrations(&manifest, &on_disk(&[("0001_a.sql", &"a".repeat(64))]))
+            .expect_err("an edited migration must fail");
+        assert_eq!(problems.len(), 1);
+        let only = problems.first().map_or("", String::as_str);
+        assert!(only.contains("0001_a.sql"), "{problems:?}");
+        assert!(only.contains("immutable"), "{problems:?}");
+    }
+
+    /// Mutation: add a migration and forget its manifest line. The message
+    /// must carry the line to add, because the fix is otherwise a second
+    /// command the contributor has to know.
+    #[test]
+    fn an_unlisted_migration_fails_with_the_line_to_add() {
+        let problems = check_migrations("", &on_disk(&[("0099_x.sql", EMPTY_SHA256)]))
+            .expect_err("an unlisted migration must fail");
+        assert_eq!(problems.len(), 1);
+        assert!(
+            problems
+                .first()
+                .is_some_and(|p| p.contains(&format!("{EMPTY_SHA256}  0099_x.sql"))),
+            "{problems:?}"
+        );
+    }
+
+    /// Mutation: delete a manifest line. Reported as the unlisted file it
+    /// makes, not silently.
+    #[test]
+    fn a_deleted_manifest_line_fails() {
+        let manifest = format!("{EMPTY_SHA256}  0001_a.sql\n");
+        let problems = check_migrations(
+            &manifest,
+            &on_disk(&[("0001_a.sql", EMPTY_SHA256), ("0002_b.sql", EMPTY_SHA256)]),
+        )
+        .expect_err("a missing line must fail");
+        assert_eq!(problems.len(), 1);
+        assert!(
+            problems.first().is_some_and(|p| p.contains("0002_b.sql")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_manifest_line_for_a_file_that_does_not_exist_fails() {
+        let manifest = format!("{EMPTY_SHA256}  0098_ghost.sql\n");
+        let problems =
+            check_migrations(&manifest, &BTreeMap::new()).expect_err("a ghost line must fail");
+        assert_eq!(problems.len(), 1);
+        assert!(
+            problems
+                .first()
+                .is_some_and(|p| p.contains("0098_ghost.sql")),
+            "{problems:?}"
+        );
+    }
+
+    /// Order is not part of the contract: the manifest is a set of claims
+    /// about files, and `just migrations-manifest` sorts, so a rebase that
+    /// interleaves two branches' appends must not fail the build.
+    #[test]
+    fn manifest_order_does_not_matter() {
+        let manifest = format!("{EMPTY_SHA256}  0002_b.sql\n{EMPTY_SHA256}  0001_a.sql\n");
+        check_migrations(
+            &manifest,
+            &on_disk(&[("0001_a.sql", EMPTY_SHA256), ("0002_b.sql", EMPTY_SHA256)]),
+        )
+        .expect("a reordered manifest is the same manifest");
+    }
+
+    /// A `#` header is how the immutability rule reaches the contributor who
+    /// opens the manifest to add a line. Before this, it was a malformed-line
+    /// failure and the rule had nowhere to live.
+    #[test]
+    fn comments_and_blank_lines_are_allowed() {
+        let manifest =
+            format!("# applied migrations are immutable\n\n{EMPTY_SHA256}  0001_a.sql\n\n");
+        check_migrations(&manifest, &on_disk(&[("0001_a.sql", EMPTY_SHA256)]))
+            .expect("a commented manifest is a valid manifest");
+    }
+
+    /// Two lines for one file used to pass: the map kept the last and the
+    /// stale one above it was invisible. A manifest that records two truths
+    /// about the same file records neither.
+    #[test]
+    fn a_duplicate_manifest_line_fails() {
+        let manifest = format!(
+            "{}  0001_a.sql\n{EMPTY_SHA256}  0001_a.sql\n",
+            "0".repeat(64)
+        );
+        let problems = check_migrations(&manifest, &on_disk(&[("0001_a.sql", EMPTY_SHA256)]))
+            .expect_err("a duplicated file must fail");
+        assert!(
+            problems.iter().any(|p| p.contains("listed more than once")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_hash_that_is_not_hex_fails() {
+        let manifest = format!("{}  0001_a.sql\n", "z".repeat(64));
+        let problems = check_migrations(&manifest, &on_disk(&[("0001_a.sql", EMPTY_SHA256)]))
+            .expect_err("a non-hex hash must fail");
+        assert!(
+            problems.iter().any(|p| p.contains("invalid hash")),
+            "{problems:?}"
+        );
+    }
+
+    /// Every problem, not the first: a contributor who has drifted three files
+    /// should be told about three.
+    #[test]
+    fn every_problem_is_reported_not_only_the_first() {
+        let manifest = format!("{EMPTY_SHA256}  0001_a.sql\n{EMPTY_SHA256}  0098_ghost.sql\n");
+        let problems = check_migrations(
+            &manifest,
+            &on_disk(&[
+                ("0001_a.sql", &"a".repeat(64)),
+                ("0099_x.sql", EMPTY_SHA256),
+            ]),
+        )
+        .expect_err("three problems");
+        assert_eq!(problems.len(), 3, "{problems:?}");
+    }
+
+    /// The repository's own manifest and its own `backends/migrations`, not a
+    /// fixture — and specifically the case that made this gate unusable
+    /// before: `backends/migrations/README.md` is not a migration, is not in
+    /// the manifest, and must not fail the build.
+    #[test]
+    fn the_repository_itself_passes_with_a_readme_beside_the_migrations() {
+        let root = super::repo_root();
+        assert!(
+            root.join("backends/migrations/README.md").is_file(),
+            "this test is only meaningful while a non-.sql file sits in backends/migrations"
+        );
+        verify_migrations(&root).expect("this repository's own migrations match its manifest");
     }
 }

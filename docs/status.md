@@ -500,6 +500,49 @@ network, a database or a binary this workspace does not build.
   [`docs/plans/exp10-notes/opus.md`](plans/exp10-notes/opus.md).
 
 
+Last verified: 2026-09-07, on branch `claude/exp29-migration-manifest` at
+commit `02445b8` — **the migration manifest gate (issue #76), and the runbook
+repair it shipped with corrected**. `just ci` **exit 0**, recipe by recipe,
+exit code read from a file rather than a banner. (`02445b8` is the head this
+was measured at; the only commit after it is the one that writes this
+paragraph, which no gate here reads differently.)
+
+- `fmt-check`; `clippy` `-D warnings`.
+- `verify`, **all eleven gates**: `verify-no-mocks`; `verify-status` 1 declared
+  unimplemented item; `verify-errors` 18 error types, 16 `#[from]` variants
+  delegating; `verify-sdk-parity` 407 proving tests, 35 dated gaps, 19 methods
+  over 23 rows; `verify-links` **920 links in 167 tracked files**;
+  `verify-npm-scope` 2 publishable packages; `check-schema` 19 declarations;
+  `verify-serde` 73 types, 16 exempted; `verify-repositories` 4 concrete
+  implementations named by none of 80 outside files; `verify-toolchain`
+  1.98.0; **`verify-migrations` 35 migration files all matching the
+  manifest**. `verify-docs` advisory.
+- `test-rust` **1563 tests run, 1563 passed, 0 skipped** in 936.9 s across 46
+  binaries against a real Postgres and real WireMock rails; `test-doc` **99
+  passed, 1 ignored**; `verify-ignored` **0 ignored (expected 0), 46 binaries
+  (expected 46), 1563 total (floor 1080)**.
+- `lint-web`; `test-web` (checkout 448, nodejs SDK 190, stripe-js SDK 146,
+  shop 96, api-client 4, ui 3); `deny` — advisories, bans, licenses, sources
+  all ok.
+
+**One caveat about this run, stated because a warning is not a pass:**
+`check-schema` printed `WARNING — cratestack 0.11.1 on PATH, this repository
+pins 0.12.0` and type-checked against the 0.11.1 grammar. That is this
+machine's PATH, not this branch: CI's `self-checks` job installs the pinned
+0.12.0 from the justfile. Nothing in this change touches `schemas/vpay.cstack`.
+
+**An earlier run of the same branch was also exit 0 but took 2251 s**, because
+`the_0028_repair_in_the_runbook_fixes_a_database_that_applied_the_original`
+took **1201 s** on its own — `sqlx::migrate!` returns `VersionMismatch` before
+its `conn.unlock()` (sqlx-core 0.9.0 `src/migrate/migrator.rs`), so a refused
+migration hands its connection back to the pool holding the advisory lock and
+the next `run()` blocks until that connection is reaped ten minutes later.
+Running the refused migration on its own closed pool took it to **1.619 s**.
+The test now asserts the leaked lock is there (`pg_locks`, `locktype =
+'advisory' AND granted` = 1) so the workaround cannot outlive its reason.
+
+**Superseded by the run above, kept for the record.**
+
 Last verified: 2026-09-07, on branch `claude/exp21-checkout-page` at the head
 of the sabotage review, rebased onto `origin/master` (PRs #55 #60 #62 #64) —
 **the checkout page restyled and made runtime-configurable, and then fixed**.
@@ -2378,6 +2421,60 @@ on 2026-09-05**, which brought [ADR-0016](adr/0016-engineering-standards.md)'s
 **1270 tests in 42 binaries, 0 ignored** — 1260 on `02ae5cc` plus this
 branch's ten, all in `xtask` (184 → 194). `verify-toolchain` is the **tenth**
 gate after that rebase, not the eighth it was written as.
+
+### Migration manifest — applied migrations are immutable (2026-09-07, issue #76)
+
+**Landed.** `backends/migrations/MANIFEST.sha256` records the SHA-256 of every
+migration file's bytes, and `verify-migrations` is the **eleventh** gate in
+`just verify` and a step in CI's `self-checks` job. It fails when a migration
+file's hash has moved, when a `.sql` file beside the manifest has no line, and
+when a line names a file that is gone. `just migrations-manifest` **refuses**
+to rewrite an existing line or to drop a line whose file has vanished — it only
+appends — so the gate cannot be silenced by regenerating.
+
+**Why:** `sqlx::migrate!` stores a SHA-384 of each file's *whole bytes*,
+comments included, in `_sqlx_migrations.checksum`. PR #39 (the `@vpay` ->
+`@vaam-apps` npm rename) reflowed one comment inside
+`0028_create-checkout-sessions.sql` after it had shipped; every job in CI stayed
+green, and every database brought up between #37 and #39 stopped booting
+(exit 78). Nothing in the workspace could have caught it: every test starts from
+an empty database and applies the current files, so the mismatch is invisible
+until a *pre-existing* database meets a new binary.
+
+**What is proved, and by what.** Twelve unit tests in `.xtask`
+(`migration_manifest_tests`) pin each way the gate fails — an edited file, an
+unlisted file, a deleted line, a line for a file that does not exist, a
+duplicated line, a non-hex hash, and that manifest *order* does not matter.
+`the_0028_repair_in_the_runbook_fixes_a_database_that_applied_the_original`
+(`backends/tests/integration/tests/postgres_smoke.rs`) is the one that matters
+operationally: it migrates a fresh `postgres:16-alpine`, rewinds migration 28's
+checksum to the original file's SHA-384, confirms `sqlx::migrate!` then refuses
+with the message the runbook quotes, parses the `UPDATE` **out of
+`docs/runbooks/migrations.md` itself**, runs it, and confirms the migrator runs
+clean afterwards.
+
+**What this gate does NOT stop, stated because the opposite would be the
+comfortable thing to write:** a contributor who edits a migration *and*
+hand-edits its line in `MANIFEST.sha256` passes. Nothing can stop that —
+a manifest whose own hash is checked has to pin that hash somewhere, and
+whoever can edit two files can edit three. The manifest makes the edit
+**visible as a reviewable one-line diff**; it does not make it impossible. It
+also says nothing about a database that is already broken; that is the
+runbook's §4.
+
+**Corrected during review (2026-09-07).** The first draft of
+`docs/runbooks/migrations.md` gave the repair as the SHA-384 of 0028's
+**original** bytes — which is precisely what a broken database already holds.
+The `UPDATE` would have reported `UPDATE 1`, changed nothing, and left the
+binary exiting 78, with the page telling an on-call operator it had worked.
+The correct value is the **current** file's
+(`6eeb31ee…07b5ec`); the original (`f4d1a8e1…8ae252`) is now stated beside it
+so an operator can tell which state their database is in, and the integration
+test above is what keeps both honest. The same draft's gate hashed *every* file
+in `backends/migrations/`, not just `*.sql`, which made
+`backends/migrations/README.md` unaddable — the gate demanded a manifest line
+for it and `just migrations-manifest` would never write one — and accepted
+duplicate manifest lines silently.
 
 ### sqlx 0.8 -> 0.9 (2026-09-05)
 

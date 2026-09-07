@@ -9,6 +9,7 @@ do, and how do I know it is fixed.
 | [provider-error-rate.md](provider-error-rate.md) | Failed rail calls rising as a share of all calls (any `error_kind`) | `VpayProviderErrorRateHigh` |
 | [worker-queue.md](worker-queue.md) | A dead-lettered job, a stranded lease, or a rail contradicting a settled charge | `VpayJobQueueBehind`, `VpayJobsDeadLettered` |
 | [webhook-delivery-failures.md](webhook-delivery-failures.md) | A delivery in `exhausted`, an endpoint with no signing secret, or a secret rotation | — |
+| [migrations.md](migrations.md) | A binary exiting 78 with `migration <n> was previously applied but has been modified` | — |
 | [release.md](release.md) | Cutting a `v*` tag, verifying an image signature, pinning a digest in Helm values | — |
 | [deploy-and-rollback.md](deploy-and-rollback.md) | A `helm upgrade`, a rollback, or a pod exiting 78/69/1 during a rollout | — |
 | [rotate-signing-key.md](rotate-signing-key.md) | Rotating the OAuth signing key; a server crash-looping on a retired `kid` | — |
@@ -50,6 +51,16 @@ threshold to tune.
 **Status:** written from the design, never exercised against a running system.
 No runbook here has been followed against a deployment, because no deployment
 exists. See [../status.md](../status.md).
+
+**[migrations.md](migrations.md) is a third kind of page** (new 2026-09-07,
+issue #76). It describes no alert — there is no metric for "a migration file
+was edited", and the symptom is a process that will not start — and it is the
+only page here whose central `UPDATE` is *executed by the test suite*:
+`the_0028_repair_in_the_runbook_fixes_a_database_that_applied_the_original`
+parses the SQL out of that markdown file, runs it against a real Postgres put
+into the broken state, and fails if the migrator does not then run clean. What
+is still unfollowed there is the same thing as everywhere else on this page:
+no deployment exists, so its `kubectl` commands have been run nowhere.
 
 **[demo.md](demo.md) and [checkout.md](checkout.md) are the exceptions, and are
 a different kind of page.** Neither describes an alert or an incident:
