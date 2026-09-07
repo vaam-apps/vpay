@@ -44,17 +44,21 @@ not visible; that is how issue #76 happened. Review the manifest line.
 
 ## 2. What happened to 0028 (issue #76)
 
-PR #39 (the `@vpay` -> `@vaam-apps` npm rename) rewrote one comment inside
-`backends/migrations/0028_create-checkout-sessions.sql` after it had shipped in
-commit `d0b602e`. The SQL is unchanged; only the comment text moved:
+PR #39 (the npm scope rename to `@vaam-apps`) rewrote **one line of comment**
+inside `backends/migrations/0028_create-checkout-sessions.sql` after it had
+shipped in commit `d0b602e` — an old package name in a note about `ui_mode`.
+No SQL changed. The whole edit:
 
-```diff
--    -- `@vpay/stripe-js`, which mounts vpay's page in an iframe).
-+    -- `@vaam-apps/vpay-stripe-js`, which mounts vpay's page in an iframe).
+```bash
+git diff d0b602e HEAD -- backends/migrations/0028_create-checkout-sessions.sql
 ```
 
 sqlx hashes the file, comments included, so that one line is a different
-migration as far as every database is concerned. Every stack brought up between
+migration as far as every database is concerned. (The retired package name is
+not quoted on this page: `cargo xtask verify-npm-scope` fails the build on any
+occurrence of it outside `docs/plans`, `docs/adr` and `docs/status.md`, and
+this runbook is not one of the places that record history. Run the command
+above to see the exact bytes.) Every stack brought up between
 #37 and #39 now exits 78 on boot:
 
 ```
