@@ -11,6 +11,8 @@ overrides:
   '@chevrotain/gast>lodash': ^4.18.1
   '@chevrotain/cst-dts-gen>lodash': ^4.18.1
 
+packageExtensionsChecksum: 007489369176186b86d42c54270bc979
+
 importers:
 
   .:
@@ -254,7 +256,7 @@ importers:
         version: 10.5.4(postcss@8.5.28)
       daisyui:
         specifier: ^4.12.23
-        version: 4.12.24(postcss@8.5.28)
+        version: 4.12.24(postcss@8.5.28)(tailwindcss@3.4.19(yaml@2.9.0))
       eslint:
         specifier: 9.39.5
         version: 9.39.5(jiti@2.7.0)
@@ -2511,6 +2513,8 @@ packages:
   daisyui@4.12.24:
     resolution: {integrity: sha512-JYg9fhQHOfXyLadrBrEqCDM6D5dWCSSiM6eTNCRrBRzx/VlOCrLS8eDfIw9RVvs64v2mJdLooKXY8EwQzoszAA==}
     engines: {node: '>=16.9.0'}
+    peerDependencies:
+      tailwindcss: ^3.4.0
 
   daisyui@5.7.28:
     resolution: {integrity: sha512-BxQap2QOj7NQy5nEsjTHRmybmUZP3t+O5G6vfdidZuptBsh/QyKN9wbdrGDZk198fMI3UyYnA/rCWlggZIhGnw==}
@@ -6419,12 +6423,13 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  daisyui@4.12.24(postcss@8.5.28):
+  daisyui@4.12.24(postcss@8.5.28)(tailwindcss@3.4.19(yaml@2.9.0)):
     dependencies:
       css-selector-tokenizer: 0.8.0
       culori: 3.3.0
       picocolors: 1.1.1
       postcss-js: 4.1.0(postcss@8.5.28)
+      tailwindcss: 3.4.19(yaml@2.9.0)
     transitivePeerDependencies:
       - postcss
 
