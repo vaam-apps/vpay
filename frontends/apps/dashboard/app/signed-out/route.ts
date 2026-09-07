@@ -14,9 +14,14 @@ import { signedOutResponse } from '../../src/server/signed-out';
  *
  * There is no loop: `/login` renders a form for a browser whose session is
  * dead rather than redirecting it anywhere.
+ *
+ * The request headers are passed on because the cookie is only forgotten for
+ * a **navigation** — a `GET` that clears a cookie is the `<img src>` a chat
+ * message can fire, and `signed-in-bar.tsx` already says so about the sign-out
+ * button.
  */
 export const dynamic = 'force-dynamic';
 
-export function GET(): NextResponse {
-  return signedOutResponse();
+export function GET(request: Request): NextResponse {
+  return signedOutResponse(request.headers);
 }

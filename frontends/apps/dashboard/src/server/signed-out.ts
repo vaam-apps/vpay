@@ -54,16 +54,63 @@ import { LOGIN_PATH } from './session';
  * first — the revocation (ADR-0017 decision 2). This only forgets a cookie,
  * which is all a page is entitled to do about a session vpay has already
  * refused.
+ *
+ * # A `GET` that clears a cookie, and the rule this app already wrote down
+ *
+ * `signed-in-bar.tsx` says why signing out is a `<form>` POST: "a sign-out
+ * link is something a prefetcher, a link scanner or an `<img src>` in a chat
+ * message can fire". This route is a `GET` — it has to be, a page redirects
+ * to it — so it would be exactly that link, and forcing a staff member out of
+ * their session from any page on the internet is a denial of service however
+ * small.
+ *
+ * {@link isNavigation} is the answer, and it is the one the browser already
+ * has: every request a modern browser makes carries `Sec-Fetch-Dest`, and it
+ * says `document` only for a **top-level navigation**. An `<img>`, a
+ * `<script>`, a `fetch` and a prefetch each say something else, so each gets
+ * the redirect and keeps its cookie. A request with no fetch metadata at all
+ * — an older browser, `curl` — is treated as a navigation, because that is
+ * the direction that keeps the feature working for the people who need it and
+ * the attack needs a browser that would have sent the header.
  */
-export function signedOutResponse(): NextResponse {
+export function signedOutResponse(headers?: Headers): NextResponse {
   const response = new NextResponse(null, {
     status: 303,
     headers: { location: LOGIN_PATH },
   });
-  // `maxAge: 0` with the SAME attributes the cookie was written with. A
-  // deletion whose `path` or `secure` differs from the original leaves the
-  // original in place — the browser treats them as different cookies — which
-  // is the drift `COOKIE_ATTRIBUTES` exists to stop (`cookies.ts`).
-  response.cookies.set(SESSION_COOKIE, '', { ...COOKIE_ATTRIBUTES, maxAge: 0 });
+  if (isNavigation(headers)) {
+    // `maxAge: 0` with the SAME attributes the cookie was written with. A
+    // deletion whose `path` or `secure` differs from the original leaves the
+    // original in place — the browser treats them as different cookies —
+    // which is the drift `COOKIE_ATTRIBUTES` exists to stop (`cookies.ts`).
+    response.cookies.set(SESSION_COOKIE, '', { ...COOKIE_ATTRIBUTES, maxAge: 0 });
+  }
   return response;
+}
+
+/**
+ * Whether this request is a person arriving on a page, rather than something
+ * a page fetched on their behalf.
+ *
+ * `Sec-Fetch-Dest: document` is a top-level navigation and cannot be forged
+ * by script — the browser sets the `Sec-` prefixed headers and refuses to let
+ * a page override them. `Sec-Purpose: prefetch` is a navigation the person
+ * did not make, and Next itself prefetches `<Link>` targets, so it is
+ * excluded too.
+ *
+ * Absent means "no fetch metadata", which is `curl` and browsers older than
+ * 2020. Treated as a navigation: this route only forgets a cookie whose
+ * session vpay has already refused, and refusing to do that for a client that
+ * sends no metadata would break the feature for the honest caller while the
+ * attack needs a browser that does send it.
+ */
+export function isNavigation(headers?: Headers): boolean {
+  if (headers === undefined) {
+    return true;
+  }
+  if ((headers.get('sec-purpose') ?? '').includes('prefetch')) {
+    return false;
+  }
+  const destination = headers.get('sec-fetch-dest');
+  return destination === null || destination === 'document';
 }
