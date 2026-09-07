@@ -322,7 +322,7 @@ Run on `08d9b8e..HEAD` under the `.nvmrc` Node (22.23.2), `pnpm install
 | `just verify-links` | ✅ | exit 0 — 899 links across 163 tracked markdown files |
 | `just verify-status` | ✅ | exit 0 — 1 declared unimplemented item, unchanged |
 | `docker build` of the shop | ✅ | built four times over this review (three source changes plus the mutation), every one green |
-| **`just test-e2e`** | ✅ | the plan's own §7 row 3 recipe, run to completion, `demo_project=exp26c-review`, ports 18501–18505: **11 tests, 11 passing, 0 failing, 0 pending, 0 skipped** — `checkout.cy.ts` 1/1, `dashboard.cy.ts` 3/3, `shop-hosted.cy.ts` 3/3, `shop-embedded.cy.ts` 4/4 (framed pass). Exit code read from a file, `TEST_E2E_EXIT=0` |
+| **`just test-e2e`** | ✅ | the plan's own §7 row 3 recipe, run to completion on the final head, `demo_project=exp26c-review`, ports 18501–18505: **11 tests, 11 passing, 0 failing, 0 pending, 0 skipped** — `checkout.cy.ts` 1/1, `dashboard.cy.ts` 3/3, `shop-hosted.cy.ts` 3/3, `shop-embedded.cy.ts` 4/4 (framed pass). Exit code read from a file, `TEST_E2E2=0`. Run twice, and **the first attempt failed** — recorded rather than dropped: `wiremock-orange is unhealthy`, a container this review had left up from an earlier stack while `gen-demo-keys` rewrote the mappings directory under it, alongside `EAI_AGAIN` registry timeouts during the image builds. `docker compose down -v` first, then the recipe from nothing, green. An environment fault, and the reason it can be called one is that it moved when the environment did and not when the code did |
 
 `just test-e2e` is the headline: Lane C could not run it and proved its two
 specs by hand instead. On this head it runs as written, all four images build,
