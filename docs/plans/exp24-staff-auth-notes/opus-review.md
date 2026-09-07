@@ -11,23 +11,24 @@ what happened, and what was changed.
 The implementation is unusually good and its own notes
 ([opus.md](opus.md)) are unusually honest — the mutation table records two
 mutations as *not caught* and explains each, which is the opposite of the
-failure mode this repository worries about. Eleven of the thirteen attacks
+failure mode this repository worries about. Eleven of the fourteen attacks
 below found nothing.
 
-**Two found something, and both were the same shape of mistake: a security
-property that was implemented, documented, tested at the unit level, and
-never actually wired to the request path.**
+**Three found something, and two of them are the same bug seen twice: a
+security property that was implemented, documented, tested at the unit level,
+and never actually wired to the request path.**
 
 | # | Finding | Severity |
 |---|---|---|
 | F1 | A **disabled** staff member's already-minted bearer token kept reading `/dash/v1` for the rest of its 15-minute TTL. `require_dashboard_token` never read `staff_members` at all. | gate-hole |
 | F2 | The **per-IP** half of the sign-in rate limit did not exist. `ConnectInfo` was never installed, so every attempt in the process shared one `ip:unknown` bucket — and ten unauthenticated requests locked the whole deployment out of the dashboard. | gate-hole |
+| F6 | A staff member **moved to another merchant** kept reading the old merchant's rows with the token they already held, for the same window. Same root cause as F1, found by asking the same question again. | gate-hole |
 | F3 | Mutation M17 (`Staff::create` → `upsert`), recorded as uncaught, was catchable at the repository layer. Now caught. | correctness |
 | F4 | ADR-0017 said deleting a session row "is a **revocation**"; its own Consequences and the suite say the JWT stays valid for its TTL. Overstated. | misleading-claim |
 | F5 | ADR-0017 decision 1 said `model Staff`; the model is `StaffMember`, which migration `0035`'s header explains at length. | nit |
 
-Both gate-holes are fixed, with decisive regression tests. F3, F4 and F5 are
-fixed. One thing is **surfaced and deliberately not taken** — see Maintainer
+All three gate-holes are fixed, with decisive regression tests. F3, F4 and F5
+are fixed. One thing is **surfaced and deliberately not taken** — see Maintainer
 decisions.
 
 ## `just ci` on the delivered head, recipe by recipe
@@ -54,7 +55,7 @@ compile, and it passed on the clean tree.
 
 ## The attack table
 
-Thirteen cases against a real `vpay_api::router` on a real socket over a real
+Fourteen cases against a real `vpay_api::router` on a real socket over a real
 Postgres, plus one in-process timing case.
 
 | # | What was tried | What happened |
@@ -73,6 +74,7 @@ Postgres, plus one in-process timing case.
 | A11 | An authorization code aged past `expires_at` | `401` |
 | A12 | Does the `302` or anything else leak the session token? | No. The `Location` carries `code` and `state` only |
 | A13 | Burn one source address's budget, then a first-ever attempt from another source with a fresh email | **BROKE IN — `429`.** **F2** |
+| A14 | Move the staff member to merchant B, then use the token minted for merchant A | **BROKE IN — `200`** with merchant A's intent in the body. **F6** |
 
 ## F1 — a disabled staff member kept reading `/dash/v1`
 
@@ -108,6 +110,31 @@ surface touch Postgres, and failing closed on a database error.
 `disabling_a_staff_member_refuses_their_live_session` now asserts both
 credentials before and after the `UPDATE`. Decisive: removing the `is_active()`
 arm gives `left: 200, right: 403`.
+
+## F6 — a staff member moved to another merchant kept reading the old one
+
+Found by asking F1's question a second time: *everything*
+`require_dashboard_token` checked was a statement about the **token**, and
+none of it was a statement about the **person**. The merchant *claim* says
+which tenant the token was minted for; nothing said which tenant the person
+belongs to now.
+
+`oauth_authorization_codes.merchant_id` is a copy of `staff.merchant_id` taken
+at issue, and migration `0035`'s comment says why: "so that a staff row edited
+between issue and exchange cannot silently move a token to another tenant."
+That is real and it protects the tenant being moved **to**. Nothing protected
+the tenant being moved **from**.
+
+Measured: with `merchant_id` updated to merchant B, the token minted for
+merchant A answered `200` with merchant A's payment intent in the body.
+
+**Fixed** in the same read F1 added, at no extra cost: the row's `merchant_id`
+must equal the binding. It refuses nobody who was ever allowed in, because
+`staff::oauth::authorize` already requires that equality before it will mint a
+code. `moving_a_staff_member_to_another_merchant_refuses_their_existing_token`
+is the guard, and it asserts the refusal carries none of the tenant's data.
+Decisive: dropping `&& staff.merchant_id == binding.merchant_id` gives
+`left: 200, right: 403` with `pi_moved_a` in the body.
 
 ## F2 — the per-IP rate limit did not exist
 
@@ -307,20 +334,25 @@ Two things were wrong and are corrected:
 
 ## Verdict
 
-**Safe as delivered: no.** F1 and F2 were both exploitable by an
-unauthenticated caller or a just-disabled insider, and both were claimed as
-working in ADR-0017, in the flow document and in `docs/status.md`.
+**Safe as delivered: no.** F2 was exploitable by any unauthenticated caller
+on the internet; F1 and F6 were exploitable by an insider an operator had just
+revoked. All three were claimed as working in ADR-0017, in the flow document
+and in `docs/status.md`.
 
 **Safe as reviewed: yes**, for the surface that exists — with the residuals
 above written down where an operator will find them, and decision 1 left where
 it belongs.
 
-The pattern worth carrying forward: **both gate-holes were properties that were
-correctly implemented and never connected to the request path**, and in both
-cases a passing unit test is what made them invisible. The limiter's tests
+The pattern worth carrying forward: **every gate-hole here was a property that
+was correctly implemented and never connected to the request path**, and in
+each case a passing test is what made it invisible. The limiter's unit tests
 passed a peer address the router never supplied; the disabled-account test
 threw away the credential it was meant to check. Neither was a bad test of the
-thing it tested.
+thing it tested — which is the point. A test that constructs the thing under
+test cannot see a wiring bug, and the three cheapest questions that find this
+class are: *what supplies this argument in production?*, *which credential does
+this test actually exercise?*, and *is this a statement about the token or
+about the person?*
 
 ## Gate on the review head
 

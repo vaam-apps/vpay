@@ -1353,3 +1353,70 @@ async fn the_sign_in_rate_limit_is_per_source_address() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+// ----------------------------------------------------------------- test 16
+
+/// **Moving a staff member to another merchant stops their existing token
+/// reading the old one**, on the next request rather than at the token's
+/// expiry.
+///
+/// The same shape as the disabled case above, and found by the same question:
+/// everything `require_dashboard_token` checked was a statement about the
+/// *token*, and none of it was a statement about the *person*.
+///
+/// `oauth_authorization_codes.merchant_id` is a copy of `staff.merchant_id`
+/// taken when the code was issued, and migration `0035`'s own comment says
+/// why: "so that a staff row edited between issue and exchange cannot
+/// silently move a token to another tenant". That protects the tenant being
+/// moved **to**. Nothing protected the tenant being moved **from**, so a
+/// staff member reassigned to merchant B went on listing merchant A's
+/// payments with the token they already held, for the rest of its 15-minute
+/// TTL.
+///
+/// It refuses nobody who was ever allowed in: `/authorize` will not mint a
+/// code for a staff member whose `merchant_id` is not the binding, so any
+/// token that exists already satisfied this at issue.
+///
+/// The decisive mutation: drop `&& staff.merchant_id == binding.merchant_id`
+/// from `require_dashboard_token` and the last assertion reads `200`.
+#[tokio::test]
+async fn moving_a_staff_member_to_another_merchant_refuses_their_existing_token()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+    seed_intent(harness.repositories.as_ref(), MERCHANT_A, "pi_moved_a").await?;
+    let (_session, token) = harness.access_token().await?;
+
+    let (status, body) = harness
+        .get_json("/dash/v1/payment_intents", None, Some(&token))
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        field(&body, "data").as_array().map(Vec::len),
+        Some(1),
+        "the bound merchant's intent is readable before the move: {body}"
+    );
+
+    // The operator's `UPDATE`. There is no HTTP endpoint that reassigns a
+    // staff member, deliberately — ADR-0017 gives the CLI one subcommand —
+    // so this is what an operator's own statement would do.
+    sqlx::query("UPDATE staff_members SET merchant_id = $1 WHERE email = $2")
+        .bind(MERCHANT_B)
+        .bind(STAFF_EMAIL)
+        .execute(&harness.repositories.op_store_pool())
+        .await
+        .context("moving the staff member to the other merchant")?;
+
+    let (status, body) = harness
+        .get_json("/dash/v1/payment_intents", None, Some(&token))
+        .await?;
+    assert_eq!(
+        status, 403,
+        "a staff member who no longer belongs to this deployment's merchant must stop reading \
+         its rows at once, not when their token happens to expire: {body}"
+    );
+    assert!(
+        !body.to_string().contains("pi_moved_a"),
+        "and the refusal must carry none of the tenant's data: {body}"
+    );
+    Ok(())
+}

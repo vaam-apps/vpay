@@ -221,11 +221,25 @@ request, placed after the audience, tenant and scope checks so an
 unauthenticated caller cannot make this surface touch Postgres, and it fails
 closed on a database error.
 
-*Added 2026-09-07 (exp24 review, finding F1).* As first delivered the check
-existed only on the session routes, so a disabled staff member went on
-listing their merchant's payment intents with the bearer token they already
-held for the rest of its 15-minute TTL — while this ADR, the flow document
-and `docs/status.md` all described `status` as the granularity that matters.
+**Moving a staff member between merchants takes effect at once too.** The
+same read compares the row's `merchant_id` to the binding. That is a second
+question from the token's merchant *claim*: the claim says which tenant the
+token was minted for, the row says which tenant the person belongs to now.
+`oauth_authorization_codes.merchant_id` is a copy taken at issue so an edit
+cannot move a token to a **new** tenant; this is the other half, without
+which the copy only protects the tenant being moved *to*. It refuses nobody
+who was ever allowed in — `/authorize` requires the same equality before it
+will mint a code.
+
+*Added 2026-09-07 (exp24 review, findings F1 and F6).* As first delivered
+`require_dashboard_token` read `staff_members` not at all: everything it
+checked was a statement about the **token** and none of it was a statement
+about the **person**. A disabled staff member went on listing their
+merchant's payment intents with the bearer token they already held for the
+rest of its 15-minute TTL — while this ADR, the flow document and
+`docs/status.md` all described `status` as the granularity that matters —
+and a staff member reassigned to another merchant went on reading their old
+one's.
 
 **The rate limit is per replica.** Three replicas admit three times the
 attempts a single one does. That is the honest cost of in-process limiting,

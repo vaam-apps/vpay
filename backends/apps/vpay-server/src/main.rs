@@ -889,12 +889,12 @@ async fn serve_with_bounded_drain(
         vpay_api::router(deps).into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
-            shutdown.await;
-            // A closed receiver just means the grace-period clock below
-            // already lost interest — the drain itself already won the race.
-            let _ = drain_started_tx.send(());
-        })
-        .into_future();
+        shutdown.await;
+        // A closed receiver just means the grace-period clock below
+        // already lost interest — the drain itself already won the race.
+        let _ = drain_started_tx.send(());
+    })
+    .into_future();
     tokio::pin!(serve_fut);
 
     tokio::select! {

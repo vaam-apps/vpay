@@ -302,15 +302,22 @@ What is built, in the order a request meets it:
    now takes effect on the **next request** for both credentials a sign-in
    produces, not just for the session.
 
-   *Corrected 2026-09-07 (exp24 review, finding F1).* As first delivered,
-   setting `status = 'disabled'` refused the session routes and left the
-   already-minted `/dash/v1` bearer token reading payment intents for the
-   rest of its 15-minute TTL. `require_dashboard_token` now reads the
-   `staff_members` row its `sub` names — one primary-key read, after every
-   cheaper check, failing closed on a database error — and
-   `disabling_a_staff_member_refuses_their_live_session` asserts both halves.
-   A break-glass control that a payments dashboard honours a quarter of an
-   hour late is not a break-glass control.
+   *Corrected 2026-09-07 (exp24 review, findings F1 and F6).* As first
+   delivered, setting `status = 'disabled'` refused the session routes and
+   left the already-minted `/dash/v1` bearer token reading payment intents
+   for the rest of its 15-minute TTL — and reassigning a staff member to
+   another merchant left them reading their old merchant's rows for the same
+   window. `require_dashboard_token` never read `staff_members` at all:
+   everything it checked was a statement about the *token* and none of it was
+   a statement about the *person*. It now reads the row its `sub` names and
+   refuses a `disabled` one, a missing one, and one whose `merchant_id` is no
+   longer the binding — one primary-key read, after every cheaper check,
+   failing closed on a database error, and refusing nobody who was ever
+   allowed in, since `/authorize` requires both before it will mint a code.
+   `disabling_a_staff_member_refuses_their_live_session` and
+   `moving_a_staff_member_to_another_merchant_refuses_their_existing_token`
+   are the guards. A break-glass control that a payments dashboard honours a
+   quarter of an hour late is not a break-glass control.
 5. **Key rotation has still never happened.** ADR-0009's fourth blocker is
    untouched. `TokenManager` holds one key for the life of the process,
    rotation is restart-based, and nothing re-reads the key file.

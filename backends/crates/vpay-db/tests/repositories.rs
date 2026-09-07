@@ -7850,7 +7850,11 @@ async fn a_second_create_for_one_staff_id_is_refused_rather_than_overwriting() -
         now,
     };
 
-    Staff::create(repositories.as_ref(), new("ada@example.test", "the-real-hash")).await?;
+    Staff::create(
+        repositories.as_ref(),
+        new("ada@example.test", "the-real-hash"),
+    )
+    .await?;
 
     let err = Staff::create(
         repositories.as_ref(),
@@ -7873,7 +7877,10 @@ async fn a_second_create_for_one_staff_id_is_refused_rather_than_overwriting() -
     let row = Staff::find(repositories.as_ref(), "stf_collide")
         .await?
         .expect("the original row is still there");
-    assert_eq!(row.email, "ada@example.test", "the address was not rewritten");
+    assert_eq!(
+        row.email, "ada@example.test",
+        "the address was not rewritten"
+    );
     assert_eq!(
         row.password_hash, "the-real-hash",
         "the password hash was not rewritten — this is the whole point of the builder choice"

@@ -934,14 +934,21 @@ where
 /// # And the person named by `sub` must still be allowed in
 ///
 /// `sub` authorises nothing, but it *identifies* — and this function reads
-/// the `staff_members` row it names and refuses a `disabled` one, or one that
-/// has been deleted. Added by the exp24 review (finding F1): a disabled staff
-/// member's already-minted bearer token went on reading this surface for the
-/// rest of its 15-minute TTL, while `staff_members.status` was documented as
-/// the one per-person kill switch a deployment has.
+/// the `staff_members` row it names and refuses three cases with one answer:
+/// the row is `disabled`, the row is gone, or the row no longer belongs to
+/// this deployment's merchant.
 ///
-/// It is one primary-key read, after every cheaper check, and it fails
-/// closed: a database that cannot answer is not read as a `yes`.
+/// Added by the exp24 review (findings F1 and F6), because everything above
+/// this paragraph is a statement about a **token** and none of it is a
+/// statement about the **person**. A token lives 15 minutes; an operator
+/// disabling an account or moving a staff member between tenants expects
+/// either to take effect now. Neither did.
+///
+/// This refuses nobody who was ever allowed in: `staff::oauth::authorize`
+/// already requires an `active` row whose `merchant_id` is the binding before
+/// it will mint a code. It is one primary-key read, after every cheaper
+/// check, and it fails closed — a database that cannot answer is not read as
+/// a `yes`.
 ///
 /// # The check this replaces, and why it could not stay
 ///
@@ -1084,18 +1091,29 @@ where
     // is the maintainer's, not this middleware's — the exp24 review surfaces
     // it rather than taking it. What is fixed here is the case the ADR never
     // accepted and its own text contradicts.
+    // The row's OWN tenant is checked here too, and it is a second question
+    // from the merchant *claim* above. The claim says which tenant the token
+    // was minted for; this says which tenant the person belongs to **now**.
+    // `staff::oauth::authorize` requires the two to agree before it will mint
+    // a code at all, so this refuses nobody who was ever allowed in — what it
+    // closes is a staff member moved to another merchant, whose old token
+    // otherwise went on reading their old merchant's payments for the rest of
+    // its TTL. `oauth_authorization_codes.merchant_id` is a copy taken at
+    // issue precisely so an edit cannot move a token to a *new* tenant; this
+    // is the other half, and without it the copy only protects the tenant
+    // being moved to.
     let repositories = Arc::<dyn Repositories>::from_ref(&state);
     match vpay_db::Staff::find(repositories.as_ref(), &claims.subject).await {
-        Ok(Some(staff)) if staff.is_active() => {}
+        Ok(Some(staff)) if staff.is_active() && staff.merchant_id == binding.merchant_id => {}
         Ok(_) => {
-            // One answer for "disabled" and for "gone": telling them apart
-            // would say which `stf_…` values name a row, and neither may
-            // read.
+            // One answer for "disabled", "gone" and "no longer this tenant's":
+            // telling them apart would say which `stf_…` values name a row,
+            // and none of the three may read.
             tracing::warn!(
                 subject = %claims.subject,
-                "a /dash/v1 token names a staff member who is disabled or no longer exists; \
-                 refusing rather than serving rows to a revoked account for the rest of the \
-                 token's TTL"
+                "a /dash/v1 token names a staff member who is disabled, no longer exists, or no \
+                 longer belongs to this deployment's merchant; refusing rather than serving rows \
+                 to a revoked account for the rest of the token's TTL"
             );
             return ApiError::Forbidden.into_response();
         }
