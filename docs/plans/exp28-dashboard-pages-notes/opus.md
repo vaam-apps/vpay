@@ -93,7 +93,7 @@ the gate render.
 
 | Gate | Result |
 |---|---|
-| `pnpm --filter @vpay/dashboard test` | **128 passed, 17 files, 0 skipped** (was 22 in 6) |
+| `pnpm --filter @vpay/dashboard test` | **134 passed, 18 files, 0 skipped** (was 22 in 6) |
 | `pnpm --filter @vpay/dashboard typecheck` | clean |
 | `pnpm --filter @vpay/dashboard lint` | clean, `--max-warnings 0` |
 | `pnpm --filter @vpay/dashboard build` | clean; all seven routes dynamic, as they must be — every one reads cookies |
@@ -110,7 +110,34 @@ Each one applied to the tree, the suite run, the mutation reverted.
 | `COOKIE_ATTRIBUTES.httpOnly` → `false` | `cookies.test.ts` fails | **1 failed, 127 passed** — "is httpOnly — no script on this origin may read a payments credential" |
 | token exchange sends `createPkce().verifier` (a *fresh* pair) instead of the one the challenge came from | `oauth.test.ts` fails | **1 failed, 127 passed** — "carries the verifier the challenge was derived from — THE decisive case" |
 | `NAV_LINKS` gains `{ href: '/webhooks' }` | `layout.test.tsx` fails | **2 failed, 126 passed** — the rendered-markup case *and* the constant case |
+| the status filter's control is renamed off `status` | `payments-filters.test.tsx` fails | **1 failed, 132 passed** — "submits the status as `status`, which is the parameter vpay reads" |
 | (in a browser) — | `dashboard.cy.ts` asserts the session cookie is `httpOnly`, that `document.cookie` cannot see it, and that no JWT appears in the rendered page | see the Cypress section |
+
+## The screens
+
+Committed under [`screenshots/`](screenshots/), captured by `dashboard.cy.ts`
+itself against the real stack rather than by hand — so the images are of the
+build the spec passed against, and re-capturing them is a `just test-e2e`
+rather than a ritual.
+
+| Image | What it is |
+|---|---|
+| `01-login.png` | `/login`, before anything is typed — no credential is in an image |
+| `02-enrolment.png` | `/login/totp` on a first sign-in: the QR, the base32 key, and the notice that nothing is stored until a code from it verifies |
+| `03-payments.png` | `/payments` — the signed-in bar naming the staff member and the tenant, the filters, and real rows created by `checkout.cy.ts` |
+| `04-payment-detail.png` | `/payments/{id}` |
+
+`02-enrolment.png` deliberately contains a real TOTP secret. It belongs to a
+staff member the stack creates fresh on every run and destroys with `down -v`
+minutes later, and it authenticates nothing that will exist tomorrow.
+
+**Looking at them found a defect nothing else did.** The detail page headed
+itself `Payment` and the first section of the view inside it headed itself
+`Payment` too — two `<h2>` with one name, which reads as a rendering bug to
+anybody who opens the page. No test asserted on heading text, and axe does not
+object to it. The section is `Summary` now, and
+`payment-detail.test.tsx` pins it. That is the entire argument for "render it
+and look at it" in one finding.
 
 ## Two things this pass got wrong first, and what they cost
 
@@ -122,6 +149,17 @@ never brought up and which belonged to somebody else. It failed instantly
 (that stack's image predates the `staff` subcommand) and `--rm` removed the
 container, so nothing was left behind. The fix repeats all six overrides on the
 sub-invocation, with a comment saying why.
+
+**The spec asserted an event type nothing writes.** Its first real run failed
+on `payment_intent.created` in the timeline of a just-minted intent — and that
+type is one of **five of the eight documented event types that nothing emits**
+(`docs/status.md`, "Events written by the worker": only `.succeeded`,
+`.payment_failed` and `checkout.session.expired` are ever written, by
+settlement and by the housekeeping sweep). The spec now asserts what is
+actually there: "No events yet." on an unconfirmed intent, and a real
+`payment_intent.*` on one that has a charge. This is the good case for running
+a thing rather than reasoning about it — the wrong assumption was the author's,
+and the only thing that could have caught it is the run.
 
 **Cypress test isolation cleared the session between tests.** The spec is a
 sequence — sign in, look around, sign out, sign back in — and Cypress clears
