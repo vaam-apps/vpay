@@ -788,5 +788,37 @@ still write `form-control`/`label-text` — daisyUI 4 classes daisyUI 5 removed,
 caught by the new `just verify-ui` gate, which is red on this file until the
 migration lands. That migration (Lane B) is not yet started.
 
+**Updated 2026-09-07: the migration landed, and `just verify-ui` is green on
+this app.** `screens.tsx`, `checkout-view.tsx`, `return-view.tsx` and
+`locale-switch.tsx` compose `@vpay/ui`'s components (`Alert`, `Badge`,
+`Button`, `Card`, `Checkbox`, `Field`, `Input`, `Select`, `Spinner`, `Stack`,
+`Text`, `PageShell`, `Heading`, `List`) instead of writing daisyUI classes or
+importing `@base-ui-components/react` directly; `tailwind.config.ts` is
+deleted (Tailwind 4 is CSS-first); `globals.css` is one `@import` plus the
+`prefers-reduced-motion` block. `OutcomePanel` now passes
+`checkoutOutcomeTone[kind]` straight into `Alert`'s `tone` prop — the
+`TONE_CLASS` lookup map and the template literal assembling a class string
+that this document's own earlier entries traced the 2026-09-07 outcome-colour
+defect to are both gone. `src/config/theme.ts` collapses from 176 to 97
+lines: daisyUI 5's `--color-primary` takes any CSS colour directly, so the
+sRGB→OKLCh conversion this module used to do by hand is dead code under
+daisyUI 5; what remains derives the foreground with the platform's own
+`color-mix()`, and `theme.test.ts` verifies that computation holds WCAG AA
+contrast (≥4.5:1) for six colours via an independent re-implementation, not by
+importing from `theme.ts`. `just test-e2e`'s three specs this app's own
+scope covers — `checkout.cy.ts`, `shop-hosted.cy.ts`, `shop-embedded.cy.ts` —
+are **8/8, 0 skipped**, including the two lines in the shop specs that used to
+select the redirect-continue button by its daisyUI class
+(`button.btn-primary`) and now use `data-testid="continue"`.
+`dashboard.cy.ts` did not run: `docker compose`'s `dashboard` image build is
+broken by an unrelated, pre-existing, out-of-scope defect (`frontends/apps/
+dashboard`'s own `next.config.ts` has no `@vpay/ui` in `transpilePackages`,
+and its scaffold already imports `@vpay/ui`'s `StatusBadge`) — Lane D's job,
+not this migration's. The page's own suite is **459 vitest cases in 23
+files, 0 skipped** (was 448). See `docs/status.md`'s "exp26 Lane B" row for
+the full gate-by-gate record, the counted `styling_files`/token targets (one
+target missed, named there with the reason), and the four regenerated
+screenshots.
+
 See [../status.md](../status.md) for the per-feature ledger and the reasons
 several of those rows are 🟡 where this document says "built".
