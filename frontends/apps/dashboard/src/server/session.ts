@@ -115,12 +115,26 @@ export async function readSession(
  * The gate every protected page opens with. Redirects rather than returning
  * when the answer is "not here".
  *
- * The `needs-token` branch runs the authorization-code leg and then reads the
- * session **again** rather than using the token the exchange returned. Both
- * carry the same string, and reading it back is what proves the row was
- * written — the one place `/dash/v1`'s token comes from for the rest of this
- * session is `staff_sessions.access_token`, and a token this app kept in a
- * local variable would still work for a render after the row was deleted.
+ * # The `needs-token` branch uses the token the exchange returned
+ *
+ * It used to read the session a **second** time instead, on the argument that
+ * reading it back proves the row was written. That second read never reached
+ * vpay: React memoises `fetch` for identical `GET`s within one render, so it
+ * answered with the *first* read's body — the one taken before the exchange,
+ * with no token on it. The branch therefore decided the session was unusable,
+ * tried to clear the cookie mid-render, and answered `500`.
+ *
+ * Measured on the real stack (exp28 review, finding F2): three consecutive
+ * first visits to `/payments` by a freshly authenticated session answered
+ * `500`, the server log showed the code and the token both issued, and
+ * `staff_sessions.last_seen_at` afterwards was *earlier* than the token — no
+ * `/staff/session` request was served after the mint at all.
+ *
+ * Using the exchanged token costs nothing the re-read bought. Sign-out is
+ * still a revocation: this token is used for the remainder of the one request
+ * that minted it, and **every later render reads the row** — which is the
+ * property ADR-0017 decision 2 rests on. A token cached across requests would
+ * break it; a token used by the request that created it cannot.
  */
 export async function requireStaff(): Promise<StaffContext> {
   const { config } = dashboardConfig();
@@ -152,13 +166,7 @@ export async function requireStaff(): Promise<StaffContext> {
   if (!exchanged.ok) {
     redirect(SIGNED_OUT_PATH);
   }
-
-  const second = await readSession(config, token);
-  const settled = second.session === null ? null : gateFor(second.session);
-  if (settled === null || settled.kind !== 'ready') {
-    redirect(SIGNED_OUT_PATH);
-  }
-  return { session: settled.session, accessToken: settled.accessToken, config };
+  return { session: gate.session, accessToken: exchanged.value.access_token, config };
 }
 
 /**
