@@ -71,6 +71,15 @@ pub mod checkout_sessions;
 /// `docs/flows/customers.md` is the long one.
 pub mod customers;
 pub mod events;
+/// The lines of a draft invoice (S4b): `/v1/invoice_items`, four routes over
+/// two paths. Its own file rather than four more handlers in [`invoices`],
+/// because the guard that freezes a line once its invoice is issued belongs
+/// beside the code it constrains.
+pub mod invoice_items;
+/// The Invoice resource (S4b): `/v1/invoices`, nine routes over five paths.
+///
+/// `docs/flows/invoices.md` is the long one.
+pub mod invoices;
 /// Cursor paging, shared by [`events`] and [`payment_intents`].
 ///
 /// `pub(crate)` unlike its two neighbours: every item in it is an
@@ -279,6 +288,83 @@ pub const V1_ROUTES: &[V1Route] = &[
             get(customers::retrieve)
                 .post(customers::update)
                 .delete(customers::delete)
+        },
+    },
+    V1Route {
+        path: "/invoices",
+        methods: &["POST", "GET"],
+        mount: || post(invoices::create).get(invoices::list),
+    },
+    // FOUR methods on one path, which no other resource here has, and the
+    // fourth is the reason to read this comment. `POST` is Stripe's update
+    // (there is no `PUT` and no `PATCH` in that API, so a merchant's existing
+    // client — and the real `stripe` package the compat suite drives — sends
+    // a `POST`), and `PATCH` is mounted *beside* it on the same handler
+    // because a partial update is what the verb means and mounting only one
+    // would make somebody guess. They cannot answer differently: it is one
+    // function.
+    //
+    // `DELETE` is draft-only and removes the invoice and its lines. An issued
+    // invoice is voided instead — `required_scopes` reads the method, so both
+    // writes need `payments:write` like every other change.
+    V1Route {
+        path: "/invoices/{id}",
+        methods: &["GET", "POST", "PATCH", "DELETE"],
+        mount: || {
+            get(invoices::retrieve)
+                .post(invoices::update)
+                .patch(invoices::update)
+                .delete(invoices::delete)
+        },
+    },
+    // Three `POST`s and not a `PATCH` with a `status`, deliberately: each is
+    // a *transition* with its own preconditions, its own event and its own
+    // refusal, and a `status=void` field would make "which transitions
+    // exist" a thing a merchant discovers by trying. Stripe spells all three
+    // the same way, and `expire` on a checkout session is this repository's
+    // own precedent.
+    V1Route {
+        path: "/invoices/{id}/finalize",
+        methods: &["POST"],
+        mount: || post(invoices::finalize),
+    },
+    V1Route {
+        path: "/invoices/{id}/void",
+        methods: &["POST"],
+        mount: || post(invoices::void),
+    },
+    V1Route {
+        path: "/invoices/{id}/mark_uncollectible",
+        methods: &["POST"],
+        mount: || post(invoices::mark_uncollectible),
+    },
+    // `pay` mints a payment intent for what is left and answers the invoice
+    // with a `hosted_invoice_url`. Stripe's `pay` charges a stored payment
+    // method outright; vpay has no stored payment methods on this market, so
+    // it hands back a page instead — see the handler.
+    V1Route {
+        path: "/invoices/{id}/pay",
+        methods: &["POST"],
+        mount: || post(invoices::pay),
+    },
+    V1Route {
+        path: "/invoice_items",
+        methods: &["POST"],
+        mount: || post(invoice_items::create),
+    },
+    // No collection `GET`. An invoice's lines are read from the invoice
+    // (`invoice.lines`, expanded on every render), and a merchant-wide list
+    // of every line ever written is a query nobody asked for over a table
+    // whose rows only mean anything beside their parent. Stated here rather
+    // than left as an omission; `docs/flows/invoices.md` records it.
+    V1Route {
+        path: "/invoice_items/{id}",
+        methods: &["GET", "POST", "PATCH", "DELETE"],
+        mount: || {
+            get(invoice_items::retrieve)
+                .post(invoice_items::update)
+                .patch(invoice_items::update)
+                .delete(invoice_items::delete)
         },
     },
 ];

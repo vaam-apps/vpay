@@ -1065,6 +1065,18 @@ async fn every_registered_v1_path_answers_401_without_a_token() -> anyhow::Resul
                 "DELETE" => http
                     .delete(&url)
                     .header("Idempotency-Key", "unauthenticated"),
+                // S4b's `PATCH /v1/invoices/{id}` and
+                // `PATCH /v1/invoice_items/{id}` are the second non-GET/POST
+                // verb, mounted beside `POST` on the same handler because
+                // Stripe's API has no `PATCH` and a partial update is what the
+                // verb means. Same shape as the `POST` arm — the boundary must
+                // answer `401` before any handler sees the body, so the body
+                // only has to be legal.
+                "PATCH" => http
+                    .patch(&url)
+                    .header("Idempotency-Key", "unauthenticated")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(""),
                 other => panic!("this test does not know how to send {other}"),
             };
             let response = request

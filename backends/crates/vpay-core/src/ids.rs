@@ -1,5 +1,6 @@
 //! The public ids vpay's objects are named by — `pi_…`, `ch_…`, `re_…`,
-//! `evt_…`, `cs_…` — and the two payer credentials that ride in URLs: the
+//! `evt_…`, `cs_…`, `cus_…`, `in_…`, `ii_…` — and the two payer credentials
+//! that ride in URLs: the
 //! `client_secret` a browser presents, and the `return_token` a redirect
 //! rail's bounce carries back.
 //!
@@ -72,6 +73,30 @@ pub const CUSTOMER_PREFIX: &str = "cus_";
 /// It is **not** a wire identifier on any merchant surface. Nothing under
 /// `/v1` renders one, and `/dash/v1` renders one only as a token's `sub`.
 pub const STAFF_PREFIX: &str = "stf_";
+
+/// The prefix on an Invoice id (S4b).
+///
+/// Stripe's own spelling. `in_` is two letters like `pi_` and `cs_`, and it
+/// is deliberately *not* `inv_`: `stripe-node`'s own type guards and every
+/// integration guide a merchant will have read spell an invoice id `in_`, and
+/// a near-miss is the kind of difference that is discovered in production
+/// rather than in a test.
+///
+/// It is not the number a human reads. An invoice carries **two** public
+/// names and they answer different questions: this one addresses the object
+/// over the API and is minted before the row exists, and
+/// `invoices.number` — `{prefix}-{000001}`, assigned at finalize out of
+/// [`invoice_number_prefix`]'s sequence — is what is printed on the document
+/// and quoted to a payer. See `docs/flows/invoices.md`.
+pub const INVOICE_PREFIX: &str = "in_";
+
+/// The prefix on an InvoiceItem id (S4b) — Stripe's own spelling for a line
+/// on an invoice.
+///
+/// `ii_` shares no two-character head with any other prefix here, which
+/// [`is_well_formed`] relies on: a line id and an invoice id arrive on the
+/// same routes and must never be mistaken for one another.
+pub const INVOICE_ITEM_PREFIX: &str = "ii_";
 
 /// Whether `id` is shaped like an id this module would have minted under
 /// `prefix`: the prefix, then exactly 24 characters, every one of them in the
@@ -234,6 +259,85 @@ pub fn checkout_session_id() -> String {
 #[must_use]
 pub fn customer_id() -> String {
     new_id(CUSTOMER_PREFIX)
+}
+
+/// A new Invoice id, `in_…`.
+///
+/// ```
+/// use vpay_core::ids::{self, INVOICE_ITEM_PREFIX, INVOICE_PREFIX};
+///
+/// let id = ids::invoice_id();
+/// assert!(ids::is_well_formed(INVOICE_PREFIX, &id));
+/// // An invoice id is not a line id. Both arrive on `/v1/invoice_items`
+/// // (as `invoice=` and as the path segment), so the two must be
+/// // distinguishable without a database round trip.
+/// assert!(!ids::is_well_formed(INVOICE_ITEM_PREFIX, &id));
+/// ```
+#[must_use]
+pub fn invoice_id() -> String {
+    new_id(INVOICE_PREFIX)
+}
+
+/// A new InvoiceItem id, `ii_…`.
+///
+/// ```
+/// use vpay_core::ids::{self, INVOICE_ITEM_PREFIX};
+///
+/// assert!(ids::is_well_formed(INVOICE_ITEM_PREFIX, &ids::invoice_item_id()));
+/// ```
+#[must_use]
+pub fn invoice_item_id() -> String {
+    new_id(INVOICE_ITEM_PREFIX)
+}
+
+/// How many characters an invoice-number prefix carries.
+///
+/// Eight, so `{prefix}-{000001}` is fifteen characters — short enough to read
+/// out over the phone, and comfortably inside migration `0036`'s
+/// `number_length` ceiling of 64 even after the sequence passes a million.
+const NUMBER_PREFIX_CHARS: usize = 8;
+
+/// A merchant's invoice-number prefix — the `A7K3M9QP` of `A7K3M9QP-000001`.
+///
+/// Minted once per merchant by the first `POST /v1/invoices/{id}/finalize`
+/// and stored in `invoice_number_sequences.prefix`, never re-derived: it is
+/// printed on documents that have already been sent.
+///
+/// # Why it is upper-case, and why it is not an id
+///
+/// This is the one identifier in this module a human **types back in** — off
+/// a paper receipt, into a bank transfer reference, over the phone to a
+/// merchant's support line. Upper-case is what a person reading a printed
+/// document produces, and Crockford's alphabet is what makes the transcription
+/// survive it: `i`, `l`, `o` and `u` are absent, so there is no `1`/`l` and no
+/// `0`/`O` to get wrong. It carries no prefix and no `_` because it is not an
+/// object name — nothing addresses anything by it.
+///
+/// # Why it is random and not derived from the merchant
+///
+/// An invoice number is quoted in e-mail, printed on receipts and read out
+/// loud. A prefix derived from `merchant_id` would put the deployment's
+/// internal tenant identifier on every one of them.
+///
+/// 40 bits of randomness. Collisions between two merchants are harmless —
+/// `invoices_merchant_number_key` is scoped to one merchant, so two merchants
+/// sharing a prefix is a cosmetic coincidence and not a conflict.
+///
+/// ```
+/// use vpay_core::ids;
+///
+/// let prefix = ids::invoice_number_prefix();
+/// assert_eq!(prefix.len(), 8);
+/// assert!(prefix.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()));
+/// // Crockford's alphabet: the four transcription-ambiguous letters are gone.
+/// assert!(!prefix.contains(['I', 'L', 'O', 'U']));
+/// ```
+#[must_use]
+pub fn invoice_number_prefix() -> String {
+    let bits = Uuid::new_v4().as_u128() >> (128 - NUMBER_PREFIX_CHARS * BITS_PER_CHAR);
+    let mut prefix = String::with_capacity(NUMBER_PREFIX_CHARS);
+    push_base32(&mut prefix, bits, NUMBER_PREFIX_CHARS);
+    prefix.to_ascii_uppercase()
 }
 
 /// A new Staff id, `stf_…` (ADR-0017).

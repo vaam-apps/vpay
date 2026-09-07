@@ -169,8 +169,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 35,
-        "all thirty-five migrations under backends/migrations should be recorded as applied \
+        applied, 36,
+        "all thirty-six migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -1994,7 +1994,45 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 /// contribute **nothing in either direction**, like the eleven before them,
 /// which is why `postgres_smoke` asserts them against a real database
 /// directly.
-const EXPECTED_DRIFT_CHANGES: u32 = 130;
+///
+/// # 130 -> 156 on 2026-09-07 (S4b, migration `0036`), and where each of the
+/// 26 went
+///
+/// Three new tables. The split is worth reading rather than trusting, because
+/// one line that a reader would expect to be here is **absent**, and its
+/// absence is the point:
+///
+/// | Relation | Lines | What they are |
+/// |---|---|---|
+/// | `invoices` | 16 | 8 hand-named CHECKs, 6 undeclared indexes, `seq` default, `status` type |
+/// | `invoice_items` | 9 | 6 hand-named CHECKs, 2 undeclared indexes, `seq` default |
+/// | `invoice_number_sequences` | 1 | the whole table, undeclared |
+///
+/// **`invoices_status_enum_check` is not in that list, and that is the first
+/// time an enum column has cost this repository nothing.** Migration 0032 had
+/// to *rename* `providers.flow`'s hand-named CHECK after the fact because
+/// `diff/checks.rs` matches by name first; migration 0036 creates the
+/// constraint under `naming.rs::check_name(table, column, "enum")`'s own
+/// spelling from the start, so the declared constraint and the live one are
+/// one object and neither side reports the other missing. What it does *not*
+/// buy is the `[lossy] column status type differs (live: Scalar("String"),
+/// schema: Enum("InvoiceStatus"))` line, which is permanent for
+/// `introspect/postgres/enums.rs`' documented reason — a TEXT column has no
+/// catalog representation that recovers an enum's name.
+///
+/// The five **multi-column** CHECKs migration 0036 adds
+/// (`number_is_assigned_at_finalize`, `paid_means_nothing_remaining`,
+/// `only_a_live_invoice_has_an_intent`, `amounts_add_up`,
+/// `amount_is_the_product`) contribute **nothing in either direction**, like
+/// the fifteen before them. That is why the four cases below assert each one
+/// against a real Postgres directly: the drift report cannot be the guard for
+/// the constraints that hold this state machine together.
+///
+/// `invoice_number_sequences` is undeclared on purpose — its only write is a
+/// self-referencing `SET` expression cratestack 0.12.0 cannot represent — so
+/// it is in the `tables_missing_from_the_schema` list below rather than being
+/// a gap somebody has to notice.
+const EXPECTED_DRIFT_CHANGES: u32 = 156;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -2038,7 +2076,13 @@ const EXPECTED_DRIFT_CHANGES: u32 = 130;
 /// and undeclared indexes, and none of the *column*-level lines every earlier
 /// modelled table carries. See `EXPECTED_DRIFT_CHANGES` for the full account
 /// of what is absent and why.
-const EXPECTED_DRIFTED_RELATIONS: u32 = 20;
+/// **20 -> 23 on 2026-09-07** (S4b): `invoices` and `invoice_items` join it
+/// declared-and-differing, in the shape `customers` joined it in, and
+/// `invoice_number_sequences` joins it *undeclared*, in the shape `jobs` is
+/// in. Three tables for +26 changes — a worse ratio than ADR-0017's three for
+/// +17, and the difference is entirely indexes and CHECKs on `invoices`,
+/// which has six of the first and eight of the second.
+const EXPECTED_DRIFTED_RELATIONS: u32 = 23;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
 /// Postgres type onto a `.cstack` scalar, which it reports as a trailing
@@ -2081,7 +2125,16 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 20;
 /// That invisibility is the *first* of the two reasons `model Customer` does
 /// not declare it — see that model's GAP note for the second, which is the
 /// one that decides it.
-const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 18;
+/// **18 -> 19 on 2026-09-07** (S4b): `invoices.metadata`, for exactly
+/// `customers.metadata`'s reason and with exactly the same consequence — it
+/// is unmeasured drift sitting inside a table that is otherwise fully
+/// compared, and `EXPECTED_DRIFT_CHANGES` would never say so.
+///
+/// `invoice_items` adds **nothing** here, and that is the property that table
+/// was shaped for: no `jsonb`, no `bytea`, no `int2`/`int4`, so every one of
+/// its columns is compared. It is the second table in this schema (after
+/// migration 0035's three) that costs this constant nothing at all.
+const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 19;
 
 /// The `--out-dir` handed to `migrate baseline`, removed when it goes out of
 /// scope.
@@ -2359,6 +2412,18 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // undeclared on purpose. That difference is the whole content of
             // `EXPECTED_DRIFT_CHANGES`' 84 -> 101 note.
             "idempotency_keys",
+            // The per-merchant invoice number sequence (migration `0036`).
+            // Undeclared **deliberately**, and the reason is measured rather
+            // than a shortage of time: its only write is
+            // `next_number = invoice_number_sequences.next_number + 1`, a
+            // `SET` whose right-hand side names the column being set, and
+            // `Update{Model}Input` carries values rather than expressions
+            // (the same shape `Customers::touch_last_used` wanted `GREATEST`
+            // for and could not have). A model would declare a table nothing
+            // could write through. `invoices` and `invoice_items` ARE
+            // modelled and are therefore absent from this list — see
+            // `EXPECTED_DRIFT_CHANGES`.
+            "invoice_number_sequences",
             "jobs",
             // These two are `public` tables, not `authkestra` ones. The
             // schema header's "and the authkestra tables" does not cover
@@ -2434,6 +2499,21 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // report could reasonably believe `customers` is fully compared.
             ("customers", "at_least_one_identifier"),
             ("idempotency_keys", "complete_has_a_response"),
+            // S4b's line arithmetic: `amount = quantity * unit_amount`. The
+            // only reason `invoice_items.amount` can be a stored column
+            // rather than a `GENERATED` one — which cratestack has no
+            // representation for.
+            ("invoice_items", "amount_is_the_product"),
+            // S4b's four invoice invariants. Together they are what makes
+            // "draft -> open -> paid | void | uncollectible" a property of
+            // the database rather than of four call sites remembering, and
+            // every one of them is invisible to the drift report — which is
+            // why the four cases below exercise them against a real Postgres
+            // by trying to store the row each one refuses.
+            ("invoices", "amounts_add_up"),
+            ("invoices", "number_is_assigned_at_finalize"),
+            ("invoices", "only_a_live_invoice_has_an_intent"),
+            ("invoices", "paid_means_nothing_remaining"),
             ("jobs", "lock_is_paired"),
             ("oauth_signing_keys", "active_key_has_no_expiry"),
             ("oauth_signing_keys", "expiry_after_creation"),

@@ -616,6 +616,151 @@ slots this function feeds, so the branch fails in the direction that **keeps**
 a merchant's personal-data record. `UNIX_EPOCH` would do the opposite — stamp
 a live customer as maximally idle and hand it to the next sweep.
 
+## `invoices`
+
+The merchant's bill to a payer and the lines it is made of
+(`backends/migrations/0036_create-invoices.sql`, S4b). Twelve repository
+methods over two tables, plus three that are `TxRepositories` methods and one
+that is `pub(crate)` to `settlement`.
+[`../flows/invoices.md`](../flows/invoices.md) is the product document; this
+section is the persistence argument.
+
+### Two of twelve go through CrateStack, and three separate things decide it
+
+`customers`' split had **one** cause (`metadata JSONB`). This family has
+three, and each method's doc names the one that applies to it, because
+collapsing them into "CrateStack cannot do it" would be false for two thirds
+of the surface:
+
+1. **`invoices.metadata` is `JSONB NOT NULL` and undeclared.** `model
+   Customer`'s two measured costs, unchanged — `map_scalar` does not read
+   `jsonb` back, so declaring it would be a `[blocking]` drift line; and
+   `Value::from_plain_json` demotes any JSON number outside `i64` to `f64`, on
+   a column that is merchant-authored and echoed back inside every `invoice.*`
+   webhook body. Every **read** of `invoices` has to carry that column, so
+   every read stays raw.
+2. **Three transitions write an `events` row in the same transaction**, and
+   `Events`' insert is itself blocked on `events.data` (see "`events.data`:
+   the one write that did not move").
+3. **Every `invoice_items` write guards on a different table's column** —
+   `EXISTS (SELECT 1 FROM invoices WHERE id = invoice_items.invoice_id AND
+   status = 'draft')`, which is what freezes an issued document.
+   `cratestack::Filter` compares columns of the model's own table, and there
+   is no relation that side-loads a parent's status into a child's `WHERE`.
+
+What is left is exactly the two in the table above.
+`mark_uncollectible` is the **only** transition with no event — Stripe's
+`invoice.marked_uncollectible` is deliberately outside migration `0036`'s
+vocabulary because nothing would write it — so it is the only one that is a
+single statement, and a compare-and-swap `update_many` expresses the whole
+operation. `items_for_invoice` goes through the generated layer because
+`invoice_items` was **shaped** so it could: no `jsonb`, no `bytea`, no native
+enum, no `int4`, which is migration `0035`'s discipline applied to a table that
+also had to be readable through this layer.
+
+### The transactions are opened by `vpay-api`, not here, and that is a departure
+
+`settlement` and `Customers::delete_idle` both take a caller-rendered
+`event_data` parameter and open their own transaction. The three invoice
+transitions that emit an event do the opposite: they are
+[`TxRepositories`] methods, so `vpay_api::v1::invoices` opens the transaction,
+gets the written row back, renders the wire object **from that row**, and
+appends the event with `insert_in_tx`.
+
+The reason is specific rather than stylistic. Those two describe an object
+whose post-write shape the caller can *project* exactly — an intent that is
+about to be `succeeded`, a customer that is about to be deleted. **A finalized
+invoice cannot be projected**: its `number` comes out of a sequence the
+statement itself advances and its `amount_due` is summed by the statement from
+the lines, so a projection would be a second implementation of the assignment,
+and the first thing it would get wrong is the number.
+
+`invoice.paid` is the exception that proves it, and it is projected — see
+below.
+
+### The number sequence is a table row, and that is the whole design
+
+`invoice_number_sequences` has no `.cstack` model, deliberately: its only write
+is `next_number = invoice_number_sequences.next_number + 1`, a `SET` whose
+right-hand side names the column being set, and `Update{Model}Input` carries
+values rather than expressions. That is the same shape
+`Customers::touch_last_used` wanted `GREATEST` for and could not have. A model
+would declare a table nothing could write through, which this schema's header
+says it does not do.
+
+`INSERT … ON CONFLICT (merchant_id) DO UPDATE SET next_number = … + 1
+RETURNING prefix, next_number - 1` does three things in one statement: it
+creates the merchant's sequence on their first finalize (the row is born
+pointing at 2 and that finalize takes 1), it advances it on every later one,
+and it **takes the row lock that serialises two concurrent finalizes**. Under
+`READ COMMITTED` the blocked transaction re-reads the committed value when the
+lock is released, so two racing finalizes get two consecutive numbers.
+
+It is not a Postgres `SEQUENCE`, and that is the point rather than an
+oversight: `nextval` is non-transactional, so a rolled-back finalize would
+burn a number. Migration `0036` argues why a hole matters more here than it
+does for Stripe.
+
+### `invoice.paid` in TX1, and why *this* one is projected
+
+`invoices::mark_paid_for_intent_in_tx` is `pub(crate)` and reached only from
+`settlement::flip_invoice` — `checkout_sessions::settle_for_intent`'s
+visibility argument verbatim: the point is that the write is not reachable
+without the settlement it belongs to.
+
+The worker projects the paid invoice before the transaction opens
+(`vpay_worker::handlers::invoice_snapshot`), which is `intent_snapshot`'s
+device. The projection is exact because an `open` invoice with a live intent
+**cannot change**: `amount_due` was frozen at finalize, its lines are
+immutable, and both `void` and `mark_uncollectible` refuse while the intent is
+uncanceled (`NO_LIVE_INTENT`). If it changes anyway, the compare-and-swap
+inside the transaction matches nothing and **no event is written at all** —
+the fail-closed direction, pinned by
+`a_settlement_whose_invoice_moved_emits_no_invoice_event`.
+
+### `NO_LIVE_INTENT` is one rule with three call sites, and one of them cannot carry it
+
+Voiding an invoice somebody is paying, writing it off, and minting a *second*
+intent for it are three ways to end up with money moved against a document
+that says nothing is owed. All three refuse on the same condition — the
+attached intent is `canceled` — spelled once as a `const` so they cannot drift.
+
+Two of them carry it in SQL. `mark_uncollectible` cannot: it goes through
+CrateStack, and the condition is a correlated sub-select over
+`payment_intents`. So `vpay-api` applies it from the row it has already read,
+and the window that leaves is closed by **the settlement's own
+compare-and-swap** rather than by the statement: a settlement that lands first
+flips the invoice to `paid`, and `update_many`'s `status = 'open'` filter then
+matches nothing. Neither ordering can produce an invoice that is both paid and
+written off.
+
+That is the one place in this module where a guard is not in the statement it
+guards, and it is stated here for that reason.
+
+### Migration 0036: what the two tables cost
+
+**156 changes over 23 relations, unmappable 19** (from 130 / 20 / 18). The +26
+splits sixteen / nine / one across `invoices`, `invoice_items` and
+`invoice_number_sequences`, and every line is a hand-named CHECK, an
+undeclared index, a `seq` identity default, or the one permanent `status` type
+line.
+
+**`invoices_status_enum_check` costs nothing, and it is the first enum column
+in this repository that does.** Migration 0032 had to *rename*
+`providers.flow`'s hand-named CHECK after the fact, because `diff/checks.rs`
+matches by name first; 0036 creates the constraint under
+`naming.rs::check_name(table, column, "enum")`'s own spelling from the start,
+so the declared constraint and the live one are one object and neither side
+reports the other missing. The `[lossy] column status type differs (live:
+Scalar("String"), schema: Enum("InvoiceStatus"))` line is still permanent, for
+`introspect/postgres/enums.rs`' documented lossiness — a TEXT column has no
+catalog representation that recovers an enum's name.
+
+The five multi-column CHECKs contribute **nothing in either direction**, like
+the fifteen before them, which is why
+`the_invoice_invariants_are_enforced_by_the_database_itself` writes the row
+each one refuses against a real Postgres.
+
 ## `charges`
 
 Three writes, and only one of them is unguarded. `insert_for_intent` opens the
@@ -1394,7 +1539,7 @@ work, and each binary installs the provider at boot
 `vpay-db` compiles `schemas/vpay.cstack` with
 [CrateStack](https://cratestack.dev)'s `include_server_schema!` macro
 (`cratestack = { package = "cratestack-pg", version = "=0.12.0" }`) and runs
-**twenty** queries through the generated data layer, spread over eight
+**twenty-two** queries through the generated data layer, spread over ten
 tables.
 This section says which eight, what deliberately did not move, and which of
 CrateStack's behaviours vpay has had to work around rather than adopt. It is
@@ -1409,7 +1554,10 @@ capability defaults and the provider pass moved with them. It said "**six**"
 until the outbox landed, and "**eight** over five tables" from 2026-09-06,
 when S4a's `customers` added `touch_last_used` and `delete`.
 
-**"Twenty over eight" since 2026-09-07** ([ADR-0017](../adr/0017-staff-authentication.md)),
+**"Twenty-two over ten" since 2026-09-07** (S4b's `invoices` and
+`invoice_items`, one query each — see "Migration 0036" below). It was
+**"twenty over eight"** earlier the same day
+([ADR-0017](../adr/0017-staff-authentication.md)),
 and the +12 is different in kind from every increment before it: it is not a
 method here and a method there, it is **three whole tables whose every
 repository method runs through the generated layer**. `staff_members` (six),
@@ -1501,6 +1649,8 @@ relations / 17 unmappable columns**.
 | `mark_fanned_out_in_tx` | `update_many().where_(id).where_(fanout_state).set(UpdateEventInput).run_in_tx(tx, ctx)` | `update` |
 | `touch_last_used` (customers) | `update_many().where_(id).where_(last_used_at.lt(now)).set(UpdateCustomerInput).run(ctx)` | `update` |
 | `delete` (customers) | `delete_many().where_(id).where_(merchant_id).run(ctx)` | `delete` |
+| `mark_uncollectible` (invoices) | `update_many().where_(id).where_(merchant_id).where_(status.eq(Open)).set(UpdateInvoiceInput).run(ctx)` | `update` |
+| `items_for_invoice` | `find_many().where_(invoice_id).order_by(seq.asc()).run(ctx)` | `read` |
 
 Plus one that is **test-only and says so**: `vpay-db`'s own
 `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` reads a

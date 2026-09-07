@@ -25,12 +25,12 @@ use std::time::Duration;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use time::OffsetDateTime;
-use vpay_core::state::{ChargeState, IntentStatus};
+use vpay_core::state::{ChargeState, IntentStatus, InvoiceStatus};
 use vpay_core::{
     Classify, FailureCode, Money, Settlement, Severity, StatusKind, contradiction, ids, settle,
 };
 use vpay_db::{
-    ChargeAsOf, ChargeRow, Charges, DbError, PaymentIntents, Repositories, TxOutcome,
+    ChargeAsOf, ChargeRow, Charges, DbError, Invoices, PaymentIntents, Repositories, TxOutcome,
     UnitOfWork as _,
 };
 use vpay_provider::{
@@ -1437,8 +1437,24 @@ async fn settle_succeeded(
         None,
     )
     .await?;
+
+    // The invoice this intent is paying, if it is paying one, rendered as it
+    // will stand once this settlement commits. Read *before* the transaction
+    // opens because the event's `data` is a wire object and `vpay-db` does
+    // not know that shape — `intent_snapshot`'s own device, and
+    // `vpay_db::settlement::InvoicePaidEvent` carries why the projection is
+    // exact and what happens when it is not.
+    let invoice = invoice_snapshot(repositories, job, &charge.payment_intent_id).await?;
     let settled = repositories
-        .apply_succeeded(&charge.id, provider_txn_id, &ids::event_id(), &data)
+        .apply_succeeded(
+            &charge.id,
+            provider_txn_id,
+            &ids::event_id(),
+            &data,
+            invoice
+                .as_ref()
+                .map(|(event_id, data)| vpay_db::InvoicePaidEvent { event_id, data }),
+        )
         .await?;
 
     match settled {
@@ -1824,6 +1840,68 @@ async fn submit_evidence(
             Some(code) => SubmitAttempt::Answered(code),
         },
     })
+}
+
+/// The `invoice.paid` event a settlement should carry, if this intent is
+/// paying an invoice — its `evt_…` and the invoice as it will stand once the
+/// settlement commits.
+///
+/// `Ok(None)` is the normal answer: most intents pay no invoice at all.
+///
+/// # Why the projection is exact
+///
+/// An `open` invoice with a live intent cannot change. `amount_due` was
+/// frozen at finalize, its lines are immutable (every `invoice_items` write
+/// carries a draft-parent guard), and both `void` and `mark_uncollectible`
+/// refuse while the intent is uncanceled. So setting `status = paid`,
+/// `amount_paid = amount_due` and `amount_remaining = 0` on the row read here
+/// produces exactly the row the settlement's own statement will write.
+///
+/// If it is wrong anyway, nothing is claimed: the settlement re-evaluates the
+/// compare-and-swap inside its transaction and writes **no event at all** when
+/// it matches nothing. This function's answer can never cause a merchant to
+/// be told about a payment that did not happen — only to be told nothing
+/// about one that did, which the poll ladder's next pass does not repeat
+/// (the charge is terminal by then) and which
+/// `docs/flows/invoices.md` records as the one exposure this design has.
+///
+/// # `lines` is empty in the event body
+///
+/// `vpay_api::v1::invoices`' own writers do the same, for the same reason and
+/// with the same consequence written down: a webhook carries the invoice's
+/// fields with `lines.data` empty, and a merchant who needs the lines reads
+/// `GET /v1/invoices/{id}`. Rendering them here would be a second query on
+/// the settlement's hot path for a value the object already summarises as
+/// `amount_paid`.
+///
+/// # Errors
+///
+/// A poisoned job if the invoice cannot be rendered — a state migration
+/// `0036`'s CHECKs make impossible, so re-running cannot fix it — or the
+/// read's own storage error.
+async fn invoice_snapshot(
+    repositories: &dyn Repositories,
+    job: &vpay_db::JobRow,
+    payment_intent_id: &str,
+) -> Result<Option<(String, serde_json::Value)>, JobError> {
+    let Some(mut row) = Invoices::find_open_by_intent(repositories, payment_intent_id).await?
+    else {
+        return Ok(None);
+    };
+
+    row.status = InvoiceStatus::Paid.as_wire_str().to_owned();
+    row.amount_paid = row.amount_due;
+    row.amount_remaining = 0;
+    row.paid_at = Some(OffsetDateTime::now_utc());
+
+    let object = vpay_api::model::InvoiceObject::render(&row, &[], None).map_err(|error| {
+        poisoned(
+            job,
+            format!("invoice {} cannot be rendered: {error}", row.id),
+        )
+    })?;
+
+    Ok(Some((ids::event_id(), encode(job, &object)?)))
 }
 
 /// The wire object as it will stand once the settlement transaction commits.

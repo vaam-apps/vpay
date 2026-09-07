@@ -11,19 +11,43 @@ Constant-time comparison; reject a timestamp older than 5 minutes.
 `payment_intent.created`, `payment_intent.processing`,
 `payment_intent.succeeded`, `payment_intent.payment_failed`,
 `payment_intent.canceled`, `charge.refunded`, `charge.refund.updated`,
-`checkout.session.expired`, `customer.deleted`.
+`checkout.session.expired`, `customer.deleted`, `invoice.created`,
+`invoice.finalized`, `invoice.paid`, `invoice.voided`.
 
 A custom type is silently dropped by any merchant using `stripe-node`'s typed
 event union or an exhaustive `switch`. This is why a late success emits a plain
 `payment_intent.succeeded`: an event merchants structurally tend to ignore is
 the worst possible carrier for "money actually arrived".
 
-**Four of the nine are written, and only four.** `payment_intent.succeeded`
-and `payment_intent.payment_failed` come from the settlement transaction (TX 1
-below); `checkout.session.expired` comes from the housekeeping sweep, since
-2026-09-04; `customer.deleted` comes from the twelve-month customer retention
-sweep, since 2026-09-06 (S4a). The other five are documented shapes nothing
-emits — events are written for terminal transitions only.
+**Eight of the thirteen are written, and only eight.**
+`payment_intent.succeeded` and `payment_intent.payment_failed` come from the
+settlement transaction (TX 1 below); `checkout.session.expired` comes from the
+housekeeping sweep, since 2026-09-04; `customer.deleted` comes from the
+twelve-month customer retention sweep, since 2026-09-06 (S4a); and the four
+`invoice.*` types come from S4b, since 2026-09-07 —
+`invoice.created`/`invoice.finalized`/`invoice.voided` from the transitions
+that write them, each inside the transition's own transaction, and
+`invoice.paid` from TX 1 beside the `payment_intent.succeeded` that pays it.
+The other five are documented shapes nothing emits — events are written for
+terminal transitions only.
+
+**The four `invoice.*` bodies carry `lines.data` EMPTY, and the `/v1` object
+does not.** The event's `data` is rendered inside the transaction that wrote
+the row, and reading an invoice's lines there would put a second query on a
+connection holding the number sequence's row lock. A merchant who needs the
+lines reads `GET /v1/invoices/{id}`, which always carries them. This is a real
+difference between what a webhook says and what the API says about the same
+object, and it is stated here rather than discovered
+([invoices.md](invoices.md)).
+
+**Two Stripe invoice types are deliberately absent.**
+`invoice.marked_uncollectible` and `invoice.payment_failed` are not in the
+list, for `customer.created`'s reason immediately below: nothing writes them.
+`POST /v1/invoices/{id}/mark_uncollectible` is a single statement with no
+transaction to put an event in, and a failed intent leaves the invoice `open`
+with the merchant already receiving `payment_intent.payment_failed`. A
+merchant learns about a write-off from
+`GET /v1/invoices?status=uncollectible`.
 
 **`customer.deleted` is the one type a merchant cannot substitute polling
 for.** Every other event describes a row that is still there afterwards, so a

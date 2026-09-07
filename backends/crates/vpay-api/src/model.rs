@@ -34,6 +34,7 @@ use std::collections::BTreeMap;
 
 use serde::{Serialize, Serializer};
 use serde_json::{Map, Value};
+use time::OffsetDateTime;
 use vpay_core::{IntentStatus, RefundStatus};
 
 use crate::ApiError;
@@ -101,6 +102,30 @@ object_tag!(
     /// object.
     CustomerTag,
     "customer"
+);
+object_tag!(
+    /// The `"invoice"` discriminator (S4b) — Stripe's own spelling.
+    InvoiceTag,
+    "invoice"
+);
+object_tag!(
+    /// The `"line_item"` discriminator on a line of an invoice.
+    ///
+    /// **Stripe's own spelling for the object inside `invoice.lines`, and
+    /// deliberately not `"invoiceitem"`.** Stripe has two objects here: an
+    /// `invoiceitem` is a *pending* charge not yet attached to a document,
+    /// and a `line_item` is what appears on `invoice.lines` once it is. vpay
+    /// has only the second — `POST /v1/invoice_items` writes straight onto a
+    /// draft invoice, because a pending-charge inbox is a subscription
+    /// feature and subscriptions are not built (`docs/flows/invoices.md`).
+    ///
+    /// The consequence a merchant can see is stated rather than hidden: the
+    /// same row is addressed as `ii_…` on `/v1/invoice_items` and rendered as
+    /// a `line_item` inside `invoice.lines`. That matches what a
+    /// Stripe-shaped handler switching on `object` expects to find in a
+    /// `lines` list.
+    LineItemTag,
+    "line_item"
 );
 object_tag!(
     /// The `"checkout.session"` discriminator.
@@ -1405,13 +1430,17 @@ pub struct CustomerObject {
 /// not happen when it did.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub struct DeletedObject {
+pub struct DeletedObject<T> {
     /// The id that was deleted.
     pub id: String,
-    /// The `object` the id named — `"customer"` today, and a field rather
-    /// than a constant because Stripe's deleted shape carries the deleted
-    /// object's own type and an SDK switches on it.
-    pub object: CustomerTag,
+    /// The `object` the id named. A **type parameter** rather than a field of
+    /// one fixed tag, since 2026-09-07: three resources answer this shape
+    /// (`customer`, `invoice`, `line_item`), Stripe's deleted shape carries
+    /// the deleted object's own type, and an SDK switches on it. Making it
+    /// generic is what stops a fourth resource answering `"customer"` for
+    /// something that is not one — the compiler picks the tag from the call
+    /// site's own value.
+    pub object: T,
     /// Always `true`.
     pub deleted: DeletedTrue,
 }
@@ -1447,6 +1476,239 @@ impl TryFrom<&vpay_db::CustomerRow> for CustomerObject {
             email: row.email.clone(),
             phone: row.phone.clone(),
             metadata: metadata_of(&row.metadata, "customers")?,
+            created: row.created_at.unix_timestamp(),
+            livemode: row.livemode,
+        })
+    }
+}
+
+/// One line on an invoice.
+///
+/// Stripe's `line_item`, narrowed to what a vpay invoice actually has: no
+/// price, no product, no proration, no period. `docs/flows/invoices.md` lists
+/// what is missing and why.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct InvoiceLineObject {
+    /// `ii_…` — `vpay_core::ids::invoice_item_id`. The same id
+    /// `/v1/invoice_items/{id}` addresses; see [`LineItemTag`] for why the
+    /// `object` differs from the route.
+    pub id: String,
+    /// Always `"line_item"`.
+    pub object: LineItemTag,
+    /// The text on the document.
+    pub description: String,
+    /// How many.
+    pub quantity: i64,
+    /// The price of one, in integer minor units.
+    pub unit_amount: i64,
+    /// `quantity * unit_amount`, in integer minor units — checked by the
+    /// database, never computed here.
+    pub amount: i64,
+    /// Lower-case ISO-4217, always the parent invoice's.
+    pub currency: String,
+    /// `false` for a sandbox deployment's objects.
+    pub livemode: bool,
+}
+
+impl From<&vpay_db::InvoiceItemRow> for InvoiceLineObject {
+    /// Infallible, unlike every other conversion in this module, and that is
+    /// a property of the table rather than an oversight: `invoice_items` has
+    /// no `jsonb` column, no enum column and no nullable text — nothing that
+    /// could be stored in a shape this renderer would have to reject. See
+    /// this module's header for why the others are `TryFrom`.
+    fn from(row: &vpay_db::InvoiceItemRow) -> Self {
+        Self {
+            id: row.id.clone(),
+            object: LineItemTag,
+            description: row.description.clone(),
+            quantity: row.quantity,
+            unit_amount: row.unit_amount,
+            amount: row.amount,
+            currency: row.currency_code.to_lowercase(),
+            livemode: row.livemode,
+        }
+    }
+}
+
+/// When each of an invoice's transitions happened, in unix seconds.
+///
+/// Stripe's `status_transitions`, and one nested object rather than four
+/// top-level keys for the reason Stripe has it: they are answers to one
+/// question ("what happened to this document, and when"), and a handler that
+/// renders a timeline reads them together.
+///
+/// Every field is `null` until the transition happens, and at most two of
+/// them are ever non-null — `finalized_at` plus whichever terminal one
+/// applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct InvoiceStatusTransitions {
+    /// When the invoice was issued and got its number.
+    pub finalized_at: Option<i64>,
+    /// When a settlement paid it.
+    pub paid_at: Option<i64>,
+    /// When the merchant voided it.
+    pub voided_at: Option<i64>,
+    /// When the merchant wrote it off.
+    pub marked_uncollectible_at: Option<i64>,
+}
+
+/// An `invoice` (S4b): a merchant's bill to one customer.
+///
+/// # `lines` is expanded, always, and `hosted_invoice_url` is derived
+///
+/// Two of the keys below do not come from the `invoices` row:
+///
+/// * `lines` is a second query (`vpay_db::Invoices::items_for_invoice`).
+///   Expanded unconditionally rather than behind Stripe's `expand[]`, because
+///   an invoice without its lines is a total with no explanation, and vpay
+///   does not implement `expand[]` at all (`docs/api/README.md`). The
+///   envelope is the ordinary [`ListObject`] so a Stripe-shaped client's
+///   `invoice.lines.data` works unchanged; `has_more` is always `false`
+///   because the list is never paged, and that is stated in
+///   `docs/flows/invoices.md` rather than left to be discovered.
+/// * `hosted_invoice_url` is the **checkout session** for this invoice's
+///   payment intent, not a page of its own. vpay has no invoice page: the
+///   payer sees the existing hosted checkout, which shows the merchant's name
+///   and the amount. It is `null` until `POST /v1/invoices/{id}/pay` has run.
+///
+/// # `amount_*` are integer minor units, and `currency` is lower-case
+///
+/// `docs/flows/money.md` and Stripe's own convention respectively. XAF is
+/// zero-decimal, so `5000` means 5,000 FCFA and there is no division
+/// anywhere.
+///
+/// # Eighteen keys, and the count is the tripwire
+///
+/// `the_invoice_object_is_the_documented_eighteen_keys` below is what keeps
+/// `docs/api/README.md`'s listing honest, and it exists for the reason
+/// [`CustomerObject`]'s twin does: this struct is the `data.object` of all
+/// four `invoice.*` event types, so a nineteenth key is signed, delivered
+/// at-least-once and stored in `events` **forever** — the one place vpay
+/// cannot retract a field it has published. `InvoiceRow` carries `seq`,
+/// `merchant_id` and `updated_at`, none of which belongs on a merchant's
+/// wire.
+///
+/// The README said *seventeen* from the day this object landed until the S4b
+/// review on 2026-09-07. The object was eighteen the whole time and no test
+/// of any name held the number.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct InvoiceObject {
+    /// `in_…` — `vpay_core::ids::invoice_id`.
+    pub id: String,
+    /// Always `"invoice"`.
+    pub object: InvoiceTag,
+    /// The `cus_…` this invoice bills. Never `null`, unlike a payment
+    /// intent's — migration `0036` makes the column `NOT NULL`.
+    pub customer: String,
+    /// Lower-case ISO-4217.
+    pub currency: String,
+    /// One of [`vpay_core::InvoiceStatus`]' five labels.
+    pub status: vpay_core::InvoiceStatus,
+    /// `{prefix}-{000001}`, or `null` while this is a draft. The number a
+    /// human quotes; [`Self::id`] is the one an API call uses.
+    pub number: Option<String>,
+    /// The total, in integer minor units. Summed from [`Self::lines`] while
+    /// the invoice is a draft, frozen at finalize.
+    pub amount_due: i64,
+    /// How much has been paid — `0`, or [`Self::amount_due`]. Partial
+    /// payments are out of scope (`docs/flows/invoices.md`).
+    pub amount_paid: i64,
+    /// `amount_due - amount_paid`, and the amount
+    /// `POST /v1/invoices/{id}/pay` creates an intent for.
+    pub amount_remaining: i64,
+    /// Unix **seconds**, or `null`. **Advisory**: nothing in vpay acts on it
+    /// — there is no dunning and no automatic transition.
+    pub due_date: Option<i64>,
+    /// The merchant's note on the document.
+    pub description: Option<String>,
+    /// The merchant's own key/value pairs, echoed back.
+    pub metadata: Map<String, Value>,
+    /// The `pi_…` paying, or that paid, this invoice — `null` until
+    /// `POST /v1/invoices/{id}/pay`.
+    pub payment_intent: Option<String>,
+    /// Where to send the payer. The checkout session for [`Self::payment_intent`],
+    /// or `null`. See the struct doc.
+    pub hosted_invoice_url: Option<String>,
+    /// Every line, newest last — the order they were added.
+    pub lines: ListObject<InvoiceLineObject>,
+    /// When each transition happened.
+    pub status_transitions: InvoiceStatusTransitions,
+    /// Unix **seconds** — not milliseconds, and not RFC 3339.
+    pub created: i64,
+    /// `false` for a sandbox deployment's objects.
+    pub livemode: bool,
+}
+
+impl InvoiceObject {
+    /// The `url` an invoice's `lines` envelope carries.
+    ///
+    /// A real, mounted path rather than Stripe's `/v1/invoices/{id}/lines`
+    /// (which vpay does not serve): a `url` pointing at a `404` is a claim
+    /// this repository does not make. `/v1/invoice_items` is where a line is
+    /// created, read, changed and removed.
+    const LINES_URL: &'static str = "/v1/invoice_items";
+
+    /// Renders a stored invoice, its lines and its hosted URL as the object a
+    /// merchant reads.
+    ///
+    /// Three inputs rather than one, and each is a query the caller has
+    /// already made: the row, its lines
+    /// (`vpay_db::Invoices::items_for_invoice`) and the checkout session's
+    /// URL. Taking them as parameters rather than fetching them keeps this
+    /// module free of I/O — the property that lets every handler and the
+    /// worker share one renderer.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Internal`] for a `metadata` that is not a JSON object or a
+    /// `status` outside [`vpay_core::InvoiceStatus`] — states migration
+    /// `0036`'s `metadata_is_object` and `invoices_status_enum_check` make
+    /// impossible, so seeing one means the schema and this code disagree.
+    /// Nothing a *caller* can send reaches an `Err` here.
+    pub fn render(
+        row: &vpay_db::InvoiceRow,
+        lines: &[vpay_db::InvoiceItemRow],
+        hosted_invoice_url: Option<String>,
+    ) -> Result<Self, ApiError> {
+        let status = vpay_core::InvoiceStatus::from_wire(&row.status).ok_or_else(|| {
+            ApiError::Internal(format!(
+                "invoices.status is `{}`, which is not an invoice status",
+                row.status
+            ))
+        })?;
+
+        Ok(Self {
+            id: row.id.clone(),
+            object: InvoiceTag,
+            customer: row.customer_id.clone(),
+            currency: row.currency_code.to_lowercase(),
+            status,
+            number: row.number.clone(),
+            amount_due: row.amount_due,
+            amount_paid: row.amount_paid,
+            amount_remaining: row.amount_remaining,
+            due_date: row.due_date.map(OffsetDateTime::unix_timestamp),
+            description: row.description.clone(),
+            metadata: metadata_of(&row.metadata, "invoices")?,
+            payment_intent: row.payment_intent_id.clone(),
+            hosted_invoice_url,
+            lines: ListObject::new(
+                lines.iter().map(InvoiceLineObject::from).collect(),
+                // Never `true`: the list is not paged. Stated on the struct.
+                false,
+                Self::LINES_URL,
+            ),
+            status_transitions: InvoiceStatusTransitions {
+                finalized_at: row.finalized_at.map(OffsetDateTime::unix_timestamp),
+                paid_at: row.paid_at.map(OffsetDateTime::unix_timestamp),
+                voided_at: row.voided_at.map(OffsetDateTime::unix_timestamp),
+                marked_uncollectible_at: row
+                    .marked_uncollectible_at
+                    .map(OffsetDateTime::unix_timestamp),
+            },
             created: row.created_at.unix_timestamp(),
             livemode: row.livemode,
         })
@@ -2004,6 +2266,176 @@ mod tests {
                 "email": "ada@example.cm",
                 "phone": "237600000200",
                 "metadata": { "order_id": "1234" },
+                "created": 1_753_401_600,
+                "livemode": false,
+            })
+        );
+    }
+
+    /// One stored invoice, its one line and a hosted URL — the fixture the
+    /// key-set assertion below renders.
+    fn invoice_row() -> vpay_db::InvoiceRow {
+        vpay_db::InvoiceRow {
+            id: "in_1".to_owned(),
+            seq: 7,
+            merchant_id: "acme-cameroon-tenant".to_owned(),
+            livemode: false,
+            customer_id: "cus_1".to_owned(),
+            currency_code: "XAF".to_owned(),
+            status: "open".to_owned(),
+            number: Some("A7K3M9QP-000001".to_owned()),
+            amount_due: 5000,
+            amount_paid: 0,
+            amount_remaining: 5000,
+            due_date: None,
+            description: Some("September hosting".to_owned()),
+            metadata: json!({ "order_id": "1234" }),
+            payment_intent_id: None,
+            finalized_at: time::OffsetDateTime::from_unix_timestamp(1_753_401_600).ok(),
+            paid_at: None,
+            voided_at: None,
+            marked_uncollectible_at: None,
+            created_at: time::OffsetDateTime::from_unix_timestamp(1_753_401_600)
+                .expect("a fixed, valid timestamp"),
+            updated_at: time::OffsetDateTime::from_unix_timestamp(1_784_937_600)
+                .expect("a fixed, valid timestamp"),
+        }
+    }
+
+    /// One line of that invoice.
+    fn invoice_line_row() -> vpay_db::InvoiceItemRow {
+        vpay_db::InvoiceItemRow {
+            id: "ii_1".to_owned(),
+            seq: 3,
+            invoice_id: "in_1".to_owned(),
+            merchant_id: "acme-cameroon-tenant".to_owned(),
+            livemode: false,
+            description: "Hosting".to_owned(),
+            quantity: 1,
+            unit_amount: 5000,
+            amount: 5000,
+            currency_code: "XAF".to_owned(),
+            created_at: time::OffsetDateTime::from_unix_timestamp(1_753_401_600)
+                .expect("a fixed, valid timestamp"),
+            updated_at: time::OffsetDateTime::from_unix_timestamp(1_753_401_600)
+                .expect("a fixed, valid timestamp"),
+        }
+    }
+
+    /// The object `docs/api/README.md` documents, key for key.
+    ///
+    /// # The count was wrong and nothing held it
+    ///
+    /// `docs/api/README.md` said **seventeen keys** from the day S4b landed
+    /// until the review on 2026-09-07. The object is eighteen, and — unlike
+    /// the customer's and the refund's, whose counts each name a test — no
+    /// test of any name existed: adding a key to [`InvoiceObject`] and
+    /// rendering it was caught by nothing in the repository. This is
+    /// `the_customer_object_is_the_documented_eight_keys`' device applied to
+    /// the object that inherited its documentation habit without its
+    /// tripwire.
+    ///
+    /// # Why the count is the assertion and not only the key list
+    ///
+    /// This object is the `data.object` of `invoice.created`,
+    /// `invoice.finalized`, `invoice.paid` and `invoice.voided`. A nineteenth
+    /// key is signed, delivered at-least-once and stored in `events`
+    /// **forever**. `InvoiceRow`'s `seq`, `merchant_id` and `updated_at` are
+    /// each one field's inattention away from being there, so they are named.
+    ///
+    /// The whole-value comparison is what makes this a statement about the
+    /// *rendering* too: `currency` lower-cased from the stored `XAF`, every
+    /// timestamp in unix **seconds**, `lines` the ordinary list envelope
+    /// pointing at a route that exists, and `metadata` a map rather than a
+    /// string.
+    #[test]
+    fn the_invoice_object_is_the_documented_eighteen_keys() {
+        let rendered = serde_json::to_value(
+            InvoiceObject::render(
+                &invoice_row(),
+                &[invoice_line_row()],
+                Some("https://checkout.vpay.test/c/cs_1#secret".to_owned()),
+            )
+            .expect("a well-formed row renders"),
+        )
+        .expect("serialises");
+        let object = rendered.as_object().expect("an object");
+
+        for key in [
+            "id",
+            "object",
+            "customer",
+            "currency",
+            "status",
+            "number",
+            "amount_due",
+            "amount_paid",
+            "amount_remaining",
+            "due_date",
+            "description",
+            "metadata",
+            "payment_intent",
+            "hosted_invoice_url",
+            "lines",
+            "status_transitions",
+            "created",
+            "livemode",
+        ] {
+            assert!(object.contains_key(key), "`{key}` is missing");
+        }
+
+        for internal in ["seq", "merchant_id", "updated_at", "currency_code"] {
+            assert!(
+                !object.contains_key(internal),
+                "`{internal}` is internal and must never reach the wire — it would be signed \
+                 into every `invoice.*` body and stored in `events` forever: {object:?}"
+            );
+        }
+
+        assert_eq!(
+            object.len(),
+            18,
+            "an undocumented key was added to the invoice object: {object:?}"
+        );
+
+        assert_eq!(
+            rendered,
+            json!({
+                "id": "in_1",
+                "object": "invoice",
+                "customer": "cus_1",
+                "currency": "xaf",
+                "status": "open",
+                "number": "A7K3M9QP-000001",
+                "amount_due": 5000,
+                "amount_paid": 0,
+                "amount_remaining": 5000,
+                "due_date": null,
+                "description": "September hosting",
+                "metadata": { "order_id": "1234" },
+                "payment_intent": null,
+                "hosted_invoice_url": "https://checkout.vpay.test/c/cs_1#secret",
+                "lines": {
+                    "object": "list",
+                    "has_more": false,
+                    "url": "/v1/invoice_items",
+                    "data": [{
+                        "id": "ii_1",
+                        "object": "line_item",
+                        "description": "Hosting",
+                        "quantity": 1,
+                        "unit_amount": 5000,
+                        "amount": 5000,
+                        "currency": "xaf",
+                        "livemode": false,
+                    }],
+                },
+                "status_transitions": {
+                    "finalized_at": 1_753_401_600,
+                    "paid_at": null,
+                    "voided_at": null,
+                    "marked_uncollectible_at": null,
+                },
                 "created": 1_753_401_600,
                 "livemode": false,
             })
