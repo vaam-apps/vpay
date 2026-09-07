@@ -198,7 +198,7 @@ run**, with the same numbers throughout:
 | `fmt-check` | ok (Rust; `just fmt` also runs prettier over ~222 unrelated files and was deliberately not run) |
 | `clippy` | ok, `-D warnings` |
 | `verify` | all ten gates — `verify-links` **854 links in 153 tracked files**, `verify-status` 1 declared unimplemented item, `verify-toolchain` 1.98.0 |
-| `test-rust` | **1401 run, 1401 passed, 0 skipped** — 840–1023 s per run, 43 binaries, real Postgres and real WireMock rails |
+| `test-rust` | **1401 run, 1401 passed, 0 skipped** — 43 binaries, real Postgres and real WireMock rails, thirteen to seventeen minutes a run |
 | `test-doc` | **96 passed, 1 ignored** |
 | `verify-ignored` | **0 ignored (expected 0), 43 binaries (expected 43), 1401 total (floor 1080)** |
 | `lint-web` | ok |
