@@ -1748,3 +1748,79 @@ async fn two_concurrent_pays_attach_exactly_one_intent() -> anyhow::Result<()> {
     harness.shutdown().await;
     Ok(())
 }
+
+/// The `starting_after` and `ending_before` cursors are resolved **inside the
+/// merchant's scope**, so another merchant's `in_…` is neither an existence
+/// oracle nor a way to widen the page.
+///
+/// # The ordering of the fixtures is the whole test
+///
+/// Measured, not assumed: with merchant B holding a single invoice *newer*
+/// than merchant A's, both cursor sub-selects answer an empty page whether or
+/// not they carry `AND merchant_id = $1` — `seq < seq(theirs)` excludes B's
+/// only row either way, so the mutation that unscopes the cursor passes. The
+/// fixtures below therefore straddle merchant A's invoice: one of B's is
+/// older and one is newer, so an unscoped `starting_after` returns the older
+/// one and an unscoped `ending_before` returns the newer one, and each cursor
+/// has a row it would leak.
+///
+/// Two failures are possible and this case refuses both: answering a `404`
+/// (which would say "that id exists, just not for you") and honouring the
+/// foreign cursor against the caller's own rows (which hands back a page the
+/// cursor never described). `list_page`'s sub-selects carry `AND merchant_id
+/// = $1`, so a foreign id resolves to `NULL`, the comparison is `NULL`, and
+/// the page is empty.
+///
+/// **The decisive mutation:** delete `AND merchant_id = $1` from either
+/// cursor sub-select in `vpay_db::invoices`' `list_page` — the matching
+/// assertion below sees one of merchant B's own invoices come back.
+#[tokio::test]
+async fn a_foreign_cursor_is_an_empty_page_and_never_an_oracle() -> anyhow::Result<()> {
+    let harness = harness().await?;
+
+    // Straddling merchant A's invoice, oldest first. See this case's doc.
+    let older = harness.draft_with_a_line(CLIENT_B).await?;
+    let theirs = harness.draft_with_a_line(CLIENT_A).await?;
+    let newer = harness.draft_with_a_line(CLIENT_B).await?;
+
+    // Merchant B's unpaged view, so "the cursor was honoured against my rows"
+    // and "the cursor refused" are visibly different answers.
+    let (status, page) = harness.get(CLIENT_B, "/v1/invoices").await?;
+    assert_eq!(status, 200, "{page}");
+    let data = field(&page, "data").as_array().expect("a list");
+    assert_eq!(data.len(), 2, "merchant B has exactly two: {page}");
+    assert_eq!(
+        field(item(data, 0, "invoice"), "id"),
+        newer.as_str(),
+        "newest first"
+    );
+    assert_eq!(field(item(data, 1, "invoice"), "id"), older.as_str());
+
+    for (cursor, would_leak) in [("starting_after", &older), ("ending_before", &newer)] {
+        let (status, page) = harness
+            .get(CLIENT_B, &format!("/v1/invoices?{cursor}={theirs}"))
+            .await?;
+        assert_eq!(status, 200, "a foreign cursor is not a 404: {page}");
+        let data = field(&page, "data").as_array().expect("a list");
+        assert!(
+            data.is_empty(),
+            "{cursor} pointing at another merchant's invoice leaked {would_leak}: {page}"
+        );
+    }
+
+    // An id of the right shape that never existed answers identically, so a
+    // caller cannot tell "not yours" from "never existed" by paging either.
+    for cursor in ["starting_after", "ending_before"] {
+        let (status, page) = harness
+            .get(
+                CLIENT_B,
+                &format!("/v1/invoices?{cursor}={MISSING_INVOICE_ID}"),
+            )
+            .await?;
+        assert_eq!(status, 200, "{page}");
+        assert!(field(&page, "data").as_array().expect("a list").is_empty());
+    }
+
+    harness.shutdown().await;
+    Ok(())
+}
