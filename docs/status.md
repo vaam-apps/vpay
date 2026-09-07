@@ -500,6 +500,47 @@ network, a database or a binary this workspace does not build.
   [`docs/plans/exp10-notes/opus.md`](plans/exp10-notes/opus.md).
 
 
+Last verified: 2026-09-07, on branch `claude/exp29-migration-manifest` at the
+head of the sabotage review — **the migration manifest gate (issue #76), and
+the runbook repair it shipped with corrected**. `just ci` **exit 0**, recipe by
+recipe, exit code read from a file rather than a banner:
+
+- `fmt-check`; `clippy` `-D warnings`.
+- `verify`, **all eleven gates**: `verify-no-mocks`; `verify-status` 1 declared
+  unimplemented item; `verify-errors` 18 error types, 16 `#[from]` variants
+  delegating; `verify-sdk-parity` 407 proving tests, 35 dated gaps, 19 methods
+  over 23 rows; `verify-links` **920 links in 167 tracked files**;
+  `verify-npm-scope` 2 publishable packages; `check-schema` 19 declarations;
+  `verify-serde` 73 types, 16 exempted; `verify-repositories` 4 concrete
+  implementations named by none of 80 outside files; `verify-toolchain`
+  1.98.0; **`verify-migrations` 35 migration files all matching the
+  manifest**. `verify-docs` advisory.
+- `test-rust` **1563 tests run, 1563 passed, 0 skipped** in 953.9 s across 46
+  binaries against a real Postgres and real WireMock rails; `test-doc` **99
+  passed, 1 ignored**; `verify-ignored` **0 ignored (expected 0), 46 binaries
+  (expected 46), 1563 total (floor 1080)**.
+- `lint-web`; `test-web` (checkout 448, nodejs SDK 190, stripe-js SDK 146,
+  shop 96, api-client 4, ui 3); `deny` — advisories, bans, licenses, sources
+  all ok.
+
+**One caveat about this run, stated because a warning is not a pass:**
+`check-schema` printed `WARNING — cratestack 0.11.1 on PATH, this repository
+pins 0.12.0` and type-checked against the 0.11.1 grammar. That is this
+machine's PATH, not this branch: CI's `self-checks` job installs the pinned
+0.12.0 from the justfile. Nothing in this change touches `schemas/vpay.cstack`.
+
+**An earlier run of the same branch was also exit 0 but took 2251 s**, because
+`the_0028_repair_in_the_runbook_fixes_a_database_that_applied_the_original`
+took **1201 s** on its own — `sqlx::migrate!` returns `VersionMismatch` before
+its `conn.unlock()` (sqlx-core 0.9.0 `src/migrate/migrator.rs`), so a refused
+migration hands its connection back to the pool holding the advisory lock and
+the next `run()` blocks until that connection is reaped ten minutes later.
+Running the refused migration on its own closed pool took it to **1.619 s**.
+The test now asserts the leaked lock is there (`pg_locks`, `locktype =
+'advisory' AND granted` = 1) so the workaround cannot outlive its reason.
+
+**Superseded by the run above, kept for the record.**
+
 Last verified: 2026-09-07, on branch `claude/exp21-checkout-page` at the head
 of the sabotage review, rebased onto `origin/master` (PRs #55 #60 #62 #64) —
 **the checkout page restyled and made runtime-configurable, and then fixed**.

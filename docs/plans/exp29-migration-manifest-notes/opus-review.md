@@ -47,9 +47,7 @@ Fixed, and the fix is executable rather than asserted:
 container, rewinds version 28's checksum to the original, confirms
 `sqlx::migrate!` refuses with the message the runbook quotes, **parses the
 `UPDATE` out of the markdown file**, runs it, and confirms the migrator then
-runs clean. Measured: `1 test run: 1 passed`, 1203 s (slow because another
-agent's `nextest run --workspace` was saturating the host and the Docker
-daemon at the time).
+runs clean. Measured: `1 test run: 1 passed`.
 
 The runbook now also states the original value beside the current one, with a
 `psql` query and a table so an operator can determine which state their
@@ -149,7 +147,7 @@ hash somewhere in source, and whoever can edit two files can edit three; the
 only difference would be a third file in the diff. **The recursion was
 considered and rejected.** What the manifest actually buys is that the edit
 becomes a one-line diff on a file whose sole purpose is to be reviewed — a
-comment reflowed inside a 400-line `.sql` file is not visible in review, and
+comment reflowed inside a 292-line `.sql` file is not visible in review, and
 that is exactly how issue #76 happened. This is now stated plainly in the
 runbook, in `backends/migrations/README.md`, in the gate's doc comment and in
 `docs/status.md`, rather than left for a reader to discover.
@@ -158,6 +156,41 @@ Every mutation above is now a unit test (`migration_manifest_tests` in
 `.xtask/src/main.rs`, twelve tests) rather than something a reviewer ran once,
 because `check_migrations` was refactored into a pure function over
 (manifest text, filename → hash) with the filesystem in the caller.
+
+### F9 — the new test took 1201 s, and the reason is upstream (found by the gate, not by review)
+
+`just ci` passed with the test at **1201.285 s** against 1.5-2.0 s for every
+other test in `postgres_smoke.rs`, twice, so it was not host contention.
+
+`sqlx-core` 0.9.0, `src/migrate/migrator.rs`: `run_direct` takes a Postgres
+advisory lock with `conn.lock()`, and every early return on the error path —
+`MigrateError::Dirty`, `validate_applied_migrations`,
+`MigrateError::VersionMismatch` — returns before reaching `conn.unlock()`. A
+refused migration hands its connection back to the pool still holding the
+lock; the next `run()` gets a different connection and blocks inside Postgres
+until the leaking one is reaped at the pool's `idle_timeout`, ten minutes by
+default. This test is the only place in the workspace that runs a migration
+expected to fail and then one expected to succeed.
+
+Fixed by running the refused migration on its own single-connection pool and
+closing it: **1201.285 s -> 1.619 s**, same assertions. The leak is now
+*observed* rather than inferred — while the refused connection is open the test
+asserts `count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted` is 1,
+and the failure message says a 0 means sqlx has started unlocking on the error
+path and the dedicated pool can go.
+
+Not an operational defect: a vpay binary hitting this error exits 78, which
+closes the connection. Recorded because the symptom — a migration that hangs
+rather than failing — looks nothing like its cause.
+
+### F10 — my own regression, caught by `just ci`
+
+The first version of the runbook quoted the retired `@vpay/*` package name in
+a diff of the 0028 comment, and `verify-npm-scope` failed the build on it
+(`docs/runbooks/migrations.md:52`). Adding an allowlist entry to make my own
+paragraph pass is exactly the exemption AGENTS.md forbids, so the page now
+gives the `git diff` command instead. Recorded because it is evidence the
+existing gates work on a reviewer too.
 
 ## Cross-platform
 
@@ -179,6 +212,32 @@ because they were checked rather than assumed:
   resolved `sha2 0.10.9`. `cargo deny check` is unaffected — no package was
   added to the graph.
 - The draft's `MANIFEST.sha256` hashes are correct: all 35 match `sha256sum`.
+
+## `just ci`, recipe by recipe (final head, exit code read from a file)
+
+| Recipe | Result |
+|---|---|
+| `fmt-check` | exit 0 |
+| `clippy` `-D warnings` | exit 0, workspace + all targets |
+| `verify` | **all eleven gates**; `verify-status` 1 declared unimplemented item; `verify-errors` 18 types; `verify-sdk-parity` 407 proving tests, 35 dated gaps; `verify-links` 920 links in 167 tracked files; `verify-npm-scope` 2 publishable packages; `check-schema` 19 declarations (see caveat); `verify-serde` 73 types, 16 exempted; `verify-repositories` 4 impls, 80 outside files; `verify-toolchain` 1.98.0; **`verify-migrations` 35 files matching**; `verify-docs` advisory |
+| `test-rust` | **1563 run, 1563 passed, 0 skipped**, 953.9 s, 46 binaries |
+| `test-doc` | **99 passed, 1 ignored** |
+| `verify-ignored` | 0 ignored (expected 0), 46 binaries (expected 46), 1563 total (floor 1080) |
+| `lint-web` | exit 0 |
+| `test-web` | checkout 448, nodejs SDK 190, stripe-js SDK 146, shop 96, api-client 4, ui 3 |
+| `deny` | advisories, bans, licenses, sources all ok |
+
+`just ci` **exit 0**, read from `exp29-review-ci.exit`, not from a banner.
+
+**Caveat, because a warning is not a pass.** `check-schema` printed
+`WARNING — cratestack 0.11.1 on PATH, this repository pins 0.12.0` and
+type-checked against the 0.11.1 grammar. That is this machine's PATH and
+predates this branch; CI's `self-checks` installs the pinned 0.12.0 from the
+justfile, and nothing here touches `schemas/vpay.cstack`. Not fixed, because
+`cargo install` into the shared `~/.cargo/bin` is forbidden by the brief.
+
+An earlier run of the same branch was also exit 0 but took **2251 s**; F9
+above is why, and the final run is 953.9 s.
 
 ## Not checked
 
