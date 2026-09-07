@@ -1,6 +1,6 @@
 # vpay task runner. `just` with no argument lists everything.
 #
-# Ten invariants this repo enforces on itself, all wired into `just verify`:
+# Eleven invariants this repo enforces on itself, all wired into `just verify`:
 #   * no test double is reachable from a shipping binary
 #   * every unimplemented item is declared in docs/status.md
 #   * every error type is classified (ADR-0011) and anyhow stays in the binaries
@@ -22,8 +22,11 @@
 #     (`verify-repositories`, 2026-09-05)
 #   * backends/Dockerfile's `FROM rust:<version>` names the compiler
 #     rust-toolchain.toml pins (`verify-toolchain`, 2026-09-05)
+#   * no palette colour, no daisyUI 4 class daisyUI 5 removed, no
+#     `!important` outside the one documented exception, and no `cva` call
+#     outside `@vpay/ui` (`verify-ui`, 2026-09-07 — exp26 UI revamp)
 #
-# `just verify` prints an eleventh thing that is NOT an invariant and never
+# `just verify` prints a twelfth thing that is NOT an invariant and never
 # fails the build: `verify-docs`, a report on doc-comment volume, in-file
 # comment volume, externalised module docs, long functions, ```ignore fences
 # and #[allow]s (Step 7 decision 4; ADR-0016 standard 6 keeps it a report).
@@ -420,7 +423,8 @@ audit-web:
 # `self-checks` job runs exactly this list, in this order:
 # verify-no-mocks, verify-status, verify-errors, verify-sdk-parity,
 # verify-links, verify-npm-scope, check-schema, verify-serde,
-# verify-repositories, verify-toolchain, and then verify-docs last.
+# verify-repositories, verify-toolchain, verify-ui, and then verify-docs
+# last.
 #
 # That sentence was false until 2026-09-04: `verify-sdk-parity` ran here but
 # had no step in `.github/workflows/ci.yml`, so ADR-0015's decision 3 ("CI
@@ -430,7 +434,7 @@ audit-web:
 # this comment honest is someone reading the workflow beside it.
 #
 # `verify-docs` is NOT a check: it exits 0 whatever it finds, so the
-# "verify: ok" below means the ten gates passed and says nothing about the
+# "verify: ok" below means the eleven gates passed and says nothing about the
 # numbers `verify-docs` printed. It is last so that the report a human reads
 # is the final thing on the terminal, after every gate has had its say.
 #
@@ -484,9 +488,19 @@ audit-web:
 # written down elsewhere — "check-schema is the seventh gate", which four
 # other files say — stays true when a gate is added.
 #
-# The ten self-checks, then the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-docs
-    @echo "verify: ok — the ten gates above passed; the verify-docs report is advisory"
+# `verify-ui` joined on 2026-09-07 as the eleventh, from the exp26 UI
+# revamp (docs/plans/2026-09-07-ui-revamp.md §9). It is a `git grep` gate
+# rather than a lint rule or a `cargo xtask` for a reason specific to its
+# highest-risk check: a daisyUI 4 class daisyUI 5 removed (`form-control`,
+# `label-text`, …) still parses and still renders — it just stops styling
+# anything, silently, and every test keeps passing. Nothing else in `just
+# ci` would notice. It is after `verify-toolchain` rather than beside
+# `verify-npm-scope` (its nearest relative in subject, not in date) for the
+# same reason every gate above it is where it is: the list is chronological.
+#
+# The eleven self-checks, then the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-docs
+    @echo "verify: ok — the eleven gates above passed; the verify-docs report is advisory"
 
 verify-no-mocks:
     cargo xtask verify-no-mocks
@@ -769,6 +783,58 @@ verify-repositories:
 # for the mutation that motivated it and for what this does not cover.
 verify-toolchain:
     cargo xtask verify-toolchain
+
+# Four things ESLint cannot express cheaply — a `git grep` is the honest
+# tool here rather than a `cargo xtask verify-ui` matching this repo's other
+# gates, which is more ceremony than four greps deserve (plan
+# docs/plans/2026-09-07-ui-revamp.md §7, "the class-string rules,
+# concretely"). Each has a decisive mutation: add the offending line,
+# confirm this exits non-zero, remove it.
+verify-ui:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    fail=0
+    # 1. No palette colour utility outside @vpay/ui. Theme tokens only
+    #    (AGENTS.md's "never inline a status colour" rule, generalised to
+    #    every colour a daisyUI theme already names).
+    if git grep -nE 'className=.*\b(bg|text|border)-(red|green|blue|amber|yellow|slate|gray|zinc|neutral|stone|emerald|teal|sky|indigo|violet|rose|orange|lime|cyan|fuchsia|pink)-[0-9]' \
+        -- 'frontends/apps' 'examples/shop' ; then
+      echo 'verify-ui: a palette colour outside @vpay/ui — use a theme token'; fail=1
+    fi
+    # 2. No daisyUI 4 class that daisyUI 5 removed. These do not error; they
+    #    silently stop styling anything. See
+    #    docs/plans/2026-09-07-ui-revamp.md §6.3. This is the subset the
+    #    plan measured this repository actually used — not the complete
+    #    daisyUI 4→5 delta.
+    if git grep -nE '\b(form-control|label-text|label-text-alt|btn-group|input-group|card-compact|tabs-bordered|tabs-lifted|tabs-boxed)\b' \
+        -- 'frontends' 'examples' ':!docs' ; then
+      echo 'verify-ui: a daisyUI 4 class removed in daisyUI 5'; fail=1
+    fi
+    # 3. No !important, with three exemptions — measured against this repo's
+    #    actual tree rather than copied from the plan unchecked (plan §7's
+    #    own snippet named only the first and would have failed this gate
+    #    the moment it landed):
+    #      - frontends/apps/checkout/app/globals.css: the
+    #        prefers-reduced-motion block, whose own comment explains why it
+    #        is load-bearing (plan §3 rule 5).
+    #      - frontends/apps/checkout/src/config/theme.ts: a doc comment that
+    #        USES the word to explain the code deliberately avoids needing
+    #        one ("… so it wins without an `!important`") — prose, not CSS.
+    #      - examples/checkout-browser/index.html: `[hidden]{display:none
+    #        !important}`, a plain-HTML demo page with no framework and no
+    #        Tailwind, explicitly out of scope for this revamp (plan §4.1,
+    #        "Out of scope, do not touch") and predating it.
+    if git grep -n '!important' -- 'frontends' 'examples' \
+        ':!frontends/apps/checkout/app/globals.css' \
+        ':!frontends/apps/checkout/src/config/theme.ts' \
+        ':!examples/checkout-browser/index.html' ; then
+      echo 'verify-ui: !important outside the documented exemptions'; fail=1
+    fi
+    # 4. No cva outside the shared library — one variant map, not one per app.
+    if git grep -n 'cva(' -- 'frontends/apps' 'examples' ; then
+      echo 'verify-ui: a cva variant map outside @vpay/ui'; fail=1
+    fi
+    exit $fail
 
 verify-docs:
     cargo xtask verify-docs
