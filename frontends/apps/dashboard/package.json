@@ -27,6 +27,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vpay/config": "workspace:*",
+    "axe-core": "4.13.0",
     "daisyui": "5.7.28",
     "eslint": "9.39.5",
     "jsdom": "^25.0.1",
