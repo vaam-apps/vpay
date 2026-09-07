@@ -1,12 +1,31 @@
-//! Command-line configuration, shared by `vpay-server` and `vpay-worker-bin`.
+//! Command-line configuration for `vpay-server` and its subcommands.
 //!
 //! Every option auto-resolves from an environment variable (via clap's `env`
 //! feature) so the same binary works identically whether it is invoked with
 //! flags, with env vars (as in `compose.yml` / a container), or a mix — with
 //! an explicit flag always winning over its environment variable.
 //!
-//! `CommonArgs` is `#[command(flatten)]`ed into both binaries' top-level
-//! parser so the two cannot drift on the options they share.
+//! # One binary, three modes (issue #77, 2026-09-07)
+//!
+//! There were two top-level parsers here until 2026-09-07: `ServerArgs` and
+//! a `WorkerArgs` that carried its own `#[command(flatten)] common`, because
+//! `vpay-server` and `vpay-worker-bin` were two packages producing two
+//! binaries and two images. They are one package and one binary now, and
+//! [`WorkerArgs`] is a [`clap::Args`] group on the `worker` subcommand
+//! rather than a [`clap::Parser`] of its own.
+//!
+//! What that costs, and how it is paid: the flags the two processes shared
+//! used to be *provably* identical, because [`CommonArgs`] was flattened
+//! into both parsers and a test read both `clap::Command`s and compared
+//! them. With one parser there is nothing left to compare — so every field
+//! of `CommonArgs` is `global = true` instead, which is what keeps
+//! `vpay-server worker --config x` and `vpay-server --config x worker`
+//! *both* working, and therefore keeps every invocation `vpay-worker-bin`
+//! accepted working unchanged apart from the inserted subcommand word.
+//! `the_common_options_are_accepted_on_either_side_of_the_worker_subcommand`
+//! below is what proves it, because a `global = true` dropped from one field
+//! is otherwise silent: the flag still parses before the subcommand and
+//! fails only after it.
 //!
 //! # `--profile` selects a file, never a code path
 //!
@@ -51,11 +70,15 @@ pub enum LogFormat {
     Text,
 }
 
-/// Options common to every vpay binary.
+/// Options every mode of `vpay-server` takes.
 ///
-/// Flattened into each binary's top-level [`clap::Parser`] struct via
-/// `#[command(flatten)]` so the server and worker cannot silently diverge on
-/// a shared flag's name, env var, or default.
+/// Flattened into [`ServerArgs`] once, and **every field is
+/// `global = true`**: `serve`, `worker` and `staff add` are one process's
+/// three modes, not three programs, so `--config` means the same thing
+/// wherever it appears on the line. Before issue #77 the same guarantee came
+/// from flattening this struct into two separate parsers; see the module
+/// docs for why the mechanism changed and which test replaced the one that
+/// compared the two `clap::Command`s.
 ///
 /// `Debug` is hand-written below instead of derived, because
 /// `database_url` routinely embeds a plaintext password
@@ -68,9 +91,10 @@ pub enum LogFormat {
 pub struct CommonArgs {
     /// Postgres connection string.
     ///
-    /// `Option<String>` at the clap level only: both `vpay-server` and
-    /// `vpay-worker-bin` treat this as required at runtime (see each
-    /// binary's own `main.rs`) — a missing value is a hard startup failure,
+    /// `Option<String>` at the clap level only: `serve`, `worker` and
+    /// `staff add` all treat this as required at runtime (see
+    /// `vpay-server`'s `main.rs` and `worker.rs`) — a missing value is a
+    /// hard startup failure,
     /// not a silently DB-less scaffold mode. It stays optional here rather
     /// than `required = true` on the `clap` attribute so the CLI-parsing
     /// layer and the binary-level "what does this process actually need to
@@ -80,40 +104,46 @@ pub struct CommonArgs {
     /// Routinely embeds a password (`postgres://user:pass@host/db`) — see
     /// [`CommonArgs`]'s hand-written `Debug` impl below, which prints only
     /// whether this is set, never its value.
-    #[arg(long, env = "DATABASE_URL")]
+    #[arg(long, env = "DATABASE_URL", global = true)]
     pub database_url: Option<String>,
 
     /// Deployment profile label.
     ///
     /// Selects which YAML config file to load — never a code path. See the
     /// module-level docs above and `docs/adr/0003-yaml-configuration.md`.
-    #[arg(long, env = "VPAY_PROFILE", default_value = "sandbox")]
+    #[arg(long, env = "VPAY_PROFILE", default_value = "sandbox", global = true)]
     pub profile: String,
 
     /// Path to the YAML configuration file (ADR-0003).
     ///
     /// `Option<PathBuf>` at the clap level only, for the same reason
-    /// [`Self::database_url`] is — see that field's doc comment. Both
-    /// `vpay-server` and `vpay-worker-bin` treat this as required at
-    /// runtime: `vpay_config::Config::load` is called with it before either
-    /// binary connects to the database or binds a listener, and a missing
+    /// [`Self::database_url`] is — see that field's doc comment. Every mode
+    /// of `vpay-server` treats this as required at
+    /// runtime: `vpay_config::Config::load` is called with it before the
+    /// process connects to the database or binds a listener, and a missing
     /// value is a hard, loud startup failure. A payment gateway that boots
     /// with no validated deployment configuration is exactly the
     /// half-configured process ADR-0003 says must never serve traffic.
-    #[arg(long, env = "VPAY_CONFIG")]
+    #[arg(long, env = "VPAY_CONFIG", global = true)]
     pub config: Option<PathBuf>,
 
     /// `tracing-subscriber` env-filter directive, e.g. `info` or
     /// `vpay_api=debug,info`.
-    #[arg(long, env = "RUST_LOG", default_value = "info")]
+    #[arg(long, env = "RUST_LOG", default_value = "info", global = true)]
     pub log_filter: String,
 
     /// Structured logging output format.
-    #[arg(long, env = "VPAY_LOG_FORMAT", value_enum, default_value = "json")]
+    #[arg(
+        long,
+        env = "VPAY_LOG_FORMAT",
+        value_enum,
+        default_value = "json",
+        global = true
+    )]
     pub log_format: LogFormat,
 
     /// Socket address the observability listener binds to: `GET /livez` and
-    /// `GET /metrics`, on **both** binaries.
+    /// `GET /metrics`, under **both** `serve` and `worker`.
     ///
     /// A second listener rather than two more routes on `--bind`, and the
     /// separation is the point rather than an implementation detail.
@@ -126,26 +156,35 @@ pub struct CommonArgs {
     /// policy expressible at all. `vpay_api::router` deliberately mounts
     /// neither path, and a test in that crate fails if either appears.
     ///
-    /// It is on `CommonArgs` — not on `ServerArgs` — because
-    /// `vpay-worker-bin` needs it *more*: the worker has no other listener,
-    /// so before this flag existed it had no liveness probe and no way to
+    /// It is on `CommonArgs` — not beside `--bind` — because the `worker`
+    /// subcommand needs it *more*: the worker has no other listener, so
+    /// before this flag existed it had no liveness probe and no way to
     /// export the queue-depth gauge that tells an operator it is falling
-    /// behind.
+    /// behind. `staff add` binds it too, and that is the one place the
+    /// sharing is untidy rather than useful: a subcommand that writes one
+    /// row and exits opens no listener at all (`vpay-server`'s
+    /// `run_command` returns before `start_observability`).
     ///
     /// Port `9090` by default, matching `deploy/helm/vpay`'s
     /// `observability.port` and the `metrics` container port both
     /// Deployments declare. A `:0` port is a real configuration — the
     /// subprocess tests use it — and the bound address is logged, because
     /// with `:0` nothing else can know it.
-    #[arg(long, env = "VPAY_OBSERVABILITY_BIND", default_value = "0.0.0.0:9090")]
+    #[arg(
+        long,
+        env = "VPAY_OBSERVABILITY_BIND",
+        default_value = "0.0.0.0:9090",
+        global = true
+    )]
     pub observability_bind: SocketAddr,
 
     /// Seconds to wait for in-flight work to finish before a forced shutdown.
     ///
-    /// Both binaries bound by this, and both exit non-zero when it elapses
-    /// rather than when it does not: `vpay-server` gives in-flight HTTP
-    /// requests at most this many seconds to finish, and `vpay-worker-bin`
-    /// gives in-flight *jobs* the same (`vpay_worker::run_loop`'s drain).
+    /// Both long-running modes bound by this, and both exit non-zero when it
+    /// elapses rather than when it does not: `vpay-server serve` gives
+    /// in-flight HTTP requests at most this many seconds to finish, and
+    /// `vpay-server worker` gives in-flight *jobs* the same
+    /// (`vpay_worker::run_loop`'s drain).
     ///
     /// The worker's cutoff is not free, which is why the number matters more
     /// there. A job cut off mid-flight has already had its `attempts`
@@ -156,7 +195,12 @@ pub struct CommonArgs {
     /// first pass committed. Set this comfortably above
     /// `vpay_provider::DEFAULT_REQUEST_TIMEOUT` (20 s) so an ordinary poll
     /// waiting on a rail is not the thing that gets cut off.
-    #[arg(long, env = "VPAY_SHUTDOWN_GRACE_SECONDS", default_value_t = 25)]
+    #[arg(
+        long,
+        env = "VPAY_SHUTDOWN_GRACE_SECONDS",
+        default_value_t = 25,
+        global = true
+    )]
     pub shutdown_grace_seconds: u64,
 }
 
@@ -194,11 +238,13 @@ impl fmt::Debug for CommonArgs {
 #[command(
     name = "vpay-server",
     version,
-    about = "vpay payment gateway API server",
-    long_about = "vpay payment gateway API server.\n\nWrites rows and returns; it never calls a payment rail itself \
-                  (see docs/flows). This binary is a scaffold — run with --help \
-                  to see the full flag set, and see docs/status.md for what is \
-                  actually implemented behind it."
+    about = "vpay payment gateway",
+    long_about = "vpay payment gateway.\n\nWith no subcommand it serves the API: it writes rows and returns, \
+                  and it never calls a payment rail itself. `vpay-server worker` \
+                  runs the job loop that does — submit, poll, reconcile, deliver \
+                  (see docs/flows). One binary and one image since 2026-09-07 \
+                  (issue #77). Run with --help to see the full flag set, and see \
+                  docs/status.md for what is actually implemented behind it."
 )]
 pub struct ServerArgs {
     /// Socket address the HTTP listener binds to.
@@ -220,11 +266,24 @@ pub struct ServerArgs {
     /// `Option<PathBuf>` at the clap level only, for the same reason
     /// [`CommonArgs::database_url`] and [`CommonArgs::config`] are — the
     /// "what does this process need to run" decision belongs to `main.rs`,
-    /// not to the parser. `vpay-server` treats it as required at runtime,
+    /// not to the parser. `serve` treats it as required at runtime,
     /// because a server that boots without a signing key can serve no
-    /// authenticated surface at all. `vpay-worker-bin` deliberately does not
-    /// take this flag: the worker issues no tokens, so mounting the signing
-    /// key into it would widen the Secret's blast radius for no capability.
+    /// authenticated surface at all.
+    ///
+    /// **It is a top-level flag and it is deliberately NOT `global`**, so
+    /// `vpay-server worker --oauth-signing-key-file …` is a parse error —
+    /// the worker issues no token and reads no key. Be exact about what that
+    /// does and does not buy now that the worker is a subcommand of this
+    /// binary rather than a binary of its own: `vpay-server
+    /// --oauth-signing-key-file … worker` *parses*, because the flag is
+    /// taken before the subcommand word, and its value is then read by
+    /// nothing. So the CLI no longer refuses every spelling of "hand the
+    /// worker the key" the way `WorkerArgs`-as-its-own-parser did. What
+    /// actually keeps the Secret away from the worker is where it is
+    /// **mounted** — `deploy/helm/vpay/templates/deployment-worker.yaml`
+    /// mounts no `signingKey` volume and `compose.e2e.yml`'s worker service
+    /// mounts no key file — and that was always the load-bearing half: a
+    /// flag naming a path that is not in the container is not a leak.
     ///
     /// **The path is not redacted from `Debug`, deliberately**: a filesystem
     /// path is not secret, and "which file did it try" is the first thing an
@@ -258,16 +317,35 @@ pub struct ServerArgs {
     pub common: CommonArgs,
 }
 
-/// The operator subcommands `vpay-server` offers.
+/// The subcommands `vpay-server` offers, other than serving traffic.
 ///
-/// One today. It is a nested `Subcommand` rather than a flat `staff-add` so
-/// that a second staff operation (disable, list) is a sibling rather than
-/// another top-level verb, and so `vpay-server staff --help` is a page about
-/// staff.
+/// Two: one long-running mode ([`Self::Worker`]) and one operator command
+/// ([`Self::Staff`]). `None` — no subcommand at all — serves the API, which
+/// is what keeps every `ENTRYPOINT`, every compose `command:` and every Helm
+/// `args:` that predates issue #77 working with no edit.
+///
+/// There is deliberately **no `serve` variant**. A `serve` that had to be
+/// spelled would break exactly those entrypoints, and a `serve` that were
+/// accepted-but-optional would be two ways to say one thing, one of which no
+/// deployment file in this repository uses.
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum ServerCommand {
+    /// Run the job loop: submit, poll, reconcile, deliver.
+    ///
+    /// The long-running mode that drives live charges. It was the separate
+    /// binary `vpay-worker-bin` until 2026-09-07 (issue #77); nothing about
+    /// what it *does* changed when it became a subcommand, and
+    /// [docs/flows/crash-safety.md](../../../../docs/flows/crash-safety.md)
+    /// still describes the loop it runs.
+    Worker(WorkerArgs),
+
     /// Manage the humans who may sign in to `/dash/v1`
     /// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md)).
+    ///
+    /// A nested `Subcommand` rather than a flat `staff-add` so that a second
+    /// staff operation (disable, list) is a sibling rather than another
+    /// top-level verb, and so `vpay-server staff --help` is a page about
+    /// staff.
     Staff {
         /// What to do.
         #[command(subcommand)]
@@ -308,20 +386,25 @@ pub enum StaffCommand {
     },
 }
 
-/// `vpay-worker-bin` CLI.
+/// `vpay-server worker` — the flags the job loop takes that no other mode
+/// does.
 ///
-/// Same composition note as [`ServerArgs`]: `#[derive(Debug)]` is safe
-/// because `common: CommonArgs` formats via its own redacting `Debug` impl.
-#[derive(Debug, Clone, Parser)]
-#[command(
-    name = "vpay-worker-bin",
-    version,
-    about = "vpay background worker",
-    long_about = "vpay background worker: submit, poll, reconcile, deliver.\n\nClaims jobs \
-                  from the `jobs` table, drives live charges to a terminal state against \
-                  the configured rails, and sweeps what has expired. Webhook delivery is \
-                  not implemented (docs/status.md)."
-)]
+/// A [`clap::Args`] group on [`ServerCommand::Worker`], not a
+/// [`clap::Parser`]: it was `vpay-worker-bin`'s own top-level parser, with
+/// its own `#[command(flatten)] common: CommonArgs`, until issue #77 folded
+/// the two binaries into one on 2026-09-07. It carries no `common` field of
+/// its own now, because [`CommonArgs`] is flattened into [`ServerArgs`] with
+/// every field `global = true` — so `--config`, `--database-url`,
+/// `--observability-bind` and the rest are read from
+/// [`ServerArgs::common`] whichever side of the word `worker` they were
+/// written on.
+///
+/// One field, and that is the whole difference between this mode and
+/// `serve`. It stays here rather than moving to `CommonArgs` for the reason
+/// `the_serve_mode_is_not_given_a_worker_concurrency` states: a process that
+/// claims no jobs has no use for a concurrency, and a knob that configures
+/// nothing is the shape of dormant configuration this repository refuses.
+#[derive(Debug, Clone, clap::Args)]
 pub struct WorkerArgs {
     /// How many jobs this worker runs at once.
     ///
@@ -348,9 +431,6 @@ pub struct WorkerArgs {
     /// process.
     #[arg(long, env = "VPAY_WORKER_CONCURRENCY", default_value_t = 4)]
     pub worker_concurrency: usize,
-
-    #[command(flatten)]
-    pub common: CommonArgs,
 }
 
 impl WorkerArgs {
@@ -389,32 +469,35 @@ impl WorkerArgs {
 // `unwrap`/`expect`/`panic`, there is no exemption available here even
 // inside `#[cfg(test)]`.
 //
-// This module instead tests two things that together cover the contract
+// This module instead tests three things that together cover the contract
 // without ever touching process env:
-//   1. Every option on both `ServerArgs` and `WorkerArgs` declares the exact
-//      env var name we document (`server_command_declares_the_documented_env_vars`
+//   1. Every option on `ServerArgs` and on the `worker` subcommand declares
+//      the exact env var name we document (`server_command_declares_the_documented_env_vars`
 //      etc. below) — this is read straight off the built `clap::Command`, so
 //      renaming or dropping an `env = "..."` attribute fails a test.
 //   2. Flags parse to the values they carry (defaults / explicit flags).
+//   3. Since issue #77: that a common flag is accepted on **either** side of
+//      the `worker` subcommand word and reaches the same field. That is the
+//      test that replaced `the_flattened_common_args_are_identical_on_both_binaries`,
+//      which compared two `clap::Command`s that no longer both exist.
 //
 // The actual end-to-end proof that setting an env var on a *child process*
 // changes the parsed result — including the flag-beats-env precedence case —
-// lives in `backends/apps/vpay-server/tests/cli.rs` and
-// `backends/apps/vpay-worker-bin/tests/cli.rs`. Those use
-// `std::process::Command::env`, which sets only the *child's* environment
-// (a safe API, no `unsafe`, no interference with this process or other
-// tests), so they can control real env vars without hitting the forbid
-// above.
+// lives in `backends/apps/vpay-server/tests/cli.rs`, for `serve` and for
+// `worker` alike. Those use `std::process::Command::env`, which sets only
+// the *child's* environment (a safe API, no `unsafe`, no interference with
+// this process or other tests), so they can control real env vars without
+// hitting the forbid above.
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
 
     use clap::{CommandFactory, Parser};
 
-    use super::{LogFormat, ServerArgs, WorkerArgs};
+    use super::{LogFormat, ServerArgs, ServerCommand, WorkerArgs};
 
-    /// `(arg id, expected env var)` for every option common to both
-    /// binaries, i.e. every field of [`CommonArgs`](super::CommonArgs).
+    /// `(arg id, expected env var)` for every option common to every mode,
+    /// i.e. every field of [`CommonArgs`](super::CommonArgs).
     const COMMON_ENV_VARS: [(&str, &str); 7] = [
         ("database_url", "DATABASE_URL"),
         ("profile", "VPAY_PROFILE"),
@@ -425,22 +508,23 @@ mod tests {
         ("shutdown_grace_seconds", "VPAY_SHUTDOWN_GRACE_SECONDS"),
     ];
 
-    /// `(arg id, expected env var)` for options unique to `vpay-worker-bin`.
+    /// `(arg id, expected env var)` for options unique to the `worker`
+    /// subcommand.
     ///
     /// Its own table rather than an entry in [`COMMON_ENV_VARS`]: concurrency
-    /// is a property of a process that *claims jobs*, and the server claims
-    /// none. `the_server_is_not_given_a_worker_concurrency` below fails if it
-    /// is ever flattened into `CommonArgs` for symmetry.
+    /// is a property of a mode that *claims jobs*, and serving traffic claims
+    /// none. `the_serve_mode_is_not_given_a_worker_concurrency` below fails if
+    /// it is ever flattened into `CommonArgs` for symmetry.
     const WORKER_ONLY_ENV_VARS: [(&str, &str); 1] =
         [("worker_concurrency", "VPAY_WORKER_CONCURRENCY")];
 
-    /// `(arg id, expected env var)` for options unique to `vpay-server`.
+    /// `(arg id, expected env var)` for options only the API server reads.
     ///
     /// `oauth_signing_key_file` is here and not in `COMMON_ENV_VARS` on
-    /// purpose: only the server issues tokens, so only the server is handed
-    /// the Secret. `worker_command_declares_the_documented_env_vars` below
-    /// would start passing if it were ever flattened into `CommonArgs`, but
-    /// `the_worker_is_not_handed_the_signing_key` fails first.
+    /// purpose: only `serve` issues tokens, so only `serve` reads the Secret.
+    /// `the_worker_subcommand_is_not_handed_the_signing_key` below is what
+    /// fails if it is ever made `global` for symmetry with the rest of
+    /// `CommonArgs`.
     const SERVER_ONLY_ENV_VARS: [(&str, &str); 2] = [
         ("bind", "VPAY_BIND"),
         ("oauth_signing_key_file", "VPAY_OAUTH_SIGNING_KEY_FILE"),
@@ -462,14 +546,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn server_command_is_well_formed() {
-        <ServerArgs as CommandFactory>::command().debug_assert();
+    /// The `worker` subcommand's own `clap::Command`, by the name an
+    /// operator types and a compose `command:` carries.
+    ///
+    /// Looked up by string rather than reached through the enum, because the
+    /// *string* is the contract: `compose.e2e.yml`, `compose.demo.yml` and
+    /// `deployment-worker.yaml` all spell it, and clap derives it from the
+    /// variant name. A rename would be a silent break in three files this
+    /// crate cannot see.
+    fn worker_subcommand() -> clap::Command {
+        <ServerArgs as CommandFactory>::command()
+            .find_subcommand("worker")
+            .cloned()
+            .expect("`vpay-server worker` must exist; compose and Helm spell it")
     }
 
     #[test]
-    fn worker_command_is_well_formed() {
-        <WorkerArgs as CommandFactory>::command().debug_assert();
+    fn server_command_is_well_formed() {
+        <ServerArgs as CommandFactory>::command().debug_assert();
     }
 
     #[test]
@@ -482,27 +576,27 @@ mod tests {
 
     #[test]
     fn worker_command_declares_the_documented_env_vars() {
-        let cmd = <WorkerArgs as CommandFactory>::command();
-        for (id, env) in COMMON_ENV_VARS.iter().chain(WORKER_ONLY_ENV_VARS.iter()) {
+        let cmd = worker_subcommand();
+        for (id, env) in WORKER_ONLY_ENV_VARS {
             assert_env_var(&cmd, id, env);
         }
     }
 
-    /// The server runs no job loop, so a `--worker-concurrency` on it would
-    /// be a knob that changes nothing — the shape of dormant configuration
-    /// this repository refuses.
+    /// Serving traffic runs no job loop, so a `--worker-concurrency` there
+    /// would be a knob that changes nothing — the shape of dormant
+    /// configuration this repository refuses.
     #[test]
-    fn the_server_is_not_given_a_worker_concurrency() {
+    fn the_serve_mode_is_not_given_a_worker_concurrency() {
         let server = <ServerArgs as CommandFactory>::command();
         assert!(
             !server
                 .get_arguments()
                 .any(|arg| arg.get_id().as_str() == "worker_concurrency"),
-            "vpay-server claims no jobs; a concurrency flag there would configure nothing"
+            "serving traffic claims no jobs; a concurrency flag there would configure nothing"
         );
         assert!(
             ServerArgs::try_parse_from(["vpay-server", "--worker-concurrency", "8"]).is_err(),
-            "vpay-server accepted --worker-concurrency"
+            "`vpay-server --worker-concurrency 8` (no subcommand) must not parse"
         );
     }
 
@@ -512,13 +606,20 @@ mod tests {
     /// doc comment), not an implementation detail.
     #[test]
     fn the_worker_concurrency_defaults_to_four_and_parses_what_it_is_given() {
-        assert_eq!(
-            WorkerArgs::parse_from(["vpay-worker-bin"]).worker_concurrency,
-            4
-        );
-        let args = WorkerArgs::parse_from(["vpay-worker-bin", "--worker-concurrency", "16"]);
+        assert_eq!(worker_args(["vpay-server", "worker"]).worker_concurrency, 4);
+        let args = worker_args(["vpay-server", "worker", "--worker-concurrency", "16"]);
         assert_eq!(args.worker_concurrency, 16);
         assert_eq!(args.concurrency(), Ok(16));
+    }
+
+    /// Parses a command line that must select [`ServerCommand::Worker`] and
+    /// returns its [`WorkerArgs`], panicking with the parse error otherwise.
+    fn worker_args<'a>(argv: impl IntoIterator<Item = &'a str>) -> WorkerArgs {
+        let parsed = ServerArgs::try_parse_from(argv).expect("a valid `vpay-server worker` line");
+        match parsed.command {
+            Some(ServerCommand::Worker(args)) => args,
+            other => panic!("expected the worker subcommand, got {other:?}"),
+        }
     }
 
     /// Zero is a deployment mistake that would otherwise present as a
@@ -526,7 +627,7 @@ mod tests {
     /// message can name the flag) and is refused by `concurrency()`.
     #[test]
     fn a_worker_concurrency_of_zero_is_refused_by_name() {
-        let args = WorkerArgs::parse_from(["vpay-worker-bin", "--worker-concurrency", "0"]);
+        let args = worker_args(["vpay-server", "worker", "--worker-concurrency", "0"]);
         let error = args
             .concurrency()
             .expect_err("0 must not be accepted as a concurrency");
@@ -536,14 +637,26 @@ mod tests {
         );
     }
 
-    /// Every option in this CLI is meant to auto-resolve from the
-    /// environment (the whole point of Task 1). This catches an option added
-    /// later without an `env = "..."` attribute, on either binary.
+    /// Every option that configures a *deployment* auto-resolves from the
+    /// environment (the whole point of Task 1). This catches one added later
+    /// without an `env = "..."` attribute.
+    ///
+    /// The scope is the top-level command and `worker` — the two
+    /// long-running modes, i.e. the ones a container starts with an
+    /// environment and no argv. It is deliberately **not** every subcommand
+    /// at every depth: `staff add`'s `--merchant`, `--email` and `--name`
+    /// carry no env var and should not. They are the arguments of one
+    /// operator invocation, not configuration of a running process; a
+    /// `VPAY_EMAIL` in a pod's environment that silently decided who got an
+    /// account would be a worse thing than the extra typing. This is the
+    /// same scope the pre-#77 version of this test had (`ServerArgs` and
+    /// `WorkerArgs`, the two top-level parsers), restated now that the shape
+    /// no longer states it for us.
     #[test]
-    fn every_declared_option_on_both_commands_has_an_env_var() {
+    fn every_deployment_option_on_both_long_running_modes_has_an_env_var() {
         for cmd in [
             <ServerArgs as CommandFactory>::command(),
-            <WorkerArgs as CommandFactory>::command(),
+            worker_subcommand(),
         ] {
             for arg in cmd.get_arguments() {
                 let id = arg.get_id().as_str();
@@ -559,24 +672,125 @@ mod tests {
         }
     }
 
-    /// `CommonArgs` is `#[command(flatten)]`ed into both binaries. This
-    /// confirms the flattened options carry byte-identical env var names on
-    /// both commands, so the two binaries provably cannot drift on a shared
-    /// flag.
+    /// **The test that replaced `the_flattened_common_args_are_identical_on_both_binaries`.**
+    ///
+    /// That one read two `clap::Command`s — `ServerArgs`'s and
+    /// `WorkerArgs`'s — and compared the env var of every shared option, and
+    /// it was the proof that the server and the worker could not drift.
+    /// Issue #77 left one command, so there is nothing to compare; what has
+    /// to hold instead is that a common option is accepted on **either** side
+    /// of the `worker` word and lands in the same field either way. That is
+    /// what `global = true` buys, and it is exactly what a `global` dropped
+    /// from one field would break — silently, because the flag still parses
+    /// in the position every current compose file and Helm chart happens not
+    /// to use.
+    ///
+    /// Every field of `CommonArgs` that takes a value is exercised, not a
+    /// representative one, because `global` is per-field.
     #[test]
-    fn the_flattened_common_args_are_identical_on_both_binaries() {
-        let server = <ServerArgs as CommandFactory>::command();
-        let worker = <WorkerArgs as CommandFactory>::command();
-        for (id, env) in COMMON_ENV_VARS {
-            assert_env_var(&server, id, env);
-            assert_env_var(&worker, id, env);
+    fn the_common_options_are_accepted_on_either_side_of_the_worker_subcommand() {
+        let flags = [
+            "--database-url",
+            "postgres://vpay:vpay@db:5432/vpay",
+            "--profile",
+            "either-side",
+            "--config",
+            "/etc/vpay/application.yml",
+            "--log-filter",
+            "vpay_worker=debug",
+            "--log-format",
+            "text",
+            "--observability-bind",
+            "127.0.0.1:19091",
+            "--shutdown-grace-seconds",
+            "7",
+        ];
+
+        let mut before = vec!["vpay-server"];
+        before.extend(flags);
+        before.push("worker");
+
+        let mut after = vec!["vpay-server", "worker"];
+        after.extend(flags);
+
+        for (position, argv) in [("before", before), ("after", after)] {
+            let parsed = ServerArgs::try_parse_from(argv.clone()).unwrap_or_else(|e| {
+                panic!(
+                    "`{}` did not parse ({position} the subcommand): {e}",
+                    argv.join(" ")
+                )
+            });
+            assert!(
+                matches!(parsed.command, Some(ServerCommand::Worker(_))),
+                "{position}: the worker subcommand was not selected"
+            );
+            let common = parsed.common;
+            assert_eq!(
+                common.database_url.as_deref(),
+                Some("postgres://vpay:vpay@db:5432/vpay"),
+                "{position}: --database-url did not reach CommonArgs"
+            );
+            assert_eq!(common.profile, "either-side", "{position}: --profile");
+            assert_eq!(
+                common.config,
+                Some(std::path::PathBuf::from("/etc/vpay/application.yml")),
+                "{position}: --config"
+            );
+            assert_eq!(
+                common.log_filter, "vpay_worker=debug",
+                "{position}: --log-filter"
+            );
+            assert_eq!(
+                common.log_format,
+                LogFormat::Text,
+                "{position}: --log-format"
+            );
+            assert_eq!(
+                common.observability_bind,
+                "127.0.0.1:19091".parse::<SocketAddr>().expect("valid addr"),
+                "{position}: --observability-bind"
+            );
+            assert_eq!(
+                common.shutdown_grace_seconds, 7,
+                "{position}: --shutdown-grace-seconds"
+            );
         }
+    }
+
+    /// The same property for `staff add`, which is the other subcommand and
+    /// the one an operator runs by hand — `kubectl exec … -- vpay-server
+    /// staff add --config /config/application.yml …` is the shape the
+    /// runbook uses, and it only works because `--config` is `global`.
+    #[test]
+    fn the_common_options_are_accepted_after_the_staff_subcommand_too() {
+        let args = ServerArgs::try_parse_from([
+            "vpay-server",
+            "staff",
+            "add",
+            "--merchant",
+            "acme",
+            "--email",
+            "ops@acme.example",
+            "--name",
+            "Ops",
+            "--config",
+            "/config/application.yml",
+        ])
+        .expect("`vpay-server staff add … --config …` must parse");
+        assert_eq!(
+            args.common.config,
+            Some(std::path::PathBuf::from("/config/application.yml"))
+        );
     }
 
     #[test]
     fn server_defaults_match_the_documented_contract() {
         let args = ServerArgs::parse_from(["vpay-server"]);
 
+        assert!(
+            args.command.is_none(),
+            "no subcommand must mean serve, or every existing ENTRYPOINT breaks"
+        );
         assert_eq!(args.bind, "0.0.0.0:8080".parse().expect("valid addr"));
         assert_eq!(args.oauth_signing_key_file, None);
         assert_eq!(args.common.database_url, None);
@@ -593,7 +807,7 @@ mod tests {
 
     #[test]
     fn worker_defaults_match_the_documented_contract() {
-        let args = WorkerArgs::parse_from(["vpay-worker-bin"]);
+        let args = ServerArgs::parse_from(["vpay-server", "worker"]);
 
         assert_eq!(args.common.database_url, None);
         assert_eq!(args.common.profile, "sandbox");
@@ -604,8 +818,8 @@ mod tests {
             args.common.observability_bind,
             "0.0.0.0:9090".parse().expect("valid addr")
         );
+        assert_eq!(worker_args(["vpay-server", "worker"]).worker_concurrency, 4);
         assert_eq!(args.common.shutdown_grace_seconds, 25);
-        assert_eq!(args.worker_concurrency, 4);
     }
 
     /// The signing-key path parses as a path and reaches the field the
@@ -628,28 +842,37 @@ mod tests {
         );
     }
 
-    /// The worker mints no tokens, so it must not accept — and a deployment
-    /// must not be able to mount — the signing key against it. This fails if
-    /// the flag is ever moved into `CommonArgs` for symmetry.
+    /// The worker mints no tokens, so `vpay-server worker
+    /// --oauth-signing-key-file …` must be refused rather than ignored. This
+    /// fails if the flag is ever made `global = true` for symmetry with
+    /// `CommonArgs`.
+    ///
+    /// **What it does not claim**, and the field's own doc comment says so at
+    /// length: `vpay-server --oauth-signing-key-file … worker` parses, and
+    /// nothing reads the value. Since 2026-09-07 one binary contains both
+    /// modes, so "the worker cannot be handed the key" is a property of the
+    /// **mount** (`deployment-worker.yaml` has no `signingKey` volume), not of
+    /// this parser. Asserting otherwise here would be a test that overstates
+    /// what it proves.
     #[test]
-    fn the_worker_is_not_handed_the_signing_key() {
-        let worker = <WorkerArgs as CommandFactory>::command();
+    fn the_worker_subcommand_is_not_handed_the_signing_key() {
+        let worker = worker_subcommand();
         assert!(
             !worker
                 .get_arguments()
                 .any(|arg| arg.get_id().as_str() == "oauth_signing_key_file"),
-            "the worker issues no tokens; giving it the signing key widens the Secret's blast \
-             radius for no capability"
+            "the worker issues no tokens; a signing-key flag on it would be a knob reading nothing"
         );
 
         assert!(
-            WorkerArgs::try_parse_from([
-                "vpay-worker-bin",
+            ServerArgs::try_parse_from([
+                "vpay-server",
+                "worker",
                 "--oauth-signing-key-file",
                 "/etc/vpay/secrets/oauth-signing-key.pem",
             ])
             .is_err(),
-            "the worker must reject the flag outright, not ignore it"
+            "`vpay-server worker --oauth-signing-key-file` must be a parse error"
         );
     }
 
@@ -680,8 +903,9 @@ mod tests {
 
     #[test]
     fn explicit_flags_resolve_through_the_flattened_common_args() {
-        let args = WorkerArgs::parse_from([
-            "vpay-worker-bin",
+        let args = ServerArgs::parse_from([
+            "vpay-server",
+            "worker",
             "--profile",
             "prod-config",
             "--log-format",
@@ -701,15 +925,14 @@ mod tests {
     /// of one idea, one of them inert, which is the exact confusion the
     /// removal was for.
     ///
-    /// Asserted on **both** commands and as a hard parse *error*, not as a
-    /// missing arg id: an operator who still passes the flag must be told,
-    /// rather than have it silently ignored.
+    /// Asserted as a hard parse *error* rather than as a missing arg id, and
+    /// in the `worker` position as well as the bare one: an operator who
+    /// still passes the flag must be told, rather than have it silently
+    /// ignored.
     #[test]
-    fn neither_binary_still_accepts_the_removed_public_base_url_flag() {
-        for cmd in [
-            <ServerArgs as CommandFactory>::command(),
-            <WorkerArgs as CommandFactory>::command(),
-        ] {
+    fn neither_mode_still_accepts_the_removed_public_base_url_flag() {
+        let cmd = <ServerArgs as CommandFactory>::command();
+        for cmd in std::iter::once(&cmd).chain(cmd.get_subcommands()) {
             assert!(
                 !cmd.get_arguments()
                     .any(|arg| arg.get_id().as_str() == "public_base_url"),
@@ -729,23 +952,24 @@ mod tests {
             "vpay-server must refuse the removed flag outright, not ignore it"
         );
         assert!(
-            WorkerArgs::try_parse_from([
-                "vpay-worker-bin",
+            ServerArgs::try_parse_from([
+                "vpay-server",
+                "worker",
                 "--public-base-url",
                 "https://api.vpay.example"
             ])
             .is_err(),
-            "vpay-worker-bin must refuse the removed flag outright, not ignore it"
+            "`vpay-server worker` must refuse the removed flag outright, not ignore it"
         );
     }
 
-    /// The observability listener is a knob **both** binaries have, and its
-    /// default is the port `deploy/helm/vpay` templates its probes and its
-    /// `ServiceMonitor` against. A change to either number breaks a chart
-    /// that cannot see this crate, so the number is pinned here rather than
-    /// left to a default-value string.
+    /// The observability listener is a knob **both** long-running modes have,
+    /// and its default is the port `deploy/helm/vpay` templates its probes
+    /// and its `ServiceMonitor` against. A change to either number breaks a
+    /// chart that cannot see this crate, so the number is pinned here rather
+    /// than left to a default-value string.
     #[test]
-    fn both_binaries_take_the_observability_bind_and_default_to_9090() {
+    fn both_modes_take_the_observability_bind_and_default_to_9090() {
         let expected: SocketAddr = "0.0.0.0:9090".parse().expect("valid addr");
         assert_eq!(
             ServerArgs::parse_from(["vpay-server"])
@@ -754,7 +978,7 @@ mod tests {
             expected
         );
         assert_eq!(
-            WorkerArgs::parse_from(["vpay-worker-bin"])
+            ServerArgs::parse_from(["vpay-server", "worker"])
                 .common
                 .observability_bind,
             expected
@@ -792,13 +1016,18 @@ mod tests {
         assert_ne!(args.bind, args.common.observability_bind);
     }
 
-    /// The worker takes no `--bind` at all — it serves no traffic — so
-    /// `--observability-bind` is the only socket it opens. If someone ever
-    /// flattens `bind` into `CommonArgs`, this fails before anything else
-    /// notices the worker started answering `/v1`.
+    /// The `worker` subcommand takes no `--bind` of its own — it serves no
+    /// traffic — so `--observability-bind` is the only socket it opens. If
+    /// someone ever moves `bind` into `CommonArgs`, this fails before
+    /// anything else notices the worker started answering `/v1`.
+    ///
+    /// `--bind` is not `global`, so this is a parse error rather than an
+    /// ignored flag; `vpay-server --bind … worker` still parses and is still
+    /// read by nothing, exactly as `--oauth-signing-key-file` is, and for the
+    /// same reason (see that field's doc).
     #[test]
-    fn the_worker_binds_only_the_observability_listener() {
-        let worker = <WorkerArgs as CommandFactory>::command();
+    fn the_worker_subcommand_binds_only_the_observability_listener() {
+        let worker = worker_subcommand();
         assert!(
             !worker
                 .get_arguments()
@@ -806,10 +1035,9 @@ mod tests {
             "the worker serves no traffic; a --bind there would open a port nothing routes"
         );
         assert!(
-            worker
-                .get_arguments()
-                .any(|arg| arg.get_id().as_str() == "observability_bind"),
-            "the worker's only listener is the observability one"
+            ServerArgs::try_parse_from(["vpay-server", "worker", "--bind", "0.0.0.0:8080"])
+                .is_err(),
+            "`vpay-server worker --bind` must be a parse error"
         );
     }
 
@@ -838,28 +1066,31 @@ mod tests {
         );
     }
 
-    /// Same check through the whole `ServerArgs`/`WorkerArgs` — the types
-    /// actually likely to be logged at startup (see the doc comment on
-    /// `CommonArgs`) — proving the derive-delegates-to-nested-Debug
-    /// composition holds for both binaries' top-level parsers, not just
-    /// `CommonArgs` in isolation.
+    /// Same check through the whole `ServerArgs` — the type actually likely
+    /// to be logged at startup (see the doc comment on `CommonArgs`) —
+    /// proving the derive-delegates-to-nested-`Debug` composition holds for
+    /// the top-level parser and not just for `CommonArgs` in isolation, in
+    /// **both** modes: `worker` reaches the same fields through a `global`
+    /// propagation rather than through its own parser, so it is asserted
+    /// rather than assumed.
     #[test]
     fn server_and_worker_args_debug_output_never_contains_the_database_password() {
-        let server = ServerArgs::parse_from([
+        let serve = ServerArgs::parse_from([
             "vpay-server",
             "--database-url",
             "postgres://vpay:hunter2-live-password@db.internal:5432/vpay",
         ]);
-        let worker = WorkerArgs::parse_from([
-            "vpay-worker-bin",
+        let worker = ServerArgs::parse_from([
+            "vpay-server",
+            "worker",
             "--database-url",
             "postgres://vpay:hunter2-live-password@db.internal:5432/vpay",
         ]);
 
-        let server_formatted = format!("{server:?}");
+        let serve_formatted = format!("{serve:?}");
         let worker_formatted = format!("{worker:?}");
 
-        assert!(!server_formatted.contains("hunter2-live-password"));
+        assert!(!serve_formatted.contains("hunter2-live-password"));
         assert!(!worker_formatted.contains("hunter2-live-password"));
     }
 

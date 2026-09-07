@@ -33,7 +33,7 @@ ignore = [
   # and must not be relied on. `vpay-db` took `authkestra-op` as a real,
   # non-dev dependency in order to implement `ClientAssertionStore`, so:
   #     rsa <- authkestra-engine <- authkestra-op <- vpay-db
-  #         <- vpay-api / vpay-server / vpay-worker-bin
+  #         <- vpay-api / vpay-server (the one shipping binary since #77)
   # with no `(dev)` marker — verified with `cargo tree -i rsa -e normal`.
   # The crate is now linked into every shipping binary and every surface,
   # not just /dash/v1. The signing-vs-decryption argument above is what

@@ -160,7 +160,11 @@ it was stated that way on purpose: it proves the recovery table, not the
 process's behaviour under a signal. ~~Nothing in this repository kills a process
 mid-confirm.~~ **Retired 2026-09-04 (Step 8, lane D):
 `backends/tests/integration/tests/worker_kill9.rs` does.** It spawns the
-shipping `vpay-worker-bin` and the shipping `vpay-server` as real OS processes
+shipping binary as real OS processes — `vpay-server worker` and `vpay-server`
+(it spawned two different binaries, `vpay-worker-bin` and `vpay-server`, until
+issue #77 made them one on 2026-09-07; the suite now spawns one binary twice
+with different argv, and that is what makes both scenarios a test of the
+subcommand as well as of the loop) —
 against a real Postgres and a real WireMock rail, makes the rail slow at exactly
 one point (a 30 s `fixedDelayMilliseconds` mapping armed by a documentation
 MSISDN — longer than `vpay_provider::DEFAULT_REQUEST_TIMEOUT`, so a late kill
@@ -199,7 +203,21 @@ there is no network call for a signal to land during. `worker_recovery.rs`
 remains the only proof of that case. Neither kill case exercises Orange, and the
 rail is a WireMock container in both.
 
-**Status: implemented, and driving payments. Updated 2026-09-03 (Step 4).**
+**Status: implemented, and driving payments. Updated 2026-09-03 (Step 4);
+re-verified 2026-09-07 (issue #77).**
+
+**Nothing in this document's behaviour changed on 2026-09-07**, and that is
+the claim the update is here to make. Issue #77 folded `vpay-worker-bin` into
+`vpay-server` as a `worker` subcommand: one package, one binary, one image.
+`vpay-worker` — the crate holding every handler, the claim, the lease, the
+drain and the recovery table — was not touched, and neither was the boot order
+the loop runs behind. What was re-run to say so rather than assume it:
+`worker_kill9`'s two scenarios (both green through `vpay-server worker`),
+`worker_recovery`'s 23 (green, and green *even against a `worker` subcommand
+mutated to do nothing at all* — it drives `run_loop`/`run_once` in-process and
+never spawns a binary, so it is `worker_kill9` and the ten
+`vpay-server::cli worker::*` cases that hold the subcommand honest, not this
+suite).
 
 **What was already true (Step 3), unchanged.**
 `POST /v1/payment_intents/{id}/confirm`

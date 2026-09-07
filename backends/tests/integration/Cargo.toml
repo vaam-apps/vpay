@@ -139,8 +139,9 @@ rustls.workspace = true
 # without a word.
 tracing.workspace = true
 tracing-subscriber.workspace = true
-# `tests/worker_kill9.rs` spawns the shipping `vpay-server` and
-# `vpay-worker-bin` as real OS processes, and a real process reads its
+# `tests/worker_kill9.rs` spawns the shipping `vpay-server` — twice, once
+# with no subcommand and once with `worker` — as real OS processes, and a
+# real process reads its
 # configuration from a YAML file (`--config` / `VPAY_CONFIG`, ADR-0003) —
 # there is no in-memory `Config` to hand it. That suite therefore *writes*
 # the same `vpay_config::Config` value its in-process harness uses, with the

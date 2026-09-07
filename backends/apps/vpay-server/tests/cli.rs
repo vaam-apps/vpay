@@ -352,6 +352,35 @@ fn spawn_and_capture_stdout(mut cmd: Command) -> (ChildGuard, Receiver<String>) 
     (ChildGuard(child), rx)
 }
 
+/// Blocks (up to `timeout`) until a captured stdout line satisfying
+/// `predicate` arrives, or returns `None` if the deadline passes first.
+/// Bounded, no fixed sleep: returns as soon as the line appears.
+///
+/// The counterpart to [`collect_remaining_lines`], which answers "did this
+/// line never appear anywhere" and can only be called after the child is
+/// reaped. This one answers "has it appeared yet" on a live process, which is
+/// the readiness signal the `worker` module below has instead of a `/healthz`
+/// to poll. It moved here with `vpay-worker-bin`'s test suite (issue #77,
+/// 2026-09-07).
+fn wait_for_line(
+    rx: &Receiver<String>,
+    predicate: impl Fn(&str) -> bool,
+    timeout: Duration,
+) -> Option<String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        match rx.recv_timeout(remaining) {
+            Ok(line) if predicate(&line) => return Some(line),
+            Ok(_) => continue,
+            Err(_) => return None,
+        }
+    }
+}
+
 /// Collects every remaining captured stdout line, up to `timeout`, stopping
 /// early once the reader thread's sender disconnects (which happens once
 /// the child's stdout pipe closes on process exit — call this only after
@@ -1745,4 +1774,578 @@ fn staff_add_refuses_a_configuration_with_no_staff_auth() {
         stderr.contains("staff_auth"),
         "the refusal names what is missing: {stderr}"
     );
+}
+
+/// `vpay-server worker`, end to end against the real compiled binary.
+///
+/// **This module is `backends/apps/vpay-worker-bin/tests/cli.rs`, moved.**
+/// Issue #77 (2026-09-07) folded that package into this one; every case here
+/// keeps the name it had, which is why they are in a module rather than
+/// alongside the `serve` cases — four of them
+/// (`a_missing_config_is_exit_78_naming_the_problem`,
+/// `a_bad_config_is_exit_78_naming_the_problem`,
+/// `an_unreachable_database_is_exit_69_naming_postgres`,
+/// `sigterm_immediately_after_startup_still_triggers_graceful_shutdown`)
+/// collide with a `serve` case of the same name asserting the same contract
+/// for the other mode, and that pairing is worth keeping visible. `cargo
+/// nextest` reports them as `worker::<name>`.
+///
+/// The worker has no HTTP surface to poll, so instead of `GET /healthz` these
+/// read its own `--log-format text` stdout for the `profile` field it stamps
+/// on startup — that field can only carry the value it did if the
+/// corresponding env var (or the overriding flag) was actually read.
+///
+/// **Every helper is the parent module's**, including `bin`, which is now the
+/// one binary both modes are spawned from. Two things the move deliberately
+/// changed and nothing else:
+///
+/// * the fixtures are `tests/fixtures/{valid,invalid}-config.yml` — the
+///   parent's, not a second pair. `vpay-worker-bin` carried its own copies
+///   that differed from these only in a comment and in `deployment.name`, and
+///   no case here reads either;
+/// * the two unit tests in `vpay-worker-bin/src/main.rs`
+///   (`the_codes_match_the_adapters_that_are_linked`,
+///   `installing_the_crypto_provider_leaves_a_process_default_and_is_idempotent`)
+///   are **not** carried over: they tested that binary's copies of
+///   `adapters`/`adapter_codes`/`install_crypto_provider`, the copies are
+///   gone, and `vpay-server`'s own tests of the same names cover the
+///   originals the worker mode now calls.
+mod worker {
+    use std::net::TcpStream;
+    use std::process::Command;
+    use std::time::Duration;
+
+    use super::{
+        UNREACHABLE_DATABASE_URL, collect_remaining_lines, free_addr, get_request, http_request,
+        invalid_config_path, send_sigterm, spawn_and_capture_stdout, valid_config_path,
+        wait_for_line, wait_with_timeout, with_live_postgres,
+    };
+
+    /// The binary under test, already carrying the subcommand word.
+    ///
+    /// It is `super::bin()` plus `worker`, rather than a second
+    /// `CARGO_BIN_EXE_*`, because there is one binary now. Every flag each
+    /// case passes therefore lands *after* the subcommand — which is the
+    /// position `vpay-worker-bin` never had, and the one
+    /// `the_common_options_are_accepted_on_either_side_of_the_worker_subcommand`
+    /// in `vpay_config::cli` exists to keep working.
+    fn bin() -> Command {
+        let mut cmd = super::bin();
+        cmd.arg("worker");
+        cmd
+    }
+
+    #[test]
+    fn an_invalid_log_format_env_var_is_read_and_rejected() {
+        // No `--log-format` flag is passed at all, so a parse failure can only
+        // be explained by `VPAY_LOG_FORMAT` actually having been read from the
+        // child's environment — this is the deterministic negative-path proof.
+        let output = bin()
+            .env("VPAY_LOG_FORMAT", "not-a-format")
+            .output()
+            .expect("spawn vpay-server worker");
+
+        assert!(
+            !output.status.success(),
+            "expected a non-zero exit for an invalid VPAY_LOG_FORMAT"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("not-a-format"),
+            "stderr should name the bad value, got: {stderr}"
+        );
+    }
+
+    /// The end-to-end half of `vpay_config::cli`'s `--worker-concurrency`
+    /// tests.
+    ///
+    /// That module can only read clap's metadata: `std::env::set_var` is
+    /// `unsafe` in edition 2024 and this workspace `forbid`s `unsafe` with no
+    /// test carve-out, so it cannot prove that a real environment variable
+    /// reaches a real process. `std::process::Command::env` sets only the
+    /// *child's* environment, which is safe and is what this file is for.
+    ///
+    /// Two things at once, and both matter. The value is read from the
+    /// environment with no flag passed, so a `0` exit would mean
+    /// `VPAY_WORKER_CONCURRENCY` was never consulted. And the exit code is
+    /// `78` — `Category::Configuration`, "fix the deploy" — rather than the
+    /// `1` an unclassified `anyhow` error would produce: an operator whose
+    /// Helm values carry a typo must not be told this is a vpay bug.
+    ///
+    /// Since issue #77 it proves one thing more, and it is the reason this
+    /// case is worth reading twice: `StartupError::UnusableConcurrency` now
+    /// lives in the *same* enum as the server's `MissingSigningKeyFile`, and
+    /// this asserts the merge did not move the number.
+    ///
+    /// No database is needed: the refusal happens before the pool is opened.
+    #[test]
+    fn a_zero_worker_concurrency_from_the_environment_is_refused_by_name_as_exit_78() {
+        let output = bin()
+            .env("VPAY_WORKER_CONCURRENCY", "0")
+            .env("VPAY_LOG_FORMAT", "text")
+            .env("DATABASE_URL", UNREACHABLE_DATABASE_URL)
+            .env("VPAY_CONFIG", valid_config_path())
+            .output()
+            .expect("spawn vpay-server worker");
+
+        assert_eq!(
+            output.status.code(),
+            Some(78),
+            "a knob set to a value that means nothing is a deploy to fix (exit 78), not a vpay \
+             bug (exit 1); stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--worker-concurrency") && stderr.contains("VPAY_WORKER_CONCURRENCY"),
+            "the refusal must name both spellings of the knob to turn, got: {stderr}"
+        );
+    }
+
+    /// `--config` / `VPAY_CONFIG` stays `Option<PathBuf>` at the `clap` level
+    /// (`vpay_config::CommonArgs::config`) but the worker treats it as
+    /// required — mirrors the parent module's test of the same name. No
+    /// `DATABASE_URL` is supplied either: config loading happens before this
+    /// mode ever tries to connect to a database, so a missing config must
+    /// fail first.
+    ///
+    /// The exit code is asserted **exactly**: `78` (`EX_CONFIG`) is
+    /// `Category::Configuration::exit_code()` per ADR-0011, and both modes
+    /// must answer with the same number for the same kind of failure — an
+    /// operator reading `docker compose ps` should not have to remember which
+    /// container they are looking at. A `!success()` assertion would pass just
+    /// as happily against a blanket exit `1`.
+    #[test]
+    fn a_missing_config_is_exit_78_naming_the_problem() {
+        let output = bin().output().expect("spawn vpay-server worker");
+
+        assert_eq!(
+            output.status.code(),
+            Some(78),
+            "expected EX_CONFIG (78) with no --config/VPAY_CONFIG at all, got {:?}; stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--config") || stderr.contains("VPAY_CONFIG"),
+            "stderr should name the missing config, got: {stderr}"
+        );
+    }
+
+    /// A config file that exists but fails validation
+    /// (`ConfigError::InsecureHost`, `tests/fixtures/invalid-config.yml`) must
+    /// also exit `78`, and before any database connection is attempted.
+    ///
+    /// Same category, same code as the missing-config case above: `ConfigError`
+    /// classifies as one `Category::Configuration` for every variant, so the
+    /// difference between "you forgot the flag" and "the file is wrong" is
+    /// carried by the message on stderr, not by the number.
+    #[test]
+    fn a_bad_config_is_exit_78_naming_the_problem() {
+        let output = bin()
+            .env("VPAY_CONFIG", invalid_config_path())
+            .output()
+            .expect("spawn vpay-server worker");
+
+        assert_eq!(
+            output.status.code(),
+            Some(78),
+            "expected EX_CONFIG (78) for a config that fails validation, got {:?}; stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("livemode requires https"),
+            "stderr should name the specific validation failure, got: {stderr}"
+        );
+    }
+
+    /// The other half of ADR-0011's exit-code contract: a valid config
+    /// pointing at a database that is not there exits `69` (`EX_UNAVAILABLE`)
+    /// — `Category::Storage`'s code — and not `78`.
+    ///
+    /// This is what proves `exit_code_for` really walks the `anyhow` chain and
+    /// classifies what it finds rather than returning a constant: the only
+    /// difference from the test above is which leaf error ends up in the
+    /// chain. It is also the case that would catch issue #77's merge of the
+    /// two `exit_code_for`s having reordered `ConfigError` and `DbError`.
+    ///
+    /// Needs no container (see [`UNREACHABLE_DATABASE_URL`]), so it runs
+    /// anywhere. It does take ~5s, which is `vpay-db`'s acquire timeout, not
+    /// this test waiting on anything of its own.
+    #[test]
+    fn an_unreachable_database_is_exit_69_naming_postgres() {
+        let output = bin()
+            .env("VPAY_CONFIG", valid_config_path())
+            .env("DATABASE_URL", UNREACHABLE_DATABASE_URL)
+            .output()
+            .expect("spawn vpay-server worker");
+
+        assert_eq!(
+            output.status.code(),
+            Some(69),
+            "expected EX_UNAVAILABLE (69) for an unreachable database, got {:?}; stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("Postgres"),
+            "stderr should name Postgres as what could not be reached, got: {stderr}"
+        );
+    }
+
+    /// The positive counterpart: a config that passes validation lets this
+    /// mode boot all the way to its startup log line and answer shutdown
+    /// signals — proving the worker path actually calls
+    /// `vpay_config::Config::load` rather than only proving the two failure
+    /// paths above.
+    ///
+    /// It is also the case that fails if `vpay-server worker` ever stops being
+    /// dispatched at all: a `worker` subcommand that fell through to the serve
+    /// path would demand `--oauth-signing-key-file` and exit 78 here.
+    #[test]
+    fn a_valid_config_lets_the_worker_boot() {
+        with_live_postgres(|database_url| {
+            let mut cmd = bin();
+            cmd.env("VPAY_LOG_FORMAT", "text")
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_CONFIG", valid_config_path());
+            #[cfg_attr(not(unix), allow(unused_mut))]
+            let (mut guard, rx) = spawn_and_capture_stdout(cmd);
+
+            let line = wait_for_line(
+                &rx,
+                |l| l.contains("database connected and migrations applied"),
+                Duration::from_secs(20),
+            );
+            assert!(
+                line.is_some(),
+                "worker never logged a successful startup with a valid config"
+            );
+
+            #[cfg(unix)]
+            {
+                send_sigterm(&guard.0);
+                let exit = guard.0.wait().expect("wait for graceful shutdown");
+                assert!(
+                    exit.success(),
+                    "expected exit 0 after SIGTERM, got {exit:?}"
+                );
+            }
+        });
+    }
+
+    /// **The case that would catch a `worker` whose logs went to stderr.**
+    ///
+    /// Every assertion in this module that reads a log line reads *stdout*
+    /// (`spawn_and_capture_stdout` pipes stdout and discards stderr), so the
+    /// whole module fails if `logs_to_stderr` in `main.rs` is ever widened
+    /// from "the staff subcommand" back to `args.command.is_some()` — which
+    /// is what it said until `worker` became a subcommand. That is a real
+    /// hazard rather than a hypothetical: a container whose logs move to
+    /// stderr disappears from anything reading only stdout, silently, with
+    /// every test that checks an exit code still green.
+    #[test]
+    fn profile_env_var_is_read_and_stamped_into_the_startup_log() {
+        with_live_postgres(|database_url| {
+            let mut cmd = bin();
+            cmd.env("VPAY_PROFILE", "integration-test-profile")
+                .env("VPAY_LOG_FORMAT", "text")
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_CONFIG", valid_config_path());
+            #[cfg_attr(not(unix), allow(unused_mut))]
+            let (mut guard, rx) = spawn_and_capture_stdout(cmd);
+
+            let line = wait_for_line(
+                &rx,
+                |l| l.contains("integration-test-profile"),
+                Duration::from_secs(20),
+            );
+            assert!(
+                line.is_some(),
+                "VPAY_PROFILE's value never appeared in the worker's startup log on STDOUT"
+            );
+
+            #[cfg(unix)]
+            {
+                send_sigterm(&guard.0);
+                let exit = guard.0.wait().expect("wait for graceful shutdown");
+                assert!(
+                    exit.success(),
+                    "expected exit 0 after SIGTERM, got {exit:?}"
+                );
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_explicit_profile_flag_wins_over_a_conflicting_env_var() {
+        with_live_postgres(|database_url| {
+            let mut cmd = bin();
+            cmd.env("VPAY_PROFILE", "env-should-lose")
+                .env("VPAY_LOG_FORMAT", "text")
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_CONFIG", valid_config_path())
+                // AFTER the subcommand word, which is the position
+                // `vpay-worker-bin` never had. It resolves only because every
+                // `CommonArgs` field is `global = true` (issue #77).
+                .args(["--profile", "flag-should-win"]);
+            let (mut guard, rx) = spawn_and_capture_stdout(cmd);
+
+            let line = wait_for_line(
+                &rx,
+                |l| l.contains("flag-should-win") || l.contains("env-should-lose"),
+                Duration::from_secs(20),
+            );
+            let line = line.expect("no profile line observed in the worker's startup log");
+            assert!(
+                line.contains("flag-should-win"),
+                "expected the --profile flag's value to win, got: {line}"
+            );
+            assert!(
+                !line.contains("env-should-lose"),
+                "VPAY_PROFILE's value should not have been used once --profile was passed, got: \
+                 {line}"
+            );
+
+            send_sigterm(&guard.0);
+            let exit = guard.0.wait().expect("wait for graceful shutdown");
+            assert!(
+                exit.success(),
+                "expected exit 0 after SIGTERM, got {exit:?}"
+            );
+        });
+    }
+
+    /// **The worker's only listener**, end to end against the real binary.
+    ///
+    /// Before Step 6 this process bound no socket at all: it was a `select!`
+    /// over signals and a heartbeat, so a Kubernetes Deployment had no
+    /// liveness probe for it and nothing could read the queue-depth gauge that
+    /// says whether live charges are being driven. `--observability-bind` /
+    /// `VPAY_OBSERVABILITY_BIND` is on `CommonArgs`, so it is byte-identically
+    /// the flag the serve path takes — which is what lets one chart template
+    /// one probe path against both Deployments.
+    ///
+    /// Three things are asserted that a router-level test cannot reach:
+    ///
+    /// 1. the bound address is **logged**, which is the only way anything can
+    ///    learn the port when `:0` is configured (and `:0` is what every test
+    ///    here binds);
+    /// 2. `/livez` and `/metrics` answer on that address, with
+    ///    `vpay_build_info` actually stamped — i.e. `install_recorder()` ran
+    ///    *before* the subcommand dispatch, which is where issue #77 put it;
+    /// 3. the listener stops **with** the process. A detached task would keep
+    ///    answering `/livez` with `ok` after the drain, which is precisely the
+    ///    lie a liveness probe must not be told.
+    #[test]
+    fn the_worker_serves_livez_and_metrics_on_the_observability_port() {
+        with_live_postgres(|database_url| {
+            let addr = free_addr();
+            let mut cmd = bin();
+            cmd.env("VPAY_LOG_FORMAT", "text")
+                .env("VPAY_OBSERVABILITY_BIND", addr.to_string())
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_CONFIG", valid_config_path());
+            #[cfg_attr(not(unix), allow(unused_mut))]
+            let (mut guard, rx) = spawn_and_capture_stdout(cmd);
+
+            // The log line is the readiness signal here — the worker has no
+            // `/healthz` to poll — and it is also assertion (1): the address is
+            // printed, so a `:0` deployment is diagnosable.
+            let line = wait_for_line(
+                &rx,
+                |l| l.contains("observability listener listening"),
+                Duration::from_secs(30),
+            )
+            .expect("the worker never logged its observability listener coming up");
+            assert!(
+                line.contains(&addr.to_string()),
+                "the bound address must be in the log line, or a `:0` bind is unknowable; got: \
+                 {line}"
+            );
+
+            let (code, response) = http_request(addr, &get_request("/livez"))
+                .expect("the observability listener answers /livez");
+            assert_eq!(code, 200, "GET /livez on {addr}:\n{response}");
+            assert!(
+                response.ends_with("ok"),
+                "/livez must answer the static body a liveness probe expects, got:\n{response}"
+            );
+
+            let (code, response) = http_request(addr, &get_request("/metrics"))
+                .expect("the observability listener answers /metrics");
+            assert_eq!(code, 200, "GET /metrics on {addr}:\n{response}");
+            assert!(
+                response.contains("text/plain; version=0.0.4"),
+                "a scraper decides how to parse from the Content-Type, got:\n{response}"
+            );
+            assert!(
+                response.contains("# HELP vpay_build_info"),
+                "vpay_core::metrics::describe_all() did not reach the recorder:\n{response}"
+            );
+            assert!(
+                response.contains(&format!("version=\"{}\"", env!("CARGO_PKG_VERSION"))),
+                "vpay_build_info must carry this build's version:\n{response}"
+            );
+            assert!(
+                response.contains("git_sha="),
+                "vpay_build_info must carry a git_sha label (it reads `unknown` until \
+                 backends/Dockerfile passes one — see install_recorder):\n{response}"
+            );
+
+            // The API surface is not here. A `/healthz` on this port would let
+            // a probe believe a database check had happened when none did —
+            // and now that one binary holds both modes, it would also be the
+            // first sign the worker had mounted the router.
+            for path in ["/healthz", "/v1/payment_intents"] {
+                let (code, response) = http_request(addr, &get_request(path))
+                    .expect("the observability listener answers something");
+                assert_eq!(
+                    code, 404,
+                    "{path} must not exist on the worker's observability port:\n{response}"
+                );
+            }
+
+            #[cfg(unix)]
+            {
+                send_sigterm(&guard.0);
+                let exit = guard.0.wait().expect("wait for graceful shutdown");
+                assert!(
+                    exit.success(),
+                    "expected exit 0 after SIGTERM, got {exit:?}"
+                );
+
+                assert!(
+                    TcpStream::connect(addr).is_err(),
+                    "the observability port is still accepting after the process exited; the \
+                     listener must drain with the job loop, not outlive it"
+                );
+            }
+        });
+    }
+
+    /// Regression test for the SIGTERM-before-handler-installation startup
+    /// race (shared with the serve path — see the parent module's test of the
+    /// same name for the fuller writeup and the calibration data behind this
+    /// test's shape): the worker used to construct its shutdown-signal future
+    /// right before entering its select loop, so the OS-level SIGTERM handler
+    /// was only installed once that future was first polled — after CLI
+    /// parsing, tracing init, the startup log lines, and the first claim. A
+    /// SIGTERM delivered before that point kept its default disposition
+    /// (immediate termination) and bypassed graceful shutdown entirely.
+    ///
+    /// Since issue #77 it guards one thing more: `ShutdownSignals::install()`
+    /// runs in `main`'s `run` *before* the subcommand dispatch, and
+    /// `worker::run` takes the already-installed handle rather than making its
+    /// own. Moving the install into `worker::run` would reintroduce exactly
+    /// the race this exists for, and would compile.
+    ///
+    /// The worker has no HTTP surface to poll for "is it up", and waiting for
+    /// its startup log line would suffer the same problem the serve path's
+    /// equivalent test avoids by not waiting for `/healthz`: by the time a log
+    /// line is observed, tracing has already initialised, which (pre-fix) is
+    /// well past where handler installation used to happen too, closing the
+    /// window this test exists to catch.
+    ///
+    /// Like the serve path's version of this test, this warms up the binary
+    /// once first (a throwaway `--help` invocation) to pay this platform's
+    /// one-time cold-start cost outside the timed section, and uses the same
+    /// spawn → `DELAY` → SIGTERM → `SETTLE`, majority-vote-of-`ATTEMPTS` shape
+    /// for the same reason.
+    ///
+    /// **Known limitation, disclosed rather than hidden** (see the parent
+    /// module's own note for the full explanation): this is a statistical, not
+    /// deterministic, test of a genuinely narrow race, and `cargo nextest run
+    /// --workspace`'s real contention from ~20 concurrently running test
+    /// binaries measurably widened the window for *both* fixed and unfixed
+    /// code. `DELAY = 50ms` prioritises never failing the full suite on
+    /// correctly fixed code over maximal sensitivity to a reintroduced bug; if
+    /// this becomes a source of CI flakiness, treat that as this limitation
+    /// showing up, not necessarily a reintroduced bug.
+    ///
+    /// Asserting on the log line, not just the exit code, matters regardless:
+    /// exit 0 alone doesn't rule out some other reason the process happened to
+    /// shut down cleanly.
+    #[cfg(unix)]
+    #[test]
+    fn sigterm_immediately_after_startup_still_triggers_graceful_shutdown() {
+        // Pays the one-time cold-start cost described above so it isn't a
+        // confound for the timed attempts below. `--help` returns before this
+        // binary's own signal-handling or tracing code ever runs (and before it
+        // ever looks at `DATABASE_URL`, so no container is needed for this
+        // warm-up call specifically).
+        let _ = bin().arg("--help").output();
+
+        // One container, reused for all `ATTEMPTS` spawns below — see
+        // `with_live_postgres`'s doc comment, and the parent module's
+        // identical test for why the added DB connect + idempotent migration
+        // per attempt does not affect this test's sensitivity to the race
+        // (`ShutdownSignals::install()` still runs first, before the DB
+        // connect and before the subcommand dispatch).
+        with_live_postgres(|database_url| {
+            const ATTEMPTS: u8 = 20;
+            const MIN_SUCCESSES: u8 = 16;
+            const DELAY: Duration = Duration::from_millis(50);
+            /// Settle gap between attempts — see the parent module's test for
+            /// why this is load-bearing, not cosmetic: without it, back-to-back
+            /// spawns keep the CPU boosted from sustained load, which washes
+            /// out the very signal this test depends on.
+            const SETTLE: Duration = Duration::from_millis(100);
+
+            // Bounds each attempt's wait so one stuck child (see
+            // `wait_with_timeout`) can cost at most this much wall time rather
+            // than hanging the test.
+            const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+            let mut outcomes = Vec::with_capacity(ATTEMPTS as usize);
+            for attempt in 1..=ATTEMPTS {
+                let mut cmd = bin();
+                cmd.env("VPAY_PROFILE", "sigterm-race-test")
+                    .env("VPAY_LOG_FORMAT", "text")
+                    .env("DATABASE_URL", &database_url)
+                    .env("VPAY_CONFIG", valid_config_path());
+                let (mut guard, rx) = spawn_and_capture_stdout(cmd);
+
+                std::thread::sleep(DELAY);
+
+                send_sigterm(&guard.0);
+                let exit = wait_with_timeout(&mut guard.0, WAIT_TIMEOUT);
+                let lines = collect_remaining_lines(&rx, Duration::from_secs(5));
+                let graceful = exit.is_some_and(|exit| exit.success())
+                    && lines
+                        .iter()
+                        .any(|l| l.contains("received SIGTERM, starting graceful shutdown"));
+                outcomes.push((attempt, graceful, exit, lines));
+                std::thread::sleep(SETTLE);
+            }
+
+            let successes = outcomes.iter().filter(|(_, ok, _, _)| *ok).count();
+            assert!(
+                successes as u8 >= MIN_SUCCESSES,
+                "only {successes}/{ATTEMPTS} attempts shut down gracefully after an immediate \
+                 SIGTERM (need at least {MIN_SUCCESSES}); this many failures indicates the \
+                 handler is not installed early enough, not just scheduling noise. Failing \
+                 attempts:\n{}",
+                outcomes
+                    .iter()
+                    .filter(|(_, ok, _, _)| !ok)
+                    .map(|(attempt, _, exit, lines)| {
+                        let exit_desc = match exit {
+                            Some(status) => format!("{status:?}"),
+                            None => {
+                                format!("timed out after {WAIT_TIMEOUT:?} and was force-killed")
+                            }
+                        };
+                        format!("  attempt {attempt}/{ATTEMPTS}: exit={exit_desc} lines={lines:?}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        });
+    }
 }

@@ -4911,35 +4911,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vpay-worker-bin"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "metrics",
- "metrics-exporter-prometheus",
- "mimalloc",
- "reqwest",
- "rustls",
- "testcontainers",
- "testcontainers-modules",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "vpay-adapter-mtn-momo",
- "vpay-adapter-orange-money",
- "vpay-api",
- "vpay-config",
- "vpay-core",
- "vpay-db",
- "vpay-provider",
- "vpay-testkit",
- "vpay-worker",
-]
-
-[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

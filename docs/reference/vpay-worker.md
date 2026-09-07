@@ -82,7 +82,9 @@ each happened.
 
 ### Why `run_loop` and `run_once` are public
 
-`vpay-worker-bin` calls `run_loop` and so does
+`vpay-server worker` calls `run_loop` (in
+`backends/apps/vpay-server/src/worker.rs`; it was `vpay-worker-bin`'s `main`
+until issue #77, 2026-09-07) and so does
 `backends/tests/integration/tests/worker_e2e.rs`. There is no second
 implementation, no `#[cfg(test)]` variant and no injected clock: the integration
 suite drives *this* loop, against a real Postgres and a real WireMock rail,

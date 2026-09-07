@@ -1,7 +1,21 @@
-//! vpay API server.
+//! vpay: one binary, three modes.
 //!
-//! Writes rows and returns. It never calls a payment rail — that is the
-//! worker's job, and it is what makes the system crash-safe.
+//! With no subcommand it is the **API server**: it writes rows and returns,
+//! and it never calls a payment rail — that is the worker's job, and it is
+//! what makes the system crash-safe. `vpay-server worker` is that worker (see
+//! [`worker`]), and `vpay-server staff add` is the operator command that
+//! creates a dashboard account.
+//!
+//! It was two packages and two images until 2026-09-07 (issue #77):
+//! `vpay-server` and `vpay-worker-bin`, built from one `cargo` invocation
+//! into two `scratch` stages and signed twice. The two `main`s already agreed
+//! on the boot sequence, the exit codes, the signal handling and the metrics
+//! recorder — by way of five functions each file kept a near-copy of, each
+//! documented as a deliberate duplicate because "the two processes deploy
+//! independently". They no longer do. See [`worker`]'s module docs for the
+//! list of copies the merge deleted and what each one's justification was.
+
+mod worker;
 
 use std::collections::BTreeMap;
 use std::future::{Future, IntoFuture as _};
@@ -64,16 +78,27 @@ fn main() -> ExitCode {
     }
 }
 
-/// A required startup input this binary was not given.
+/// A startup input this binary was not given, or was given a value it cannot
+/// use.
 ///
-/// It exists so that "you forgot a flag" reaches an operator as exit `78` ("fix
-/// the deploy") rather than `1` ("this is a vpay bug"): without a typed leaf in
-/// the chain, [`exit_code_for`] has nothing to classify and the
-/// honest-but-unhelpful [`Category::Internal`] fallback applies.
+/// It exists so that "you forgot a flag" and "you set the knob to a value that
+/// means nothing" reach an operator as exit `78` ("fix the deploy") rather
+/// than `1` ("this is a vpay bug"): without a typed leaf in the chain,
+/// [`exit_code_for`] has nothing to classify and the honest-but-unhelpful
+/// [`Category::Internal`] fallback applies.
 ///
 /// **Defined in the binary, not in `vpay-config`, deliberately** — which inputs
 /// a process requires is a property of *that process*. See
 /// [docs/reference/vpay-config.md § optional flags that are required in practice](../../../../docs/reference/vpay-config.md#optional-flags-that-are-required-in-practice).
+///
+/// It carried one variant until 2026-09-07, and `vpay-worker-bin` had a twin
+/// enum of the same name carrying the other. Issue #77 merged the binaries, so
+/// the two enums merged too: the old pair's doc comments both argued that the
+/// set of inputs a process requires belongs to *that binary*, and there is one
+/// binary now. Which mode reads which variant is still exact — nothing on the
+/// serve path can produce [`Self::UnusableConcurrency`] and nothing in
+/// [`worker`] can produce [`Self::MissingSigningKeyFile`] — and both classify
+/// identically anyway, so the merge cannot move an exit code.
 #[derive(Debug, thiserror::Error)]
 enum StartupError {
     /// `--oauth-signing-key-file` / `VPAY_OAUTH_SIGNING_KEY_FILE` was not
@@ -84,13 +109,19 @@ enum StartupError {
          every /v1 access token with it and cannot serve the merchant API without one (ADR-0010)"
     )]
     MissingSigningKeyFile,
+
+    /// `--worker-concurrency` / `VPAY_WORKER_CONCURRENCY` was zero. The
+    /// message is `vpay_config::WorkerArgs::concurrency`'s, which names both
+    /// spellings, because the message is the entire fix.
+    #[error("{0}")]
+    UnusableConcurrency(String),
 }
 
 impl vpay_core::error::Classify for StartupError {
     /// A deploy that must be fixed — never retried, never the caller's
     /// fault. [`Category::Configuration`] is what makes that exit `78`,
     /// the same number a malformed YAML file produces, because it is the
-    /// same kind of operator problem.
+    /// same kind of operator problem. Both variants, for the same reason.
     fn category(&self) -> Category {
         Category::Configuration
     }
@@ -99,10 +130,19 @@ impl vpay_core::error::Classify for StartupError {
 /// The exit code for a failed startup, per ADR-0011's Tier 3 and the table in
 /// `docs/flows/errors.md`.
 ///
-/// The lookup order is load-bearing rather than alphabetical, `DbError` last
-/// does not mean it always means `69`, and `vpay-worker-bin`'s near-copy is
-/// deliberate rather than an oversight — all three are explained in
+/// The lookup order is load-bearing rather than alphabetical, and `DbError`
+/// last does not mean it always means `69` — both are explained in
 /// [docs/reference/vpay-config.md § exit codes](../../../../docs/reference/vpay-config.md#exit-codes).
+/// That section also used to explain why `vpay-worker-bin` kept a near-copy
+/// of this function; issue #77 deleted the copy along with the binary, and
+/// **the numbers this function returns for the worker's failures are
+/// unchanged**. The copy looked for `ConfigError` before `StartupError` and
+/// this one looks for `StartupError` first, which cannot matter: both are
+/// [`Category::Configuration`], `ConfigError` is one category for every
+/// variant by construction (`vpay_config`'s `Classify` impl), and `DbError`
+/// is last in both. `tests/cli.rs`'s `worker::a_bad_config_is_exit_78_naming_the_problem`
+/// and `worker::an_unreachable_database_is_exit_69_naming_postgres` are the
+/// two cases that would catch a reordering that did.
 ///
 /// `find_in_chain` is typed, so this function is also the exhaustive list of
 /// leaf errors this binary knows how to classify; anything else falls through to
@@ -166,11 +206,24 @@ async fn run() -> anyhow::Result<()> {
 
     let metrics = install_process_defaults(&args)?;
 
-    // An operator subcommand does its work and exits. Before `boot`, because
-    // it needs neither a signing key nor a reconcile and must not bind
-    // anything — see `ServerArgs::command`.
-    if let Some(command) = args.command.clone() {
-        return run_command(&args, command).await;
+    // The three modes. `None` is serving traffic and is the rest of this
+    // function; the other two return without ever reaching `boot` below, and
+    // that is deliberate for different reasons in each case.
+    //
+    // `Worker` needs no signing key and binds no `--bind`, so running it
+    // through the serve path's `boot` would demand a Secret it does not read
+    // and open a port nothing routes.
+    //
+    // `Staff` needs neither a signing key nor a reconcile and must bind
+    // nothing at all — see `ServerArgs::command`.
+    match args.command.clone() {
+        Some(vpay_config::ServerCommand::Worker(worker_args)) => {
+            return worker::run(&args.common, &worker_args, shutdown_signals, metrics).await;
+        }
+        Some(vpay_config::ServerCommand::Staff { command }) => {
+            return run_command(&args, command).await;
+        }
+        None => {}
     }
 
     let booted = boot(&args).await?;
@@ -213,7 +266,8 @@ async fn run() -> anyhow::Result<()> {
         staff_login: booted.staff_login,
     };
 
-    let (observability, observability_shutdown_tx) = start_observability(&args, metrics).await?;
+    let (observability, observability_shutdown_tx) =
+        start_observability(args.common.observability_bind, metrics).await?;
 
     let shutdown_grace = Duration::from_secs(args.common.shutdown_grace_seconds);
     let shutdown = async move {
@@ -257,26 +311,43 @@ async fn run() -> anyhow::Result<()> {
 fn install_process_defaults(args: &ServerArgs) -> anyhow::Result<PrometheusHandle> {
     install_crypto_provider();
     let metrics = install_recorder().context("installing the Prometheus metrics recorder")?;
-    // **An operator subcommand logs to stderr; the server logs to stdout.**
-    //
-    // Not a style choice, and it was found by a test rather than reasoned
-    // out. `tracing_subscriber::fmt()` defaults to *stdout*, which is right
-    // for the server — a container log collector reads stdout — and wrong for
-    // `staff add`, whose whole output is a one-time password an operator has
-    // to be able to pipe. With one stream, the password arrives as the fifth
-    // line of a JSON log and every line of that log is then a line an
-    // operator has to strip. Worse, a naive `> password.txt` would write the
-    // log to the file and leave the password on the terminal.
-    //
-    // So the split is by *what this invocation is*, not by log level: a
-    // subcommand's structured output is stdout and its diagnostics are
-    // stderr, which is the ordinary Unix contract.
     init_tracing(
         &args.common.log_filter,
         args.common.log_format,
-        args.command.is_some(),
+        logs_to_stderr(args.command.as_ref()),
     );
     Ok(metrics)
+}
+
+/// Whether this invocation's logs belong on **stderr** rather than stdout.
+///
+/// Not a style choice, and it was found by a test rather than reasoned out.
+/// `tracing_subscriber::fmt()` defaults to *stdout*, which is right for a
+/// long-running process — a container log collector reads stdout — and wrong
+/// for `staff add`, whose whole output is a one-time password an operator has
+/// to be able to pipe. With one stream, the password arrives as the fifth line
+/// of a JSON log and every line of that log is then a line an operator has to
+/// strip. Worse, a naive `> password.txt` would write the log to the file and
+/// leave the password on the terminal.
+///
+/// So the split is by *what this invocation is*: a one-shot operator command's
+/// structured output is stdout and its diagnostics are stderr, which is the
+/// ordinary Unix contract.
+///
+/// **It is a match on the variant, not `args.command.is_some()`**, and that is
+/// the whole reason this is a named function. It was `is_some()` until
+/// 2026-09-07, when `worker` became a subcommand: `is_some()` would have moved
+/// every worker log line to stderr the moment issue #77 landed, which is a
+/// container whose logs vanish from `docker compose logs` for anyone reading
+/// only stdout and a silent regression in every deployment. Adding a variant
+/// here is a decision, so the arms are written out and there is no `_ =>`.
+const fn logs_to_stderr(command: Option<&vpay_config::ServerCommand>) -> bool {
+    match command {
+        // The one-time password is the whole of stdout.
+        Some(vpay_config::ServerCommand::Staff { .. }) => true,
+        // Both long-running modes log to stdout, where a collector reads.
+        Some(vpay_config::ServerCommand::Worker(_)) | None => false,
+    }
 }
 
 /// Boot steps 1-4 plus this binary's own signing key, in the order
@@ -515,13 +586,18 @@ fn loopback_validator(
 /// [`loopback_validator`].
 /// Runs an operator subcommand and returns, without binding anything.
 ///
+/// It takes a [`vpay_config::StaffCommand`] rather than the whole
+/// [`vpay_config::ServerCommand`] since 2026-09-07 (issue #77), so that
+/// "which subcommands are one-shot operator commands" is expressed in the
+/// type rather than in an arm this function could never reach. `worker` is a
+/// long-running mode with its own drain and `run` dispatches it directly.
+///
 /// # Errors
 ///
 /// Whatever the subcommand's own step fails with — a config that will not
 /// load, a database that will not open, a merchant that is not registered, an
 /// address that is already taken.
-async fn run_command(args: &ServerArgs, command: vpay_config::ServerCommand) -> anyhow::Result<()> {
-    let vpay_config::ServerCommand::Staff { command } = command;
+async fn run_command(args: &ServerArgs, command: vpay_config::StaffCommand) -> anyhow::Result<()> {
     match command {
         vpay_config::StaffCommand::Add {
             merchant,
@@ -753,38 +829,43 @@ fn loopback_dashboard_validator(
 /// Binds `--observability-bind` and starts serving `/livez` and `/metrics` on
 /// it, returning the task and the switch that stops it.
 ///
-/// Bound **last**, after the config, the signing key, the database, the
-/// migrations, boot step 4 and the validator: that ordering is the entire
-/// definition of `/livez`, and nothing in the handler checks anything — the
-/// bind *is* the check.
+/// Bound **last** by both long-running modes, after the config, the database,
+/// the migrations, boot step 4 and (on the serve path) the signing key and the
+/// validator: that ordering is the entire definition of `/livez`, and nothing
+/// in the handler checks anything — the bind *is* the check.
 ///
 /// Never `args.bind`: `/metrics` names every rail, route and error code this
 /// deployment has, and `args.bind` is the port an Ingress fronts. See
 /// `vpay_config::CommonArgs::observability_bind`.
 ///
 /// The returned sender is observed by the served future, so this listener stops
-/// accepting at the same moment the traffic drain starts. A detached task with
-/// no shutdown of its own would keep the port open past the drain and answer
+/// accepting at the same moment the drain starts. A detached task with no
+/// shutdown of its own would keep the port open past the drain and answer
 /// `/livez` with `ok` while the process was on its way out.
+///
+/// It takes the `SocketAddr` rather than a `&ServerArgs` because
+/// [`worker::run`] calls the same function; `vpay-worker-bin` had a near-copy
+/// of it taking a `&WorkerArgs` until issue #77 (2026-09-07). One listener,
+/// one flag, one implementation — which is what lets one Helm chart template
+/// one probe path against both Deployments.
 ///
 /// # Errors
 ///
 /// A bind failure on `--observability-bind`, or a listener whose bound address
 /// cannot be read back.
 async fn start_observability(
-    args: &ServerArgs,
+    observability_bind: SocketAddr,
     metrics: PrometheusHandle,
 ) -> anyhow::Result<(
     tokio::task::JoinHandle<std::io::Result<()>>,
     tokio::sync::oneshot::Sender<()>,
 )> {
-    let listener = tokio::net::TcpListener::bind(args.common.observability_bind)
+    let listener = tokio::net::TcpListener::bind(observability_bind)
         .await
         .with_context(|| {
             format!(
-                "binding the observability listener on {} (--observability-bind / \
-                 VPAY_OBSERVABILITY_BIND)",
-                args.common.observability_bind
+                "binding the observability listener on {observability_bind} \
+                 (--observability-bind / VPAY_OBSERVABILITY_BIND)"
             )
         })?;
     let bound = listener
@@ -907,11 +988,16 @@ async fn serve_with_bounded_drain(
 }
 
 /// Waits for the observability listener to stop, bounded by the same grace
-/// period the traffic drain uses.
+/// period the drain uses.
 ///
-/// Called only on the clean path, and failures here are logged rather than
+/// Called only on the clean path by both long-running modes — the timed-out
+/// path calls `std::process::exit(1)` and takes this task with it, which is
+/// correct there: a process that has already cut work off mid-flight must not
+/// then wait on a metrics socket. Failures here are logged rather than
 /// propagated — see
 /// [docs/reference/vpay-config.md § shutdown and drain](../../../../docs/reference/vpay-config.md#shutdown-and-drain).
+///
+/// `vpay-worker-bin` had a near-copy of this until issue #77 (2026-09-07).
 async fn join_observability(
     observability: tokio::task::JoinHandle<std::io::Result<()>>,
     grace: Duration,
@@ -934,9 +1020,17 @@ async fn join_observability(
 ///
 /// The twin of [`install_crypto_provider`] and placed beside it for the same
 /// reason: it is a process-wide default, and anything recorded before it is
-/// silently lost. Why a library does not do this, why `vpay-worker-bin` keeps a
-/// near-copy, and when `git_sha` reads `unknown`:
+/// silently lost. Why a library does not do this, and when `git_sha` reads
+/// `unknown`:
 /// [docs/reference/vpay-config.md § vpay_build_info's git_sha](../../../../docs/reference/vpay-config.md#vpay_build_infos-git_sha-and-when-it-is-unknown).
+/// That section also described `vpay-worker-bin`'s near-copy of this
+/// function; issue #77 deleted it along with the binary. What the worker mode
+/// does with the recorder that the serve path does not is unchanged:
+/// `vpay_worker::run_loop` emits `vpay_jobs_claimed_total`,
+/// `vpay_jobs_completed_total` and `vpay_jobs_oldest_claimable_age_seconds`
+/// into it, and those macros are no-ops until this call has run — which is
+/// why it sits at the top of `run`, ahead of the subcommand dispatch, and not
+/// beside the loop.
 ///
 /// # Errors
 ///
@@ -990,8 +1084,9 @@ async fn grace_clock(drain_started_rx: tokio::sync::oneshot::Receiver<()>, grace
 /// sufficient protection for:
 /// [docs/reference/vpay-config.md § the rustls CryptoProvider process default](../../../../docs/reference/vpay-config.md#the-rustls-cryptoprovider-process-default).
 ///
-/// `vpay-worker-bin` has a byte-identical copy, for the reason
-/// [`exit_code_for`]'s doc gives.
+/// `vpay-worker-bin` had a byte-identical copy until issue #77 (2026-09-07)
+/// made it one binary; there is one call, at the top of `run`, before either
+/// long-running mode has built anything.
 fn install_crypto_provider() {
     rustls::crypto::ring::default_provider()
         .install_default()

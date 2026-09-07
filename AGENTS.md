@@ -47,8 +47,9 @@ edit a document that cites a CI run id, a pull request or an issue.
 
 ### 1. No test doubles in shipping processes
 
-No mock, fake, stub or dummy may be reachable from `vpay-server` or
-`vpay-worker-bin`.
+No mock, fake, stub or dummy may be reachable from `vpay-server` — the one
+shipping binary since 2026-09-07 (issue #77), in any of its modes (`serve`,
+`worker`, `staff`). It was two, `vpay-server` and `vpay-worker-bin`.
 
 - `vpay-testkit`, `wiremock`, `testcontainers`, `mockall`, `fake` may appear
   **only** under `[dev-dependencies]`.

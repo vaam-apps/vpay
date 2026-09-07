@@ -1,8 +1,9 @@
 # `vpay-config` reference
 
 Why the code in `backends/crates/vpay-config` looks the way it does, and the
-boot sequence both binaries in `backends/apps` follow. The crates' own doc
-comments say *what* each item is and link here.
+boot sequence the one binary in `backends/apps` follows, in both of its
+long-running modes. The crates' own doc comments say *what* each item is and
+link here.
 
 Tier: an [ADR](../adr/) records a decision, a [flow](../flows/) describes a
 process, and a reference page like this one explains why a particular piece of
@@ -22,10 +23,16 @@ of it.
 
 ## The boot sequence
 
-Both `vpay-server` and `vpay-worker-bin` run the same steps in the same order.
+`vpay-server` and `vpay-server worker` run the same steps in the same order.
 `vpay-server`'s `run` is written as that list and nothing else; each step is a
 named function, so "what happens before what" is answerable by reading a dozen
 lines.
+
+They were two binaries, `vpay-server` and `vpay-worker-bin`, until 2026-09-07
+(issue #77). "The same steps in the same order" was then a *convention* held up
+by two near-identical `main`s and by the tests below; it is now a fact of the
+code — steps 1-3 run once in `main`'s `run`, before the subcommand is even
+dispatched, and steps 4 onward are `vpay_api::boot` calls both modes make.
 
 | # | Step | Where |
 |---|---|---|
@@ -100,29 +107,41 @@ error code this deployment has, and `--bind` is the port an Ingress fronts.
 
 ### What is shared and what stays per-binary
 
-Shared, in `vpay_api::boot`, because both binaries write the same two tables in
+Shared, in `vpay_api::boot`, because both modes write the same two tables in
 the same database and a divergence there would be silent: keying the adapters,
 the YAML→seed join, the connect/migrate call and the reconcile call.
 
-Per-binary, deliberately:
+**This section listed four things as deliberate per-binary duplicates until
+2026-09-07.** Issue #77 folded `vpay-worker-bin` into `vpay-server` as the
+`worker` subcommand, and every one of those duplicates was deleted rather than
+kept — not because the arguments for them were wrong, but because each rested
+on a premise ("the two deploy independently", "the two are free to diverge as
+they grow", "a shared helper would need a crate that depends on both
+`vpay-config` and `vpay-db`") that a single binary does not have. What they
+were, and where each one went:
 
-- **The `adapters()` list of linked rails** (Step 2's D6). A worker that learned
-  which rails exist from `vpay-server`'s crate would make its capabilities a
-  function of the API server, and the two deploy independently.
-  `cargo xtask verify-no-mocks` walks the dependency graph from each binary
-  root.
+- **The `adapters()` list of linked rails** (Step 2's D6). The worker had its
+  own copy so that its capabilities were not a function of the API server's
+  crate. It now calls `vpay_server::adapters`, which is in the same crate.
+  `cargo xtask verify-no-mocks` walks the dependency graph from the binary
+  root — one root now, and `SHIPPING_PACKAGES` is still an array because a
+  second shipping binary is a plausible future.
 - **`install_crypto_provider`, `init_tracing`, `install_recorder`,
-  `exit_code_for`.** These are near-copies on purpose. `exit_code_for` takes an
-  `&anyhow::Error`, and ADR-0011 keeps `anyhow` out of every library crate's
-  `[dependencies]` — a shared helper could not take one. The exporter's
-  configuration is a property of what a process measures, and the two measure
-  different things. "Which leaf errors this binary knows how to classify" is a
-  property of the binary, not a library boundary, and the two are free to
-  diverge as they grow. Each copy is pinned by its own CLI tests.
-- **Everything after step 10**: the server loads the RS256 signing key, binds
-  the traffic listener and mounts the router; the worker validates
-  `--worker-concurrency`, projects each rail's `ProviderConfig` and the merchant
-  webhook endpoints, and runs the job loop.
+  `exit_code_for`.** One of each, in `main.rs`. The `anyhow`-at-the-boundary
+  argument that made a *library* helper impossible is unaffected and still
+  holds: `exit_code_for` still takes an `&anyhow::Error` and still lives in the
+  binary, where ADR-0011 puts it. What changed is only that there is one binary
+  to put it in. `StartupError`'s two variants — `MissingSigningKeyFile` and
+  `UnusableConcurrency` — merged into one enum for the same reason; both
+  classify `Category::Configuration`, so the merge cannot move an exit code,
+  and the two subprocess cases named under "exit codes" below are what would
+  catch it if it did.
+- **Everything after step 10 is still per-mode**: with no subcommand the
+  process loads the RS256 signing key, binds the traffic listener and mounts
+  the router; `worker` validates `--worker-concurrency`, projects each rail's
+  `ProviderConfig` and the merchant webhook endpoints, and runs the job loop.
+  That is the one item on this list the merge did not touch, because it was
+  never a duplicate.
 
 ### Exit codes
 
@@ -175,10 +194,21 @@ that `exit_code_for` classifies as `Category::Configuration` and turns into exit
 `78`, "fix the deploy".
 
 Which inputs a process requires is a property of *that process*, which is why
-`StartupError` is defined in each binary rather than in this crate:
-`vpay-worker-bin` takes no `--oauth-signing-key-file` at all (it issues no
-tokens, so mounting the signing key into it would widen the Secret's blast
-radius for no capability), and `vpay-server` takes no `--worker-concurrency`.
+`StartupError` is defined in the binary rather than in this crate. Which inputs
+a *mode* requires is likewise a property of that mode, and the CLI still says
+so: `vpay-server worker --oauth-signing-key-file …` is a parse error, and
+`vpay-server --worker-concurrency …` with no subcommand is too.
+
+One thing genuinely weakened when the two binaries became one, and it is worth
+stating rather than leaving to be discovered. `vpay-worker-bin` could not be
+handed the signing key *at all* — the flag did not exist on it. `vpay-server`
+accepts `--oauth-signing-key-file` because it must, so `vpay-server
+--oauth-signing-key-file … worker` now parses (and reads nothing). The
+guarantee that matters is unchanged and lives where it always did: the worker
+Deployment mounts no `signingKey` volume
+(`deploy/helm/vpay/templates/deployment-worker.yaml`) and the compose worker
+service mounts no key file. A flag naming a path that is not in the container
+was never the risk.
 
 A payment gateway that boots with no validated deployment configuration, or with
 no database, is exactly the half-configured process
@@ -519,8 +549,13 @@ The recorder is installed by the application, never by a library:
 recorder from a library takes the decision out of the application's hands and
 makes two linked libraries a startup failure. The exporter's configuration —
 which quantiles, which buckets, which idle timeout — is a property of what a
-process measures, and the two binaries measure different things, which is why
-neither shares the other's `install_recorder`.
+process measures. The two *modes* measure different things — only `worker`
+emits the three `vpay_jobs_*` names — but they are one process with one
+recorder, installed once in `install_recorder` ahead of the subcommand
+dispatch. This paragraph ended "which is why neither binary shares the other's
+`install_recorder`" until issue #77; there is one now, and
+`worker::the_worker_serves_livez_and_metrics_on_the_observability_port` is what
+proves the recorder is installed on the worker path too.
 
 ---
 

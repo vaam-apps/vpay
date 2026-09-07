@@ -12,7 +12,6 @@ members = [
     "backends/crates/vpay-worker",
     "backends/crates/vpay-testkit",
     "backends/apps/vpay-server",
-    "backends/apps/vpay-worker-bin",
     "backends/tests/integration",
     "backends/tests/conformance",
     ".xtask",

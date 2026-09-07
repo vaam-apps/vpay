@@ -10,7 +10,7 @@
 //!
 //! | Killed | While | Recovered by |
 //! |---|---|---|
-//! | `vpay-worker-bin` | its status query is in flight | the next worker's boot reap, then the ladder |
+//! | `vpay-server worker` | its status query is in flight | the next worker's boot reap, then the ladder |
 //! | `vpay-server` | its `requesttopay` submit is in flight (kill point 2) | the worker's recovery table |
 //!
 //! Nothing here is simulated except the passage of time (see
@@ -73,7 +73,7 @@
 // This whole compilation unit is an integration-test binary; clippy's
 // "is this a test" detection does not extend to free helper functions in a
 // `tests/*.rs` crate even though `clippy.toml` exempts tests. Same header,
-// for the same reason, as `vpay-worker-bin/tests/cli.rs`.
+// for the same reason, as `vpay-server/tests/cli.rs`.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::BTreeMap;
@@ -174,13 +174,20 @@ fn mappings_dir(rail: &str) -> PathBuf {
 ///
 /// Cargo sets `CARGO_BIN_EXE_<name>` only for integration tests **of the
 /// package that declares the binary** — which is why
-/// `vpay-worker-bin/tests/cli.rs` can use it and this suite cannot. This
-/// package cannot depend on either app either: both are binary-only crates
-/// with no library target, and artifact dependencies are nightly-only.
+/// `vpay-server/tests/cli.rs` can use it and this suite cannot. This
+/// package cannot depend on the app either: it has a library target, but
+/// nothing in it is the `main` this suite has to kill, and artifact
+/// dependencies are nightly-only.
+///
+/// Since 2026-09-07 (issue #77) there is one shipping binary rather than
+/// two: `vpay-server`, with the worker behind a `worker` subcommand. This
+/// helper still takes a package name, because what it does is "build a
+/// binary out of this tree and hand me its path", and which *mode* the
+/// caller then runs is the caller's argv — see [`spawn_worker`].
 ///
 /// # Why it runs `cargo build` rather than just computing a path
 ///
-/// The path (`<target>/<profile>/vpay-worker-bin`, derived from this test
+/// The path (`<target>/<profile>/vpay-server`, derived from this test
 /// binary's own location) may hold a binary built from *older sources*, or
 /// none at all — `cargo nextest run -p vpay-tests-integration` has no reason
 /// to build another package's binary. A stale binary is the worse of the two
@@ -759,16 +766,27 @@ async fn age_the_crashed_charge(pool: &PgPool, charge_id: &str) -> anyhow::Resul
 
 // -------------------------------------------------------------- the spawns
 
-/// The shipping worker, configured the way `compose.yml` configures it.
+/// The shipping worker, configured the way `compose.e2e.yml` configures it.
+///
+/// **`vpay-server` plus the literal argument `worker`** — the same two words
+/// `compose.e2e.yml`'s `command:` and `deployment-worker.yaml`'s `args:`
+/// carry since issue #77 (2026-09-07). It was `Command::new(shipping_binary(
+/// "vpay-worker-bin"))` with no argument until then, and this is the seam
+/// that makes the two `kill -9` scenarios below a test of the *subcommand*
+/// and not only of `vpay_worker::run_loop`: `worker_recovery.rs` drives
+/// `run_once`/`run_loop` in-process, so it would stay green against a
+/// `worker` subcommand that did nothing at all, while `boot_worker`'s wait
+/// for `job loop running` here would not.
 ///
 /// `--worker-concurrency 1` so the process has exactly one job in flight and
 /// "the poll was in flight when it died" is unambiguous.
 /// `--observability-bind 127.0.0.1:0` because two workers run in this file
 /// and a fixed port would collide (a `:0` port is a real configuration —
-/// `vpay-worker-bin/tests/cli.rs` uses it too).
+/// `vpay-server/tests/cli.rs`'s `worker` module uses it too).
 fn spawn_worker(name: &'static str, database_url: &str, config: &Path) -> Proc {
-    let mut cmd = Command::new(shipping_binary("vpay-worker-bin"));
-    cmd.env("DATABASE_URL", database_url)
+    let mut cmd = Command::new(shipping_binary("vpay-server"));
+    cmd.arg("worker")
+        .env("DATABASE_URL", database_url)
         .env("VPAY_CONFIG", config)
         .env("VPAY_PROFILE", "kill9")
         .env("VPAY_LOG_FORMAT", "text")
@@ -797,7 +815,7 @@ fn boot_worker(name: &'static str, database_url: &str, config: &Path) -> Proc {
 
 /// Stops a worker with `SIGTERM` and asserts it drained cleanly.
 ///
-/// Exit `0` is the whole assertion: `vpay-worker-bin` exits `1` when the
+/// Exit `0` is the whole assertion: `vpay-server worker` exits `1` when the
 /// shutdown grace period elapses with jobs still in flight, so a `0` here is
 /// the binary's own statement that it finished its work and let go of every
 /// lease.
