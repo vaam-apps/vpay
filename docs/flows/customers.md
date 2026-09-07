@@ -201,7 +201,7 @@ Each pass deletes every customer that is **both**:
 * referenced by no payment intent and no checkout session.
 
 "Idle" is measured by `customers.last_used_at`, and **"used" means**: created,
-updated, or named by a payment intent or a checkout session. Every one of
+updated, or named by a payment intent, a checkout session or an invoice. Every one of
 those paths calls `vpay_db::Customers::touch_last_used`. A path that is
 *missing* does not fail — it makes a live customer look idle, and the sweep
 deletes it twelve months later with nothing in any log saying anything unusual
@@ -372,13 +372,6 @@ module adds seven with no container.
   external mirror of their customers therefore has to poll. Recorded as a
   dated ⛔/⛔ row in [../sdks/parity.md](../sdks/parity.md), owned by the vpay
   maintainers rather than the SDK ones.
-- **Invoices.** The definition of "used" above names two referencing objects
-  and would name three. Invoices do not exist
-  ([../status.md](../status.md)), so `Customers::idle_since`'s and
-  `delete_idle`'s shared `NOT EXISTS` guard is closed at two — and
-  `the_sweep_guard_names_every_table_that_can_reference_a_customer` asserts
-  the count, so the day an invoice table lands, the omission is a test failure
-  rather than a customer swept out from under a live invoice.
 - **No `email` filter on the list.** Stripe's takes one. A filter on a payer
   identifier turns the list into a lookup, and a lookup by email over a table
   holding one merchant's payers is one scoping mistake away from being a
@@ -393,3 +386,26 @@ module adds seven with no container.
 - **No deployment has ever run the retention sweep.** It is proven against a
   real Postgres through the real worker loop with a horizon this suite
   controls; no vpay has been up for twelve months.
+
+### Correction, 2026-09-07 (S4b)
+
+This section listed **Invoices** as a gap until 2026-09-07: "the definition of
+'used' above names two referencing objects and would name three. Invoices do
+not exist". [Migration `0036`](invoices.md) is when that stopped being true.
+`invoices.customer_id` is a **required** `NO ACTION` foreign key, so a customer
+with any invoice cannot be deleted at all, and
+`vpay_db::customers::UNREFERENCED` grew its third `NOT EXISTS` in the same
+commit — with `the_sweep_guard_names_every_table_that_can_reference_a_customer`
+moved from two to three, which is the assertion that made the omission
+impossible to ship.
+
+Creating an invoice also **stamps** the customer's retention clock, exactly as
+creating an intent or a session does, so a merchant who bills a payer monthly
+never has that payer swept.
+
+Without the third clause nothing would have broken loudly: the foreign key
+would still refuse the delete, and the sweep would simply *offer* a customer it
+can never remove — minting an `evt_…` and building a `customer.deleted` object
+for a payer whose record is not going anywhere, once an hour, forever.
+`an_invoiced_customer_is_never_offered_to_the_sweep` is the test, and deleting
+the clause is what makes it fail.

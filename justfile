@@ -1459,7 +1459,15 @@ expected_ignored := "0"
 # copies are gone, and `vpay-server`'s tests of the same names cover the
 # originals the worker mode now calls. Net on `cargo nextest list
 # --workspace`: **1550 -> 1548 total, 46 -> 44 test binaries, 0 ignored**.
-expected_suites := "44"
+#
+# **44 -> 45 on 2026-09-07** (S4b, invoices): one new binary,
+# `backends/tests/integration/tests/invoices.rs`. It is raw HTTP against the
+# shipping router rather than SDK-driven, unlike `customers.rs`, because
+# neither merchant SDK has invoice methods yet — `docs/sdks/parity.md` carries
+# the dated gap row, and a suite written against a client that does not exist
+# would be the "test asserts the implementation back to itself" failure
+# `CLAUDE.md` names.
+expected_suites := "45"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

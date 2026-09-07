@@ -80,7 +80,7 @@ pub(crate) const CURSOR: CursorKind = CursorKind {
 /// Stored on the row as an absolute `expires_at` rather than recomputed on
 /// read, so changing this constant does not retroactively expire — or
 /// un-expire — a session a payer is already looking at.
-const SESSION_LIFETIME: time::Duration = time::Duration::hours(24);
+pub(crate) const SESSION_LIFETIME: time::Duration = time::Duration::hours(24);
 
 /// The one `status` in which a session is still being driven (D10).
 ///
@@ -653,6 +653,39 @@ fn chosen_publishable_key(
     ))
 }
 
+/// The stored `ui_mode` of a hosted session, for a caller outside this
+/// module that has no `UiMode` value to spell it with.
+///
+/// `pub(crate)` and a constant rather than making [`UiMode`] itself public:
+/// the enum carries a parse and a default that are this resource's contract,
+/// and `super::invoices::pay` needs neither — it needs the one label a
+/// payer-facing session is created with, and it must not be able to create an
+/// `embedded` one by accident.
+pub(crate) const UI_MODE_HOSTED: &str = UiMode::Hosted.as_wire_str();
+
+/// This merchant's first registered publishable key, for a caller with no
+/// `publishable_key` parameter to honour.
+///
+/// [`chosen_publishable_key`] with `requested = None`, exposed for
+/// `super::invoices::pay`: an invoice's checkout session is created by vpay
+/// rather than requested by a merchant, so there is nothing to choose
+/// between and the "no keys configured" refusal is the only one that can
+/// fire. Routed through the same function rather than reading
+/// `publishable_keys_for` directly, so a deployment with no checkout
+/// configured refuses `pay` with exactly the sentence it refuses
+/// `POST /v1/checkout/sessions` with.
+///
+/// # Errors
+///
+/// [`ApiError::CheckoutNotConfigured`] when the tenant has no registered
+/// publishable key.
+pub(crate) fn first_publishable_key(
+    config: &ResourceConfig,
+    merchant_id: &str,
+) -> Result<String, ApiError> {
+    chosen_publishable_key(config, merchant_id, None)
+}
+
 /// A URL this mode requires, or a `400` naming it.
 fn required(value: Option<String>, param: &'static str, mode: &str) -> Result<String, ApiError> {
     value.ok_or_else(|| {
@@ -698,7 +731,11 @@ fn refused(
 /// # Errors
 ///
 /// [`ApiError::invalid_param`] naming `param`.
-fn checked_forward_url(url: &str, param: &'static str, livemode: bool) -> Result<(), ApiError> {
+pub(crate) fn checked_forward_url(
+    url: &str,
+    param: &'static str,
+    livemode: bool,
+) -> Result<(), ApiError> {
     // Lowercased because URL schemes are case-insensitive (RFC 3986 §3.1) —
     // the column's CHECK compares the same way, so `HTTPS://` is accepted by
     // both or by neither.
@@ -1014,7 +1051,7 @@ fn not_found(id: &str) -> ApiError {
 ///
 /// `base` has already had its trailing slash removed by
 /// [`ResourceConfig::from_config`], so this is a plain `format!`.
-fn hosted_url(row: &CheckoutSessionRow, base: Option<&str>) -> Option<String> {
+pub(crate) fn hosted_url(row: &CheckoutSessionRow, base: Option<&str>) -> Option<String> {
     if row.ui_mode != "hosted" {
         return None;
     }

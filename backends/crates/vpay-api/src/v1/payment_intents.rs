@@ -1858,7 +1858,10 @@ fn parse_amount(raw: Option<&str>) -> Result<i64, ApiError> {
 
 /// Both currency gates: a code the system knows, *and* one this deployment
 /// configured. See [`ResourceConfig::admits_currency`].
-fn parse_currency(raw: Option<&str>, config: &ResourceConfig) -> Result<Currency, ApiError> {
+pub(crate) fn parse_currency(
+    raw: Option<&str>,
+    config: &ResourceConfig,
+) -> Result<Currency, ApiError> {
     let raw = raw.ok_or_else(|| {
         ApiError::invalid_param("currency", "A three-letter `currency` code is required.")
     })?;

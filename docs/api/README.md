@@ -71,17 +71,20 @@ else `403` `forbidden`
 ### Served today
 
 `vpay_api::v1::V1_ROUTES` is the router's source, not a copy of it.
-**Eighteen methods across thirteen paths**, re-counted from `V1_ROUTES` on
-2026-09-06 after S4a mounted `/v1/customers` (two paths, five methods) on top
-of `GET /v1/refunds/{id}` (issue #45) and `GET /v1/account_holders` (issue
-#47): eleven across nine after Step 9, twelve across ten with issue #47,
-thirteen across eleven with issue #45, eighteen across thirteen now. Each
-change was written against a tree without the others, and the first two each
-said "twelve across ten"; no number here has survived two changes yet, which
-is why it is re-counted rather than incremented.
+**Thirty-one methods across twenty paths**, re-counted from `V1_ROUTES` on
+2026-09-07 after S4b mounted `/v1/invoices` (five paths, nine methods) and
+`/v1/invoice_items` (two paths, five methods): eleven across nine after
+Step 9, twelve across ten with issue #47, thirteen across eleven with issue
+#45, eighteen across thirteen with S4a's customers, thirty-one across twenty
+now. Each change was written against a tree without the others, which is why
+this is re-counted rather than incremented.
 
-`/v1/customers/{id}` is the only path answering three methods, and
-`DELETE /v1/customers/{id}` is the only `DELETE` on this surface.
+`/v1/invoices/{id}` and `/v1/invoice_items/{id}` are the only paths answering
+**four** methods, and the only ones answering `PATCH` — mounted beside `POST`
+on the same handler, because Stripe's API has no `PATCH` (so `POST` is the one
+a merchant's existing client sends) but a partial update is what the verb
+means. `DELETE` appears on three paths: those two and
+`/v1/customers/{id}`.
 
 | Method | Path | Request params | Answer |
 |---|---|---|---|
@@ -103,6 +106,19 @@ is why it is re-counted rather than incremented.
 | POST | `/v1/customers/{id}` | as `POST /v1/customers`, plus: a field sent **empty** is *cleared*, which is a different request from omitting it | `200` + `customer`; `400` naming `name` when the patch would clear the customer's last identifier; the uniform `404` (S4a) |
 | GET | `/v1/customers` | `limit`, `starting_after`, `ending_before` (`cus_…` ids; not both) | `200` + `list` envelope of `customer`, newest first. **No `email` filter**, deliberately — see [../flows/customers.md](../flows/customers.md) |
 | DELETE | `/v1/customers/{id}` | | `200` + `{"id", "object": "customer", "deleted": true}` — a **hard** delete; `409` when any payment intent or checkout session references the customer; the uniform `404` (S4a) |
+| POST | `/v1/invoices` | `customer` (**required**, a `cus_…` of yours), `currency` (as on an intent), `description` (≤1000), `due_date` (unix **seconds**, advisory — nothing reads it), `metadata[…]` | `201` + `invoice` in `draft` with no `number` and zero amounts; `400` naming `customer` when it is absent or not yours (S4b) |
+| GET | `/v1/invoices/{id}` | | `200` + `invoice` with its `lines` expanded, or `404 resource_missing` — **including for another merchant's id**, byte for byte (`another_merchants_invoice_is_byte_identical_to_one_that_never_existed`) |
+| POST, PATCH | `/v1/invoices/{id}` | `description`, `due_date`, `metadata[…]` — a field sent **empty** is *cleared*; `customer` and `currency` are **not** patchable | `200` + `invoice`; `409` naming the status when the invoice is no longer a `draft`; the uniform `404` (S4b) |
+| GET | `/v1/invoices` | `limit`, `starting_after`, `ending_before` (`in_…` ids; not both), `customer` (a `cus_…`), `status` (one of the five) | `200` + `list` envelope of `invoice`, newest first; `400` naming `status` for a label vpay does not have — never an empty page (S4b) |
+| DELETE | `/v1/invoices/{id}` | | `200` + `{"id", "object": "invoice", "deleted": true}`, and its lines go with it; `409` for anything but a `draft` — an issued invoice is **voided**, never deleted; the uniform `404` (S4b) |
+| POST | `/v1/invoices/{id}/finalize` | | `200` + the invoice in `open` with its `number` assigned and `amount_due` frozen; `400` naming `invoice` when it has no lines; `409` when it is not a `draft` (S4b) |
+| POST | `/v1/invoices/{id}/void` | | `200` + the invoice in `void`, **keeping its number**; `409` when it is not `open`, or when its payment intent has not been canceled (S4b) |
+| POST | `/v1/invoices/{id}/mark_uncollectible` | | `200` + the invoice in `uncollectible`, still owed and never expected; `409` as for `void`. **Emits no event** — see [../flows/webhooks.md](../flows/webhooks.md) (S4b) |
+| POST | `/v1/invoices/{id}/pay` | `success_url`, `cancel_url` (**both required**, same rules as a checkout session's) | `200` + the invoice with `payment_intent` and `hosted_invoice_url` set — a `pi_…` for `amount_remaining` and a hosted checkout session for it; `409` when it is not `open` or an intent is already live; `500 checkout_not_configured` when this deployment serves no checkout page (S4b) |
+| POST | `/v1/invoice_items` | `invoice` (**required**, an `in_…` of yours **in `draft`**), `description` (**required**, ≤1000), `quantity` (≥1, default 1), `unit_amount` (**required**, integer minor units) | `201` + `line_item`, and the invoice's `amount_due` moves with it; `400` naming `invoice` when it is not one of your drafts (S4b) |
+| GET | `/v1/invoice_items/{id}` | | `200` + `line_item` whatever the parent's status, or the uniform `404` (S4b) |
+| POST, PATCH | `/v1/invoice_items/{id}` | `description`, `quantity`, `unit_amount` — `amount` is **not** a parameter, ever | `200` + `line_item` with `amount` recomputed; `409` when the parent is no longer a `draft`; the uniform `404` (S4b) |
+| DELETE | `/v1/invoice_items/{id}` | | `200` + `{"id", "object": "line_item", "deleted": true}`, and the invoice re-totals; `409`/`404` as above (S4b) |
 
 **`GET /v1/events` renders an event through the same code the webhook
 deliverer signs** (`vpay_api::model::EventObject`). That is deliberate: this
@@ -122,11 +138,11 @@ would let it answer a different question from the one the webhook asked. The
 ```
 
 `created` is unix **seconds**, like every other `created` on this surface.
-`type` is one of the nine in [../flows/webhooks.md](../flows/webhooks.md); only
-`payment_intent.succeeded`, `payment_intent.payment_failed`,
-`checkout.session.expired` and `customer.deleted` are ever written today, and
-the CHECK `type_is_a_documented_event` (migrations `0018`, `0029` and `0034`)
-closes the vocabulary at the database. `livemode` comes off the stored row, not from
+`type` is one of the thirteen in [../flows/webhooks.md](../flows/webhooks.md);
+only `payment_intent.succeeded`, `payment_intent.payment_failed`,
+`checkout.session.expired`, `customer.deleted` and the four `invoice.*` types
+are ever written today, and the CHECK `type_is_a_documented_event` (migrations
+`0018`, `0029`, `0034` and `0036`) closes the vocabulary at the database. `livemode` comes off the stored row, not from
 configuration read at render time, so redeploying does not change what a
 delivered event says about itself.
 
@@ -143,9 +159,12 @@ so an SDK version that predates a future object type can still receive the
 event rather than failing to decode it.
 
 **Except on `checkout.session.expired`, whose `data.object` is a
-`checkout.session`, and `customer.deleted`, whose `data.object` is a
-`customer`** — the two types whose payload is not a `payment_intent` or a
-refund. The session is the 14-key object documented below, with `status` already
+`checkout.session`; `customer.deleted`, whose `data.object` is a `customer`;
+and the four `invoice.*` types, whose `data.object` is an `invoice` with
+`lines.data` **empty** ([../flows/invoices.md](../flows/invoices.md) says
+why — the body is rendered inside the transition's own transaction, and the
+`/v1` object always carries the lines).** These are the types whose payload is
+not a `payment_intent` or a refund. The session is the 14-key object documented below, with `status` already
 `expired`, `payment_status` whatever the money did, and **`url` always
 `null`**: a hosted session's `url` carries its `client_secret` in the fragment,
 and a webhook body is stored, delivered at-least-once and replayed. So `url:
@@ -202,6 +221,69 @@ checkout session references cannot be deleted at all (`409`). So "delete this
 customer" is not a complete erasure of the payer: the payment record survives.
 Clearing `name`, `email` and `phone` with an update is the other half of the
 answer, and is why an update can clear a field.
+
+### The `invoice` object (S4b)
+
+A merchant's bill to one customer. **Seventeen keys**, and — like the customer
+— the object whose *rules* matter more than its shape;
+[../flows/invoices.md](../flows/invoices.md) is the whole of them.
+
+```json
+{
+  "id": "in_…", "object": "invoice",
+  "customer": "cus_…", "currency": "xaf",
+  "status": "open", "number": "A7K3M9QP-000001",
+  "amount_due": 11000, "amount_paid": 0, "amount_remaining": 11000,
+  "due_date": null, "description": "September hosting",
+  "metadata": { "order_id": "1234" },
+  "payment_intent": null, "hosted_invoice_url": null,
+  "lines": {
+    "object": "list", "has_more": false, "url": "/v1/invoice_items",
+    "data": [
+      { "id": "ii_…", "object": "line_item", "description": "Hosting",
+        "quantity": 1, "unit_amount": 5000, "amount": 5000,
+        "currency": "xaf", "livemode": false }
+    ]
+  },
+  "status_transitions": {
+    "finalized_at": 1753401600, "paid_at": null,
+    "voided_at": null, "marked_uncollectible_at": null
+  },
+  "created": 1753401600, "livemode": false
+}
+```
+
+**`customer` is never `null`**, unlike a payment intent's: an invoice is a bill
+to somebody, and one that names no payer is one nobody can be asked to pay.
+
+**`lines` is always expanded**, and `has_more` is always `false`. vpay does not
+implement Stripe's `expand[]` at all, and an invoice without its lines is a
+total with no explanation. The list is not paged; `url` points at
+`/v1/invoice_items`, a route that exists, rather than Stripe's
+`/v1/invoices/{id}/lines`, which vpay does not serve.
+
+**A line's `object` is `line_item` and its route is `/v1/invoice_items`.**
+Stripe has two objects where vpay has one — see the flow doc. The same `ii_…`
+is addressed on one and rendered as the other.
+
+**`number` is `null` exactly while the invoice is a `draft`.** It is
+`{prefix}-{000001}` from that merchant's own sequence, assigned at finalize,
+never reused, and **kept** by a voided invoice — a number that vanished is a
+hole an accountant reads as a destroyed document.
+
+**All three amounts are integer minor units**, and `amount_paid` is `0` or
+`amount_due` — partial payments are out of scope, enforced by the database.
+
+**`due_date` is advisory.** Nothing in vpay reads it: there is no dunning, no
+reminder and no automatic transition.
+
+**`hosted_invoice_url` is a checkout session, not an invoice page.** vpay has
+no invoice page; a payer following it sees the existing hosted checkout. It is
+`null` until `POST /v1/invoices/{id}/pay`.
+
+**Inside an `invoice.*` webhook body, `lines.data` is empty.** The event is
+rendered inside the transition's own transaction; this endpoint always carries
+the lines. See [../flows/webhooks.md](../flows/webhooks.md).
 
 ### The `account_holder` object (issue #47)
 
