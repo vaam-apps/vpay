@@ -130,16 +130,38 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      # The upstream install action, pinned to the commit `v0.11.1` was
-      # tagged at (`6b3053f`) rather than the `@main` its documentation shows
+      # The upstream install action, pinned to the commit `v0.12.0` was
+      # tagged at (`0823bab`) rather than the `@main` its documentation shows
       # — https://cratestack.dev/tooling/cli-install. It downloads the
       # prebuilt `x86_64-unknown-linux-gnu` binary from that repository's
       # releases and verifies it against the published `.sha256` sidecar
       # before putting it on PATH, which is why this job does not do the
       # `curl | sha256sum -c` dance the `deploy` job does for kubeconform.
+      #
+      # `6b3053f` (v0.11.1) until 2026-09-07. Two things were checked when
+      # the pin moved, because a SHA pin's whole value is that neither can
+      # be assumed. `git/ref/tags/v0.12.0` resolves to `0823bab382…` and the
+      # ref is `"type": "commit"` — a lightweight tag, so there is no tag
+      # object to dereference and the commit above is the tag itself. And
+      # `action.yml` at the two commits is byte-identical (md5
+      # 40c0fb26361a4b742f824ac6d4e49a95), so this line moves the provenance
+      # of the code CI runs and nothing about what it does.
+      #
+      # There is NO checksum input to move with it, and that is worth saying
+      # because the natural assumption is that a pinned action pins a
+      # digest: the action takes `version` and `github-token` only, and
+      # fetches `<asset>.sha256` from the same release at run time. What
+      # pins the binary is therefore the release, not this workflow — the
+      # v0.12.0 release carries
+      # `cratestack-cli-x86_64-unknown-linux-gnu-v0.12.0.tar.gz` and its
+      # sidecar, and reproducing the action's own steps by hand on
+      # 2026-09-07 gave a matching digest
+      # (d38eb010b0f61ef3e6d8f9e5f45c35d73abbc904e8249ae32c3bcce75b74b307)
+      # and a binary that reports `cratestack 0.12.0`.
       # No Rust toolchain is involved, and since 2026-09-05 that is a choice
       # rather than a necessity. `cratestack-cli` declares
-      # `rust-version = "1.98.0"`; this job's toolchain is whatever
+      # `rust-version = "1.98.0"` (still 1.98.0 at 0.12.0, re-read from the
+      # manifest on 2026-09-07); this job's toolchain is whatever
       # `rust-toolchain.toml` pins, which was 1.95.0 until that date, so
       # `cargo install` here USED to fail outright with "requires rustc
       # 1.98.0 or newer" (verified by running it). The pin is 1.98.0 now, so
@@ -147,7 +169,7 @@ jobs:
       # checksum-verified prebuilt binary is seconds against compiling the
       # CLI and its graph on every `self-checks` run, not because the
       # compiler cannot do it.
-      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@6b3053fa77924f5162915d594d457d3eda51afaa # v0.11.1
+      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@0823bab382425e1fe4d04c42b9657b7e7bb7b286 # v0.12.0
         with:
           version: ${{ steps.cratestack.outputs.version }}
       # `just check-schema`, not a copy of the command it runs: the recipe is
@@ -251,7 +273,10 @@ jobs:
       # without the binary, not a skip (added 2026-09-05; the first CI run of
       # that test failed here for exactly that reason — run 33980091252).
       # Same two steps as `self-checks`: the version comes from the justfile,
-      # the action is pinned to the v0.11.1 commit and verifies the checksum.
+      # the action is pinned to the v0.12.0 commit (`0823bab`, v0.11.1's
+      # `6b3053f` until 2026-09-07) and verifies the checksum. The evidence
+      # for both halves of that sentence is in `self-checks` above rather
+      # than repeated here.
       - name: resolve the pinned CrateStack version from the justfile
         id: cratestack
         run: |
@@ -261,7 +286,7 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@6b3053fa77924f5162915d594d457d3eda51afaa # v0.11.1
+      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@0823bab382425e1fe4d04c42b9657b7e7bb7b286 # v0.12.0
         with:
           version: ${{ steps.cratestack.outputs.version }}
       - run: cargo fmt --all -- --check

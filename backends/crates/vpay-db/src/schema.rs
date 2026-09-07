@@ -18,6 +18,6 @@
 // expansion and a text-scanning gate would otherwise see nothing wrong.
 //
 // The path is resolved against `CARGO_MANIFEST_DIR`
-// (`cratestack-macros-0.11.1/src/include/parse.rs`), not against this file,
+// (`cratestack-macros-0.12.0/src/include/parse.rs:18`), not against this file,
 // so it climbs out of `backends/crates/vpay-db`.
 ::cratestack::include_server_schema!("../../../schemas/vpay.cstack", db = Postgres);

@@ -560,7 +560,7 @@ verify-npm-scope:
 # jobs there already use to read the compiler channel out of
 # `rust-toolchain.toml`. Bump it here and CI follows; there is no second copy
 # to forget.
-cratestack_version := "0.11.1"
+cratestack_version := "0.12.0"
 
 # The floor for `check-schema`'s "is there anything here?" assertion: the
 # number of top-level `model`/`enum` declarations schemas/vpay.cstack must
@@ -583,7 +583,8 @@ cratestack_min_declarations := "15"
 # whoever last ran the tool by hand ("Verified against CrateStack 0.10.1 …
 # schema OK"). That is a claim with a date on it and nothing re-running it:
 # the grammar moves fast (crates.io published 29 cratestack-cli releases
-# between 0.7.8 on 2026-08-08 and the pinned 0.11.1 on 2026-09-03), and the
+# between 0.7.8 on 2026-08-08 and the then-pinned 0.11.1 on 2026-09-03; the
+# pin is 0.12.0 since 2026-09-07), and the
 # first anyone would have learned that the file had stopped parsing is
 # whenever somebody next felt like checking. The schema is still EXCLUDED
 # FROM THE BUILD GRAPH — no crate depends on it, nothing generates from it —

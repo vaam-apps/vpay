@@ -1094,7 +1094,7 @@ async fn an_out_of_range_currency_exponent_is_rejected_by_the_database() -> anyh
 /// deletion of.
 ///
 /// That matters more now than it did, because `schemas/vpay.cstack`'s
-/// `model Event` deliberately does **not** declare this CHECK (0.11.1 has no
+/// `model Event` deliberately does **not** declare this CHECK (0.12.0 has no
 /// validator for "one of these eight strings" on a `String` column), so a
 /// generated `cratestack migrate diff` would emit DDL dropping it as
 /// undeclared. Nothing runs `migrate diff` today, so that half is latent.
@@ -1534,9 +1534,23 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 /// Pending drift changes between `schemas/vpay.cstack` and a freshly migrated
 /// vpay database, as counted by `cratestack migrate baseline --strict`.
 ///
-/// **Measured, not chosen**, against `cratestack-cli 0.11.1` and
+/// **Measured, not chosen**, against `cratestack-cli 0.12.0` and
 /// `postgres:16-alpine` — `docs/plans/exp13-notes/opus.md` has the full
-/// transcript for the original 2026-09-05 measurement. **This number must
+/// transcript for the original 2026-09-05 measurement, taken at 0.11.1.
+///
+/// **Unmoved by the CLI itself going 0.11.1 -> 0.12.0 on 2026-09-07**, and
+/// re-derived rather than assumed: this test ran against a fresh
+/// `postgres:16-alpine` with the 0.12.0 binary on `PATH` and printed
+/// `cratestack CLI under test: 0.12.0 (justfile pins 0.12.0)` above
+/// `drift detected in 16 table(s)/view(s) (101 change(s) total)`. A version
+/// bump is the one change that could move this number without anybody
+/// touching the schema — introspection or the report growing a case — so
+/// "unchanged" is worth a line here rather than silence. The four
+/// upstream files this measurement depends on (`ir.rs`,
+/// `introspect/postgres/{mod,tables,types}.rs`, `migrate/drift_report.rs`)
+/// are byte-identical between the two releases, which is why.
+///
+/// **This number must
 /// move when the schema grows.** It is the size of the gap between a design
 /// sketch and the migrations that outran it, so a commit that closes part of
 /// that gap and leaves this constant alone has changed the schema without
@@ -1589,7 +1603,7 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 ///     it, introspection always reports it as opaque text"). So two
 ///     unrelated lines became a same-named drop-and-add pair: a clearer
 ///     report, the same number. Not a reason to revert the rename — the
-///     names are the half that *can* converge at 0.11.1 — but a reason not
+///     names are the half that *can* converge at 0.12.0 — but a reason not
 ///     to expect a validator rename to move this constant.
 ///   * Converting `providers.flow` from the native `provider_flow` enum to
 ///     `TEXT` + `providers_flow_enum_check` also moved **nothing**, and
@@ -1737,7 +1751,7 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 17;
 /// reason `EXPECTED_DRIFT_CHANGES` may fall alongside it — the comparison
 /// grew by a column and the drift it found on that column was zero. Every
 /// remaining entry is a `jsonb`, a `bytea`, or an `int2`/`int4`; `jsonb` and
-/// `bytea` do not round-trip at 0.11.1 (they are emitted but not read back),
+/// `bytea` do not round-trip at 0.12.0 (they are emitted but not read back),
 /// so this number cannot reach zero by schema work alone.
 ///
 /// **Still 17 after `model Event` and `model WebhookDelivery` (2026-09-06),
@@ -1792,7 +1806,7 @@ fn repo_root() -> anyhow::Result<std::path::PathBuf> {
         .context("resolving the repository root from CARGO_MANIFEST_DIR")
 }
 
-/// The `cratestack` version string on `PATH`, e.g. `"0.11.1"`.
+/// The `cratestack` version string on `PATH`, e.g. `"0.12.0"`.
 ///
 /// # Errors
 ///
@@ -1808,7 +1822,7 @@ fn cratestack_version() -> anyhow::Result<String> {
         .context(
             "the `cratestack` CLI must be on PATH for this test — it is a red failure, not a \
              skip, exactly as `just check-schema` treats the same absence. Install the pinned \
-             release with `cargo install cratestack-cli --locked --version 0.11.1` (the version \
+             release with `cargo install cratestack-cli --locked --version 0.12.0` (the version \
              pin lives in `justfile` as `cratestack_version`)",
         )?;
     anyhow::ensure!(
@@ -1885,7 +1899,7 @@ fn parse_drift_header(stdout: &str) -> anyhow::Result<(u32, u32)> {
 ///
 /// Keyed on the sentence, not on the `[lossy]` severity label that precedes
 /// it. `Op::DropTable` is unconditionally `Destructiveness::Lossy` in
-/// `cratestack-migrate` 0.11.1 (`src/ir.rs`), so pinning the label was
+/// `cratestack-migrate` 0.12.0 (`src/ir.rs`), so pinning the label was
 /// correct — but it is a second fact about the tool riding on an assertion
 /// about vpay's schema, and if the label ever changed this would quietly
 /// return an empty set. The test would still fail, and would fail saying the
@@ -2066,7 +2080,7 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
     // reported.
     //
     // `cardinality(conkey) > 1` is the complement of the tool's own filter,
-    // and the tool documents it: `cratestack-migrate` 0.11.1's
+    // and the tool documents it: `cratestack-migrate` 0.12.0's
     // `src/introspect/postgres/mod.rs` lists "Multi-column and zero-column
     // CHECK constraints are skipped … `AddCheck` ties to exactly one column"
     // under Known gaps, and `constraints.rs::introspect_checks` selects
@@ -2130,7 +2144,7 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
     // None of the eleven reaches the report.
     //
     // Matched as the shape the report renders a CHECK in — ``CHECK `name` ``,
-    // from `cratestack-cli` 0.11.1's `src/migrate/drift_report.rs::describe`,
+    // from `cratestack-cli` 0.12.0's `src/migrate/drift_report.rs::describe`,
     // which is the only way an `Op::AddCheck`/`Op::DropCheck` is ever printed
     // — rather than as a bare substring of the whole report. Detection is
     // identical and the false-positive class goes away: this repository names
@@ -2144,8 +2158,9 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         assert!(
             !stdout.contains(&rendered),
             "`{table}.{name}` is a multi-column CHECK that `migrate baseline` did not mention on \
-             2026-09-05 (and, for `customers.at_least_one_identifier`, on 2026-09-06), at \
-             cratestack 0.11.1. It does now. That is a change in what the tool \
+             2026-09-05 (and, for `customers.at_least_one_identifier`, on 2026-09-06) at \
+             cratestack 0.11.1, nor on 2026-09-07 at 0.12.0. It does now. That is a \
+             change in what the tool \
              can see — very likely the cross-column CHECK support this repository has been \
              asking for — and it wants recording in docs/status.md and schemas/vpay.cstack's \
              header rather than a constant bump: {stdout}"
@@ -2234,9 +2249,9 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
 
     // The other half of the promise, and the half nothing else here could
     // notice. A recorded baseline row means a `cratestack_migrations` table
-    // (`cratestack-cli` 0.11.1, `src/migrate/baseline_cmd.rs`), and
+    // (`cratestack-cli` 0.12.0, `src/migrate/baseline_cmd.rs`), and
     // introspection excludes that table from its own table list
-    // (`cratestack-migrate` 0.11.1, `src/introspect/postgres/tables.rs`) — so
+    // (`cratestack-migrate` 0.12.0, `src/introspect/postgres/tables.rs`) — so
     // if `--strict` did write one, the 86 above would not move and the set of
     // undeclared tables would not grow. docs/status.md asserted this from a
     // run someone did by hand; it is read from the database now.

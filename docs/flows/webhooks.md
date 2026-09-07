@@ -125,6 +125,15 @@ from.
 
 ## Status
 
+**Updated 2026-09-07: CrateStack 0.11.1 → 0.12.0 changed nothing here.** The
+`events.data` blocker above is `Value::from_plain_json`'s `f64` demotion, and
+`cratestack-core`'s `src/` is byte-identical between the two releases
+(`value.rs:95-106`), so the hand-written `insert_in_tx` stays for the reason
+it already had. `webhook_deliveries`' `upsert(..).do_nothing()` and the
+`fanout_state` compare-and-swap both still run through CrateStack, unchanged,
+and the whole suite is green at 0.12.0 (`../status.md` § CrateStack 0.11.1 →
+0.12.0).
+
 **Updated 2026-09-04: the housekeeping sweep is a third writer.** A checkout
 session passing its 24-hour horizon with nothing driving it now produces one
 `checkout.session.expired` — in the same transaction as the status flip — and
@@ -178,7 +187,7 @@ returns. What changed is which layer issues two of the statements:
 
 `events.data` did **not** move, and the reason is worth stating in this
 document rather than only in the reference: it is the exact object that is
-signed and delivered, and CrateStack 0.11.1's `Json` scalar round-trips
+signed and delivered, and CrateStack 0.12.0's `Json` scalar round-trips
 through `cratestack::Value`, whose number decoding falls back to `f64` for
 anything that is not an `i64`. Merchant-authored `metadata` travels inside
 `data`. The insert therefore stays one hand-written statement in the same

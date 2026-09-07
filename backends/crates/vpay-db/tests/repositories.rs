@@ -6695,7 +6695,7 @@ async fn a_second_delivery_for_one_event_and_endpoint_is_not_created() -> anyhow
 /// still-open* transaction is refused outright — and that is a narrowing the
 /// move to CrateStack introduced on 2026-09-06, not a property of the outbox.
 ///
-/// # Why it happens, in the pinned 0.11.1 sources
+/// # Why it happens, in the pinned 0.12.0 sources
 ///
 /// `.upsert(..).do_nothing()` resolves its branch in two steps that do not
 /// use the same connection:

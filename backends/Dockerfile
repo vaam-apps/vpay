@@ -44,7 +44,8 @@
 # for the reason recorded there: CrateStack 0.11.1 — whose CLI is the seventh
 # gate in `just verify` — declares `rust-version = "1.98.0"` throughout, and
 # the maintainer chose to move the pin rather than pin CrateStack back to
-# 0.8.15. The Alpine base deliberately did NOT move with it:
+# 0.8.15. The CrateStack pin has since moved to 0.12.0 (2026-09-07) and this
+# line did not have to move with it: 0.12.0 declares the same 1.98.0 floor. The Alpine base deliberately did NOT move with it:
 # `rust:1.98.0-alpine3.22` exists on Docker Hub (`docker manifest inspect`,
 # checked 2026-09-05: six manifest entries, of which THREE are architectures —
 # linux/amd64, linux/arm64/v8, linux/ppc64le — and three are `unknown/unknown`
