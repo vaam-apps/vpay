@@ -78,7 +78,20 @@ export function Select({
       </BaseSelect.Trigger>
       <BaseSelect.Portal>
         <BaseSelect.Positioner className="z-50" sideOffset={4}>
-          <BaseSelect.Popup className="menu bg-base-100 rounded-box border-base-300 w-[--anchor-width] border p-1 shadow-lg">
+          {/*
+           * The width uses Tailwind 4's PARENTHESISED bare-variable syntax.
+           * Tailwind 4 dropped the square-bracket shorthand v3 accepted:
+           * written that way the utility compiles to the literal declaration
+           * `width: --anchor-width`, invalid CSS the browser drops, and the
+           * popup sizes to its content instead of matching the trigger —
+           * with no error anywhere. The daisyUI-4-class failure mode (plan
+           * §6.3) in Tailwind's own syntax. `enforce-consistent-variable-
+           * syntax` now gates it, and the class name is deliberately not
+           * spelled the wrong way here: Tailwind's scanner reads comments
+           * too, and would emit the dead rule from this very sentence.
+           * `--anchor-width` is set by Base UI on `Select.Positioner`.
+           */}
+          <BaseSelect.Popup className="menu rounded-box border-base-300 bg-base-100 w-(--anchor-width) border p-1 shadow-lg">
             <BaseSelect.List>
               {items.map((item) => (
                 <BaseSelect.Item
