@@ -8399,23 +8399,11 @@ async fn a_settlement_pays_only_the_invoice_its_own_intent_is_bound_to() -> anyh
     assert_eq!(
         invoice_event.object_id, "in_settle_bound",
         "`object_id` comes off the flipped row, not off the caller's body"
-// --- the four `checkout_sessions` reads that moved to CrateStack (S5) -------
-//
-// These are the ONLY CrateStack queries on any money table, and the four
-// assertions below exist because the properties they pin are the ones a swap
-// from a hand-written `SELECT` to a generated builder can silently lose. The
-// integration suite exercises the same reads through `/v1`, but through three
-// layers that could each mask a wrong answer; these ask the repository
-// directly.
-//
-// Every one of them is mutation-driven. `docs/plans/exp34-money-tables-notes/
-// opus.md` records the run, and the mutation each refuses is named in its own
-// doc comment so that deleting the test is not cheaper than fixing the code.
+    );
 
-/// A hosted session for `merchant_id`, on `payment_intent_id`, through the
-/// production writer (`CheckoutSessions::create`) rather than a hand-rolled
-/// `INSERT` — so what these reads read is what `/v1` writes, credentials from
-/// the real generators and all.
+    Ok(())
+}
+
 fn fixture_session(
     id: &str,
     merchant_id: &str,
