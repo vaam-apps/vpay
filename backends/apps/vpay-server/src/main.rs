@@ -16,7 +16,7 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use mimalloc::MiMalloc;
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::{LoadedSigningKey, SigningKeyError};
-use vpay_api::resource_auth::{DashboardJwtValidator, JwtValidator, MerchantJwtValidator, Surface};
+use vpay_api::resource_auth::{DashboardJwtValidator, JwtValidator, MerchantJwtValidator};
 use vpay_api::{ResourceConfig, RouterDeps};
 use vpay_config::{ConfigError, LogFormat, ServerArgs, ShutdownSignals};
 use vpay_core::error::{Category, Classify as _, find_in_chain};
@@ -448,7 +448,7 @@ fn loopback_validator(
             jwks_url,
             JWKS_REFRESH_INTERVAL,
             merchant_op.issuer(),
-            Surface::Merchant,
+            vpay_config::MERCHANT_AUDIENCE,
         )
         .context("building the JWKS client the /v1 token validator fetches with")?,
     ))
@@ -498,7 +498,13 @@ fn loopback_dashboard_validator(
             loopback_jwks_url(bound),
             JWKS_REFRESH_INTERVAL,
             merchant_op.issuer(),
-            Surface::Dashboard,
+            // ADR-0017 decision 3: the dashboard's audience is its own
+            // registered `client_id`, because that is what
+            // `default_handle_authorization_code` mints. It was the constant
+            // `vpay:dash/v1` until 2026-09-07, which no token from the only
+            // grant that can produce a dashboard credential would ever have
+            // carried.
+            dashboard.client_id.as_str(),
         )
         .context("building the JWKS client the /dash/v1 token validator fetches with")?,
     )))

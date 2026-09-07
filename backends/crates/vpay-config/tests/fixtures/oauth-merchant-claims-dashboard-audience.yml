@@ -1,9 +1,14 @@
-# Fixture for `a_merchant_client_that_lists_the_dashboard_audience_is_rejected`
+# Fixture for `a_merchant_client_that_lists_the_dashboard_client_id_is_rejected`
 # (backends/crates/vpay-config/src/config.rs). `allowed_audiences` is what
 # `handle_client_credentials` checks a REQUESTED audience against, so this one
 # YAML line would let a merchant credential mint a token the /dash/v1 resource
 # validator accepts — the two surfaces exist to be different credentials
 # (ADR-0008). See `ConfigError::MerchantClaimsDashboardAudience`.
+#
+# REWRITTEN 2026-09-07 for ADR-0017. The forbidden value used to be the
+# constant `vpay:dash/v1` and this fixture registered no dashboard at all;
+# the audience is now the dashboard client's OWN client_id, so the document
+# has to contain both halves for the rule to have anything to compare.
 
 deployment:
   name: vpay
@@ -20,4 +25,13 @@ merchant_clients:
           n: placeholder
           e: AQAB
     grant_types: [client_credentials]
-    allowed_audiences: [vpay:v1, vpay:dash/v1]
+    # `vpay-dashboard` is the dashboard client's id, below. That is the whole
+    # fixture.
+    allowed_audiences: [vpay:v1, vpay-dashboard]
+
+dashboard_client:
+  client_id: vpay-dashboard
+  merchant_id: acme-tenant
+  scope: dashboard:read
+  redirect_uris:
+    - http://localhost:3000/api/auth/callback

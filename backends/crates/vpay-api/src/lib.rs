@@ -102,6 +102,10 @@ pub mod op;
 // see that module's header.
 pub mod provider_callback;
 pub mod resource_auth;
+/// Staff credentials: argon2id with a deployment pepper, RFC 6238 TOTP, the
+/// AEAD that keeps a TOTP secret out of a database dump, and the opaque
+/// tokens (ADR-0017).
+pub mod staff_auth;
 #[cfg(test)]
 mod test_fixtures;
 #[cfg(test)]
@@ -813,9 +817,9 @@ where
     };
 
     let resource_config = Arc::<ResourceConfig>::from_ref(&state);
-    let Some(merchant_id) = resource_config.merchant_id_for(&claims.client_id) else {
+    let Some(merchant_id) = resource_config.merchant_id_for(&claims.subject) else {
         tracing::warn!(
-            client_id = %claims.client_id,
+            client_id = %claims.subject,
             "a validly signed /v1 token names a client this deployment has no registration for; \
              refusing rather than guessing a tenant"
         );
@@ -833,7 +837,7 @@ where
     let required = v1::required_scopes(&parts.method);
     if !required.iter().any(|scope| claims.has_scope(scope)) {
         tracing::warn!(
-            client_id = %claims.client_id,
+            client_id = %claims.subject,
             method = %parts.method,
             granted = ?claims.scope,
             required = ?required,
@@ -858,45 +862,51 @@ where
 /// | credential | any registered merchant client | the **one** registered dashboard client |
 /// | methods | every method, scoped per verb | `GET`/`HEAD` only; everything else refused here |
 ///
-/// # Why the `client_id` check is not redundant with the audience
+/// # What identifies the credential, after ADR-0017
 ///
-/// The audience says which *surface* a token was minted for; the `sub` says
-/// which *credential* it was minted to. Only the second answers "may this
-/// caller read the tenant this deployment bound the dashboard to". Today
-/// there is one dashboard registration and the two questions have the same
-/// answer — but "there is only one, so it does not matter" is a property of
-/// a YAML file, not of this code, and the day a second dashboard client is
-/// registered for a second tenant the check is the only thing standing
-/// between them. Boot already refuses a merchant registration that could
-/// mint this audience at all
-/// (`vpay_config::ConfigError::MerchantClaimsDashboardAudience`); this is
-/// the second of the two, and neither is sufficient alone.
+/// **`aud` and the merchant claim; never `sub`.**
 ///
-/// # This check will not survive the login it is waiting for
+/// The audience is checked by the validator before this function runs, and
+/// under ADR-0017 decision 3 it *is* the registered
+/// `dashboard_client.client_id` — the value the authorization-code grant
+/// actually mints (`default_handle_authorization_code` passes
+/// `Some(client_id)` as the audience and has no requested-audience path). So
+/// "was this token minted for this deployment's dashboard client" is answered
+/// by [`resource_auth::JwtValidator`]'s own `set_audience`, and repeating it
+/// here would be a second copy of one check rather than a second check.
 ///
-/// Recorded by the 2026-09-06 review, and **left as it is on purpose**: it is
-/// correct for every token this deployment can currently produce and wrong
-/// for the ones the next track will.
+/// What this function adds is the **tenant**: the token must carry
+/// [`vpay_config::DASHBOARD_MERCHANT_CLAIM`] and it must equal
+/// `dashboard_client.merchant_id`. Two things follow, and both are the point:
 ///
-/// `ResourceClaims::client_id` is the token's `sub`. Under
-/// `client_credentials` that is the OAuth2 client
-/// (`authkestra_engine::token::TokenManager::issue_client_token` sets `sub:
-/// client_id.to_string()`), so comparing it with the registration's
-/// `client_id` asks exactly the intended question. Under the
-/// **authorization-code** grant `docs/flows/dashboard-auth.md` prescribes,
-/// `authkestra_op`'s `default_handle_authorization_code` calls
-/// `issue_user_token_with_extra(auth_code.identity, …, Some(client_id))` —
-/// `sub` becomes `identity.external_id`, **the staff member**, and the
-/// `client_id` goes in `aud`. So this arm would refuse every token a real
-/// dashboard login issued.
+/// 1. **No machine client can read this surface.** A `client_credentials`
+///    token carries no merchant claim, because nothing but the staff
+///    authorization-code grant stamps one — so the refusal is a property of
+///    how tokens are minted, not of a list somebody maintains. That is a
+///    tightening over what stood here before, and it is deliberate:
+///    `/dash/v1` is a staff surface, and a machine caller on it would be a
+///    service account nobody registered as a person.
+/// 2. **A token cannot choose its own tenant.** The claim is *compared*, not
+///    *used*: the [`MerchantScope`] inserted below is built from the binding,
+///    exactly as before, so a forged claim buys a `403` rather than another
+///    merchant's rows. The claim is a second lock on the same door, and the
+///    door was already locked.
 ///
-/// **Which claim identifies the dashboard credential once a human is in the
-/// loop is a maintainer decision** — `azp`, an explicit `client_id` claim, or
-/// the audience itself under ADR-0017's rule that the dashboard audience
-/// becomes the `DashboardClient`'s `client_id` — and it belongs with that
-/// track rather than being guessed here. Nothing else in this module makes
-/// that track harder; `vpay_config::DASHBOARD_AUDIENCE` being one constant
-/// makes the audience half easier. This is the one line that has to move.
+/// # The check this replaces, and why it could not stay
+///
+/// Until 2026-09-07 this compared [`resource_auth::ResourceClaims`]' `sub` to
+/// `binding.client_id`. That was right for `client_credentials`, where
+/// `TokenManager::issue_client_token` sets `sub` to the client id — and
+/// **wrong for every token a real staff login produces**, where `sub` is the
+/// staff member and the client id is the audience. The 2026-09-06 review
+/// recorded it as finding F7 and left it, because which claim identifies the
+/// credential was a maintainer decision. ADR-0017 takes it. `sub` now names
+/// the staff row and authorises nothing; it is logged, and that is all.
+///
+/// Boot already refuses a merchant registration that could mint this audience
+/// at all (`vpay_config::ConfigError::MerchantClaimsDashboardAudience`, moved
+/// to whole-document scope by the same ADR); this is the second of the two,
+/// and neither is sufficient alone.
 ///
 /// # Why a method it does not serve is refused here
 ///
@@ -969,18 +979,23 @@ where
         }
     };
 
-    if claims.client_id != binding.client_id {
+    // The tenant claim, which is what tells a staff token from every other
+    // token this OP can mint. `None` is the `client_credentials` case and is
+    // refused with the same 403 a wrong tenant gets: telling them apart would
+    // say which of the two a caller had presented.
+    if claims.merchant.as_deref() != Some(binding.merchant_id.as_str()) {
         tracing::warn!(
-            client_id = %claims.client_id,
-            "a validly signed dashboard-audience token names a client that is not this \
-             deployment's registered dashboard client; refusing rather than guessing a tenant"
+            subject = %claims.subject,
+            carried_merchant_claim = claims.merchant.is_some(),
+            "a validly signed dashboard-audience token does not carry this deployment's \
+             merchant claim; refusing rather than serving a tenant nothing vouched for"
         );
         return ApiError::Forbidden.into_response();
     }
 
     if !claims.has_scope(required_scope) {
         tracing::warn!(
-            client_id = %claims.client_id,
+            subject = %claims.subject,
             granted = ?claims.scope,
             required = required_scope,
             "a /dash/v1 token does not carry the dashboard registration's scope; refusing"

@@ -21,9 +21,11 @@ pub mod config;
 pub mod oauth;
 pub mod signal;
 pub use cli::{CommonArgs, LogFormat, ServerArgs, WorkerArgs};
-pub use config::{CheckoutConfig, Config, CurrencyEntry, ProviderHost, WebhookPolicy};
+pub use config::{
+    CheckoutConfig, Config, CurrencyEntry, ProviderHost, StaffAuth, WebhookPolicy,
+};
 pub use oauth::{
-    DASHBOARD_AUDIENCE, DashboardClient, GrantType, MERCHANT_AUDIENCE, MerchantClient,
+    DASHBOARD_MERCHANT_CLAIM, DashboardClient, GrantType, MERCHANT_AUDIENCE, MerchantClient,
     WebhookEndpoint,
 };
 pub use signal::ShutdownSignals;
@@ -272,36 +274,81 @@ pub enum ConfigError {
         /// The `merchant_id` it named.
         merchant_id: String,
     },
-    /// A **merchant** registration lists the dashboard audience in
+    /// A **merchant** registration lists the dashboard client's own id in
     /// `allowed_audiences`.
     ///
     /// This is a privilege boundary, not tidiness. `handle_client_credentials`
     /// honours a *requested* audience whenever `allowed_audiences` permits
-    /// it, so a merchant registration carrying
-    /// [`oauth::DASHBOARD_AUDIENCE`] lets that merchant post
-    /// `audience=vpay:dash/v1` to `/v1/oauth/token` and receive a token the
-    /// `/dash/v1` resource validator's audience check accepts. The two
-    /// surfaces exist to be different credentials (ADR-0008: the dashboard
-    /// never holds a merchant key), and one YAML line would have made them
-    /// the same one.
+    /// it, so a merchant registration carrying that value lets that merchant
+    /// post `audience=<dashboard client id>` to `/v1/oauth/token` and receive
+    /// a token the `/dash/v1` resource validator's audience check accepts.
+    /// The two surfaces exist to be different credentials (ADR-0008: the
+    /// dashboard never holds a merchant key), and one YAML line would have
+    /// made them the same one.
     ///
-    /// `/dash/v1` refuses such a token a second time anyway — its middleware
-    /// requires the token's `client_id` to be the registered dashboard
-    /// client's, and a merchant's is not — but a boundary that depends on
-    /// one check is a boundary one edit removes. Refusing the registration
-    /// is the cheap half, and it is the half an operator can read.
+    /// # What changed on 2026-09-07, and why the check had to move
+    ///
+    /// The forbidden value used to be the constant `vpay:dash/v1`, and this
+    /// was checked inside `validate_merchant_client` — one registration at a
+    /// time, against a value that was the same in every deployment.
+    /// [ADR-0017](../../../../docs/adr/0017-staff-authentication.md)
+    /// decision 3 retired that constant: the audience is now the dashboard
+    /// client's own `client_id`, which is only knowable once the whole
+    /// document has been read. So the check moved to `Config::validate_all`,
+    /// beside `validate_dashboard_binding`, which is the other rule that is
+    /// a property of the *document* rather than of a registration.
+    ///
+    /// **A deployment with no `dashboard_client` cannot trip it**, and that
+    /// is correct rather than a gap: with no dashboard registered there is no
+    /// dashboard audience for a merchant to claim, and `/dash/v1` mounts
+    /// nothing at all.
+    ///
+    /// `/dash/v1` refuses such a token a second time anyway — a
+    /// `client_credentials` token carries no merchant claim, and
+    /// `vpay_api::require_dashboard_token` requires one — but a boundary that
+    /// depends on one check is a boundary one edit removes. Refusing the
+    /// registration is the cheap half, and it is the half an operator can
+    /// read.
     ///
     /// Merchant-only: the dashboard client has no `allowed_audiences` field
     /// at all, because it is not the party that requests one.
     #[error(
-        "merchant client {client_id} lists `{}` in allowed_audiences; that is the dashboard \
-         surface's audience and a merchant credential must never be able to mint one (ADR-0008)",
-        oauth::DASHBOARD_AUDIENCE
+        "merchant client {client_id} lists `{audience}` in allowed_audiences; that is the \
+         dashboard client's own id, which is the audience of every /dash/v1 token, and a \
+         merchant credential must never be able to mint one (ADR-0008, ADR-0017)"
     )]
     MerchantClaimsDashboardAudience {
         /// The merchant registration that claimed it.
         client_id: String,
+        /// The value it claimed — the dashboard client's `client_id`. Never
+        /// a secret: it is a public client identifier published in the
+        /// deployment's own YAML.
+        audience: String,
     },
+    /// A livemode deployment registers a `dashboard_client` and leaves one
+    /// of the two `staff_auth` secrets out
+    /// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md)).
+    ///
+    /// Fatal, and specifically fatal rather than "mount no login": in a
+    /// livemode deployment a registered dashboard with no way to sign in is
+    /// a surface an operator believes exists. In a *sandbox* deployment the
+    /// same configuration is legal and `vpay-server` logs that no staff login
+    /// is mounted, because a sandbox with no staff is an ordinary thing and
+    /// requiring a Secret there is how a Secret acquires a checked-in default
+    /// value.
+    ///
+    /// The message names the field and never a value — neither of these has
+    /// a non-secret half worth printing.
+    #[error(
+        "staff_auth.{field} is required in a livemode deployment that registers a \
+         dashboard_client: without it no staff member can sign in, and the dashboard would be \
+         a surface nobody can reach (ADR-0017)"
+    )]
+    StaffAuthSecretMissing {
+        /// `password_pepper` or `totp_encryption_key`.
+        field: String,
+    },
+
     /// ADR-0010 / `docs/flows/dashboard-auth.md`: vpay stores no client
     /// secret, in any form, for any client kind — a merchant authenticates
     /// only via a signed `private_key_jwt` assertion, and the dashboard is a
