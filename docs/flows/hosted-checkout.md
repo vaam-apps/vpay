@@ -846,20 +846,26 @@ script's own definition — the shop has no `@vpay/ui`-style layer to absorb
 classNames into, by design (D1), so eliminating every inline style could
 only ever add files to that count, not remove them.
 
-**Driven end to end in a real browser the same day.** `shop-hosted.cy.ts`
-(3 tests — MTN push, Orange redirect, a declined MTN charge to
-`cancel_url`) and `VPAY_E2E_FRAMED=1 shop-embedded.cy.ts` (4 tests — the
-frame's exact `src` and CSP, MTN inside the frame, Orange breaking out, an
-unregistered framer refused) both green, **7 passing, 0 failing**, against
-a fresh compose stack (project `exp26c`) built from this lane's own head.
-Not through the plan's own `just test-e2e` recipe: that recipe builds all
-four app images in one `docker compose … --build`, and the `dashboard`
-image fails first on an unrelated, pre-existing gap — `frontends/apps/
-dashboard`'s `next build` cannot resolve `@vpay/ui`'s `./cn.js`-suffixed
-exports through Next's webpack bundler. Neither shop spec visits the
-dashboard, so it was left out of the `docker compose up` service list and
-each spec run directly; see `docs/plans/exp26-notes/lane-c.md` for the
-exact error and why it is Lane D's gap, not this one's.
+**Driven end to end in a real browser, through the plan's own recipe.**
+Corrected 2026-09-07 in review (`docs/plans/exp26-notes/lane-c-review.md`):
+the lane originally proved its two specs by hand, because the `dashboard`
+image would not build. That defect is fixed, so `just test-e2e` was run to
+completion instead — all four images, all four specs, **11 tests, 11
+passing, 0 failing, 0 pending, 0 skipped** (`checkout.cy.ts` 1,
+`dashboard.cy.ts` 3, `shop-hosted.cy.ts` 3 — MTN push, Orange redirect, a
+declined MTN charge to `cancel_url` — and `VPAY_E2E_FRAMED=1
+shop-embedded.cy.ts` 4: the frame's exact `src` and CSP, MTN inside the
+frame, Orange breaking out, an unregistered framer refused).
+
+**And the claim about the compiled stylesheet above was true and proved
+nothing.** `.badge-{success,warning,error}` were in the output only because
+a vitest file contains those strings and Tailwind 4's content detection
+scans test files; the components assembled the class at runtime, which
+Tailwind's scanner cannot see. Fixed, and gated — see the review's
+finding 1, and `docs/status.md`'s Lane C row. One caveat this document must
+carry until Lane B lands: `just lint-web` fails on
+`frontends/apps/checkout/tailwind.config.ts` with this lane in the tree, for
+the dependency-hoisting reason the review's finding 6 sets out.
 
 See [../status.md](../status.md) for the per-feature ledger and the reasons
 several of those rows are 🟡 where this document says "built".

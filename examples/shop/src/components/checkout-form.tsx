@@ -212,7 +212,9 @@ export function CheckoutForm({
           `<label className="label">` above an `<input>` lands beside the
           field rather than over it, and any `mb-*` on it is inert. This is
           the shape daisyUI's own upgrade guide gives as the replacement for
-          `form-control` + `label-text` (§6.3's two removed classes). */}
+          the two form classes daisyUI 5 removed — named in plan §6.3 and in
+          `just verify-ui`'s check 2, and deliberately not repeated here,
+          because that check is a grep and it reads comments. */}
       <fieldset className="fieldset max-w-xl">
         <label htmlFor="email" className="label">
           Your e-mail <span className="text-base-content/60">(optional)</span>

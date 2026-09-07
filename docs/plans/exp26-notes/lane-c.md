@@ -1,5 +1,26 @@
 # exp26 Lane C notes — `examples/shop` on Tailwind 4 + daisyUI 5 (decision D1)
 
+> **Superseded in three places by the review**
+> ([lane-c-review.md](lane-c-review.md), 2026-09-07). Read that document
+> beside this one; where they disagree it is right and this is wrong.
+>
+> 1. **The branch was rebased onto `08d9b8e`**, Lane A's *reviewed* head, so
+>    the base SHA below and the commit SHAs below are the pre-rebase ones.
+> 2. **`just test-e2e` runs.** The `dashboard` image failure that blocked it
+>    is fixed on `08d9b8e`; the full recipe was run to completion in review
+>    and passes 11/11. The manual substitute recorded below is no longer
+>    the evidence for the two shop specs.
+> 3. **`just lint-web`'s failure is caused by this lane, not pre-existing.**
+>    The `git stash` reproduction below is invalid — `git stash` does not
+>    uninstall a dependency tree, so `node_modules` still held Tailwind 4
+>    for the "unmodified base" run. Reproduced properly (revert this lane's
+>    two manifest files, reinstall, re-run) the gate passes without this
+>    lane and fails with it. See the review's finding 6.
+>
+> The review also found that the `badge-{tone}` classes this document
+> reports as present in the compiled stylesheet were present **only because
+> a vitest file contains the strings** — finding 1, fixed.
+
 Branch `claude/exp26-ui-lane-c`, base `177645e` (Lane A's head). Commits, in
 order, on top of that base:
 
