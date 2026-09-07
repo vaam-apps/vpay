@@ -56,6 +56,7 @@ use anyhow::Context as _;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
+use sqlx::Row as _;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use time::{Duration, OffsetDateTime};
@@ -260,6 +261,55 @@ impl Harness {
         Ok(SignedIn { session, totp })
     }
 
+    /// A login stopped after the password, on an **unenrolled** account: the
+    /// session, the sealed secret it was handed, and a `Totp` over that
+    /// secret.
+    ///
+    /// The building block for the enrolment-race case. `sign_in` completes
+    /// enrolment; this deliberately does not.
+    async fn begin_enrolment(&self) -> anyhow::Result<Enrolling> {
+        let (status, body) = self
+            .post_form(
+                "/dash/v1/staff/login",
+                None,
+                &[("email", STAFF_EMAIL), ("password", ONE_TIME_PASSWORD)],
+            )
+            .await?;
+        anyhow::ensure!(status == 200, "login: {status} {body}");
+
+        let session = field(&body, "session")
+            .as_str()
+            .context("a session token")?
+            .to_owned();
+        let sealed = field(&body, "enrolment")
+            .as_str()
+            .context("an enrolment blob — this account must be unenrolled")?
+            .to_owned();
+        let totp = totp::Totp::new(self.credentials.open_secret(&sealed)?);
+        Ok(Enrolling {
+            session,
+            sealed,
+            totp,
+        })
+    }
+
+    /// A `Totp` over the secret an **enrolled** account actually stores, read
+    /// back out of the row and opened with the deployment key.
+    ///
+    /// The only way a test can generate a code for an account it did not
+    /// enrol in the same function — and it goes through the same
+    /// `open_secret` the server does, so a change to the sealing format
+    /// breaks it here rather than silently somewhere else.
+    async fn enrolled_totp(&self) -> anyhow::Result<totp::Totp> {
+        let sealed: String = sqlx::query("SELECT totp_secret FROM staff_members WHERE email = $1")
+            .bind(STAFF_EMAIL)
+            .fetch_one(&self.repositories.op_store_pool())
+            .await
+            .context("reading the stored TOTP secret")?
+            .get("totp_secret");
+        Ok(totp::Totp::new(self.credentials.open_secret(&sealed)?))
+    }
+
     /// A signed-in session all the way to a `/dash/v1` bearer token.
     async fn access_token(&self) -> anyhow::Result<(String, String)> {
         let signed_in = self.sign_in().await?;
@@ -303,6 +353,13 @@ fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
 /// Lower-case hex, the spelling `staff_sessions.id` carries.
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// A login stopped after the password, on an unenrolled account.
+struct Enrolling {
+    session: String,
+    sealed: String,
+    totp: totp::Totp,
 }
 
 /// A session that has presented both factors, and the TOTP it did it with.
@@ -970,15 +1027,30 @@ async fn signing_out_deletes_the_session_and_with_it_the_access_token() -> anyho
 ///
 /// The decisive mutation: use `load_session` instead of
 /// `authenticated_session` in `authorize` and this returns a `302`.
+///
+/// **The first draft of this test was not decisive, and the mutation is what
+/// said so.** It signed in from scratch, so the session it built was
+/// `pending_totp` *and* belonged to a staff member who had never replaced the
+/// printed one-time password — and `authorize` refuses that too. Under the
+/// mutation the test still passed, refusing for the second reason while the
+/// first was gone. So this one signs in **fully** first, which clears
+/// `password_change_required`, and only then starts a second login and stops
+/// after the password: the second-factor check is the only thing left to
+/// refuse it. The control at the end is what stops a mutation that refused
+/// *every* session from passing.
 #[tokio::test]
 async fn a_session_that_has_not_presented_a_second_factor_cannot_authorize() -> anyhow::Result<()> {
     let harness = harness().await?;
+
+    // A full sign-in first, purely to clear `password_change_required` — see
+    // the doc above. Its own session is then abandoned.
+    harness.sign_in().await?;
 
     let (status, body) = harness
         .post_form(
             "/dash/v1/staff/login",
             None,
-            &[("email", STAFF_EMAIL), ("password", ONE_TIME_PASSWORD)],
+            &[("email", STAFF_EMAIL), ("password", NEW_PASSWORD)],
         )
         .await?;
     assert_eq!(status, 200, "{body}");
@@ -990,6 +1062,94 @@ async fn a_session_that_has_not_presented_a_second_factor_cannot_authorize() -> 
     let (status, code) = harness.authorize(&session, CHALLENGE).await?;
     assert_eq!(status, 401, "a password alone is not a sign-in");
     assert!(code.is_none());
+
+    // The control: the same session, once it HAS presented a code, reaches
+    // `/authorize`.
+    let totp = harness.enrolled_totp().await?;
+    let step = totp::step_at(OffsetDateTime::now_utc().unix_timestamp());
+    let (status, body) = harness
+        .post_form(
+            "/dash/v1/staff/totp",
+            Some(&session),
+            &[("code", &totp.code_at_step(step + 1))],
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    let (status, code) = harness.authorize(&session, CHALLENGE).await?;
+    assert_eq!(status, 302, "the same session, with both factors");
+    assert!(code.is_some());
+    Ok(())
+}
+
+/// **Enrolment happens once.** A second first-sign-in cannot replace an
+/// enrolled staff member's second factor.
+///
+/// Two logins are started against an *unenrolled* account, so each is handed
+/// its own freshly minted secret. The first completes enrolment; the second
+/// then presents a valid code **from its own secret**, and is refused —
+/// because `Staff::enrol_totp`'s compare-and-swap guards on
+/// `totp_enrolled_at IS NULL` and the first login won it.
+///
+/// Without that guard the second login would *succeed* and overwrite the
+/// stored secret with its own: a second-factor reset performed by whoever
+/// reached the enrolment screen second, with nothing but the password in
+/// front of it. The step used is deliberately one **ahead** of the first's,
+/// so the TOTP replay guard is not what refuses it.
+///
+/// The decisive mutation: delete
+/// `.where_(staff_member::totp_enrolled_at().is_null())` from `enrol_totp`.
+#[tokio::test]
+async fn a_second_enrolment_cannot_replace_an_enrolled_second_factor() -> anyhow::Result<()> {
+    let harness = harness().await?;
+
+    let first = harness.begin_enrolment().await?;
+    let second = harness.begin_enrolment().await?;
+    assert_ne!(
+        first.sealed, second.sealed,
+        "each login mints its own secret, or this test proves nothing"
+    );
+
+    let step = totp::step_at(OffsetDateTime::now_utc().unix_timestamp());
+    let (status, body) = harness
+        .post_form(
+            "/dash/v1/staff/totp",
+            Some(&first.session),
+            &[
+                ("code", &first.totp.code_at_step(step)),
+                ("enrolment", &first.sealed),
+            ],
+        )
+        .await?;
+    assert_eq!(status, 200, "the first login enrols: {body}");
+
+    // One step ahead, so the TOTP replay guard cannot be what refuses this.
+    let (status, body) = harness
+        .post_form(
+            "/dash/v1/staff/totp",
+            Some(&second.session),
+            &[
+                ("code", &second.totp.code_at_step(step + 1)),
+                ("enrolment", &second.sealed),
+            ],
+        )
+        .await?;
+    assert_eq!(
+        status, 401,
+        "a second enrolment must not replace the stored secret: {body}"
+    );
+
+    // "Was not replaced" means: the FIRST login's secret is still the one
+    // that authenticates.
+    let stored = harness.enrolled_totp().await?;
+    assert_eq!(
+        stored.code_at_step(step + 2),
+        first.totp.code_at_step(step + 2),
+        "the stored secret is the first login's"
+    );
+    assert_ne!(
+        stored.code_at_step(step + 2),
+        second.totp.code_at_step(step + 2)
+    );
     Ok(())
 }
 
