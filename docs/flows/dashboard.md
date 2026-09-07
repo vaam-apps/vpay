@@ -192,6 +192,17 @@ revocation: delete the row and there is nowhere left to read it from.
   empty list and read as data having been lost.
 - **A status this build cannot name renders as text, not as a coloured pill.**
   A green badge on an unfamiliar status is a claim.
+- **The timeline says what is missing from it.** `events.type` is constrained
+  to eight documented types (migration `0018`, extended by `0029`) and **five
+  of them are written by nothing at all** (`../status.md`, "Events written by
+  the worker"): only `payment_intent.succeeded`,
+  `payment_intent.payment_failed` and `checkout.session.expired` are ever
+  emitted, by settlement and by the housekeeping sweep. So a succeeded
+  payment's timeline is one line — and a section headed "Timeline" with one
+  line on it reads as everything that happened to that payment, which is the
+  same failure as an empty table that means "the read was refused". The page
+  therefore names the five missing types under the section, on screen rather
+  than only here, and `payment-detail.test.tsx` pins the sentence.
 
 **Configuration is read at container start and fails closed.** The API base
 URL, the dashboard `client_id`, its `redirect_uri` and its scope come from the

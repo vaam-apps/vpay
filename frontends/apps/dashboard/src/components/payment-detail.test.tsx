@@ -92,3 +92,28 @@ describe('the payment detail', () => {
     expect(screen.getByText('re_example_1')).toBeInTheDocument();
   });
 });
+
+describe('the timeline', () => {
+  it('says which documented event types nothing writes', () => {
+    // A section headed "Timeline" showing one line reads as the whole history
+    // of a payment. Five of the eight types the schema allows are written by
+    // nothing (`docs/status.md`), so the page says so where the person who
+    // needs to know is looking. Named individually, so the day one of them is
+    // written this assertion is what finds the sentence.
+    render(<PaymentDetailView detail={DETAIL} />);
+    const note = screen.getByTestId('timeline-gap');
+    // Scoped to the note rather than the document: `DETAIL` puts event rows
+    // on the page too, and `getByText` over the whole screen would be
+    // matching either of two elements without saying which.
+    for (const type of [
+      'payment_intent.created',
+      'payment_intent.processing',
+      'payment_intent.canceled',
+      'charge.refunded',
+      'charge.refund.updated',
+    ]) {
+      expect(note, type).toHaveTextContent(type);
+    }
+    expect(note).toHaveTextContent('is not the whole history of a payment');
+  });
+});
