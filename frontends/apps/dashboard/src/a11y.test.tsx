@@ -72,12 +72,16 @@ describe('the rendered app', () => {
 });
 
 describe('each recipe', () => {
-  it('SignInForm, including its error state', async () => {
+  it('SignInForm, including its error state and its pending state', async () => {
     const { container, unmount } = render(
-      <SignInForm error="That code has expired." onSubmit={() => {}} />,
+      <SignInForm error="That code has expired." requestId="req_01J8ABCDEF" onSubmit={() => {}} />,
     );
     expect(await violations(container)).toEqual([]);
     unmount();
+
+    const disabled = render(<SignInForm pending onSubmit={() => {}} />);
+    expect(await violations(disabled.container)).toEqual([]);
+    disabled.unmount();
   });
 
   it('PaymentsTable', async () => {

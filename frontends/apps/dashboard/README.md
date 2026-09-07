@@ -30,6 +30,14 @@ persistent chrome and, today, **no other links** — there is exactly one page.
 The day a second page lands (sign-in, the payments list), add its link to
 that `<nav>` in the same commit that adds the page, never before.
 
+That is a **gate**, not an honour system:
+[`src/layout.test.tsx`](src/layout.test.tsx) resolves every internal `href`
+the layout renders against `app/**/page.tsx` on disk and fails on a link to a
+page nobody wrote. It was added by the review, which measured that the rule
+had been stated in three places and enforced in none — a dangling
+`<a href="/payments">` left the whole suite, `lint` and `dashboard.cy.ts`
+green.
+
 ## Recipes for the next pages
 
 Four patterns the plan (§3, "the component set") and `docs/flows/dashboard.md`
@@ -50,19 +58,48 @@ on this lane actually needing them, and it doesn't).
 ### 1. Sign-in form
 
 [`src/recipes/sign-in-form.tsx`](src/recipes/sign-in-form.tsx) — `Field` for
-the label/error association, `Input` for the control, `Button` for submit.
-Deliberately agnostic about the second factor (`docs/flows/dashboard.md`
-records that choice as not yet taken): swap the `code` field's `type`/
-`autoComplete` for whatever exp24 lands and the composition is unchanged.
+the label/error association, `Input` for the control, `Button` for submit,
+`Alert` for the one place an error is shown.
+
+**It is one leg, and that is the first thing to know about it.** The staff
+login `claude/exp24-staff-auth` is building (its ADR-0017) is two:
+`POST /dash/v1/staff/login` with an argon2id password, then
+`POST /dash/v1/staff/totp` with the code. This recipe has **no password
+control**, because adding one would import a decision this branch's own
+[`docs/flows/dashboard.md`](../../../docs/flows/dashboard.md) still records as
+open ("how does a human staff member prove who they are?"). Building the
+second leg is another `Field` + `FieldLabel` + `Input type="password"` in
+exactly this shape — see
+[`lane-d-review.md`](../../../docs/plans/exp26-notes/lane-d-review.md)
+finding 4, which measured what the recipe could and could not express.
+
+What the review **did** add are the three controls that leg needs whichever
+factor wins, each of them missing from the first draft and each now proven by
+a test:
+
+| prop | why it exists |
+|---|---|
+| `pending` | Disables every control and makes the submit handler a no-op. The one-time code is verified behind a compare-and-swap replay guard, so the *second* submission of one code is refused **on purpose** — a double-click would show "invalid code" to someone who typed a good one. Without this prop a double-click called `onSubmit` twice (measured). |
+| `requestId` | vpay emits `request-id`/`x-request-id` with one value on every response, and `vpay-api`'s error envelope deliberately carries no `request_id` field because the header already does. A staff member who cannot sign in has nothing else to quote to an operator. |
+| `codeLength` | `maxLength` + `pattern`, six by default (RFC 6238). The first draft constrained the field to nothing at all. |
 
 ```tsx
-import { Alert, Button, Field, FieldError, FieldLabel, Input } from '@vpay/ui';
+import { Alert, Button, Field, FieldLabel, Input, Text } from '@vpay/ui';
 
-export function SignInForm({ error = null, onSubmit }: SignInFormProps) {
+export function SignInForm({
+  error = null,
+  requestId = null,
+  pending = false,
+  codeLength = DEFAULT_CODE_LENGTH,
+  onSubmit,
+}: SignInFormProps) {
   return (
     <form
       onSubmit={(event) => {
         event.preventDefault();
+        if (pending) {
+          return;
+        }
         const data = new FormData(event.currentTarget);
         const email = data.get('email');
         const code = data.get('code');
@@ -74,7 +111,14 @@ export function SignInForm({ error = null, onSubmit }: SignInFormProps) {
     >
       <Field invalid={error !== null}>
         <FieldLabel htmlFor="dashboard-signin-email">Work email</FieldLabel>
-        <Input id="dashboard-signin-email" name="email" type="email" required autoComplete="username" />
+        <Input
+          id="dashboard-signin-email"
+          name="email"
+          type="email"
+          required
+          disabled={pending}
+          autoComplete="username"
+        />
       </Field>
       <Field invalid={error !== null}>
         <FieldLabel htmlFor="dashboard-signin-code">One-time code</FieldLabel>
@@ -84,24 +128,45 @@ export function SignInForm({ error = null, onSubmit }: SignInFormProps) {
           type="text"
           inputMode="numeric"
           autoComplete="one-time-code"
+          maxLength={codeLength}
+          pattern={`[0-9]{${codeLength}}`}
           required
+          disabled={pending}
         />
-        <FieldError match={error !== null}>{error}</FieldError>
       </Field>
-      {error !== null ? <Alert tone="error">{error}</Alert> : null}
-      <Button type="submit" block>
-        Sign in
+      {error === null ? null : (
+        <Alert tone="error">
+          {error}
+          {requestId === null ? null : (
+            <Text as="span" size="xs" tone="muted">
+              Request <code>{requestId}</code>
+            </Text>
+          )}
+        </Alert>
+      )}
+      <Button type="submit" block disabled={pending}>
+        {pending ? 'Signing in…' : 'Sign in'}
       </Button>
     </form>
   );
 }
 ```
 
-Proven by [`sign-in-form.test.tsx`](src/recipes/sign-in-form.test.tsx): a
-submit reads the two fields out of a plain `FormData` (the same pattern
-`frontends/apps/checkout`'s `MsisdnForm` uses); an `error` prop renders as an
-`alert` and marks both fields `aria-invalid` through `Field`'s own validation
-state, not a hand-rolled `aria-*` prop.
+The error is rendered in **one** place. The first draft put it through
+`FieldError` *and* through `Alert`, so every failed sign-in printed the same
+sentence twice; `sign-in-form.test.tsx` now counts the occurrences rather
+than trusting the reading. A genuinely *field-level* error (this one is
+form-level — the server rejected the pair) is what `FieldError match={…}` is
+for, and `@vpay/ui` still exports it.
+
+Proven by [`sign-in-form.test.tsx`](src/recipes/sign-in-form.test.tsx), 8
+cases: a submit reads the two fields out of a plain `FormData` (the same
+pattern `frontends/apps/checkout`'s `MsisdnForm` uses); an `error` prop
+renders as an `alert` and marks both fields `aria-invalid` through `Field`'s
+own validation state, not a hand-rolled `aria-*` prop; the error appears
+exactly once; the request id reaches the alert; the code field carries
+`maxlength`/`pattern`/`inputmode`; and `pending` both disables every control
+and refuses a `submit` raised any other way.
 
 ### 2. Data table with status pills
 
@@ -217,14 +282,21 @@ Proven by [`empty-state.test.tsx`](src/recipes/empty-state.test.tsx).
 ## Testing this app
 
 `vitest.config.ts` + `vitest.setup.ts` are new in this pass — the scaffold
-had zero test files and no jsdom environment configured. Both mirror
+had zero test files and no jsdom environment configured.
+[`src/a11y.test.tsx`](src/a11y.test.tsx) runs `axe-core@4.13.0`'s structural
+rules (plan §7 row 5's exact list) over the **real rendered `<body>`** of the
+layout wrapped around the page, and over every recipe including its error and
+pending states. It exists because the first draft of this pass dropped the
+`<main>` landmark the scaffold had and every other gate stayed green:
+`region` went 0 → 1 violation and nothing said so. Contrast is **not**
+checked here and cannot be — jsdom computes no paint (plan §7 row 6). Both mirror
 `frontends/packages/ui`'s own setup exactly (same jsdom polyfills for the
 Base UI pointer-capture APIs jsdom doesn't implement), because the recipes
 render the same Base UI primitives (`Input`, `Button`, `Field`) that
 package's component tests do, and hit the same gap.
 
 ```bash
-pnpm --filter @vpay/dashboard test        # 4 files, 6 tests
+pnpm --filter @vpay/dashboard test        # 6 files, 22 tests
 pnpm --filter @vpay/dashboard typecheck
 pnpm --filter @vpay/dashboard lint
 pnpm --filter @vpay/dashboard build       # also proves the compiled CSS
