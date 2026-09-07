@@ -2045,7 +2045,75 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 /// self-referencing `SET` expression cratestack 0.12.0 cannot represent — so
 /// it is in the `tables_missing_from_the_schema` list below rather than being
 /// a gap somebody has to notice.
-const EXPECTED_DRIFT_CHANGES: u32 = 156;
+/// **156 -> 167 on 2026-09-07** (S5, rebased over S4b's 156 — the S5 delta is +11, measured as 130 -> 141 on its own base: migration `0037` and the four money
+/// models). The number went UP by eleven and that is the trade, measured per
+/// table against a freshly migrated database before and after:
+///
+///   | table | before | after |
+///   |---|---|---|
+///   | `payment_intents` | 31 | 19 |
+///   | `charges` | 23 | 16 |
+///   | `checkout_sessions` | 1 | 21 |
+///   | `refunds` | 1 | 11 |
+///
+/// Nothing else moved by a single line, `EXPECTED_DRIFTED_RELATIONS` did not
+/// move at all, and `EXPECTED_UNMAPPABLE_COLUMNS` did not move either — which
+/// is the prediction "an undeclared `jsonb` column is invisible in both
+/// directions" makes, and this is what tested it.
+///
+/// **The two falls are the interesting half.** `model PaymentIntent` and
+/// `model Charge` were design sketches that had rotted: `PaymentIntent`
+/// declared `last_payment_error`, a column migration `0014` DROPPED, and
+/// neither knew about `seq`, `description`, `customer_id`,
+/// `client_secret_suffix`, `provider_txn_id`, `return_url` or `updated_at`.
+/// Nineteen of those thirty-one and seven of those twenty-three lines were
+/// the report describing that rot. Rewriting both against the live tables is
+/// what removed them; **not one `column … is declared in the schema but does
+/// not exist` and not one `column … exists in the live database but is not
+/// declared` line survives on any of the four tables**, which is the sharpest
+/// thing this constant now says.
+///
+/// **The two rises are `customers`' lesson repeated**, and this constant
+/// already predicted them: "the marginal drift of a column depends on whether
+/// its table is modelled … not declaring it at all would have cost one."
+/// `checkout_sessions` and `refunds` were one line each as undeclared tables
+/// and are 21 and 11 now that every column is compared.
+///
+/// The 67 lines the four tables carry break down into five kinds, and **every
+/// one of them is a kind 0.12.0 structurally cannot close**:
+///
+///   * **37 hand-named CHECKs** — `@db_enforce` would emit a drop-and-add
+///     pair (exp17 §1a), so the models declare the validators without it.
+///   * **12 undeclared indexes** — partial, multi-column-with-a-direction, or
+///     unique under a name the generator does not produce
+///     (`one_charge_per_intent`).
+///   * **6 `column … type differs`** on the six enum-typed columns. Permanent:
+///     an enum's NAME has no catalog representation to recover it from, which
+///     `introspect/postgres/enums.rs`' own doc comment calls documented
+///     lossiness. Migration `0037` did not create these lines — the columns
+///     were native enums before it and `resolve_column` mapped those to
+///     `Scalar("String")` too.
+///   * **2 `column seq default value differs`** — `model Event.seq`'s known
+///     trade, an identity column carrying no `pg_attrdef` default.
+///   * **10 `foreign key … is declared in the schema but does not exist in
+///     the live database`, every one of which is FALSE.** All ten exist. This
+///     is a fifth measured upstream gap, and it is documented upstream rather
+///     than inferred from the report: `introspect/postgres/mod.rs`'s own
+///     "Known gaps" says "**Foreign keys are not introspected.** … so
+///     `TableProjection::foreign_keys` is always empty here. A table with
+///     `.cstack`-declared relations will show every foreign key as 'missing'
+///     drift until a follow-up phase adds this."
+///
+///     The relations are declared anyway, and that is a deliberate choice
+///     rather than an oversight: the ten foreign keys are real, `cratestack-
+///     parser` requires both sides of a relation to be declared, and removing
+///     a true declaration to make a false report line disappear would be
+///     optimising this number instead of the schema — the exact move this
+///     constant's own assertion message warns about. The hazard it leaves is
+///     the mirror of the undeclared-CHECK one: a generated `migrate diff`
+///     would emit `ADD CONSTRAINT … FOREIGN KEY` for ten constraints that
+///     already exist. Nothing runs `migrate diff` here, so it is latent.
+const EXPECTED_DRIFT_CHANGES: u32 = 167;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -2416,7 +2484,14 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // genuinely in the database `sqlx::migrate!` produces, so it is
             // honestly part of the drift rather than something to filter out.
             "_sqlx_migrations",
-            "checkout_sessions",
+            // `checkout_sessions` and `refunds` left this list on 2026-09-07
+            // with `model CheckoutSession` and `model Refund` (S5). They are
+            // the fourth and fifth tables to leave it, and — like `events`
+            // and `webhook_deliveries` and unlike `disabled_clients` — they
+            // did NOT leave the drift report: they cost 21 and 11 lines now
+            // that every column is compared, against one line each while they
+            // were invisible. `EXPECTED_DRIFT_CHANGES`' 130 -> 141 note has
+            // the per-table table and the five kinds those lines fall into.
             // `events` and `webhook_deliveries` left this list on 2026-09-06
             // with `model Event` / `model WebhookDelivery`. They are the
             // second and third tables ever to leave it, after
@@ -2444,8 +2519,11 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // because baseline introspects the connection's own schema.
             "oauth_client_assertion_jtis",
             "oauth_signing_keys",
+            // Out of scope FOREVER unless a reason appears (docs/status.md),
+            // like `jobs` and `idempotency_keys` above it: the
+            // `latest_submit_attempt` ordering `sent_at DESC, id DESC` has no
+            // delegate, and `attempt` and `status_code` are both `int4`.
             "provider_requests",
-            "refunds",
         ],
         "the set of tables the migrations build and the schema does not declare"
     );
