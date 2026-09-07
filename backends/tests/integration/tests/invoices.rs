@@ -252,7 +252,7 @@ impl Harness {
             .post(client_id, "/v1/customers", &[("phone", CANONICAL_PHONE)])
             .await?;
         anyhow::ensure!(status == 201, "creating a customer: {status} {body}");
-        Ok(body["id"]
+        Ok(field(&body, "id")
             .as_str()
             .expect("a customer has an id")
             .to_owned())
@@ -270,7 +270,7 @@ impl Harness {
             )
             .await?;
         anyhow::ensure!(status == 201, "creating an invoice: {status} {body}");
-        let id = body["id"]
+        let id = field(&body, "id")
             .as_str()
             .expect("an invoice has an id")
             .to_owned();
@@ -299,6 +299,66 @@ impl Harness {
 /// running in the same process cannot collide on one.
 fn fresh_key() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+/// One field of a JSON body, or `Null`.
+///
+/// Not `field(&body, "field")`: `clippy::indexing_slicing` is denied in these suites,
+/// and `serde_json::Value`'s `Index` impl panics on a type mismatch — so a
+/// handler that answered an array where a case expects an object would fail
+/// as a panic rather than as an assertion naming the field.
+/// `staff_sign_in.rs` and `dashboard_read_surface.rs` carry the same helper.
+fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
+    value.get(key).unwrap_or(&Value::Null)
+}
+
+/// One field of a nested object — `at(&body, &["error", "param"])`.
+///
+/// A path rather than chained [`field`] calls, because this suite reads two-
+/// and three-deep paths often enough (`lines.data[0].id`,
+/// `status_transitions.finalized_at`) that the chained form is what a reader
+/// has to parse rather than read.
+fn at<'a>(value: &'a Value, path: &[&str]) -> &'a Value {
+    path.iter().fold(value, |current, key| field(current, key))
+}
+
+/// The `n`th element of a JSON array, or `Null` — [`field`]'s reason applied
+/// to a list.
+fn nth(value: &Value, index: usize) -> &Value {
+    value
+        .as_array()
+        .and_then(|items| items.get(index))
+        .unwrap_or(&Value::Null)
+}
+
+/// The only element of a slice, asserting there is exactly one.
+///
+/// `clippy::indexing_slicing` is denied in these suites, and `rows[0]` after
+/// an `assert_eq!(rows.len(), 1)` is two statements saying one thing. This
+/// says it once, and its message names what was expected — which matters most
+/// on the event assertions, where "a refused transition wrote no event" and
+/// "the transition wrote two" are different bugs with the same symptom.
+fn only<'a, T>(items: &'a [T], what: &str) -> &'a T {
+    assert_eq!(
+        items.len(),
+        1,
+        "expected exactly one {what}, got {}",
+        items.len()
+    );
+    items
+        .first()
+        .unwrap_or_else(|| panic!("checked non-empty above"))
+}
+
+/// The `n`th element of a slice, or a panic naming what was missing.
+fn item<'a, T>(items: &'a [T], index: usize, what: &str) -> &'a T {
+    items.get(index).unwrap_or_else(|| {
+        panic!(
+            "expected at least {} {what}, got {}",
+            index + 1,
+            items.len()
+        )
+    })
 }
 
 /// Encodes a form body with **literal brackets in the keys**.
@@ -439,33 +499,45 @@ async fn a_draft_is_created_listed_and_retrieved_with_its_lines() -> anyhow::Res
         )
         .await?;
     assert_eq!(status, 201, "{invoice}");
-    let id = invoice["id"].as_str().expect("an id").to_owned();
+    let id = field(&invoice, "id").as_str().expect("an id").to_owned();
 
-    assert_eq!(invoice["object"], "invoice");
-    assert_eq!(invoice["status"], "draft");
-    assert_eq!(invoice["customer"], customer.as_str());
-    assert_eq!(invoice["currency"], "xaf");
-    assert_eq!(invoice["number"], Value::Null, "a draft has no number");
-    assert_eq!(invoice["amount_due"], 0);
-    assert_eq!(invoice["amount_remaining"], 0);
-    assert_eq!(invoice["metadata"]["order_id"], "1234");
-    assert_eq!(invoice["lines"]["object"], "list");
+    assert_eq!(field(&invoice, "object"), "invoice");
+    assert_eq!(field(&invoice, "status"), "draft");
+    assert_eq!(field(&invoice, "customer"), customer.as_str());
+    assert_eq!(field(&invoice, "currency"), "xaf");
     assert_eq!(
-        invoice["lines"]["data"].as_array().expect("a list").len(),
+        field(&invoice, "number"),
+        &Value::Null,
+        "a draft has no number"
+    );
+    assert_eq!(field(&invoice, "amount_due"), 0);
+    assert_eq!(field(&invoice, "amount_remaining"), 0);
+    assert_eq!(at(&invoice, &["metadata", "order_id"]), "1234");
+    assert_eq!(at(&invoice, &["lines", "object"]), "list");
+    assert_eq!(
+        at(&invoice, &["lines", "data"])
+            .as_array()
+            .expect("a list")
+            .len(),
         0
     );
-    assert_eq!(invoice["payment_intent"], Value::Null);
-    assert_eq!(invoice["hosted_invoice_url"], Value::Null);
-    assert!(invoice["id"].as_str().expect("an id").starts_with("in_"));
+    assert_eq!(field(&invoice, "payment_intent"), &Value::Null);
+    assert_eq!(field(&invoice, "hosted_invoice_url"), &Value::Null);
+    assert!(
+        field(&invoice, "id")
+            .as_str()
+            .expect("an id")
+            .starts_with("in_")
+    );
 
     // `invoice.created` is in the same transaction as the insert. Asserted by
     // reading the row rather than by trusting the response, because the whole
     // claim is about what was committed.
     let created = harness.events_of("invoice.created").await?;
-    assert_eq!(created.len(), 1, "exactly one invoice.created");
-    assert_eq!(created[0].0, id);
-    assert_eq!(created[0].1["object"], "invoice");
-    assert_eq!(created[0].1["status"], "draft");
+    let event = only(&created, "created event");
+    assert_eq!(event.0, id);
+    assert_eq!(field(&event.1, "object"), "invoice");
+    assert_eq!(field(&event.1, "status"), "draft");
 
     // Two lines, and the total follows both.
     for (description, quantity, unit_amount) in
@@ -484,54 +556,62 @@ async fn a_draft_is_created_listed_and_retrieved_with_its_lines() -> anyhow::Res
             )
             .await?;
         assert_eq!(status, 201, "{line}");
-        assert_eq!(line["object"], "line_item");
-        assert!(line["id"].as_str().expect("an id").starts_with("ii_"));
+        assert_eq!(field(&line, "object"), "line_item");
+        assert!(
+            field(&line, "id")
+                .as_str()
+                .expect("an id")
+                .starts_with("ii_")
+        );
         assert_eq!(
-            line["currency"], "xaf",
+            field(&line, "currency"),
+            "xaf",
             "a line inherits its invoice's currency"
         );
     }
 
     let (status, invoice) = harness.get(CLIENT_A, &format!("/v1/invoices/{id}")).await?;
     assert_eq!(status, 200, "{invoice}");
-    assert_eq!(invoice["amount_due"], 11_000, "5000 + 3 x 2000");
-    assert_eq!(invoice["amount_remaining"], 11_000);
-    assert_eq!(invoice["amount_paid"], 0);
-    let lines = invoice["lines"]["data"].as_array().expect("a list");
+    assert_eq!(field(&invoice, "amount_due"), 11_000, "5000 + 3 x 2000");
+    assert_eq!(field(&invoice, "amount_remaining"), 11_000);
+    assert_eq!(field(&invoice, "amount_paid"), 0);
+    let lines = at(&invoice, &["lines", "data"]).as_array().expect("a list");
     assert_eq!(lines.len(), 2);
-    assert_eq!(lines[0]["description"], "Hosting");
+    assert_eq!(field(item(lines, 0, "line"), "description"), "Hosting");
     assert_eq!(
-        lines[1]["amount"], 6000,
+        field(item(lines, 1, "line"), "amount"),
+        6000,
         "3 x 2000, computed by the database"
     );
     assert_eq!(
-        invoice["lines"]["has_more"], false,
+        at(&invoice, &["lines", "has_more"]),
+        false,
         "an invoice's lines are never paged"
     );
 
     let (status, page) = harness.get(CLIENT_A, "/v1/invoices").await?;
     assert_eq!(status, 200, "{page}");
-    assert_eq!(page["object"], "list");
-    assert_eq!(page["url"], "/v1/invoices");
-    let data = page["data"].as_array().expect("a list");
+    assert_eq!(field(&page, "object"), "list");
+    assert_eq!(field(&page, "url"), "/v1/invoices");
+    let data = field(&page, "data").as_array().expect("a list");
     assert_eq!(data.len(), 1);
-    assert_eq!(data[0]["id"], id.as_str());
+    assert_eq!(field(item(data, 0, "invoice"), "id"), id.as_str());
 
     // Both filters, in the same `WHERE` as `merchant_id`.
     let (_, page) = harness.get(CLIENT_A, "/v1/invoices?status=draft").await?;
-    assert_eq!(page["data"].as_array().expect("a list").len(), 1);
+    assert_eq!(field(&page, "data").as_array().expect("a list").len(), 1);
     let (_, page) = harness.get(CLIENT_A, "/v1/invoices?status=open").await?;
-    assert_eq!(page["data"].as_array().expect("a list").len(), 0);
+    assert_eq!(field(&page, "data").as_array().expect("a list").len(), 0);
     let (_, page) = harness
         .get(CLIENT_A, &format!("/v1/invoices?customer={customer}"))
         .await?;
-    assert_eq!(page["data"].as_array().expect("a list").len(), 1);
+    assert_eq!(field(&page, "data").as_array().expect("a list").len(), 1);
 
     // An unknown status is a `400` naming the parameter, and NOT an empty
     // page — which would read as "you have no invoices like that".
     let (status, body) = harness.get(CLIENT_A, "/v1/invoices?status=sent").await?;
     assert_eq!(status, 400, "{body}");
-    assert_eq!(body["error"]["param"], "status");
+    assert_eq!(at(&body, &["error", "param"]), "status");
 
     harness.shutdown().await;
     Ok(())
@@ -552,11 +632,11 @@ async fn a_line_amount_follows_its_own_factors_and_the_invoice_follows_the_lines
     let (_, page) = harness
         .get(CLIENT_A, &format!("/v1/invoices/{invoice}"))
         .await?;
-    let line = page["lines"]["data"][0]["id"]
+    let line = at(nth(at(&page, &["lines", "data"]), 0), &["id"])
         .as_str()
         .expect("the line has an id")
         .to_owned();
-    assert_eq!(page["amount_due"], 5000);
+    assert_eq!(field(&page, "amount_due"), 5000);
 
     // Both factors at once.
     let (status, updated) = harness
@@ -567,13 +647,13 @@ async fn a_line_amount_follows_its_own_factors_and_the_invoice_follows_the_lines
         )
         .await?;
     assert_eq!(status, 200, "{updated}");
-    assert_eq!(updated["amount"], 1000, "4 x 250, not 1 x 5000");
+    assert_eq!(field(&updated, "amount"), 1000, "4 x 250, not 1 x 5000");
 
     let (_, page) = harness
         .get(CLIENT_A, &format!("/v1/invoices/{invoice}"))
         .await?;
-    assert_eq!(page["amount_due"], 1000);
-    assert_eq!(page["amount_remaining"], 1000);
+    assert_eq!(field(&page, "amount_due"), 1000);
+    assert_eq!(field(&page, "amount_remaining"), 1000);
 
     // One factor only.
     let (_, updated) = harness
@@ -584,7 +664,8 @@ async fn a_line_amount_follows_its_own_factors_and_the_invoice_follows_the_lines
         )
         .await?;
     assert_eq!(
-        updated["amount"], 500,
+        field(&updated, "amount"),
+        500,
         "2 x 250 — unit_amount was left alone"
     );
 
@@ -593,14 +674,20 @@ async fn a_line_amount_follows_its_own_factors_and_the_invoice_follows_the_lines
         .delete(CLIENT_A, &format!("/v1/invoice_items/{line}"))
         .await?;
     assert_eq!(status, 200, "{deleted}");
-    assert_eq!(deleted["deleted"], true);
-    assert_eq!(deleted["object"], "line_item");
+    assert_eq!(field(&deleted, "deleted"), true);
+    assert_eq!(field(&deleted, "object"), "line_item");
 
     let (_, page) = harness
         .get(CLIENT_A, &format!("/v1/invoices/{invoice}"))
         .await?;
-    assert_eq!(page["amount_due"], 0);
-    assert_eq!(page["lines"]["data"].as_array().expect("a list").len(), 0);
+    assert_eq!(field(&page, "amount_due"), 0);
+    assert_eq!(
+        at(&page, &["lines", "data"])
+            .as_array()
+            .expect("a list")
+            .len(),
+        0
+    );
 
     harness.shutdown().await;
     Ok(())
@@ -621,7 +708,7 @@ async fn a_finalized_invoice_refuses_every_write_that_changes_a_draft() -> anyho
     let (_, draft) = harness
         .get(CLIENT_A, &format!("/v1/invoices/{invoice}"))
         .await?;
-    let line = draft["lines"]["data"][0]["id"]
+    let line = at(nth(at(&draft, &["lines", "data"]), 0), &["id"])
         .as_str()
         .expect("the line has an id")
         .to_owned();
@@ -630,10 +717,14 @@ async fn a_finalized_invoice_refuses_every_write_that_changes_a_draft() -> anyho
         .post(CLIENT_A, &format!("/v1/invoices/{invoice}/finalize"), &[])
         .await?;
     assert_eq!(status, 200, "{open}");
-    assert_eq!(open["status"], "open");
-    assert_eq!(open["amount_due"], 5000, "the total is computed once, here");
-    assert_eq!(open["amount_remaining"], 5000);
-    let number = open["number"]
+    assert_eq!(field(&open, "status"), "open");
+    assert_eq!(
+        field(&open, "amount_due"),
+        5000,
+        "the total is computed once, here"
+    );
+    assert_eq!(field(&open, "amount_remaining"), 5000);
+    let number = field(&open, "number")
         .as_str()
         .expect("a finalized invoice has a number");
     assert!(
@@ -642,15 +733,15 @@ async fn a_finalized_invoice_refuses_every_write_that_changes_a_draft() -> anyho
     );
     assert_eq!(number.len(), 15, "{{8-char prefix}}-{{6 digits}}: {number}");
     assert!(
-        open["status_transitions"]["finalized_at"].is_i64(),
+        at(&open, &["status_transitions", "finalized_at"]).is_i64(),
         "finalize stamps its own transition"
     );
 
     // `invoice.finalized`, in the same transaction.
     let finalized = harness.events_of("invoice.finalized").await?;
-    assert_eq!(finalized.len(), 1);
-    assert_eq!(finalized[0].0, invoice);
-    assert_eq!(finalized[0].1["number"], number);
+    let event = only(&finalized, "finalized event");
+    assert_eq!(event.0, invoice);
+    assert_eq!(field(&event.1, "number"), number);
 
     // Every draft-only write, refused.
     let (status, body) = harness
@@ -662,7 +753,7 @@ async fn a_finalized_invoice_refuses_every_write_that_changes_a_draft() -> anyho
         .await?;
     assert_eq!(status, 409, "PATCH after finalize: {body}");
     assert!(
-        body["error"]["message"]
+        at(&body, &["error", "message"])
             .as_str()
             .expect("a message")
             .contains("`open`"),
@@ -700,7 +791,7 @@ async fn a_finalized_invoice_refuses_every_write_that_changes_a_draft() -> anyho
         )
         .await?;
     assert_eq!(status, 400, "adding to a frozen invoice: {body}");
-    assert_eq!(body["error"]["param"], "invoice");
+    assert_eq!(at(&body, &["error", "param"]), "invoice");
 
     // A second finalize is refused, and writes no second event.
     let (status, body) = harness
@@ -717,9 +808,15 @@ async fn a_finalized_invoice_refuses_every_write_that_changes_a_draft() -> anyho
     let (_, after) = harness
         .get(CLIENT_A, &format!("/v1/invoices/{invoice}"))
         .await?;
-    assert_eq!(after["amount_due"], 5000);
-    assert_eq!(after["number"], number);
-    assert_eq!(after["lines"]["data"].as_array().expect("a list").len(), 1);
+    assert_eq!(field(&after, "amount_due"), 5000);
+    assert_eq!(field(&after, "number"), number);
+    assert_eq!(
+        at(&after, &["lines", "data"])
+            .as_array()
+            .expect("a list")
+            .len(),
+        1
+    );
 
     harness.shutdown().await;
     Ok(())
@@ -757,15 +854,22 @@ async fn two_concurrent_finalizes_take_consecutive_numbers() -> anyhow::Result<(
     assert_eq!(right_status, 200, "{right_body}");
 
     let mut numbers = [
-        left_body["number"].as_str().expect("a number").to_owned(),
-        right_body["number"].as_str().expect("a number").to_owned(),
+        field(&left_body, "number")
+            .as_str()
+            .expect("a number")
+            .to_owned(),
+        field(&right_body, "number")
+            .as_str()
+            .expect("a number")
+            .to_owned(),
     ];
     numbers.sort();
 
-    assert_ne!(numbers[0], numbers[1], "two invoices, two numbers");
+    let (first_number, second_number) = (item(&numbers, 0, "number"), item(&numbers, 1, "number"));
+    assert_ne!(first_number, second_number, "two invoices, two numbers");
 
-    let (prefix_a, seq_a) = numbers[0].split_once('-').expect("prefix-sequence");
-    let (prefix_b, seq_b) = numbers[1].split_once('-').expect("prefix-sequence");
+    let (prefix_a, seq_a) = first_number.split_once('-').expect("prefix-sequence");
+    let (prefix_b, seq_b) = second_number.split_once('-').expect("prefix-sequence");
     assert_eq!(
         prefix_a, prefix_b,
         "one merchant, one prefix — it is minted once and stored"
@@ -788,7 +892,7 @@ async fn two_concurrent_finalizes_take_consecutive_numbers() -> anyhow::Result<(
         .await?;
     assert_eq!(status, 200, "{body}");
     assert!(
-        body["number"]
+        field(&body, "number")
             .as_str()
             .expect("a number")
             .ends_with("-000001"),
@@ -832,12 +936,12 @@ async fn a_refused_finalize_does_not_burn_a_number() -> anyhow::Result<()> {
             &[("customer", &customer), ("currency", "xaf")],
         )
         .await?;
-    let empty_id = empty["id"].as_str().expect("an id");
+    let empty_id = field(&empty, "id").as_str().expect("an id");
     let (status, body) = harness
         .post(CLIENT_A, &format!("/v1/invoices/{empty_id}/finalize"), &[])
         .await?;
     assert_eq!(status, 400, "a lineless invoice is refused: {body}");
-    assert_eq!(body["error"]["param"], "invoice");
+    assert_eq!(at(&body, &["error", "param"]), "invoice");
 
     assert_eq!(
         harness.next_number(MERCHANT_A).await?,
@@ -852,7 +956,7 @@ async fn a_refused_finalize_does_not_burn_a_number() -> anyhow::Result<()> {
         .await?;
     assert_eq!(status, 200, "{body}");
     assert!(
-        body["number"]
+        field(&body, "number")
             .as_str()
             .expect("a number")
             .ends_with("-000001"),
@@ -881,7 +985,7 @@ async fn the_two_terminal_transitions_and_the_transitions_they_refuse() -> anyho
         .await?;
     assert_eq!(status, 409, "a draft is deleted, not voided: {body}");
     assert!(
-        body["error"]["message"]
+        at(&body, &["error", "message"])
             .as_str()
             .expect("a message")
             .contains("`draft`")
@@ -902,24 +1006,28 @@ async fn the_two_terminal_transitions_and_the_transitions_they_refuse() -> anyho
     let (_, open) = harness
         .post(CLIENT_A, &format!("/v1/invoices/{draft}/finalize"), &[])
         .await?;
-    let number = open["number"].as_str().expect("a number").to_owned();
+    let number = field(&open, "number")
+        .as_str()
+        .expect("a number")
+        .to_owned();
 
     let (status, voided) = harness
         .post(CLIENT_A, &format!("/v1/invoices/{draft}/void"), &[])
         .await?;
     assert_eq!(status, 200, "{voided}");
-    assert_eq!(voided["status"], "void");
+    assert_eq!(field(&voided, "status"), "void");
     assert_eq!(
-        voided["number"], number,
+        field(&voided, "number"),
+        number.as_str(),
         "a voided invoice keeps its number — a hole in the sequence is a \
          destroyed document"
     );
-    assert!(voided["status_transitions"]["voided_at"].is_i64());
+    assert!(at(&voided, &["status_transitions", "voided_at"]).is_i64());
 
     let events = harness.events_of("invoice.voided").await?;
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].0, draft);
-    assert_eq!(events[0].1["status"], "void");
+    let event = only(&events, "events event");
+    assert_eq!(event.0, draft);
+    assert_eq!(field(&event.1, "status"), "void");
 
     // A voided invoice is terminal: nothing moves it again.
     for path in ["void", "mark_uncollectible", "pay", "finalize"] {
@@ -958,10 +1066,17 @@ async fn the_two_terminal_transitions_and_the_transitions_they_refuse() -> anyho
         )
         .await?;
     assert_eq!(status, 200, "{written_off}");
-    assert_eq!(written_off["status"], "uncollectible");
-    assert!(written_off["status_transitions"]["marked_uncollectible_at"].is_i64());
+    assert_eq!(field(&written_off, "status"), "uncollectible");
+    assert!(
+        at(
+            &written_off,
+            &["status_transitions", "marked_uncollectible_at"]
+        )
+        .is_i64()
+    );
     assert_eq!(
-        written_off["amount_remaining"], 5000,
+        field(&written_off, "amount_remaining"),
+        5000,
         "written off is still owed — it is just never expected"
     );
 
@@ -975,9 +1090,9 @@ async fn the_two_terminal_transitions_and_the_transitions_they_refuse() -> anyho
     let (_, page) = harness
         .get(CLIENT_A, "/v1/invoices?status=uncollectible")
         .await?;
-    let data = page["data"].as_array().expect("a list");
+    let data = field(&page, "data").as_array().expect("a list");
     assert_eq!(data.len(), 1);
-    assert_eq!(data[0]["id"], second.as_str());
+    assert_eq!(field(item(data, 0, "invoice"), "id"), second.as_str());
 
     harness.shutdown().await;
     Ok(())
@@ -1007,13 +1122,13 @@ async fn an_invoice_being_paid_refuses_void_write_off_and_a_second_payment() -> 
         )
         .await?;
     assert_eq!(status, 200, "{paying}");
-    let intent = paying["payment_intent"]
+    let intent = field(&paying, "payment_intent")
         .as_str()
         .expect("pay attaches an intent")
         .to_owned();
     assert!(intent.starts_with("pi_"));
-    assert_eq!(paying["status"], "open", "paying does not pay it");
-    let hosted = paying["hosted_invoice_url"]
+    assert_eq!(field(&paying, "status"), "open", "paying does not pay it");
+    let hosted = field(&paying, "hosted_invoice_url")
         .as_str()
         .expect("pay produces a hosted URL");
     assert!(
@@ -1027,9 +1142,9 @@ async fn an_invoice_being_paid_refuses_void_write_off_and_a_second_payment() -> 
         .get(CLIENT_A, &format!("/v1/payment_intents/{intent}"))
         .await?;
     assert_eq!(status, 200, "{pi}");
-    assert_eq!(pi["amount"], 5000);
-    assert_eq!(pi["currency"], "xaf");
-    assert_eq!(pi["customer"], paying["customer"]);
+    assert_eq!(field(&pi, "amount"), 5000);
+    assert_eq!(field(&pi, "currency"), "xaf");
+    assert_eq!(field(&pi, "customer"), field(&paying, "customer"));
 
     for path in ["void", "mark_uncollectible", "pay"] {
         let (status, body) = harness
@@ -1041,7 +1156,7 @@ async fn an_invoice_being_paid_refuses_void_write_off_and_a_second_payment() -> 
             .await?;
         assert_eq!(status, 409, "{path} while an intent is live: {body}");
         assert!(
-            body["error"]["message"]
+            at(&body, &["error", "message"])
                 .as_str()
                 .expect("a message")
                 .contains(&intent),
@@ -1067,7 +1182,7 @@ async fn an_invoice_being_paid_refuses_void_write_off_and_a_second_payment() -> 
         status, 200,
         "a cancelled intent unblocks the void: {voided}"
     );
-    assert_eq!(voided["status"], "void");
+    assert_eq!(field(&voided, "status"), "void");
 
     harness.shutdown().await;
     Ok(())
@@ -1089,7 +1204,7 @@ async fn another_merchants_invoice_is_byte_identical_to_one_that_never_existed()
     let (_, draft) = harness
         .get(CLIENT_A, &format!("/v1/invoices/{theirs}"))
         .await?;
-    let their_line = draft["lines"]["data"][0]["id"]
+    let their_line = at(nth(at(&draft, &["lines", "data"]), 0), &["id"])
         .as_str()
         .expect("a line id")
         .to_owned();
@@ -1169,8 +1284,8 @@ async fn another_merchants_invoice_is_byte_identical_to_one_that_never_existed()
         .get(CLIENT_A, &format!("/v1/invoices/{theirs}"))
         .await?;
     assert_eq!(status, 200, "{still}");
-    assert_eq!(still["status"], "draft");
-    assert_eq!(still["amount_due"], 5000);
+    assert_eq!(field(&still, "status"), "draft");
+    assert_eq!(field(&still, "amount_due"), 5000);
 
     harness.shutdown().await;
     Ok(())
@@ -1202,7 +1317,7 @@ async fn an_idempotency_key_replays_a_create_and_a_finalize() -> anyhow::Result<
     // One object, and one event: a replayed create must not write a second
     // `invoice.created`.
     let (_, page) = harness.get(CLIENT_A, "/v1/invoices").await?;
-    assert_eq!(page["data"].as_array().expect("a list").len(), 1);
+    assert_eq!(field(&page, "data").as_array().expect("a list").len(), 1);
     assert_eq!(harness.events_of("invoice.created").await?.len(), 1);
 
     // The same key, a different body. **`400`, not `422`** — this API's own
@@ -1224,12 +1339,12 @@ async fn an_idempotency_key_replays_a_create_and_a_finalize() -> anyhow::Result<
         )
         .await?;
     assert_eq!(status, 400, "{body}");
-    assert_eq!(body["error"]["code"], "idempotency_key_in_use");
-    assert_eq!(body["error"]["type"], "idempotency_error");
+    assert_eq!(at(&body, &["error", "code"]), "idempotency_key_in_use");
+    assert_eq!(at(&body, &["error", "type"]), "idempotency_error");
 
     // A replayed finalize gives back the same number and does not advance the
     // sequence a second time.
-    let invoice = first["id"].as_str().expect("an id").to_owned();
+    let invoice = field(&first, "id").as_str().expect("an id").to_owned();
     harness
         .post(
             CLIENT_A,
@@ -1259,7 +1374,10 @@ async fn an_idempotency_key_replays_a_create_and_a_finalize() -> anyhow::Result<
             &finalize_key,
         )
         .await?;
-    assert_eq!(first_finalize["number"], replayed_finalize["number"]);
+    assert_eq!(
+        field(&first_finalize, "number"),
+        field(&replayed_finalize, "number")
+    );
     assert_eq!(
         harness.next_number(MERCHANT_A).await?,
         Some(2),
@@ -1389,7 +1507,10 @@ async fn the_invoice_invariants_are_enforced_by_the_database_itself() -> anyhow:
             ],
         )
         .await?;
-    let intent_id = intent["id"].as_str().expect("an intent id").to_owned();
+    let intent_id = field(&intent, "id")
+        .as_str()
+        .expect("an intent id")
+        .to_owned();
 
     let (_, second) = harness
         .post(
@@ -1398,7 +1519,7 @@ async fn the_invoice_invariants_are_enforced_by_the_database_itself() -> anyhow:
             &[("customer", &customer), ("currency", "xaf")],
         )
         .await?;
-    let draft = second["id"].as_str().expect("an id").to_owned();
+    let draft = field(&second, "id").as_str().expect("an id").to_owned();
     let refused = sqlx::query("UPDATE invoices SET payment_intent_id = $2 WHERE id = $1")
         .bind(&draft)
         .bind(&intent_id)

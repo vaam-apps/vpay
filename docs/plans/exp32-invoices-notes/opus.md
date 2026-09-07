@@ -129,6 +129,17 @@ and had a `metadata[order_id]` assertion that failed for exactly this reason;
 the suite now encodes its own bodies with literal brackets, which is what both
 merchant SDKs and Stripe's own clients send.
 
+### `clippy::indexing_slicing` shapes how these suites read JSON
+
+`body["id"]` is denied workspace-wide, and `serde_json::Value`'s `Index` impl
+panics on a *type* mismatch besides — so a handler that answered an array
+where a case expects an object would fail as a panic rather than as an
+assertion naming the field. `invoices.rs` carries `field`/`at`/`nth`/`only`/
+`item`, which is `staff_sign_in.rs`' and `dashboard_read_surface.rs`'
+convention. The first draft used indexing throughout and `just ci`'s clippy
+step is what said so — the suite was green under `cargo nextest` the whole
+time.
+
 ### The idempotency refusal is `400`, not `422`
 
 The brief asked for "different body 422". This API's documented answer is
@@ -151,6 +162,12 @@ restored, and the restoration was verified.
 | 3 | drop `AND {NO_LIVE_INTENT}` from `attach_intent` | `attaching_a_second_intent_to_an_invoice_is_refused_by_the_statement` | **FAIL** — one invoice acquired two live payment intents |
 | 4 | delete `@@allow("update", auth().isSystem())` from `model Invoice` | `invoices::tests::every_action_this_module_calls_has_an_allow_arm` | **FAIL** in 4 ms, no container |
 | 5 | drop `'invoice.paid'` from `type_is_a_documented_event` | `the_event_vocabulary_holds_exactly_the_invoice_types_that_have_writers` **and** `apply_succeeded_pays_the_invoice_the_intent_was_for` | **FAIL** (both) — `23514` on the insert |
+
+Mutation 2 was **re-run after** the JSON-accessor refactor above, because that
+refactor rewrote the very assertions it lands on (`numbers[0]`/`numbers[1]`
+became `item(&numbers, 0, …)`). It still fails, and
+`a_refused_finalize_does_not_burn_a_number` still passes under it, which is
+the pair that says the two cases are testing different things.
 
 Mutation 3 is the one worth dwelling on: **every wire-level case still passed
 under it**, because `vpay_api::v1::invoices::pay` reads the invoice and refuses

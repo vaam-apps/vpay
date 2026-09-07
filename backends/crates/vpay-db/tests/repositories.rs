@@ -5211,8 +5211,6 @@ async fn invoice_state(pool: &PgPool, id: &str) -> anyhow::Result<(String, i64, 
 #[tokio::test]
 async fn attaching_a_second_intent_to_an_invoice_is_refused_by_the_statement() -> anyhow::Result<()>
 {
-    use vpay_db::Invoices as _;
-
     let (_container, repositories, pool) = migrated_postgres().await?;
     seed_reference_data(repositories.as_ref()).await?;
 
@@ -5284,8 +5282,6 @@ async fn attaching_a_second_intent_to_an_invoice_is_refused_by_the_statement() -
 /// catch before a container ever runs.
 #[tokio::test]
 async fn marking_uncollectible_moves_an_open_invoice_and_nothing_else() -> anyhow::Result<()> {
-    use vpay_db::Invoices as _;
-
     let (_container, repositories, pool) = migrated_postgres().await?;
     seed_reference_data(repositories.as_ref()).await?;
     repositories
