@@ -224,8 +224,12 @@ answer, and is why an update can clear a field.
 
 ### The `invoice` object (S4b)
 
-A merchant's bill to one customer. **Seventeen keys**, and — like the customer
-— the object whose *rules* matter more than its shape;
+A merchant's bill to one customer. **Eighteen keys**, counted from the
+rendering rather than from this list and pinned by
+`the_invoice_object_is_the_documented_eighteen_keys` — it said *seventeen*
+until the S4b review on 2026-09-07, when the count was measured and no test of
+any name existed to hold it. Like the customer, this is the object whose
+*rules* matter more than its shape;
 [../flows/invoices.md](../flows/invoices.md) is the whole of them.
 
 ```json

@@ -1578,6 +1578,21 @@ pub struct InvoiceStatusTransitions {
 /// `docs/flows/money.md` and Stripe's own convention respectively. XAF is
 /// zero-decimal, so `5000` means 5,000 FCFA and there is no division
 /// anywhere.
+///
+/// # Eighteen keys, and the count is the tripwire
+///
+/// `the_invoice_object_is_the_documented_eighteen_keys` below is what keeps
+/// `docs/api/README.md`'s listing honest, and it exists for the reason
+/// [`CustomerObject`]'s twin does: this struct is the `data.object` of all
+/// four `invoice.*` event types, so a nineteenth key is signed, delivered
+/// at-least-once and stored in `events` **forever** — the one place vpay
+/// cannot retract a field it has published. `InvoiceRow` carries `seq`,
+/// `merchant_id` and `updated_at`, none of which belongs on a merchant's
+/// wire.
+///
+/// The README said *seventeen* from the day this object landed until the S4b
+/// review on 2026-09-07. The object was eighteen the whole time and no test
+/// of any name held the number.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct InvoiceObject {
@@ -2251,6 +2266,176 @@ mod tests {
                 "email": "ada@example.cm",
                 "phone": "237600000200",
                 "metadata": { "order_id": "1234" },
+                "created": 1_753_401_600,
+                "livemode": false,
+            })
+        );
+    }
+
+    /// One stored invoice, its one line and a hosted URL — the fixture the
+    /// key-set assertion below renders.
+    fn invoice_row() -> vpay_db::InvoiceRow {
+        vpay_db::InvoiceRow {
+            id: "in_1".to_owned(),
+            seq: 7,
+            merchant_id: "acme-cameroon-tenant".to_owned(),
+            livemode: false,
+            customer_id: "cus_1".to_owned(),
+            currency_code: "XAF".to_owned(),
+            status: "open".to_owned(),
+            number: Some("A7K3M9QP-000001".to_owned()),
+            amount_due: 5000,
+            amount_paid: 0,
+            amount_remaining: 5000,
+            due_date: None,
+            description: Some("September hosting".to_owned()),
+            metadata: json!({ "order_id": "1234" }),
+            payment_intent_id: None,
+            finalized_at: time::OffsetDateTime::from_unix_timestamp(1_753_401_600).ok(),
+            paid_at: None,
+            voided_at: None,
+            marked_uncollectible_at: None,
+            created_at: time::OffsetDateTime::from_unix_timestamp(1_753_401_600)
+                .expect("a fixed, valid timestamp"),
+            updated_at: time::OffsetDateTime::from_unix_timestamp(1_784_937_600)
+                .expect("a fixed, valid timestamp"),
+        }
+    }
+
+    /// One line of that invoice.
+    fn invoice_line_row() -> vpay_db::InvoiceItemRow {
+        vpay_db::InvoiceItemRow {
+            id: "ii_1".to_owned(),
+            seq: 3,
+            invoice_id: "in_1".to_owned(),
+            merchant_id: "acme-cameroon-tenant".to_owned(),
+            livemode: false,
+            description: "Hosting".to_owned(),
+            quantity: 1,
+            unit_amount: 5000,
+            amount: 5000,
+            currency_code: "XAF".to_owned(),
+            created_at: time::OffsetDateTime::from_unix_timestamp(1_753_401_600)
+                .expect("a fixed, valid timestamp"),
+            updated_at: time::OffsetDateTime::from_unix_timestamp(1_753_401_600)
+                .expect("a fixed, valid timestamp"),
+        }
+    }
+
+    /// The object `docs/api/README.md` documents, key for key.
+    ///
+    /// # The count was wrong and nothing held it
+    ///
+    /// `docs/api/README.md` said **seventeen keys** from the day S4b landed
+    /// until the review on 2026-09-07. The object is eighteen, and — unlike
+    /// the customer's and the refund's, whose counts each name a test — no
+    /// test of any name existed: adding a key to [`InvoiceObject`] and
+    /// rendering it was caught by nothing in the repository. This is
+    /// `the_customer_object_is_the_documented_eight_keys`' device applied to
+    /// the object that inherited its documentation habit without its
+    /// tripwire.
+    ///
+    /// # Why the count is the assertion and not only the key list
+    ///
+    /// This object is the `data.object` of `invoice.created`,
+    /// `invoice.finalized`, `invoice.paid` and `invoice.voided`. A nineteenth
+    /// key is signed, delivered at-least-once and stored in `events`
+    /// **forever**. `InvoiceRow`'s `seq`, `merchant_id` and `updated_at` are
+    /// each one field's inattention away from being there, so they are named.
+    ///
+    /// The whole-value comparison is what makes this a statement about the
+    /// *rendering* too: `currency` lower-cased from the stored `XAF`, every
+    /// timestamp in unix **seconds**, `lines` the ordinary list envelope
+    /// pointing at a route that exists, and `metadata` a map rather than a
+    /// string.
+    #[test]
+    fn the_invoice_object_is_the_documented_eighteen_keys() {
+        let rendered = serde_json::to_value(
+            InvoiceObject::render(
+                &invoice_row(),
+                &[invoice_line_row()],
+                Some("https://checkout.vpay.test/c/cs_1#secret".to_owned()),
+            )
+            .expect("a well-formed row renders"),
+        )
+        .expect("serialises");
+        let object = rendered.as_object().expect("an object");
+
+        for key in [
+            "id",
+            "object",
+            "customer",
+            "currency",
+            "status",
+            "number",
+            "amount_due",
+            "amount_paid",
+            "amount_remaining",
+            "due_date",
+            "description",
+            "metadata",
+            "payment_intent",
+            "hosted_invoice_url",
+            "lines",
+            "status_transitions",
+            "created",
+            "livemode",
+        ] {
+            assert!(object.contains_key(key), "`{key}` is missing");
+        }
+
+        for internal in ["seq", "merchant_id", "updated_at", "currency_code"] {
+            assert!(
+                !object.contains_key(internal),
+                "`{internal}` is internal and must never reach the wire — it would be signed \
+                 into every `invoice.*` body and stored in `events` forever: {object:?}"
+            );
+        }
+
+        assert_eq!(
+            object.len(),
+            18,
+            "an undocumented key was added to the invoice object: {object:?}"
+        );
+
+        assert_eq!(
+            rendered,
+            json!({
+                "id": "in_1",
+                "object": "invoice",
+                "customer": "cus_1",
+                "currency": "xaf",
+                "status": "open",
+                "number": "A7K3M9QP-000001",
+                "amount_due": 5000,
+                "amount_paid": 0,
+                "amount_remaining": 5000,
+                "due_date": null,
+                "description": "September hosting",
+                "metadata": { "order_id": "1234" },
+                "payment_intent": null,
+                "hosted_invoice_url": "https://checkout.vpay.test/c/cs_1#secret",
+                "lines": {
+                    "object": "list",
+                    "has_more": false,
+                    "url": "/v1/invoice_items",
+                    "data": [{
+                        "id": "ii_1",
+                        "object": "line_item",
+                        "description": "Hosting",
+                        "quantity": 1,
+                        "unit_amount": 5000,
+                        "amount": 5000,
+                        "currency": "xaf",
+                        "livemode": false,
+                    }],
+                },
+                "status_transitions": {
+                    "finalized_at": 1_753_401_600,
+                    "paid_at": null,
+                    "voided_at": null,
+                    "marked_uncollectible_at": null,
+                },
                 "created": 1_753_401_600,
                 "livemode": false,
             })
