@@ -280,10 +280,10 @@ export function vpayEslintConfig(options) {
     // rules, concretely"; §3's "what elegant means here, as rules a gate can
     // read"). The plugin was added to this package's dependencies by the
     // implementing pass and never wired into a config, so none of these rules
-    // ran and the plan's own mutation — "a two-line `className` string is
-    // added → fail `just lint-web`" — passed. Measured before this block
-    // landed: `eslint --print-config` on a component reported 0 rules whose
-    // name contains "tailwind", and a deliberately six-line `className` in
+    // ran and the plan's own mutation — "a two-line class attribute is added
+    // → fail `just lint-web`" — passed. Measured before this block landed:
+    // `eslint --print-config` on a component reported 0 rules whose name
+    // contains "tailwind", and a deliberately six-line class attribute in
     // `badge.tsx` left `pnpm --filter @vpay/ui lint` at exit 0.
     //
     // On `tailwind`, not on `react`: the plugin compiles TAILWIND_ENTRY_POINT
@@ -294,8 +294,9 @@ export function vpayEslintConfig(options) {
     // "@import 'tailwindcss'". Each app flips this flag in the same commit
     // that moves it to Tailwind 4.
     //
-    // `enforce-consistent-line-wrapping` is the maintainer's "no `className`
-    // longer than one line", expressed in the two directions the rule has:
+    // `enforce-consistent-line-wrapping` is the maintainer's "no class
+    // attribute longer than one line", expressed in the rule's two
+    // directions:
     // `preferSingleLine` makes an unnecessarily wrapped string an error, and
     // `printWidth` makes a string that does not fit one line an error. The
     // remedy for the second is to shorten the string — to reach for a `cva`

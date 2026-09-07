@@ -177,6 +177,35 @@ has built the `cypress-axe` real-browser check yet.
    tell apart from an actual class. Fixed the same way as finding 2, above:
    a named path exemption, not a regex rewrite (commit `dc4244a`).
 
+## Reviewed
+
+A sabotage review ran over `177645e` on 2026-09-07 and its record is
+[`lane-a-review.md`](lane-a-review.md). Verdict: **not safe as drafted** —
+six findings fixed on top of this lane's eight commits, one open question
+surfaced rather than taken. Read that file before this section: three of the
+claims below were measured to be weaker than they read.
+
+- The `eslint-plugin-better-tailwindcss` rules plan §5 step 7 asks for were
+  **not wired at all** — the package was installed and imported by nothing —
+  and that was not recorded here under "What was NOT done". Now wired, behind
+  a `tailwind` flag that only `@vpay/ui` sets, because the plugin cannot load
+  in the two apps still on Tailwind 3.
+- The intermittent failure item 8 above describes **did not reproduce**: the
+  parent commit's `src` restored and the suite run twelve consecutive times,
+  12/12 green. The fix is kept — it is correct discipline — but "surfaced at
+  least once in roughly ten runs" is one observation, not a rate, and item 8's
+  claim to have covered "every" Base UI render was wrong: `drawer.test.tsx`'s
+  Escape case had none.
+- The axe harness's unlabelled-`<button>` sanity check was done by hand and
+  left nothing behind. It is a test now, and it runs first.
+
+Two shipped components carried real defects (`Select`'s popup width in
+Tailwind 3 syntax; `Drawer`'s raw `bg-black/40`), and `cn()` dropped a daisyUI
+colour whenever a style class followed it. `@vpay/ui`'s own
+`class_tokens_distinct` fell 130 → **119** as a side effect of the review's
+class-order fixes and the duplicate/raw-colour removals; the `OUTSIDE
+@vpay/ui` row is byte-for-byte the baseline still.
+
 ## For the reviewer
 
 Decisive mutations from plan §5 Lane A, run and confirmed:
