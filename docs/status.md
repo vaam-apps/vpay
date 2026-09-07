@@ -500,10 +500,86 @@ network, a database or a binary this workspace does not build.
   [`docs/plans/exp10-notes/opus.md`](plans/exp10-notes/opus.md).
 
 
-Last verified: 2026-09-07, on branch `claude/exp30-single-binary` (code in
-`adc99da` and `27c03da`, base `30fb8f1` = `master`, which carries #80's
-`vpay-server staff add`) — **one binary and one backend image: issue #77
-folded `vpay-worker-bin` into `vpay-server` as the `worker` subcommand.**
+Last verified: 2026-09-07, on branch `claude/exp30-single-binary` at the head
+of the **sabotage review** of issue #77's one-binary change (base `30fb8f1` =
+`master`, which carries #80's `vpay-server staff add`; the implementation is
+`adc99da`/`27c03da`/`9ded03d`, the review's commits sit on top). The entry
+below this one is the implementation pass's and every number in it was
+re-measured here rather than carried over.
+
+**`just ci` exit 0 on the review head**, exit code read from a file:
+`fmt-check`; `clippy` `-D warnings`; `verify`, all ten gates (`verify-links`
+**925 links in 166 tracked files**, `verify-status` 1 declared unimplemented
+item, `verify-errors` 18 error types / 16 `#[from]` variants, `verify-serde`
+73 types / 16 exemptions, `verify-repositories` 4 implementations,
+`verify-toolchain` 1.98.0); `test-rust` **1552 tests run, 1552 passed, 0
+skipped** across **44** binaries against a real Postgres and real WireMock
+rails; `test-doc` 99 passed, 1 ignored (`sdks/rust`'s README block,
+pre-existing); `verify-ignored` **0 ignored (expected 0), 44 binaries
+(expected 44), 1552 total (floor 1080)**; `lint-web`; `test-web`; `deny`.
+1548 → 1552 is this pass's four new cases, two in `vpay-config` and two
+subprocess cases in `vpay-server::cli worker`; no binary was added.
+
+**The review's own four proofs**, on a throwaway compose project (`exp30rev`,
+ports 18290-18294, torn down; the maintainer's `vpay-demo` stack was up on
+8080/8082/8083/3001/3080 the whole time and was not touched):
+`just ci` (above, and once on `9ded03d` before any review commit — same
+1548/1548/0 the entry below reports); `just helm-check` **17 guards all fired
+by name, kubeconform 23 resources valid, 0 invalid**; `just test-e2e` **11
+Cypress tests, 11 passing, 0 failing**; `just demo-up` + `just demo-walk`
+exit 0, **6 payments on 2 rails, every one settled by the worker asking the
+rail and evidenced by a signed webhook**.
+
+**What the review changed, and why each is not cosmetic:**
+
+- **`vpay-server worker` now refuses serve-only flags in both positions.**
+  `vpay-server --oauth-signing-key-file … worker` (and the same for `--bind`)
+  parsed and was read by nothing — `vpay-worker-bin` had refused every
+  spelling because it declared neither flag. `ServerArgs::parse_checked`
+  refuses it, scoped to `ValueSource::CommandLine` so the *environment*
+  variable stays ignored rather than refused, which is what the old binary
+  did and what stops a shared env block CrashLoopBackOffing a worker.
+  **Decisive mutation:** reverting `main` to clap's `parse()` leaves both new
+  `vpay-config` unit tests GREEN and fails only the subprocess case — which
+  is why the subprocess case exists.
+- **Five present-tense references to the deleted `vpay-worker-bin`** were
+  retired, one of them a security sentence in `vpay-api/src/staff_auth` whose
+  *meaning* changed: it claimed the password pepper and TOTP key were kept
+  out of a binary that no longer exists, which was a statement about the link
+  graph. One binary does not have that property; what survives is that the
+  worker mode constructs no `StaffLogin`, and it now says so.
+- **The largest untested edge is half closed.** `args: ["worker"]` has still
+  never met a kubelet. The container-runtime half was measured on the real
+  `FROM scratch` image: `docker run IMG worker` exits **69** through the job
+  loop's own boot lines, `docker run IMG` exits **78** through the serve
+  path's missing signing key, and `docker run --entrypoint worker IMG` exits
+  **127** with `exec: "worker": executable file not found` — the
+  CrashLoopBackOff the chart comment predicts, now observed rather than
+  reasoned. Table in [flows/deployment.md](flows/deployment.md).
+- **The retired GHCR package is now a maintainer action**, not a fact —
+  `ghcr.io/vaam-apps/vpay-worker` still answers a `docker pull`, so an
+  un-upgraded deployment keeps running 2026-09-04's worker binary. Deleting
+  it needs a scope this repository has never held.
+
+**Measured by hand and NOT covered by any gate**, stated because a reader
+would otherwise assume the suite has it: **a SIGTERM that lands while the
+worker has work outstanding.** `worker_kill9` covers `kill -9`; its SIGTERM
+helper asserts the *empty* case in its own message. Run by hand on the demo
+stack: exit **0** with `received SIGTERM, starting graceful shutdown`, an
+undelivered webhook that stayed undelivered while no worker ran, and the same
+container restarted delivering it within ~6 s, signed. The gap predates #77
+(the same helper behaved the same way against `vpay-worker-bin`) and a third
+`worker_kill9` scenario was **not** written in this pass. Also verified in a
+container rather than only by unit test: all 14 worker log lines on
+**stdout**, none on stderr.
+
+Findings, mutations and what remains unproven:
+[plans/exp30-single-binary-notes/opus-review.md](plans/exp30-single-binary-notes/opus-review.md).
+
+*The implementation pass's entry, unchanged — 2026-09-07, on branch
+`claude/exp30-single-binary` (code in `adc99da` and `27c03da`) — **one binary
+and one backend image: issue #77 folded `vpay-worker-bin` into `vpay-server`
+as the `worker` subcommand.***
 
 `just ci` **exit 0**, recipe by recipe, exit code read from a file rather
 than a banner. Run **three times** — on the code above, and twice more on the

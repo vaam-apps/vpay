@@ -46,10 +46,21 @@ What an operator has to do about it:
 * **The GHCR package still exists** and is frozen at the last `:edge` and
   `sha-<40 hex>` `release.yml` pushed to it (the digest recorded in that
   workflow's header, `sha256:08667b03…`, from run `33929374661` on
-  2026-09-04). Nothing publishes to it any more. It has not been deleted, and
-  nobody has checked whether it can be: this repository has never
-  authenticated to that package's API (see the "GHCR visibility was attempted
-  and could not be measured" note in the Status section below).
+  2026-09-04). Nothing publishes to it any more.
+
+  > **Maintainer action, open since 2026-09-07 — delete or archive
+  > `ghcr.io/vaam-apps/vpay-worker`.** It has *not* been deleted and nobody
+  > has checked whether it can be: deleting a GHCR package needs a
+  > `delete:packages` scope this repository has never held, the same 403 the
+  > "GHCR visibility was attempted and could not be measured" note in the
+  > Status section below records. It is left rather than half-attempted, and
+  > it is written here as a task with an owner rather than as a fact,
+  > because the failure mode is specific: a package nothing publishes to
+  > still answers a `docker pull`, so a deployment that has not been
+  > upgraded keeps silently running 2026-09-04's worker binary against a
+  > newer server image and a newer schema. Whoever holds the token decides
+  > between deleting it, marking it deprecated, or leaving it and accepting
+  > that. Nothing in this repository can make that call.
 * **A cluster running the old two-image release keeps working**; nothing
   removes an already-pulled image. The next `helm upgrade` moves the worker
   Deployment onto the server image.
@@ -420,15 +431,35 @@ The 2026-09-07 change is described in §1 and is a change to *what ships*, not
 to what has been proven. Its evidence is `just helm-check` (chart lint, both
 value sets rendered, every named guard firing, kubeconform over every rendered
 object) and `just test-e2e` against a compose stack whose worker container runs
-the `worker` subcommand of the server image. **`args: ["worker"]` on the worker
-Deployment has still never been applied to a cluster**, exactly like every
-other line of this chart — the compose stack proves the *entrypoint* takes the
-argument, and nothing has proven a Kubernetes `args` against a real kubelet.
-The compose and Kubernetes spellings differ (`command:` there, `args:` here,
-because Docker's `command` is the CMD and Kubernetes' `command` is the
-ENTRYPOINT), so the one that has been exercised is not the one that will run in
-a cluster. That asymmetry is the single largest untested edge this change
-introduces, and it is named here rather than left in a commit message.
+the `worker` subcommand of the server image.
+
+**`args: ["worker"]` has still never been applied to a cluster**, exactly like
+every other line of this chart. What *has* been measured, in the review of the
+same day, is the half that is the container runtime's rather than the
+kubelet's — the ENTRYPOINT/CMD composition a rendered `args:` reduces to. On
+the real `FROM scratch` image `just test-e2e` built (`Entrypoint =
+["/vpay-server"]`, `Cmd = null`, `User = 65532:65532`), with one config file
+mounted and `DATABASE_URL` pointed at a closed port:
+
+| Rendered spec | `docker` equivalent | Result |
+|---|---|---|
+| worker Deployment: `command: null`, `args: ["worker"]` | `docker run IMG worker` | exit **69**, having logged `provider adapters linked` and `job loop concurrency` — the job loop's own boot lines — then failing on Postgres |
+| server Deployment: `command: null`, `args: null` | `docker run IMG` | exit **78**, `--oauth-signing-key-file … is required` — the *serve* path, from the same image and the same environment |
+| the spelling the chart must **not** use: `command: ["worker"]` | `docker run --entrypoint worker IMG` | exit **127**, `exec: "worker": executable file not found in $PATH` |
+
+Two different exit codes and two different failure messages out of one image
+and one env block is the argument selecting the mode, measured rather than
+reasoned; and the third row turns the warning in `deployment-worker.yaml`'s
+comment from a prediction into an observation.
+
+**What that still does not cover**, and it is why the paragraph above is not
+deleted: a kubelet, a `securityContext` with `readOnlyRootFilesystem`, a
+`ServiceAccount`, the liveness and startup probes against the observability
+port, and the `Recreate` strategy. The compose and Kubernetes spellings also
+still differ (`command:` there, `args:` here, because Docker's `command` is
+the CMD and Kubernetes' `command` is the ENTRYPOINT), so the *key* that will
+run in a cluster is one nothing has parsed but `helm template` and
+`kubeconform`.
 
 What exists:
 

@@ -219,6 +219,33 @@ never spawns a binary, so it is `worker_kill9` and the ten
 `vpay-server::cli worker::*` cases that hold the subcommand honest, not this
 suite).
 
+### The graceful stop is a different property from `kill -9`, and is not in the suite
+
+Everything above is about a process that is **killed**. A SIGTERM with work
+outstanding is the other half, and no automated case reaches it: the suites
+send SIGTERM only through `stop_worker_cleanly`, whose own assertion string
+says "a worker with nothing in flight". That has been true since the helper
+was written and is not something issue #77 changed — the same helper did the
+same thing when it spawned `vpay-worker-bin`.
+
+It was run by hand in the #77 review instead, on the demo compose stack, and
+the outcome is recorded here because a reader would otherwise assume the
+suite covers it. `docker kill -s TERM` on the worker mid-settlement: the
+container exits **0** having logged `received SIGTERM, starting graceful
+shutdown` then `graceful shutdown complete, exiting` (i.e. `Drain::Clean`, not
+the `Drain::TimedOut` branch that exits `1`). An intent whose settlement had
+committed but whose webhook had not been delivered stayed undelivered while
+no worker ran — zero POSTs at the receiver for it — and the **same container,
+restarted and nothing else**, delivered it within ~6 s, signed. Outstanding
+work at a graceful stop is not lost; it waits for a worker, which is the same
+invariant the lease and the compare-and-swap handlers give a killed one.
+Details in
+[../plans/exp30-single-binary-notes/opus-review.md](../plans/exp30-single-binary-notes/opus-review.md).
+
+**This is a measurement, not a test.** Nothing re-runs it, and a regression in
+the drain would be caught by no gate. Turning it into a third `worker_kill9`
+scenario is the obvious answer and was not done in this pass.
+
 **What was already true (Step 3), unchanged.**
 `POST /v1/payment_intents/{id}/confirm`
 (`backends/crates/vpay-api/src/v1/payment_intents.rs`) performs exactly the

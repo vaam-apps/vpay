@@ -167,8 +167,14 @@ cosign signed. Put it in your values file:
 ```yaml
 images:
   server: { digest: "sha256:<64 hex>" }
-  worker: { digest: "sha256:<64 hex>" }
 ```
+
+This block carried a second line, `worker: { digest: … }`, until issue #77
+(2026-09-07). Copying it now is not a harmless leftover: `values.schema.json`
+is `additionalProperties: false` and `images.worker` was removed with the
+image, so a values file carrying it fails `helm lint` with `images:
+Additional property worker is not allowed` — deliberately, so that a
+pinned-but-unpulled digest cannot sit in a values file looking load-bearing.
 
 A digest wins over a tag in this chart, and the `image-digest-format` template
 guard rejects anything that is not `sha256:` + 64 hex at template time rather
@@ -178,9 +184,15 @@ than at image-pull time in the cluster. Verify the render before you install:
 helm template vpay deploy/helm/vpay -f your-values.yaml | grep -n 'image:'
 ```
 
-**The two workloads are pinned independently and must be pinned together.**
-`vpay-server` and `vpay-server worker` share a database schema and a migration set (one image since issue #77);
-running two versions against one database is not a supported configuration.
+**One digest pins both workloads, and that is a change.** Until issue #77
+(2026-09-07) this read "the two workloads are pinned independently and must be
+pinned together", because `vpay-server` and `vpay-worker` were separate images
+sharing a database schema and a migration set, and running two versions
+against one database is not a supported configuration. There is one image now
+and both Deployments resolve `images.server`, so that particular hazard is
+gone by construction rather than by an instruction you have to follow. It is
+*not* gone for a rolling upgrade that spans a migration, which is §5's
+subject.
 
 ## 5. Rolling back
 
