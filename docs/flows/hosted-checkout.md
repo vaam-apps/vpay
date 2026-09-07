@@ -266,8 +266,18 @@ mapping was accurate and the screen was wrong: a payer whose payment failed
 read a grey box while a payer who cancelled read a red one. An operator's
 status palette is not a payer's outcome palette, so `@vpay/tokens` now carries
 both — `statusTone` unchanged, and `checkoutOutcomeTone` for these three
-screens. `canceled` stays red rather than becoming a softer amber; that is a
-design call left to the maintainer.
+screens. *Updated 2026-09-07 (decision D4,
+[2026-09-07-ui-revamp.md](../plans/2026-09-07-ui-revamp.md) §9):* `canceled`
+now tones `warning`, not `error` — the design call this paragraph used to
+defer is taken, on the reasoning that a payer's own cancellation is not the
+same event as a payment that failed for a reason outside their control.
+`failed` still tones `error`. The token moved in `@vpay/tokens`
+(`frontends/packages/tokens/src/index.ts`); `OutcomePanel`
+(`frontends/apps/checkout/src/components/screens.tsx`) already carries a
+`warning` entry in its `TONE_CLASS` lookup, so the colour renders correctly
+with no change to this app — the migration of that lookup onto `@vpay/ui`'s
+`Alert` component is separate work, not yet done (`docs/plans/2026-09-07-ui-
+revamp.md` §4.1).
 
 **A failed outcome also shows the rail's own words** where the API gave any.
 `last_payment_error.message` is rendered as *data*, under the translated
@@ -766,6 +776,17 @@ and a permanent false warning into the demo. **`just test-e2e` on this head:
 `dashboard.cy.ts` (3), `shop-hosted.cy.ts` (3) and `shop-embedded.cy.ts` (4) —
 through a compose stack that mounts both YAML files. The page's own suite is
 **448 vitest cases in 23 files, 0 skipped** (was 302 in 17).
+
+**Updated 2026-09-07: the shared UI library moved; this page has not, yet.**
+`docs/plans/2026-09-07-ui-revamp.md` Lane A landed `@vpay/ui` on
+`@base-ui/react@1.8.0` (the deprecated `@base-ui-components/react@1.0.0-rc.0`
+this page still imports was **renamed**, not superseded — a different
+package, a real 1.0 release nine months old), Tailwind 4 and daisyUI 5, and
+took decision D4 above. **This app is unchanged**: it still imports the old
+package, still has its own `tailwind.config.ts`, and its `Field`/`Checkbox`
+still write `form-control`/`label-text` — daisyUI 4 classes daisyUI 5 removed,
+caught by the new `just verify-ui` gate, which is red on this file until the
+migration lands. That migration (Lane B) is not yet started.
 
 See [../status.md](../status.md) for the per-feature ledger and the reasons
 several of those rows are 🟡 where this document says "built".
