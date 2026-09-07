@@ -1,10 +1,17 @@
 /**
  * The repository's one ESLint flat configuration.
  *
- * Why it lives here: `@vpay/config` is already the home of the shared
- * tsconfig/tailwind settings, and `package.json` has declared a `./eslint`
- * export pointing at this exact path since the package was created — at a
- * file that did not exist. Every workspace package's `eslint.config.js` is a
+ * Why it lives here: `package.json` has declared a `./eslint` export
+ * pointing at this exact path since the package was created — at a file
+ * that did not exist. `@vpay/config`'s own header used to also claim to be
+ * "the home of the shared tsconfig/tailwind settings"; that sentence was
+ * never true (there was no shared tsconfig or Tailwind config here, only
+ * this file), and under Tailwind 4 — which has no `tailwind.config.ts` at
+ * all — the natural home for shared Tailwind/daisyUI settings is the CSS
+ * entry point in `@vpay/ui` (`frontends/packages/ui/src/styles.css`), not a
+ * config package. Corrected 2026-09-07 (exp26 UI revamp) rather than
+ * inventing a package to make the old sentence true. Every workspace
+ * package's `eslint.config.js` is a
  * three-line call into `vpayEslintConfig` below, so a rule is added in one
  * place or not at all.
  *
