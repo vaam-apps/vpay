@@ -63,6 +63,15 @@ export interface StaffContext {
   readonly session: SessionResponse;
   /** The `/dash/v1` bearer token, read back from the session row. */
   readonly accessToken: string;
+  /**
+   * The staff session token this browser presented.
+   *
+   * Carried so a page can mint a **replacement** access token when the one
+   * above has expired — `server/dash-read.ts` and the fifteen minutes it
+   * describes. Server-side only, like everything else here: it is the cookie
+   * value, and nothing renders it.
+   */
+  readonly sessionToken: string;
   /** The settings this container booted with. */
   readonly config: DashboardConfig;
 }
@@ -159,14 +168,19 @@ export async function requireStaff(): Promise<StaffContext> {
     redirect(PASSWORD_PATH);
   }
   if (gate.kind === 'ready') {
-    return { session: gate.session, accessToken: gate.accessToken, config };
+    return { session: gate.session, accessToken: gate.accessToken, sessionToken: token, config };
   }
 
   const exchanged = await completeAuthorizationCode(config, token);
   if (!exchanged.ok) {
     redirect(SIGNED_OUT_PATH);
   }
-  return { session: gate.session, accessToken: exchanged.value.access_token, config };
+  return {
+    session: gate.session,
+    accessToken: exchanged.value.access_token,
+    sessionToken: token,
+    config,
+  };
 }
 
 /**

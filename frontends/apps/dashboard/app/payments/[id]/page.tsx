@@ -5,7 +5,8 @@ import { Alert, Heading, Stack, Text } from '@vpay/ui';
 
 import { PaymentDetailView } from '../../../src/components/payment-detail';
 import { SignedInBar } from '../../../src/components/signed-in-bar';
-import { getJson, type PaymentDetail } from '../../../src/server/api';
+import { type PaymentDetail } from '../../../src/server/api';
+import { readDash } from '../../../src/server/dash-read';
 import { signOut } from '../../../src/server/actions';
 import { requireStaff } from '../../../src/server/session';
 
@@ -26,13 +27,15 @@ export default async function PaymentDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const { session, accessToken, config } = await requireStaff();
+  const staff = await requireStaff();
+  const { session, config } = staff;
   const { id } = await params;
 
-  const result = await getJson<PaymentDetail>(
-    config.apiBaseUrl,
+  const result = await readDash<PaymentDetail>(
+    config,
     `/dash/v1/payment_intents/${encodeURIComponent(id)}`,
-    { bearer: accessToken },
+    staff.accessToken,
+    staff.sessionToken,
   );
 
   if (!result.ok && result.failure.status === 404) {

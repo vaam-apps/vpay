@@ -6,7 +6,8 @@ import { PaymentsFilters } from '../../src/components/payments-filters';
 import { PaymentsTable } from '../../src/components/payments-table';
 import { SignedInBar } from '../../src/components/signed-in-bar';
 import { apiQueryString, pagerHrefs, queryFrom } from '../../src/payments-query';
-import { getJson, type PaymentIntentList } from '../../src/server/api';
+import { type PaymentIntentList } from '../../src/server/api';
+import { readDash } from '../../src/server/dash-read';
 import { signOut } from '../../src/server/actions';
 import { requireStaff } from '../../src/server/session';
 
@@ -22,6 +23,12 @@ import { requireStaff } from '../../src/server/session';
  * server can obtain it from. A token cached in this process would keep
  * rendering payments for a signed-out session until it expired.
  *
+ * The read goes through `readDash`, which mints a fresh access token once if
+ * the one on the row has expired — the token's TTL is fifteen minutes and a
+ * session's is up to twelve hours, so without that this page answers "the
+ * bearer token is invalid, expired" for the rest of every sign-in past the
+ * first quarter of an hour. See that module.
+ *
  * # An empty table means zero rows and nothing else
  *
  * A failed read renders the failure and the request id, never an empty list:
@@ -35,13 +42,15 @@ export default async function PaymentsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const { session, accessToken, config } = await requireStaff();
+  const staff = await requireStaff();
+  const { session, config } = staff;
   const query = queryFrom(await searchParams);
 
-  const result = await getJson<PaymentIntentList>(
-    config.apiBaseUrl,
+  const result = await readDash<PaymentIntentList>(
+    config,
     `/dash/v1/payment_intents?${apiQueryString(query)}`,
-    { bearer: accessToken },
+    staff.accessToken,
+    staff.sessionToken,
   );
 
   return (
