@@ -167,11 +167,16 @@ deploy/         helm/vpay   (rendered and schema-validated; never applied to a c
 
 `schemas/vpay.cstack` is no longer outside the build: `vpay-db` compiles it
 (`include_server_schema!`) and `just check-schema` runs `cratestack check`
-against the pinned CLI inside `just verify`. Four table families —
-`disabled_clients`, `staff_members`, `staff_sessions`,
-`oauth_authorization_codes` — run their statements through it; the rest is a
-design sketch a compiler now type-checks, and `backends/migrations` remains the
-authoritative schema. See `docs/status.md` § CrateStack.
+against the pinned CLI inside `just verify`. **Nine of the file's thirteen
+models carry statements `vpay-server` and `vpay-worker` actually run** —
+`currencies`, `providers`, `disabled_clients`, `customers`, `events`,
+`webhook_deliveries`, `staff_members`, `staff_sessions` and
+`oauth_authorization_codes`; the four that do not are `payment_intents`,
+`charges`, `ledger_transactions` and `ledger_entries`, which stay a design
+sketch a compiler now type-checks. `backends/migrations` remains the
+authoritative schema, and this file has diverged from it on two `CHECK`
+constraints CrateStack's grammar cannot express. See `docs/status.md`
+§ CrateStack.
 
 ## Stack
 
