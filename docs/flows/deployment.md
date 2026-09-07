@@ -12,16 +12,47 @@ and what stops a bad configuration before it becomes an outage.
 
 ## 1. What ships
 
-**Four** images since 2026-09-04, published to
-`ghcr.io/vaam-apps/vpay-{server,worker,dashboard,checkout}` (step-6
-decision (1), extended by Step 9).
+**Three** images since 2026-09-07, published to
+`ghcr.io/vaam-apps/vpay-{server,dashboard,checkout}` (step-6 decision (1),
+extended by Step 9, reduced by issue #77).
 
 | Image | Base | Contents |
 |---|---|---|
-| `vpay-server` | `scratch` | one static musl binary, plus `config/` baked at `/config` |
-| `vpay-worker` | `scratch` | ditto, the worker binary |
+| `vpay-server` | `scratch` | one static musl binary, plus `config/` baked at `/config`. Runs **both** backend workloads |
 | `vpay-dashboard` | `node:22-alpine` | the Next standalone server |
 | `vpay-checkout` | `node:22-alpine` | vpay's own hosted/embedded payment page |
+
+### `ghcr.io/vaam-apps/vpay-worker` is retired, as of 2026-09-07
+
+There was a fourth image. `backends/Dockerfile` had a second `FROM scratch AS
+worker` stage holding a second binary, `release.yml` built it on two runners,
+merged a manifest list for it and signed it, and the chart had an
+`images.worker` block to pin it. All of that is gone with issue #77: the two
+binaries were always one `cargo` invocation over one dependency graph, so the
+second image bought a second pull and a second signature for the same code.
+
+What runs the worker now is **this** image with `worker` as its argument —
+`command: ["worker"]` in compose (compose's `command:` is the Docker CMD, and
+the image's `ENTRYPOINT` is `["/vpay-server"]`), `args: ["worker"]` in the
+chart (Kubernetes `args` is the CMD; its `command` would *replace* the
+entrypoint, so the chart must not use it and does not).
+
+What an operator has to do about it:
+
+* **A values file that sets `images.worker` now fails `helm lint`** rather
+  than being ignored — `values.schema.json` is `additionalProperties: false`
+  and the key was removed, deliberately, so that a pinned-but-unused digest
+  cannot sit in a values file looking load-bearing.
+* **The GHCR package still exists** and is frozen at the last `:edge` and
+  `sha-<40 hex>` `release.yml` pushed to it (the digest recorded in that
+  workflow's header, `sha256:08667b03…`, from run `33929374661` on
+  2026-09-04). Nothing publishes to it any more. It has not been deleted, and
+  nobody has checked whether it can be: this repository has never
+  authenticated to that package's API (see the "GHCR visibility was attempted
+  and could not be measured" note in the Status section below).
+* **A cluster running the old two-image release keeps working**; nothing
+  removes an already-pulled image. The next `helm upgrade` moves the worker
+  Deployment onto the server image.
 
 **`ghcr.io/vaam-apps/vpay-checkout`** — vpay's own hosted/embedded payment
 page (`frontends/apps/checkout`), built from `frontends/Dockerfile`'s
@@ -55,7 +86,7 @@ is the origin every payer link vpay mints is built on. The chart cannot
 check it — the overlay is opaque YAML to it — and a disagreement is a
 `session.url` that resolves to nothing, with no log anywhere naming a port.
 
-The two **backend** images have no shell, no package manager and no writable
+The **backend** image has no shell, no package manager and no writable
 path ([ADR-0004](../adr/0004-musl-mimalloc.md)). Three consequences follow
 from that and they show up everywhere below:
 
@@ -168,9 +199,11 @@ exists.
 4. `Config::validate_all` refuses a configuration that would fail later at
    runtime instead of now.
 5. The database connects and migrations run.
-6. `vpay-server` binds `VPAY_BIND` and starts serving; `vpay-worker` starts its
-   claim loop. Both install their shutdown signal handler *first*, before any
-   of the above, so a SIGTERM during boot is never lost.
+6. With no subcommand the process binds `VPAY_BIND` and starts serving; with
+   `worker` it starts its claim loop. The shutdown signal handler is installed
+   *first*, before any of the above **and before the subcommand is
+   dispatched**, so a SIGTERM during boot is never lost — in either mode, and
+   now by construction rather than by two `main`s agreeing.
 7. **Last**, both bind `VPAY_OBSERVABILITY_BIND` and serve `/livez` +
    `/metrics` on it. The ordering is the entire meaning of `/livez`: a probe
    against a process that is still in steps 1–5, or about to exit 78, is
@@ -363,8 +396,9 @@ rather than at pull time.
   `images.*.digest` a values file could pin today would be invented.~~
   **Corrected 2026-09-05:** §2's workflow has run 13 times on `master`, 12
   green, most recently `33929374661` (2026-09-04, head `33d6c25`), which
-  pushed a signed manifest list for all four images — `vpay-server`,
-  `vpay-worker`, `vpay-dashboard` and `vpay-checkout`. The bullet's *heading*
+  pushed a signed manifest list for all four images of the time — `vpay-server`,
+  `vpay-worker` (retired 2026-09-07, §1), `vpay-dashboard` and
+  `vpay-checkout`. The bullet's *heading*
   survives its body: the images exist and nothing has pulled one. GHCR package
   visibility is unmeasured — `gh api "orgs/vaam-apps/packages"` needs a
   `read:packages` scope the available token lacks, and an anonymous
@@ -379,7 +413,22 @@ rather than at pull time.
 ## Status
 
 **🟡 — designed, rendered, schema-validated, never applied.** Written
-2026-09-03 (Step 6, block B).
+2026-09-03 (Step 6, block B). **Updated 2026-09-07 (issue #77): three images,
+not four.**
+
+The 2026-09-07 change is described in §1 and is a change to *what ships*, not
+to what has been proven. Its evidence is `just helm-check` (chart lint, both
+value sets rendered, every named guard firing, kubeconform over every rendered
+object) and `just test-e2e` against a compose stack whose worker container runs
+the `worker` subcommand of the server image. **`args: ["worker"]` on the worker
+Deployment has still never been applied to a cluster**, exactly like every
+other line of this chart — the compose stack proves the *entrypoint* takes the
+argument, and nothing has proven a Kubernetes `args` against a real kubelet.
+The compose and Kubernetes spellings differ (`command:` there, `args:` here,
+because Docker's `command` is the CMD and Kubernetes' `command` is the
+ENTRYPOINT), so the one that has been exercised is not the one that will run in
+a cluster. That asymmetry is the single largest untested edge this change
+introduces, and it is named here rather than left in a commit message.
 
 What exists:
 
@@ -451,7 +500,8 @@ What does not exist, stated plainly:
   `cosign verify` has been run, so no Fulcio certificate or Rekor entry has
   been read — see the "Image signing" row in
   [../status.md](../status.md). **Updated 2026-09-05: the count is now 13 runs,
-  12 green** (latest `33929374661`, 2026-09-04, four images pushed and signed),
+  12 green** (latest `33929374661`, 2026-09-04, four images pushed and signed —
+  the matrix builds three since 2026-09-07, and has not run since),
   **and GHCR visibility was attempted and could not be measured** — the org
   packages API needs a `read:packages` scope the token lacks and anonymous
   pull is refused, which shows the packages are not public but leaves "private"
@@ -504,8 +554,10 @@ never run.~~ **Corrected 2026-09-05: `release.yml` has run, and it does pass a
 real one.** Run `33929374661`'s `build vpay-server (amd64)` step invokes
 `docker buildx build … --build-arg
 VPAY_GIT_SHA=33d6c253a232958604801518a08a2f34accb689c …`, so the published
-`vpay-server` and `vpay-worker` images carry
-`vpay_build_info{git_sha="33d6c25…"}` rather than `unknown`. `unknown` remains
+`vpay-server` and `vpay-worker` images of that run carry
+`vpay_build_info{git_sha="33d6c25…"}` rather than `unknown`. (`vpay-worker` is
+retired as of 2026-09-07 — §1 — so that is the last build of it there will
+be.) `unknown` remains
 correct for every *local* build, which is what `just release-dry-run` and
 `compose` produce — and nobody has run a published image to read the series
 off it, so this is read from the build command rather than from a scrape.

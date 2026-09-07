@@ -1,7 +1,7 @@
 name: release
 
-# Publishes the four container images the Helm chart and the compose files
-# name: `ghcr.io/<owner>/vpay-{server,worker,dashboard,checkout}` (step-6
+# Publishes the three container images the Helm chart and the compose files
+# name: `ghcr.io/<owner>/vpay-{server,dashboard,checkout}` (step-6
 # decision (1), plus `vpay-checkout` from Step 9's D3), where `<owner>` is
 # `github.repository_owner` lowercased by the `namespace` job below rather
 # than a literal. It used to be the literal `vaam-store`, and that is what
@@ -122,12 +122,19 @@ jobs:
       fail-fast: false
       matrix:
         image:
+          # ONE backend image, and it runs both backend workloads: with no
+          # argument it serves the API, with `worker` it runs the job loop.
+          # There was a second entry here, `vpay-worker` from
+          # `backends/Dockerfile`'s `worker` target, until 2026-09-07 (issue
+          # #77) — two `build` jobs, a `merge` job and a `cosign sign` for a
+          # second image built from the same `cargo` invocation and the same
+          # dependency graph as this one. `ghcr.io/<owner>/vpay-worker` is
+          # frozen at the last `:edge` it was pushed; nothing publishes to it
+          # any more and the chart no longer names it. See
+          # docs/flows/deployment.md.
           - name: vpay-server
             file: backends/Dockerfile
             target: server
-          - name: vpay-worker
-            file: backends/Dockerfile
-            target: worker
           # `frontends/Dockerfile` builds both of these. Every target is named
           # explicitly rather than left to "the last stage wins" — that
           # property stopped holding the moment the file grew a second image,
@@ -191,10 +198,13 @@ jobs:
           # inside. Both ride in the image index buildx pushes.
           provenance: mode=max
           sbom: true
-          # A `master` push rebuilds the whole musl workspace twice per
-          # architecture (server and worker are separate jobs sharing one
-          # builder stage but not one runner). The scope is per image AND per
-          # architecture because an amd64 layer is useless to an arm64 build.
+          # A `master` push rebuilds the whole musl workspace once per
+          # architecture. It was twice — `vpay-server` and `vpay-worker` were
+          # separate jobs sharing one builder stage but not one runner — until
+          # issue #77 made them one image; that is two `build` jobs and one
+          # `merge` job fewer per push, for the same bytes. The scope is per
+          # image AND per architecture because an amd64 layer is useless to an
+          # arm64 build.
           # Unmeasured: whether eight `mode=max` scopes fit inside GitHub's
           # per-repository cache budget without evicting each other. If they
           # do not, the symptom is slow builds, not wrong ones — drop to
@@ -254,7 +264,6 @@ jobs:
       matrix:
         image:
           - name: vpay-server
-          - name: vpay-worker
           - name: vpay-dashboard
           - name: vpay-checkout
     steps:

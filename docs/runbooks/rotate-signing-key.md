@@ -89,9 +89,16 @@ Step 4 is deliberately after the confirmation in the next section: a rotation
 that has not been confirmed is one you may have to undo, and the key file is
 the only thing that can undo it.
 
-Only the **server** mounts the signing key. `vpay-worker-bin` takes no
-`--oauth-signing-key-file`, issues no token, and the chart deliberately does
-not mount the Secret there. There is nothing to restart on the worker side.
+Only the **server** Deployment mounts the signing key. The worker issues no
+token, reads no key, and the chart deliberately does not mount the Secret
+there. There is nothing to restart on the worker side.
+
+This paragraph said "`vpay-worker-bin` takes no `--oauth-signing-key-file`"
+until 2026-09-07. Since issue #77 there is one binary, so the flag exists on
+it: `vpay-server worker --oauth-signing-key-file …` is refused at parse time,
+but `vpay-server --oauth-signing-key-file … worker` parses and reads nothing.
+**The guarantee is the mount, not the flag** — `deployment-worker.yaml`
+templates no `signingKey` volume — which is what it always actually rested on.
 
 ### Confirming it took
 

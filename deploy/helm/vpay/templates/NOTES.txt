@@ -1,7 +1,8 @@
 vpay {{ .Chart.AppVersion }} — chart {{ .Chart.Version }}, release {{ .Release.Name }} in {{ .Release.Namespace }}.
 
-  server:  {{ include "vpay.image" (dict "ctx" . "component" "server") }}  ({{ .Values.server.replicaCount }} replicas)
-  worker:  {{ include "vpay.image" (dict "ctx" . "component" "worker") }}  ({{ .Values.worker.replicaCount }} replicas)
+  image:   {{ include "vpay.image" (dict "ctx" . "component" "server") }}
+  server:  {{ .Values.server.replicaCount }} replicas (no args — serves the API)
+  worker:  {{ .Values.worker.replicaCount }} replicas (args: ["worker"] — the job loop)
   profile: {{ .Values.config.profile }}{{ if .Values.config.createOverlayConfigMap }} (overlay ConfigMap {{ include "vpay.overlayConfigMapName" . }} -> {{ include "vpay.overlayMountPath" . }}){{ else }} (no overlay ConfigMap — the image's baked config is the whole configuration){{ end }}
 
 READ THIS.

@@ -65,7 +65,7 @@ Step 5 (webhooks) has landed `MERCHANT_WEBHOOK_SECRET` on `master`, and they
 are an example, not a contract.
 */}}
 {{- if empty .Values.rails.existingSecret -}}
-{{- fail "vpay chart guard \"rails-secret\": rails.existingSecret must name a Secret carrying every credential the image's baked config/application.yml references as ${VAR} — one key per placeholder, and an unresolved one is exit 78 on both vpay-server and vpay-worker. The chart does not own that list and cannot check it: read it off the revision you are deploying with `grep -o '${[A-Z_]*}' config/application.yml`. On this branch, 2026-09-03, it is MERCHANT_WEBHOOK_SECRET, MTN_API_KEY, MTN_API_USER, MTN_SUBSCRIPTION_KEY, ORANGE_CLIENT_ID, ORANGE_CLIENT_SECRET and ORANGE_MERCHANT_KEY; a later image needs more." -}}
+{{- fail "vpay chart guard \"rails-secret\": rails.existingSecret must name a Secret carrying every credential the image's baked config/application.yml references as ${VAR} — one key per placeholder, and an unresolved one is exit 78 on both Deployments (they run one image, `vpay-server`, the worker with `args: [worker]`). The chart does not own that list and cannot check it: read it off the revision you are deploying with `grep -o '${[A-Z_]*}' config/application.yml`. On this branch, 2026-09-03, it is MERCHANT_WEBHOOK_SECRET, MTN_API_KEY, MTN_API_USER, MTN_SUBSCRIPTION_KEY, ORANGE_CLIENT_ID, ORANGE_CLIENT_SECRET and ORANGE_MERCHANT_KEY; a later image needs more." -}}
 {{- end -}}
 
 {{/* ---------------------------------------------------------------- 5 */}}
@@ -74,7 +74,7 @@ image-digest-format — a digest that is not a full `sha256:` + 64 hex is not a
 pull that fails at `helm install`; it is a pod that will not schedule, found
 later, in a cluster.
 */}}
-{{- range $component := list "server" "worker" "checkout" -}}
+{{- range $component := list "server" "checkout" -}}
 {{- $digest := (index $.Values.images $component).digest -}}
 {{- if $digest -}}
 {{- if not (regexMatch "^sha256:[0-9a-f]{64}$" $digest) -}}

@@ -15,7 +15,7 @@ being pushed and then signed:
 | Image | Index digest pushed to `:edge` and `:sha-33d6c25…` | Rekor tlog index |
 |---|---|---|
 | `ghcr.io/vaam-apps/vpay-server` | `sha256:5485db5e397edd8e672737e676756ca4e9eb56a23fb117a6bc762e0532b50537` | 2717616118 |
-| `ghcr.io/vaam-apps/vpay-worker` | `sha256:08667b03bae210802d04d59dba92820be9bccb4052f8337c74f0ea0a80d68a78` | 2717617767 |
+| `ghcr.io/vaam-apps/vpay-worker` (**retired 2026-09-07, issue #77 — this is its last build**) | `sha256:08667b03bae210802d04d59dba92820be9bccb4052f8337c74f0ea0a80d68a78` | 2717617767 |
 | `ghcr.io/vaam-apps/vpay-dashboard` | `sha256:ba6d6712dc143598c66c34300dffa3e38cdd5a21de98dfc9b43a13103b21a7a7` | 2717616040 |
 | `ghcr.io/vaam-apps/vpay-checkout` | `sha256:5214e408be6062123b51374d99988ef20e28081fa96e7bcb0eb4ac2b5b12e51e` | 2717615975 |
 
@@ -179,7 +179,7 @@ helm template vpay deploy/helm/vpay -f your-values.yaml | grep -n 'image:'
 ```
 
 **The two workloads are pinned independently and must be pinned together.**
-`vpay-server` and `vpay-worker` share a database schema and a migration set;
+`vpay-server` and `vpay-server worker` share a database schema and a migration set (one image since issue #77);
 running two versions against one database is not a supported configuration.
 
 ## 5. Rolling back
@@ -256,7 +256,7 @@ The Rust image is built in four stages:
 |---|---|---|
 | `chef` | `rust:1.98.0-alpine3.22` (was `1.95.0-alpine3.22` until 2026-09-05; the Alpine base deliberately did not move with the compiler), `apk add musl-dev pkgconfig`, `cargo install cargo-chef --locked --version 0.1.78` | the base image tag or the cargo-chef pin changes |
 | `planner` | copies the workspace, runs `cargo chef prepare` → `recipe.json` (manifests + `Cargo.lock`, **no source**) | every build; it compiles nothing and takes ~0.1 s |
-| `builder` (cook) | `cargo chef cook --profile dist --target <host triple> -p vpay-server -p vpay-worker-bin` — compiles the ~317-package dependency graph into `target/` | `recipe.json` changes (a manifest or the lockfile moved), or `.cargo/config.toml` changes |
+| `builder` (cook) | `cargo chef cook --profile dist --target <host triple> -p vpay-server` (it named `-p vpay-worker-bin` too until issue #77) — compiles the ~317-package dependency graph into `target/` | `recipe.json` changes (a manifest or the lockfile moved), or `.cargo/config.toml` changes |
 | `builder` (build) | `ARG VPAY_GIT_SHA`, copy the real source, `cargo build`, `cp` to `/out` | any source edit, or a different `VPAY_GIT_SHA` |
 
 Three properties this shape depends on. Two of the ways to break them are

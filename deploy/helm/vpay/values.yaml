@@ -33,7 +33,8 @@ commonAnnotations: {}
 
 images:
   # Registry and repository owner. Step-6 decision (1): the release workflow
-  # (block A) publishes to `ghcr.io/vaam-apps/vpay-{server,worker,dashboard}`.
+  # (block A) publishes to `ghcr.io/vaam-apps/vpay-{server,dashboard,checkout}`
+  # (it published a fourth, `vpay-worker`, until issue #77 on 2026-09-07).
   # The release workflow derives this from the repository owner rather than
   # a literal (`.github/workflows/release.yml`'s `namespace` job) — this
   # value must be kept in step by hand whenever that owner changes, because
@@ -46,6 +47,15 @@ images:
   # for a public GHCR package.
   pullSecrets: []
 
+  # **Both backend workloads run this one image.** The worker Deployment
+  # passes `args: ["worker"]` to it. There was an `images.worker` key here,
+  # defaulting to `vpay-worker`, until 2026-09-07 (issue #77): one package,
+  # one binary, one image, one signature. The key is REMOVED rather than left
+  # to default at a name nothing publishes any more, so a values file that
+  # still sets it fails `helm lint` against `values.schema.json`
+  # (`additionalProperties: false`) instead of pinning a digest nothing pulls.
+  # `ghcr.io/vaam-apps/vpay-worker` still exists as a GHCR package and is
+  # frozen at its last `:edge`; docs/flows/deployment.md carries the date.
   server:
     name: vpay-server
     # Empty means "use `.Chart.AppVersion`".
@@ -54,10 +64,6 @@ images:
     # `registry/namespace/name@sha256:...`. Format is enforced by the
     # "image-digest-format" guard — a truncated digest is otherwise a pull
     # failure at schedule time, in a cluster, at the worst moment.
-    digest: ""
-  worker:
-    name: vpay-worker
-    tag: ""
     digest: ""
   # The hosted/embedded payment page (Step 9, D3). Only read when
   # `checkout.enabled` is true.
@@ -307,7 +313,7 @@ database:
 
 signingKey:
   # Secret holding the RS256 private key the merchant OP signs `/v1` access
-  # tokens with. Server only — `vpay-worker-bin` deliberately takes no such
+  # tokens with. Server only — the worker Deployment deliberately mounts no such
   # flag, so mounting it there would widen the blast radius for no capability.
   # `vpay-server` exits 78 without it.
   existingSecret: vpay-oauth-signing-key

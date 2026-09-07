@@ -122,7 +122,20 @@ services:
     build:
       context: .
       dockerfile: backends/Dockerfile
-      target: worker
+      # The SAME target, and therefore the same image, as `vpay-server`
+      # above. It was `target: worker` — a second `FROM scratch` stage
+      # holding a second binary — until 2026-09-07 (issue #77).
+      target: server
+    # Docker's CMD, appended to the image's `ENTRYPOINT ["/vpay-server"]`, so
+    # this container runs `/vpay-server worker`. `vpay-server` above passes
+    # no `command:` at all and therefore serves the API, which is the whole
+    # reason `worker` is a subcommand and `serve` is not: every entrypoint
+    # that predates #77 keeps working untouched.
+    #
+    # Note the difference from Kubernetes, where `command:` REPLACES the
+    # entrypoint and the equivalent is `args:` — see
+    # `deploy/helm/vpay/templates/deployment-worker.yaml`.
+    command: ["worker"]
     environment:
       VPAY_PROFILE: sandbox
       VPAY_CONFIG: /config/application.yml

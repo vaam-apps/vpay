@@ -80,7 +80,7 @@ Both are wired into `just verify` and CI, because a promise nothing checks is a
 promise that decays.
 
 **1. No test doubles in shipping processes.** No mock, fake or stub may be
-reachable from `vpay-server` or `vpay-worker-bin`. A stub rail is a *WireMock
+reachable from `vpay-server` (either mode). A stub rail is a *WireMock
 host in configuration* — the same mechanism production uses to reach a real
 rail. `cargo xtask verify-no-mocks` enforces it.
 ([ADR-0006](docs/adr/0006-no-mocks-in-main-processes.md))
@@ -96,7 +96,7 @@ run never overstates coverage.
 ```
 backends/
   crates/       vpay-core, -config, -ledger, -provider, adapters, -api, -worker, -testkit
-  apps/         vpay-server, vpay-worker-bin   (musl → scratch images)
+  apps/         vpay-server                    (one musl → scratch image; `worker` is a subcommand)
   tests/        integration (testcontainers) · conformance (shared adapter suite)
 frontends/
   packages/     @vpay/tokens · @vpay/ui (design system) · @vpay/api-client · @vpay/config
@@ -271,8 +271,12 @@ live flag set — that is more trustworthy than any doc if the two disagree:
 
 ```bash
 cargo run -p vpay-server -- --help
-cargo run -p vpay-worker-bin -- --help
+cargo run -p vpay-server -- worker --help
 ```
+
+One binary since 2026-09-07 (issue #77): with no subcommand it serves the API,
+`worker` runs the job loop, and `staff add` creates a dashboard account. It was
+two packages and two images (`vpay-server`, `vpay-worker-bin`) before that.
 
 `vpay-server` signs merchant tokens, so it needs an RS256 signing key before it
 will start. Generate one once, offline:
@@ -308,8 +312,12 @@ VPAY_BIND=127.0.0.1:8080 VPAY_LOG_FORMAT=text cargo run -p vpay-server
 
 The Postgres those URLs point at is the one `just up` starts.
 
-`vpay-server` calls a payment rail when a merchant confirms an intent;
-`vpay-worker-bin` calls none, because it has no job loop. `vpay-server`
+`vpay-server` calls a payment rail when a merchant confirms an intent, and
+`vpay-server worker` calls one on every poll the job loop drives. (This
+sentence read "`vpay-worker-bin` calls none, because it has no job loop" until
+2026-09-07 — a claim that had been false since Step 4 landed the loop, and
+which the issue-#77 rewrite of this paragraph is correcting rather than
+carrying forward.) `vpay-server`
 connects to Postgres, runs migrations, and serves `/healthz` plus the
 merchant OP —
 `POST /v1/oauth/token` (`client_credentials` + `private_key_jwt`),
@@ -329,9 +337,12 @@ has only ever been a stub. `GET /v1/events`, `GET /v1/events/{id}` (Step 5,
 and creating a refund will keep doing so until a rail can refund. This
 sentence named all three of `/v1/refunds`, `/v1/events` and `/v1/balance` as
 unrouted, and had been wrong about `/v1/events` since Step 5.
-`vpay-worker-bin` stays up answering shutdown signals but its
-job loop is not implemented, and it says so in a startup banner and a repeating
-heartbeat log line.
+`vpay-server worker` claims jobs from the `jobs` table, drives live charges to
+a terminal state against the configured rails, sweeps what has expired and
+delivers webhooks. (This sentence said the loop "is not implemented" and
+described a heartbeat log line that Step 4 removed; corrected 2026-09-07 with
+the rest of this paragraph.) It binds one socket, `--observability-bind`, for
+`/livez` and `/metrics` and nothing else.
 
 `--config`, `--database-url` and `--oauth-signing-key-file` are required and
 genuinely consumed; a missing one exits `78` before the port is bound.
