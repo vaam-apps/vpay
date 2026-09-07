@@ -44,8 +44,22 @@ export function formatAmount(minorUnits: number, currency: string): string {
   const units = Math.abs(minorUnits).toString().padStart(digits + 1, '0');
   const major = units.slice(0, units.length - digits);
   const minor = digits === 0 ? '' : `.${units.slice(units.length - digits)}`;
-  const grouped = Number(major).toLocaleString('en-US');
-  return `${negative ? '-' : ''}${grouped}${minor} ${code}`;
+  return `${negative ? '-' : ''}${group(major)}${minor} ${code}`;
+}
+
+/**
+ * Thousands separators, inserted into the digit **string**.
+ *
+ * Not `Number(major).toLocaleString()`, and the difference is not cosmetic:
+ * amounts are `i64` on the wire, and an `i64` above 2^53 does not survive a
+ * round trip through a JavaScript number. `9007199254740993` would render as
+ * `9,007,199,254,740,992`. No amount that large is realistic, and rendering a
+ * money value through a lossy type on the argument that it is unrealistic is
+ * the reasoning this repository denies float arithmetic workspace-wide to
+ * avoid. The digits never stop being digits here.
+ */
+function group(digits: string): string {
+  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 /**

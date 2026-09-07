@@ -136,3 +136,29 @@ export async function requireStaff(): Promise<StaffContext> {
   }
   return { session: settled.session, accessToken: settled.accessToken, config };
 }
+
+/**
+ * Whether this browser already holds a usable session, for the login pages.
+ *
+ * Answers a plain boolean rather than redirecting, because `/login` is where a
+ * dead cookie has to be *survivable* — see this module's header.
+ *
+ * **Here rather than in `actions.ts`, and that is a boundary rather than
+ * tidiness.** Every export of a `'use server'` file is a callable endpoint:
+ * Next registers an action id for it and a `POST` from anywhere reaches it.
+ * The four things a staff member can *do* have to be endpoints; a predicate
+ * three pages read during their own render does not, and giving it one widens
+ * the app's reachable surface for nothing.
+ */
+export async function alreadySignedIn(): Promise<boolean> {
+  const { config } = dashboardConfig();
+  if (config === null) {
+    return false;
+  }
+  const token = await sessionToken();
+  if (token === null) {
+    return false;
+  }
+  const { session } = await readSession(config, token);
+  return session !== null && !session.password_change_required;
+}

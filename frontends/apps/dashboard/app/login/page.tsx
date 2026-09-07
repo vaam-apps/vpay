@@ -4,8 +4,8 @@ import { Alert, Heading, List, Stack, Text } from '@vpay/ui';
 
 import { dashboardConfig } from '../../src/config/runtime';
 import { SignInForm } from '../../src/components/sign-in-form';
-import { alreadySignedIn, signIn } from '../../src/server/actions';
-import { HOME_PATH } from '../../src/server/session';
+import { signIn } from '../../src/server/actions';
+import { alreadySignedIn, HOME_PATH } from '../../src/server/session';
 
 /**
  * `/login` — leg one of ADR-0017's two-factor sign-in.

@@ -1,7 +1,6 @@
 import { redirect } from 'next/navigation';
 
-import { alreadySignedIn } from '../src/server/actions';
-import { HOME_PATH, LOGIN_PATH } from '../src/server/session';
+import { alreadySignedIn, HOME_PATH, LOGIN_PATH } from '../src/server/session';
 
 /**
  * `/` — the door, and nothing else.

@@ -36,7 +36,6 @@ import {
   HOME_PATH,
   LOGIN_PATH,
   PASSWORD_PATH,
-  readSession,
   sessionToken,
   setSessionCookie,
   TOTP_PATH,
@@ -263,23 +262,4 @@ export async function signOut(): Promise<void> {
   }
   await clearSessionCookie();
   redirect(LOGIN_PATH);
-}
-
-/**
- * Whether this browser already holds a usable session, for the login pages.
- *
- * Answers a plain boolean rather than redirecting, because `/login` is where
- * a dead cookie has to be *survivable* — see `session.ts`'s header.
- */
-export async function alreadySignedIn(): Promise<boolean> {
-  const { config } = dashboardConfig();
-  if (config === null) {
-    return false;
-  }
-  const token = await sessionToken();
-  if (token === null) {
-    return false;
-  }
-  const { session } = await readSession(config, token);
-  return session !== null && !session.password_change_required;
 }
