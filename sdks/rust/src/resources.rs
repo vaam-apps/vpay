@@ -15,8 +15,9 @@ use serde::de::DeserializeOwned;
 use crate::client::Client;
 use crate::form::FormValue;
 use crate::model::{
-    AccountHolder, Balance, CheckoutSession, CheckoutUiMode, Customer, DeletedCustomer, Event,
-    List, PaymentIntent, PaymentMethodType, Refund,
+    AccountHolder, Balance, CheckoutSession, CheckoutUiMode, Customer, DeletedCustomer,
+    DeletedInvoice, DeletedInvoiceItem, Event, Invoice, InvoiceLine, InvoiceStatus, List,
+    PaymentIntent, PaymentMethodType, Refund,
 };
 use crate::validate::check_amount;
 
@@ -436,22 +437,31 @@ pub struct UpdateCustomerParams {
     pub metadata: BTreeMap<String, String>,
 }
 
-impl UpdateCustomerParams {
-    /// `Some(None)` becomes the empty string, which is what "clear this" is
-    /// on a form-encoded wire; `None` is omitted from the body entirely.
-    fn patch(field: Option<&Option<String>>) -> FormValue {
-        match field {
-            None => FormValue::Skip,
-            Some(None) => FormValue::from(""),
-            Some(Some(value)) => FormValue::from(value.as_str()),
-        }
+/// One three-state patch field, in the wire's own encoding.
+///
+/// `None` is omitted from the body entirely ("leave it alone"), `Some(None)`
+/// becomes the empty string — which is what "clear this" is on a
+/// form-encoded wire — and `Some(Some(v))` sets it.
+///
+/// Written once and used by every patch type on this surface
+/// ([`UpdateCustomerParams`], [`UpdateInvoiceParams`]) rather than per
+/// resource: the three states are one wire rule, and a second copy is a
+/// second thing that can lose the distinction between "not mentioned" and
+/// "cleared".
+fn patch_form<T: Into<FormValue> + Clone>(field: Option<&Option<T>>) -> FormValue {
+    match field {
+        None => FormValue::Skip,
+        Some(None) => FormValue::from(""),
+        Some(Some(value)) => value.clone().into(),
     }
+}
 
+impl UpdateCustomerParams {
     pub(crate) fn to_form(&self) -> FormValue {
         FormValue::Object(vec![
-            ("name".to_string(), Self::patch(self.name.as_ref())),
-            ("email".to_string(), Self::patch(self.email.as_ref())),
-            ("phone".to_string(), Self::patch(self.phone.as_ref())),
+            ("name".to_string(), patch_form(self.name.as_ref())),
+            ("email".to_string(), patch_form(self.email.as_ref())),
+            ("phone".to_string(), patch_form(self.phone.as_ref())),
             ("metadata".to_string(), metadata_form(&self.metadata)),
         ])
     }
@@ -485,6 +495,305 @@ impl ListCustomersParams {
                 "ending_before".to_string(),
                 FormValue::from(self.ending_before.clone()),
             ),
+        ])
+    }
+}
+
+/// `POST /v1/invoices` request fields (S4b).
+///
+/// `customer` is the only required one, and it is required for a reason worth
+/// stating: an invoice is a bill to somebody, and one that names no payer is
+/// one nobody can be asked to pay. It is a plain `String` rather than an
+/// `Option<String>` so that the type says so — the server answers a `400`
+/// naming `customer` for an absent, unknown or *other merchant's* `cus_…`,
+/// always the same sentence, so the parameter cannot be used to discover
+/// which customers exist under some other account.
+///
+/// A created invoice is always a [`crate::InvoiceStatus::Draft`] with no
+/// number, no lines and zero amounts. Add lines with
+/// [`InvoiceItemsResource::create`], then issue it with
+/// [`InvoicesResource::finalize`].
+#[derive(Debug, Clone, Default)]
+pub struct CreateInvoiceParams {
+    /// The `cus_…` this invoice bills. Required.
+    pub customer: String,
+    /// Lower-cased at encode time regardless of how it was supplied, for
+    /// [`CreatePaymentIntentParams::currency`]'s reason.
+    ///
+    /// Omitted from the body entirely when `None`, which is how the server
+    /// gets to apply this deployment's own default rather than this SDK
+    /// guessing it.
+    pub currency: Option<String>,
+    /// The merchant's note on the document. At most 1000 characters, which
+    /// the server checks.
+    pub description: Option<String>,
+    /// Unix **seconds**, as Stripe spells it — not milliseconds.
+    ///
+    /// **Advisory**: nothing in vpay reads it. There is no dunning and no
+    /// automatic transition, so setting this changes nothing about what vpay
+    /// does; it is a field the merchant's own systems may read back off
+    /// [`crate::Invoice::due_date`].
+    pub due_date: Option<i64>,
+    /// Merchant-owned key/value pairs, encoded as `metadata[key]=value`.
+    pub metadata: BTreeMap<String, String>,
+}
+
+impl CreateInvoiceParams {
+    /// The one required field, for a caller who would otherwise write a
+    /// struct literal with a `..Default::default()` in it.
+    #[must_use]
+    pub fn new(customer: impl Into<String>) -> Self {
+        Self {
+            customer: customer.into(),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn to_form(&self) -> FormValue {
+        FormValue::Object(vec![
+            (
+                "customer".to_string(),
+                FormValue::from(self.customer.as_str()),
+            ),
+            (
+                "currency".to_string(),
+                FormValue::from(self.currency.as_ref().map(|c| c.to_lowercase())),
+            ),
+            (
+                "description".to_string(),
+                FormValue::from(self.description.clone()),
+            ),
+            ("due_date".to_string(), FormValue::from(self.due_date)),
+            ("metadata".to_string(), metadata_form(&self.metadata)),
+        ])
+    }
+}
+
+/// `POST /v1/invoices/{id}` request fields (S4b) — **draft only**.
+///
+/// # Three states per field, exactly as [`UpdateCustomerParams`] has
+///
+/// `None` leaves the field alone, `Some(Some(v))` sets it and `Some(None)`
+/// **clears** it, which this SDK sends as `description=`. A plain
+/// `Option<T>` collapses the first and the third and a merchant could not
+/// remove a due date they set by mistake.
+///
+/// `customer` and `currency` are **not** patchable and deliberately absent
+/// from this type: an invoice that changed who it bills, or what it is
+/// denominated in, is a different document.
+///
+/// A finalized invoice is a `409` naming its status — an issued document's
+/// terms are what was sent to the payer. Void it and issue a new one.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateInvoiceParams {
+    /// `None` leaves the description alone; `Some(None)` clears it.
+    pub description: Option<Option<String>>,
+    /// See [`Self::description`]. Unix **seconds**.
+    pub due_date: Option<Option<i64>>,
+    /// Keys to merge. A key whose value is the empty string is **removed**
+    /// from the stored metadata, which is Stripe's own per-key delete, so an
+    /// empty map means "leave metadata alone" and there is no separate
+    /// "clear all of it".
+    pub metadata: BTreeMap<String, String>,
+}
+
+impl UpdateInvoiceParams {
+    pub(crate) fn to_form(&self) -> FormValue {
+        FormValue::Object(vec![
+            (
+                "description".to_string(),
+                patch_form(self.description.as_ref()),
+            ),
+            ("due_date".to_string(), patch_form(self.due_date.as_ref())),
+            ("metadata".to_string(), metadata_form(&self.metadata)),
+        ])
+    }
+}
+
+/// `GET /v1/invoices` query parameters (S4b). All optional; an unset field is
+/// omitted from the query string entirely.
+#[derive(Debug, Clone, Default)]
+pub struct ListInvoicesParams {
+    /// Page size. The server's own default and ceiling apply when unset.
+    pub limit: Option<u32>,
+    /// Cursor: return invoices *after* this `in_…` (the next page).
+    pub starting_after: Option<String>,
+    /// Cursor: return invoices *before* this `in_…` (the previous page).
+    pub ending_before: Option<String>,
+    /// Only this customer's invoices.
+    pub customer: Option<String>,
+    /// Only invoices in this state.
+    ///
+    /// A typed [`crate::InvoiceStatus`] rather than a `String`, and that is
+    /// the one filter where the type earns its place: the server answers a
+    /// `400` naming `status` for a label it does not have rather than
+    /// silently returning the whole first page, so a typo here would cost a
+    /// round trip and read like an empty result. It is also how a merchant
+    /// finds their write-offs, which emit no event.
+    pub status: Option<InvoiceStatus>,
+}
+
+impl ListInvoicesParams {
+    pub(crate) fn to_form(&self) -> FormValue {
+        FormValue::Object(vec![
+            ("limit".to_string(), FormValue::from(self.limit)),
+            (
+                "starting_after".to_string(),
+                FormValue::from(self.starting_after.clone()),
+            ),
+            (
+                "ending_before".to_string(),
+                FormValue::from(self.ending_before.clone()),
+            ),
+            (
+                "customer".to_string(),
+                FormValue::from(self.customer.clone()),
+            ),
+            (
+                "status".to_string(),
+                FormValue::from(self.status.map(InvoiceStatus::as_wire_str)),
+            ),
+        ])
+    }
+}
+
+/// `POST /v1/invoices/{id}/pay` request fields (S4b).
+///
+/// **Both URLs are required**, unlike on a checkout session where the pair is
+/// required only in hosted mode: `pay` mints a *hosted* session and there is
+/// no other mode to be in. They take the same rules the session's do —
+/// http(s), at most 2048 characters, `https` only under livemode, and
+/// `success_url` may carry the literal `{CHECKOUT_SESSION_ID}` — and this SDK
+/// deliberately does not duplicate them, for
+/// [`CreateCheckoutSessionParams`]' reason.
+///
+/// This does **not** charge anything. Stripe's `pay` charges a stored payment
+/// method; vpay has none, so this mints a payment intent for
+/// [`crate::Invoice::amount_remaining`] and answers the invoice with
+/// [`crate::Invoice::hosted_invoice_url`] set — a page to send the payer to.
+#[derive(Debug, Clone, Default)]
+pub struct PayInvoiceParams {
+    /// Where a paying payer is forwarded.
+    pub success_url: String,
+    /// Where a payer who gave up is forwarded.
+    pub cancel_url: String,
+}
+
+impl PayInvoiceParams {
+    /// The two required URLs.
+    #[must_use]
+    pub fn new(success_url: impl Into<String>, cancel_url: impl Into<String>) -> Self {
+        Self {
+            success_url: success_url.into(),
+            cancel_url: cancel_url.into(),
+        }
+    }
+
+    pub(crate) fn to_form(&self) -> FormValue {
+        FormValue::Object(vec![
+            (
+                "success_url".to_string(),
+                FormValue::from(self.success_url.as_str()),
+            ),
+            (
+                "cancel_url".to_string(),
+                FormValue::from(self.cancel_url.as_str()),
+            ),
+        ])
+    }
+}
+
+/// `POST /v1/invoice_items` request fields (S4b).
+///
+/// There is no `currency` parameter and no `amount` one, and both absences
+/// are the wire contract rather than an omission here: a line is always in
+/// its invoice's currency (copied off the parent in the statement that writes
+/// the row), and `amount` is `quantity * unit_amount` computed by the
+/// database. A merchant who could send `amount` could send one that did not
+/// match its own factors.
+#[derive(Debug, Clone, Default)]
+pub struct CreateInvoiceItemParams {
+    /// The `in_…` to add this line to. Required, and it must be one of your
+    /// **drafts** — a `400` naming `invoice` otherwise, including for a
+    /// finalized invoice and for another merchant's.
+    pub invoice: String,
+    /// The text on the document. Required, at most 1000 characters.
+    pub description: String,
+    /// How many. At least 1; omitted from the body when `None`, so the
+    /// server applies its own default of 1 rather than this SDK sending one.
+    pub quantity: Option<i64>,
+    /// The price of one, in integer minor units.
+    ///
+    /// Held to the same `0..=2^53-1` bound as every other amount on this
+    /// surface, refused before a request is built — see
+    /// [`crate::validate`]'s reasoning: an amount this SDK sent and the Node
+    /// SDK refused would be a divergence in the money path.
+    pub unit_amount: i64,
+}
+
+impl CreateInvoiceItemParams {
+    /// The three required fields.
+    #[must_use]
+    pub fn new(
+        invoice: impl Into<String>,
+        description: impl Into<String>,
+        unit_amount: i64,
+    ) -> Self {
+        Self {
+            invoice: invoice.into(),
+            description: description.into(),
+            quantity: None,
+            unit_amount,
+        }
+    }
+
+    pub(crate) fn to_form(&self) -> FormValue {
+        FormValue::Object(vec![
+            (
+                "invoice".to_string(),
+                FormValue::from(self.invoice.as_str()),
+            ),
+            (
+                "description".to_string(),
+                FormValue::from(self.description.as_str()),
+            ),
+            ("quantity".to_string(), FormValue::from(self.quantity)),
+            ("unit_amount".to_string(), FormValue::from(self.unit_amount)),
+        ])
+    }
+}
+
+/// `POST /v1/invoice_items/{id}` request fields (S4b) — **draft parent
+/// only**.
+///
+/// # Why these are single `Option`s and [`UpdateInvoiceParams`]' are double
+///
+/// All three columns are `NOT NULL`, so there is no "clear it" state to
+/// carry: `None` leaves the field alone and `Some(v)` sets it. Sending
+/// `description=` is a `400` naming the parameter rather than a clear, which
+/// is why this type cannot express it.
+///
+/// `amount` is not here, ever — see [`CreateInvoiceItemParams`].
+#[derive(Debug, Clone, Default)]
+pub struct UpdateInvoiceItemParams {
+    /// The text on the document.
+    pub description: Option<String>,
+    /// How many. At least 1.
+    pub quantity: Option<i64>,
+    /// The price of one, in integer minor units. Bounded like
+    /// [`CreateInvoiceItemParams::unit_amount`].
+    pub unit_amount: Option<i64>,
+}
+
+impl UpdateInvoiceItemParams {
+    pub(crate) fn to_form(&self) -> FormValue {
+        FormValue::Object(vec![
+            (
+                "description".to_string(),
+                FormValue::from(self.description.clone()),
+            ),
+            ("quantity".to_string(), FormValue::from(self.quantity)),
+            ("unit_amount".to_string(), FormValue::from(self.unit_amount)),
         ])
     }
 }
@@ -926,6 +1235,305 @@ impl CustomersResource<'_> {
     ) -> Result<DeletedCustomer, crate::Error> {
         self.client
             .delete(&format!("/customers/{}", path_segment(id)), opts)
+            .await
+    }
+}
+
+/// `client.invoices()` — the nine merchant operations on `/v1/invoices`
+/// (S4b): five CRUD and the four transitions.
+///
+/// # The one thing to know before calling any of them
+///
+/// **The state machine is the server's `WHERE` clause, not a check this SDK
+/// makes.** A transition that does not apply comes back a `409` naming the
+/// invoice's current status, and this SDK does not try to predict which —
+/// `draft → open → paid | void | uncollectible`, and every method below says
+/// which statuses it accepts. Reading the invoice first to decide whether to
+/// call is a race; call, and read the refusal.
+///
+/// `del` and not `delete`, for [`CustomersResource`]'s reason.
+#[derive(Debug, Clone, Copy)]
+pub struct InvoicesResource<'a> {
+    pub(crate) client: &'a Client,
+}
+
+impl InvoicesResource<'_> {
+    /// `POST /v1/invoices` — creates a **draft**, with no number and zero
+    /// amounts.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`]. In particular a `400` naming `customer`
+    /// when it is absent, unknown, or another merchant's — one sentence for
+    /// all three, so the parameter is not an oracle.
+    pub async fn create(
+        &self,
+        params: CreateInvoiceParams,
+        opts: RequestOptions,
+    ) -> Result<Invoice, crate::Error> {
+        post(self.client, "/invoices", params.to_form(), opts).await
+    }
+
+    /// `GET /v1/invoices/{id}` — the invoice **with its lines**.
+    ///
+    /// This is the read a webhook handler falls back to: an `invoice.*` event
+    /// body carries an empty `lines.data` (see [`crate::Event::invoice`]),
+    /// and this response always carries the lines.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`]. Another merchant's `in_…` is the same
+    /// `404`, byte for byte, as one that never existed.
+    pub async fn retrieve(&self, id: &str) -> Result<Invoice, crate::Error> {
+        get(
+            self.client,
+            &format!("/invoices/{}", path_segment(id)),
+            None,
+        )
+        .await
+    }
+
+    /// `POST /v1/invoices/{id}` — patches a **draft**.
+    ///
+    /// A `POST` and not a `PATCH`, for [`CustomersResource::update`]'s
+    /// reason, even though the server mounts both verbs on the one handler:
+    /// `POST` is what a merchant's existing Stripe client sends, so it is the
+    /// one that has to work.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`]. A `409` naming the status once the invoice
+    /// is no longer a draft — an issued document's terms are what was sent to
+    /// the payer.
+    pub async fn update(
+        &self,
+        id: &str,
+        params: UpdateInvoiceParams,
+        opts: RequestOptions,
+    ) -> Result<Invoice, crate::Error> {
+        post(
+            self.client,
+            &format!("/invoices/{}", path_segment(id)),
+            params.to_form(),
+            opts,
+        )
+        .await
+    }
+
+    /// `GET /v1/invoices` — newest first.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`].
+    pub async fn list(&self, params: ListInvoicesParams) -> Result<List<Invoice>, crate::Error> {
+        get(self.client, "/invoices", query_string(&params.to_form())).await
+    }
+
+    /// `DELETE /v1/invoices/{id}` — **draft only**, and its lines go with it.
+    ///
+    /// An issued invoice is [`Self::void`]ed, never deleted: a voided draft
+    /// would be a non-draft row with no number, which migration `0036`
+    /// refuses outright, and a document that vanished is a hole an accountant
+    /// reads as a destroyed one.
+    ///
+    /// Carries an `Idempotency-Key` like every other write, which is what
+    /// makes a retried delete answer the original `{deleted: true}` rather
+    /// than a `404`.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`]. A `409` for anything but a draft.
+    pub async fn del(
+        &self,
+        id: &str,
+        opts: RequestOptions,
+    ) -> Result<DeletedInvoice, crate::Error> {
+        self.client
+            .delete(&format!("/invoices/{}", path_segment(id)), opts)
+            .await
+    }
+
+    /// `POST /v1/invoices/{id}/finalize` — issues the document. **Draft
+    /// only.**
+    ///
+    /// The money transition: the invoice takes the next number out of this
+    /// merchant's own sequence under a row lock, its lines freeze, its
+    /// amounts are computed once, and it moves to
+    /// [`crate::InvoiceStatus::Open`] — all in one transaction, with
+    /// `invoice.finalized` inside it. Numbers are consecutive and have no
+    /// holes, unlike Stripe's.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`]. A `400` naming `invoice` when it has no
+    /// lines, or when its total is past `2^53-1` minor units; a `409` when it
+    /// is not a draft.
+    pub async fn finalize(&self, id: &str, opts: RequestOptions) -> Result<Invoice, crate::Error> {
+        post(
+            self.client,
+            &format!("/invoices/{}/finalize", path_segment(id)),
+            FormValue::Object(Vec::new()),
+            opts,
+        )
+        .await
+    }
+
+    /// `POST /v1/invoices/{id}/void` — cancels an issued document. **Open
+    /// only.**
+    ///
+    /// The invoice **keeps its number**. Terminal.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`]. A `409` when it is not open, and a `409`
+    /// while a payment intent is attached and not yet canceled — cancel that
+    /// intent first.
+    pub async fn void(&self, id: &str, opts: RequestOptions) -> Result<Invoice, crate::Error> {
+        post(
+            self.client,
+            &format!("/invoices/{}/void", path_segment(id)),
+            FormValue::Object(Vec::new()),
+            opts,
+        )
+        .await
+    }
+
+    /// `POST /v1/invoices/{id}/mark_uncollectible` — writes an issued
+    /// document off. **Open only.**
+    ///
+    /// Still owed, never expected. Terminal, and it **emits no event**: vpay
+    /// does not write `invoice.marked_uncollectible`, so nothing arrives on a
+    /// webhook and a merchant reconciling write-offs reads them with
+    /// [`Self::list`] filtered on
+    /// [`crate::InvoiceStatus::Uncollectible`].
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`]. As [`Self::void`].
+    pub async fn mark_uncollectible(
+        &self,
+        id: &str,
+        opts: RequestOptions,
+    ) -> Result<Invoice, crate::Error> {
+        post(
+            self.client,
+            &format!("/invoices/{}/mark_uncollectible", path_segment(id)),
+            FormValue::Object(Vec::new()),
+            opts,
+        )
+        .await
+    }
+
+    /// `POST /v1/invoices/{id}/pay` — mints a payment intent and a hosted
+    /// checkout for what is left. **Open only.**
+    ///
+    /// **This does not charge anybody.** Stripe's `pay` charges a stored
+    /// payment method; vpay has none, so this answers the invoice with
+    /// [`crate::Invoice::payment_intent`] and
+    /// [`crate::Invoice::hosted_invoice_url`] set — a page to send the payer
+    /// to. The invoice stays [`crate::InvoiceStatus::Open`] until the
+    /// settlement moves it, which is when `invoice.paid` is emitted.
+    ///
+    /// One payment at a time: calling this again while the attached intent is
+    /// live is a `409`, and cancelling that intent is the way back. Two
+    /// concurrent calls attach exactly one intent.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`]. A `409` when it is not open or an intent is
+    /// already live, a `400` for a URL the server refuses, and a `500`
+    /// `checkout_not_configured` when this deployment serves no checkout
+    /// page.
+    pub async fn pay(
+        &self,
+        id: &str,
+        params: PayInvoiceParams,
+        opts: RequestOptions,
+    ) -> Result<Invoice, crate::Error> {
+        post(
+            self.client,
+            &format!("/invoices/{}/pay", path_segment(id)),
+            params.to_form(),
+            opts,
+        )
+        .await
+    }
+}
+
+/// `client.invoice_items()` — the four operations on `/v1/invoice_items`
+/// (S4b): the lines of a **draft** invoice.
+///
+/// There is deliberately no `list`: an invoice's lines are read off the
+/// invoice ([`crate::Invoice::lines`], expanded on every render), and a
+/// merchant-wide list of lines across invoices answers no question anybody
+/// asked. The server mounts no collection `GET` either, so this is not an
+/// omission here.
+///
+/// Every write requires the parent to still be a
+/// [`crate::InvoiceStatus::Draft`]; [`Self::retrieve`] does not.
+#[derive(Debug, Clone, Copy)]
+pub struct InvoiceItemsResource<'a> {
+    pub(crate) client: &'a Client,
+}
+
+impl InvoiceItemsResource<'_> {
+    /// `POST /v1/invoice_items` — adds a line to a draft, and the invoice's
+    /// `amount_due` moves with it.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`]. [`crate::Error::InvalidParams`] before any
+    /// request when `unit_amount` is outside `0..=2^53-1`; a `400` naming
+    /// `invoice` when it is not one of your drafts.
+    pub async fn create(
+        &self,
+        params: CreateInvoiceItemParams,
+        opts: RequestOptions,
+    ) -> Result<InvoiceLine, crate::Error> {
+        check_amount(params.unit_amount, "unit_amount")?;
+        post(self.client, "/invoice_items", params.to_form(), opts).await
+    }
+
+    /// `GET /v1/invoice_items/{id}` — readable whatever the parent's status.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`].
+    pub async fn retrieve(&self, id: &str) -> Result<InvoiceLine, crate::Error> {
+        get(
+            self.client,
+            &format!("/invoice_items/{}", path_segment(id)),
+            None,
+        )
+        .await
+    }
+
+    /// `POST /v1/invoice_items/{id}` — **draft parent only**, with `amount`
+    /// recomputed.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`]. [`crate::Error::InvalidParams`] for a
+    /// `unit_amount` outside the bound; a `409` once the parent is no longer
+    /// a draft.
+    pub async fn update(
+        &self,
+        id: &str,
+        params: UpdateInvoiceItemParams,
+        opts: RequestOptions,
+    ) -> Result<InvoiceLine, crate::Error> {
+        if let Some(unit_amount) = params.unit_amount {
+            check_amount(unit_amount, "unit_amount")?;
+        }
+        post(
+            self.client,
+            &format!("/invoice_items/{}", path_segment(id)),
+            params.to_form(),
+            opts,
+        )
+        .await
+    }
+
+    /// `DELETE /v1/invoice_items/{id}` — **draft parent only**, and the
+    /// invoice re-totals.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`].
+    pub async fn del(
+        &self,
+        id: &str,
+        opts: RequestOptions,
+    ) -> Result<DeletedInvoiceItem, crate::Error> {
+        self.client
+            .delete(&format!("/invoice_items/{}", path_segment(id)), opts)
             .await
     }
 }

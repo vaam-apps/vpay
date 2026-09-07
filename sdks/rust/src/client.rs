@@ -24,7 +24,8 @@ use crate::error::{ConfigError, Error};
 use crate::form::FormValue;
 use crate::resources::{
     AccountHoldersResource, BalanceResource, CheckoutResource, CustomersResource, EventsResource,
-    PaymentIntentsResource, RefundsResource, RequestOptions,
+    InvoiceItemsResource, InvoicesResource, PaymentIntentsResource, RefundsResource,
+    RequestOptions,
 };
 
 /// The `aud` value `/v1` access tokens must carry. Requested by default on
@@ -300,6 +301,18 @@ impl Client {
     #[must_use]
     pub fn customers(&self) -> CustomersResource<'_> {
         CustomersResource { client: self }
+    }
+
+    /// `/v1/invoices` — a merchant's bill to one customer (S4b).
+    #[must_use]
+    pub fn invoices(&self) -> InvoicesResource<'_> {
+        InvoicesResource { client: self }
+    }
+
+    /// `/v1/invoice_items` — the lines of a draft invoice (S4b).
+    #[must_use]
+    pub fn invoice_items(&self) -> InvoiceItemsResource<'_> {
+        InvoiceItemsResource { client: self }
     }
 
     /// `/v1/refunds`.

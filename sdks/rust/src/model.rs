@@ -484,6 +484,257 @@ pub struct DeletedCustomer {
     pub deleted: bool,
 }
 
+/// An invoice's lifecycle state (S4b).
+///
+/// Exactly the five labels `vpay_core::InvoiceStatus` defines, and the
+/// transitions between them are the server's: `draft → open → paid | void |
+/// uncollectible`. Nothing here moves an invoice; the four transition methods
+/// on [`crate::InvoicesResource`] do, and the server's `WHERE` clause is what
+/// refuses an illegal one.
+///
+/// Closed rather than `#[non_exhaustive]`, unlike [`KnownEventType`], and
+/// that is the same split [`IntentStatus`] and [`RefundStatus`] already make:
+/// the five labels are a database `CHECK` constraint (migration `0036`'s
+/// `invoices_status_enum_check`), so a sixth is a schema migration and a
+/// breaking wire change, not something a merchant's deployment can meet by
+/// surprise. `sdks/nodejs` spells the same five as a string union.
+///
+/// ```
+/// use vpay_sdk::InvoiceStatus;
+///
+/// // The query-string spelling and the decoded one are the same five words,
+/// // by two different routes — `as_wire_str` and `serde`.
+/// assert_eq!(InvoiceStatus::Uncollectible.as_wire_str(), "uncollectible");
+/// let decoded: InvoiceStatus = serde_json::from_str("\"uncollectible\"")?;
+/// assert_eq!(decoded, InvoiceStatus::Uncollectible);
+/// # Ok::<(), serde_json::Error>(())
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvoiceStatus {
+    /// Being edited. Lines may be added, changed and removed; the invoice has
+    /// no [`Invoice::number`] and cannot be paid. The only status a
+    /// [`crate::InvoicesResource::del`] accepts.
+    Draft,
+    /// Issued: it has a number, its lines are frozen, and it is waiting to be
+    /// paid. The only status [`crate::InvoicesResource::pay`],
+    /// [`crate::InvoicesResource::void`] and
+    /// [`crate::InvoicesResource::mark_uncollectible`] accept.
+    Open,
+    /// Paid in full. Terminal, and only reachable with
+    /// [`Invoice::amount_remaining`] at zero — partial payments are out of
+    /// scope, and the database enforces it.
+    Paid,
+    /// Cancelled by the merchant. Terminal, and it **keeps its number**: a
+    /// number that vanished is a hole an accountant reads as a destroyed
+    /// document.
+    Void,
+    /// Written off by the merchant: still owed, never expected. Terminal.
+    ///
+    /// Emits **no event** — vpay does not write `invoice.marked_uncollectible`
+    /// — so a merchant learns about a write-off from
+    /// `list` with [`ListInvoicesParams::status`] set to this, not from a
+    /// webhook. `docs/flows/invoices.md` says so rather than leaving it to be
+    /// discovered.
+    Uncollectible,
+}
+
+impl InvoiceStatus {
+    /// The exact string this status is named by on the wire.
+    ///
+    /// Hand-written beside the `serde` rename for
+    /// [`PaymentMethodType::as_wire_str`]'s reason: it is also the value
+    /// [`ListInvoicesParams::status`] puts in a query string, which never
+    /// goes through `serde`, so without it the wire spelling would exist in
+    /// only one of the two paths.
+    #[must_use]
+    pub fn as_wire_str(self) -> &'static str {
+        match self {
+            InvoiceStatus::Draft => "draft",
+            InvoiceStatus::Open => "open",
+            InvoiceStatus::Paid => "paid",
+            InvoiceStatus::Void => "void",
+            InvoiceStatus::Uncollectible => "uncollectible",
+        }
+    }
+}
+
+/// One line on an invoice — the `line_item` object.
+///
+/// # Why the type is `InvoiceLine` and the resource is `invoice_items`
+///
+/// The wire has one object under two names, and both are load-bearing: the
+/// `object` field is `"line_item"` and the route that creates, reads, changes
+/// and removes it is `/v1/invoice_items`. Stripe has two objects there
+/// (`invoiceitem` and `line_item`); vpay has one, and
+/// `docs/flows/invoices.md` records the narrowing. This type is named for the
+/// object it decodes and [`crate::InvoiceItemsResource`] for the route it
+/// calls, so neither name is invented — `sdks/nodejs` spells them
+/// `InvoiceLine` and `client.invoiceItems` for the same reason.
+///
+/// No price, no product, no proration and no period: a line is a description,
+/// a quantity and a unit amount.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InvoiceLine {
+    /// `ii_…` — the id `/v1/invoice_items/{id}` addresses.
+    pub id: String,
+    /// Always `"line_item"`, and **not** `"invoice_item"`. See the struct doc.
+    pub object: String,
+    /// The text on the document.
+    pub description: String,
+    /// How many.
+    pub quantity: i64,
+    /// The price of one, in integer minor units.
+    pub unit_amount: i64,
+    /// `quantity * unit_amount`, in integer minor units.
+    ///
+    /// Computed and checked by the database, never sent: `amount` is not a
+    /// parameter on either [`crate::InvoiceItemsResource::create`] or
+    /// [`crate::InvoiceItemsResource::update`], ever.
+    pub amount: i64,
+    /// Lower-case ISO-4217, always the parent invoice's — a line cannot be
+    /// denominated in anything else, which is why there is no `currency`
+    /// parameter.
+    pub currency: String,
+    /// `false` for a sandbox deployment's objects.
+    pub livemode: bool,
+}
+
+/// When each of an invoice's transitions happened, in unix **seconds**.
+///
+/// One nested object rather than four fields on [`Invoice`], because that is
+/// the wire shape and because they are answers to one question. Every field
+/// is `None` until the transition happens, and at most two are ever
+/// `Some` — [`Self::finalized_at`] plus whichever terminal one applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvoiceStatusTransitions {
+    /// When the invoice was issued and got its [`Invoice::number`].
+    pub finalized_at: Option<i64>,
+    /// When a settlement paid it.
+    pub paid_at: Option<i64>,
+    /// When the merchant voided it.
+    pub voided_at: Option<i64>,
+    /// When the merchant wrote it off.
+    pub marked_uncollectible_at: Option<i64>,
+}
+
+/// An `invoice` (S4b): a merchant's bill to one customer.
+///
+/// Eighteen keys, the count `vpay_api`'s
+/// `the_invoice_object_is_the_documented_eighteen_keys` pins on the server
+/// side; `an_invoice_decodes_every_documented_key_and_its_lines` is this
+/// crate's half.
+///
+/// # `lines` is always expanded, and always unpaged
+///
+/// vpay does not implement Stripe's `expand[]` at all, and an invoice without
+/// its lines is a total with no explanation — so [`Self::lines`] arrives
+/// populated on every `/v1/invoices` response, with `has_more` always
+/// `false`. Its `url` is `/v1/invoice_items`, a route that exists, rather
+/// than Stripe's `/v1/invoices/{id}/lines`, which vpay does not serve.
+///
+/// **Inside an `invoice.*` webhook body `lines.data` is empty**, and that is
+/// the one place the shape differs: the event is rendered inside the
+/// transition's own transaction. Re-read the invoice with
+/// [`crate::InvoicesResource::retrieve`] if a handler needs the lines.
+///
+/// # `hosted_invoice_url` is a checkout session, not an invoice page
+///
+/// vpay has no invoice page. A payer following it meets the existing hosted
+/// checkout, and it is `None` until [`crate::InvoicesResource::pay`] has run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Invoice {
+    /// `in_…`. The id an API call uses; [`Self::number`] is the one a human
+    /// quotes.
+    pub id: String,
+    /// Always `"invoice"`.
+    pub object: String,
+    /// The `cus_…` this invoice bills.
+    ///
+    /// A `String` and not an `Option<String>`, unlike
+    /// [`PaymentIntent::customer`], and that is the wire contract rather than
+    /// an assumption: the column is `NOT NULL`, because an invoice naming no
+    /// payer is one nobody can be asked to pay.
+    pub customer: String,
+    /// Lower-case ISO-4217.
+    pub currency: String,
+    /// One of the five labels. See [`InvoiceStatus`].
+    pub status: InvoiceStatus,
+    /// `{prefix}-{000001}` from this merchant's own sequence, or `None`
+    /// **exactly** while the invoice is a [`InvoiceStatus::Draft`].
+    ///
+    /// Assigned at finalize, never reused, and kept by a voided invoice.
+    pub number: Option<String>,
+    /// The total, in integer minor units. Summed from [`Self::lines`] while
+    /// the invoice is a draft, frozen at finalize.
+    pub amount_due: i64,
+    /// How much has been paid: `0`, or [`Self::amount_due`]. Never anything
+    /// between the two — partial payments are out of scope.
+    pub amount_paid: i64,
+    /// `amount_due - amount_paid`, and the amount
+    /// [`crate::InvoicesResource::pay`] mints an intent for.
+    pub amount_remaining: i64,
+    /// Unix **seconds**, or `None`.
+    ///
+    /// **Advisory**: nothing in vpay reads it. There is no dunning, no
+    /// reminder and no automatic transition, so a merchant who needs one
+    /// builds it.
+    pub due_date: Option<i64>,
+    /// The merchant's note on the document.
+    pub description: Option<String>,
+    /// The merchant's own key/value pairs, echoed back.
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+    /// The `pi_…` paying, or that paid, this invoice — `None` until
+    /// [`crate::InvoicesResource::pay`].
+    pub payment_intent: Option<String>,
+    /// Where to send the payer: the checkout session for
+    /// [`Self::payment_intent`]. See the struct doc.
+    pub hosted_invoice_url: Option<String>,
+    /// Every line, in the order they were added. See the struct doc for when
+    /// this is empty and when it is not.
+    pub lines: List<InvoiceLine>,
+    /// When each transition happened.
+    pub status_transitions: InvoiceStatusTransitions,
+    /// Unix **seconds** — not milliseconds, and not RFC 3339.
+    pub created: i64,
+    /// `false` for a sandbox deployment's objects.
+    pub livemode: bool,
+}
+
+/// What `DELETE /v1/invoices/{id}` answers with — Stripe's deleted-object
+/// shape.
+///
+/// A **draft** is deleted and an issued invoice is voided, which is why this
+/// type is reachable from one method and [`Invoice`] from the other four
+/// transitions: a voided draft would be a non-draft row with no number, a
+/// state migration `0036` refuses outright.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeletedInvoice {
+    /// The `in_…` that was deleted.
+    pub id: String,
+    /// Always `"invoice"`.
+    pub object: String,
+    /// Always `true`. A plain `bool` for [`DeletedCustomer::deleted`]'s
+    /// reason.
+    pub deleted: bool,
+}
+
+/// What `DELETE /v1/invoice_items/{id}` answers with.
+///
+/// Its `object` is `"line_item"` and not `"invoice_item"`, matching
+/// [`InvoiceLine::object`] — the route and the object are named differently
+/// and both spellings are the wire's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeletedInvoiceItem {
+    /// The `ii_…` that was deleted.
+    pub id: String,
+    /// Always `"line_item"`.
+    pub object: String,
+    /// Always `true`. See [`DeletedInvoice::deleted`].
+    pub deleted: bool,
+}
+
 /// A refund's lifecycle state. Independent of [`IntentStatus`] — a refund
 /// never changes its intent's status (`docs/flows/payment-lifecycle.md`:
 /// "Refunds do not change intent status").
@@ -649,6 +900,33 @@ pub enum KnownEventType {
     /// one for an id that never existed. That is also why polling cannot
     /// substitute for this event, unlike every other type here.
     CustomerDeleted,
+    /// A draft invoice was created by `POST /v1/invoices` (S4b).
+    ///
+    /// `data.object` is an [`Invoice`] — decode it with [`Event::invoice`].
+    /// The insert and this event are one transaction, so an event you
+    /// received describes a row that committed.
+    InvoiceCreated,
+    /// A draft was issued: it has its [`Invoice::number`], its lines are
+    /// frozen and its amounts are final.
+    ///
+    /// `data.object` is an [`Invoice`] in [`InvoiceStatus::Open`].
+    InvoiceFinalized,
+    /// A settlement paid an invoice in full.
+    ///
+    /// `data.object` is an [`Invoice`] in [`InvoiceStatus::Paid`]. Emitted
+    /// inside the settlement transaction itself, beside the
+    /// `payment_intent.succeeded` for the same money — so a merchant
+    /// receives both and must not treat them as two payments.
+    InvoicePaid,
+    /// The merchant cancelled an issued invoice. `data.object` is an
+    /// [`Invoice`] in [`InvoiceStatus::Void`], **keeping** its number.
+    ///
+    /// There is deliberately no `invoice.marked_uncollectible` beside this
+    /// one: vpay does not write it, so a union entry would be a claim about
+    /// vpay that is false. A write-off is learned from
+    /// `invoices.list` filtered on
+    /// [`InvoiceStatus::Uncollectible`].
+    InvoiceVoided,
 }
 
 impl KnownEventType {
@@ -670,6 +948,10 @@ impl KnownEventType {
             KnownEventType::ChargeRefundUpdated => "charge.refund.updated",
             KnownEventType::CheckoutSessionExpired => "checkout.session.expired",
             KnownEventType::CustomerDeleted => "customer.deleted",
+            KnownEventType::InvoiceCreated => "invoice.created",
+            KnownEventType::InvoiceFinalized => "invoice.finalized",
+            KnownEventType::InvoicePaid => "invoice.paid",
+            KnownEventType::InvoiceVoided => "invoice.voided",
         }
     }
 
@@ -696,6 +978,10 @@ impl KnownEventType {
             "charge.refund.updated" => Some(KnownEventType::ChargeRefundUpdated),
             "checkout.session.expired" => Some(KnownEventType::CheckoutSessionExpired),
             "customer.deleted" => Some(KnownEventType::CustomerDeleted),
+            "invoice.created" => Some(KnownEventType::InvoiceCreated),
+            "invoice.finalized" => Some(KnownEventType::InvoiceFinalized),
+            "invoice.paid" => Some(KnownEventType::InvoicePaid),
+            "invoice.voided" => Some(KnownEventType::InvoiceVoided),
             _ => None,
         }
     }
@@ -785,6 +1071,60 @@ impl Event {
             crate::Error::UnexpectedResponse {
                 status: 0,
                 body_prefix: format!("event.data.object did not decode as a checkout_session: {e}"),
+            }
+        })
+    }
+
+    /// Decodes [`EventData::object`] as an [`Invoice`], for one of the four
+    /// `invoice.*` events (S4b).
+    ///
+    /// **The invoice on an event carries no lines.** `data.object.lines.data`
+    /// is empty on every `invoice.*` body — the event is rendered inside the
+    /// transition's own transaction, where the lines are not read — so
+    /// [`Invoice::lines`] here decodes to an empty [`List`] with
+    /// `has_more: false`, and that is not the same statement as "this invoice
+    /// has no lines". A handler that needs them calls
+    /// [`crate::InvoicesResource::retrieve`], whose response always carries
+    /// them. The empty envelope still decodes rather than failing, which is
+    /// why this returns an `Invoice` and not a narrower type.
+    ///
+    /// ```
+    /// use vpay_sdk::{Event, InvoiceStatus, KnownEventType};
+    ///
+    /// let body = serde_json::json!({
+    ///     "id": "evt_1", "object": "event", "type": "invoice.finalized",
+    ///     "created": 1_753_401_600, "livemode": false,
+    ///     "data": { "object": {
+    ///         "id": "in_1", "object": "invoice", "customer": "cus_1",
+    ///         "currency": "xaf", "status": "open", "number": "A7K3M9QP-000001",
+    ///         "amount_due": 5000, "amount_paid": 0, "amount_remaining": 5000,
+    ///         "due_date": null, "description": null, "metadata": {},
+    ///         "payment_intent": null, "hosted_invoice_url": null,
+    ///         // Empty on every `invoice.*` body — see above.
+    ///         "lines": { "object": "list", "data": [], "has_more": false,
+    ///                    "url": "/v1/invoice_items" },
+    ///         "status_transitions": { "finalized_at": 1_753_401_600, "paid_at": null,
+    ///                                 "voided_at": null, "marked_uncollectible_at": null },
+    ///         "created": 1_753_401_600, "livemode": false
+    ///     } }
+    /// });
+    /// let event: Event = serde_json::from_value(body)?;
+    ///
+    /// assert_eq!(KnownEventType::from_wire(&event.kind), Some(KnownEventType::InvoiceFinalized));
+    /// let invoice = event.invoice().expect("the payload is an invoice");
+    /// assert_eq!(invoice.status, InvoiceStatus::Open);
+    /// assert_eq!(invoice.number.as_deref(), Some("A7K3M9QP-000001"));
+    /// assert!(invoice.lines.data.is_empty(), "an event body carries no lines");
+    /// # Ok::<(), serde_json::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    /// See [`Event::payment_intent`].
+    pub fn invoice(&self) -> Result<Invoice, crate::Error> {
+        serde_json::from_value(self.data.object.clone()).map_err(|e| {
+            crate::Error::UnexpectedResponse {
+                status: 0,
+                body_prefix: format!("event.data.object did not decode as an invoice: {e}"),
             }
         })
     }
