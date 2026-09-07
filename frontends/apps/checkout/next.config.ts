@@ -23,6 +23,13 @@ const config: NextConfig = {
   // `@vpay/ui` ships raw `.ts` source (no build step, `main: './src/index.ts'`)
   // the same way `@vpay/tokens` does — added 2026-09-07 (exp26 UI revamp)
   // when this app started importing it.
+  //
+  // Declared because it is TRUE of the package, not because a gate proves it:
+  // measured on 2026-09-07 in the Lane B review, `next build` also succeeds
+  // with `@vpay/ui` removed from this list, so no mutation of this line fails
+  // anything today. Keep it anyway — Next's own docs make transpiling a
+  // source-shipping workspace package the supported arrangement, and the
+  // alternative is relying on a resolution that happens to work.
   transpilePackages: ['@vpay/tokens', '@vpay/ui'],
   output: 'standalone',
   /**

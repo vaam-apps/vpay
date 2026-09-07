@@ -822,3 +822,42 @@ screenshots.
 
 See [../status.md](../status.md) for the per-feature ledger and the reasons
 several of those rows are 🟡 where this document says "built".
+
+**Reviewed 2026-09-07 (`docs/plans/exp26-notes/lane-b-review.md`), and three
+things about this page changed as a result.**
+
+*The failure screen is readable again.* `OutcomePanel`'s `failed` branch
+renders `.alert-error`, and daisyUI 5's bumblebee paints it at **3.53:1** —
+below WCAG AA's 4.5:1 for body text, and down from the **6.82:1** the same
+alert had under daisyUI 4. That is the one screen on this page that tells a
+payer their money did not move. `@vpay/ui/src/styles.css` now corrects
+`--color-error-content` (and `--color-info-content`) as a theme token,
+unlayered so it beats daisyUI's own `@layer base` block — the same mechanism
+`src/config/theme.ts` uses at runtime for `--color-primary`. Measured in
+Chrome from the app's own compiled stylesheet: `.alert-error` **4.62:1**,
+`.alert-success` 5.12:1, `.alert-warning` 5.24:1, `.btn-primary` 5.51:1.
+`frontends/packages/ui/src/theme-contrast.test.ts` re-measures every tone from
+the compiled sheet on every run, so a daisyUI bump that moves a colour is a
+failing test rather than an unreadable screen.
+
+*The language switch has a label a payer can see again.* The migration
+replaced the visible `<label>` with an `aria-label`, which kept the accessible
+name and took the word off the screen. `LocaleSwitch` now names the control
+with a visible `<Text>` through `Select`'s `aria-labelledby`.
+
+*The brand-and-language row is a `<header>` again* on both `CheckoutView` and
+`ReturnView`, so a screen-reader user can still skip it by landmark.
+
+Also on this page and unchanged by any of it: the hydration guard
+(`layout.test.tsx`'s "renders NO explicit `<head>` element", `href`/
+`precedence` hoisting) is untouched, the popup peer and sole-origin rules are
+untouched, and the CSP header is untouched — `git diff 08d9b8e..HEAD` over
+`*frame*` and `*channel*` is empty. `just test-e2e` is **11/11 across all four
+specs**, `shop-hosted.cy.ts` — §6.5's own decisive check for the hydration
+fix — among them at 3/3.
+
+Not covered by any test, and named here rather than left implied: **Space or
+Enter on the memory opt-in's checkbox**. jsdom does not simulate a native
+`<button>`'s keyboard default action, and no Cypress spec touches this
+control. The label-click path IS measured (`@vpay/ui`'s `CheckboxLabel`
+case clicks the sentence and expects the handler).
