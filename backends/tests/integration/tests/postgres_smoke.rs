@@ -2703,3 +2703,139 @@ async fn a_negative_refund_fee_is_rejected_by_the_database() -> anyhow::Result<(
 
     Ok(())
 }
+
+/// `docs/runbooks/migrations.md`'s one-off repair for issue #76 is executed
+/// here, verbatim out of the document, against a real database deliberately
+/// put into the broken state — and the proof is that `sqlx::migrate!` refuses
+/// to run before it and runs clean after it.
+///
+/// **This test exists because the value in the runbook was wrong when first
+/// written.** It carried the SHA-384 of the migration's *original* bytes,
+/// which is exactly what a broken database already holds: the `UPDATE` would
+/// have reported `UPDATE 1`, changed nothing, and the binary would have kept
+/// exiting 78 — discovered by an on-call operator, against production, with
+/// the runbook telling them it had worked. The direction of the repair is the
+/// whole content of the fix and no reader can check it by eye; both values are
+/// 96 hex characters of noise.
+///
+/// The SQL is *parsed out of the markdown* rather than restated here. A copy
+/// in this file would pin the code to itself; the document is what an operator
+/// runs, so the document is what must be pinned to a database.
+#[tokio::test]
+async fn the_0028_repair_in_the_runbook_fixes_a_database_that_applied_the_original()
+-> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    let runbook_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../docs/runbooks/migrations.md");
+    let runbook = std::fs::read_to_string(&runbook_path)
+        .with_context(|| format!("reading {}", runbook_path.display()))?;
+
+    // The checksum a fresh database — the state every new deployment is in —
+    // records for migration 28. This is the value the repair must write.
+    let current_hex = checksum_28(&pool).await?;
+    assert!(
+        runbook.contains(&current_hex),
+        "the runbook must state the checksum a database built from the CURRENT migration files \
+         holds; it prints as {current_hex}"
+    );
+    assert!(
+        runbook.contains(ORIGINAL_0028_SHA384),
+        "the runbook must ALSO state the original file's SHA-384, or an operator cannot tell \
+         which of the two states their database is in before running anything"
+    );
+
+    // Put this database into the broken state: the one a stack brought up
+    // between #37 and #39 is in.
+    sqlx::query("UPDATE _sqlx_migrations SET checksum = decode($1, 'hex') WHERE version = 28")
+        .bind(ORIGINAL_0028_SHA384)
+        .execute(&pool)
+        .await
+        .context("rewinding migration 28's checksum to the original file's")?;
+    assert_eq!(checksum_28(&pool).await?, ORIGINAL_0028_SHA384);
+
+    // The negative control, and the reason this whole page exists: the
+    // migrator now refuses, exactly as the runbook's trigger says.
+    let refusal = sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect_err("a database holding the original 0028 checksum must be refused");
+    let refusal = refusal.to_string();
+    assert!(
+        refusal.contains("28") && refusal.contains("modified"),
+        "the refusal must be the one the runbook's trigger quotes, not some other failure: \
+         {refusal}"
+    );
+
+    // The runbook's own `UPDATE`, character for character.
+    let repair = sql_block_containing(&runbook, "UPDATE _sqlx_migrations").context(
+        "docs/runbooks/migrations.md must carry a ```sql block updating _sqlx_migrations",
+    )?;
+    // `AssertSqlSafe` because sqlx 0.9 refuses a non-`'static` query string
+    // without an explicit audit. The audit is: this string comes from a
+    // tracked markdown file in this repository, reviewed like any other source
+    // file, and running it verbatim is the entire point of the test — a
+    // paraphrase here would prove the paraphrase.
+    let repaired = sqlx::query(sqlx::AssertSqlSafe(repair))
+        .execute(&pool)
+        .await
+        .context("running the runbook's repair verbatim")?;
+    assert_eq!(
+        repaired.rows_affected(),
+        1,
+        "the runbook says to expect `UPDATE 1`"
+    );
+
+    assert_eq!(
+        checksum_28(&pool).await?,
+        current_hex,
+        "after the repair the database must hold the CURRENT file's checksum — writing the \
+         original back is a no-op against exactly the databases this repair is for"
+    );
+
+    // And the thing the operator actually wants: the binary boots again.
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .context("after the repair the migrator must run clean, which is what booting is")?;
+
+    Ok(())
+}
+
+/// SHA-384 of `0028_create-checkout-sessions.sql` as it shipped, before PR
+/// #39's `@vpay` -> `@vaam-apps` comment rename:
+///
+/// ```text
+/// git show d0b602e:backends/migrations/0028_create-checkout-sessions.sql | sha384sum
+/// ```
+///
+/// A literal because it is a fact about git history, which cannot change. The
+/// value the repair *writes* is not a literal anywhere in this test — it is
+/// read off a freshly migrated database.
+const ORIGINAL_0028_SHA384: &str = "f4d1a8e11606df3e3d0b3fb2a0a0483668b53813fb1baa6598ca3fdc2e105db162c4d43e8ea0e2790a4baecbce8ae252";
+
+/// Migration 28's stored checksum as lowercase hex — the spelling
+/// `encode(checksum, 'hex')` gives an operator following the runbook, so the
+/// test compares what they would compare.
+async fn checksum_28(pool: &PgPool) -> anyhow::Result<String> {
+    let raw: Vec<u8> =
+        sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = 28")
+            .fetch_one(pool)
+            .await
+            .context("migration 28's checksum, as sqlx::migrate! recorded it")?;
+    Ok(raw.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// The first ```` ```sql ```` fenced block in `markdown` containing `needle`.
+///
+/// Parsing the document instead of restating its SQL is the point of the test
+/// that calls this: a runbook nothing executes is a procedure nobody has
+/// checked.
+fn sql_block_containing(markdown: &str, needle: &str) -> Option<String> {
+    markdown
+        .split("```sql\n")
+        .skip(1)
+        .filter_map(|rest| rest.split_once("```"))
+        .map(|(block, _)| block.to_string())
+        .find(|block| block.contains(needle))
+}
