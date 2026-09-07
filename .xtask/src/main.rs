@@ -107,6 +107,7 @@ fn main() -> ExitCode {
         "verify-serde" => verify_serde(&root),
         "verify-repositories" => verify_repositories(&root),
         "verify-toolchain" => verify_toolchain(&root),
+        "verify-migrations" => verify_migrations(&root),
         "verify-citations" => verify_citations(&root),
         // `verify-citations` is deliberately absent from `verify-all`: it
         // needs the network, and `verify-all` is what an offline gate list
@@ -119,7 +120,8 @@ fn main() -> ExitCode {
             .and_then(|()| verify_npm_scope(&root))
             .and_then(|()| verify_serde(&root))
             .and_then(|()| verify_repositories(&root))
-            .and_then(|()| verify_toolchain(&root)),
+            .and_then(|()| verify_toolchain(&root))
+            .and_then(|()| verify_migrations(&root)),
         // Not `Result`-shaped like the three gates above, and that is the
         // point: there is nothing here for a caller to fail on. See
         // `verify_docs`.
@@ -133,7 +135,7 @@ fn main() -> ExitCode {
                 "usage: cargo xtask \
                  <verify-no-mocks|verify-status|verify-errors|verify-sdk-parity|verify-links\
                  |verify-npm-scope|verify-serde|verify-repositories\
-                 |verify-toolchain|verify-all>\n\
+                 |verify-toolchain|verify-migrations|verify-all>\n\
                  \x20      cargo xtask verify-citations   (a gate; needs `gh` and the network)\n\
                  \x20      cargo xtask verify-docs        (a report; never fails)\n\
                  \x20      cargo xtask gen-signing-key --out <dir>"
@@ -4745,6 +4747,14 @@ const TOOLCHAIN_FILE: &str = "rust-toolchain.toml";
 /// build context exists.
 const TOOLCHAIN_IMAGE_FILE: &str = "backends/Dockerfile";
 
+/// The directory where migration files are stored.
+const MIGRATIONS_DIR: &str = "backends/migrations";
+
+/// The manifest file that lists the SHA256 hashes of all migration files.
+/// Applied migrations are immutable; a changed hash means the file was edited
+/// after it shipped, and every database that applied the original fails boot.
+const MIGRATIONS_MANIFEST: &str = "backends/migrations/MANIFEST.sha256";
+
 /// `backends/Dockerfile`'s builder image is the compiler `rust-toolchain.toml`
 /// pins, and nothing else.
 ///
@@ -4840,6 +4850,136 @@ fn verify_toolchain(root: &Path) -> Result<(), String> {
         agreed.join(", ")
     );
     Ok(())
+}
+
+/// Migration files are immutable: an applied migration cannot be edited.
+///
+/// This gate verifies that:
+/// 1. Every migration file's SHA256 matches its entry in the manifest
+/// 2. No migration file exists without a manifest entry
+/// 3. No manifest entry exists for a file that does not exist
+///
+/// The manifest is generated once by `just migrations-manifest`, which refuses
+/// to change existing entries (it may only append), so the gate cannot be
+/// satisfied by regenerating after an edit.
+fn verify_migrations(root: &Path) -> Result<(), String> {
+    let manifest_path = root.join(MIGRATIONS_MANIFEST);
+    let manifest_text = fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("{MIGRATIONS_MANIFEST}: {e}"))?;
+
+    let migrations_dir = root.join(MIGRATIONS_DIR);
+
+    let mut problems = Vec::new();
+    let mut manifest_entries = std::collections::BTreeMap::new();
+
+    // Parse the manifest: hash  filename (two spaces between hash and name)
+    for line in manifest_text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.split("  ").collect();
+        if parts.len() != 2 {
+            problems.push(format!("{MIGRATIONS_MANIFEST}: malformed line (expected '<hash>  <filename>'): {line}"));
+            continue;
+        }
+        let hash = parts[0];
+        let filename = parts[1];
+
+        if hash.len() != 64 {
+            problems.push(format!(
+                "{MIGRATIONS_MANIFEST}: invalid hash for {filename} (expected 64 hex chars, got {}): {hash}",
+                hash.len()
+            ));
+            continue;
+        }
+
+        manifest_entries.insert(filename.to_string(), hash.to_string());
+    }
+
+    // Check that every file in the directory has a manifest entry and hash matches
+    if let Ok(entries) = fs::read_dir(&migrations_dir) {
+        let mut found_files = std::collections::BTreeSet::new();
+
+        for entry in entries {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                if path.is_file() {
+                    let filename = path.file_name().unwrap().to_string_lossy().to_string();
+
+                    // Skip the manifest file itself
+                    if filename == "MANIFEST.sha256" {
+                        continue;
+                    }
+
+                    found_files.insert(filename.clone());
+
+                    // Check if file is in manifest
+                    if let Some(expected_hash) = manifest_entries.get(&filename) {
+                        // Verify the hash matches
+                        let file_text = match fs::read(&path) {
+                            Ok(text) => text,
+                            Err(e) => {
+                                problems.push(format!("{}:  cannot read: {e}", path.display()));
+                                continue;
+                            }
+                        };
+
+                        let actual_hash = sha256(&file_text);
+
+                        if actual_hash != *expected_hash {
+                            problems.push(format!(
+                                "{}/{}: file has been edited (hash changed). Applied migrations are immutable. Do not edit migration files; if you must fix a typo, create a new migration that corrects it.",
+                                MIGRATIONS_DIR,
+                                filename
+                            ));
+                        }
+                    } else {
+                        problems.push(format!(
+                            "{}/{}: file exists but is not in {MIGRATIONS_MANIFEST} — add this line to the manifest:\n  {}  {}",
+                            MIGRATIONS_DIR,
+                            filename,
+                            sha256(&fs::read(&path).unwrap_or_default()),
+                            filename
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Check that every manifest entry exists as a file
+        for (filename, _hash) in &manifest_entries {
+            if !found_files.contains(filename) {
+                problems.push(format!(
+                    "{MIGRATIONS_MANIFEST}: entry for {filename} does not exist in {MIGRATIONS_DIR}/"
+                ));
+            }
+        }
+    } else {
+        return Err(format!("{MIGRATIONS_DIR}: cannot read directory"));
+    }
+
+    if problems.is_empty() {
+        println!(
+            "verify-migrations: ok — {} migration file(s) in {MIGRATIONS_DIR}/ all match their entries in {MIGRATIONS_MANIFEST}",
+            manifest_entries.len()
+        );
+        Ok(())
+    } else {
+        Err(format!(
+            "migrations not immutable:\n  - {}",
+            problems.join("\n  - ")
+        ))
+    }
+}
+
+/// Compute SHA256 hash of the given bytes and return it as a hex string.
+fn sha256(data: &[u8]) -> String {
+    use sha2::{Sha256, Digest};
+
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let result = hasher.finalize();
+    format!("{:x}", result)
 }
 
 /// The `channel` value, read the way `.github/workflows/ci.yml` reads it.

@@ -2379,6 +2379,25 @@ on 2026-09-05**, which brought [ADR-0016](adr/0016-engineering-standards.md)'s
 branch's ten, all in `xtask` (184 → 194). `verify-toolchain` is the **tenth**
 gate after that rebase, not the eighth it was written as.
 
+### Migration manifest — applied migrations are immutable
+
+**Landed.** `backends/migrations/MANIFEST.sha256` records the SHA256 hash of each
+migration file. `verify-migrations` (the **eleventh** gate in `just verify`, new
+2026-09-07) fails the build if:
+
+- Any migration file has been edited (hash changed) — applied migrations cannot be
+  edited because every database that applied the original will fail boot.
+- A new migration file exists without a manifest entry.
+- The manifest lists a file that no longer exists.
+
+`just migrations-manifest` regenerates the manifest but **refuses to change existing
+lines** — it may only append new ones. This makes the gate impossible to satisfy by
+regenerating after an accidental edit. See `docs/runbooks/migrations.md` for the
+add-and-repair rules.
+
+**What was caught:** This gate exists because migration 0028 was edited by PR #39
+(the npm rename) after it shipped, breaking every database created before that commit.
+
 ### sqlx 0.8 -> 0.9 (2026-09-05)
 
 **Landed.** `[workspace.dependencies] sqlx` is `0.9` and `Cargo.lock` resolves
