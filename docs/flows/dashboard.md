@@ -175,6 +175,27 @@ writes it to the `staff_sessions` row, and every render reads it back from
 `GET /dash/v1/staff/session` — which is exactly what makes signing out a
 revocation: delete the row and there is nowhere left to read it from.
 
+**It is re-minted when it expires, and it has to be.** That token's TTL is
+fifteen minutes (`vpay_api::op::ACCESS_TOKEN_TTL_SECS`) and a staff session's
+is thirty minutes idle, twelve hours absolute — so a page that used the token
+on the row and nothing else answered "the bearer token is invalid, expired"
+for the rest of every sign-in past its first quarter of an hour. That is what
+it did until the exp28 review measured it. `src/server/dash-read.ts` retries a
+`401` once, after running the same authorization-code leg the first render
+runs, which re-reads the staff row and re-checks the account, the merchant
+binding and `password_change_required` — so re-minting is *more* checking than
+carrying one token for twelve hours, not less. A `403` is never retried.
+
+**There is one route that is not a page**, and it exists for a Next rule
+rather than for a person: `GET /signed-out` clears the session cookie and
+redirects to `/login`. A page may not write a cookie — `cookies().set` throws
+outside a Server Action or a Route Handler — so a protected page that has
+decided a session is unusable redirects here instead of clearing it itself.
+Doing the clearing in the render is what made every such refusal a `500` until
+the exp28 review. It forgets the cookie only for a top-level navigation
+(`Sec-Fetch-Dest`), because a `GET` that clears a cookie is otherwise the
+`<img src>` forced-logout the sign-out button is a POST to avoid.
+
 **What the pages deliberately do not show:**
 
 - **No "Rail" column on the list.** `GET /dash/v1/payment_intents` returns no

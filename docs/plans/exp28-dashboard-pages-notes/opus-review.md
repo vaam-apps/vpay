@@ -307,9 +307,33 @@ different problem and belongs to whoever owns `select.test.tsx`.
 landed before it was worth spending forty minutes on a head nobody would
 merge.
 
-### On the review head
+### On the review head `2952fe2`
 
-Recorded at the end of this file.
+Run from nothing, in the review's own compose project on non-default ports.
+`2952fe2` is the branch's **last code-bearing commit**; the commits after it
+change only `docs/`.
+
+| recipe | exit | measured |
+|---|---|---|
+| `fmt-check` | 0 | |
+| `clippy` | 0 | `--workspace --all-targets -D warnings` |
+| `verify` | 0 | eleven gates, `verify-ui` among them; `verify-docs` advisory |
+| `test-rust` | 0 | **1551 run, 1551 passed, 0 skipped** (906 s) |
+| `test-doc` | 0 | |
+| `verify-ignored` | 0 | 0 ignored (expected 0), 46 binaries (expected 46), 1551 total (floor 1080) |
+| `lint-web` | 0 | |
+| `test-web` | 0 | **1244 across nine projects** — `@vpay/dashboard` **150 in 20 files**, `@vpay/ui` 74 (green this run; F11 did not recur), `@vpay/checkout` 507, `examples/shop` 102, `@vaam-apps/vpay-sdk` 190, `@vaam-apps/vpay-stripe-js` 146, `@vpay/config` 63, `@vpay/tokens` 8, `@vpay/api-client` 4 |
+| `deny` | 0 | advisories, bans, licenses, sources all ok |
+| **`just ci`** | **0** | |
+
+`just test-e2e`, same head, from nothing in the same project: **exit 0 — 16
+Cypress tests across four specs, 16 passing, 0 failing, 0 skipped.**
+`checkout.cy.ts` 1, `dashboard.cy.ts` **8**, `shop-hosted.cy.ts` 3 in pass 1;
+`shop-embedded.cy.ts` 4 in pass 2. Stack torn down with `down -v`; no
+container and no volume left behind, and the user's `vpay-demo` was never
+addressed.
+
+The `staff_sign_in` suite specifically: **17 tests, 17 passed, 0 skipped.**
 
 ## Maintainer decisions
 

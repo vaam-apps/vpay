@@ -111,10 +111,28 @@ form that answered differently for either would be an account-enumeration
 oracle.
 
 Sign-in is rate limited per email **and** per IP, in-process, fixed window,
-ten attempts per five minutes, refused **before** any credential work happens.
-Both counters move on every attempt including a refused one — short-circuiting
-would let an attacker who exhausted one address keep hammering a thousand
-others from the same host with that host's counter frozen.
+ten attempts per five minutes. `POST /staff/login` is refused **before** any
+credential work happens, because an attempt over budget must not cost an
+argon2id verification. Both counters move on every attempt including a refused
+one — short-circuiting would let an attacker who exhausted one address keep
+hammering a thousand others from the same host with that host's counter
+frozen.
+
+**The second factor spends from the same budget, and it did not until
+2026-09-07** (the exp28 review). The limiter was wired to `/staff/login` alone,
+and a TOTP code is six digits with three of them live at any instant — on a
+path that costs one HMAC-SHA1 and no argon2id, so a caller holding one phished
+password and the `pending_totp` session it produces could guess at whatever
+rate the network allowed. Measured against a real stack: thirty consecutive
+wrong codes, thirty `401`s, no `429`.
+
+`POST /staff/totp` counts on the **failure** path rather than before the
+verification, which is the one place it differs from the password leg. The
+budget is shared between the two, behind a proxy the per-IP half of it is
+shared by the whole deployment, and a correct code that spent a unit would
+have halved how many people can sign in per window to close a hole only wrong
+codes exploit. There is no argon2id here to protect, so the count can wait
+until the answer is known.
 
 **The limits are per replica.** Three replicas admit three times the attempts
 one does. That is the honest cost of in-process limiting; the alternative — a
