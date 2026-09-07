@@ -507,14 +507,15 @@ jobs:
       # `application-sandbox.yml` is exercised by nothing in this workflow
       # even though `sandbox` is the CLI's default profile.
       #
-      # That is currently inert, and only currently. The sandbox overlay sets
-      # exactly two things the demo overlay does not: `deployment.name`
-      # (cosmetic) and `dashboard_client.redirect_uris`, which points the OIDC
-      # callback at `http://localhost:3000/dash/v1/callback`. The Cypress spec
-      # asserts the dashboard's scaffold notice and never starts a login, so
-      # no redirect URI is read on either profile. The day a spec signs in,
-      # this job stops covering the profile it thinks it covers — see
-      # docs/status.md's "GitHub Actions" row.
+      # **That stopped being inert on 2026-09-07 (exp28), and this paragraph
+      # used to end "the day a spec signs in, this job stops covering the
+      # profile it thinks it covers".** `dashboard.cy.ts` signs in now, so a
+      # redirect URI *is* read, and it is the demo overlay's — `just
+      # gen-demo-keys` writes `http://localhost:3000/dash/v1/callback` into it
+      # and refuses to keep an overlay that predates that line. The sandbox
+      # overlay's copy of the same setting is still exercised by nothing in
+      # this workflow, which is what docs/status.md's "GitHub Actions" row
+      # records.
       - name: generate throwaway OAuth keys — the OP's, and a registered merchant's
         run: just gen-demo-keys
       - name: build both images and bring up the real stack (rails stubbed by WireMock, not in-process)
@@ -540,11 +541,14 @@ jobs:
           docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml logs --no-color vpay-server
           exit 1
       - name: wait for the dashboard to answer on :3000
+        # Since exp28 the root redirects to /login (307) — a signed-out
+        # dashboard has no page at /. Follow the redirect and wait for the
+        # login page's 200, which is what a person's browser would see.
         run: |
           for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/ || true)
+            code=$(curl -sL -o /dev/null -w '%{http_code}' http://localhost:3000/ || true)
             if [ "$code" = "200" ]; then
-              echo "dashboard: / answered 200 after ${i}s"
+              echo "dashboard: / (followed to /login) answered 200 after ${i}s"
               exit 0
             fi
             sleep 1
@@ -581,6 +585,22 @@ jobs:
               exit 1
             fi
           done
+      # The dashboard's staff member, created against the RUNNING stack.
+      #
+      # `vpay-server staff add` is the only way one is created (ADR-0017
+      # decision 1), and without it `dashboard.cy.ts` has nobody to sign in
+      # as: `cy.task('staffPassword')` throws, and five of its seven cases
+      # fail. `just test-e2e` grew this step on 2026-09-07 (exp28); this job
+      # is a second copy of the same sequence and did not, so the branch that
+      # wrote the spec was green locally and would have failed here. The
+      # recipe is called rather than its body copied, so the two cannot drift
+      # again.
+      #
+      # No `VPAY_DEMO_*` is set anywhere in this job, so the recipe's own
+      # defaults stand and it addresses the same `vpay-demo` project the
+      # `docker compose` lines above brought up.
+      - name: create the dashboard's staff member (dashboard.cy.ts signs in as them)
+        run: just demo-staff
       # VPAY_BASE_URL/VPAY_MERCHANT_CLIENT_ID/VPAY_MERCHANT_PRIVATE_KEY_PATH
       # are read by `checkout.cy.ts`'s `cy.task('mintCheckoutPaymentIntent')`
       # (`frontends/tests/e2e/cypress/tasks/checkoutTasks.ts`) to mint a real
@@ -609,6 +629,15 @@ jobs:
           VPAY_ORANGE_STUB_URL: http://localhost:8082
           VPAY_MERCHANT_CLIENT_ID: demo-merchant
           VPAY_MERCHANT_PRIVATE_KEY_PATH: ${{ github.workspace }}/.e2e/demo-merchant/oauth-signing-key.pem
+          # The staff member the step above created. The address is public;
+          # the PASSWORD is a path and never a value — `dashboardTasks.ts`
+          # reads the file in Node, so the credential is not in `Cypress.env`,
+          # not in a `cypress run` argument list and not in this job's log.
+          # Both are the `demo_staff_email` / `demo_staff_password_file`
+          # defaults from the justfile, spelled here so a change to either
+          # fails loudly rather than inside a 60-second Cypress timeout.
+          VPAY_STAFF_EMAIL: ada@example.test
+          VPAY_STAFF_PASSWORD_FILE: ${{ github.workspace }}/.e2e/vpay-demo/staff-password.txt
       # The official `stripe` package, driven against this same running stack
       # through `createStripeAuthenticator` (docs/flows/stripe-sdk-compat.md).
       # Out of process on purpose: half of what it proves is header behaviour

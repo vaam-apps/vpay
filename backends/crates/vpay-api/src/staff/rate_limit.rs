@@ -54,6 +54,37 @@
 //! (`the_sign_in_rate_limit_is_per_source_address`), which drives two
 //! loopback source addresses through a real socket.
 //!
+//! # Which endpoints spend from it, and the one that did not
+//!
+//! Both legs of a sign-in: [`crate::staff::login`] and
+//! [`crate::staff::totp_step`], on the same per-email key — `login`
+//! lower-cases the address it was given and `totp_step` uses the row's, which
+//! migration `0035` constrains to lower case, so one account is one budget
+//! across both.
+//!
+//! `totp_step` did **not**, until the exp28 review (2026-09-07). ADR-0017
+//! decision 2 says "sign-in is rate limited", this module's whole subject is
+//! bounding a guess, and the second factor — six digits, three of them live at
+//! any instant given `Totp`'s one-step skew, and no argon2id anywhere on that
+//! path — was the cheapest thing in the flow to guess and the only one nothing
+//! bounded. Measured against a real stack: thirty consecutive wrong codes,
+//! thirty `401`s, no `429`. The end-to-end guard is
+//! `the_second_factor_is_rate_limited_and_not_only_the_password`, and deleting
+//! the `check` from `totp_step` makes it read `[401 × 12]`.
+//!
+//! It is the same class of defect as the `ConnectInfo` one below: a limiter
+//! that is correct and is not called from where it is needed.
+//!
+//! `totp_step` spends a unit only on a **wrong** code, where `login` spends
+//! one on every attempt. That asymmetry is deliberate: the budget is shared
+//! between the two legs, and behind a reverse proxy the per-IP half of it is
+//! shared by every staff member in the deployment (see the last paragraph of
+//! this header), so counting successful second factors would have halved how
+//! many people can sign in per window in order to close a hole only wrong
+//! codes exploit. `login` counts every attempt because an attempt over budget
+//! must not cost an argon2id verification; `totp_step` costs one HMAC-SHA1,
+//! so it can wait until the answer is known.
+//!
 //! **The address is the transport peer.** No `X-Forwarded-For`, no
 //! `Forwarded`: both are caller-supplied on an unauthenticated route, and
 //! trusting either without an authenticated proxy allow-list would hand an

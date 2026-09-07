@@ -369,14 +369,46 @@ pub(crate) async fn login(
 
 /// Step 2: the code, and — on a first sign-in — the enrolment it completes.
 ///
+/// # Rate limited, and it was not until the exp28 review
+///
+/// [ADR-0017](../../../../docs/adr/0017-staff-authentication.md) decision 2
+/// says "**sign-in** is rate limited per email and per IP … failing closed
+/// with `429`", and the limiter was wired to [`login`] alone. A second factor
+/// is **six digits**, [`crate::staff_auth::totp::Totp::verify`] accepts a
+/// one-step skew either side (three live codes at any instant), and nothing
+/// here costs an argon2id verification — so a caller holding one password and
+/// one `pending_totp` session could guess the second factor at whatever rate
+/// the network allowed. Measured on the real stack before this check existed:
+/// thirty consecutive wrong codes, thirty `401`s, no `429` (exp28 review,
+/// finding F3).
+///
+/// The key is `staff.email` — the row's, which migration `0035` constrains to
+/// lower case, and [`login`] lower-cases the *request's* address before using
+/// it as the same key. So the two legs of one sign-in share one budget, which
+/// is what "per email" has to mean if it is to bound guessing at an account
+/// rather than at an endpoint.
+///
+/// **Only a WRONG code spends from it**, and that is the one place this
+/// differs from [`login`]. The budget is shared, and behind a reverse proxy
+/// the per-IP half of it is shared by every staff member in the deployment
+/// (ADR-0017's Consequences) — so a second factor that spent a second unit on
+/// every *successful* sign-in would have halved how many people can sign in
+/// per window, to close a hole that only wrong codes exploit. [`login`]
+/// checks first because an attempt over budget must not cost an argon2id
+/// verification; there is no argon2id on this path, only one HMAC-SHA1, so
+/// the same reason does not apply and the check can wait until the answer is
+/// known.
+///
 /// # Errors
 ///
+/// [`ApiError::StaffSignInRateLimited`] over the budget;
 /// [`ApiError::StaffSignInRefused`] for a session at the wrong stage, an
 /// expired or idle session, a disabled account, a wrong code, and a
 /// **replayed** one; [`ApiError::Db`] if Postgres fails.
 pub(crate) async fn totp_step(
     State(state): State<crate::AppState>,
     headers: HeaderMap,
+    peer: Option<axum::Extension<ConnectInfo<SocketAddr>>>,
     Form(request): Form<TotpRequest>,
 ) -> Result<Json<TotpResponse>, ApiError> {
     let login = state.staff_login()?;
@@ -424,6 +456,16 @@ pub(crate) async fn totp_step(
 
     let totp = totp::Totp::new(secret);
     let Some(step) = totp.verify(request.code.trim(), now.unix_timestamp()) else {
+        // A wrong code is what the budget exists for, and it is the only thing
+        // that spends from it here — see this function's header. Counted
+        // after the verification rather than before it because the
+        // verification is one HMAC and the reason `login` checks first (not
+        // spending an argon2id on an attempt over budget) does not apply.
+        let peer_ip = peer.map(|axum::Extension(ConnectInfo(peer))| peer.ip());
+        if login.limiter.check(&staff.email, peer_ip, now) == rate_limit::Verdict::Limited {
+            tracing::warn!("a staff second-factor attempt was refused by the rate limiter");
+            return Err(ApiError::StaffSignInRateLimited);
+        }
         return Err(refused("totp code"));
     };
 

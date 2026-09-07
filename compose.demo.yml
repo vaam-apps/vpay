@@ -260,30 +260,46 @@ services:
     # its request journal runs on the host. See the header of this file.
     ports: !override ["127.0.0.1:${VPAY_DEMO_RECEIVER_PORT:-8083}:8080"]
 
-  # NOTE ON `dashboard`. This file does not mention it, and `just demo-up`
-  # does not start it — the recipe names the eight services the walkthrough
-  # needs (postgres, both rail stubs, the receiver, the server, the worker,
-  # the checkout page and the shop). Two reasons, one of them honest rather
-  # than practical: building the dashboard costs minutes, and per
-  # docs/status.md it renders a static scaffold notice and makes no call to
-  # `vpay-server` — there is no data source to show, so a demo that booted it
-  # would be inviting a reader to look at a screen that cannot show the
-  # payments the walkthrough just made (docs/runbooks/demo.md says so out
-  # loud). Its `3000:3000` publication is therefore left exactly as
-  # compose.e2e.yml has it: unreached by the demo, and still there for
-  # `docker compose -f compose.yml -f compose.e2e.yml up`.
+  # THE DASHBOARD, AND THE DAY THIS FILE SAID TO BIND IT.
   #
-  # It is therefore also the ONE publication in this file set still on
-  # 0.0.0.0 — `docker compose … config` over the three files reports
-  # `host_ip: 127.0.0.1` for all five services this file publishes and
-  # `0.0.0.0` for `dashboard`. Stated rather than fixed: `just demo` never
-  # starts it (`demo_services`), and what it serves if you start it by hand
-  # is the static scaffold notice, which reads no database and calls no API.
-  # Bind it here the day it grows a data source.
+  # Until 2026-09-07 this file did not mention `dashboard` at all, `just
+  # demo-up` did not start it, and its `0.0.0.0:3000` publication from
+  # compose.e2e.yml was left alone with the reason written out here: the demo
+  # never started it, and what it served if you started it by hand was a
+  # static scaffold notice that read no database and called no API. The note
+  # ended "Bind it here the day it grows a data source."
   #
-  # It does mean 3000 is spoken for in the file set, which is why
-  # `demo_shop_port` defaults to 3001 rather than to the 3000 the shop's
-  # container listens on.
+  # **That day was exp28**, in the same commit that added `dashboard` to
+  # `demo_services` — and the binding did not move with it. Measured on the
+  # machine this was written on, with the demo stack up:
+  #
+  #     $ curl -o /dev/null -w '%{http_code}' http://10.10.0.227:3000/
+  #     307                       <- the dashboard, from the LAN
+  #     $ curl -o /dev/null -w '%{http_code}' http://10.10.0.227:18190/healthz
+  #     (7) Failed to connect     <- vpay-server, as every other service here
+  #
+  # So for the length of one review, `just demo` published a real staff
+  # sign-in form, a real session cookie and a merchant's payments list on
+  # every interface the host has, while the API behind it was on loopback.
+  # That is precisely the property this file's header claims for every
+  # publication in it, and it is why the claim is now true of this one too.
+  #
+  # `!override` for the reason `vpay-server`'s `ports:` gives: compose APPENDS
+  # `ports:` across files, so a plain list would leave compose.e2e.yml's
+  # `3000:3000` published as well and the loopback binding would buy nothing.
+  #
+  # The port itself is NOT a `demo_*` variable and cannot become one: the
+  # dashboard client's registered `redirect_uri` names 3000 and authkestra
+  # matches a redirect URI byte for byte. Two demo stacks therefore cannot
+  # both serve a dashboard — the justfile's `demo_services` says so — and
+  # 3000 being spoken for in this file set is why `demo_shop_port` defaults
+  # to 3001 rather than to the 3000 the shop's container listens on.
+  #
+  # CI's e2e job drives every one of these ports as `http://localhost:…` from
+  # the same host, so loopback costs it nothing.
+  dashboard:
+    ports: !override ["127.0.0.1:3000:3000"]
+
   vpay-worker:
     environment:
       VPAY_PROFILE: demo

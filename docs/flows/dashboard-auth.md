@@ -111,10 +111,28 @@ form that answered differently for either would be an account-enumeration
 oracle.
 
 Sign-in is rate limited per email **and** per IP, in-process, fixed window,
-ten attempts per five minutes, refused **before** any credential work happens.
-Both counters move on every attempt including a refused one — short-circuiting
-would let an attacker who exhausted one address keep hammering a thousand
-others from the same host with that host's counter frozen.
+ten attempts per five minutes. `POST /staff/login` is refused **before** any
+credential work happens, because an attempt over budget must not cost an
+argon2id verification. Both counters move on every attempt including a refused
+one — short-circuiting would let an attacker who exhausted one address keep
+hammering a thousand others from the same host with that host's counter
+frozen.
+
+**The second factor spends from the same budget, and it did not until
+2026-09-07** (the exp28 review). The limiter was wired to `/staff/login` alone,
+and a TOTP code is six digits with three of them live at any instant — on a
+path that costs one HMAC-SHA1 and no argon2id, so a caller holding one phished
+password and the `pending_totp` session it produces could guess at whatever
+rate the network allowed. Measured against a real stack: thirty consecutive
+wrong codes, thirty `401`s, no `429`.
+
+`POST /staff/totp` counts on the **failure** path rather than before the
+verification, which is the one place it differs from the password leg. The
+budget is shared between the two, behind a proxy the per-IP half of it is
+shared by the whole deployment, and a correct code that spent a unit would
+have halved how many people can sign in per window to close a hole only wrong
+codes exploit. There is no argon2id here to protect, so the count can wait
+until the answer is known.
 
 **The limits are per replica.** Three replicas admit three times the attempts
 one does. That is the honest cost of in-process limiting; the alternative — a
@@ -232,8 +250,10 @@ the rest of its TTL — see "The session, and what signing out actually does".
 
 ## Status
 
-**A staff member can sign in.** That sentence has never been in this document
-before, and it is the one a reader should carry away.
+**A staff member can sign in, and since 2026-09-07 they can do it in a
+browser.** The first half of that sentence entered this document with
+ADR-0017; the second half is exp28's, and until it was true everything below
+was reachable over HTTP and by nothing a person could click.
 
 ~~**No login has ever been performed.**~~ Corrected 2026-09-07
 ([ADR-0017](../adr/0017-staff-authentication.md)). Thirteen cases in
@@ -284,10 +304,29 @@ What is built, in the order a request meets it:
 
 **What is still not built, and none of it is implied by the above:**
 
-1. **The pages.** `frontends/apps/dashboard` is unchanged: still the scaffold,
-   still saying so on screen, still zero tests, and `dashboard.cy.ts` still
-   asserts the scaffold notice. Everything above is reachable over HTTP and by
-   nothing a person can click. See [dashboard.md](dashboard.md).
+1. ~~**The pages.**~~ **Built 2026-09-07 (exp28).** `frontends/apps/dashboard`
+   serves `/login`, `/login/totp` (with the enrolment QR and the secret as
+   text on a first sign-in), `/login/password`, `/payments` and
+   `/payments/{id}`. It is the OAuth client decision 4 describes: the session
+   cookie is httpOnly, Secure, SameSite=Lax on its own origin, the app's own
+   server follows the `/authorize` `302` and exchanges the code, and the
+   `/dash/v1` access token is read back out of the `staff_sessions` row on
+   every render rather than kept in the app — which is what makes signing out
+   a revocation in practice and not only in the schema.
+
+   **There is no route at `redirect_uri`, and nothing is missing.** Decision 4
+   has the app's own server follow the redirect, so that string is an
+   identifier the two legs must spell identically rather than a page. It is a
+   thing a reader will go looking for, so it is said here as well as in
+   [dashboard.md](dashboard.md).
+
+   `dashboard.cy.ts` drives the whole of the flow above through a browser
+   against the real stack, and computes its TOTP codes from the secret **the
+   enrolment screen displayed** — so what it proves is that an authenticator
+   app enrolled from that QR would work, rather than that a test secret
+   verifies against itself. `just demo-staff` is what creates the staff member
+   it signs in as; `vpay-server staff add` is still the only way one is
+   created.
 2. **No sweep.** Nothing deletes an expired `staff_sessions` or
    `oauth_authorization_codes` row on a schedule. Expired rows are refused on
    read and removed by the sign-out cascade; the indexes a sweep would need

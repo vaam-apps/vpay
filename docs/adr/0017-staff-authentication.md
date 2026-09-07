@@ -113,6 +113,22 @@ rather than a lockout, because a durable lockout is a denial of service an
 attacker triggers by guessing at somebody else's address. The limits are per
 replica; the honest reading of that is in Consequences.
 
+**"Sign-in" is both legs, and it was one leg until 2026-09-07.** The limiter
+was called from `POST /staff/login` and from nowhere else, so the *second
+factor* — six digits, three of them live at any instant given the one-step
+skew, on a path that costs no argon2id verification — was the cheapest
+credential in this design to guess and the only one nothing bounded. A caller
+holding one phished password and one `pending_totp` session could try codes at
+line rate; measured against a real stack, thirty consecutive wrong codes
+answered thirty `401`s and no `429`. `POST /staff/totp` spends from the same
+per-email budget now, on a **wrong** code only
+(`the_second_factor_is_rate_limited_and_not_only_the_password`): the budget is
+shared between the two legs and behind a proxy the per-IP half is shared by
+the whole deployment, so counting successful second factors would have halved
+how many people can sign in per window to close a hole only wrong codes
+exploit. This paragraph records that the one above it was a claim about the
+design and not about the code for as long as the login existed.
+
 ### 3. The OP serves the authorization-code grant with PKCE, for the dashboard client only
 
 vpay supplies the authenticated `Identity` from the session established by

@@ -1,4 +1,18 @@
+import { cleanup } from '@testing-library/react';
+import { afterEach } from 'vitest';
+
 import '@testing-library/jest-dom/vitest';
+
+/**
+ * Unmount between tests.
+ *
+ * Testing Library only registers this itself when `globals` is on, and this
+ * app's `vitest.config.ts` deliberately keeps it off. Without it every render
+ * in a file accumulates in one `document.body`, so `getByRole` finds the
+ * previous test's copy of a control and a suite that is really passing
+ * reports "found multiple elements".
+ */
+afterEach(cleanup);
 
 /**
  * jsdom does not implement a handful of browser APIs Base UI's interactive
