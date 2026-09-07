@@ -254,9 +254,13 @@ Six steps, the fourth of which is a table:
 6. `GET /v1/account_holders` — the three-way answer a name lookup has.
 
 **Every outcome is chosen at the rail stub, never in the demo.** MTN's is
-selected by the payer's MSISDN (a documentation number in the `2376000000xx`
-block) and Orange's by the amount, because those are the only fields of each
-rail's protocol a merchant actually controls. Nothing rewrites stored state to
+selected by the payer's MSISDN and Orange's by the amount, because those are
+the only fields of each rail's protocol a merchant actually controls. The
+three MSISDNs the walkthrough pays from — `237600000ce0`, `237600000f01`,
+`237600000f02` — are **not phone numbers**: the last three characters are a
+hex steering code the stub keys its scenario on, and step 6 shows
+`GET /v1/account_holders` refusing one of them with a `400` because it is not
+a Cameroon E.164 number. Nothing rewrites stored state to
 make an outcome happen. The stubs are WireMock containers reached over HTTP
 exactly as a real rail would be — that is the rule in [AGENTS.md](AGENTS.md): a
 stub rail is a *host*, never a linked implementation — and **MTN's and Orange's
