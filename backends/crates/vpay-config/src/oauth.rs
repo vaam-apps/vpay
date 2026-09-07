@@ -37,18 +37,34 @@ use serde_json::Value as JsonValue;
 /// shapes that failure takes and why it is fatal at boot instead.
 pub const MERCHANT_AUDIENCE: &str = "vpay:v1";
 
-/// The `aud` value every `/dash/v1` access token must carry.
+/// The claim a `/dash/v1` access token carries the merchant binding in.
 ///
-/// Here beside [`MERCHANT_AUDIENCE`] and for the same reason: it has to be
-/// one string in one place. `vpay_api::resource_auth::Surface::Dashboard`
-/// returned this as a **local literal** until 2026-09-06, with a doc comment
-/// saying so — nothing registered or validated a dashboard token, so there
-/// was no second party to disagree with. There is now:
-/// [`DashboardClient::merchant_id`] binds the dashboard client to a tenant,
-/// [`crate::ConfigError::MerchantClaimsDashboardAudience`] refuses a merchant
-/// registration that lists this value, and `/dash/v1`'s resource validator
-/// requires it. Three parties, one constant.
-pub const DASHBOARD_AUDIENCE: &str = "vpay:dash/v1";
+/// **This is what replaced `DASHBOARD_AUDIENCE` on 2026-09-07**, and the
+/// replacement is [ADR-0017](../../../../docs/adr/0017-staff-authentication.md)
+/// decision 3 rather than a rename. The constant `vpay:dash/v1` existed
+/// because `Surface::Dashboard`'s validator demanded a literal audience; the
+/// authorization-code grant mints `aud = <client_id>` and has no
+/// requested-audience path at all
+/// (`authkestra-op-0.7.1/src/handlers/token.rs`, step 7), so a token from the
+/// only grant that can ever produce a dashboard credential would never have
+/// carried it. The validator was changed to expect what the grant produces:
+/// the audience is now [`DashboardClient::client_id`], passed to
+/// `vpay_api::resource_auth::JwtValidator::new` as a value rather than looked
+/// up from a constant.
+///
+/// What a constant is still needed for is the **tenant**. `aud` says which
+/// credential; this claim says which merchant, and
+/// `vpay_api::require_dashboard_token` refuses a token whose value here is
+/// not [`DashboardClient::merchant_id`]. It is stamped by the one grant that
+/// mints these tokens and by nothing else, which is what makes a
+/// `client_credentials` token structurally unable to satisfy it — no machine
+/// client may read the dashboard.
+///
+/// `vpay_merchant_id` and not `merchant_id`: `authkestra_engine`'s
+/// `reject_named_claim_collisions` refuses an `extra` key that collides with
+/// a named `Claims` field, and a vendor prefix is what keeps this from
+/// colliding with one a future authkestra adds.
+pub const DASHBOARD_MERCHANT_CLAIM: &str = "vpay_merchant_id";
 
 /// OAuth2 grant types this workspace's clients can be registered for.
 ///

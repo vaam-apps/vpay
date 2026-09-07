@@ -122,6 +122,44 @@ sha2.workspace = true
 # dependency simply moved from test-only to production, because the JWKS a
 # merchant verifies against is production output.
 base64 = "0.22"
+# ADR-0017's staff credentials. `argon2` is the password hash (`std` brings
+# `password-hash/std` and the `rand` default brings `password_hash::rand_core`,
+# which is the OS CSPRNG every random value in `staff_auth` is drawn from — so
+# `rand` itself stays a dev-dependency and no second CSPRNG enters the
+# shipping graph). Already resolved at exactly 0.5.3 in `Cargo.lock` via
+# `authkestra-engine`, so this adds no package: it makes an already-compiled
+# one directly importable here.
+argon2 = { version = "0.5", features = ["std"] }
+# `staff.totp_secret` is sealed with AES-256-GCM (`staff_auth::secret_box`).
+# Workspace pin, and `docs/flows/dashboard-auth.md` has listed it as an unused
+# one since Step 2 — this is its first consumer.
+aes-gcm.workspace = true
+# HMAC-SHA1, RFC 6238's default and the only algorithm every authenticator app
+# honours (`staff_auth::totp` says why SHA-256 was not taken). `hmac` is the
+# workspace pin — a second unused one this closes.
+hmac.workspace = true
+# The digest half of the same HMAC. **Pinned to 0.10, not the 0.11 already in
+# `Cargo.lock`**, and the reason is a version wall rather than a preference:
+# `hmac` 0.12 is built on `digest` 0.10, `sha1` 0.11 on `digest` 0.11, and the
+# two do not compose. `sha1` 0.11 is in the lock through CrateStack's own
+# graph; this adds `sha1` 0.10 beside it, which `deny.toml`'s
+# `multiple-versions = "warn"` reports and does not fail. Not in
+# `[workspace.dependencies]`: this is the only consumer, and SHA-1 belongs to
+# exactly one RFC in this codebase.
+sha1 = "0.10"
+# `authkestra_op::AuthorizationCode::expires_at` is `chrono::DateTime<Utc>`
+# (`authkestra-op-0.7.1/src/code.rs`), so the code store has to speak it at
+# that one boundary and converts to `time::OffsetDateTime` immediately, the
+# way `vpay-db`'s `client_assertion` already does. It was a dev-dependency of
+# this crate for exactly the same types; it is production now because the
+# dashboard code store is production. No new package: the workspace pin is
+# already in both binaries' graphs.
+chrono.workspace = true
+# Constant-time comparison of a TOTP code (`staff_auth::totp::Totp::verify`).
+# A `==` on two six-digit strings exits at the first differing byte, which is
+# a timing oracle over a six-digit space a caller may probe at will. Workspace
+# pin, already in the graph via `vpay-db`.
+subtle.workspace = true
 # `op::keys`: `oauth_signing_keys.expires_at` is a `TIMESTAMPTZ` bound as a
 # `time::OffsetDateTime` by vpay-db, so the rotation-overlap policy this
 # crate owns (`ROTATION_OVERLAP`) has to be expressed in the same units to
@@ -147,13 +185,6 @@ uuid.workspace = true
 # uses it: `error.rs`'s tests, which construct a `sqlx::Error` to prove a
 # driver's text reaches the log and not the response body.
 sqlx.workspace = true
-# Test-only: `op::refusing_stores`' unit tests construct an
-# `authkestra_op::AuthorizationCode` / `RefreshToken` / `DeviceCodeSession` to
-# offer the twelve refusing methods something to refuse, and those types are
-# chrono-typed (`authkestra-op-0.7.1/src/code.rs`). vpay's own convention is
-# the `time` crate; this stays test-only for that reason, and no shipping code
-# in this crate names chrono.
-chrono.workspace = true
 # Test-only, and deliberately the *shipping* exporter rather than
 # `metrics-util`'s `DebuggingRecorder`: the router tests assert on the
 # rendered Prometheus text, which is what a scrape of a pod actually

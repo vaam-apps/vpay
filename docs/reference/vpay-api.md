@@ -352,7 +352,7 @@ false: `require_dashboard_token` validates through a `DashboardJwtValidator`
 in front of two `GET` routes, and `vpay-server` builds one whenever the
 deployment registers a `dashboard_client` — see
 [the dashboard surface](#the-dashboard-surface-dash). What is still true is
-the sentence that matters: no grant this deployment serves can mint a token
+the sentence that mattered until 2026-09-07: no grant this deployment served could mint a token
 for that surface. `AuthenticatedDashboard`, the extractor, is mounted on
 nothing and stays that way; `/dash/v1` validates once in middleware, for the
 merchant boundary's reason.
@@ -438,10 +438,17 @@ Two `GET` routes under `/dash/v1`, added 2026-09-06. The product side is
 is [docs/flows/dashboard-auth.md](../flows/dashboard-auth.md); this page
 carries the shape decisions.
 
-**Read the first paragraph of `dash/mod.rs` before anything else**: no client
-of this deployment can obtain a token for this surface, because the
-authorization-code grant that would mint one is not served. What follows
-describes a resource server whose issuer does not exist yet.
+~~**Read the first paragraph of `dash/mod.rs` before anything else**: no
+client of this deployment can obtain a token for this surface.~~ **Corrected
+2026-09-07** ([ADR-0017](../adr/0017-staff-authentication.md)): the
+authorization-code grant *is* served, for the dashboard client and nothing
+else, and `vpay_api::staff` is the seven unauthenticated routes that produce
+the `Identity` `authkestra-op` takes as a parameter and authenticates nobody
+for. What follows describes a resource server that now has an issuer.
+
+What is still true is that **nothing a person can click reaches any of it**:
+`frontends/apps/dashboard` is the scaffold. See
+[docs/flows/dashboard.md](../flows/dashboard.md)'s "There are still no pages".
 
 Its own module rather than routes under `v1` for the reason `browser` is one:
 it is a different credential, a different tenancy rule and a different
@@ -451,28 +458,55 @@ authentication boundary. A route table shared with `/v1` would be one
 `401` without a token, which `DASH_ROUTES` must also do but for a different
 validator.
 
-### Why the `client_id` check is not redundant with the audience
+### What identifies the credential (ADR-0017), and what it replaced
 
 `require_dashboard_token` checks three things about a validated token: the
-audience (through the validator), the `client_id`, and the scope. The second
-looks redundant today and is not.
+**audience** (through the validator), the **merchant claim**, and the
+**scope**.
 
-The audience says which **surface** a token was minted for. The `sub` says
-which **credential** it was minted to. Only the second answers "may this
-caller read the tenant this deployment bound the dashboard to". There is one
-dashboard registration today and the two questions have the same answer — but
-that is a property of a YAML file, not of this code, and the day a second
-dashboard client is registered for a second tenant the `client_id` check is
-the only thing between them.
+The audience is the registered `dashboard_client.client_id`. It was the
+constant `vpay:dash/v1` until 2026-09-07, and the constant could not survive a
+login: `default_handle_authorization_code` mints with `aud = <client_id>` and
+has **no requested-audience path at all**
+(`authkestra-op-0.7.1/src/handlers/token.rs`, step 7), so no token from the
+only grant that can produce a dashboard credential would ever have carried it.
+ADR-0017 changed the *validator* to expect what the grant produces rather than
+forking the handler, and `Surface::audience()` is gone —
+`JwtValidator::new` takes the audience as a value, because it is configuration
+now and not a constant.
+
+**The merchant claim is what this middleware adds.** The token must carry
+`vpay_config::DASHBOARD_MERCHANT_CLAIM` and it must equal
+`dashboard_client.merchant_id`. Two things follow, and both are the point:
+
+- a `client_credentials` token carries no such claim, because nothing but the
+  staff grant stamps one — so **no machine client may read this surface**, by
+  construction rather than by a list. That is a tightening over what stood
+  before, and `a_client_credentials_token_is_refused_on_dash_v1` pins it;
+- the claim is *compared*, never *used*. The `MerchantScope` still comes from
+  the binding, so a forged claim buys a `403` rather than another merchant's
+  rows.
+
+**What this replaced**, recorded because the replacement is the interesting
+part: the middleware used to compare the token's `sub` to `binding.client_id`.
+That is right under `client_credentials`, where
+`TokenManager::issue_client_token` sets `sub` to the client id — and wrong for
+every token a real staff login produces, where `sub` is the **staff member**.
+The 2026-09-06 review measured it as finding F7 and left it, because which
+claim identifies the credential was reserved for the maintainer. ADR-0017
+takes it; `ResourceClaims::client_id` is renamed to `subject` so nothing can
+read it as a client id again without saying so.
 
 The boot rule
 (`vpay_config::ConfigError::MerchantClaimsDashboardAudience`) is the other
 half and neither is sufficient alone: it stops a *merchant* registration from
-being able to request `vpay:dash/v1` at `/v1/oauth/token` at all. That was a
-real hole before 2026-09-06 — `handle_client_credentials` honours any
-requested audience `allowed_audiences` permits, and nothing restricted what
-else a merchant could list beside `vpay:v1`. It was harmless only because
-`/dash/v1` mounted nothing.
+being able to request the dashboard client's id at `/v1/oauth/token` at all.
+That was a real hole before 2026-09-06 — `handle_client_credentials` honours
+any requested audience `allowed_audiences` permits, and nothing restricted
+what else a merchant could list beside `vpay:v1`. It was harmless only
+because `/dash/v1` mounted nothing. The rule moved to whole-document scope in
+the same change, because its forbidden value is no longer a constant one
+registration could compare itself against.
 
 Any method but `GET`/`HEAD` is refused in the same middleware, **before** the
 router matches. Relying instead on `DASH_ROUTES` mounting no `post(..)` would
@@ -480,6 +514,28 @@ make "the dashboard cannot write" a property of a route table, and a route
 table is the thing a future slice edits. ADR-0008 requires an `audit_log` row
 per dashboard write and none exists, so a write that arrived here must not
 reach a handler at all.
+
+### The staff routes are outside the token layer, and the nest's fallback is not
+
+`crate::router` builds the `/dash/v1` nest as `dash::routes()` wrapped in
+`require_dashboard_token`, then `.merge(staff::routes())`. The merge is
+**after** the layer, so the seven staff routes are outside it — they have to
+be, because they exist to produce the credential that layer checks, and a
+`/dash/v1/staff/login` behind a bearer-token requirement is a login nobody can
+reach.
+
+`Router::layer` wraps the routes *and the fallback* present when it is called,
+so `dash::routes`' own `.fallback(not_found)` stays inside: an unmatched
+`/dash/v1/...` path answers exactly what it answered before this module
+existed. `staff::routes` deliberately carries no fallback of its own, because
+two routers with fallbacks cannot be merged.
+
+The staff routes are mounted whether or not `staff_auth` is configured. A
+deployment with a dashboard and no secrets answers the honest 404 through
+`AppState::staff_login`, rather than the paths vanishing — a 404 on
+`/dash/v1/staff/login` and a 404 on `/dash/v1/nonsense` are the same answer,
+and making a route table depend on a Secret's presence is how a deployment
+discovers a missing Secret by reading a route table.
 
 ### Why an absent registration mounts nothing
 

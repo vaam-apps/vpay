@@ -14,30 +14,135 @@ for why vpay runs the OP itself rather than pointing at someone else's.
 
 ## Login flow
 
-Authorization code + PKCE, the only flow this surface uses — no implicit,
-no hybrid, no resource-owner-password.
+Two legs, and the first of them is vpay's own. `authkestra-op` authenticates
+nobody — `handle_authorize` takes an already-authenticated `Identity` **as a
+parameter** — so the thing that produces one is
+[ADR-0017](../adr/0017-staff-authentication.md)'s staff table and the four
+routes in front of it.
 
+```text
+staff browser              dashboard app              vpay
+      |  POST /api/auth/login  |                       |
+      |----------------------->|  POST /dash/v1/staff/login
+      |                        |---------------------->|  argon2id + pepper
+      |                        |  { session, next }    |  session row: pending_totp
+      |                        |<----------------------|
+      |  (QR on first sign-in) |                       |
+      |  POST /api/auth/totp   |                       |
+      |----------------------->|  POST /dash/v1/staff/totp
+      |                        |---------------------->|  RFC 6238, +/-1 step
+      |                        |                       |  replay guard: CAS on
+      |                        |                       |  last_totp_step
+      |                        |<----------------------|  session row: authenticated
+      |                        |                       |
+      |                        |  GET /dash/v1/oauth/authorize?code_challenge=...
+      |                        |---------------------->|  exact redirect_uri match
+      |                        |  302 -> ?code=...     |  code row, 60 s, single use
+      |                        |<----------------------|
+      |                        |  POST /dash/v1/oauth/token { code, code_verifier }
+      |                        |---------------------->|  PKCE S256, CAS consume
+      |                        |  { access_token }     |  aud = dashboard client_id
+      |                        |<----------------------|  + vpay_merchant_id claim
+      |                        |                       |
+      |  a page                |  GET /dash/v1/payment_intents, Bearer ...
+      |<---------------------->|---------------------->|
 ```
-staff browser                    /dash/v1 (vpay, as OP)
-      |  GET /authorize?response_type=code&code_challenge=…    |
-      |------------------------------------------------------->|
-      |                          (staff authenticates)          |
-      |  302 → redirect_uri?code=…                              |
-      |<-------------------------------------------------------|
-      |  POST /token  { code, code_verifier, redirect_uri }     |
-      |------------------------------------------------------->|
-      |  200 { access_token, id_token }                          |
-      |<-------------------------------------------------------|
-      |  subsequent /dash/v1/* calls, Authorization: Bearer …   |
-      |------------------------------------------------------->|
-```
+
+**The dashboard app follows the `302` itself**, and that is
+[ADR-0017](../adr/0017-staff-authentication.md) decision 4 rather than an
+accident. In a browser-driven flow the user agent follows it and a callback
+*page* completes the exchange; here the app's own server does, and a browser
+never sees a code, a verifier or a token. Everything the grant checks is
+unchanged — the redirect URI is matched byte for byte against the
+registration, PKCE is mandatory, the code is single-use — and what changes is
+only who follows the redirect.
 
 `redirect_uris` are matched exactly — no prefix or wildcard matching
 (`authkestra_op::client::ClientRegistration::allows_redirect_uri`). PKCE is
-mandatory for the dashboard's client registration.
+mandatory for **every** client on this grant, unconditionally
+(authkestra#273, OAuth 2.1 §4.1), not because a registration asks for it.
 
-The diagram above intentionally does not show a `refresh_token` in the
-`/token` response — see Token lifetimes below.
+The diagram intentionally does not show a `refresh_token` — see Token
+lifetimes below.
+
+## The session, and what signing out actually does
+
+The session token is 256 bits from the OS CSPRNG, held by the dashboard app in
+an httpOnly, Secure, SameSite=Lax cookie on its own origin and presented to
+vpay in `X-Vpay-Staff-Session`. `staff_sessions` is keyed by its **SHA-256**,
+so a dump of that table yields no usable session.
+
+Two bounds, and they are not one bound:
+
+| Bound | Value | Moved by |
+|---|---|---|
+| Absolute | 12 h from creation | nothing — never extended |
+| Idle | 30 min since the last accepted request | every accepted request |
+
+Both are checked on **read** and neither deletes anything: an expired row is
+refused and left in place, so "this session expired" and "this session never
+existed" stay distinguishable to an operator reading the table. On the wire
+they are the same `401`, for the reason in the next section.
+
+`POST /dash/v1/staff/logout` **deletes** the row. That is a revocation rather
+than a cookie clear: the row carries the access token the exchange minted, so
+the dashboard's own server can no longer obtain it — and the cascade on
+`oauth_authorization_codes.session_id` kills any code that session issued and
+has not exchanged. **This is the server-side deny-list ADR-0009's
+Consequences section explicitly left open**, and ADR-0017 is what decides it.
+
+What it is not: the minted JWT stays cryptographically valid for the rest of
+its TTL. Nothing can change that, and
+`signing_out_deletes_the_session_and_with_it_the_access_token` asserts it
+rather than implying otherwise.
+
+## Every refusal is one answer
+
+No such address, wrong password, disabled account, wrong code, replayed code,
+expired session, idle session, forged session, session at the wrong stage:
+one `401`, one sentence, `error.code = "authentication_error"`. The step that
+refused reaches the log and never the body.
+
+The **timing** half of the same property is
+`vpay_api::staff_auth::StaffCredentials::verify_absent_account`: an address
+with no account still costs one argon2id verification, so "no such account"
+and "wrong password" take the same time as well as the same shape. A login
+form that answered differently for either would be an account-enumeration
+oracle.
+
+Sign-in is rate limited per email **and** per IP, in-process, fixed window,
+ten attempts per five minutes, refused **before** any credential work happens.
+Both counters move on every attempt including a refused one — short-circuiting
+would let an attacker who exhausted one address keep hammering a thousand
+others from the same host with that host's counter frozen.
+
+**The limits are per replica.** Three replicas admit three times the attempts
+one does. That is the honest cost of in-process limiting; the alternative — a
+shared counter in Postgres — puts a write on the unauthenticated path, which
+is a denial-of-service amplifier of a different kind. It is the first thing to
+revisit for a deployment that runs many replicas.
+
+**The IP the limiter counts is the transport peer, and nothing else.** vpay
+reads no `X-Forwarded-For` and no `Forwarded`, deliberately: both are
+caller-supplied on an unauthenticated route, and honouring either without an
+authenticated trusted-proxy list hands an attacker a fresh bucket per request.
+The consequence is stated rather than hidden — **behind a reverse proxy or an
+Ingress, every staff member shares one per-IP budget**, because the peer is
+the proxy. The per-email budget still binds per account, and closing the rest
+needs a trusted-proxy allow-list that this slice does not have. It is recorded
+in ADR-0017's Consequences.
+
+*Corrected 2026-09-07 (exp24 review, finding F2).* Until that review the
+per-IP half **did not exist**: axum supplies the peer address through
+`ConnectInfo`, `ConnectInfo` is present only when the service is built with
+`into_make_service_with_connect_info`, and neither `vpay-server` nor the test
+harness did that. Every attempt in the process was counted under the
+limiter's one `ip:unknown` key, so ten requests from anywhere locked every
+staff member out of the dashboard for five minutes — the deployment-wide
+version of exactly the lockout the design refuses to build. Both call sites
+now build the service with connect info, and
+`the_sign_in_rate_limit_is_per_source_address` burns one loopback source's
+budget and asserts a second source's first attempt is still served.
 
 ## Scope
 
@@ -67,18 +172,23 @@ scoped work, not before.
 
 | Token | TTL knob | Notes |
 |---|---|---|
-| Authorization code | `OpConfig::authorization_code_ttl_secs` | Single use, consumed at `/token` |
+| Authorization code | `OpConfig::authorization_code_ttl_secs`, **60 s** | Single use, enforced by a compare-and-swap on `oauth_authorization_codes.consumed_at`. A second exchange is refused whatever else about it is right, and a *failed* exchange spends the code too — so a captured code cannot be probed against candidate verifiers |
 | Access token | `OpConfig::access_token_ttl_secs` | Bearer, presented on every `/dash/v1/*` call |
 | Refresh token | **Not issued** | vpay does not use `RefreshTokenStore` for this flow. Staff re-run authorization-code + PKCE when the access token expires — a short-TTL access token with no refresh token, rather than a long-lived refresh token that `authkestra-op` has no endpoint to revoke |
-| ID token | Same signing key/alg as access token | `RS256`; symmetric algorithms are not valid per Authkestra's own `OpConfig` docs |
+| ID token | **Not issued** | The dashboard reads who is signed in from `GET /dash/v1/staff/session`, which answers from the session row rather than from a claim — so an id token would be a second, staler copy of the same fact. `openid` is not in the registration's single scope, so the grant does not mint one |
 
 **No revocation endpoint exists in `authkestra-op`.** A stolen or misused
 access token cannot be revoked mid-lifetime through the OP itself — see the
 Consequences section of ADR-0009. Not issuing a refresh token narrows this
 exposure rather than closing it: there is no long-lived refresh token to
 also protect, but the access token itself is still a live bearer credential
-for the whole of its TTL. This flow's mitigation is a short access-token TTL
-and/or a deny-list; **which one vpay implements is not yet decided.**
+for the whole of its TTL. This flow's mitigation is a short access-token TTL and a deny-list.
+~~**which one vpay implements is not yet decided.**~~ **Decided 2026-09-07,
+[ADR-0017](../adr/0017-staff-authentication.md) decision 2, and it is both:**
+the access token lives in the session row, the dashboard's own server reads it
+back on every render, and signing out deletes the row. So the *obtainability*
+of the token is revoked even though the JWT stays cryptographically valid for
+the rest of its TTL — see "The session, and what signing out actually does".
 
 ## JWKS publication and key rotation
 
@@ -107,175 +217,143 @@ and/or a deny-list; **which one vpay implements is not yet decided.**
 
 | Piece | Owner |
 |---|---|
-| OP handlers (`/authorize`, `/token`, `/userinfo`, discovery, jwks) | `authkestra-op`, mounted into `/dash/v1` |
+| `/dash/v1/oauth/authorize` | `authkestra_op::handlers::authorize::handle_authorize`, called by `vpay_api::staff::oauth::authorize` — which supplies the `Identity` authkestra takes as a parameter and authenticates nobody for |
+| `/dash/v1/oauth/token` | **vpay's own** (`vpay_api::staff::oauth::token`). Not `handle_token`'s dispatch: the mint has to stamp `vpay_config::DASHBOARD_MERCHANT_CLAIM`, and `default_handle_authorization_code`'s last step *is* the mint. Every check the default performs is performed there, in the same order, each with its own test |
+| `/userinfo`, discovery, `/jwks.json` on `/dash/v1` | **Not served.** One OP, one issuer (`{public_base_url}/v1/oauth`) and one JWKS: a dashboard token's `iss` is the merchant surface's, and `/v1/oauth/jwks.json` is where its key is published. A second discovery document would be a second issuer identity for one signer |
 | Client registration (dashboard's own `client_id`, its bound `merchant_id`, redirect URIs, PKCE requirement, single read-only scope) | vpay configuration (ADR-0003 — YAML, not the dashboard). `merchant_id` since 2026-09-06: the one tenant `/dash/v1` reads, refused at boot if unregistered |
-| Authorization codes, device codes | **Nothing, as of 2026-09-05.** The schema exists (`backends/migrations/0006_create-authkestra-op-tables.sql`) and its four tables are unread and unwritten by any code path. This row said `authkestra_op::sqlx_store::SqlxOpStore` against vpay's Postgres, and that was true of the type `/v1`'s OP put in three unreachable slots; those slots hold `vpay_api::op::refusing_stores`' fail-closed types now, and the `sqlx-postgres` feature that gated `SqlxOpStore` is off in every manifest. A `/dash/v1` that ever serves the authorization-code grant has to choose a store, and `SqlxOpStore` is no longer a free choice: it pins `sqlx ^0.8`, and this workspace has moved to 0.9. See "The three OP stores that pinned sqlx 0.8" in [status.md](../status.md) |
+| Authorization codes | `oauth_authorization_codes` (migration `0035`), a **vpay-owned** table modelled in `schemas/vpay.cstack` and reached through CrateStack, replacing `RefusingAuthorizationCodeStore` for this one grant. Not `authkestra.oauth_codes`: that table exists for `SqlxOpStore`, which is behind a feature pinning `sqlx ^0.8`, and this workspace is on `=0.9.0` so CrateStack and `vpay-db` can share a transaction. It also carries two columns authkestra's shape has nowhere to put — `session_id` (so signing out kills a code in flight) and `merchant_id` (so a staff row edited between issue and exchange cannot move a token to another tenant) |
+| Staff identity and credentials | `staff_members` (migration `0035`): argon2id with a deployment pepper, RFC 6238 TOTP sealed with AES-256-GCM under a second deployment key, and `last_totp_step` — the replay guard, a compare-and-swap. `vpay_api::staff_auth` owns the cryptography; `vpay-db` never learns what any of the strings mean |
+| Sessions | `staff_sessions` (migration `0035`), keyed by the SHA-256 of an opaque token. See "The session, and what signing out actually does" |
+| Device codes | **Nothing.** The schema exists (`backends/migrations/0006_create-authkestra-op-tables.sql`) and its four tables are unread and unwritten by any code path. This row said `authkestra_op::sqlx_store::SqlxOpStore` against vpay's Postgres, and that was true of the type `/v1`'s OP put in three unreachable slots; those slots hold `vpay_api::op::refusing_stores`' fail-closed types now, and the `sqlx-postgres` feature that gated `SqlxOpStore` is off in every manifest. A `/dash/v1` that ever serves the authorization-code grant has to choose a store, and `SqlxOpStore` is no longer a free choice: it pins `sqlx ^0.8`, and this workspace has moved to 0.9. See "The three OP stores that pinned sqlx 0.8" in [status.md](../status.md) |
 | `oauth_refresh_tokens`, `oauth_device_codes` | Created by the same migration (`authkestra-op`'s fixed DDL is transcribed wholesale, not column-by-column selected) but structurally unused by this flow: refresh tokens are not issued (Token lifetimes, above) and the device grant is not offered on any client this deployment registers |
 | Signing keys and rotation | vpay operational tooling. Storage schema exists (`backends/migrations/0007_create-oauth-signing-keys.sql`: `oauth_signing_keys`, at most one active key enforced by a partial unique index); key generation and rotation logic itself is not yet designed or written |
-| Session → per-record authorization (which staff member may view which merchant's records) | vpay's own layer on top of the validated token; not Authkestra's concern. Built 2026-09-06 as `vpay_api::require_dashboard_token`, and it authorizes by **registration** rather than by staff member: the tenant is `dashboard_client.merchant_id`, and no claim in any token changes it. Which *staff member* is which cannot be authorized against anything, because there is no staff identity — see blocker 1. Scoped to *view* — see Scope, above, for why there is nothing to authorize a write against yet |
+| Session → per-record authorization (which staff member may view which merchant's records) | vpay's own layer on top of the validated token; not Authkestra's concern. `vpay_api::require_dashboard_token` authorizes by **registration**: the tenant is `dashboard_client.merchant_id`, and no claim in any token changes it. Since ADR-0017 the token must also *carry* that tenant as a `vpay_merchant_id` claim, which is a second lock on the same door — a forged claim buys a `403`, never another merchant's rows — and is what makes a `client_credentials` token structurally unable to read this surface. Which *staff member* is which is `staff_members.id`, and it is the token's `sub`; it authorises nothing, and `/authorize` refuses a staff member whose `merchant_id` is not the binding one round trip earlier. Scoped to *view* — see Scope, above |
 | Audit log row per write | [ADR-0008](../adr/0008-dashboard-scope.md) — one row per dashboard action, independent of the auth mechanism. Not yet applicable: there is no write path to log (Scope, above) |
 
 ## Status
 
-**No login has ever been performed.** That has not changed and is the only
-sentence in this section a reader should carry away.
+**A staff member can sign in.** That sentence has never been in this document
+before, and it is the one a reader should carry away.
 
-~~There is no `/dash/v1` route of any kind.~~ **That half stopped being true
-on 2026-09-06**, and the correction has to be read together with the sentence
-above it, because separately each is misleading. Two `GET` routes are now
-mounted at `/dash/v1` — the payments list and the payment detail
-([dashboard.md](dashboard.md), slice 1) — behind the validator this document
-describes. **No grant this deployment serves can mint a token for them.**
-They are a resource server with no issuer: real, tested, fail-closed, and
-unreachable by any client. What that slice deliberately did *not* do is
-invent a way to reach them.
+~~**No login has ever been performed.**~~ Corrected 2026-09-07
+([ADR-0017](../adr/0017-staff-authentication.md)). Thirteen cases in
+`backends/tests/integration/tests/staff_sign_in.rs` drive the real
+`vpay_api::router` on a real socket over a real Postgres, and **that suite
+mints no token at all**: every token it presents came out of
+`POST /dash/v1/oauth/token` after a password, a TOTP code and a PKCE exchange,
+and the server verified it through its own published JWKS over the same
+socket.
 
-What it did add that this document owns:
+What is built, in the order a request meets it:
 
-- `Surface::Dashboard.audience()` is no longer a local literal. It returns
-  `vpay_config::DASHBOARD_AUDIENCE`, beside `MERCHANT_AUDIENCE`, because
-  there are now three parties that must agree on the string rather than one.
-- **A merchant registration may no longer claim the dashboard audience.**
-  `handle_client_credentials` mints a token for any audience a registration's
-  `allowed_audiences` permits, so before this a merchant whose YAML listed
-  `vpay:dash/v1` could have obtained a token this document's validator
-  accepts. `vpay_config::ConfigError::MerchantClaimsDashboardAudience`
-  refuses that registration at boot. This was an open hole rather than a
-  hypothetical one; it was closed the day `/dash/v1` first mounted a route,
-  and it would have been worth closing earlier.
-- `dashboard_client` gained a required `merchant_id`: the one tenant the
-  dashboard may read, refused at boot if no merchant registers it
-  (`ConfigError::DashboardUnknownMerchant`).
-- The missing half of the audience pair is now proven over a real router:
-  `a_merchant_audience_token_is_refused_on_dash_v1`
-  (`backends/tests/integration/tests/dashboard_read_surface.rs`) is the
-  partner `a_dashboard_audience_token_is_refused_on_v1` has had none of since
-  it was written.
+- `staff_members`, `staff_sessions` and `oauth_authorization_codes`
+  (migration `0035`), all three born with a `schemas/vpay.cstack` model and
+  shaped so that **every** repository method runs through CrateStack — no
+  `jsonb`, no `bytea`, no native enum, no `DEFAULT` on any column a writer
+  names. `docs/reference/vpay-db.md` § CrateStack has the account.
+- `vpay-server staff add --merchant … --email … --name …`, the **only** way a
+  staff member is created. No HTTP endpoint creates one and there is no
+  self-service sign-up. It prints a one-time password on stdout alone —
+  a subcommand's logs go to stderr, which
+  `staff_add_creates_a_staff_member_and_prints_a_one_time_password_on_stdout`
+  found the hard way.
+- `POST /dash/v1/staff/login`, `/totp`, `/password`, `/session`, `/logout`,
+  and `GET /dash/v1/oauth/authorize` + `POST /dash/v1/oauth/token`. Seven
+  unauthenticated routes, mounted beside the protected reads rather than
+  inside the bearer-token layer, because they exist to produce the credential
+  that layer checks.
+- argon2id at OWASP's first parameter set with a deployment pepper; RFC 6238
+  TOTP (HMAC-SHA1, 30 s, ±1 step) whose codes are pinned against Appendix B's
+  own vectors; AES-256-GCM for the stored secret; the PKCE check pinned
+  against RFC 7636 Appendix B's own vector.
+- `Surface::Dashboard.audience()` is **gone**. The audience is the registered
+  `dashboard_client.client_id`, because that is what
+  `default_handle_authorization_code` mints; `vpay:dash/v1` is retired and
+  ADR-0017 supersedes that part of ADR-0009.
+- `require_dashboard_token` no longer compares the token's `sub` to the
+  client id. That check was exp23's finding F7 — right for
+  `client_credentials` and wrong for every token a real login produces — and
+  the maintainer decision it reserved is taken: the credential is `aud` plus
+  the merchant claim, and `sub` names the staff row — and while `sub`
+  authorises nothing, the staff row it names must still be `active`, or the
+  request is refused (finding F1).
+- **No machine client may read `/dash/v1`.** A `client_credentials` token
+  carries no merchant claim and nothing but this grant stamps one, so the
+  refusal is a property of the mint. It is a tightening over what stood
+  before, and `a_client_credentials_token_is_refused_on_dash_v1` pins it.
 
-The merchant work of 2026-09-02 still makes the "no login" sentence *more*
-important to say plainly, because several pieces this flow needs exist and
-serve a different surface.
+**What is still not built, and none of it is implied by the above:**
 
-**What exists now and belongs to `/v1`, not here:**
+1. **The pages.** `frontends/apps/dashboard` is unchanged: still the scaffold,
+   still saying so on screen, still zero tests, and `dashboard.cy.ts` still
+   asserts the scaffold notice. Everything above is reachable over HTTP and by
+   nothing a person can click. See [dashboard.md](dashboard.md).
+2. **No sweep.** Nothing deletes an expired `staff_sessions` or
+   `oauth_authorization_codes` row on a schedule. Expired rows are refused on
+   read and removed by the sign-out cascade; the indexes a sweep would need
+   exist, and the sweep does not.
+3. **No `audit_log`.** ADR-0008 wants one row per dashboard *write*, and this
+   surface mounts none — `require_dashboard_token` refuses every non-read
+   method before the router matches.
+4. **No way to disable the dashboard client.** `disabled_clients` revokes a
+   *merchant* credential; the dashboard registration can only be removed from
+   YAML and the process restarted. What can be disabled per person is
+   `staff_members.status`, which is the granularity that matters — and which
+   now takes effect on the **next request** for both credentials a sign-in
+   produces, not just for the session.
 
-- **Signing keys and a JWKS endpoint are real.** A key is generated
-  (`cargo xtask gen-signing-key --out <dir>`, 3072-bit PKCS#8, mode 0600),
-  loaded at boot from `--oauth-signing-key-file` / `VPAY_OAUTH_SIGNING_KEY_FILE`
-  with an RFC 7638 thumbprint as its `kid`, announced in `oauth_signing_keys`
-  through `vpay_db::ensure_active_signing_key` (one advisory-locked
-  transaction, so replicas booting together rotate once between them), and
-  published at **`/v1/oauth/jwks.json`** across a 24 h overlap window.
-  `vpay-server` refuses to start without a key (exit 78). This is the
-  signing-key half of what this flow needs — but the endpoint is on the
-  merchant surface, and nothing here consumes it.
-- ~~**A shipping binary now constructs `SqlxOpStore<Postgres>`** — as three
-  slots the `OpStore` supertrait demands and **no grant reaches**.~~
-  **No longer true as of 2026-09-05, and it is the change this section most
-  needs a reader to notice.** Nothing in this workspace constructs a
-  `SqlxOpStore` any more: `/v1`'s three slots hold
-  `vpay_api::op::refusing_stores`' fail-closed types, which touch no
-  database, and `authkestra-op`'s `sqlx-postgres` feature is off everywhere.
-  The reason was the sqlx 0.8 pin that feature carried; see "The three OP
-  stores that pinned sqlx 0.8" in [status.md](../status.md).
-- The schema is unchanged and still exists:
-  `authkestra.oauth_clients`/`oauth_codes`/`oauth_refresh_tokens`/`oauth_device_codes`
-  (`0006`, a byte-faithful transcription of `authkestra-op` `=0.3.4`'s own
-  DDL), the `=0.7.1` additive delta (`0013`: `oauth_dpop_jti`, and the `jkt`,
-  `token_endpoint_auth_method` and `jwks` columns), and `oauth_signing_keys`
-  (`0007`, reshaped by `0010`). **What it is no longer tested *against* is
-  the store**: `authkestra_op_smoke.rs`, whose three tests drove the real
-  `SqlxOpStore<Postgres>` over `find_client`, single-use
-  `store_code`/`consume_code`, `store_token`/`get_token` with `jkt` and
-  `check_and_record_dpop_jti`, was deleted with the feature on 2026-09-05.
-  `postgres_smoke.rs` still proves all four tables exist and that
-  `oauth_codes.client_id`'s foreign key fires — which is a schema check, not
-  a compatibility check. **Extended 2026-09-05 by review** to `oauth_dpop_jti`
-  and 0013's three added columns as well: the deleted file was the only place
-  in the repository that named any of them, so their existence had stopped
-  being checked anywhere. **A reader must not infer from any of this that a
-  shipping binary can issue a dashboard token**, and must now also not infer
-  that the DDL is still known to match any store's hand-built SQL.
+   *Corrected 2026-09-07 (exp24 review, findings F1 and F6).* As first
+   delivered, setting `status = 'disabled'` refused the session routes and
+   left the already-minted `/dash/v1` bearer token reading payment intents
+   for the rest of its 15-minute TTL — and reassigning a staff member to
+   another merchant left them reading their old merchant's rows for the same
+   window. `require_dashboard_token` never read `staff_members` at all:
+   everything it checked was a statement about the *token* and none of it was
+   a statement about the *person*. It now reads the row its `sub` names and
+   refuses a `disabled` one, a missing one, and one whose `merchant_id` is no
+   longer the binding — one primary-key read, after every cheaper check,
+   failing closed on a database error, and refusing nobody who was ever
+   allowed in, since `/authorize` requires both before it will mint a code.
+   `disabling_a_staff_member_refuses_their_live_session` and
+   `moving_a_staff_member_to_another_merchant_refuses_their_existing_token`
+   are the guards. A break-glass control that a payments dashboard honours a
+   quarter of an hour late is not a break-glass control.
+5. **Key rotation has still never happened.** ADR-0009's fourth blocker is
+   untouched. `TokenManager` holds one key for the life of the process,
+   rotation is restart-based, and nothing re-reads the key file.
+6. **The rate limit is per replica** — see "Every refusal is one answer".
 
-**What blocks this flow, specifically:**
+**What the two blockers this document recorded turned out to be:**
 
-1. **No login route.** ~~No `/dash/v1`.~~ Corrected 2026-09-06: the
-   `/dash/v1` *resource* routes exist (above). What does not exist is any of
-   `/login`, `/authorize`, `/userinfo` or the dashboard's callback.
-   `authkestra-axum` is deliberately not a dependency (its bundled router
-   mounts endpoints this deployment must not serve and publishes a one-key
-   JWKS instead of the rotation window vpay serves), so these have to be
-   written, not enabled.
+~~1. **No login route.** … And writing them needs a decision that has never
+been taken: how does a staff member prove who they are?~~ Taken, as ADR-0017
+decision 1: a vpay-owned `staff_members` table, argon2id with a pepper, and
+mandatory TOTP.
 
-   **And writing them needs a decision that has never been taken: how does a
-   staff member prove who they are?** `authkestra_op::handlers::authorize::handle_authorize`
-   takes an already-authenticated `authkestra_engine::auth::state::Identity`
-   **as a parameter** — it authenticates nobody. vpay must supply one, and
-   vpay has no staff table (33 migrations, none), no credential store, no
-   password hashing, and no `authkestra_engine::auth::strategy::AuthenticationStrategy`
-   implementation. Choosing among a staff table with password hashes,
-   WebAuthn, TOTP, or federating the *human* step to an external IdP in front
-   of vpay's own OP is an ADR-level decision that touches ADR-0009's central
-   claim, and it is **not** a default to pick in passing — the same standing
-   this document already gives the audience problem in item 3 below. Nothing
-   in this repository records it as an open question; it is recorded here
-   now, on 2026-09-06, because a slice went looking for it and found nothing.
-2. **No session store.** `authkestra-engine` is pinned
-   `features = ["rustls-no-provider", "token", "session"]` — **without
-   `sql-postgres`** — so no SQL-backed session store is compiled into the
-   workspace at all. Enabling it pulls `sqlx/chrono` and `sqlx/json` and
-   needs `cargo deny` re-run.
-3. **An audience problem that must be solved before any of the above.**
-   `authkestra-op`'s `default_handle_authorization_code` mints the access
-   token with `Some(client_id)` as the audience and has **no
-   requested-audience path at all** (`authkestra-op-0.7.1/src/handlers/token.rs`,
-   step 7). A token from that grant would carry `aud = <client_id>`, and
-   `vpay_api::resource_auth::Surface::Dashboard.audience()` — `vpay:dash/v1`
-   — rejects every one of them. `/v1` does not hit this because
-   `handle_client_credentials` *does* honour a requested audience. Resolving
-   it (a custom grant handler, a different dashboard audience rule, or an
-   upstream change) is a maintainer decision, not a default to pick in
-   passing.
-4. **Key rotation has still never happened.** This flow's own definition of
-   done includes rotating a signing key at least once. `TokenManager` holds
-   one key for the life of the process; rotation is restart-based, nothing
-   re-reads the key file, and a rollback to a retired `kid` is refused.
+~~2. **No session store.** `authkestra-engine` is pinned without
+`sql-postgres`.~~ Still pinned without it, and it is **not** a blocker: vpay's
+sessions are its own rows in its own table through its own data layer, not
+`authkestra-engine`'s `SessionStore`. Enabling that feature would pull
+`sqlx/chrono` and `sqlx/json` into the graph for a store this deployment does
+not use.
 
-What is proven about the dashboard *validator*, and no more than that:
-`JwtValidator`/`AuthenticatedDashboard` pinned to `Surface::Dashboard`
-accepts a correctly-audienced token and rejects a merchant-audienced one
-(`a_dashboard_audience_token_is_accepted_by_the_dashboard_validator`,
-`a_merchant_audience_token_is_rejected_by_the_dashboard_validator`, unit
-tests in `resource_auth.rs`), and the merchant surface rejects a
-dashboard-audienced token over a real booted server
-(`a_dashboard_audience_token_is_refused_on_v1`).
+~~3. **An audience problem that must be solved before any of the above.**~~
+Solved by changing the *validator* rather than the grant — ADR-0017 decision
+3, above.
 
-~~`AuthenticatedDashboard` is mounted on nothing.~~ **Corrected 2026-09-06.**
-The dashboard *validator* is now mounted, in front of the two `/dash/v1`
-read routes, and the thirteen cases in
-`backends/tests/integration/tests/dashboard_read_surface.rs` prove over a
-real booted server that: the bound merchant's rows come back and another's do
-not; another merchant's id is byte-for-byte the same 404 as one that never
-existed; a merchant-audience token is refused; a dashboard-audience token for
-an *unregistered client* is refused; a token without the registered scope is
-refused; an expired token is a 401; no route answers without a token; the
-detail read carries no `client_secret` where `/v1`'s does; and a deployment
-with no `dashboard_client` mounts no nest; and — added by the review on the
-same day — the detail read renders the events and refunds an intent *has*,
-both objects' events oldest first, and no other tenant's event, and a list
-cursor naming another merchant's intent answers exactly what an id nothing
-ever wrote answers, and a write method is refused by the boundary itself
-rather than by the route table. What none of
-them proves, and what
-no test in this repository can prove today, is that a token could ever be
-*obtained*. (`AuthenticatedDashboard`, the extractor, is still mounted on
-nothing — `require_dashboard_token` validates once in middleware for
-`require_merchant_token`'s reason.)
+4. **Key rotation** — see item 5 of what is not built. Unchanged.
 
-`hmac`, `sha2`, `subtle` and `aes-gcm` were listed here
-as unused workspace pins; `sha2` gained its first real consumer on
-2026-09-02 (the RFC 7638 thumbprint in `vpay_api::op::keys`), and the other
-three are still unused.
+What is proven about the dashboard **validator** is now proven about the whole
+path: `backends/tests/integration/tests/dashboard_read_surface.rs` (15 cases)
+covers which rows a validly-minted token may read and which credentials are
+refused, and `staff_sign_in.rs` (13 cases) covers how one is obtained. The
+first file's own header still opens by saying it proves nothing about signing
+in, and that remains true *of that file*.
 
-This flow is now tracked as **Phase 2b** in [`docs/roadmap.md`](../roadmap.md),
-split out of Phase 2 when the merchant half landed and this one did not. See
-[../status.md](../status.md) for the full, row-by-row picture.
+`hmac`, `sha2`, `subtle` and `aes-gcm` were listed here as unused workspace
+pins. `sha2` gained its first consumer on 2026-09-02; **`hmac`, `subtle` and
+`aes-gcm` gained theirs on 2026-09-07** — the TOTP HMAC, the constant-time
+code comparison, and the sealed TOTP secret respectively. None is unused now.
+
+This flow is tracked as **Phase 2b** in [`docs/roadmap.md`](../roadmap.md).
+See [../status.md](../status.md) for the full, row-by-row picture.

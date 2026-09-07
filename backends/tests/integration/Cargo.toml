@@ -109,6 +109,11 @@ rsa = "0.9"
 rand.workspace = true
 # `rsa`'s modulus/exponent are base64url in a JWK.
 base64 = "0.22"
+# `staff_sign_in.rs` computes a PKCE challenge and a session digest — the same
+# two functions `vpay_api::staff_auth` computes, deliberately recomputed here
+# rather than exposed, so the suite checks the server's answer against an
+# independent one. Workspace pin, already in this crate's graph.
+sha2.workspace = true
 # `tests/dashboard_read_surface.rs` mints ONE token by hand: the expired one.
 # Every other token that suite presents comes from
 # `authkestra_engine::token::TokenManager::issue_client_token` — the shipping

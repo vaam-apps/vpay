@@ -57,14 +57,27 @@ untested.
 Four checks stand between a request and a row, each in a different place so
 that no single edit removes the boundary:
 
-1. the token validates for `Surface::Dashboard` — signature, expiry, issuer
-   and audience (`vpay:dash/v1`), against vpay's own published JWKS;
-2. its `client_id` is the registered dashboard client's. The audience says
-   which _surface_; only the `sub` says which _credential_. **This check does
-   not survive a real login, and that is recorded rather than fixed** — see
-   "The `client_id` check is written for the grant we have" below;
+1. the token validates for the dashboard surface — signature, expiry, issuer
+   and audience, against vpay's own published JWKS. **The audience is the
+   registered `dashboard_client.client_id`** since
+   [ADR-0017](../adr/0017-staff-authentication.md); `vpay:dash/v1` is retired,
+   because `default_handle_authorization_code` mints `aud = <client_id>` and
+   has no requested-audience path, so no token from the only grant that can
+   produce a dashboard credential would ever have carried the constant;
+2. it carries a `vpay_merchant_id` claim equal to the bound `merchant_id`.
+   Nothing but the staff authorization-code grant stamps that claim, so **no
+   `client_credentials` token can satisfy it** — the refusal is a property of
+   the mint rather than of a list somebody maintains. The claim is *compared*,
+   never used: the tenant still comes from the binding, so a forged claim buys
+   a `403` and never another merchant's rows;
 3. it carries the registration's single scope;
 4. every query filters by the bound `merchant_id`.
+
+Check 2 replaced a comparison of the token's `sub` with the registered client
+id. That was right for `client_credentials` — where `sub` *is* the client id —
+and wrong for every token a real login produces, where `sub` is the **staff
+member**. It was the 2026-09-06 review's finding F7, left as a maintainer
+decision; ADR-0017 takes it.
 
 Boot adds two refusals that make the first three worth having:
 
@@ -73,12 +86,16 @@ Boot adds two refusals that make the first three worth having:
   no runtime symptom at all: every query filters by a tenant no row carries,
   so the list is empty and the detail read is a 404 — exactly what a merchant
   with no payments looks like;
-- a **merchant** registration listing `vpay:dash/v1` in `allowed_audiences`
-  is fatal (`ConfigError::MerchantClaimsDashboardAudience`). This was a real
-  hole, not a hypothetical one: `handle_client_credentials` mints a token for
-  any requested audience `allowed_audiences` permits, so one YAML line would
-  have let a merchant credential obtain a token the `/dash/v1` validator
-  accepts.
+- a **merchant** registration listing the dashboard client's own id in
+  `allowed_audiences` is fatal (`ConfigError::MerchantClaimsDashboardAudience`).
+  This was a real hole, not a hypothetical one:
+  `handle_client_credentials` mints a token for any requested audience
+  `allowed_audiences` permits, so one YAML line would have let a merchant
+  credential obtain a token the `/dash/v1` validator accepts. The forbidden
+  value was the constant `vpay:dash/v1` and the check ran per registration;
+  ADR-0017 made it the dashboard client's own id, which one registration
+  cannot know, so the check moved to whole-document scope beside
+  `validate_dashboard_binding`.
 
 A deployment that registers no `dashboard_client` mounts **no `/dash/v1`
 nest at all**, so every path under it is the honest 404 rather than a 401
@@ -86,68 +103,63 @@ promising a credential would help.
 
 ## What slice 1 did NOT build
 
-### Nobody can sign in
+### ~~Nobody can sign in~~ — corrected 2026-09-07
 
-**This is the headline, and it is a blocker rather than a shortfall.**
-`/dash/v1` requires a token whose audience is `vpay:dash/v1`. The only grant
-vpay serves is `client_credentials`, registered for merchant clients alone —
-and, since this slice, explicitly forbidden from claiming that audience. The
-authorization-code + PKCE grant that would mint one is not built.
+**This was the headline of this section and it is no longer true.**
+[ADR-0017](../adr/0017-staff-authentication.md) took the decision this
+paragraph said nobody had taken — how a human staff member proves who they
+are — and `vpay_api::staff` serves the grant.
+[dashboard-auth.md](dashboard-auth.md) is the document that owns it; the short
+form is: a vpay-owned `staff_members` table, argon2id with a deployment
+pepper, mandatory RFC 6238 TOTP with a compare-and-swap replay guard,
+server-side sessions with an absolute and an idle bound, and the
+authorization-code grant with PKCE served for the dashboard client only.
 
-It is not built because building it requires a decision nobody has taken:
-**how does a human staff member prove who they are?** `authkestra-op`'s
-`handle_authorize` takes an already-authenticated
-`authkestra_engine::auth::state::Identity` **as a parameter** — it
-authenticates nobody. vpay would have to supply one, and vpay has no staff
-table, no credential store, no password hashing, no session store compiled
-in (`authkestra-engine` is pinned without `sql-postgres`), and no
-`AuthenticationStrategy` implementation. Choosing among the options (a staff
-table with password hashes; WebAuthn; TOTP; federating the human step to an
-external IdP in front of vpay's own OP) is an ADR, and it interacts with
-ADR-0009's "vpay is its own OP" in ways a passing implementation must not
-settle.
+`backends/tests/integration/tests/staff_sign_in.rs` (13 cases) drives it end
+to end and **mints no token of its own**.
 
-### The `client_id` check is written for the grant we have
+~~It is not built because building it requires a decision nobody has taken~~ —
+and the paragraph that followed, about `authkestra-op` authenticating nobody,
+is still accurate about `authkestra-op` and no longer a blocker: supplying the
+`Identity` is exactly what `vpay_api::staff::oauth::authorize` does.
 
-Found by the 2026-09-06 review and deliberately **not** changed, because
-changing it means choosing something reserved for the maintainer.
+### ~~The `client_id` check is written for the grant we have~~ — resolved
 
-Check 2 above compares the token's `sub` with the registered dashboard
-client's `client_id`. Under `client_credentials` that is right: Authkestra's
-`TokenManager::issue_client_token` sets `sub` to the client id. Under the
-authorization-code grant this slice is blocked on,
-`default_handle_authorization_code` issues a **user** token — `sub` is the
-staff member's identity and the client id goes into `aud`. So the check as
-written would refuse every token a working dashboard login produced.
+Found by the 2026-09-06 review, recorded as finding F7 and deliberately not
+changed then, because changing it meant choosing something reserved for the
+maintainer. ADR-0017 decision 3 chose: **the credential is identified by
+`aud`** — which the validator has already checked by the time
+`require_dashboard_token` runs — **plus the merchant claim**, and `sub` names
+the staff row and authorises nothing.
 
-Which claim identifies the dashboard *credential* once a human is in the loop
-(`azp`, an explicit `client_id` claim, or the audience itself under the rule
-that the dashboard audience becomes the `DashboardClient`'s `client_id`) is
-part of the same decision as blocker 2 below, and belongs with it. Nothing
-else here makes that work harder: moving `vpay:dash/v1` into one
-`vpay_config::DASHBOARD_AUDIENCE` constant makes the audience half of it a
-single edit.
+The second, smaller decision recorded beside it — that
+`default_handle_authorization_code` mints `aud = <client_id>` with no
+requested-audience path — is resolved in the same move, by changing the
+*validator* to expect what the grant produces rather than forking the handler.
 
-A second, smaller decision is already recorded as a maintainer's call and is
-also unresolved: `authkestra-op`'s `default_handle_authorization_code` mints
-the access token with `aud = <client_id>` and has no requested-audience path,
-so a token from that grant would not carry `vpay:dash/v1` at all. See
-[dashboard-auth.md](dashboard-auth.md)'s Status, blocker 3, and
-[roadmap.md](../roadmap.md)'s Phase 2b, scope item 3.
+~~**Consequence, stated plainly: the two routes above are a resource server
+with no issuer.**~~ They have an issuer now. What was true and stays true is
+why the tenancy boundary was built first: it has to be right *before* a login
+exists, not after.
 
-**Consequence, stated plainly: the two routes above are a resource server
-with no issuer.** They are real, tested and fail closed, and no client of
-this deployment can reach them. That is the honest half of the slice to
-build first — the tenancy boundary has to be right _before_ a login exists,
-not after — but it is a half.
-
-### There are no pages
+### There are still no pages, and the reason changed
 
 `frontends/apps/dashboard` is unchanged: still the scaffold, still saying so
-on screen. Sign-in, the payments table, the detail view and sign-out were all
-in slice 1's brief and none was built, because a dashboard whose session
-cannot exist is a set of pages that cannot be reached, screenshotted, or
-tested end to end. `dashboard.cy.ts` still asserts the scaffold notice.
+on screen, still zero tests, and `dashboard.cy.ts` still asserts the scaffold
+notice.
+
+Slice 1's reason — "a dashboard whose session cannot exist is a set of pages
+that cannot be reached, screenshotted, or tested end to end" — **stopped
+being true on 2026-09-07**. A session can exist now, and the pages were in
+ADR-0017's own scope. They were not built in that pass either, and the honest
+statement of why is scope rather than a blocker: the backend slice
+(three tables, the credential primitives, seven routes, the audience change
+and two test suites) was as much as one pass delivered, and the brief it was
+written to said in so many words to deliver the grant end to end first and
+report the pages as not done rather than stubbing them.
+
+So the whole of `/dash/v1` — the reads, the login and the grant — is reachable
+over HTTP and by nothing a person can click.
 
 ### Two columns the list cannot show
 

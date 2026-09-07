@@ -37,7 +37,7 @@ true.
 |---|---|---|
 | 1 | Foundations | ✅ Complete — seven commits through `932d8a4`; the **28** migrations in `backends/migrations/` apply cleanly and their constraints are proven to fire (`postgres_smoke.rs`; 26 when this row was written, 27 with Step 8's callback index and 28 with Step 9's `checkout_sessions`) |
 | 2 | Authentication — merchant (`/v1`) | ✅ Delivered 2026-09-02 (Step 1, PR #15) — the OP is mounted at `/v1/oauth` and `AuthenticatedMerchant` gates the whole `/v1` nest; 7 `merchant_token_flow` tests. *`docs/status.md`'s own "Merchant auth" row is still 🟡 and names its own trigger — "when the CI `rust` job runs them green" — which has since happened on `master` (run `33792230584`) without that row being re-measured* |
-| 2b | Authentication — dashboard login (`/dash/v1`) | ⛔ **Still not started, and the goal below is unmet: no login has ever been performed.** ~~no `/dash/v1` route of any kind~~ — corrected 2026-09-06 (exp23): two `GET` *resource* routes are now mounted and tenant-bound, which is a resource server with **no issuer**, since no grant this deployment serves can mint a token for them. Still no `/login`, no `/authorize`, no `SessionStore`. **A second blocker, larger than item 3 below, was found and recorded that day**: `handle_authorize` takes an already-authenticated `Identity` as a parameter, and how a human staff member proves who they are has never been decided anywhere in this repository. Split out of Phase 2 on 2026-09-02 |
+| 2b | Authentication — dashboard login (`/dash/v1`) | 🟡 **The login is built; the pages are not** (2026-09-07, [ADR-0017](adr/0017-staff-authentication.md) — see the amendment at the end of the phase). ~~⛔ Still not started, and the goal below is unmet: no login has ever been performed.~~ ~~no `/dash/v1` route of any kind~~ — corrected 2026-09-06 (exp23): two `GET` *resource* routes are now mounted and tenant-bound, which is a resource server with **no issuer**, since no grant this deployment serves can mint a token for them. Still no `/login`, no `/authorize`, no `SessionStore`. **A second blocker, larger than item 3 below, was found and recorded that day**: `handle_authorize` takes an already-authenticated `Identity` as a parameter, and how a human staff member proves who they are has never been decided anywhere in this repository. Split out of Phase 2 on 2026-09-02 |
 | 3 | Payment API (`/v1`) | ✅ Delivered 2026-09-02→03 (Steps 2–3, PRs #16–#17) — create / retrieve / list / cancel / confirm, form-encoded, idempotent and merchant-scoped, with `confirm` moving the intent to `processing` or `requires_action`. **Against WireMock rails**, which is why the matching `docs/status.md` rows are 🟡 |
 | 4 | The rails | → **split 2026-09-03.** **4a** ✅ delivered (Step 3, PR #17) — both adapters pass the one shared conformance suite, 26 tests, 0 `#[ignore]`s, every one of them against a `wiremock/wiremock` container. **4b** (push-rail recovery) delivered inside Phase 5 (Step 4, PR #18). The two headings below are current; this row is the pre-split one |
 | 5 | The worker | 🟡 In progress — the job loop, the poll ladder, recovery and settlement landed 2026-09-03 (Step 4, PR #18) against WireMock rails, and a confirmed intent reaches `succeeded` unattended. **Updated 2026-09-04 (Step 8):** ~~the callback route (`POST /provider/{code}/callback`) … did not~~ — **it exists now** (lane C), and ~~the "crash tests" kill no process~~ — **`worker_kill9.rs` `SIGKILL`s the shipping worker and the shipping server** (lane D), so two of the three kill points are caused rather than written. Lane G additionally fixed a `500` on confirm that this step's demo found. **Still 🟡:** prompt expiry is unbuilt, kill point 1 is still written rather than caused, Orange is not in the kill test, no rail has ever called the callback route, and every rail here is a WireMock host |
@@ -478,7 +478,9 @@ works". Nothing below is new scope; it is Phase 2's dashboard scope, moved.
 against `/dash/v1` and a subsequent authenticated call accepts the token; a
 merchant-audience token is rejected on `/dash/v1`.
 
-**Status.** Not started. **No login has ever been performed.** ~~and no
+**Status.** ~~Not started. **No login has ever been performed.**~~ **Corrected
+2026-09-07: the backend is built and the pages are not — see the amendment at
+the end of this phase.** ~~and no
 `/dash/v1` route exists~~ — corrected 2026-09-06 (exp23): the `/dash/v1`
 *read* surface exists (two `GET` routes, tenant-bound, ten integration tests
 over a real server; see [flows/dashboard.md](flows/dashboard.md)), and no
@@ -523,7 +525,9 @@ None of that is login.
    them. `handle_client_credentials` *does* honour a requested audience,
    which is why `/v1` does not hit this. Options — a custom grant handler, a
    different `Surface::Dashboard` audience rule, or an upstream change —
-   are a maintainer's call, not a default to pick in passing.
+   are a maintainer's call, not a default to pick in passing. **Taken
+   2026-09-07: the second option.** See the amendment at the end of this
+   phase.
 4. The dashboard's own server-side session handling ([ADR-0008](adr/0008-dashboard-scope.md):
    the dashboard never holds a merchant API key and calls `/dash/v1`
    server-side under an OIDC session).
@@ -543,8 +547,57 @@ None of that is login.
 
 **Decisions and open questions.** Every one Phase 2 lists still applies here
 — the dashboard scope ([ADR-0008](adr/0008-dashboard-scope.md)), no refresh
-tokens, the Keycloak/ZITADEL comparison ADR-0009 asked for and nobody has
-done, and the revocation-endpoint gap.
+tokens, and the Keycloak/ZITADEL comparison ADR-0009 asked for and nobody has
+done. ~~and the revocation-endpoint gap~~ — **closed on 2026-09-07** by
+[ADR-0017](adr/0017-staff-authentication.md) decision 2, in the only form
+available: the access token lives in the session row, the dashboard's own
+server reads it back on every render, and signing out deletes the row. The
+minted JWT stays cryptographically valid for the rest of its TTL and nothing
+can change that; what is revoked is its *obtainability*.
+
+### Amendment, 2026-09-07 — the login is built; the pages are not
+
+Scope items 1–3 above are **done** and item 4 is done in a shape the paragraph
+did not anticipate. [ADR-0017](adr/0017-staff-authentication.md) took the
+decision item 2 reserved (a `staff_members` table, argon2id with a deployment
+pepper, mandatory RFC 6238 TOTP) and resolved item 3 by changing the
+*validator* rather than the grant: the audience is the registered
+`dashboard_client.client_id`, because that is what
+`default_handle_authorization_code` mints, and `vpay:dash/v1` is retired.
+
+Item 4's session is vpay's own row in vpay's own table rather than
+`authkestra-engine`'s `SessionStore`, which stays uncompiled — and the
+dashboard app follows the `/authorize` redirect **itself**, server-side, so a
+browser never sees a code, a verifier or a token.
+
+**Definition of done, against the four bullets above:**
+
+- ✅ *An integration test drives a real authorization-code + PKCE round trip
+  and receives a token a subsequent authenticated call accepts* —
+  `backends/tests/integration/tests/staff_sign_in.rs`, 13 cases, and it mints
+  no token of its own.
+- ✅ *A merchant-audience token is rejected on `/dash/v1`, over a real mounted
+  router* — `a_merchant_audience_token_is_refused_on_dash_v1`, and since
+  ADR-0017 a **`client_credentials`** token is refused too, which is stricter
+  than this bullet asked for.
+- ⛔ *A signing key is rotated at least once* — **untouched.** Rotation is
+  still restart-based and nothing re-reads the key file. This is the one
+  bullet ADR-0017 does not move, and it is why this phase is not closed.
+
+**Still open, and not implied by any of the above:** the pages. This phase's
+whole point is a dashboard a person uses, and `frontends/apps/dashboard` is
+byte-identical to the scaffold — `/login`, the OIDC callback, `/payments`,
+`/payments/{id}` and sign-out were in ADR-0017's own scope and were not built.
+Everything the phase's backend needs is reachable over HTTP and by nothing a
+person can click. Also open: no sweep of expired sessions or authorization
+codes, no `audit_log`, and no way to disable the dashboard *client* short of
+removing it from YAML.
+
+The **refine.dev** question at the top of this phase is untouched by any of
+this and is still an ADR nobody has written. What ADR-0017 changes about it is
+one input: `schemas/vpay.cstack` is no longer "a design sketch, excluded from
+the build graph" — it is compiled into `vpay-db` on every build, and three of
+its models are now the only path to their tables.
 
 ---
 

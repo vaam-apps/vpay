@@ -61,6 +61,18 @@ pub const CHECKOUT_SESSION_PREFIX: &str = "cs_";
 /// likely to be read by a human comparing two systems.
 pub const CUSTOMER_PREFIX: &str = "cus_";
 
+/// Prefix for a Staff id (ADR-0017), the one identifier here that names a
+/// *person* rather than an object a merchant created.
+///
+/// `stf_`, three letters like `evt_` and unlike every two-letter prefix, and
+/// deliberately not `st_`: `stf_` shares no two-character head with `cs_`,
+/// and [`is_well_formed`] compares whole prefixes precisely so a near-miss
+/// cannot pass for another kind of id.
+///
+/// It is **not** a wire identifier on any merchant surface. Nothing under
+/// `/v1` renders one, and `/dash/v1` renders one only as a token's `sub`.
+pub const STAFF_PREFIX: &str = "stf_";
+
 /// Whether `id` is shaped like an id this module would have minted under
 /// `prefix`: the prefix, then exactly 24 characters, every one of them in the
 /// alphabet.
@@ -224,6 +236,24 @@ pub fn customer_id() -> String {
     new_id(CUSTOMER_PREFIX)
 }
 
+/// A new Staff id, `stf_…` (ADR-0017).
+///
+/// Minted by `vpay-server staff add` before the insert, exactly as every
+/// other id here is minted before its row. Never derived from the email: an
+/// id a reader can guess from an address is one that leaks who works for a
+/// merchant to anybody who can enumerate ids.
+///
+/// ```
+/// use vpay_core::ids::{self, STAFF_PREFIX};
+///
+/// let id = ids::staff_id();
+/// assert!(ids::is_well_formed(STAFF_PREFIX, &id));
+/// ```
+#[must_use]
+pub fn staff_id() -> String {
+    new_id(STAFF_PREFIX)
+}
+
 /// What joins an object id to its secret suffix: `pi_…` + this + the suffix.
 ///
 /// Public because it is a **wire contract**: `@vaam-apps/vpay-stripe-js` splits a
@@ -370,13 +400,14 @@ mod tests {
     /// being listed here is a generator none of the properties below hold of
     /// — the length, the alphabet, the id-column CHECK and the
     /// percent-encoding identity are claims about *every* id vpay mints.
-    const GENERATORS: [Generator; 6] = [
+    const GENERATORS: [Generator; 7] = [
         (payment_intent_id as fn() -> String, PAYMENT_INTENT_PREFIX),
         (charge_id, CHARGE_PREFIX),
         (refund_id, REFUND_PREFIX),
         (event_id, EVENT_PREFIX),
         (checkout_session_id, CHECKOUT_SESSION_PREFIX),
         (customer_id, CUSTOMER_PREFIX),
+        (staff_id, STAFF_PREFIX),
     ];
 
     /// `sdks/rust/src/form.rs`'s `is_safe_byte`, copied verbatim rather than

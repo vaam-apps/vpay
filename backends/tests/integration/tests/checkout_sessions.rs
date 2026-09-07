@@ -257,6 +257,7 @@ fn config_with(
             public_base_url: checkout_base.map(str::to_owned),
         },
         dashboard_client: None,
+        staff_auth: vpay_config::StaffAuth::default(),
     }
 }
 

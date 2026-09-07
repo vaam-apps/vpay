@@ -82,10 +82,7 @@ use serde::{Deserialize, Serialize};
 use vpay_core::Currency;
 use vpay_provider::ProviderConfig;
 
-use crate::oauth::{
-    DASHBOARD_AUDIENCE, DashboardClient, MERCHANT_AUDIENCE, MerchantClient,
-    jwks_has_at_least_one_key,
-};
+use crate::oauth::{DashboardClient, MERCHANT_AUDIENCE, MerchantClient, jwks_has_at_least_one_key};
 use crate::{
     ConfigError, Deployment, GrantType, HostEntry, validate_host, validate_secret,
     validate_webhook_url,
@@ -519,6 +516,95 @@ pub struct Config {
     #[garde(dive)]
     #[serde(default)]
     pub dashboard_client: Option<DashboardClient>,
+    /// The two deployment secrets staff sign-in needs (ADR-0017). Absent
+    /// means this deployment serves no staff login — see [`StaffAuth`].
+    #[garde(dive)]
+    #[serde(default)]
+    pub staff_auth: StaffAuth,
+}
+
+/// The two deployment secrets staff sign-in needs
+/// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md) decision 1).
+///
+/// Both `Option`, and both **required in livemode whenever a
+/// `dashboard_client` is registered** — see
+/// [`Config::validate_all`]'s `validate_staff_auth`. A sandbox deployment may
+/// leave them out, and the consequence is stated rather than hidden: with
+/// either absent, `vpay-server` mounts no staff login at all, exactly as a
+/// deployment with no `dashboard_client` mounts no dashboard.
+///
+/// Neither value is ever *used* by this crate. `vpay_api::staff_auth::StaffCredentials`
+/// is what turns them into an argon2 secret input and an AES-256-GCM key, and
+/// it is what refuses a key of the wrong length. Config's job is to carry
+/// them and to refuse a deployment that wrote them as literals.
+#[derive(Clone, Default, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
+pub struct StaffAuth {
+    /// argon2id's secret input, mixed into every staff password hash.
+    ///
+    /// **Losing this invalidates every `staff_members.password_hash` in the
+    /// database.** It belongs in the same Secret as the RS256 signing key
+    /// and has the same backup story; migration `0035` says so too, where an
+    /// operator will look.
+    ///
+    /// No length rule here: any string is a usable argon2 secret, and a
+    /// minimum would be a number this file invented. What is enforced is
+    /// that a livemode deployment wrote it as a `${VAR}` rather than as a
+    /// literal — the rule every other secret in this document already obeys.
+    #[garde(skip)]
+    #[serde(default)]
+    pub password_pepper: Option<String>,
+
+    /// The AES-256-GCM key `staff_members.totp_secret` is sealed under, base64url
+    /// (unpadded) of exactly 32 bytes.
+    ///
+    /// Losing it invalidates every enrolled second factor. Deliberately a
+    /// **different** value from [`Self::password_pepper`]: one is an argon2
+    /// secret input and the other an AEAD key, and reusing one for both would
+    /// mean rotating either forces rotating both.
+    ///
+    /// The length and the encoding are checked by
+    /// `vpay_api::staff_auth::StaffCredentials::new` at boot rather than
+    /// here, because that is where the constant that decides them lives —
+    /// a second copy of "32" in this file is a second thing to keep in step.
+    #[garde(skip)]
+    #[serde(default)]
+    pub totp_encryption_key: Option<String>,
+}
+
+/// Prints presence and nothing else. Both fields are deployment secrets, and
+/// unlike [`ProviderHost`]'s redaction there is no useful non-secret half to
+/// show: a pepper has no structure and a key is 32 random bytes.
+impl fmt::Debug for StaffAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StaffAuth")
+            .field(
+                "password_pepper",
+                &self.password_pepper.as_deref().map(|_| "[redacted]"),
+            )
+            .field(
+                "totp_encryption_key",
+                &self.totp_encryption_key.as_deref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
+}
+
+impl StaffAuth {
+    /// Both secrets, or `None` if either is missing.
+    ///
+    /// A pair rather than two accessors, because a deployment with one of
+    /// them can do nothing: it can hash a password it cannot pair with a
+    /// second factor, or seal a secret for an account whose password it
+    /// cannot check. `vpay-server` uses this to decide whether the staff
+    /// login mounts at all.
+    #[must_use]
+    pub fn both(&self) -> Option<(&str, &str)> {
+        Some((
+            self.password_pepper.as_deref()?,
+            self.totp_encryption_key.as_deref()?,
+        ))
+    }
 }
 
 impl Config {
@@ -808,6 +894,15 @@ impl Config {
             // and it is the same reason the duplicate-`client_id` check
             // lives here.
             validate_dashboard_binding(dashboard, &self.merchant_clients)?;
+            // The second whole-document dashboard rule, here for the reason
+            // above and because ADR-0017 made its forbidden value the
+            // dashboard client's own id.
+            validate_no_merchant_claims_the_dashboard_client(dashboard, &self.merchant_clients)?;
+            // Third and last: a livemode dashboard with no staff secrets is
+            // a dashboard nobody can sign in to. Checked only when a
+            // dashboard is registered, because without one the secrets have
+            // nothing to protect.
+            validate_staff_auth(&self.staff_auth, livemode, raw_secrets)?;
         }
 
         Ok(())
@@ -855,6 +950,10 @@ struct RawSecrets {
     /// resolved value traceable back to its own text at all: two secrets on
     /// one endpoint are two different strings with no key to tell them apart.
     webhook_secrets: BTreeMap<(String, String), Vec<String>>,
+    /// `staff_auth.<field>` -> the value as written (ADR-0017). A flat map
+    /// keyed by the field name, because unlike the two above there is exactly
+    /// one `staff_auth` block in a document and its keys are a closed set.
+    staff_auth: BTreeMap<String, String>,
 }
 
 impl RawSecrets {
@@ -871,6 +970,7 @@ impl RawSecrets {
         Self {
             provider_credentials: Self::provider_credentials_from(document),
             webhook_secrets: Self::webhook_secrets_from(document),
+            staff_auth: Self::staff_auth_from(document),
         }
     }
 
@@ -968,6 +1068,31 @@ impl RawSecrets {
             .map(String::as_str)
     }
 
+    /// The same walk for the `staff_auth` block. A missing block, a block
+    /// that is not a map, or a non-string value is simply absent from the
+    /// map, which fails closed for
+    /// [`Self::provider_credential_as_written`]'s reason.
+    fn staff_auth_from(document: &figment::value::Value) -> BTreeMap<String, String> {
+        use figment::value::Value;
+
+        let mut out = BTreeMap::new();
+        let Some(dict) = document.find_ref("staff_auth").and_then(Value::as_dict) else {
+            return out;
+        };
+        for (key, value) in dict {
+            if let Some(text) = value.as_str() {
+                out.insert(key.clone(), text.to_owned());
+            }
+        }
+        out
+    }
+
+    /// A staff-auth secret as the file wrote it. `None` fails closed for
+    /// [`Self::provider_credential_as_written`]'s reason.
+    fn staff_auth_as_written(&self, field: &str) -> Option<&str> {
+        self.staff_auth.get(field).map(String::as_str)
+    }
+
     /// One webhook secret as the file wrote it, by position. `None` fails
     /// closed for [`Self::provider_credential_as_written`]'s reason.
     fn webhook_secret_as_written(
@@ -996,6 +1121,19 @@ impl RawSecrets {
     /// this shortcut cannot be used to fake that proof.
     fn identity(config: &Config) -> Self {
         Self {
+            staff_auth: [
+                (
+                    "password_pepper",
+                    config.staff_auth.password_pepper.as_deref(),
+                ),
+                (
+                    "totp_encryption_key",
+                    config.staff_auth.totp_encryption_key.as_deref(),
+                ),
+            ]
+            .into_iter()
+            .filter_map(|(field, value)| Some((field.to_owned(), value?.to_owned())))
+            .collect(),
             provider_credentials: config
                 .providers
                 .iter()
@@ -1107,19 +1245,40 @@ fn validate_merchant_client(merchant: &MerchantClient) -> Result<(), ConfigError
             client_id: merchant.client_id.clone(),
         });
     }
-    // Last, and about a *different* surface than the four rules above it: a
-    // merchant registration that lists the dashboard audience can mint a
-    // token `/dash/v1`'s validator accepts. See
-    // `ConfigError::MerchantClaimsDashboardAudience` for why one check in
-    // the middleware is not enough.
-    if merchant
-        .allowed_audiences
-        .iter()
-        .any(|audience| audience == DASHBOARD_AUDIENCE)
-    {
-        return Err(ConfigError::MerchantClaimsDashboardAudience {
-            client_id: merchant.client_id.clone(),
-        });
+    // The dashboard-audience rule used to be here, as a fifth check against
+    // a constant. It moved to `Config::validate_all` on 2026-09-07: ADR-0017
+    // made the forbidden value the dashboard client's own `client_id`, which
+    // one registration cannot know. See
+    // `validate_no_merchant_claims_the_dashboard_client`.
+    Ok(())
+}
+
+/// No merchant registration may name the dashboard client's id as an
+/// audience it is allowed to request.
+///
+/// Whole-document scope, beside [`validate_dashboard_binding`], and for the
+/// same reason: the value being compared against comes from a *different*
+/// entry in the document. It used to be a constant checked per registration
+/// inside [`validate_merchant_client`]; ADR-0017 decision 3 retired that
+/// constant, and exp23's review had already recorded the move as the thing
+/// that would have to happen.
+///
+/// # Errors
+///
+/// [`ConfigError::MerchantClaimsDashboardAudience`] — see that variant for
+/// why refusing the *registration* matters when `/dash/v1` would refuse the
+/// token anyway.
+fn validate_no_merchant_claims_the_dashboard_client(
+    dashboard: &DashboardClient,
+    merchants: &[MerchantClient],
+) -> Result<(), ConfigError> {
+    for merchant in merchants {
+        if merchant.allowed_audiences.contains(&dashboard.client_id) {
+            return Err(ConfigError::MerchantClaimsDashboardAudience {
+                client_id: merchant.client_id.clone(),
+                audience: dashboard.client_id.clone(),
+            });
+        }
     }
     Ok(())
 }
@@ -1749,6 +1908,65 @@ fn validate_dashboard_binding(
     })
 }
 
+/// The staff-sign-in secrets: present in livemode, and never written as a
+/// literal.
+///
+/// Two rules, in that order, and the order matters for the same reason the
+/// audience rule is checked after the shape rules: an operator whose pepper
+/// is missing entirely should be told *that*, not that a value they did not
+/// write is not a `${VAR}`.
+///
+/// # Why only in livemode, and only with a dashboard registered
+///
+/// A sandbox deployment that leaves both out gets no staff login and is told
+/// so in a boot log line. A deployment with no `dashboard_client` has no
+/// `/dash/v1` at all, so these secrets would protect nothing. Requiring them
+/// unconditionally would make every existing test fixture and every local
+/// `compose.yml` refuse to start for a feature they do not use — which is how
+/// a required secret ends up with a checked-in default value.
+///
+/// # Errors
+///
+/// [`ConfigError::StaffAuthSecretMissing`] in livemode when either is absent;
+/// [`ConfigError::LiteralSecret`] when either was written as a literal rather
+/// than a `${VAR}` reference — the same rule, and the same function, every
+/// rail credential and webhook secret in this document already obeys.
+fn validate_staff_auth(
+    staff_auth: &StaffAuth,
+    livemode: bool,
+    raw_secrets: &RawSecrets,
+) -> Result<(), ConfigError> {
+    for (field, value) in [
+        ("password_pepper", staff_auth.password_pepper.as_deref()),
+        (
+            "totp_encryption_key",
+            staff_auth.totp_encryption_key.as_deref(),
+        ),
+    ] {
+        match value {
+            None if livemode => {
+                return Err(ConfigError::StaffAuthSecretMissing {
+                    field: field.to_owned(),
+                });
+            }
+            // Sandbox with no staff secrets: legal, and `vpay-server` logs
+            // that no staff login is mounted.
+            None => {}
+            Some(_) => {
+                // The value **as written**, never the resolved one — the
+                // ordering bug `a_livemode_config_whose_placeholders_resolve_loads`
+                // exists to catch, applied to a third kind of secret.
+                validate_secret(
+                    &format!("staff_auth.{field}"),
+                    raw_secrets.staff_auth_as_written(field).unwrap_or(""),
+                    livemode,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// See the module docs' "Locating the profile overlay" section.
 fn profile_overlay_path(base_path: &Path, profile: &str) -> Option<PathBuf> {
     let parent = base_path.parent().unwrap_or_else(|| Path::new(""));
@@ -2080,6 +2298,7 @@ mod tests {
     /// struct at all) use [`load_fixture`] instead, and say so.
     fn valid_config() -> Config {
         Config {
+            staff_auth: StaffAuth::default(),
             deployment: Deployment {
                 name: "test".to_owned(),
                 livemode: false,
@@ -2802,6 +3021,7 @@ mod tests {
     #[test]
     fn a_livemode_deployment_cannot_derive_a_plaintext_callback_url() {
         let config = Config {
+            staff_auth: StaffAuth::default(),
             deployment: Deployment {
                 name: "prod".to_owned(),
                 livemode: true,
@@ -4108,43 +4328,83 @@ providers:
     }
 
     /// A merchant registration must not be able to name the dashboard
-    /// audience.
+    /// client's own id as an audience it may request.
     ///
     /// This is the boot half of a two-part boundary and the cheaper half to
     /// read. `handle_client_credentials` mints a token for any *requested*
     /// audience `allowed_audiences` permits, so this one YAML line hands a
     /// merchant credential a token whose `aud` the `/dash/v1` resource
-    /// validator accepts. Deleting the check in `validate_merchant_client`
-    /// makes this test fail and makes that registration loadable.
+    /// validator accepts. Deleting the
+    /// `validate_no_merchant_claims_the_dashboard_client` call makes this
+    /// test fail and makes that registration loadable.
+    ///
+    /// **The fixture changed on 2026-09-07 and the change is the point.**
+    /// The forbidden value used to be the constant `vpay:dash/v1`, checked
+    /// per registration; ADR-0017 made it the dashboard client's own
+    /// `client_id`, so the fixture now has to carry a `dashboard_client` for
+    /// the rule to have anything to compare against — and the check had to
+    /// move to whole-document scope to see both halves.
     #[test]
-    fn a_merchant_client_that_lists_the_dashboard_audience_is_rejected() {
+    fn a_merchant_client_that_lists_the_dashboard_client_id_is_rejected() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/oauth-merchant-claims-dashboard-audience.yml"
         );
         let env = example_env(BTreeMap::new());
         let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
-            .expect_err("a merchant listing the dashboard audience must be rejected");
+            .expect_err("a merchant listing the dashboard client id must be rejected");
         assert_eq!(
             err,
             ConfigError::MerchantClaimsDashboardAudience {
                 client_id: "acme".to_owned(),
+                audience: "vpay-dashboard".to_owned(),
             }
         );
     }
 
-    /// The two audience constants are different strings.
+    /// A merchant may not claim the dashboard client's id **whatever it is**
+    /// — the rule compares against the document, not against a constant.
     ///
-    /// Trivial to assert and not trivial to lose: every rule above is a
-    /// comparison against one of them, and the day they became equal, both
-    /// `MerchantMissingV1Audience` and `MerchantClaimsDashboardAudience`
-    /// would fire on every well-formed registration — the config crate would
-    /// refuse to boot anything, which is at least loud. What this pins is
-    /// the direction nobody would notice: one constant defined in terms of
-    /// the other.
+    /// This is the assertion that would have been impossible before ADR-0017
+    /// and is the one that matters now: a deployment that renames its
+    /// dashboard client is still protected, because there is no constant left
+    /// to fall out of step with the registration.
     #[test]
-    fn the_two_surface_audiences_are_not_the_same_string() {
-        assert_ne!(MERCHANT_AUDIENCE, DASHBOARD_AUDIENCE);
+    fn the_dashboard_audience_rule_follows_the_registered_client_id() {
+        let dashboard = |client_id: &str| DashboardClient {
+            client_id: client_id.to_owned(),
+            merchant_id: "merchant-one".to_owned(),
+            scope: "dashboard:read".to_owned(),
+            redirect_uris: vec!["http://localhost:3000/cb".to_owned()],
+            client_secret: None,
+        };
+        let mut config = valid_config();
+        let merchant = config
+            .merchant_clients
+            .first_mut()
+            .expect("valid_config registers one merchant");
+        merchant.merchant_id = "merchant-one".to_owned();
+        merchant
+            .allowed_audiences
+            .push("renamed-dashboard".to_owned());
+        let merchant_client_id = merchant.client_id.clone();
+        config.dashboard_client = Some(dashboard("renamed-dashboard"));
+        assert_eq!(
+            config.validate_all(&RawSecrets::identity(&config)),
+            Err(ConfigError::MerchantClaimsDashboardAudience {
+                client_id: merchant_client_id,
+                audience: "renamed-dashboard".to_owned(),
+            }),
+            "the forbidden value is whatever the document registers, not a constant"
+        );
+
+        // The same merchant, against a dashboard registered under a different
+        // id: legal, because `renamed-dashboard` is then nobody's audience.
+        config.dashboard_client = Some(dashboard("some-other-dashboard"));
+        assert!(
+            config.validate_all(&RawSecrets::identity(&config)).is_ok(),
+            "an audience no registered client owns is not the dashboard's"
+        );
     }
 
     #[test]

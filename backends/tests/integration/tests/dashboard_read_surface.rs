@@ -75,7 +75,7 @@ use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_api::op::keys::LoadedSigningKey;
 use vpay_config::{
-    Config, CurrencyEntry, DASHBOARD_AUDIENCE, DashboardClient, Deployment, HostEntry,
+    Config, CurrencyEntry, DASHBOARD_MERCHANT_CLAIM, DashboardClient, Deployment, HostEntry,
     MERCHANT_AUDIENCE, ProviderHost,
 };
 use vpay_db::{NewPaymentIntent, Repositories, UnitOfWork as _};
@@ -101,6 +101,14 @@ const MERCHANT_B: &str = "beta-douala-tenant";
 /// The registered dashboard client, and its single scope.
 const DASHBOARD_CLIENT: &str = "vpay-dashboard";
 const DASHBOARD_SCOPE: &str = "dashboard:read";
+
+/// The `sub` of every staff token this suite mints.
+///
+/// A `stf_…`, because that is what the authorization-code grant puts there —
+/// and the point of ADR-0017's rename of `ResourceClaims::client_id` to
+/// `subject`: under this grant `sub` is a **person**, not a credential, and
+/// nothing in `require_dashboard_token` authorises against it any more.
+const STAFF_ID: &str = "stf_0000000000000000000dash";
 
 const PUSH_RAIL: &str = "mtn_momo";
 const CURRENCY: &str = "XAF";
@@ -133,17 +141,77 @@ struct Harness {
 }
 
 impl Harness {
-    /// A token the registered dashboard client would hold, if anything could
-    /// issue it — see this file's header.
+    /// The token a signed-in staff member holds.
     ///
-    /// Minted through `TokenManager::issue_client_token`, the shipping
-    /// function, so the claim set is the one vpay's own OP produces rather
-    /// than a hand-assembled JSON object that happens to validate.
+    /// **Rewritten for [ADR-0017]**, and the rewrite is the change this suite
+    /// exists to record. It used to be `issue_client_token` — a
+    /// `client_credentials` shape, `sub` = the client id, `aud` =
+    /// `vpay:dash/v1`, no merchant claim. That token is now **refused**, and
+    /// `a_client_credentials_token_is_refused_on_dash_v1` below is what pins
+    /// it: no machine client may read the dashboard.
+    ///
+    /// What replaces it is exactly what
+    /// `vpay_api::staff::oauth::token` mints — `issue_user_token_with_extra`,
+    /// `sub` = the staff member, `aud` = the dashboard client id, plus the
+    /// merchant claim — so what this suite presents is the claim set the
+    /// shipping grant produces rather than a hand-assembled object that
+    /// happens to validate.
+    ///
+    /// [ADR-0017]: ../../../../docs/adr/0017-staff-authentication.md
     fn dashboard_token(&self) -> String {
-        self.token(DASHBOARD_CLIENT, DASHBOARD_AUDIENCE, DASHBOARD_SCOPE)
+        self.staff_token(DASHBOARD_CLIENT, DASHBOARD_SCOPE, Some(MERCHANT_A))
     }
 
-    fn token(&self, client_id: &str, audience: &str, scope: &str) -> String {
+    /// A staff token, with every part of it a parameter so a test can move
+    /// exactly one.
+    ///
+    /// `merchant` is `Option` because "no merchant claim at all" is a case
+    /// with its own test — it is what every `client_credentials` token looks
+    /// like.
+    fn staff_token(&self, audience: &str, scope: &str, merchant: Option<&str>) -> String {
+        self.staff_token_for(STAFF_ID, audience, scope, merchant)
+    }
+
+    /// [`Self::staff_token`] with the **subject** a parameter too.
+    ///
+    /// One caller: the test that presents a token for a `stf_…` no
+    /// `staff_members` row names. That is a case only this suite can build —
+    /// `staff_sign_in.rs` mints nothing and every subject it presents came
+    /// out of a real sign-in, so its staff row exists by construction.
+    fn staff_token_for(
+        &self,
+        subject: &str,
+        audience: &str,
+        scope: &str,
+        merchant: Option<&str>,
+    ) -> String {
+        let mut extra = std::collections::HashMap::new();
+        if let Some(merchant) = merchant {
+            extra.insert(
+                DASHBOARD_MERCHANT_CLAIM.to_owned(),
+                Value::String(merchant.to_owned()),
+            );
+        }
+        self.signing_key
+            .token_manager()
+            .issue_user_token_with_extra(
+                vpay_api::op::dashboard::token_identity_for(subject),
+                TOKEN_TTL_SECS,
+                Some(scope.to_owned()),
+                Some(audience.to_owned()),
+                extra,
+            )
+            .expect("the server's own signing key mints a token")
+    }
+
+    /// The `client_credentials` token this surface used to accept, minted
+    /// through the shipping function `/v1` uses.
+    ///
+    /// Two callers: the test that proves such a token is now refused on
+    /// `/dash/v1`, and the two that present a real *merchant* credential —
+    /// which is the same shape, for a different client and a different
+    /// audience.
+    fn machine_token(&self, client_id: &str, audience: &str, scope: &str) -> String {
         self.signing_key
             .token_manager()
             .issue_client_token(
@@ -165,9 +233,10 @@ impl Harness {
         let now = chrono::Utc::now().timestamp();
         let claims = serde_json::json!({
             "iss": format!("{}/v1/oauth", self.base_url),
-            "aud": DASHBOARD_AUDIENCE,
-            "sub": DASHBOARD_CLIENT,
+            "aud": DASHBOARD_CLIENT,
+            "sub": STAFF_ID,
             "scope": DASHBOARD_SCOPE,
+            DASHBOARD_MERCHANT_CLAIM: MERCHANT_A,
             "iat": now - 3_600,
             "exp": now - 600,
         });
@@ -269,6 +338,11 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value, dashboard: bool) ->
             scope: DASHBOARD_SCOPE.to_owned(),
             client_secret: None,
         }),
+        // No staff secrets, deliberately: this suite is about the READ
+        // surface's boundary and mints its tokens directly, so a staff login
+        // mounted beside it would be scenery. `staff_sign_in.rs` is the suite
+        // that exercises the grant end to end.
+        staff_auth: vpay_config::StaffAuth::default(),
     }
 }
 
@@ -286,6 +360,8 @@ async fn harness_with(dashboard: bool) -> anyhow::Result<Harness> {
     })
     .await?;
 
+    seed_staff(repositories.as_ref()).await?;
+
     Ok(Harness {
         _container: container,
         server: served.server,
@@ -299,6 +375,41 @@ async fn harness_with(dashboard: bool) -> anyhow::Result<Harness> {
 
 async fn harness() -> anyhow::Result<Harness> {
     harness_with(true).await
+}
+
+/// Writes the `staff_members` row every token this suite mints names.
+///
+/// **Required since the exp24 review (findings F1 and F6).**
+/// `require_dashboard_token` reads the row its `sub` names and refuses a
+/// `disabled` one, a missing one, or one whose `merchant_id` is not the
+/// binding — so a token for a `stf_…` nobody created is now a `403`, which is
+/// the right answer and which eight tests here were relying on not happening.
+///
+/// Seeding it is a strengthening rather than a workaround: what this suite
+/// presents is meant to be exactly what the authorization-code grant
+/// produces, and that grant's `sub` is `oauth_authorization_codes.staff_id`,
+/// a column with a foreign key to this table. A token whose subject names no
+/// person was never a thing the shipping mint could produce.
+///
+/// The password hash is a placeholder and is never verified: nothing in this
+/// suite signs in. `staff_sign_in.rs` is where a real credential is exercised.
+async fn seed_staff(repositories: &dyn Repositories) -> anyhow::Result<()> {
+    vpay_db::Staff::create(
+        repositories,
+        vpay_db::NewStaff {
+            id: STAFF_ID.to_owned(),
+            merchant_id: MERCHANT_A.to_owned(),
+            email: "dash-reader@example.test".to_owned(),
+            display_name: "Dash Reader".to_owned(),
+            // Never verified here — see this function's doc.
+            password_hash: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$notarealhash"
+                .to_owned(),
+            now: time::OffsetDateTime::now_utc(),
+        },
+    )
+    .await
+    .context("seeding the staff member every token in this suite names")?;
+    Ok(())
 }
 
 /// Writes one payment intent directly through the repository.
@@ -462,8 +573,8 @@ async fn another_merchants_intent_is_indistinguishable_from_one_that_never_exist
 /// anything.
 ///
 /// The decisive mutation: build the dashboard nest's validator with
-/// `Surface::Merchant`, or give one validator both audiences, and this passes
-/// a `/v1` credential straight into the staff surface.
+/// `vpay_config::MERCHANT_AUDIENCE`, or give one validator both audiences,
+/// and this passes a `/v1` credential straight into the staff surface.
 #[tokio::test]
 async fn a_merchant_audience_token_is_refused_on_dash_v1() -> anyhow::Result<()> {
     let harness = harness().await?;
@@ -471,7 +582,8 @@ async fn a_merchant_audience_token_is_refused_on_dash_v1() -> anyhow::Result<()>
 
     // A real `/v1` credential: merchant A's own client id, the `/v1`
     // audience, the scopes `merchant_client` registers.
-    let merchant_token = harness.token(CLIENT_A, MERCHANT_AUDIENCE, "payments:read payments:write");
+    let merchant_token =
+        harness.machine_token(CLIENT_A, MERCHANT_AUDIENCE, "payments:read payments:write");
 
     let (status, body) = harness
         .get("/dash/v1/payment_intents", Some(&merchant_token))
@@ -492,25 +604,62 @@ async fn a_merchant_audience_token_is_refused_on_dash_v1() -> anyhow::Result<()>
 
 // ------------------------------------------------------------------ test 4
 
-/// The right audience is not enough: the `client_id` must be the registered
-/// dashboard client's.
+/// A token minted for **another** dashboard client is refused.
 ///
 /// This is the check that stops "one dashboard client per tenant" from being
 /// a promise the code does not keep. The token below is correct in every
-/// other respect — vpay's own signature, the dashboard audience, the
-/// dashboard scope, unexpired — and names a different client.
+/// other respect — vpay's own signature, the dashboard scope, the merchant
+/// claim, unexpired — and its `aud` is a different client.
 ///
-/// The decisive mutation: delete the `claims.client_id != binding.client_id`
-/// arm from `require_dashboard_token` and this returns `200` with merchant
-/// A's payments.
+/// **Where the refusal comes from changed with ADR-0017 and the test is kept
+/// deliberately.** It used to be `require_dashboard_token`'s
+/// `claims.client_id != binding.client_id` arm, comparing the token's `sub`.
+/// The audience *is* the client id now, so the refusal is
+/// `JwtValidator`'s own `set_audience` and the answer is a `401` rather than
+/// a `403`. The property is the same and the mutation is different: build
+/// the validator with any other audience and this returns `200` with
+/// merchant A's payments.
 #[tokio::test]
 async fn a_dashboard_token_for_an_unregistered_client_is_refused() -> anyhow::Result<()> {
     let harness = harness().await?;
     seed_intent(harness.repositories.as_ref(), MERCHANT_A, "pi_dash_a_only").await?;
 
-    let impostor = harness.token("some-other-dashboard", DASHBOARD_AUDIENCE, DASHBOARD_SCOPE);
+    let impostor = harness.staff_token("some-other-dashboard", DASHBOARD_SCOPE, Some(MERCHANT_A));
     let (status, body) = harness
         .get("/dash/v1/payment_intents", Some(&impostor))
+        .await?;
+
+    assert_eq!(status, 401, "{body}");
+    assert!(
+        !body.contains("pi_dash_a_only"),
+        "a refused request must not carry rows: {body}"
+    );
+    Ok(())
+}
+
+/// **No machine client may read the dashboard** (ADR-0017 decision 3).
+///
+/// A `client_credentials` token minted for the registered dashboard client,
+/// with the registered scope and the right audience, is refused — because it
+/// carries no merchant claim, and nothing but the staff authorization-code
+/// grant stamps one. That makes the refusal a property of the mint rather
+/// than of a list somebody maintains.
+///
+/// **This is a tightening**, and it is the one behaviour change ADR-0017
+/// makes to a surface that already worked: before it, a token of exactly this
+/// shape was the *only* thing `/dash/v1` accepted.
+///
+/// The decisive mutation: delete the `claims.merchant` arm from
+/// `require_dashboard_token` and this returns `200` with merchant A's
+/// payments.
+#[tokio::test]
+async fn a_client_credentials_token_is_refused_on_dash_v1() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    seed_intent(harness.repositories.as_ref(), MERCHANT_A, "pi_dash_a_only").await?;
+
+    let machine = harness.machine_token(DASHBOARD_CLIENT, DASHBOARD_CLIENT, DASHBOARD_SCOPE);
+    let (status, body) = harness
+        .get("/dash/v1/payment_intents", Some(&machine))
         .await?;
 
     assert_eq!(status, 403, "{body}");
@@ -518,6 +667,28 @@ async fn a_dashboard_token_for_an_unregistered_client_is_refused() -> anyhow::Re
         !body.contains("pi_dash_a_only"),
         "a refused request must not carry rows: {body}"
     );
+    Ok(())
+}
+
+/// A staff token whose merchant claim is **another tenant** is refused.
+///
+/// The claim is compared against `dashboard_client.merchant_id`, never used
+/// as the tenant — so this test's failure mode without the check is a `200`
+/// carrying merchant **A**'s rows, not merchant B's. That is the point worth
+/// pinning: the claim is a second lock on the same door, and a forged one
+/// buys a `403` rather than another merchant's data.
+#[tokio::test]
+async fn a_token_whose_merchant_claim_is_not_the_binding_is_refused() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    seed_intent(harness.repositories.as_ref(), MERCHANT_A, "pi_dash_a_only").await?;
+
+    let wrong_tenant = harness.staff_token(DASHBOARD_CLIENT, DASHBOARD_SCOPE, Some(MERCHANT_B));
+    let (status, body) = harness
+        .get("/dash/v1/payment_intents", Some(&wrong_tenant))
+        .await?;
+
+    assert_eq!(status, 403, "{body}");
+    assert!(!body.contains("pi_dash_a_only"), "{body}");
     Ok(())
 }
 
@@ -537,7 +708,7 @@ async fn a_dashboard_token_without_the_registered_scope_is_refused() -> anyhow::
     // but a *populated, wrong* scope is what a real misconfiguration looks
     // like, and it is the case a naive "the token has some scope" check
     // would let through.
-    let wrong_scope = harness.token(DASHBOARD_CLIENT, DASHBOARD_AUDIENCE, "payments:write");
+    let wrong_scope = harness.staff_token(DASHBOARD_CLIENT, "payments:write", Some(MERCHANT_A));
     let (status, body) = harness
         .get("/dash/v1/payment_intents", Some(&wrong_scope))
         .await?;
@@ -678,7 +849,7 @@ async fn the_detail_read_carries_the_charge_and_never_the_client_secret() -> any
     // The *merchant* surface does render it, from the same row — so the
     // assertion above is about this handler's choice and not about the row
     // having no secret to leak.
-    let merchant_token = harness.token(CLIENT_A, MERCHANT_AUDIENCE, "payments:read");
+    let merchant_token = harness.machine_token(CLIENT_A, MERCHANT_AUDIENCE, "payments:read");
     let (v1_status, v1_body) = harness
         .get("/v1/payment_intents/pi_dash_detail", Some(&merchant_token))
         .await?;
@@ -1144,5 +1315,64 @@ async fn a_write_method_is_refused_by_the_boundary_not_by_the_route_table() -> a
         )
         .await?;
     assert_eq!(head_status, 200);
+    Ok(())
+}
+
+// ------------------------------------------------------------------ test 16
+
+/// **A validly signed, in-audience, in-tenant, in-scope token whose `sub`
+/// names no staff member is refused.**
+///
+/// Added by the exp24 review (findings F1 and F6). `require_dashboard_token`
+/// reads the `staff_members` row its `sub` names, and this is the third of
+/// the three cases that read shares one answer with — the other two are a
+/// `disabled` row and a row belonging to another merchant, both of which
+/// `staff_sign_in.rs` drives through a real sign-in.
+///
+/// This one can only be built here, by minting: a subject with no row is not
+/// something the shipping grant can produce, because
+/// `oauth_authorization_codes.staff_id` has a foreign key to the table. It is
+/// worth pinning anyway, and for a reason the delivered surface makes plain —
+/// **this whole suite minted such tokens for fifteen tests and nothing
+/// noticed**, because until the review nothing on this path read
+/// `staff_members` at all. The refusal is what a deleted account looks like.
+///
+/// The three assertions that make it decisive: the control token works, the
+/// unknown subject is refused, and the refusal carries none of the tenant's
+/// rows.
+#[tokio::test]
+async fn a_token_whose_subject_names_no_staff_member_is_refused() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    seed_intent(harness.repositories.as_ref(), MERCHANT_A, "pi_dash_a_only").await?;
+
+    // The control: everything about this token is right, including its
+    // subject, and it reads.
+    let (status, body) = harness.dash_json("/dash/v1/payment_intents").await?;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body.get("data").and_then(Value::as_array).map(Vec::len),
+        Some(1),
+        "the control reads the bound merchant's intent: {body}"
+    );
+
+    // One thing moved: a subject nobody created.
+    let orphan = harness.staff_token_for(
+        "stf_0000000000000000000ghost",
+        DASHBOARD_CLIENT,
+        DASHBOARD_SCOPE,
+        Some(MERCHANT_A),
+    );
+    let (status, body) = harness
+        .get("/dash/v1/payment_intents", Some(&orphan))
+        .await?;
+    assert_eq!(
+        status, 403,
+        "a token naming a staff member who does not exist must be refused: a deleted account's \
+         credential is not a credential: {body}"
+    );
+    assert!(
+        !body.contains("pi_dash_a_only"),
+        "and the refusal carries none of the tenant's rows: {body}"
+    );
     Ok(())
 }

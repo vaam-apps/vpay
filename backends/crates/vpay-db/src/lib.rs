@@ -14,6 +14,8 @@
 // The table-family modules stay `pub` for the row/seed types and each
 // family's own trait, not for free functions. Why, in full: [docs/reference/vpay-db.md
 // § what stays pub, and why](../../../../docs/reference/vpay-db.md#what-stays-pub-and-why).
+/// The dashboard client's authorization-code store (ADR-0017 decision 3).
+pub mod authorization_codes;
 pub mod charges;
 // The hosted/embedded checkout object (Step 9). Its own module rather than
 // functions on `payment_intents`, because a session is not a property of an
@@ -55,6 +57,12 @@ pub mod refunds;
 // that tells a merchant about them. A home inside either table's module
 // would have made "settle the charge" reachable without the rest.
 pub mod settlement;
+/// Staff sign-in: the `staff_members` table, its two credentials and the replay
+/// guard (ADR-0017).
+pub mod staff;
+/// Server-side staff sessions: the two bounds, and the revocation that makes
+/// signing out mean something (ADR-0017 decision 2).
+pub mod staff_sessions;
 // The delivery side of the outbox. Its own module rather than functions on
 // `events`, because the fan-out transaction spans both tables and the write
 // that closes it (`mark_fanned_out_in_tx`) must not be reachable without the
@@ -86,6 +94,7 @@ mod signing_keys;
 #[cfg(test)]
 mod sql_audit;
 
+pub use authorization_codes::{AuthorizationCodeRow, AuthorizationCodes, NewAuthorizationCode};
 pub use charges::{ChargeAsOf, ChargeRow, Charges, NewCharge};
 pub use checkout_sessions::{
     CheckoutSessionRow, CheckoutSessions, NewCheckoutSession, SessionListPage,
@@ -118,4 +127,8 @@ pub use repository::{
 };
 pub use settlement::{AttemptRow, Settlement};
 pub use signing_keys::{ActivationOutcome, SigningKey, SigningKeys};
+pub use staff::{NewStaff, Staff, StaffRow, StaffStatus};
+pub use staff_sessions::{
+    ABSOLUTE_LIFETIME, IDLE_TIMEOUT, NewSession, SessionRow, SessionState, StaffSessions,
+};
 pub use webhook_deliveries::{DeliveryRow, WebhookDeliveries};

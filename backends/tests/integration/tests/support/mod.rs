@@ -39,7 +39,7 @@ use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::LoadedSigningKey;
-use vpay_api::resource_auth::{DashboardJwtValidator, JwtValidator, MerchantJwtValidator, Surface};
+use vpay_api::resource_auth::{DashboardJwtValidator, JwtValidator, MerchantJwtValidator};
 use vpay_api::{ResourceConfig, RouterDeps};
 use vpay_config::oauth::{GrantType, MerchantClient, WebhookEndpoint};
 use vpay_config::{Config, MERCHANT_AUDIENCE};
@@ -321,8 +321,10 @@ pub(crate) fn router_deps(
     merchant_op: Arc<MerchantOp>,
     merchant_validator: MerchantJwtValidator,
     dashboard_validator: Option<DashboardJwtValidator>,
+    signing_key: &LoadedSigningKey,
     config: &Config,
 ) -> RouterDeps {
+    let repositories_for_login = Arc::clone(&repositories);
     RouterDeps {
         repositories,
         merchant_op,
@@ -333,7 +335,44 @@ pub(crate) fn router_deps(
             ResourceConfig::from_config(config)
                 .expect("the suite's configuration projects onto the port"),
         ),
+        // Derived from the configuration, exactly as `vpay-server`'s `main`
+        // derives it — so a suite gets a staff login when, and only when, it
+        // registers a `dashboard_client` **and** both `staff_auth` secrets.
+        // Every suite but `staff_sign_in.rs` gets `None`, which is what makes
+        // `/dash/v1/staff/login` a `404` in all of them.
+        staff_login: staff_login_for(config, signing_key, &repositories_for_login),
     }
+}
+
+/// `vpay-server`'s own `staff_login`, for a suite's harness.
+///
+/// Copied rather than shared, because `main.rs`'s version logs three
+/// operator-facing lines this has no business emitting into a test's output —
+/// and because a helper in `vpay-api` that both called would be a shipping
+/// function whose only caller shape is a test. What must not drift is the
+/// *condition*, and it is one line in both: a dashboard client and both
+/// secrets, or `None`.
+pub(crate) fn staff_login_for(
+    config: &Config,
+    signing_key: &LoadedSigningKey,
+    repositories: &Arc<dyn Repositories>,
+) -> Option<Arc<vpay_api::staff::StaffLogin>> {
+    let dashboard = config.dashboard_client.as_ref()?;
+    let (pepper, totp_key) = config.staff_auth.both()?;
+    let credentials = vpay_api::staff_auth::StaffCredentials::new(pepper, totp_key)
+        .expect("the suite's staff_auth secrets are usable");
+
+    Some(Arc::new(vpay_api::staff::StaffLogin {
+        credentials: Arc::new(credentials),
+        dashboard_op: Arc::new(vpay_api::op::dashboard::DashboardOp::new(
+            config,
+            dashboard,
+            signing_key,
+            Arc::clone(repositories),
+        )),
+        limiter: Arc::new(vpay_api::staff::rate_limit::SignInLimiter::new()),
+        issuer_label: config.deployment.name.clone(),
+    }))
 }
 
 /// The `/dash/v1` validator a suite's server should hold, derived from its
@@ -354,13 +393,17 @@ pub(crate) fn dashboard_validator_for(
     issuer: &str,
     config: &Config,
 ) -> Option<DashboardJwtValidator> {
-    config.dashboard_client.as_ref().map(|_| {
+    config.dashboard_client.as_ref().map(|dashboard| {
         DashboardJwtValidator(
             JwtValidator::new(
                 format!("{base_url}/v1/oauth/jwks.json"),
                 Duration::from_secs(300),
                 issuer,
-                Surface::Dashboard,
+                // ADR-0017 decision 3: the dashboard's audience is its own
+                // registered `client_id`, because that is what the
+                // authorization-code grant mints. It was the constant
+                // `vpay:dash/v1` until 2026-09-07.
+                dashboard.client_id.as_str(),
             )
             .expect("the vendored-roots JWKS client builds"),
         )
@@ -749,7 +792,7 @@ pub(crate) async fn serve(
             format!("{base_url}/v1/oauth/jwks.json"),
             Duration::from_secs(300),
             merchant_op.issuer(),
-            Surface::Merchant,
+            vpay_config::MERCHANT_AUDIENCE,
         )
         .expect("the vendored-roots JWKS client builds"),
     );
@@ -760,10 +803,23 @@ pub(crate) async fn serve(
         merchant_op,
         merchant_validator,
         dashboard_validator,
+        &signing_key,
         &config,
     );
     let server = tokio::spawn(async move {
-        let _ = axum::serve(listener, vpay_api::router(deps)).await;
+        // `into_make_service_with_connect_info`, exactly as
+        // `vpay-server`'s own `serve_with_bounded_drain` does it. Without it
+        // no request carries a `ConnectInfo`, the sign-in rate limiter counts
+        // every caller under one `ip:unknown` key, and a suite here would
+        // prove the limiter works while the binary's per-IP budget did not
+        // exist (exp24 review, finding F2). A harness that boots the router
+        // differently from the binary stops proving anything about the
+        // binary — this module's own header says so.
+        let _ = axum::serve(
+            listener,
+            vpay_api::router(deps).into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await;
     });
 
     Ok(Served {

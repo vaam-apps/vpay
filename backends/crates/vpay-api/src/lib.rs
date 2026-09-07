@@ -102,6 +102,13 @@ pub mod op;
 // see that module's header.
 pub mod provider_callback;
 pub mod resource_auth;
+/// Staff credentials: argon2id with a deployment pepper, RFC 6238 TOTP, the
+/// AEAD that keeps a TOTP secret out of a database dump, and the opaque
+/// tokens (ADR-0017).
+/// Staff sign-in: the routes that produce the credential `/dash/v1` checks
+/// (ADR-0017).
+pub mod staff;
+pub mod staff_auth;
 #[cfg(test)]
 mod test_fixtures;
 #[cfg(test)]
@@ -311,6 +318,18 @@ pub struct RouterDeps {
     /// same `Config` the same way, and so this crate never learns how to
     /// find a config file.
     pub resource_config: Arc<ResourceConfig>,
+    /// Everything the staff sign-in routes need, or `None` and they are not
+    /// mounted (ADR-0017).
+    ///
+    /// A second `Option` beside [`Self::dashboard_validator`], and the two
+    /// are deliberately independent. A deployment can register a
+    /// `dashboard_client` and leave the `staff_auth` secrets out — legal in
+    /// sandbox, refused at boot in livemode — and what it gets is the
+    /// `/dash/v1` read surface exp23 built, with no way to sign in. That is
+    /// exactly the state master was in before this ADR, and it stays
+    /// expressible so that "the reads are mounted" and "a human can reach
+    /// them" remain two separate claims rather than one.
+    pub staff_login: Option<Arc<staff::StaffLogin>>,
 }
 
 /// Shared state for every route in this router.
@@ -327,6 +346,30 @@ pub(crate) struct AppState {
     dashboard_validator: Option<DashboardJwtValidator>,
     adapters: Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>,
     resource_config: Arc<ResourceConfig>,
+    staff_login: Option<Arc<staff::StaffLogin>>,
+}
+
+impl AppState {
+    /// The staff sign-in state, or the honest 404.
+    ///
+    /// Every staff handler starts here. `router` only mounts them when this
+    /// is `Some`, so reaching the `Err` arm means a router was assembled by
+    /// some other caller — and the answer is the one an unmounted deployment
+    /// gives, for `require_dashboard_token`'s reason: a `500` would claim
+    /// vpay is broken when the truth is that this deployment serves no staff
+    /// login.
+    pub(crate) fn staff_login(&self) -> Result<&staff::StaffLogin, ApiError> {
+        self.staff_login.as_deref().ok_or(ApiError::NotFound {
+            resource: "route",
+            id: "/dash/v1/staff".to_owned(),
+        })
+    }
+
+    /// The repositories, for a staff handler that would otherwise need its
+    /// own `State` extractor beside this one.
+    pub(crate) fn repositories(&self) -> &dyn Repositories {
+        self.repositories.as_ref()
+    }
 }
 
 /// So [`op::jwks::jwks_handler`] can take `State<Arc<dyn Repositories>>` and
@@ -813,9 +856,9 @@ where
     };
 
     let resource_config = Arc::<ResourceConfig>::from_ref(&state);
-    let Some(merchant_id) = resource_config.merchant_id_for(&claims.client_id) else {
+    let Some(merchant_id) = resource_config.merchant_id_for(&claims.subject) else {
         tracing::warn!(
-            client_id = %claims.client_id,
+            client_id = %claims.subject,
             "a validly signed /v1 token names a client this deployment has no registration for; \
              refusing rather than guessing a tenant"
         );
@@ -833,7 +876,7 @@ where
     let required = v1::required_scopes(&parts.method);
     if !required.iter().any(|scope| claims.has_scope(scope)) {
         tracing::warn!(
-            client_id = %claims.client_id,
+            client_id = %claims.subject,
             method = %parts.method,
             granted = ?claims.scope,
             required = ?required,
@@ -858,45 +901,70 @@ where
 /// | credential | any registered merchant client | the **one** registered dashboard client |
 /// | methods | every method, scoped per verb | `GET`/`HEAD` only; everything else refused here |
 ///
-/// # Why the `client_id` check is not redundant with the audience
+/// # What identifies the credential, after ADR-0017
 ///
-/// The audience says which *surface* a token was minted for; the `sub` says
-/// which *credential* it was minted to. Only the second answers "may this
-/// caller read the tenant this deployment bound the dashboard to". Today
-/// there is one dashboard registration and the two questions have the same
-/// answer — but "there is only one, so it does not matter" is a property of
-/// a YAML file, not of this code, and the day a second dashboard client is
-/// registered for a second tenant the check is the only thing standing
-/// between them. Boot already refuses a merchant registration that could
-/// mint this audience at all
-/// (`vpay_config::ConfigError::MerchantClaimsDashboardAudience`); this is
-/// the second of the two, and neither is sufficient alone.
+/// **`aud` and the merchant claim; never `sub`.**
 ///
-/// # This check will not survive the login it is waiting for
+/// The audience is checked by the validator before this function runs, and
+/// under ADR-0017 decision 3 it *is* the registered
+/// `dashboard_client.client_id` — the value the authorization-code grant
+/// actually mints (`default_handle_authorization_code` passes
+/// `Some(client_id)` as the audience and has no requested-audience path). So
+/// "was this token minted for this deployment's dashboard client" is answered
+/// by [`resource_auth::JwtValidator`]'s own `set_audience`, and repeating it
+/// here would be a second copy of one check rather than a second check.
 ///
-/// Recorded by the 2026-09-06 review, and **left as it is on purpose**: it is
-/// correct for every token this deployment can currently produce and wrong
-/// for the ones the next track will.
+/// What this function adds is the **tenant**: the token must carry
+/// [`vpay_config::DASHBOARD_MERCHANT_CLAIM`] and it must equal
+/// `dashboard_client.merchant_id`. Two things follow, and both are the point:
 ///
-/// `ResourceClaims::client_id` is the token's `sub`. Under
-/// `client_credentials` that is the OAuth2 client
-/// (`authkestra_engine::token::TokenManager::issue_client_token` sets `sub:
-/// client_id.to_string()`), so comparing it with the registration's
-/// `client_id` asks exactly the intended question. Under the
-/// **authorization-code** grant `docs/flows/dashboard-auth.md` prescribes,
-/// `authkestra_op`'s `default_handle_authorization_code` calls
-/// `issue_user_token_with_extra(auth_code.identity, …, Some(client_id))` —
-/// `sub` becomes `identity.external_id`, **the staff member**, and the
-/// `client_id` goes in `aud`. So this arm would refuse every token a real
-/// dashboard login issued.
+/// 1. **No machine client can read this surface.** A `client_credentials`
+///    token carries no merchant claim, because nothing but the staff
+///    authorization-code grant stamps one — so the refusal is a property of
+///    how tokens are minted, not of a list somebody maintains. That is a
+///    tightening over what stood here before, and it is deliberate:
+///    `/dash/v1` is a staff surface, and a machine caller on it would be a
+///    service account nobody registered as a person.
+/// 2. **A token cannot choose its own tenant.** The claim is *compared*, not
+///    *used*: the [`MerchantScope`] inserted below is built from the binding,
+///    exactly as before, so a forged claim buys a `403` rather than another
+///    merchant's rows. The claim is a second lock on the same door, and the
+///    door was already locked.
 ///
-/// **Which claim identifies the dashboard credential once a human is in the
-/// loop is a maintainer decision** — `azp`, an explicit `client_id` claim, or
-/// the audience itself under ADR-0017's rule that the dashboard audience
-/// becomes the `DashboardClient`'s `client_id` — and it belongs with that
-/// track rather than being guessed here. Nothing else in this module makes
-/// that track harder; `vpay_config::DASHBOARD_AUDIENCE` being one constant
-/// makes the audience half easier. This is the one line that has to move.
+/// # And the person named by `sub` must still be allowed in
+///
+/// `sub` authorises nothing, but it *identifies* — and this function reads
+/// the `staff_members` row it names and refuses three cases with one answer:
+/// the row is `disabled`, the row is gone, or the row no longer belongs to
+/// this deployment's merchant.
+///
+/// Added by the exp24 review (findings F1 and F6), because everything above
+/// this paragraph is a statement about a **token** and none of it is a
+/// statement about the **person**. A token lives 15 minutes; an operator
+/// disabling an account or moving a staff member between tenants expects
+/// either to take effect now. Neither did.
+///
+/// This refuses nobody who was ever allowed in: `staff::oauth::authorize`
+/// already requires an `active` row whose `merchant_id` is the binding before
+/// it will mint a code. It is one primary-key read, after every cheaper
+/// check, and it fails closed — a database that cannot answer is not read as
+/// a `yes`.
+///
+/// # The check this replaces, and why it could not stay
+///
+/// Until 2026-09-07 this compared [`resource_auth::ResourceClaims`]' `sub` to
+/// `binding.client_id`. That was right for `client_credentials`, where
+/// `TokenManager::issue_client_token` sets `sub` to the client id — and
+/// **wrong for every token a real staff login produces**, where `sub` is the
+/// staff member and the client id is the audience. The 2026-09-06 review
+/// recorded it as finding F7 and left it, because which claim identifies the
+/// credential was a maintainer decision. ADR-0017 takes it. `sub` now names
+/// the staff row and authorises nothing; it is logged, and that is all.
+///
+/// Boot already refuses a merchant registration that could mint this audience
+/// at all (`vpay_config::ConfigError::MerchantClaimsDashboardAudience`, moved
+/// to whole-document scope by the same ADR); this is the second of the two,
+/// and neither is sufficient alone.
 ///
 /// # Why a method it does not serve is refused here
 ///
@@ -934,6 +1002,7 @@ where
     S: Send + Sync + Clone + 'static,
     Option<DashboardJwtValidator>: FromRef<S>,
     Arc<ResourceConfig>: FromRef<S>,
+    Arc<dyn Repositories>: FromRef<S>,
 {
     let (mut parts, body) = request.into_parts();
 
@@ -969,23 +1038,91 @@ where
         }
     };
 
-    if claims.client_id != binding.client_id {
+    // The tenant claim, which is what tells a staff token from every other
+    // token this OP can mint. `None` is the `client_credentials` case and is
+    // refused with the same 403 a wrong tenant gets: telling them apart would
+    // say which of the two a caller had presented.
+    if claims.merchant.as_deref() != Some(binding.merchant_id.as_str()) {
         tracing::warn!(
-            client_id = %claims.client_id,
-            "a validly signed dashboard-audience token names a client that is not this \
-             deployment's registered dashboard client; refusing rather than guessing a tenant"
+            subject = %claims.subject,
+            carried_merchant_claim = claims.merchant.is_some(),
+            "a validly signed dashboard-audience token does not carry this deployment's \
+             merchant claim; refusing rather than serving a tenant nothing vouched for"
         );
         return ApiError::Forbidden.into_response();
     }
 
     if !claims.has_scope(required_scope) {
         tracing::warn!(
-            client_id = %claims.client_id,
+            subject = %claims.subject,
             granted = ?claims.scope,
             required = required_scope,
             "a /dash/v1 token does not carry the dashboard registration's scope; refusing"
         );
         return ApiError::Forbidden.into_response();
+    }
+
+    // THE STAFF ROW IS RE-READ HERE, and this is a bearer token rather than a
+    // session, so it is worth saying why it is read at all.
+    //
+    // `sub` names the `stf_…` the authorization-code grant minted for. A
+    // disabled account must stop reading `/dash/v1` on its next request —
+    // that is what `staff_members.status` is *for*: ADR-0017 gives an
+    // operator no way to disable the dashboard client, and says in so many
+    // words that "what can be disabled per person is `staff_members.status`,
+    // which is the granularity that matters". Until the exp24 review
+    // (finding F1) that was true of the session routes and false of this one,
+    // which is the only credential that reads a merchant's payments:
+    // `disabling_a_staff_member_refuses_their_live_session` disabled the
+    // account and then checked `/dash/v1/staff/session`, discarding the
+    // bearer token, so a disabled staff member went on listing payment
+    // intents for the whole 15-minute access-token TTL. Break-glass has to
+    // work faster than a token expiry or it is not break-glass.
+    //
+    // Placed **after** the audience, tenant and scope checks so that the read
+    // costs only a caller who has already proved a validly signed, in-tenant,
+    // in-scope token — an unauthenticated caller cannot make this surface
+    // touch Postgres.
+    //
+    // NOT a session lookup, deliberately. Binding every `/dash/v1` read to a
+    // live `staff_sessions` row would also make sign-out a true revocation,
+    // which ADR-0017's Consequences currently accepts as a residual ("a
+    // minted token stays valid for its TTL"). Reversing an accepted decision
+    // is the maintainer's, not this middleware's — the exp24 review surfaces
+    // it rather than taking it. What is fixed here is the case the ADR never
+    // accepted and its own text contradicts.
+    // The row's OWN tenant is checked here too, and it is a second question
+    // from the merchant *claim* above. The claim says which tenant the token
+    // was minted for; this says which tenant the person belongs to **now**.
+    // `staff::oauth::authorize` requires the two to agree before it will mint
+    // a code at all, so this refuses nobody who was ever allowed in — what it
+    // closes is a staff member moved to another merchant, whose old token
+    // otherwise went on reading their old merchant's payments for the rest of
+    // its TTL. `oauth_authorization_codes.merchant_id` is a copy taken at
+    // issue precisely so an edit cannot move a token to a *new* tenant; this
+    // is the other half, and without it the copy only protects the tenant
+    // being moved to.
+    let repositories = Arc::<dyn Repositories>::from_ref(&state);
+    match vpay_db::Staff::find(repositories.as_ref(), &claims.subject).await {
+        Ok(Some(staff)) if staff.is_active() && staff.merchant_id == binding.merchant_id => {}
+        Ok(_) => {
+            // One answer for "disabled", "gone" and "no longer this tenant's":
+            // telling them apart would say which `stf_…` values name a row,
+            // and none of the three may read.
+            tracing::warn!(
+                subject = %claims.subject,
+                "a /dash/v1 token names a staff member who is disabled, no longer exists, or no \
+                 longer belongs to this deployment's merchant; refusing rather than serving rows \
+                 to a revoked account for the rest of the token's TTL"
+            );
+            return ApiError::Forbidden.into_response();
+        }
+        Err(error) => {
+            // Fail closed. A database that cannot answer "is this person
+            // still allowed in" must not be read as "yes".
+            tracing::error!(%error, "reading the staff row behind a /dash/v1 token");
+            return ApiError::from(error).into_response();
+        }
     }
 
     // The tenant this surface reads is the *bound* one, never anything the
@@ -1047,6 +1184,7 @@ pub fn router(deps: RouterDeps) -> Router {
         dashboard_validator: deps.dashboard_validator,
         adapters: deps.adapters,
         resource_config: deps.resource_config,
+        staff_login: deps.staff_login,
     };
 
     // Unauthenticated by necessity, not by omission — see the table above.
@@ -1182,6 +1320,28 @@ pub fn router(deps: RouterDeps) -> Router {
                 state.clone(),
                 require_dashboard_token::<AppState>,
             ))
+            // **Merged AFTER the token layer, so these routes are outside
+            // it.** They have to be: they exist to produce the credential
+            // that layer checks, and a `/dash/v1/staff/login` behind a
+            // bearer-token requirement is a login nobody can reach.
+            //
+            // `Router::layer` wraps the routes *and the fallback* present
+            // when it is called, so the merge below adds unwrapped routes
+            // and leaves `dash::routes`' fallback inside the layer —
+            // which is why an unmatched `/dash/v1/...` path still answers
+            // exactly what it answered before this module existed.
+            // `staff::routes` deliberately carries no fallback of its own:
+            // two routers with fallbacks cannot be merged.
+            //
+            // Mounted whether or not `staff_login` is `Some`. A deployment
+            // with a dashboard and no `staff_auth` secrets gets these paths
+            // answering the honest 404 through `AppState::staff_login`,
+            // rather than the paths vanishing — because a 404 on
+            // `/dash/v1/staff/login` and a 404 on `/dash/v1/nonsense` are
+            // the same answer, and making the route table depend on a
+            // Secret's presence is how a deployment discovers a missing
+            // Secret by reading a route table.
+            .merge(staff::routes())
             // Outside the token check, for the `/v1` nest's reason: an
             // anonymous caller must not be able to make this process
             // buffer a body before the 401. The limit is `/v1`'s,

@@ -1094,7 +1094,16 @@ expected_ignored := "0"
 # identity, a twelve-month retention sweep that erases a merchant's records on
 # a timer — apply only there, and the suite that proves them belongs beside
 # them rather than folded into `payment_intents.rs`.
-expected_suites := "45"
+# 45 -> 46 on 2026-09-07 (ADR-0017): `backends/tests/integration/tests/staff_sign_in.rs`
+# is a new test binary, and it earns its own file for a stronger reason than
+# `customers.rs` did. `dashboard_read_surface.rs` mints every token it
+# presents, because until this branch nothing could issue one; this suite
+# mints none — every token in it came out of `POST /dash/v1/oauth/token` after
+# a password, a TOTP code and a PKCE exchange. Folding the two together would
+# put "the resource server refuses the wrong credential" and "a human can
+# obtain the right one" in one file, and the first is the claim that has to
+# keep holding if the second is ever removed.
+expected_suites := "46"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

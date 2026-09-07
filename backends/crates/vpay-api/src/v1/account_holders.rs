@@ -555,6 +555,7 @@ mod tests {
             webhooks: vpay_config::WebhookPolicy::default(),
             checkout: vpay_config::CheckoutConfig::default(),
             dashboard_client: None,
+            staff_auth: vpay_config::StaffAuth::default(),
         };
         Arc::new(
             ResourceConfig::from_config(&config).expect("the fixture rail projects onto the port"),

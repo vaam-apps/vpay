@@ -1119,3 +1119,193 @@ model Customer {
 //
 // Add each once its crate has a real, tested type to mirror — the same bar
 // this file just applied to the ledger models above.
+
+// --- staff sign-in (ADR-0017) --------------------------------------------
+
+// `staff_members`, `staff_sessions` and `oauth_authorization_codes` (migration 0035)
+// — the three tables that let a human reach `/dash/v1`.
+//
+// THESE THREE ARE THE FIRST MODELS IN THIS FILE WHOSE EVERY REPOSITORY
+// METHOD RUNS THROUGH CRATESTACK. `DisabledClient` got there for three
+// methods and `Customer` for two of seven; here it is all of them, and that
+// is a property of migration 0035 rather than of ambition: the tables were
+// shaped so it would be true. No `jsonb` column (which is what keeps five of
+// `Customer`'s seven on raw sqlx), no `bytea`, no native enum, no `DEFAULT`
+// on any column a writer names, and no `seq` cursor — so every `Create…Input`
+// below can carry every column the writer has to set.
+//
+// The cost of that is stated where it is paid: the encrypted TOTP secret is
+// base64url `TEXT` rather than `BYTEA` (see `Staff.totp_secret`), and the
+// code store's single-use guard is a `Boolean` rather than `consumed_at IS
+// NULL` (see `OauthAuthorizationCode.consumed`), both because of what 0.11.1
+// can express.
+//
+// NO `@db_enforce` ANYWHERE BELOW, for `model Event`'s measured reason: the
+// live CHECKs are hand-named, `@db_enforce` would generate
+// `<table>_<column>_<validator>_check`, `diff/checks.rs` matches by name
+// first, so promoting them emits a drop-and-add PAIR where declaring them
+// without it emits nothing. The validators are still not inert —
+// `inputs.rs::validate_impl_tokens` generates `input.validate()` from the
+// validator list regardless, and every generated write path calls it before
+// any SQL runs.
+//
+// NO ENUM TYPE for `Staff.status` or `StaffSession.state`, although both are
+// closed vocabularies with a live CHECK. A `.cstack` enum would give the
+// column type `Enum("StaffStatus")` against a live `Scalar("String")` — one
+// permanent `column type differs` drift line per column, which is what every
+// one of the six remaining native-enum columns already costs
+// (docs/reference/vpay-db.md, "The enum conversion no report can see") — and
+// the CHECK's *kind* could not converge either, because introspection reports
+// a hand-written `IN (...)` on a TEXT column as `CheckKind::Raw` and only
+// reconstructs `CheckKind::Enum` from `pg_enum`. So: `String` here, a real
+// Rust enum in `vpay_db::staff`, and the CHECK in the migration. The
+// vocabulary is closed by the database and mirrored by the parse, exactly as
+// `events.type` and `jobs.kind` are.
+
+// `StaffMember` and not `Staff`, and the name decides the TABLE name: 0.11.1
+// derives it with `pluralize(to_snake_case(model))` and has no `@@map`, so
+// `model StaffMember` would read and write `staffs`. Migration 0035's header records
+// the measurement. The Rust trait is still `vpay_db::Staff`.
+model StaffMember {
+  id String @id @length(min: 1, max: 64)
+  merchant_id String @length(min: 1, max: 128)
+  email String @length(min: 3, max: 512)
+  display_name String @length(min: 1, max: 256)
+  // `@sensitive` is what `cratestack-macros`' `is_sensitive_field` reads to
+  // redact a value from the audit log. Nothing in vpay audits today (`@@audit`
+  // is not declared, so `ensure_audit_table` is never reached) — `model
+  // Customer`'s three identifiers carry it for the same forward-looking
+  // reason. These two are stronger cases than those: an argon2id digest is an
+  // offline cracking target and the sealed TOTP secret is a second factor.
+  password_hash String @sensitive
+  password_change_required Boolean
+  // The AES-256-GCM sealed RFC 6238 secret, base64url, nonce-prefixed.
+  //
+  // `String?` AND NOT `Bytes`, and the reason is the data layer rather than a
+  // preference. `cratestack-migrate`'s `map_scalar` does not map `bytea`
+  // (docs/reference/vpay-db.md, "Six Postgres types are mapped, and vpay uses
+  // more than six"), so a `BYTEA` column would be excluded from the drift
+  // comparison outright and — the half that decides it — could not be named
+  // in `CreateStaffInput` at all, which would put enrolment back on raw sqlx
+  // and defeat the point of shaping 0035 the way it is shaped.
+  totp_secret String? @sensitive
+  totp_enrolled_at DateTime?
+  // The RFC 6238 time step of the last accepted code. `Int` is `int8`, which
+  // is why migration 0035 declares `BIGINT` and not `INT`: `int4` is one of
+  // the six unmapped types and `currencies.exponent` had to be widened by
+  // migration 0032 for exactly this reason. A table born with a model does
+  // not repeat that.
+  //
+  // NOT `Int?`. `NULL < step` is NULL in SQL, so a nullable column would make
+  // the compare-and-swap refuse every staff member's FIRST code forever —
+  // migration 0035 seeds it to 0 and declares it `NOT NULL` for that reason.
+  last_totp_step Int
+  status String
+  // NO `@default(now())`, unlike `Customer.created_at`, and this is the one
+  // difference between these models and 0034's that a reader should notice.
+  // `cratestack-macros` drops every `@default(...)` field from
+  // `Create{Model}Input` (`model/inputs.rs:20-26`), so a defaulted
+  // `created_at` is a column the CLI's `staff add` could not set. `Customer`
+  // can afford the default because its create is hand-written sqlx; these
+  // cannot, so migration 0035 declares no `DEFAULT` and the writer supplies
+  // both stamps. That also means the two sides agree and the columns cost no
+  // drift — a `DEFAULT` costs drift only when the two sides disagree
+  // (migration 0033's measurement).
+  created_at DateTime
+  updated_at DateTime
+  last_sign_in_at DateTime?
+
+  // Four arms, one per action `vpay_db::staff` calls, each separately
+  // droppable — `model DisabledClient`'s reason for four lines rather than
+  // one `@@allow("all", …)`. The runtime effects are the asymmetry that
+  // module's table measured, and here they are:
+  //
+  //   read   -> SILENT, and this is the dangerous one in the *safe*
+  //             direction: `find_unique` compiles the policy into the
+  //             `WHERE`, so a missing arm makes every sign-in answer "no such
+  //             account". Loud in practice (nobody can log in) and harmless.
+  //   create -> LOUD. `upsert`/`create` evaluate `create_allow_policies` in
+  //             Rust before any SQL, so `staff add` fails with a `Forbidden`
+  //             naming the model.
+  //   update -> SILENT, and this is the dangerous one in the DANGEROUS
+  //             direction. `update_many`'s policy is part of the statement's
+  //             `WHERE`, so a missing arm makes `record_totp_step` match zero
+  //             rows and return `ok: 0` — and `record_totp_step` is the
+  //             REPLAY GUARD. A TOTP code would become reusable for its whole
+  //             +/-1-step window with every log line saying the sign-in
+  //             succeeded normally. `every_action_this_module_calls_has_an_allow_arm`
+  //             in `vpay-db/src/staff.rs` is what makes that red in
+  //             milliseconds with no container.
+  //   delete -> SILENT. Nothing in vpay deletes a staff row today; the arm is
+  //             here because `staff_sessions`' and
+  //             `oauth_authorization_codes`' cascades name this table, and an
+  //             operator deleting an account through a future surface must
+  //             not be told it worked while the row stayed.
+  @@allow("read", auth().isSystem())
+  @@allow("create", auth().isSystem())
+  @@allow("update", auth().isSystem())
+  @@allow("delete", auth().isSystem())
+}
+
+model StaffSession {
+  // The SHA-256 of the opaque session token, lower-case hex — never the
+  // token. 64 characters exactly, which migration 0035 states as an equality
+  // CHECK and this states as a bound, for the reason above: no
+  // `@db_enforce`, so the two never have to converge on a name, and the
+  // generated `input.validate()` still refuses a writer that got the width
+  // wrong before any SQL runs.
+  id String @id @length(min: 64, max: 64)
+  staff_id String @length(min: 1, max: 64)
+  state String
+  created_at DateTime
+  expires_at DateTime
+  last_seen_at DateTime
+  // The `/dash/v1` access token, once the exchange has minted one.
+  // `@sensitive` for `Staff.password_hash`'s reason and more urgently: this
+  // is a live bearer credential for the length of its TTL.
+  access_token String? @sensitive
+
+  // No `@relation` to `Staff`, although `staff_sessions.staff_id` is a real
+  // foreign key. 0.11.1's `@relation` needs both ends declared and side-loads
+  // rows this crate never wants side-loaded: every read here is by primary
+  // key and the staff row is fetched separately, deliberately, so that a
+  // disabled account is re-checked on the session read rather than trusted
+  // from a join taken when the session was created.
+  @@allow("read", auth().isSystem())
+  @@allow("create", auth().isSystem())
+  @@allow("update", auth().isSystem())
+  @@allow("delete", auth().isSystem())
+}
+
+model OauthAuthorizationCode {
+  code_hash String @id @length(min: 64, max: 64)
+  client_id String @length(min: 1, max: 256)
+  staff_id String @length(min: 1, max: 64)
+  session_id String @length(min: 64, max: 64)
+  merchant_id String @length(min: 1, max: 128)
+  scope String
+  code_challenge String @length(min: 1, max: 256)
+  code_challenge_method String
+  redirect_uri String @length(min: 1, max: 2048)
+  nonce String?
+  created_at DateTime
+  expires_at DateTime
+  // THE SINGLE-USE GUARD, and one nullable column is all of it. The consume
+  // is a compare-and-swap —
+  // `update_many().where_(code_hash).where_(consumed_at().is_null())
+  // .set(consumed_at)` — so `BatchSummary::ok == 1` is the atomic answer to
+  // "did I win the race", which is the property
+  // `AuthorizationCodeStore::consume_code`'s own doc calls "the single most
+  // important correctness property in this crate".
+  //
+  // `is_null()` is a `cratestack_sql::FieldRef` method on an optional column
+  // (`filter/field_ref.rs:163`); `.eq(None)` is NOT — `Option<T>` does not
+  // implement `IntoSqlValue`, which is a compile error rather than a silent
+  // mismatch, and is how this was found.
+  consumed_at DateTime?
+
+  @@allow("read", auth().isSystem())
+  @@allow("create", auth().isSystem())
+  @@allow("update", auth().isSystem())
+  @@allow("delete", auth().isSystem())
+}
