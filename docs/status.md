@@ -509,7 +509,7 @@ re-measured here rather than carried over.
 
 **`just ci` exit 0 on the review head**, exit code read from a file:
 `fmt-check`; `clippy` `-D warnings`; `verify`, all ten gates (`verify-links`
-**925 links in 166 tracked files**, `verify-status` 1 declared unimplemented
+**928 links in 166 tracked files**, `verify-status` 1 declared unimplemented
 item, `verify-errors` 18 error types / 16 `#[from]` variants, `verify-serde`
 73 types / 16 exemptions, `verify-repositories` 4 implementations,
 `verify-toolchain` 1.98.0); `test-rust` **1552 tests run, 1552 passed, 0

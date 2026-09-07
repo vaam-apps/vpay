@@ -170,7 +170,29 @@ deployment keeps running 2026-09-04's worker against a newer server image and
 a newer schema. Deleting it needs a scope this repository has never held, so
 the choice between deleting, deprecating and accepting is the maintainer's.
 
-### 5 — nits, not fixed and listed rather than swept
+### 5 — correctness: the release runbook told an operator to write a values file the chart now rejects
+
+`docs/runbooks/release.md` §4's copy-pasteable block still read
+
+```yaml
+images:
+  server: { digest: "sha256:<64 hex>" }
+  worker: { digest: "sha256:<64 hex>" }
+```
+
+and `values.schema.json` is `additionalProperties: false` with `images.worker`
+removed, so pasting it gives `helm lint`: `images: Additional property worker
+is not allowed`. Measured, both ways: the old block fails `helm lint`, the new
+one passes. `just helm-check` cannot catch this — it lints `values.yaml` and
+`ci/values-full.yaml`, not a YAML fence in a runbook — which is why it
+survived a green gate.
+
+The same section's bold sentence had also become self-contradicting: "the two
+workloads are pinned independently and must be pinned together", above a body
+saying they are one image. Both fixed. Three other places name `images.worker`
+and all three are prose correctly saying it no longer exists.
+
+### 6 — nits, not fixed and listed rather than swept
 
 * `opus.md` says the weakening "is stated in four places rather than one". It
   was stated in six (`cli.rs`'s field doc, the chart comment, the chart
@@ -185,6 +207,16 @@ the choice between deleting, deprecating and accepting is the maintainer's.
   to two images". It goes to **three** (`vpay-server`, `vpay-dashboard`,
   `vpay-checkout`); the brief was counting the backend. The delivered state
   is right and says three everywhere.
+* Two waits in the moved `worker::*` cases widened from 20 s to 30 s
+  (`the_worker_serves_livez_and_metrics_on_the_observability_port`). Checked
+  rather than assumed: it is a *wait* bound, not an assertion — the
+  `.expect(..)` still fires if the line never appears — so it trades
+  flake-resistance for latency and weakens nothing. The binary it waits on is
+  larger than the one it used to.
+* The startup failure prefix on stderr moved from `vpay-worker-bin: ` to
+  `vpay-server: `. Nothing in `docs/`, the runbooks or any workflow greps the
+  old string (checked), and `docker compose logs vpay-worker` still works
+  because the compose *service* name is unchanged.
 
 ## What is still not proven, after this pass
 
