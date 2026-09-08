@@ -1022,8 +1022,11 @@ pub struct RefundObject {
     /// The argument for a `String` is that a label this crate cannot parse
     /// would turn a merchant's `GET /v1/refunds/{id}` into a `500` instead of
     /// showing them the refund; the reason it does not win here is that
-    /// `refunds.status` is a Postgres `ENUM` (`refund_status`, migration
-    /// `0017`) holding exactly the four labels above. A fifth value cannot be
+    /// `refunds.status` holds exactly the four labels above and the database
+    /// refuses a fifth — as the `refund_status` Postgres `ENUM` (migration
+    /// `0017`) until 2026-09-07, and as the `refunds_status_enum_check`
+    /// membership CHECK carrying the identical four labels since migration
+    /// `0037` converted the column to `TEXT`. A fifth value cannot be
     /// written without a migration, so a value that fails to parse is not a
     /// vocabulary this code has not caught up with — it is a **corrupted
     /// row**, and rendering a refund whose state vpay cannot name would tell
@@ -1724,8 +1727,9 @@ impl TryFrom<&vpay_db::RefundRow> for RefundObject {
     /// # Errors
     ///
     /// [`ApiError::Internal`] for a `status` outside [`RefundStatus`] or a
-    /// `metadata` that is not a JSON object — both states the `refund_status`
-    /// enum and the `metadata_is_object` CHECK
+    /// `metadata` that is not a JSON object — both states
+    /// `refunds_status_enum_check` (migration `0037`, which replaced the
+    /// `refund_status` enum) and the `metadata_is_object` CHECK
     /// (`backends/migrations/0017_create-refunds.sql`) make impossible, so
     /// seeing one means the schema and this code disagree and the row is
     /// corrupt. Nothing a *caller* can send reaches an `Err` here; see this
@@ -2639,7 +2643,8 @@ mod tests {
         assert_eq!(decoded.fee, Some(250), "a reported fee arrives unchanged");
     }
 
-    /// A refund `status` the `refund_status` enum cannot hold is a
+    /// A refund `status` the database cannot hold — `refunds_status_enum_check`
+    /// since migration `0037`, the `refund_status` enum before it — is a
     /// schema/code disagreement, not a status to invent.
     #[test]
     fn a_refund_status_outside_the_vocabulary_is_internal_rather_than_guessed() {
@@ -2653,9 +2658,11 @@ mod tests {
         );
     }
 
-    /// Every value the `refund_status` enum (migration `0017`) can hold
-    /// parses into [`RefundStatus`] **and** decodes in the merchant SDK's own
-    /// closed enum.
+    /// Every value `refunds.status` can hold — the four labels migration
+    /// `0017` created as the `refund_status` enum and migration `0037`
+    /// re-closed as `refunds_status_enum_check` — parses into
+    /// [`RefundStatus`] **and** decodes in the merchant SDK's own closed
+    /// enum.
     ///
     /// This is the case that pays for [`RefundObject::status`] being typed:
     /// the four labels the database can produce are exactly the four this

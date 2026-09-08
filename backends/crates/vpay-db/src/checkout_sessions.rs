@@ -18,6 +18,42 @@
 //! `docs/reference/vpay-db.md` §"`checkout_sessions`" carries the reasoning:
 //! what each rule prevents, why the settlement flip is `pub(crate)`, and why
 //! `find_open_by_intent` returns the whole row.
+//!
+//! # Four reads run through CrateStack, and five statements do not
+//!
+//! Since S5 (2026-09-07) [`CheckoutSessions::get_for_merchant`],
+//! [`CheckoutSessions::get_by_id_unscoped`],
+//! [`CheckoutSessions::find_open_by_intent`] and
+//! [`CheckoutSessions::find_latest_by_intent`] go through the generated data
+//! layer. **They are the only CrateStack queries on any money table**, and
+//! the reason is a property of migration `0028` rather than of ambition:
+//! `checkout_sessions` is the one table of the four with **no `jsonb` column
+//! at all**. `payment_intents`, `charges` and `refunds` each carry one that
+//! every row struct returns, and `Value::from_plain_json` demotes any
+//! non-`i64` number to `f64`, so those columns stay undeclared and every
+//! query on those three tables stays raw.
+//!
+//! What did **not** move here, and why, because "the rest" is not a reason:
+//!
+//! * [`CheckoutSessions::list_page`] — the cursor is a correlated sub-select
+//!   (`seq < (SELECT seq FROM checkout_sessions WHERE id = $2 AND merchant_id
+//!   = $1)`), which no delegate expresses. `Events::list_page` is blocked on
+//!   the identical shape.
+//! * [`CheckoutSessions::expire`], [`CheckoutSessions::due_for_expiry`],
+//!   [`expire_due`](CheckoutSessions::expire_due) and
+//!   [`settle_for_intent`] — each carries a `NOT EXISTS (SELECT 1 FROM
+//!   charges …)` over a *second* table, and a generated builder filters
+//!   columns of one. That guard is the whole point of those statements: it is
+//!   what stops a session being expired out from under a payer who has
+//!   already confirmed.
+//! * [`CheckoutSessions::create`] — expressible, and deliberately not moved
+//!   in this pass. It would need migration `0037` to drop the `created_at`
+//!   and `updated_at` defaults (`cratestack-macros` filters every
+//!   `@default(...)` field out of `Create{Model}Input`), which is 0033's
+//!   trade on a money table and a bigger change than a read swap. The
+//!   migration says why it declined; `model CheckoutSession` has no
+//!   `@@allow("create", …)` arm as a result, and a unit test asserts that
+//!   slot is *empty* so adding one has to be deliberate.
 
 use std::fmt;
 
@@ -31,6 +67,19 @@ use time::OffsetDateTime;
 
 use crate::error::{DbError, classify_write};
 use crate::payment_intents::LIVE_CHARGE_STATES;
+use crate::persistence::{classify_cratestack, system_context};
+use crate::schema::cratestack_schema::{self, checkout_session};
+use crate::staff::from_chrono;
+
+/// The `.cstack` model the four reads below name.
+///
+/// `CheckoutSession` pluralizes to `checkout_sessions`
+/// (`route_naming::pluralize(to_snake_case(model))`), which is the live table.
+/// That is not free of consequence — migration 0035's header records a draft
+/// where the model name and the table name disagreed, every query answered
+/// `relation "staffs" does not exist`, and no gate said anything until a
+/// container-backed test ran.
+const MODEL: &str = "CheckoutSession";
 
 /// Every column of `checkout_sessions`, in one place so the queries below
 /// cannot drift on the shape they decode into [`CheckoutSessionRow`].
@@ -477,7 +526,16 @@ pub trait CheckoutSessions: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::Query`] if the read fails.
+    /// Returns [`DbError::Persistence`] if the read fails — **not**
+    /// [`DbError::Query`], which is what this method returned until S5 moved it
+    /// through CrateStack (2026-09-07). A caller branching on the *classification*
+    /// sees nothing (both are `Category::Storage`); a caller matching the variant
+    /// would have silently stopped matching, which is why it is written here.
+    ///
+    /// A policy refusal cannot appear on this path: a read policy is a `WHERE`
+    /// clause rather than an error, so `@@allow` going missing is an `Ok(None)`
+    /// and not a `Denied` — see the model's own note and
+    /// `every_action_this_module_calls_has_an_allow_arm`.
     async fn get_for_merchant(
         &self,
         merchant_id: &str,
@@ -507,7 +565,16 @@ pub trait CheckoutSessions: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::Query`] if the read fails.
+    /// Returns [`DbError::Persistence`] if the read fails — **not**
+    /// [`DbError::Query`], which is what this method returned until S5 moved it
+    /// through CrateStack (2026-09-07). A caller branching on the *classification*
+    /// sees nothing (both are `Category::Storage`); a caller matching the variant
+    /// would have silently stopped matching, which is why it is written here.
+    ///
+    /// A policy refusal cannot appear on this path: a read policy is a `WHERE`
+    /// clause rather than an error, so `@@allow` going missing is an `Ok(None)`
+    /// and not a `Denied` — see the model's own note and
+    /// `every_action_this_module_calls_has_an_allow_arm`.
     async fn get_by_id_unscoped(&self, id: &str) -> Result<Option<CheckoutSessionRow>, DbError>;
 
     /// The **open** session on this intent, if there is one.
@@ -540,7 +607,16 @@ pub trait CheckoutSessions: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::Query`] if the read fails.
+    /// Returns [`DbError::Persistence`] if the read fails — **not**
+    /// [`DbError::Query`], which is what this method returned until S5 moved it
+    /// through CrateStack (2026-09-07). A caller branching on the *classification*
+    /// sees nothing (both are `Category::Storage`); a caller matching the variant
+    /// would have silently stopped matching, which is why it is written here.
+    ///
+    /// A policy refusal cannot appear on this path: a read policy is a `WHERE`
+    /// clause rather than an error, so `@@allow` going missing is an `Ok(None)`
+    /// and not a `Denied` — see the model's own note and
+    /// `every_action_this_module_calls_has_an_allow_arm`.
     async fn find_open_by_intent(
         &self,
         payment_intent_id: &str,
@@ -584,7 +660,16 @@ pub trait CheckoutSessions: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::Query`] if the read fails.
+    /// Returns [`DbError::Persistence`] if the read fails — **not**
+    /// [`DbError::Query`], which is what this method returned until S5 moved it
+    /// through CrateStack (2026-09-07). A caller branching on the *classification*
+    /// sees nothing (both are `Category::Storage`); a caller matching the variant
+    /// would have silently stopped matching, which is why it is written here.
+    ///
+    /// A policy refusal cannot appear on this path: a read policy is a `WHERE`
+    /// clause rather than an error, so `@@allow` going missing is an `Ok(None)`
+    /// and not a `Denied` — see the model's own note and
+    /// `every_action_this_module_calls_has_an_allow_arm`.
     async fn find_latest_by_intent(
         &self,
         payment_intent_id: &str,
@@ -827,63 +912,71 @@ impl CheckoutSessions for crate::repository::PgRepositories {
         merchant_id: &str,
         id: &str,
     ) -> Result<Option<CheckoutSessionRow>, DbError> {
-        let sql =
-            format!("SELECT {COLUMNS} FROM checkout_sessions WHERE merchant_id = $1 AND id = $2");
-
-        sqlx::query_as::<_, CheckoutSessionRow>(AssertSqlSafe(sql))
-            .bind(merchant_id)
-            .bind(id)
-            .fetch_optional(&self.pool)
+        // `find_many` and not `find_unique(id)`, even though `id` is the
+        // primary key: the tenant predicate has to be **in the statement**,
+        // and `find_unique` takes only a key. Reading the row and comparing
+        // `merchant_id` in Rust would answer the same value here and be the
+        // wrong shape — a caller that learns the row exists before the check
+        // is a caller that can be made to leak that it does. `limit(1)`
+        // because the primary key bounds it at one anyway.
+        let rows = self
+            .cs
+            .checkout_session()
+            .find_many()
+            .where_(checkout_session::id().eq(id.to_owned()))
+            .where_(checkout_session::merchant_id().eq(merchant_id.to_owned()))
+            .limit(1)
+            .run(&system_context())
             .await
-            .map_err(DbError::Query)
+            .map_err(|error| DbError::from(classify_cratestack(MODEL, "read", error)))?;
+
+        Ok(rows.into_iter().next().map(row_from_model))
     }
 
     async fn get_by_id_unscoped(&self, id: &str) -> Result<Option<CheckoutSessionRow>, DbError> {
-        let sql = format!("SELECT {COLUMNS} FROM checkout_sessions WHERE id = $1");
-
-        sqlx::query_as::<_, CheckoutSessionRow>(AssertSqlSafe(sql))
-            .bind(id)
-            .fetch_optional(&self.pool)
+        // The one read here with no tenant predicate, so `find_unique` is
+        // exactly right — and the absence of a `merchant_id` filter is the
+        // whole difference from `get_for_merchant` above. See this method's
+        // trait doc for who is allowed to call it.
+        let model = self
+            .cs
+            .checkout_session()
+            .find_unique(id.to_owned())
+            .run(&system_context())
             .await
-            .map_err(DbError::Query)
+            .map_err(|error| DbError::from(classify_cratestack(MODEL, "read", error)))?;
+
+        Ok(model.map(row_from_model))
     }
 
     async fn find_open_by_intent(
         &self,
         payment_intent_id: &str,
     ) -> Result<Option<CheckoutSessionRow>, DbError> {
-        let sql = format!(
-            "SELECT {COLUMNS} FROM checkout_sessions \
-             WHERE payment_intent_id = $1 AND status = '{OPEN}'"
-        );
-
-        sqlx::query_as::<_, CheckoutSessionRow>(AssertSqlSafe(sql))
-            .bind(payment_intent_id)
-            .fetch_optional(&self.pool)
+        let rows = self
+            .cs
+            .checkout_session()
+            .find_many()
+            .where_(checkout_session::payment_intent_id().eq(payment_intent_id.to_owned()))
+            .where_(checkout_session::status().eq(OPEN.to_owned()))
+            .limit(1)
+            .run(&system_context())
             .await
-            .map_err(DbError::Query)
+            .map_err(|error| DbError::from(classify_cratestack(MODEL, "read", error)))?;
+
+        Ok(rows.into_iter().next().map(row_from_model))
     }
 
     async fn find_latest_by_intent(
         &self,
         payment_intent_id: &str,
     ) -> Result<Option<CheckoutSessionRow>, DbError> {
-        // No `status` predicate at all — that is the whole difference from
-        // `find_open_by_intent`, and it is what lets the caller tell "no
-        // session was ever created" from "the session that was created is
-        // over".
-        let sql = format!(
-            "SELECT {COLUMNS} FROM checkout_sessions \
-             WHERE payment_intent_id = $1 \
-             ORDER BY seq DESC \
-             LIMIT 1"
-        );
-
-        sqlx::query_as::<_, CheckoutSessionRow>(AssertSqlSafe(sql))
-            .bind(payment_intent_id)
-            .fetch_optional(&self.pool)
+        let rows = latest_by_intent_query(&self.cs, payment_intent_id)
+            .run(&system_context())
             .await
-            .map_err(DbError::Query)
+            .map_err(|error| DbError::from(classify_cratestack(MODEL, "read", error)))?;
+
+        Ok(rows.into_iter().next().map(row_from_model))
     }
 
     async fn list_page(
@@ -1051,6 +1144,84 @@ impl CheckoutSessions for crate::repository::PgRepositories {
     }
 }
 
+/// The builder [`CheckoutSessions::find_latest_by_intent`] runs, extracted so
+/// a test can render **the query itself** rather than a copy of it.
+///
+/// # Why this is a function and not an inline chain
+///
+/// Deleting the `.order_by(...)` below leaves
+/// `the_open_session_read_filters_by_status_and_the_latest_read_orders_by_seq`
+/// — a container test that seeds two sessions and asserts *which* one comes
+/// back — **green**. Measured, not reasoned: `checkout_sessions_intent_seq_idx`
+/// (migration 0030) is `(payment_intent_id, seq DESC)`, so Postgres answers an
+/// unordered `LIMIT 1` out of that index in seq-descending order anyway. The
+/// right row comes back for the wrong reason, and would keep doing so until a
+/// planner choice, that index, or the row count changed.
+///
+/// So the guarantee is asserted where it is made, on the rendered SQL, by
+/// [`tests::the_latest_session_query_orders_by_seq_and_takes_one`]. A test that
+/// rebuilt this chain itself would assert the generator's behaviour back to
+/// itself and catch nothing — which is the whole reason the chain lives here
+/// instead of in the method body.
+///
+/// # Why `seq` and not `created_at`
+///
+/// Two sessions on one intent created inside the same microsecond tie on the
+/// timestamp, and "the newest" would then be whichever Postgres felt like
+/// returning. `seq` is `GENERATED ALWAYS AS IDENTITY` and cannot tie.
+///
+/// # Why no `status` predicate
+///
+/// That is the whole difference from [`CheckoutSessions::find_open_by_intent`],
+/// and it is what lets a caller tell "no session was ever created" from "the
+/// session that was created is over".
+fn latest_by_intent_query<'a>(
+    cs: &'a cratestack_schema::Cratestack,
+    payment_intent_id: &str,
+) -> cratestack::FindMany<'a, cratestack_schema::models::CheckoutSession, String> {
+    cs.checkout_session()
+        .find_many()
+        .where_(checkout_session::payment_intent_id().eq(payment_intent_id.to_owned()))
+        .order_by(checkout_session::seq().desc())
+        .limit(1)
+}
+
+/// The generated model row, in vpay's own types.
+///
+/// Infallible, unlike [`crate::staff_sessions`]' equivalent, and the
+/// difference is a statement about this crate rather than about the two
+/// tables: `SessionRow::state` is a typed `SessionState`, so an unknown label
+/// has to become an error, while every vocabulary on a checkout session is
+/// carried as `String` (D4) and parsed by whoever renders it. There is
+/// nothing here that can fail to convert.
+///
+/// The three vocabularies are `String` on **both** sides, which is why this
+/// function has no parse at all: `model CheckoutSession` declares `ui_mode`,
+/// `status` and `payment_status` as `String` rather than as `.cstack` enums,
+/// for the reasons that model records.
+fn row_from_model(model: cratestack_schema::models::CheckoutSession) -> CheckoutSessionRow {
+    CheckoutSessionRow {
+        id: model.id,
+        seq: model.seq,
+        merchant_id: model.merchant_id,
+        payment_intent_id: model.payment_intent_id,
+        livemode: model.livemode,
+        ui_mode: model.ui_mode,
+        status: model.status,
+        payment_status: model.payment_status,
+        success_url: model.success_url,
+        cancel_url: model.cancel_url,
+        return_url: model.return_url,
+        customer_id: model.customer_id,
+        publishable_key: model.publishable_key,
+        client_secret_suffix: model.client_secret_suffix,
+        return_token: model.return_token,
+        expires_at: from_chrono(model.expires_at),
+        created_at: from_chrono(model.created_at),
+        updated_at: from_chrono(model.updated_at),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1199,5 +1370,171 @@ mod tests {
     #[test]
     fn the_open_label_is_the_one_the_partial_index_is_built_over() {
         assert_eq!(OPEN, "open");
+    }
+
+    /// Every `@@allow` slot this module's CrateStack calls need is occupied —
+    /// asked of the descriptor rather than of a database, so it costs
+    /// milliseconds and needs no container.
+    ///
+    /// It is not a substitute for the container cases: a non-empty slot does
+    /// not say the policy admits *this* caller, which is what
+    /// `auth().isSystem()` has to get right. What it removes is the wait to
+    /// learn that a slot is **empty** — and on this model that wait would be
+    /// expensive, because the failure is silent. A read policy is compiled
+    /// into the statement's own `WHERE`
+    /// (`query/support/policy.rs::push_allow_policy_query` renders the
+    /// literal `FALSE` for an empty allow list), so deleting
+    /// `@@allow("read", …)` from `model CheckoutSession` makes all four reads
+    /// answer `Ok(None)` for every session that exists, with no error
+    /// anywhere: `GET /v1/checkout/sessions/{id}` would 404 a live session
+    /// and the confirm path would stop finding the session it just created.
+    ///
+    /// Measured: deleting that line leaves `cargo build`, `just clippy`,
+    /// `just check-schema` and every one of the twelve `just verify` gates
+    /// green. This test and the container cases are the only things that go
+    /// red.
+    #[test]
+    fn every_action_this_module_calls_has_an_allow_arm() {
+        use cratestack_schema::models::CHECKOUT_SESSION_MODEL as descriptor;
+
+        assert!(
+            !descriptor.read_allow_policies.is_empty(),
+            "model CheckoutSession lost @@allow(\"read\", …): every checkout session would \
+             read as absent through all four of this module's CrateStack reads, silently — \
+             a live session would 404 and the confirm path would find none"
+        );
+
+        // The other three slots are asserted EMPTY, which is the unusual half
+        // and the deliberate one. `create`, `expire`, `expire_due` and
+        // `settle_for_intent` are still raw sqlx (each carries a `NOT EXISTS`
+        // over `charges`, or a column the create input cannot name), so an
+        // arm for any of them would be a standing permission with no caller.
+        // If one of those writes ever moves, this assertion is what makes
+        // adding the arm a deliberate edit rather than a silent one.
+        assert!(
+            descriptor.create_allow_policies.is_empty(),
+            "model CheckoutSession grew an @@allow(\"create\", …) arm. No CrateStack write on \
+             this table exists; if one landed, move this assertion and say so in \
+             docs/reference/vpay-db.md"
+        );
+        assert!(
+            descriptor.update_allow_policies.is_empty(),
+            "model CheckoutSession grew an @@allow(\"update\", …) arm — see the create arm"
+        );
+        assert!(
+            descriptor.delete_allow_policies.is_empty(),
+            "model CheckoutSession grew an @@allow(\"delete\", …) arm — see the create arm"
+        );
+
+        // No `@@deny` has appeared. A deny arm is ANDed into the same `WHERE`
+        // and would be exactly as silent as a missing allow.
+        assert!(
+            descriptor.read_deny_policies.is_empty(),
+            "model CheckoutSession grew an @@deny(\"read\", …) arm: it would be ANDed into \
+             every read's WHERE clause and refuse rows without raising"
+        );
+    }
+
+    /// A pool that has never opened a connection, and cannot: the port is
+    /// unroutable. `connect_lazy` does no I/O, and neither does
+    /// `preview_sql`. [`crate::disabled_clients`]' device, used here for the
+    /// same reason — this is a question about a *rendered statement*, not
+    /// about a database.
+    fn lazy_cratestack() -> cratestack_schema::Cratestack {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+            .expect("a lazy pool parses its URL and connects to nothing");
+        cratestack_schema::Cratestack::builder(pool).build()
+    }
+
+    /// `find_latest_by_intent` orders by `seq DESC` **in the statement**, and
+    /// this is the only thing in the repository that says so.
+    ///
+    /// THE MUTATION THIS REFUSES: delete
+    /// `.order_by(checkout_session::seq().desc())` from
+    /// [`super::latest_by_intent_query`].
+    ///
+    /// `the_open_session_read_filters_by_status_and_the_latest_read_orders_by_seq`
+    /// in `tests/repositories.rs` seeds two sessions on one intent and
+    /// asserts which one comes back, and it stays **GREEN** under that
+    /// mutation — measured, twice. `checkout_sessions_intent_seq_idx`
+    /// (migration 0030) is `(payment_intent_id, seq DESC)`, so Postgres
+    /// answers an unordered `LIMIT 1` out of that index in seq-descending
+    /// order anyway. Behaviour that is right by accident is right until a
+    /// planner choice, an index or a row count changes, and on the confirm
+    /// path "the newest session on this intent" being wrong means a payer is
+    /// shown a checkout that is over.
+    ///
+    /// It previews [`super::latest_by_intent_query`] — the same builder
+    /// `find_latest_by_intent` runs — rather than rebuilding the chain here.
+    /// A rebuilt chain would assert the generator's behaviour back to itself
+    /// and could not fail for the reason this test exists.
+    ///
+    /// No database and no container: it fails in a millisecond on a laptop
+    /// with no Docker.
+    #[tokio::test]
+    async fn the_latest_session_query_orders_by_seq_and_takes_one() {
+        let cs = lazy_cratestack();
+        let sql = latest_by_intent_query(&cs, "pi_00000000000000000000000y").preview_sql();
+
+        assert!(
+            sql.contains("FROM checkout_sessions"),
+            "this test is no longer looking at a checkout_sessions read: {sql}"
+        );
+        assert!(
+            sql.contains("payment_intent_id ="),
+            "the intent predicate left the statement, so this read would answer the newest \
+             session of ANY intent: {sql}"
+        );
+        assert!(
+            sql.contains("ORDER BY seq DESC"),
+            "`find_latest_by_intent` lost its ORDER BY. The container case that seeds two \
+             sessions does NOT catch this — checkout_sessions_intent_seq_idx answers an \
+             unordered LIMIT 1 in seq-descending order anyway — so the confirm path would \
+             keep working until a planner choice changed and then show a payer a checkout \
+             that is over: {sql}"
+        );
+        assert!(
+            sql.contains("LIMIT "),
+            "the LIMIT left the statement: this read would materialise every session on the \
+             intent to answer with one: {sql}"
+        );
+
+        // The order of the two clauses matters as much as their presence: an
+        // `ORDER BY` after a `LIMIT` is not the same query, and a substring
+        // search alone would accept it.
+        let order_at = sql.find("ORDER BY").expect("the ORDER BY is present");
+        let limit_at = sql.find("LIMIT ").expect("the LIMIT is present");
+        assert!(
+            order_at < limit_at,
+            "the LIMIT is applied before the ORDER BY, so the row that comes back is not the \
+             newest: {sql}"
+        );
+    }
+
+    /// The scoped render of the same read carries the model's `read` policy,
+    /// and this is where "a missing @@allow is silent" stops being a claim
+    /// about upstream source and becomes an assertion about vpay's statement.
+    ///
+    /// [`every_action_this_module_calls_has_an_allow_arm`] asks the
+    /// *descriptor* whether the slot is occupied. This asks the *rendered
+    /// statement* whether the policy reached it — different failures, and
+    /// only the second is what a database executes.
+    #[tokio::test]
+    async fn the_read_policy_is_compiled_into_the_statement_rather_than_checked_beside_it() {
+        let cs = lazy_cratestack();
+        let sql = latest_by_intent_query(&cs, "pi_00000000000000000000000y")
+            .preview_scoped_sql(&system_context());
+
+        assert!(
+            !sql.contains("FALSE"),
+            "the scoped read renders the literal FALSE, which is what \
+             `push_allow_policy_query` emits for an EMPTY allow list. Every checkout session \
+             would read as absent, silently, through all four of this module's reads: {sql}"
+        );
+        assert!(
+            sql.contains("ORDER BY seq DESC"),
+            "this test is no longer looking at the latest-session read: {sql}"
+        );
     }
 }

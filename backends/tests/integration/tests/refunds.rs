@@ -284,7 +284,7 @@ async fn seed_refund_with_id(
     sqlx::query(
         "INSERT INTO refunds \
              (id, payment_intent_id, amount, currency_code, status, reason, metadata) \
-         VALUES ($1, $2, $3, 'XAF', $4::refund_status, $5, $6)",
+         VALUES ($1, $2, $3, 'XAF', $4, $5, $6)",
     )
     .bind(id)
     .bind(payment_intent_id)

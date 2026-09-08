@@ -34,8 +34,8 @@ use sqlx::PgPool;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_db::{
-    Charges, Events, Idempotency, Jobs, NewStaff, PaymentIntents, Repositories, Staff, TxOutcome,
-    UnitOfWork as _,
+    Charges, CheckoutSessions, Events, Idempotency, Jobs, NewStaff, PaymentIntents, Repositories,
+    Staff, TxOutcome, UnitOfWork as _,
 };
 
 /// Starts a fresh, migrated Postgres 16 container and returns the
@@ -1595,7 +1595,7 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
 
     // Every live state blocks it, not just the one a confirm starts in.
     for state in ["submitted", "pending", "unresolved"] {
-        sqlx::query("UPDATE charges SET state = $1::charge_state WHERE id = 'ch_live'")
+        sqlx::query("UPDATE charges SET state = $1 WHERE id = 'ch_live'")
             .bind(state)
             .execute(&pool)
             .await
@@ -1609,7 +1609,7 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
 
     // Terminal: nothing is in flight, and the intent can never get another
     // charge, so a cancel is the only thing left that can move it.
-    sqlx::query("UPDATE charges SET state = 'failed'::charge_state WHERE id = 'ch_live'")
+    sqlx::query("UPDATE charges SET state = 'failed' WHERE id = 'ch_live'")
         .execute(&pool)
         .await
         .context("failing the charge must succeed")?;
@@ -8399,6 +8399,237 @@ async fn a_settlement_pays_only_the_invoice_its_own_intent_is_bound_to() -> anyh
     assert_eq!(
         invoice_event.object_id, "in_settle_bound",
         "`object_id` comes off the flipped row, not off the caller's body"
+    );
+
+    Ok(())
+}
+
+fn fixture_session(
+    id: &str,
+    merchant_id: &str,
+    payment_intent_id: &str,
+) -> vpay_db::NewCheckoutSession {
+    vpay_db::NewCheckoutSession {
+        id: id.to_owned(),
+        merchant_id: merchant_id.to_owned(),
+        payment_intent_id: payment_intent_id.to_owned(),
+        livemode: false,
+        ui_mode: "hosted".to_owned(),
+        success_url: Some("https://merchant.example/ok".to_owned()),
+        cancel_url: Some("https://merchant.example/no".to_owned()),
+        return_url: None,
+        customer_id: None,
+        publishable_key: "pk_test_0123456789abcdef".to_owned(),
+        client_secret_suffix: vpay_core::ids::client_secret_suffix(),
+        return_token: vpay_core::ids::return_token(),
+        expires_at: time::OffsetDateTime::now_utc() + time::Duration::hours(24),
+        created_at: time::OffsetDateTime::now_utc(),
+    }
+}
+
+/// An intent for an arbitrary merchant, so a second tenant can own one.
+fn fixture_intent_for(id: &str, merchant_id: &str) -> vpay_db::NewPaymentIntent {
+    vpay_db::NewPaymentIntent {
+        merchant_id: merchant_id.to_owned(),
+        ..fixture_intent(id, "XAF")
+    }
+}
+
+/// `get_for_merchant` is merchant-scoped **in the statement**, and another
+/// tenant's session is indistinguishable from a missing one.
+///
+/// THE MUTATION THIS REFUSES: delete
+/// `.where_(checkout_session::merchant_id().eq(..))` from
+/// `CheckoutSessions::get_for_merchant`. The method still compiles, still
+/// answers the owner correctly, and every other test in this repository
+/// stays green — while `GET /v1/checkout/sessions/{id}` starts handing any
+/// merchant any other merchant's session, including its
+/// `client_secret_suffix`, which confirms a payment with no merchant token.
+///
+/// That is why the assertion is `None` for the second tenant and not merely
+/// `Some` for the first: a test that only checked the happy path would pass
+/// under the mutation.
+#[tokio::test]
+async fn a_session_read_for_the_wrong_merchant_is_indistinguishable_from_a_missing_one()
+-> anyhow::Result<()> {
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+
+    repositories
+        .insert(&fixture_intent_for("pi_tenant_a", "merchant_a"))
+        .await
+        .context("merchant_a's intent inserts")?;
+    CheckoutSessions::create(
+        &*repositories,
+        &fixture_session("cs_tenant_a", "merchant_a", "pi_tenant_a"),
+    )
+    .await
+    .context("merchant_a's session is created")?;
+
+    let mine = CheckoutSessions::get_for_merchant(&*repositories, "merchant_a", "cs_tenant_a")
+        .await
+        .context("the owning merchant's read must succeed")?;
+    assert_eq!(
+        mine.map(|row| row.id),
+        Some("cs_tenant_a".to_owned()),
+        "the owning merchant must be able to read its own session — if this is the assertion \
+         that failed, the read is broken rather than leaky"
+    );
+
+    let theirs = CheckoutSessions::get_for_merchant(&*repositories, "merchant_b", "cs_tenant_a")
+        .await
+        .context("the read for another tenant must not error")?;
+    assert!(
+        theirs.is_none(),
+        "another tenant read merchant_a's checkout session. The merchant_id predicate is gone \
+         from the statement, and with it the property that makes a foreign id and a missing id \
+         the same 404 — see vpay_db::checkout_sessions::get_for_merchant"
+    );
+
+    // And the unscoped read still sees it, so the `None` above is the tenant
+    // predicate refusing rather than the row having failed to exist at all.
+    // Without this, deleting the seed would also make the assertion pass.
+    let unscoped = repositories
+        .get_by_id_unscoped("cs_tenant_a")
+        .await
+        .context("the unscoped read must succeed")?;
+    assert_eq!(
+        unscoped.map(|row| row.merchant_id),
+        Some("merchant_a".to_owned()),
+        "the row must genuinely exist, or the refusal above proves nothing"
+    );
+
+    Ok(())
+}
+
+/// `find_open_by_intent` carries its `status = 'open'` predicate, and
+/// `find_latest_by_intent` deliberately does not.
+///
+/// THE MUTATION THIS REFUSES, twice over:
+///
+///   * delete `.where_(checkout_session::status().eq(OPEN..))` from
+///     `find_open_by_intent` — the confirm path would then treat an expired
+///     session as live and drive a payer through a checkout that is over.
+/// **What it does NOT refuse, corrected 2026-09-07 after the mutation was
+/// actually run:** deleting `.order_by(checkout_session::seq().desc())` from
+/// `latest_by_intent_query`. This test claimed to catch that and it does not
+/// — measured, it stays GREEN. The live `checkout_sessions_intent_seq_idx` is
+/// `(payment_intent_id, seq DESC)`, so Postgres answers an unordered
+/// `LIMIT 1` out of that index in seq-descending order anyway and the right
+/// row comes back for the wrong reason. That guarantee is asserted where it
+/// is made instead, on the rendered SQL, by
+/// `checkout_sessions::tests::the_latest_session_query_orders_by_seq_and_takes_one`
+/// — which is red in a millisecond under the same mutation.
+///
+/// The `find_latest_by_intent` assertions below are kept anyway, because they
+/// pin something that test cannot: that the query answers the newest session
+/// **whatever its status**, which is a behaviour and not a statement shape.
+///
+/// The two are asserted together because the difference between them is the
+/// point: `find_latest_by_intent` answering the expired session is CORRECT
+/// (it is what lets a caller tell "no session was ever created" from "the
+/// session that was created is over"), and `find_open_by_intent` answering it
+/// is a defect.
+#[tokio::test]
+async fn the_open_session_read_filters_by_status_and_the_latest_read_orders_by_seq()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+
+    repositories
+        .insert(&fixture_intent_for("pi_two_sessions", "merchant_a"))
+        .await
+        .context("the intent inserts")?;
+
+    // The older session, then expired — `checkout_sessions_one_open_per_intent`
+    // is a partial unique index over `status = 'open'`, so the first has to
+    // stop being open before the second can be created. That is the real
+    // sequence a merchant produces by abandoning a checkout and starting
+    // another, not a contrivance to make the test work.
+    CheckoutSessions::create(
+        &*repositories,
+        &fixture_session("cs_older", "merchant_a", "pi_two_sessions"),
+    )
+    .await
+    .context("the first session is created")?;
+    let expired = repositories
+        .expire("merchant_a", "cs_older")
+        .await
+        .context("expiring the first session must not error")?;
+    assert!(
+        expired.is_some(),
+        "the first session must actually expire, or the second create below fails on the \
+         partial unique index and this test proves nothing"
+    );
+    CheckoutSessions::create(
+        &*repositories,
+        &fixture_session("cs_newer", "merchant_a", "pi_two_sessions"),
+    )
+    .await
+    .context("the second session is created")?;
+
+    // `seq` is what decides "latest", and it is what the mutation removes.
+    // Asserted from the database rather than assumed, so a future change to
+    // the identity column cannot make this test quietly meaningless.
+    let seqs: Vec<(String, i64)> =
+        sqlx::query_as("SELECT id, seq FROM checkout_sessions ORDER BY seq")
+            .fetch_all(&pool)
+            .await
+            .context("reading the two sessions' seq values")?;
+    assert_eq!(
+        seqs.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+        ["cs_older", "cs_newer"],
+        "the fixture must have been created in the order this test assumes"
+    );
+
+    let open = vpay_db::CheckoutSessions::find_open_by_intent(&*repositories, "pi_two_sessions")
+        .await
+        .context("the open read must not error")?;
+    assert_eq!(
+        open.map(|row| row.id),
+        Some("cs_newer".to_owned()),
+        "find_open_by_intent answered something other than the one open session. If it \
+         answered cs_older, the status predicate is gone and the confirm path can now drive a \
+         payer through an expired checkout"
+    );
+
+    let latest = repositories
+        .find_latest_by_intent("pi_two_sessions")
+        .await
+        .context("the latest read must not error")?;
+    assert_eq!(
+        latest.map(|row| row.id),
+        Some("cs_newer".to_owned()),
+        "find_latest_by_intent answered something other than the highest seq. NOTE: this \
+         assertion does NOT catch a deleted ORDER BY — see this test's doc comment and \
+         the_latest_session_query_orders_by_seq_and_takes_one, which does"
+    );
+
+    // The other direction, and the reason these two reads are not one method:
+    // once the newest session is itself expired, `find_open_by_intent` must
+    // answer nothing while `find_latest_by_intent` still names it.
+    repositories
+        .expire("merchant_a", "cs_newer")
+        .await
+        .context("expiring the second session must not error")?;
+
+    assert!(
+        vpay_db::CheckoutSessions::find_open_by_intent(&*repositories, "pi_two_sessions")
+            .await
+            .context("the open read must not error")?
+            .is_none(),
+        "every session on this intent is expired and find_open_by_intent still found one — the \
+         status predicate is not in the statement"
+    );
+    assert_eq!(
+        repositories
+            .find_latest_by_intent("pi_two_sessions")
+            .await
+            .context("the latest read must not error")?
+            .map(|row| row.id),
+        Some("cs_newer".to_owned()),
+        "find_latest_by_intent must still name the newest session whatever its status — that is \
+         what lets a caller tell 'never created' from 'over'"
     );
 
     Ok(())

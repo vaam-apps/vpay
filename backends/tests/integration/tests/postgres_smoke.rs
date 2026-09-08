@@ -124,7 +124,7 @@ async fn insert_payment_intent(
         // these inserts depend on a Rust function agreeing with a CHECK.
         "INSERT INTO payment_intents \
             (id, merchant_id, livemode, amount, amount_refunded, amount_refund_pending, currency_code, status, payment_method_types, client_secret_suffix) \
-         VALUES ($1, 'merchant_1', false, $2, $3, $4, 'XAF', 'requires_payment_method'::intent_status, '[]'::jsonb, \
+         VALUES ($1, 'merchant_1', false, $2, $3, $4, 'XAF', 'requires_payment_method', '[]'::jsonb, \
                  replace(gen_random_uuid()::text, '-', ''))",
     )
     .bind(id)
@@ -143,7 +143,7 @@ async fn insert_charge(
     sqlx::query(
         "INSERT INTO charges \
             (id, payment_intent_id, provider_code, provider_reference_id, state, amount, currency_code) \
-         VALUES ($1, $2, 'mtn_momo', $3, 'submitting'::charge_state, 5000, 'XAF')",
+         VALUES ($1, $2, 'mtn_momo', $3, 'submitting', 5000, 'XAF')",
     )
     .bind(id)
     .bind(payment_intent_id)
@@ -169,8 +169,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 36,
-        "all thirty-six migrations under backends/migrations should be recorded as applied \
+        applied, 37,
+        "all thirty-seven migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -219,7 +219,20 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          human can sign in to, all three born with a schemas/vpay.cstack \
          model and shaped so that EVERY repository method runs through \
          CrateStack: no jsonb, no bytea, no native enum, no DEFAULT on any \
-         column a writer names, and no seq cursor)"
+         column a writer names, and no seq cursor, \
+         and S5's 0037, which converts the LAST FOUR of vpay's native enums \
+         that sit on a money table -- intent_status, charge_state, \
+         refund_status and the failure_code shared by three columns across \
+         three tables -- to TEXT plus a <table>_<column>_enum_check, for \
+         0032's reason: CrateStack's generated row decoders read an enum \
+         column with try_get::<String>(), so a native enum column fails to \
+         decode on every read and no query on payment_intents, charges or \
+         refunds could ever have moved. It drops charges_live_idx and \
+         rebuilds it unchanged, because Postgres refuses to alter a column \
+         a PARTIAL index predicate depends on; it drops no column DEFAULT \
+         and renames no hand-written CHECK, and 0037's own header says why \
+         for each. account_kind and direction, on the ledger tables, are \
+         the two native enums left)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -2032,7 +2045,75 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 /// self-referencing `SET` expression cratestack 0.12.0 cannot represent — so
 /// it is in the `tables_missing_from_the_schema` list below rather than being
 /// a gap somebody has to notice.
-const EXPECTED_DRIFT_CHANGES: u32 = 156;
+/// **156 -> 167 on 2026-09-07** (S5, rebased over S4b's 156 — the S5 delta is +11, measured as 130 -> 141 on its own base: migration `0037` and the four money
+/// models). The number went UP by eleven and that is the trade, measured per
+/// table against a freshly migrated database before and after:
+///
+///   | table | before | after |
+///   |---|---|---|
+///   | `payment_intents` | 31 | 19 |
+///   | `charges` | 23 | 16 |
+///   | `checkout_sessions` | 1 | 21 |
+///   | `refunds` | 1 | 11 |
+///
+/// Nothing else moved by a single line, `EXPECTED_DRIFTED_RELATIONS` did not
+/// move at all, and `EXPECTED_UNMAPPABLE_COLUMNS` did not move either — which
+/// is the prediction "an undeclared `jsonb` column is invisible in both
+/// directions" makes, and this is what tested it.
+///
+/// **The two falls are the interesting half.** `model PaymentIntent` and
+/// `model Charge` were design sketches that had rotted: `PaymentIntent`
+/// declared `last_payment_error`, a column migration `0014` DROPPED, and
+/// neither knew about `seq`, `description`, `customer_id`,
+/// `client_secret_suffix`, `provider_txn_id`, `return_url` or `updated_at`.
+/// Nineteen of those thirty-one and seven of those twenty-three lines were
+/// the report describing that rot. Rewriting both against the live tables is
+/// what removed them; **not one `column … is declared in the schema but does
+/// not exist` and not one `column … exists in the live database but is not
+/// declared` line survives on any of the four tables**, which is the sharpest
+/// thing this constant now says.
+///
+/// **The two rises are `customers`' lesson repeated**, and this constant
+/// already predicted them: "the marginal drift of a column depends on whether
+/// its table is modelled … not declaring it at all would have cost one."
+/// `checkout_sessions` and `refunds` were one line each as undeclared tables
+/// and are 21 and 11 now that every column is compared.
+///
+/// The 67 lines the four tables carry break down into five kinds, and **every
+/// one of them is a kind 0.12.0 structurally cannot close**:
+///
+///   * **37 hand-named CHECKs** — `@db_enforce` would emit a drop-and-add
+///     pair (exp17 §1a), so the models declare the validators without it.
+///   * **12 undeclared indexes** — partial, multi-column-with-a-direction, or
+///     unique under a name the generator does not produce
+///     (`one_charge_per_intent`).
+///   * **6 `column … type differs`** on the six enum-typed columns. Permanent:
+///     an enum's NAME has no catalog representation to recover it from, which
+///     `introspect/postgres/enums.rs`' own doc comment calls documented
+///     lossiness. Migration `0037` did not create these lines — the columns
+///     were native enums before it and `resolve_column` mapped those to
+///     `Scalar("String")` too.
+///   * **2 `column seq default value differs`** — `model Event.seq`'s known
+///     trade, an identity column carrying no `pg_attrdef` default.
+///   * **10 `foreign key … is declared in the schema but does not exist in
+///     the live database`, every one of which is FALSE.** All ten exist. This
+///     is a fifth measured upstream gap, and it is documented upstream rather
+///     than inferred from the report: `introspect/postgres/mod.rs`'s own
+///     "Known gaps" says "**Foreign keys are not introspected.** … so
+///     `TableProjection::foreign_keys` is always empty here. A table with
+///     `.cstack`-declared relations will show every foreign key as 'missing'
+///     drift until a follow-up phase adds this."
+///
+///     The relations are declared anyway, and that is a deliberate choice
+///     rather than an oversight: the ten foreign keys are real, `cratestack-
+///     parser` requires both sides of a relation to be declared, and removing
+///     a true declaration to make a false report line disappear would be
+///     optimising this number instead of the schema — the exact move this
+///     constant's own assertion message warns about. The hazard it leaves is
+///     the mirror of the undeclared-CHECK one: a generated `migrate diff`
+///     would emit `ADD CONSTRAINT … FOREIGN KEY` for ten constraints that
+///     already exist. Nothing runs `migrate diff` here, so it is latent.
+const EXPECTED_DRIFT_CHANGES: u32 = 167;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -2403,7 +2484,14 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // genuinely in the database `sqlx::migrate!` produces, so it is
             // honestly part of the drift rather than something to filter out.
             "_sqlx_migrations",
-            "checkout_sessions",
+            // `checkout_sessions` and `refunds` left this list on 2026-09-07
+            // with `model CheckoutSession` and `model Refund` (S5). They are
+            // the fourth and fifth tables to leave it, and — like `events`
+            // and `webhook_deliveries` and unlike `disabled_clients` — they
+            // did NOT leave the drift report: they cost 21 and 11 lines now
+            // that every column is compared, against one line each while they
+            // were invisible. `EXPECTED_DRIFT_CHANGES`' 130 -> 141 note has
+            // the per-table table and the five kinds those lines fall into.
             // `events` and `webhook_deliveries` left this list on 2026-09-06
             // with `model Event` / `model WebhookDelivery`. They are the
             // second and third tables ever to leave it, after
@@ -2431,8 +2519,11 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // because baseline introspects the connection's own schema.
             "oauth_client_assertion_jtis",
             "oauth_signing_keys",
+            // Out of scope FOREVER unless a reason appears (docs/status.md),
+            // like `jobs` and `idempotency_keys` above it: the
+            // `latest_submit_attempt` ordering `sent_at DESC, id DESC` has no
+            // delegate, and `attempt` and `status_code` are both `int4`.
             "provider_requests",
-            "refunds",
         ],
         "the set of tables the migrations build and the schema does not declare"
     );
@@ -2685,7 +2776,7 @@ async fn insert_refund(
     sqlx::query(
         "INSERT INTO refunds \
             (id, payment_intent_id, amount, currency_code, status, fee) \
-         VALUES ($1, $2, 1000, 'XAF', 'pending'::refund_status, $3)",
+         VALUES ($1, $2, 1000, 'XAF', 'pending', $3)",
     )
     .bind(id)
     .bind(payment_intent_id)
@@ -2718,7 +2809,7 @@ async fn an_unreported_refund_fee_stays_null_and_never_becomes_zero() -> anyhow:
     // `DEFAULT 0` to migration 0031 left every other assertion here green.
     sqlx::query(
         "INSERT INTO refunds (id, payment_intent_id, amount, currency_code, status) \
-         VALUES ('re_omitted', 'pi_fee', 1000, 'XAF', 'pending'::refund_status)",
+         VALUES ('re_omitted', 'pi_fee', 1000, 'XAF', 'pending')",
     )
     .execute(&pool)
     .await
@@ -2958,4 +3049,519 @@ fn sql_block_containing(markdown: &str, needle: &str) -> Option<String> {
         .filter_map(|rest| rest.split_once("```"))
         .map(|(block, _)| block.to_string())
         .find(|block| block.contains(needle))
+}
+
+// ------------------------------------------------- migration 0037 (S5) ----
+//
+// Three properties of the enum -> TEXT + CHECK conversion, none of which had
+// a test when the branch was first proposed for review: that a populated
+// database survives it, that the CHECKs it puts in place of the four dropped
+// types actually refuse, and that the partial index it drops and rebuilds is
+// still the one the crash-recovery sweep plans against.
+//
+// The reason the gap mattered: deleting any one of 0037's six `ADD CONSTRAINT
+// … _enum_check` statements left `just ci` entirely green, and a money
+// vocabulary that Postgres no longer closes is open — `charges.state` could
+// then hold a label no `vpay-core` state machine knows, in a column the
+// settlement compare-and-swap reads.
+
+/// The six labels `charge_state` carried, and the four of them that are live.
+///
+/// Spelled here rather than imported because this suite's subject is what the
+/// *database* enforces: a constant shared with `vpay-db` would make the test
+/// agree with the code it is meant to be independent of.
+const CHARGE_STATE_LABELS: [&str; 6] = [
+    "submitting",
+    "submitted",
+    "pending",
+    "unresolved",
+    "succeeded",
+    "failed",
+];
+const INTENT_STATUS_LABELS: [&str; 5] = [
+    "requires_payment_method",
+    "requires_action",
+    "processing",
+    "succeeded",
+    "canceled",
+];
+const REFUND_STATUS_LABELS: [&str; 4] = ["pending", "succeeded", "failed", "canceled"];
+const FAILURE_CODE_LABELS: [&str; 11] = [
+    "insufficient_funds",
+    "payer_timeout",
+    "payer_declined",
+    "invalid_payer",
+    "payer_limit_reached",
+    "payer_account_blocked",
+    "invalid_payee",
+    "payee_account_blocked",
+    "provider_account_blocked",
+    "provider_unavailable",
+    "provider_error",
+];
+
+/// Migration 0037 applied to a **populated** database keeps every stored
+/// label, drops all four types, and rebuilds the partial index.
+///
+/// `migration_0033_changes_no_stored_capability_on_a_populated_table`'s
+/// device, and for the same reason: the claim an upgrade depends on is about
+/// rows that already exist, and only a database can settle it. The table is
+/// put back into its pre-0037 shape — four native enum types, six enum-typed
+/// columns, `charges_live_idx` as a PARTIAL index over the enum — then seeded
+/// with **every label of every one of the four types**, and then 0037's own
+/// text is applied via `include_str!` rather than a copy of its statements,
+/// so the file and this test cannot drift apart.
+///
+/// The restored partial index is load-bearing rather than decoration. Postgres
+/// refuses to alter a column a partial index predicate depends on:
+///
+/// ```text
+/// ERROR:  operator does not exist: text = charge_state
+/// ```
+///
+/// so if 0037 ever loses its `DROP INDEX charges_live_idx`, this test fails
+/// on that error instead of quietly proving nothing.
+#[tokio::test]
+async fn migration_0037_keeps_every_stored_label_on_a_populated_database() -> anyhow::Result<()> {
+    /// Migration 0037 itself, read from the file.
+    const MIGRATION_0037: &str =
+        include_str!("../../../migrations/0037_money-tables-cratestack-shape.sql");
+
+    let (_container, pool) = migrated_postgres().await?;
+    seed_currencies(&pool).await?;
+    seed_providers(&pool).await?;
+
+    // --- back to the pre-0037 shape ---------------------------------------
+    //
+    // The four `CREATE TYPE`s are migrations 0003, 0004, 0014 and 0017's, in
+    // their declared order; the six `ALTER COLUMN`s are the columns 0037
+    // converts, and the index is 0014's.
+    let restore = format!(
+        "ALTER TABLE payment_intents DROP CONSTRAINT payment_intents_status_enum_check; \
+         ALTER TABLE payment_intents \
+             DROP CONSTRAINT payment_intents_last_payment_error_code_enum_check; \
+         ALTER TABLE charges DROP CONSTRAINT charges_state_enum_check; \
+         ALTER TABLE charges DROP CONSTRAINT charges_failure_code_enum_check; \
+         ALTER TABLE refunds DROP CONSTRAINT refunds_status_enum_check; \
+         ALTER TABLE refunds DROP CONSTRAINT refunds_failure_code_enum_check; \
+         CREATE TYPE intent_status AS ENUM ('{intents}'); \
+         CREATE TYPE charge_state AS ENUM ('{charges}'); \
+         CREATE TYPE refund_status AS ENUM ('{refunds}'); \
+         CREATE TYPE failure_code AS ENUM ('{failures}'); \
+         DROP INDEX charges_live_idx; \
+         ALTER TABLE payment_intents ALTER COLUMN status TYPE intent_status \
+             USING status::intent_status; \
+         ALTER TABLE payment_intents ALTER COLUMN last_payment_error_code TYPE failure_code \
+             USING last_payment_error_code::failure_code; \
+         ALTER TABLE charges ALTER COLUMN state TYPE charge_state USING state::charge_state; \
+         ALTER TABLE charges ALTER COLUMN failure_code TYPE failure_code \
+             USING failure_code::failure_code; \
+         ALTER TABLE refunds ALTER COLUMN status TYPE refund_status USING status::refund_status; \
+         ALTER TABLE refunds ALTER COLUMN failure_code TYPE failure_code \
+             USING failure_code::failure_code; \
+         CREATE INDEX charges_live_idx ON charges (state) \
+             WHERE state IN ('submitting', 'submitted', 'pending', 'unresolved');",
+        intents = INTENT_STATUS_LABELS.join("', '"),
+        charges = CHARGE_STATE_LABELS.join("', '"),
+        refunds = REFUND_STATUS_LABELS.join("', '"),
+        failures = FAILURE_CODE_LABELS.join("', '"),
+    );
+    sqlx::raw_sql(sqlx::AssertSqlSafe(restore))
+        .execute(&pool)
+        .await
+        .context("restoring the pre-0037 shape must succeed")?;
+
+    // The restore has to be real before anything below means anything. A
+    // reversal that silently did nothing would make this whole test vacuous,
+    // which is the failure `migration_0033_…` records having guarded against.
+    let types_before: Vec<String> = sqlx::query_scalar(
+        "SELECT typname::text FROM pg_type \
+         WHERE typname IN ('intent_status', 'charge_state', 'refund_status', 'failure_code') \
+         ORDER BY typname",
+    )
+    .fetch_all(&pool)
+    .await
+    .context("listing the restored enum types must succeed")?;
+    assert_eq!(
+        types_before,
+        vec![
+            "charge_state",
+            "failure_code",
+            "intent_status",
+            "refund_status"
+        ],
+        "the pre-0037 shape has to carry all four native enum types, or the migration below is \
+         applied to a database it was never meant for"
+    );
+    let live_index_before: String =
+        sqlx::query_scalar("SELECT indexdef FROM pg_indexes WHERE indexname = 'charges_live_idx'")
+            .fetch_one(&pool)
+            .await
+            .context("reading the restored charges_live_idx must succeed")?;
+    assert!(
+        live_index_before.contains(" WHERE "),
+        "charges_live_idx must be restored as a PARTIAL index — its predicate is what makes \
+         0037's DROP INDEX necessary, and without it this test cannot fail for the reason it \
+         exists: {live_index_before}"
+    );
+
+    // --- one row per label of every one of the four types -----------------
+    //
+    // `failure_code` is spread across three tables, which is why it is
+    // dropped last in the migration; the loops below place all eleven of its
+    // labels across those three so the DROP has something to trip on if the
+    // ordering is ever wrong.
+    for (status, failure) in INTENT_STATUS_LABELS.iter().zip(FAILURE_CODE_LABELS) {
+        sqlx::query(
+            "INSERT INTO payment_intents \
+                (id, merchant_id, livemode, amount, currency_code, status, \
+                 last_payment_error_code, last_payment_error_message, payment_method_types, \
+                 client_secret_suffix) \
+             VALUES ($1, 'merchant_1', false, 5000, 'XAF', $2::intent_status, \
+                     $3::failure_code, 'a rail said so', '[]'::jsonb, \
+                     replace(gen_random_uuid()::text, '-', ''))",
+        )
+        .bind(format!("pi_label_{status}"))
+        .bind(status)
+        .bind(failure)
+        .execute(&pool)
+        .await
+        .with_context(|| format!("seeding an intent in status {status}"))?;
+    }
+    // The charges take `failure_code`'s LAST six labels and the intents above
+    // took its first five, so all eleven are stored somewhere across the three
+    // tables — which is what gives 0037's `DROP TYPE failure_code` something
+    // to trip on if it were ever ordered before one of the conversions.
+    for (state, failure) in CHARGE_STATE_LABELS
+        .iter()
+        .zip(FAILURE_CODE_LABELS.into_iter().skip(5))
+    {
+        // One intent per charge: `one_charge_per_intent` is a unique index.
+        sqlx::query(
+            "INSERT INTO payment_intents \
+                (id, merchant_id, livemode, amount, currency_code, status, \
+                 payment_method_types, client_secret_suffix) \
+             VALUES ($1, 'merchant_1', false, 5000, 'XAF', 'processing'::intent_status, \
+                     '[]'::jsonb, replace(gen_random_uuid()::text, '-', ''))",
+        )
+        .bind(format!("pi_for_{state}"))
+        .execute(&pool)
+        .await
+        .with_context(|| format!("seeding the intent behind a {state} charge"))?;
+        sqlx::query(
+            "INSERT INTO charges \
+                (id, payment_intent_id, provider_code, provider_reference_id, state, amount, \
+                 currency_code, failure_code, failure_raw) \
+             VALUES ($1, $2, 'mtn_momo', $3, $4::charge_state, 5000, 'XAF', $5::failure_code, \
+                     'the rail said so')",
+        )
+        .bind(format!("ch_label_{state}"))
+        .bind(format!("pi_for_{state}"))
+        .bind(Uuid::new_v4())
+        .bind(state)
+        .bind(failure)
+        .execute(&pool)
+        .await
+        .with_context(|| format!("seeding a charge in state {state}"))?;
+    }
+    for (status, failure) in REFUND_STATUS_LABELS.iter().zip(FAILURE_CODE_LABELS) {
+        sqlx::query(
+            "INSERT INTO refunds \
+                (id, payment_intent_id, amount, currency_code, status, failure_code, \
+                 failure_raw) \
+             VALUES ($1, 'pi_label_succeeded', 100, 'XAF', $2::refund_status, \
+                     $3::failure_code, 'the rail said so')",
+        )
+        .bind(format!("re_label_{status}"))
+        .bind(status)
+        .bind(failure)
+        .execute(&pool)
+        .await
+        .with_context(|| format!("seeding a refund in status {status}"))?;
+    }
+
+    /// Every stored label on the six columns, as text, ordered — read the
+    /// same way before and after so the comparison is of values and not of
+    /// types.
+    const SNAPSHOT: &str = "SELECT 'pi:' || id || '=' || status::text || '/' || \
+             coalesce(last_payment_error_code::text, '-') FROM payment_intents \
+         UNION ALL \
+         SELECT 'ch:' || id || '=' || state::text || '/' || \
+             coalesce(failure_code::text, '-') FROM charges \
+         UNION ALL \
+         SELECT 're:' || id || '=' || status::text || '/' || \
+             coalesce(failure_code::text, '-') FROM refunds \
+         ORDER BY 1";
+    let before: Vec<String> = sqlx::query_scalar(SNAPSHOT)
+        .fetch_all(&pool)
+        .await
+        .context("snapshotting every stored label before 0037")?;
+    assert_eq!(
+        before.len(),
+        // One intent per `intent_status` label, one charge per `charge_state`
+        // label with an intent each to hang it off (`one_charge_per_intent`
+        // is unique), and one refund per `refund_status` label: 5 + 12 + 4.
+        INTENT_STATUS_LABELS.len() + CHARGE_STATE_LABELS.len() * 2 + REFUND_STATUS_LABELS.len(),
+        "the fixture must carry one row per label of every type; a short fixture would make \
+         the comparison below pass on rows nobody seeded: {before:?}"
+    );
+
+    // --- the migration, on the populated database -------------------------
+    sqlx::raw_sql(MIGRATION_0037).execute(&pool).await.context(
+        "migration 0037 must apply to a POPULATED database. `operator does not exist: \
+             text = charge_state` here means it lost the DROP INDEX on the partial \
+             charges_live_idx",
+    )?;
+
+    let after: Vec<String> = sqlx::query_scalar(SNAPSHOT)
+        .fetch_all(&pool)
+        .await
+        .context("snapshotting every stored label after 0037")?;
+    assert_eq!(
+        before, after,
+        "0037 changed a stored label. `USING status::TEXT` is the enum's own label text and \
+         must round-trip exactly; anything else here is silent data corruption on the money \
+         tables"
+    );
+
+    let types_after: Vec<String> = sqlx::query_scalar(
+        "SELECT typname::text FROM pg_type \
+         WHERE typname IN ('intent_status', 'charge_state', 'refund_status', 'failure_code')",
+    )
+    .fetch_all(&pool)
+    .await
+    .context("listing the enum types after 0037 must succeed")?;
+    assert!(
+        types_after.is_empty(),
+        "0037 must drop all four types. It uses `DROP TYPE` without CASCADE on purpose, so a \
+         surviving type here means something still references it: {types_after:?}"
+    );
+
+    let live_index_after: String =
+        sqlx::query_scalar("SELECT indexdef FROM pg_indexes WHERE indexname = 'charges_live_idx'")
+            .fetch_one(&pool)
+            .await
+            .context("charges_live_idx must exist again after 0037")?;
+    for label in ["submitting", "submitted", "pending", "unresolved"] {
+        assert!(
+            live_index_after.contains(label),
+            "0037 rebuilt charges_live_idx without the live label {label}; the predicate is \
+             transcribed by hand and a missing label is silent — the index simply stops \
+             matching: {live_index_after}"
+        );
+    }
+
+    Ok(())
+}
+
+/// Every CHECK migration 0037 created in place of a dropped type refuses a
+/// value outside it — one assertion per column, on a real database.
+///
+/// Until 0037 the vocabularies were closed by the Postgres enum types
+/// themselves, and `a_mixed_case_address_and_an_unknown_status_are_refused_by_the_database`
+/// / `an_unknown_provider_flow_is_refused_by_the_check_that_replaced_the_enum_type`
+/// are the precedents for asserting the replacement rather than trusting it.
+///
+/// THE MUTATIONS THIS REFUSES, and what else refuses them — measured,
+/// because the first draft of this comment claimed to be the only guard and
+/// was wrong:
+///
+/// * delete `charges_state_enum_check` from 0037 — RED here, and **also** red
+///   in `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`
+///   (the constraint `model Charge`'s `state ChargeState` generates stops
+///   existing, so the count moves off 141);
+/// * mistype one label inside it (`'unresolved'` -> `'unresolvd'`) — RED in
+///   both, again.
+///
+/// So this is not the only net. It is the one that fails **at the database,
+/// for the reason that matters**: a count moving off a pinned number says
+/// "the schema and the migrations disagree", where what actually happened is
+/// that a money column stopped being closed — `charges.state` could then hold
+/// a label no `vpay_core::ChargeState` knows, in the column the settlement
+/// compare-and-swap reads.
+///
+/// It is also the net that survives an edit to `schemas/vpay.cstack`. The
+/// drift test only notices because `model Charge` declares `state
+/// ChargeState`, so the generator expects `charges_state_enum_check` by name.
+/// Declare those columns as plain `String` — exactly what `model
+/// CheckoutSession` does for its own three vocabularies, and a defensible
+/// thing to do — and the drift report goes quiet about all six while this
+/// test does not. It also needs no CrateStack CLI on `PATH`, which the drift
+/// test does.
+///
+/// The second half below, that every label vpay actually writes is still
+/// ACCEPTED, is the direction a hand-transcribed predicate gets wrong: a typo
+/// there is silent in production until a charge first reaches that state.
+#[tokio::test]
+async fn every_enum_check_0037_created_refuses_a_value_outside_it() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_currencies(&pool).await?;
+    seed_providers(&pool).await?;
+
+    insert_payment_intent(&pool, "pi_vocab", 5000, 0, 0)
+        .await
+        .context("the fixture intent inserts")?;
+    insert_charge(&pool, "ch_vocab", "pi_vocab")
+        .await
+        .context("the fixture charge inserts")?;
+    insert_refund(&pool, "re_vocab", "pi_vocab", None)
+        .await
+        .context("the fixture refund inserts")?;
+
+    // Column, statement, and the constraint that must be the one to refuse.
+    // The name is asserted, not merely the failure: a row rejected by
+    // `lpe_paired` or a NOT NULL would "pass" a test that only checked for an
+    // error, and would say nothing about the vocabulary.
+    let cases: [(&str, &str, &str); 6] = [
+        (
+            "payment_intents.status",
+            "UPDATE payment_intents SET status = 'not_a_status' WHERE id = 'pi_vocab'",
+            "payment_intents_status_enum_check",
+        ),
+        (
+            "payment_intents.last_payment_error_code",
+            "UPDATE payment_intents SET last_payment_error_code = 'not_a_code', \
+             last_payment_error_message = 'x' WHERE id = 'pi_vocab'",
+            "payment_intents_last_payment_error_code_enum_check",
+        ),
+        (
+            "charges.state",
+            "UPDATE charges SET state = 'not_a_state' WHERE id = 'ch_vocab'",
+            "charges_state_enum_check",
+        ),
+        (
+            "charges.failure_code",
+            "UPDATE charges SET failure_code = 'not_a_code' WHERE id = 'ch_vocab'",
+            "charges_failure_code_enum_check",
+        ),
+        (
+            "refunds.status",
+            "UPDATE refunds SET status = 'not_a_status' WHERE id = 're_vocab'",
+            "refunds_status_enum_check",
+        ),
+        (
+            "refunds.failure_code",
+            "UPDATE refunds SET failure_code = 'not_a_code', failure_raw = 'x' \
+             WHERE id = 're_vocab'",
+            "refunds_failure_code_enum_check",
+        ),
+    ];
+
+    for (column, statement, constraint) in cases {
+        let error = sqlx::query(sqlx::AssertSqlSafe(statement.to_owned()))
+            .execute(&pool)
+            .await
+            .expect_err(&format!(
+                "{column} accepted a value outside its vocabulary. Migration 0037 replaced a \
+                 native Postgres enum with {constraint}; without it this column is open, and \
+                 every reader in vpay-core parses it expecting a closed set"
+            ));
+        let database = error
+            .as_database_error()
+            .with_context(|| format!("{column}: the refusal must come from Postgres"))?;
+        assert_eq!(
+            database.code().as_deref(),
+            Some("23514"),
+            "{column}: a CHECK violation is 23514; anything else means a different constraint \
+             refused this row and the vocabulary itself is untested: {error}"
+        );
+        assert_eq!(
+            database.constraint(),
+            Some(constraint),
+            "{column}: refused by the wrong constraint, so this case proves nothing about the \
+             vocabulary: {error}"
+        );
+    }
+
+    // The other direction, which is the half that would catch a CHECK with a
+    // typo in a label: every value the code actually writes is still accepted.
+    for state in CHARGE_STATE_LABELS {
+        sqlx::query("UPDATE charges SET state = $1 WHERE id = 'ch_vocab'")
+            .bind(state)
+            .execute(&pool)
+            .await
+            .with_context(|| {
+                format!(
+                    "charges_state_enum_check refused the label {state}, which vpay writes. A \
+                     mistyped label in 0037's CHECK is silent until a charge reaches that state"
+                )
+            })?;
+    }
+    for status in INTENT_STATUS_LABELS {
+        sqlx::query("UPDATE payment_intents SET status = $1 WHERE id = 'pi_vocab'")
+            .bind(status)
+            .execute(&pool)
+            .await
+            .with_context(|| format!("payment_intents_status_enum_check refused {status}"))?;
+    }
+    for code in FAILURE_CODE_LABELS {
+        sqlx::query(
+            "UPDATE payment_intents SET last_payment_error_code = $1, \
+             last_payment_error_message = 'x' WHERE id = 'pi_vocab'",
+        )
+        .bind(code)
+        .execute(&pool)
+        .await
+        .with_context(|| {
+            format!("payment_intents_last_payment_error_code_enum_check refused {code}")
+        })?;
+    }
+    for status in REFUND_STATUS_LABELS {
+        sqlx::query("UPDATE refunds SET status = $1 WHERE id = 're_vocab'")
+            .bind(status)
+            .execute(&pool)
+            .await
+            .with_context(|| format!("refunds_status_enum_check refused {status}"))?;
+    }
+
+    Ok(())
+}
+
+/// After 0037 rebuilt it over a `TEXT` column, `charges_live_idx` is still the
+/// index the crash-recovery sweep plans against.
+///
+/// `the_confirm_paths_session_lookup_is_served_by_an_index`'s device. The
+/// definition is checked elsewhere (`repositories.rs` reads its `indexdef`);
+/// what a definition cannot say is that the planner can still *use* it, and
+/// that is the half a column type change could break — a partial index whose
+/// predicate no longer implies the query's is a correct index nothing reaches.
+///
+/// The query is `Settlement::live_charges_stale_since`, which is what
+/// `docs/flows/crash-safety.md`'s recovery sweep runs: it filters on `state`
+/// alone and is the reason migration 0014 added a partial index at all.
+#[tokio::test]
+async fn the_crash_recovery_sweep_is_still_served_by_the_rebuilt_partial_index()
+-> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    // One connection for both statements: `SET` is session-scoped.
+    let mut connection = pool
+        .acquire()
+        .await
+        .context("taking one connection for the SET and the EXPLAIN")?;
+    sqlx::query("SET enable_seqscan = off")
+        .execute(&mut *connection)
+        .await
+        .context("disabling sequential scans for this session must succeed")?;
+
+    let plan: Vec<String> = sqlx::query_scalar(
+        "EXPLAIN SELECT id FROM charges \
+         WHERE state IN ('submitting', 'submitted', 'pending', 'unresolved') \
+           AND updated_at < now() \
+         ORDER BY updated_at LIMIT 50",
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .context("explaining the recovery sweep must succeed")?;
+    let plan = plan.join("\n");
+
+    assert!(
+        plan.contains("charges_live_idx"),
+        "the recovery sweep no longer plans against charges_live_idx. 0037 dropped that index \
+         to alter the column and rebuilt it; if the rebuilt predicate no longer implies the \
+         query's, the sweep degrades to a full scan of charges on every worker tick and only \
+         a production-sized table would say so: {plan}"
+    );
+
+    Ok(())
 }

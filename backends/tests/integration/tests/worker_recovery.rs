@@ -476,8 +476,8 @@ async fn charge_updated_at(pool: &PgPool, id: &str) -> anyhow::Result<time::Offs
 /// same way every time.
 async fn escalated_charge(pool: &PgPool, charge_id: &str) -> anyhow::Result<()> {
     let moved = sqlx::query(
-        "UPDATE charges SET state = 'unresolved'::charge_state, updated_at = now() \
-         WHERE id = $1 AND state = 'submitting'::charge_state",
+        "UPDATE charges SET state = 'unresolved', updated_at = now() \
+         WHERE id = $1 AND state = 'submitting'",
     )
     .bind(charge_id)
     .execute(pool)

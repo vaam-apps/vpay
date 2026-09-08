@@ -166,6 +166,25 @@ enum FailureCode {
   provider_error
 }
 
+// backends/crates/vpay-db/src/refunds.rs — the refund lifecycle. A native
+// `refund_status` enum in the database until migration 0037 converted it to
+// TEXT + `refunds_status_enum_check`, for the reason every enum on these
+// tables was converted: CrateStack's generated row decoders read an enum
+// column with `try_get::<String>()`, so a native enum column fails to decode
+// on every read.
+//
+// `canceled` is in the vocabulary because migration 0017 put it there, not
+// because anything reaches it: nothing in this repository writes a refund at
+// all (`vpay_db::refunds` is two reads and no write, because
+// `ProviderAdapter::refund` is `NotImplemented` on MTN and `Unsupported` on
+// Orange). docs/status.md says so.
+enum RefundStatus {
+  pending
+  succeeded
+  failed
+  canceled
+}
+
 // backends/crates/vpay-ledger/src/lib.rs — AccountKind
 enum AccountKind {
   merchant_payable
@@ -226,6 +245,13 @@ model Currency {
 
   payment_intents PaymentIntent[] @relation(fields: [code], references: [currency_code])
   charges Charge[] @relation(fields: [code], references: [currency_code])
+  // Added with `model Refund` (S5). A back-reference carries no column and
+  // emits no foreign key of its own (`convert/relations.rs` returns `None`
+  // for a `List` field) — it is here because `cratestack-parser` requires
+  // BOTH sides of a relation to declare `@relation(...)`, and `Refund`'s
+  // owning side is what makes `refunds_currency_code_fkey` a foreign key the
+  // schema declares rather than one the report proposes dropping.
+  refunds Refund[] @relation(fields: [code], references: [currency_code])
   ledger_entries LedgerEntry[] @relation(fields: [code], references: [currency_code])
 
   @@allow("read", auth().isSystem())
@@ -368,34 +394,118 @@ model Provider {
 // --- payments --------------------------------------------------------------
 
 model PaymentIntent {
+  // S5 (2026-09-07) rewrote this model field-for-field against the live
+  // table. It had been a design sketch since the file was written and had
+  // drifted badly: it declared `last_payment_error String?`, a column
+  // migration 0014 DROPPED, and knew nothing of `seq`, `metadata`,
+  // `description`, `customer_id`, `client_secret_suffix` or `updated_at`.
+  // Nothing read or wrote through it, so nothing noticed — which is exactly
+  // the hazard `EXPECTED_DRIFT_CHANGES` exists to make expensive.
+  //
+  // WHAT IS DELIBERATELY ABSENT: `payment_method_types` and `metadata`, both
+  // `JSONB`. They are not modelled and no query on this table runs through
+  // CrateStack because of them — see the block comment below.
   id String @id @length(min: 1, max: 64)
+  // `GENERATED ALWAYS AS IDENTITY` (migration 0014); `model Customer.seq`'s
+  // trade, unchanged. An identity column carries no `pg_attrdef` default and
+  // introspection reads only that, so this line costs one permanent
+  // `column `seq` default value differs`; dropping the `@default(...)` would
+  // make `seq` a REQUIRED field of `CreatePaymentIntentInput`, an explicit
+  // value for a `GENERATED ALWAYS` column, which Postgres refuses.
+  //
+  // No `@unique`, though `payment_intents_seq_key` exists: `model Customer`
+  // leaves `customers_seq_key` undeclared for the same reason and this file
+  // follows the newest model rather than inventing a second convention.
+  seq Int @default(dbgenerated())
   merchant_id String @length(min: 1, max: 128)
   livemode Boolean
-  amount Int @range(min: 0) @db_enforce
-  amount_received Int @default(0) @range(min: 0) @db_enforce
-  amount_refunded Int @default(0) @range(min: 0) @db_enforce
-  amount_refund_pending Int @default(0) @range(min: 0) @db_enforce
+  // NO `@db_enforce` on any of the four, and that is a change S5 made rather
+  // than an omission. The live CHECKs are hand-named (`amount_non_negative`
+  // and the three `amount_*_non_negative`), `@db_enforce` generates
+  // `payment_intents_amount_range_check`, and `diff/checks.rs` matches by
+  // name first — so promoting them emitted a drop-and-add PAIR (two lines)
+  // where declaring the validator alone emits nothing beyond the `[safe]`
+  // line the hand-named CHECK produces either way. `model Customer` records
+  // the same measurement for its `@length`s. The validators are not inert:
+  // `inputs.rs::validate_impl_tokens` builds `input.validate()` from them
+  // regardless of `@db_enforce`.
+  amount Int @range(min: 0)
+  // The three running totals keep their `@default(...)`, and migration 0037
+  // deliberately did NOT drop the DDL defaults to match 0033's `providers`
+  // treatment. The trade is the opposite one here: `PaymentIntents::insert`
+  // does not name these columns, no CrateStack write on this table moves, so
+  // dropping the defaults would turn every intent creation into a `23502`
+  // and buy nothing. Both sides carrying the default is what costs zero
+  // drift (0033's own measurement).
+  amount_received Int @default(0) @range(min: 0)
+  amount_refunded Int @default(0) @range(min: 0)
+  amount_refund_pending Int @default(0) @range(min: 0)
   currency_code String
   currency Currency @relation(fields: [currency_code], references: [code])
+  // TEXT + `payment_intents_status_enum_check` since migration 0037; a
+  // native `intent_status` enum before it. An enum-typed field costs one
+  // permanent `column `status` type differs (live: Scalar("String"), schema:
+  // Enum("IntentStatus"))` line that no migration can remove — the enum's
+  // NAME has no catalog representation to recover it from, which
+  // `introspect/postgres/enums.rs`' own doc comment calls documented
+  // lossiness. The CHECK itself converges, by name and by kind.
   status IntentStatus
-  last_payment_error String? @length(max: 512) // docs/flows/payment-lifecycle.md: populated when a rail-reported failure returns the intent to requires_payment_method
-  payment_method_types Json // NOT String[] — see note below
-  created_at DateTime @default(dbgenerated())
+  // Migration 0014's structured replacement for the `last_payment_error`
+  // free-text column this model used to declare. `lpe_paired` keeps the two
+  // halves together and is a cross-column CHECK, so it is invisible here and
+  // to the report both.
+  last_payment_error_code FailureCode?
+  last_payment_error_message String? @length(max: 512)
+  description String? @length(max: 1000)
+  customer_id String?
+  customer Customer? @relation(fields: [customer_id], references: [id])
+  // A live payer credential (migration 0026). `@sensitive` is what
+  // `is_sensitive_field` reads to redact a value from the audit log; nothing
+  // in vpay audits today, and it is declared for the reason `model
+  // Customer`'s identifiers are — the alternative is deciding retroactively
+  // which credentials were safe to have written to a log.
+  client_secret_suffix String @length(min: 32, max: 128) @sensitive
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now())
 
   charges Charge[] @relation(fields: [id], references: [payment_intent_id])
+  refunds Refund[] @relation(fields: [id], references: [payment_intent_id])
+  checkout_sessions CheckoutSession[] @relation(fields: [id], references: [payment_intent_id])
 
+  // `payment_intents_merchant_id_idx`, exactly. `index_name(table, cols,
+  // None)` renders `<table>_<columns>_idx`, so this one-column declaration
+  // and the live index are the same name and the same columns.
+  // `payment_intents_merchant_seq_idx` is NOT declared: it is two columns
+  // with a direction, which this grammar cannot express, and declaring
+  // `@@index([merchant_id, seq])` would claim an index the database does not
+  // have — `model Customer` carries the long form of that argument.
   @@index([merchant_id])
 
-  // `payment_method_types Json`, not `String[]`: verified with the real CLI
-  // that a list-arity scalar on a datasource-backed model is a *parse-time
-  // rejection*, not a style preference —
-  //   $ cratestack check --schema <fixture with `tags String[]`>
-  //   Error: list-valued type `String[]` is not supported on a
-  //   database-backed model — there is no SQL bind representation for a
-  //   list-valued scalar ... (cratestack-parser/src/tests_list_arity.rs
-  //   documents the same rejection as a regression test for issue #229)
-  // This is the one place the original invented-syntax file would have
-  // failed outright had anyone tried to run it through the real tool.
+  // NO @@allow ARM, AND THAT IS THE POINT.
+  //
+  // A model with no `@@allow` is deny-by-default: every generated read
+  // renders `FALSE` into its `WHERE` and every generated write refuses. That
+  // is the correct declaration for this table today, because **no query on
+  // `payment_intents` runs through CrateStack** and adding an arm would be a
+  // standing permission for a call site that does not exist.
+  //
+  // WHY NO QUERY MOVED, and it is one reason rather than a list: every read
+  // and every write in `vpay_db::payment_intents` returns a
+  // `PaymentIntentRow`, and `PaymentIntentRow` carries `payment_method_types`
+  // and `metadata` — two `JSONB` columns this model does not declare and
+  // must not. `Value::from_plain_json` routes every JSON number through
+  // `Number::as_i64()` with an `as_f64().unwrap_or_default()` fallback
+  // (cratestack-core 0.12.0 `value.rs:95-106`), so a `u64` above `i64::MAX`
+  // anywhere inside a merchant's `metadata` comes back as a float. A
+  // generated read that omitted the two columns would answer a struct the
+  // repository cannot build, and a second statement to fetch them would be a
+  // consistency window on the money path. `docs/reference/vpay-db.md`
+  // § "The money tables: what moved, and what stays raw forever" is the long
+  // form, and it names what would have to change upstream first.
+  //
+  // What migration 0037 bought, then, is not a moved query: it is that the
+  // report compares this table column by column instead of reporting it as a
+  // table it cannot see, and that a future query CAN decode `status` at all.
 
   // GAP — merchant_id has no @relation. There is no Merchant model in
   // this schema because there is no `struct Merchant` anywhere in
@@ -403,56 +513,270 @@ model PaymentIntent {
   // make this field "look" referentially sound would be exactly the
   // plausible-but-fabricated failure mode this rewrite exists to avoid.
 
-  // GAP — same missing CHECK class as Provider, above, in THIS GRAMMAR, for
-  // the over-refund invariant: amount_refunded + amount_refund_pending <=
-  // amount is a cross-column arithmetic CHECK; @db_enforce cannot express
-  // it for the same reason noted on Provider. In this file it remains
-  // enforced only by Money's type-level guarantees in vpay-core
-  // (docs/flows/money.md invariant 3) at the moment of construction.
-  //
-  // UPDATE: raw SQL has no such limitation — see `CONSTRAINT
-  // no_over_refund` in backends/migrations/0003_create-payment-intents.sql,
-  // proven to fire by over_refund_is_rejected_by_the_database in
-  // backends/tests/integration/tests/postgres_smoke.rs. See that migration's
-  // own comment for exactly what concurrency guarantee this does and does
-  // not provide (it rejects any single committed write that would go
-  // over-refunded, including racing concurrent UPDATEs via Postgres's
-  // ordinary row-lock-then-recheck behaviour; it is not the same thing as
-  // an application-level SELECT ... FOR UPDATE, which does not exist here).
-  // The migrations, not this file, are the authoritative schema for this
-  // constraint.
+  // GAP — the over-refund invariant, `amount_refunded +
+  // amount_refund_pending <= amount`, is a cross-column arithmetic CHECK and
+  // there is still no `@@check(expr)` in the 0.12.0 grammar. Raw SQL has no
+  // such limitation: `CONSTRAINT no_over_refund` in
+  // backends/migrations/0003_create-payment-intents.sql is real and is proven
+  // to fire by `over_refund_is_rejected_by_the_database` in
+  // backends/tests/integration/tests/postgres_smoke.rs. `migrate baseline`
+  // cannot see it in either direction (`introspect_checks` selects
+  // `array_length(c.conkey, 1) = 1`), so deleting it moves no drift line and
+  // only that test notices. The migrations, not this file, are the
+  // authoritative schema for it.
 }
 
 model Charge {
+  // Rewritten field-for-field against the live table by S5, like
+  // `PaymentIntent` above: it was missing `provider_txn_id` (migration 0021),
+  // `return_url` (0019) and `updated_at` (0014).
+  //
+  // DELIBERATELY ABSENT: `provider_ref_extra`, `JSONB`, and the single reason
+  // no query on this table moved either — see `PaymentIntent`'s block on the
+  // same subject; every `charges` read and write returns a `ChargeRow`, and
+  // `ChargeRow` carries it.
   id String @id @length(min: 1, max: 64)
-  payment_intent_id String @unique @length(min: 1, max: 64) // "one charge per intent, forever" — a plain unique index, exactly as AGENTS.md and docs/flows/payment-lifecycle.md describe. This one IS fully expressible and is now real.
+  // NO `@unique`, and S5 removed the one that was here. The live index is
+  // `one_charge_per_intent` (migration 0004); `@unique` renders
+  // `index_name_unique(table, cols)` = `charges_payment_intent_id_key`, a
+  // name the database does not have, so the declaration cost a drop-and-add
+  // PAIR — a `[blocking] index ... is declared in the schema but does not
+  // exist` line beside the `[safe] index one_charge_per_intent ... is not
+  // declared` line that is there regardless. Two lines to describe one
+  // index, one of them a claim about an index that does not exist.
+  //
+  // "One charge per intent, forever" (AGENTS.md) is unaffected: it is that
+  // unique index, in migration 0004, and `a_second_charge_on_one_intent_is_
+  // rejected_by_the_database` in postgres_smoke.rs is what proves it fires.
+  payment_intent_id String @length(min: 1, max: 64)
   payment_intent PaymentIntent @relation(fields: [payment_intent_id], references: [id])
   provider_code String
   provider Provider @relation(fields: [provider_code], references: [code])
-  provider_reference_id Uuid // matches vpay_provider::ChargeRef::reference_id: Uuid exactly — the original file had this as `String`
-  provider_ref_extra Json? // vpay_provider::RefExtra = BTreeMap<String, String>; rail key material (pay_token)
+  // matches vpay_provider::ChargeRef::reference_id: Uuid exactly. `uuid` IS
+  // in `map_scalar`, unlike `jsonb` — this column is compared.
+  provider_reference_id Uuid
+  // The rail's own identifier for the settled payment, written only by the
+  // settlement transaction (migration 0021).
+  provider_txn_id String? @length(min: 1, max: 128)
   redirect_url String? @uri
+  // The merchant's own destination for a `/v1` confirm (migration 0019).
+  // NOT rail material — that is `provider_ref_extra`, which this model does
+  // not declare.
+  return_url String? @uri
+  // TEXT + `charges_state_enum_check` since migration 0037. See
+  // `PaymentIntent.status` for the one permanent drift line an enum-typed
+  // field costs and why no migration can remove it.
   state ChargeState
-  amount Int @range(min: 0) @db_enforce
+  amount Int @range(min: 0)
   currency_code String
   currency Currency @relation(fields: [currency_code], references: [code])
-  payer_ref String? @sensitive // null on redirect rails
+  payer_ref String? @sensitive
   payer_ref_masked String?
   failure_code FailureCode?
-  failure_raw String? @length(max: 2000) @sensitive // vpay_provider::ChargeStatus::Failed carries both `code` AND `raw` — the original file captured only failure_code and silently dropped the raw provider message
-  created_at DateTime @default(dbgenerated())
+  // vpay_provider::ChargeStatus::Failed carries both `code` AND `raw`.
+  failure_raw String? @length(max: 2000) @sensitive
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now())
 
+  refunds Refund[] @relation(fields: [id], references: [charge_id])
   ledger_transactions LedgerTransaction[] @relation(fields: [id], references: [charge_id])
 
+  // `charges_state_idx`, exactly (migration 0004).
+  // `charges_live_idx` is NOT declared: it is PARTIAL, and a partial index is
+  // what forced migration 0037 to drop and rebuild it around the
+  // `ALTER COLUMN state TYPE TEXT`. `charges_provider_reference_idx` is two
+  // columns. Neither is expressible, and both are named in their migrations.
   @@index([state])
+
+  // No @@allow arm, for `PaymentIntent`'s reason and the same measured
+  // blocker (`provider_ref_extra`). Deny-by-default is the honest
+  // declaration for a model nothing queries.
 
   // GAP — provider_requests, the table docs/flows/crash-safety.md
   // requires to disambiguate a crashed `submitting` charge ("Row exists,
   // status_code IS NULL" vs "no row at all" vs "row has a status code"), is
-  // not modeled. `grep -rn "ProviderRequest" backends/crates/*/src` is
-  // empty — no Rust type exists to mirror. This is the single biggest
-  // structural gap in this file relative to the crash-safety design, and it
-  // is left out rather than invented from prose alone.
+  // not modelled, and is out of scope FOREVER unless a reason appears
+  // (docs/status.md): `latest_submit_attempt`'s `sent_at DESC, id DESC`
+  // ordering and its `status_code`/`responded_at` pairing have no delegate,
+  // and `status_code` is `int4`, one of the six unmapped types.
+}
+
+model Refund {
+  // New in S5, and the table is the one place in this file where "modelled"
+  // buys the least: `vpay_db::refunds` is TWO READS AND NO WRITE, because
+  // creating a refund needs `ProviderAdapter::refund` and that is
+  // `NotImplemented` on MTN and `Unsupported` on Orange (docs/status.md).
+  // The brief that produced this model asked for "refunds' create/get" to
+  // move; there is no create to move, and saying so is the point.
+  //
+  // Neither read moves either, and for two independent reasons rather than
+  // one: `RefundRow` carries `metadata`, which is `JSONB` and undeclared
+  // here for `PaymentIntent`'s reason; and both reads are merchant-scoped
+  // through a JOIN onto `payment_intents`, because `refunds` carries no
+  // `merchant_id` of its own (migration 0017 argues why it should not). A
+  // generated read filters columns of ONE table — `find_many` renders
+  // `SELECT ... FROM refunds WHERE ...` and has no join — so the tenant
+  // predicate could not be in the statement, and "the merchant-facing query
+  // is merchant-scoped in SQL" is the rule this module exists to keep.
+  id String @id @length(min: 1, max: 64)
+  payment_intent_id String @length(min: 1, max: 64)
+  payment_intent PaymentIntent @relation(fields: [payment_intent_id], references: [id])
+  // Nullable: a refund is requested against an INTENT, and the intent may
+  // have no charge row to attribute it to when the request arrives.
+  charge_id String?
+  charge Charge? @relation(fields: [charge_id], references: [id])
+  // `@range(min: 1)`, not `min: 0`: the live CHECK is `amount_positive`
+  // (`amount > 0`), stricter than the intent's and the charge's, because a
+  // zero-amount refund moves no money and is a caller mistake rather than a
+  // no-op to store. No `@db_enforce`, for the reason on
+  // `PaymentIntent.amount`.
+  amount Int @range(min: 1)
+  currency_code String
+  currency Currency @relation(fields: [currency_code], references: [code])
+  // TEXT + `refunds_status_enum_check` since migration 0037.
+  status RefundStatus
+  // The MERCHANT's free text ("duplicate", "requested_by_customer"), not
+  // vpay's. Deliberately not an enum in the database either — closing this
+  // vocabulary would reject reasons vpay has no business having an opinion
+  // about — so it is a plain `String?` here too.
+  reason String? @length(max: 512)
+  failure_code FailureCode?
+  failure_raw String? @length(max: 2000) @sensitive
+  // The rail-facing reference, generated before the call
+  // (docs/flows/crash-safety.md). NULL until a rail call is attempted, and
+  // every stored value is NULL today because nothing attempts one.
+  provider_reference_id Uuid?
+  // What the rail charged US to execute the refund (migration 0031, issue
+  // #46). NULL means the rail reported no fee; 0 means it reported the
+  // movement was free, and the column has no DEFAULT so those stay
+  // different. NOT WRITTEN BY ANY CODE IN THIS REPOSITORY.
+  fee Int? @range(min: 0)
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now())
+
+  // Both live indexes from migration 0017, both one column, both named
+  // `<table>_<column>_idx` — so both are expressible and declared.
+  @@index([payment_intent_id])
+  @@index([charge_id])
+
+  // No @@allow arm: nothing queries this model. See `PaymentIntent`.
+
+  // ABSENT: `metadata Json`. Also absent from the report in both directions,
+  // which is the property that makes leaving it out free —
+  // `introspect/postgres/types.rs::map_scalar` does not map `jsonb` back onto
+  // any scalar, so an undeclared `jsonb` column is invisible, while declaring
+  // `metadata Json` would add a `[blocking] column metadata is declared in
+  // the schema but does not exist in the live database` line.
+  //
+  // GAP — `failure_paired` and `metadata_is_object` are cross-column and
+  // `jsonb_typeof` CHECKs respectively; neither is expressible here and
+  // neither is visible to the report. `refunds.sql`'s migration owns them.
+}
+
+model CheckoutSession {
+  // New in S5, and the ONE table of the four with no `jsonb` column at all —
+  // which is why it is the only one any query moved on. See
+  // `vpay_db::checkout_sessions` for which four did and which did not.
+  id String @id @length(min: 1, max: 64)
+  // `GENERATED ALWAYS AS IDENTITY` (migration 0028). Same trade, same
+  // permanent `default value differs` line, and no `@unique` for the same
+  // reason as `PaymentIntent.seq`.
+  seq Int @default(dbgenerated())
+  merchant_id String @length(min: 1, max: 128)
+  payment_intent_id String @length(min: 1, max: 64)
+  payment_intent PaymentIntent @relation(fields: [payment_intent_id], references: [id])
+  livemode Boolean
+  // THE THREE CLOSED VOCABULARIES ARE `String`, NOT `.cstack` ENUMS, and
+  // that is a deliberate difference from `PaymentIntent.status` three models
+  // up.
+  //
+  // These columns were never native Postgres enums: migration 0028 created
+  // them as TEXT plus the hand-named CHECKs `ui_mode_is_known`,
+  // `status_is_known` and `payment_status_is_known`. Declaring them as enums
+  // here would generate `checkout_sessions_status_enum_check` and the rest,
+  // `diff/checks.rs` matches by name first, and the result would be a
+  // drop-and-add pair per column PLUS the permanent `type differs` line an
+  // enum-typed field carries — three lines each, where a plain `String`
+  // leaves the one `[safe] CHECK ... is not declared` line the hand-named
+  // constraint produces anyway. `events.type_is_a_documented_event` is left
+  // hand-named for exactly this reason and this file follows it.
+  //
+  // Renaming the three constraints in migration 0037 to converge was
+  // considered and rejected: the measured lesson from 0032's two `currencies`
+  // renames is that a CHECK rename moves the count by ZERO, and `vpay-db`
+  // carries all three as `String` regardless, so a generated Rust enum would
+  // be a type nothing wants.
+  ui_mode String
+  status String
+  payment_status String
+  // `@uri` and the `@length(max: 2048)` mirror migration 0028's three
+  // `*_is_a_bounded_web_url` CHECKs, which are scheme tests and therefore
+  // hand-written: no validator expresses "starts with http:// or https://".
+  // No `@db_enforce` on any of them.
+  success_url String? @uri @length(max: 2048)
+  cancel_url String? @uri @length(max: 2048)
+  return_url String? @uri @length(max: 2048)
+  customer_id String?
+  customer Customer? @relation(fields: [customer_id], references: [id])
+  // NOT A SECRET: a publishable key names a tenant and authorises nothing,
+  // and it is rendered into a merchant's own public checkout page by
+  // construction. No `@sensitive`, unlike the two below it — migration 0028
+  // argues the distinction at length.
+  publishable_key String @length(min: 4, max: 128)
+  // Both payer credentials, and both `@sensitive` for
+  // `PaymentIntent.client_secret_suffix`'s reason.
+  client_secret_suffix String @length(min: 32, max: 128) @sensitive
+  return_token String @length(min: 32, max: 128) @sensitive
+  // A stored instant rather than a computed one, so the horizon a session
+  // was created under survives a change to the 24-hour constant. NO
+  // `@default(...)`: the column has none, and the writer supplies it.
+  expires_at DateTime
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now())
+
+  // NO @@index AT ALL, and all six live indexes are named in migrations 0028,
+  // 0030 and 0034 instead. Five of the six are two columns with a direction
+  // or are partial, and the sixth (`checkout_sessions_seq_key`) is the unique
+  // index on `seq` that `model Customer` also leaves undeclared. Declaring
+  // any of them would claim an index the database does not have.
+
+  // `read` AND NOTHING ELSE — the one action `vpay_db::checkout_sessions`
+  // calls through this model, and the four reads that call it are the only
+  // CrateStack queries on any money table.
+  //
+  // WHAT A MISSING `read` ARM COSTS, and it is the SILENT direction: a read
+  // policy is compiled into the statement's own `WHERE`
+  // (`query/support/policy.rs::push_allow_policy_query` renders the literal
+  // `FALSE` for an empty allow list), so deleting this line does not raise —
+  // it makes every session read as absent. `GET /v1/checkout/sessions/{id}`
+  // would answer 404 for a session that exists, the confirm path's
+  // `find_latest_by_intent` would see none, and nothing would log an error.
+  //
+  // Two tests catch it and they catch it two ways.
+  // `every_action_this_module_calls_has_an_allow_arm` in
+  // `vpay-db/src/checkout_sessions.rs` asserts the slot is occupied with no
+  // container, in milliseconds; the container cases in
+  // `vpay-db/tests/repositories.rs` and the `checkout_sessions` integration
+  // suite fail on the row.
+  //
+  // `auth().isSystem()` and not `auth() != null`: `SystemContext` is the only
+  // producer of a context that satisfies it, it has no
+  // `From<CratestackContext>`, and `CratestackContext::system` is
+  // `#[serde(skip)]` — so the marker cannot arrive over a wire. The weaker
+  // predicate would be satisfied by any authenticated caller if this table
+  // were ever reached on behalf of a request.
+  //
+  // No `create` arm, though `CheckoutSessions::create` exists: that write did
+  // NOT move, and an arm for a call site that does not exist is a standing
+  // permission nobody asked for. What it would take is written down in
+  // `vpay_db::checkout_sessions::create` and in docs/reference/vpay-db.md.
+  @@allow("read", auth().isSystem())
+
+  // GAP — `urls_match_ui_mode`, the CHECK that makes "a session's URLs always
+  // match its mode" a property of the schema, is cross-column: five columns
+  // in one predicate. Invisible here and invisible to the report, and
+  // `a_hosted_session_without_urls_is_rejected_by_the_database` in
+  // postgres_smoke.rs is what proves it fires.
 }
 
 // --- ledger ------------------------------------------------------------

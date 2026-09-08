@@ -204,7 +204,43 @@ remains the only proof of that case. Neither kill case exercises Orange, and the
 rail is a WireMock container in both.
 
 **Status: implemented, and driving payments. Updated 2026-09-03 (Step 4);
-re-verified 2026-09-07 (issue #77).**
+re-verified 2026-09-07 twice — for issue #77, and again for migration `0037`
+(S5, the money tables through CrateStack).**
+
+**Nothing in this document's behaviour changed for `0037` either, and the
+migration is the reason to say so explicitly.** It converted
+`charges.state`, `charges.failure_code`, `payment_intents.status`,
+`payment_intents.last_payment_error_code`, `refunds.status` and
+`refunds.failure_code` from native Postgres enums to `TEXT` plus a membership
+CHECK carrying exactly the same labels — a change to the *type* of the columns
+every rule on this page is written in terms of. Every write-before-network
+ordering, every compare-and-swap and the settlement statement itself are
+byte-for-byte what they were apart from dropped casts; **no write on any money
+table moved to the generated data layer**, so the one-statement settlement,
+the confirm path's two-row transaction and the `provider_requests` audit trail
+are untouched (`docs/reference/vpay-db.md` § "The money tables: what moved,
+and what stays raw forever" says why, and it is a `jsonb` blocker rather than
+a choice).
+
+What was re-run to say so rather than assume it: `worker_kill9`'s two
+scenarios, both green — one `charges` row, one `payment_intent.succeeded`
+event, `amount_received` written once, and no second submit at the rail after
+a real `SIGKILL`. `worker_recovery`'s 23 are green as well, including the
+three that reach `unresolved`, which is the state the `charge_state`
+conversion would have broken first.
+
+**One ordering rule this migration adds, and it is an operator's rule rather
+than a payer's:** `0037` is not backward compatible with the previous binary,
+in two different ways, both measured on 2026-09-08 against real databases by
+building 889d045's `vpay-db`. A previous-release process that **restarts**
+fails at boot in `run_migrations()`
+(`sqlx::MigrateError::VersionMissing(37)`) and never serves — the same thing
+0032 does on a restart. A previous-release process that **keeps running**
+serves reads normally and fails money **writes** with `42704 type
+"intent_status"/"charge_state" does not exist`; that in-flight window is what
+is new here, and it is quiet, because nothing a merchant can see goes dark.
+Drain the previous version before it lands, and do not roll past it. The
+migration's own header carries the detail and the measured statements.
 
 **Nothing in this document's behaviour changed on 2026-09-07**, and that is
 the claim the update is here to make. Issue #77 folded `vpay-worker-bin` into

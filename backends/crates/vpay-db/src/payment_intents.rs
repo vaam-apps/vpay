@@ -24,15 +24,17 @@ use crate::error::{DbError, classify_write};
 /// Every column of `payment_intents`, in one place so the four queries
 /// below cannot drift on the shape they decode into [`PaymentIntentRow`].
 ///
-/// `status` and `last_payment_error_code` are cast to `TEXT`: both are
-/// native Postgres enums, and this crate carries them as `String` (D4 of
-/// this step's design — `vpay-core` owns parsing them into
-/// `IntentStatus`/`FailureCode`). Without the cast `sqlx` refuses to decode
-/// a user-defined type into `String` at runtime, which is a failure this
-/// crate would only discover against a real database.
+/// `status` and `last_payment_error_code` are selected without a cast, and
+/// that is what migration `0037` changed: both were native Postgres enums
+/// (`intent_status`, `failure_code`) and every statement here had to spell
+/// `status::TEXT AS status`, because `sqlx` refuses to decode a
+/// user-defined type into `String`. They are `TEXT` + a membership CHECK
+/// now, so the cast is a no-op and saying it would suggest a type that no
+/// longer exists. What has *not* changed is that this crate carries the
+/// vocabularies as `String` (D4 of Step 2's design — `vpay-core` owns
+/// parsing them into `IntentStatus`/`FailureCode`).
 const COLUMNS: &str = "id, seq, merchant_id, livemode, amount, amount_received, amount_refunded, \
-                       amount_refund_pending, currency_code, status::TEXT AS status, \
-                       last_payment_error_code::TEXT AS last_payment_error_code, \
+                       amount_refund_pending, currency_code, status, last_payment_error_code, \
                        last_payment_error_message, payment_method_types, metadata, description, \
                        customer_id, client_secret_suffix, created_at, updated_at";
 
@@ -69,7 +71,9 @@ pub struct PaymentIntentRow {
     /// ISO-4217 code, uppercase as stored (`vpay-api` lowercases it on the
     /// wire, Stripe-style).
     pub currency_code: String,
-    /// `intent_status` as text. `String`, not an enum, per D4.
+    /// The intent's status label. `String`, not an enum, per D4; the
+    /// vocabulary is closed by `payment_intents_status_enum_check`
+    /// (migration `0037`, which replaced the `intent_status` type).
     pub status: String,
     /// Closed failure vocabulary as text, or `None`. Paired with
     /// `last_payment_error_message` by the `lpe_paired` CHECK.
@@ -275,15 +279,20 @@ pub struct ListPage {
 /// predicate has to be in the statement the `LIMIT` applies to.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IntentFilter {
-    /// One `intent_status` value, as its wire text
-    /// (`vpay_core::IntentStatus::as_wire_str`). Compared as text against
-    /// `status::TEXT` rather than cast to the enum, so an unknown value is
-    /// an empty result rather than a Postgres `invalid input value for
-    /// enum` error 500 — the caller sent a status this deployment does not
-    /// have, which is a caller's mistake and not an outage. `vpay-api`
-    /// refuses an unknown status before it gets here; this is what makes
-    /// that a *policy* rather than the only thing between the query and a
-    /// 500.
+    /// One status label, as its wire text
+    /// (`vpay_core::IntentStatus::as_wire_str`), compared against the
+    /// `status` column directly.
+    ///
+    /// An unknown value is an empty result rather than an error, which is
+    /// the answer a caller naming a status this deployment does not have
+    /// should get. That used to need care — the column was the
+    /// `intent_status` enum and this predicate deliberately compared
+    /// `status::TEXT` rather than casting `$5`, because a cast to the enum
+    /// turns an unknown label into a Postgres `invalid input value for
+    /// enum` and a `500`. Migration `0037` made the column `TEXT`, so the
+    /// property now holds for free. `vpay-api` still refuses an unknown
+    /// status before it gets here; that stays a *policy* rather than the
+    /// only thing between the query and a `500`.
     pub status: Option<String>,
     /// Only intents created at or after this instant.
     pub created_gte: Option<OffsetDateTime>,
@@ -333,8 +342,8 @@ where
     E: sqlx::Executor<'e, Database = sqlx::Postgres>,
 {
     let sql = format!(
-        "UPDATE payment_intents SET status = $4::intent_status, updated_at = now() \
-         WHERE merchant_id = $1 AND id = $2 AND status = $3::intent_status \
+        "UPDATE payment_intents SET status = $4, updated_at = now() \
+         WHERE merchant_id = $1 AND id = $2 AND status = $3 \
          RETURNING {COLUMNS}"
     );
 
@@ -389,10 +398,10 @@ pub(crate) async fn record_payment_error(
 ) -> Result<Option<PaymentIntentRow>, DbError> {
     let sql = format!(
         "UPDATE payment_intents \
-         SET last_payment_error_code = $4::failure_code, \
+         SET last_payment_error_code = $4, \
              last_payment_error_message = $5, \
              updated_at = now() \
-         WHERE merchant_id = $1 AND id = $2 AND status = $3::intent_status \
+         WHERE merchant_id = $1 AND id = $2 AND status = $3 \
          RETURNING {COLUMNS}"
     );
 
@@ -407,8 +416,8 @@ pub(crate) async fn record_payment_error(
         .map_err(classify_write)
 }
 
-/// The `intent_status` labels a live charge's intent can legitimately be in
-/// when a settlement arrives.
+/// The `payment_intents.status` labels a live charge's intent can
+/// legitimately be in when a settlement arrives.
 ///
 /// Two of them are the confirmed statuses — a push rail leaves the intent
 /// `processing`, a redirect rail leaves it `requires_action`. The third,
@@ -464,7 +473,7 @@ pub(crate) async fn succeed_after_submission(
 ) -> Result<Option<PaymentIntentRow>, DbError> {
     let sql = format!(
         "UPDATE payment_intents \
-         SET status = 'succeeded'::intent_status, \
+         SET status = 'succeeded', \
              amount_received = amount, \
              updated_at = now() \
          WHERE id = $1 AND status IN ({SETTLEABLE_STATUSES}) \
@@ -516,8 +525,8 @@ pub(crate) async fn fail_after_submission(
 
     let sql = format!(
         "UPDATE payment_intents \
-         SET status = 'requires_payment_method'::intent_status, \
-             last_payment_error_code = $2::failure_code, \
+         SET status = 'requires_payment_method', \
+             last_payment_error_code = $2, \
              last_payment_error_message = $3, \
              updated_at = now() \
          WHERE id = $1 AND status IN ({SETTLEABLE_STATUSES}) \
@@ -533,15 +542,18 @@ pub(crate) async fn fail_after_submission(
         .map_err(classify_write)
 }
 
-/// The `charge_state` labels a charge is in while the rail may still act on
-/// it — the four non-terminal members of the enum created by migration 0004,
-/// and exactly the set the partial index `charges_live_idx` (migration 0014)
-/// is built over, so the `NOT EXISTS` in [`PaymentIntents::cancel`] is an index lookup.
+/// The `charges.state` labels a charge is in while the rail may still act on
+/// it — the four non-terminal members of the vocabulary migration 0004
+/// created as the `charge_state` enum and migration `0037` re-closed as
+/// `charges_state_enum_check`, and exactly the set the partial index
+/// `charges_live_idx` (migration 0014, rebuilt unchanged by `0037`) is built
+/// over, so the `NOT EXISTS` in [`PaymentIntents::cancel`] is an index lookup.
 ///
 /// Spelled as SQL text rather than built from `vpay_core::ChargeState`
-/// because this crate carries Postgres enums as `String` (D4) and the list
-/// has to appear inside a statement; the migration and this constant are the
-/// two places it is written, and `charges_live_idx` is what ties them.
+/// because this crate carries the vocabularies as `String` (D4) and the list
+/// has to appear inside a statement; `0004`'s CHECK, `0014`'s index and this
+/// constant are the three places it is written, and `charges_live_idx` is
+/// what ties the last two.
 ///
 /// `pub(crate)` because [`crate::settlement`] guards its charge
 /// compare-and-swaps on the same set — a settlement may only move a charge
@@ -561,9 +573,9 @@ pub trait PaymentIntents: Send + Sync {
     /// [`DbError::ForeignKeyViolation`] if `currency_code` is not in
     /// `currencies` (a merchant naming a currency this deployment does not
     /// know), [`DbError::UniqueViolation`] if `id` is already taken, and
-    /// [`DbError::Query`] for anything else — including a `status` that is not
-    /// a member of the `intent_status` enum, which is a vpay bug rather than a
-    /// caller error.
+    /// [`DbError::Query`] for anything else — including a `status` outside
+    /// the vocabulary `payment_intents_status_enum_check` closes, which is a
+    /// vpay bug rather than a caller error.
     async fn insert(&self, new: &NewPaymentIntent) -> Result<PaymentIntentRow, DbError>;
 
     /// Reads one intent *for this merchant*. `None` means "no such intent for
@@ -688,8 +700,20 @@ pub trait PaymentIntents: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::Query`] if the write fails, including when
-    /// `expected` or `new` is not a member of the `intent_status` enum.
+    /// Returns [`DbError::Query`] if the write fails, including a `new`
+    /// outside the vocabulary `payment_intents_status_enum_check` closes —
+    /// a `23514`, which `classify_write` leaves as `Query` exactly as it
+    /// left the `22P02` the `intent_status` enum used to raise.
+    ///
+    /// **One behaviour did change with migration `0037`, and it is not
+    /// visible in this signature.** `expected` used to be bound as
+    /// `$3::intent_status`, so a label outside the vocabulary was a
+    /// Postgres error and reached a caller as a `500`. It is a plain `TEXT`
+    /// comparison now, so it matches no row and answers `Ok(None)` — the
+    /// same answer a genuine lost race gives. Every caller passes a label
+    /// from `vpay_core`'s state machine, so the difference is between two
+    /// spellings of "a vpay bug"; it is recorded because a `409` is quieter
+    /// than a `500` and nothing else would say so.
     async fn transition(
         &self,
         merchant_id: &str,
@@ -729,7 +753,7 @@ impl PaymentIntents for crate::repository::PgRepositories {
             "INSERT INTO payment_intents (id, merchant_id, livemode, amount, currency_code, status, \
          last_payment_error_code, last_payment_error_message, payment_method_types, metadata, \
          description, customer_id, client_secret_suffix, created_at) \
-         VALUES ($1, $2, $3, $4, $5, $6::intent_status, $7::failure_code, $8, $9, $10, $11, $12, \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, \
          $13, $14) \
          RETURNING {COLUMNS}"
         );
@@ -809,10 +833,9 @@ impl PaymentIntents for crate::repository::PgRepositories {
         // The three filter predicates are `$N IS NULL OR …`, not string
         // interpolation: an absent filter must produce the *same statement*
         // as `/v1` sends, so Postgres plans one query rather than eight, and
-        // so a filter value can never reach the SQL text. `status` is
-        // compared against `status::TEXT` for the reason
-        // `IntentFilter::status` gives — a cast to the enum turns an unknown
-        // value into a 500.
+        // so a filter value can never reach the SQL text. `status` is a
+        // plain column comparison since migration 0037 made the column
+        // `TEXT`; see `IntentFilter::status` for what it cost before.
         let sql = format!(
             "SELECT {COLUMNS} FROM payment_intents \
          WHERE merchant_id = $1 \
@@ -820,7 +843,7 @@ impl PaymentIntents for crate::repository::PgRepositories {
                 OR seq < (SELECT seq FROM payment_intents WHERE id = $2 AND merchant_id = $1)) \
            AND ($3::TEXT IS NULL \
                 OR seq > (SELECT seq FROM payment_intents WHERE id = $3 AND merchant_id = $1)) \
-           AND ($5::TEXT IS NULL OR status::TEXT = $5) \
+           AND ($5::TEXT IS NULL OR status = $5) \
            AND ($6::TIMESTAMPTZ IS NULL OR created_at >= $6) \
            AND ($7::TIMESTAMPTZ IS NULL OR created_at <= $7) \
          ORDER BY seq {direction} \
@@ -866,9 +889,9 @@ impl PaymentIntents for crate::repository::PgRepositories {
         id: &str,
     ) -> Result<Option<PaymentIntentRow>, DbError> {
         let sql = format!(
-            "UPDATE payment_intents SET status = 'canceled'::intent_status, updated_at = now() \
+            "UPDATE payment_intents SET status = 'canceled', updated_at = now() \
          WHERE merchant_id = $1 AND id = $2 \
-           AND status = 'requires_payment_method'::intent_status \
+           AND status = 'requires_payment_method' \
            AND NOT EXISTS (SELECT 1 FROM charges \
                            WHERE charges.payment_intent_id = payment_intents.id \
                              AND charges.state IN ({LIVE_CHARGE_STATES})) \
