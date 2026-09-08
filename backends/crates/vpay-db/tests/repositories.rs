@@ -8582,8 +8582,7 @@ async fn the_open_session_read_filters_by_status_and_the_latest_read_orders_by_s
         "the fixture must have been created in the order this test assumes"
     );
 
-    let open = repositories
-        .find_open_by_intent("pi_two_sessions")
+    let open = vpay_db::CheckoutSessions::find_open_by_intent(&*repositories, "pi_two_sessions")
         .await
         .context("the open read must not error")?;
     assert_eq!(
@@ -8615,8 +8614,7 @@ async fn the_open_session_read_filters_by_status_and_the_latest_read_orders_by_s
         .context("expiring the second session must not error")?;
 
     assert!(
-        repositories
-            .find_open_by_intent("pi_two_sessions")
+        vpay_db::CheckoutSessions::find_open_by_intent(&*repositories, "pi_two_sessions")
             .await
             .context("the open read must not error")?
             .is_none(),
