@@ -1822,8 +1822,8 @@ async fn a_cancel_and_its_event_roll_back_together() -> anyhow::Result<()> {
 /// answer does not depend on how it got there: a `succeeded` intent is
 /// refused, and no `payment_intent.canceled` is written for it.
 #[tokio::test]
-async fn a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event()
--> anyhow::Result<()> {
+async fn a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event() -> anyhow::Result<()>
+{
     let (_container, repositories, pool) = migrated_postgres().await?;
     seed_reference_data(repositories.as_ref()).await?;
 
@@ -1930,7 +1930,10 @@ async fn a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event()
     )
     .await?
     .context("the intent survives")?;
-    assert_eq!(after.status, "canceled", "one terminal state, and it is the cancel's");
+    assert_eq!(
+        after.status, "canceled",
+        "one terminal state, and it is the cancel's"
+    );
     assert_eq!(
         events_about(&pool, "pi_race_cancel_first").await?,
         vec!["payment_intent.canceled".to_owned()],

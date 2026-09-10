@@ -1797,11 +1797,12 @@ async fn a_submit_decline_emits_one_payment_failed_and_it_reaches_the_receiver()
         Some("invalid_payer"),
         "the code a merchant branches on is on the object"
     );
-    let charges: i64 = sqlx::query_scalar("SELECT count(*) FROM charges WHERE payment_intent_id = $1")
-        .bind(&intent.id)
-        .fetch_one(&h.pool)
-        .await
-        .expect("counting the charges");
+    let charges: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM charges WHERE payment_intent_id = $1")
+            .bind(&intent.id)
+            .fetch_one(&h.pool)
+            .await
+            .expect("counting the charges");
     assert_eq!(charges, 1, "one charge per intent, forever");
 
     let emitted = events_for_object(&h.pool, &intent.id)

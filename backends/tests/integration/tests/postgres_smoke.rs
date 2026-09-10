@@ -1093,8 +1093,8 @@ async fn a_hand_written_provider_insert_must_now_name_every_capability_column() 
 /// It is applied a second time on top of itself, which its `DROP CONSTRAINT`
 /// / `ADD CONSTRAINT` pair makes well-defined.
 #[tokio::test]
-async fn migration_0039_validates_a_populated_events_table_in_both_directions()
--> anyhow::Result<()> {
+async fn migration_0039_validates_a_populated_events_table_in_both_directions() -> anyhow::Result<()>
+{
     /// Migration 0039 itself, read from the file.
     const MIGRATION_0039: &str =
         include_str!("../../../migrations/0039_events-customer-created-updated.sql");
@@ -1135,13 +1135,10 @@ async fn migration_0039_validates_a_populated_events_table_in_both_directions()
         .with_context(|| format!("`{kind}` must be storable before the re-apply means anything"))?;
     }
 
-    sqlx::raw_sql(MIGRATION_0039)
-        .execute(&pool)
-        .await
-        .context(
-            "0039 applied to a populated events table must succeed: ADD CONSTRAINT scans every \
+    sqlx::raw_sql(MIGRATION_0039).execute(&pool).await.context(
+        "0039 applied to a populated events table must succeed: ADD CONSTRAINT scans every \
              stored row, and a deployment's events table is never empty",
-        )?;
+    )?;
 
     let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
         .fetch_one(&pool)
