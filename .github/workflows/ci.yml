@@ -392,6 +392,16 @@ jobs:
       # auditing it twice per pull request buys nothing.
       - name: audit-web (pnpm audit; high and critical fail)
         run: just audit-web
+      # `just fmt-check-web` (prettier --check over the whole tree), not
+      # `cargo fmt`'s half of `just fmt-check` — this job has no Rust
+      # toolchain, and the `rust` job runs `cargo fmt --all -- --check`.
+      # Added 2026-09-10 with the formatting pass: before it, prettier's
+      # opinion of this repository was enforced only inside
+      # `examples/shop`'s own `lint` script, so a `just fmt` no-op was true
+      # on the day it was measured and nothing kept it true. Runs before the
+      # build because it needs nothing built.
+      - name: fmt-check-web (prettier --check)
+        run: just fmt-check-web
       # `just lint-web`, not a copy of its commands — the same reason the
       # audit step above runs the recipe: the gate and what a contributor
       # runs locally cannot drift. The recipe is `build-sdk-node`, then
