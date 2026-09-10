@@ -155,8 +155,14 @@ so, in the file a future writer of that insert will read.
 ## Migration numbering
 
 `0042`, not `0040`. `0040` (exp44) and `0041` (exp46) were taken by branches in
-flight when this one was written, so this tree has a two-wide gap in the
+flight when this one was written, so this tree had a two-wide gap in the
 prefixes. `sqlx::migrate!` orders by prefix and does not require density;
 `schema_migrates_cleanly_on_an_empty_database` counts **rows** in
-`_sqlx_migrations` (40) rather than assuming the highest prefix is the count,
-and its message now says so.
+`_sqlx_migrations` rather than assuming the highest prefix is the count, and
+its message says so.
+
+**Amended 2026-09-11 by the review.** `0040` (issue #88) landed on `master` in
+PR #108 while this branch was open, and the rebase brought it in: the gap is
+now **one** wide and sits at `0041`, and the assertion is **41** rows, not 40.
+The number in this paragraph was one of three places on the branch that the
+rebase falsified — see `opus-review.md`.
