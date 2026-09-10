@@ -38,13 +38,28 @@
 //!
 //! Two consequences, and both are recorded rather than smoothed over:
 //!
-//! * **`ErrorReason` is the whole Collection API's error schema**, not
-//!   `requesttopay`'s. MTN publishes no per-operation subset, so a row here
-//!   for a code vpay has never seen on a `requesttopay` is a deliberate
-//!   assumption in the safe direction — the same one the `404` on
-//!   `basicuserinfo` is (`docs/flows/adapter-mtn-momo.md`): if MTN never
-//!   sends it the row is dead code, and if MTN does send it a payer gets an
-//!   accurate answer instead of `provider_error`.
+//! * **MTN binds this enum to the response this adapter actually polls.**
+//!   `RequestToPayResult.reason` is `$ref: "#/components/schemas/ErrorReason"`
+//!   in the same document, and `RequesttoPayTransactionStatus`
+//!   (`GET /v1_0/requesttopay/{referenceId}`) answers `RequestToPayResult` on
+//!   its `200` — whose description is "the 'reason' field can be used to
+//!   retrieve a cause in case of failure", and two of whose worked examples
+//!   put `PAYER_NOT_FOUND` and `PAYEE_NOT_FOUND` in `reason.code`. So these
+//!   rows are a *citation* about `requesttopay`, not an inference from a
+//!   neighbouring operation.
+//!
+//!   This bullet said the opposite until 2026-09-11 — that `ErrorReason` was
+//!   "the whole Collection API's error schema, not `requesttopay`'s", that
+//!   MTN "publishes no per-operation subset", and that every new row was
+//!   therefore a deliberate assumption. The document says otherwise, and the
+//!   correction matters in both directions: it is the difference between
+//!   `PAYMENT_NOT_APPROVED` being evidence and being a guess a maintainer
+//!   would be right to revert, and it sharpens the next bullet from "absent
+//!   from a big shared schema" to "absent from the enum MTN types this exact
+//!   field with".
+//!
+//!   What a schema cannot say is that a value ever *arrives*. Nothing here
+//!   has called MTN.
 //! * **Two rows below are not in that enum at all** —
 //!   `COULD_NOT_PERFORM_TRANSACTION` and `SENDER_ACCOUNT_NOT_ACTIVE`. They
 //!   are kept, because the flow doc and this repository's stubs have carried

@@ -56,21 +56,52 @@ out rather than fetched: a test that reached the network would fail on a
 train, and the point of the list is to be a snapshot someone re-retrieves
 deliberately.
 
-### 1.2 The load-bearing caveat
+### 1.2 The load-bearing caveat — **retracted 2026-09-11**
 
-**`ErrorReason` is the whole Collection API's error schema, not
-`requesttopay`'s.** The API has twenty-three operations, including
-`PreApproval`, `CreateInvoice`, `CreatePayments` and `RequestToWithdraw`; MTN
-publishes no per-operation subset of the enum. So "MTN publishes
-`PAYMENT_NOT_APPROVED`" is a fact, and "`requesttopay` returns
-`PAYMENT_NOT_APPROVED`" is an inference.
+> **This section was wrong.** It is left in place, struck through in prose
+> rather than deleted, because it was cited as the justification for three
+> mapping rows in four other files and a reader who followed those citations
+> needs to land on the correction. See
+> [opus-review.md](opus-review.md) § Finding 1.
 
-The inference is made deliberately and in the safe direction — the same call
-this repository already documents for the `404` on `basicuserinfo`
-([adapter-mtn-momo.md](../../flows/adapter-mtn-momo.md)): if MTN never sends
-it the row is dead code, and if MTN does send it a payer reads an accurate
-sentence instead of `provider_error`. Nothing has ever called MTN, and these
-rows do not change that.
+~~**`ErrorReason` is the whole Collection API's error schema, not
+`requesttopay`'s.** MTN publishes no per-operation subset of the enum. So "MTN
+publishes `PAYMENT_NOT_APPROVED`" is a fact, and "`requesttopay` returns
+`PAYMENT_NOT_APPROVED`" is an inference.~~
+
+**What the document actually says.** Re-retrieved 2026-09-11 from the same two
+URLs:
+
+* `RequestToPayResult.reason` is `{"$ref": "#/components/schemas/ErrorReason"}`
+  — MTN types this exact field with this exact enum.
+* `RequesttoPayTransactionStatus` (`GET /v1_0/requesttopay/{referenceId}`)
+  answers `RequestToPayResult` on its `200`, described as "note that a failed
+  request to pay will be returned with this status too … the 'reason' field
+  can be used to retrieve a cause in case of failure". Its `404` and `500`
+  responses are `ErrorReason` directly.
+* Two of that `200`'s worked examples carry `PAYER_NOT_FOUND` and
+  `PAYEE_NOT_FOUND` in `reason.code`.
+
+So `requesttopay`'s `reason` vocabulary **is** `ErrorReason`, per MTN, and the
+three new rows are a citation rather than an inference. The error was not
+reading the schema — that was retrieved and transcribed correctly, all
+seventeen values in the right order — but writing a caveat about it from
+memory of how APIM portals are usually shaped, and then repeating it in four
+more files.
+
+Two things follow, and they point opposite ways:
+
+* The rows are **better** evidenced than this file claimed. A maintainer
+  reading "this is an inference" could reasonably have reverted
+  `PAYMENT_NOT_APPROVED` as a guess; it is not one.
+* §1.3's caveat is **stronger** than this file claimed. The two unpublished
+  strings are not merely missing from a large shared error schema — they are
+  missing from the enum MTN types the very field the adapter reads.
+
+**What is still true, and is the caveat that should have been here:** a schema
+types a field, it does not promise a value. Nothing in this repository has
+called MTN, so whether a Cameroon deployment ever emits any of these strings
+is unknown, and "Real sandbox" stays ⛔.
 
 ### 1.3 Two reasons this repository maps that MTN does not publish
 
