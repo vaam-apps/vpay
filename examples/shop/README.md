@@ -135,6 +135,10 @@ this example changed.
 > other type, and `SETTLING_EVENTS` in `src/server/webhook.ts` — which has
 > mapped that type to `cancelled` since it was written — does the rest.
 >
+> Watched happen in a real browser since 2026-09-10: `the shop cancels the
+intent and the order reaches \`cancelled\`, through the webhook`in`frontends/tests/e2e/cypress/e2e/shop-embedded.cy.ts`presses this button
+and polls`orders.get` until the row moves.
+>
 > What this shop still will **not** do is write `cancelled` locally from its
 > own request. That would be it deciding a settled status from something other
 > than a signed event, which is the one thing the whole example exists to
@@ -200,10 +204,12 @@ handset.
 > buyer it is the same thing happening — so the order becomes `failed`,
 > `last_payment_error.code` is `invalid_payer`, and "Try again" is offered on
 > exactly the rule the other four use (`FailureCode::payer_actionable`). Not
-> one line of this shop changed. Pinned by
-> `a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read` in
-> `backends/tests/integration`, whose event assertion was inverted from "the
-> `events` table stays empty" to an exact one-element list — the mutation it
+> one line of this shop changed. **Watched happen in a real browser** since
+> 2026-09-10 — `a decline at submit reaches the shop as \`failed\`, through
+> the webhook`in`frontends/tests/e2e/cypress/e2e/shop-embedded.cy.ts`types
+this number on vpay's page and polls this shop's own`orders.get`until the
+row moves. Pinned by`a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read`in`backends/tests/integration`, whose event assertion was inverted from "the
+`events` table stays empty" to an exact one-element list — the mutation it
 > is armed against is the insert being dropped again.
 
 **No number produces `payer_declined` on this rail.** MTN documents no reason

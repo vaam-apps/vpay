@@ -1157,10 +1157,25 @@ async fn migration_0039_validates_a_populated_events_table_in_both_directions()
     // about a constraint that validates nothing. A row the new list does not
     // name has to stop the migration — which is exactly what would happen on
     // a real database if a label were removed while rows carrying it existed.
-    sqlx::raw_sql("ALTER TABLE events DROP CONSTRAINT type_is_a_documented_event")
-        .execute(&pool)
-        .await
-        .context("dropping the constraint to plant the offending row")?;
+    //
+    // THE PERMISSIVE CONSTRAINT IS LOAD-BEARING, and the first version of this
+    // test did not have it. Dropping the constraint and leaving it dropped
+    // makes the migration's own first statement — `ALTER TABLE events DROP
+    // CONSTRAINT type_is_a_documented_event` — fail with "constraint does not
+    // exist", which is an error, and an error whose message happens to name
+    // the constraint. The assertion below passed on that, and the whole second
+    // direction proved nothing: measured 2026-09-10 by mutating the migration
+    // to `ADD CONSTRAINT … NOT VALID`, which skips the row scan entirely and
+    // left this case GREEN. Re-adding a `CHECK (true)` of the same name gives
+    // the migration something to drop, so the only thing that can fail is the
+    // scan.
+    sqlx::raw_sql(
+        "ALTER TABLE events DROP CONSTRAINT type_is_a_documented_event; \
+         ALTER TABLE events ADD CONSTRAINT type_is_a_documented_event CHECK (true)",
+    )
+    .execute(&pool)
+    .await
+    .context("standing in a permissive constraint of the same name")?;
     sqlx::query(
         "INSERT INTO events (id, merchant_id, livemode, type, object_id, data) \
          VALUES ($1, 'merchant_a', false, 'customer.subscription.created', 'obj_1', '{}'::jsonb)",
@@ -1180,6 +1195,11 @@ async fn migration_0039_validates_a_populated_events_table_in_both_directions()
     assert!(
         message.contains("type_is_a_documented_event"),
         "the failure must name the constraint an operator has to reconcile: {message}"
+    );
+    assert!(
+        message.contains("is violated by some row"),
+        "and it must be the ROW SCAN that refused, not a statement that could not run at all \
+         — the distinction this test exists for: {message}"
     );
 
     Ok(())
