@@ -938,6 +938,18 @@ the `/dash/v1` access token from. The JWT itself stays cryptographically valid
 until it expires — ADR-0017's Consequences says so rather than letting
 "revocation" carry more weight than it can.
 
+**This stack's `/dash/v1` tokens live twenty seconds, and a real deployment's
+live 900.** `demo_staff_token_ttl` is the variable
+(`staff_auth.access_token_ttl_seconds` in the generated overlay), and the
+difference is deliberate: at 900 seconds nothing that runs in under a quarter
+of an hour ever crosses an expiry, so the re-mint the dashboard performs — and
+the fifteen-minute bug it exists to fix (issue #88 item 1) — was exercised by
+no browser run at all. At twenty, clicking around the demo for half a minute
+does it. You will not notice: the app replaces the token when a fifth of its
+life is left, so a page never waits on a refused read. `just
+demo_staff_token_ttl=900 demo` gets the production number and regenerates the
+overlay to match.
+
 ### What you will see that looks wrong and is not
 
 - **The payer column is an em dash.** `charges.payer_ref_masked` is never

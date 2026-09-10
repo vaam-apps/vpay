@@ -537,7 +537,7 @@ pub struct Config {
 /// is what turns them into an argon2 secret input and an AES-256-GCM key, and
 /// it is what refuses a key of the wrong length. Config's job is to carry
 /// them and to refuse a deployment that wrote them as literals.
-#[derive(Clone, Default, Serialize, Deserialize, Validate)]
+#[derive(Clone, Serialize, Deserialize, Validate)]
 #[serde(rename_all = "snake_case")]
 pub struct StaffAuth {
     /// argon2id's secret input, mixed into every staff password hash.
@@ -601,6 +601,61 @@ pub struct StaffAuth {
     #[garde(dive)]
     #[serde(default)]
     pub rate_limits: RateLimits,
+
+    /// How long a `/dash/v1` access token lives, in seconds. Absent means
+    /// [`StaffAuth::DEFAULT_ACCESS_TOKEN_TTL_SECONDS`] — the 900 the staff
+    /// grant shipped with (issue #88 item 1).
+    ///
+    /// # Why this one is configurable and `/v1`'s is not
+    ///
+    /// `vpay_api::op::ACCESS_TOKEN_TTL_SECS` says in as many words that a TTL
+    /// varying by YAML is "one more thing that can differ between the sandbox
+    /// a merchant integrates against and the production they go live on".
+    /// That argument is about a number **merchants** build against, and it is
+    /// not weakened here: nothing outside this deployment ever sees a
+    /// dashboard token. The one client is `frontends/apps/dashboard`, whose
+    /// own server holds it, and the number is therefore an operational
+    /// parameter rather than a published contract.
+    ///
+    /// What it buys is the thing the proactive re-mint could not otherwise
+    /// have: an end-to-end run that actually **crosses** an expiry. At 900 s a
+    /// browser test would have to sit for a quarter of an hour, so the
+    /// behaviour that a staff member met fifteen minutes into every session
+    /// was exercised by nothing (the exp28 review's finding F4). `compose.e2e.yml`
+    /// sets a few seconds here and `dashboard.cy.ts` renders past it.
+    ///
+    /// # The bounds, and what each of them is
+    ///
+    /// **At least 10.** Below that the margin — 20 % of the TTL — is under two
+    /// seconds, and every render would be a re-mint on any network at all.
+    /// **At most 3600.** The floor is arithmetic; the ceiling is policy, and
+    /// it is far below the real constraint: `vpay_api::op::keys::ROTATION_OVERLAP`
+    /// is 24 hours, and a token must expire long before the key that signed
+    /// it stops being published. One hour keeps a *revoked* session's already
+    /// minted token — the residual ADR-0017's Consequences records — short.
+    #[garde(range(min = 10, max = 3600))]
+    #[serde(default = "StaffAuth::default_access_token_ttl_seconds")]
+    pub access_token_ttl_seconds: u32,
+}
+
+impl Default for StaffAuth {
+    /// No secrets, no trusted proxies, the shipping limits and the shipping
+    /// token TTL.
+    ///
+    /// Written out rather than derived, and that is the point: `#[derive]`
+    /// would make [`Self::access_token_ttl_seconds`] **zero**, which
+    /// `garde` refuses — so a deployment that never wrote the key would fail
+    /// validation, and a test that built the struct with `..default()` would
+    /// mint tokens that expired the instant they were signed.
+    fn default() -> Self {
+        Self {
+            password_pepper: None,
+            totp_encryption_key: None,
+            trusted_proxies: Vec::new(),
+            rate_limits: RateLimits::default(),
+            access_token_ttl_seconds: Self::default_access_token_ttl_seconds(),
+        }
+    }
 }
 
 /// One fixed-window budget: how many attempts, over how long.
@@ -738,11 +793,24 @@ impl fmt::Debug for StaffAuth {
             )
             .field("trusted_proxies", &self.trusted_proxies)
             .field("rate_limits", &self.rate_limits)
+            .field("access_token_ttl_seconds", &self.access_token_ttl_seconds)
             .finish()
     }
 }
 
 impl StaffAuth {
+    /// The `/dash/v1` access-token TTL a deployment that says nothing gets.
+    ///
+    /// 900 seconds — the value `vpay_api::op::ACCESS_TOKEN_TTL_SECS` carried
+    /// for both halves of the OP until 2026-09-10, unchanged, so that not
+    /// writing the key is exactly what shipped.
+    pub const DEFAULT_ACCESS_TOKEN_TTL_SECONDS: u32 = 900;
+
+    /// [`Self::DEFAULT_ACCESS_TOKEN_TTL_SECONDS`], for `serde`.
+    fn default_access_token_ttl_seconds() -> u32 {
+        Self::DEFAULT_ACCESS_TOKEN_TTL_SECONDS
+    }
+
     /// Both secrets, or `None` if either is missing.
     ///
     /// A pair rather than two accessors, because a deployment with one of

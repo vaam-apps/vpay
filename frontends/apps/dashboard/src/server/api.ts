@@ -62,6 +62,25 @@ export interface SessionResponse {
   readonly password_change_required: boolean;
   /** Absent until the code exchange has minted one. */
   readonly access_token?: string;
+  /**
+   * When {@link SessionResponse.access_token} stops being accepted, RFC 3339.
+   * Absent exactly when the token is.
+   *
+   * Read from `staff_sessions.access_token_expires_at` (migration 0040) and
+   * **not** from the JWT's own `exp`: this app holds the token and presents
+   * it, it does not verify it, and reading a claim out of an unverified
+   * credential is a habit worth not having here.
+   */
+  readonly access_token_expires_at?: string;
+  /**
+   * How long a freshly minted token lives, in seconds
+   * (`staff_auth.access_token_ttl_seconds`).
+   *
+   * The denominator of the re-mint margin — see `gate.ts`'s
+   * `REMINT_AFTER_FRACTION`, which is a fraction precisely because this is
+   * configuration now.
+   */
+  readonly access_token_ttl_seconds: number;
 }
 
 /**

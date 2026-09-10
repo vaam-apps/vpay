@@ -35,6 +35,15 @@
  * 5. only then `/payments`, rendered from a token minted by the
  *    authorization-code grant with PKCE, whose exchange this app's own server
  *    performed.
+ *
+ * # And one leg that is about a token rather than about a person
+ *
+ * "replaces the access token before it expires" is issue #88 item 1, and it is
+ * here rather than in a unit test because the thing it proves is a **sequence
+ * of renders across an expiry**. It depends on this stack's short
+ * `staff_auth.access_token_ttl_seconds` (`demo_staff_token_ttl`, twenty
+ * seconds) — at the shipping 900 no browser run could reach the case at all,
+ * which is why nothing ever had.
  */
 import { totpDigits, waitForNextTotpStep } from "../support/dashboard";
 
@@ -331,6 +340,70 @@ describe("the dashboard", { testIsolation: false }, () => {
         });
       };
       check(0);
+    });
+  });
+
+  it("replaces the access token before it expires, so a long session never sees a 401", () => {
+    // ISSUE #88 ITEM 1, and the case the exp28 review's finding F4 could not
+    // have. The `/dash/v1` token's TTL is
+    // `staff_auth.access_token_ttl_seconds`; a session's bounds are twelve
+    // hours and thirty minutes idle. Until 2026-09-10 `requireStaff` ran the
+    // authorization-code leg only when the row carried NO token, so once one
+    // was written it was used until sign-out and every render past its expiry
+    // was an error box.
+    //
+    // At the shipping 900 s no browser run could reach that. This stack sets
+    // twenty (`demo_staff_token_ttl`), so the margin — 20 % of the TTL — falls
+    // at sixteen seconds and one leg crosses both it and the expiry.
+    //
+    // **What makes this decisive.** The reactive re-mint in `dash-read.ts`
+    // still exists, so a page renders correctly whether the token was replaced
+    // early or replaced after a read failed on it. The two are told apart by
+    // `access_token_expires_at`, read from vpay itself: the assertion is that
+    // the expiry MOVED while the old one had not yet passed. Drop the margin
+    // from `gateFor` and the second read answers the same expiry as the first.
+    const ttlSeconds = 20;
+    const marginSeconds = ttlSeconds * 0.2;
+
+    cy.visit("/payments");
+    cy.contains("h2", "Payments").should("be.visible");
+
+    cy.getCookie("vpay_dash_session").then((cookie) => {
+      const session = cookie?.value ?? "";
+      expect(session, "a signed-in session").to.not.equal("");
+
+      cy.task<string | null>("staffTokenExpiry", session).then((first) => {
+        expect(first, "the session row must record when its token expires").to.be.a("string");
+        const firstExpiry = Date.parse(String(first));
+
+        // Past the margin, and deliberately NOT past the expiry.
+        cy.wait((ttlSeconds - marginSeconds + 1) * 1000);
+        cy.visit("/payments");
+        cy.contains("h2", "Payments").should("be.visible");
+
+        cy.task<string | null>("staffTokenExpiry", session).then((second) => {
+          const secondExpiry = Date.parse(String(second));
+          expect(
+            secondExpiry,
+            "the render past the margin must have minted a NEW token; the same expiry back " +
+              "means nothing re-minted and the fifteen minutes are still there",
+          ).to.be.greaterThan(firstExpiry);
+          expect(
+            Date.now(),
+            "and it must have done so BEFORE the old token expired — that is the whole " +
+              "difference between this and the reactive retry in dash-read.ts",
+          ).to.be.lessThan(firstExpiry);
+        });
+
+        // And now past the ORIGINAL token's expiry entirely: the render that
+        // used to be an error box. No sign-in happens in between.
+        cy.wait((ttlSeconds - (ttlSeconds - marginSeconds) + 2) * 1000);
+        cy.visit("/payments");
+        cy.location("pathname").should("eq", "/payments");
+        cy.contains("h2", "Payments").should("be.visible");
+        cy.contains(staffEmail()).should("be.visible");
+        cy.get("table").should("exist");
+      });
     });
   });
 

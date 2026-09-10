@@ -23,12 +23,41 @@ export type Gate =
    * and asks again.
    */
   | { readonly kind: 'needs-token'; readonly session: SessionResponse }
+  /**
+   * Signed in, holding a token that is **near the end of its life**. Mint a
+   * replacement before reading — and, unlike `needs-token`, there is
+   * something to fall back on if the mint cannot be reached: see
+   * {@link staleTokenFor}.
+   */
+  | {
+      readonly kind: 'stale-token';
+      readonly session: SessionResponse;
+      readonly accessToken: string;
+    }
   /** Signed in, with a token to read `/dash/v1` with. */
   | {
       readonly kind: 'ready';
       readonly session: SessionResponse;
       readonly accessToken: string;
     };
+
+/**
+ * How much of a token's life must be **gone** before a render replaces it.
+ *
+ * 80 %, so a token is re-minted with a fifth of its TTL still in hand: 180
+ * seconds at the shipping 900, four at the few seconds an end-to-end run
+ * configures. A fraction and not a fixed number of seconds because the TTL is
+ * `staff_auth.access_token_ttl_seconds` now and a deployment may set it —
+ * sixty seconds of margin would be a fifteenth of one TTL and three times
+ * another, which is either too late to matter or a re-mint on every render.
+ *
+ * The margin is not an optimisation. Without it the *first* read after the
+ * expiry fails and `dash-read.ts` retries it, so every fifteen minutes a staff
+ * member's page costs a refused request before it costs a good one — and that
+ * reactive path stays, because a clock that disagrees with vpay's, or a token
+ * revoked mid-render, is not something a margin can see.
+ */
+export const REMINT_AFTER_FRACTION = 0.8;
 
 /**
  * The decision, in the order the checks have to happen.
@@ -38,8 +67,13 @@ export type Gate =
  * `vpay_api::staff::oauth::authorize`'s third refusal — so asking for one
  * first would spend a round trip to be told the same thing in a shape that
  * reads like a failure rather than like a step.
+ *
+ * @param session what `GET /dash/v1/staff/session` answered
+ * @param now the render's own instant, in milliseconds since the epoch.
+ *   A parameter and not `Date.now()` inside, so the expiry arithmetic is
+ *   something a unit test can stand at either side of.
  */
-export function gateFor(session: SessionResponse): Gate {
+export function gateFor(session: SessionResponse, now: number): Gate {
   if (session.password_change_required) {
     return { kind: 'must-change-password', session };
   }
@@ -47,7 +81,44 @@ export function gateFor(session: SessionResponse): Gate {
   if (typeof token !== 'string' || token.length === 0) {
     return { kind: 'needs-token', session };
   }
-  return { kind: 'ready', session, accessToken: token };
+  return staleTokenFor(session, now)
+    ? { kind: 'stale-token', session, accessToken: token }
+    : { kind: 'ready', session, accessToken: token };
+}
+
+/**
+ * Whether the token on this session is close enough to its expiry to replace.
+ *
+ * # Every unreadable answer is "replace it"
+ *
+ * A missing `access_token_expires_at`, one that does not parse, and a
+ * non-positive TTL all read as stale. That is the fail-closed direction and it
+ * is cheap: re-minting is *more* checking than carrying a token — the
+ * authorization leg re-reads the staff row, the active status, the merchant
+ * binding and `password_change_required` on every mint — where trusting an
+ * unknown expiry is the fifteen minutes the exp28 review measured.
+ *
+ * vpay pairs the two columns (migration 0040's
+ * `staff_sessions_token_expiry_is_paired`), so a token with no expiry is a
+ * shape this app should never see; this is what it does if it ever does.
+ *
+ * The decisive mutation is returning `false` for an absent or unparseable
+ * expiry, which is the shape "only re-mint when we are sure" would take.
+ */
+function staleTokenFor(session: SessionResponse, now: number): boolean {
+  const ttlSeconds = session.access_token_ttl_seconds;
+  if (typeof ttlSeconds !== 'number' || !Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+    return true;
+  }
+  const expiresAt = Date.parse(session.access_token_expires_at ?? '');
+  if (Number.isNaN(expiresAt)) {
+    return true;
+  }
+  // `>=` and not `>`: at exactly the margin the fifth is spent, and a
+  // boundary that renders with the old token is a boundary an end-to-end run
+  // cannot stand on.
+  const marginMs = ttlSeconds * (1 - REMINT_AFTER_FRACTION) * 1000;
+  return now >= expiresAt - marginMs;
 }
 
 /** What a refused read of `/dash/v1/staff/session` means for this browser. */

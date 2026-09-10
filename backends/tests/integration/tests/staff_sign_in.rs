@@ -518,6 +518,24 @@ fn staff_auth_with(trusted_proxies: Vec<String>, rate_limits: RateLimits) -> Sta
         totp_encryption_key: Some(URL_SAFE_NO_PAD.encode([9_u8; 32])),
         trusted_proxies,
         rate_limits,
+        // The shipping TTL. A case whose subject is the expiry passes its own
+        // — see `staff_auth_with_token_ttl` — and every other case must run
+        // under the number a deployment that wrote nothing gets, so that a
+        // short TTL cannot make an unrelated assertion pass or fail.
+        access_token_ttl_seconds: StaffAuth::DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
+    }
+}
+
+/// The same block with a **short** `/dash/v1` token TTL.
+///
+/// The only way to exercise an expiry in a test that does not sit for a
+/// quarter of an hour, and the reason the TTL is configuration at all
+/// (`staff_auth.access_token_ttl_seconds`). The value is bounded at 10 by
+/// `garde`, so this is the shortest a deployment may legally ask for.
+fn staff_auth_with_token_ttl(access_token_ttl_seconds: u32) -> StaffAuth {
+    StaffAuth {
+        access_token_ttl_seconds,
+        ..staff_auth_with(Vec::new(), RateLimits::default())
     }
 }
 
@@ -2401,6 +2419,201 @@ async fn a_disabled_account_is_refused_at_the_stage_route() -> anyhow::Result<()
     assert_eq!(
         status, 401,
         "a disabled account's half-authenticated session must stop at once: {body}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------- test 24
+
+/// **The `/dash/v1` token is re-minted from a live session and from nothing
+/// else** — and the row records when it dies (issue #88 item 1).
+///
+/// There is no `refresh_token` on this surface and there is not going to be
+/// one (`docs/flows/dashboard-auth.md`, "Token lifetimes"). The refresh *is*
+/// the authorization-code leg, run again on the session the browser already
+/// holds — which is not a way around a check but strictly more checking than
+/// carrying one token for twelve hours: `authorize` re-reads the staff row and
+/// re-checks the active status, the merchant binding and
+/// `password_change_required` on **every** mint.
+///
+/// This asserts the four refusals that makes true, each with the same session
+/// **restored afterwards** so the control proves the mutation caused the
+/// refusal rather than something the case had already broken:
+///
+/// 1. a live session mints a *different* token, and moves the recorded expiry;
+/// 2. a **disabled** staff member's session cannot;
+/// 3. a staff member **moved to another merchant** cannot;
+/// 4. an **idle** session cannot;
+/// 5. a **signed-out** session cannot.
+///
+/// And the TTL: `staff_auth.access_token_ttl_seconds` is honoured on the wire
+/// (`expires_in`) and in `staff_sessions.access_token_expires_at`, which is
+/// what the dashboard's margin arithmetic reads. The decisive mutation is
+/// writing `crate::op::ACCESS_TOKEN_TTL_SECS` back into either place: the
+/// deployment here configures 10 seconds and 900 is not within a minute of it.
+#[tokio::test]
+async fn the_dashboard_token_is_re_minted_from_a_live_session_and_from_nothing_else()
+-> anyhow::Result<()> {
+    /// Short enough that the assertions below are unambiguous against the
+    /// shipping 900, and the shortest `garde` admits.
+    const TTL_SECONDS: i64 = 10;
+
+    let harness = harness_with(staff_auth_with_token_ttl(
+        u32::try_from(TTL_SECONDS).expect("10 fits in a u32"),
+    ))
+    .await?;
+    let pool = harness.repositories.op_store_pool();
+
+    /// The session row's token and its recorded expiry, read directly —
+    /// `StaffSessions::load` refuses an expired row, and one of the cases
+    /// below deliberately makes it one.
+    async fn recorded(
+        pool: &sqlx::PgPool,
+        session: &str,
+    ) -> anyhow::Result<(Option<String>, Option<OffsetDateTime>)> {
+        let row = sqlx::query(
+            "SELECT access_token, access_token_expires_at FROM staff_sessions WHERE id = $1",
+        )
+        .bind(hex(&sha256(session.as_bytes())))
+        .fetch_one(pool)
+        .await
+        .context("reading the session row")?;
+        Ok((row.get("access_token"), row.get("access_token_expires_at")))
+    }
+
+    /// The whole leg: `/authorize` then `/token`. The status of the
+    /// authorization request is what every refusal below shows up as.
+    async fn re_mint(harness: &Harness, session: &str) -> anyhow::Result<(u16, Option<Value>)> {
+        let (status, code) = harness.authorize(session, CHALLENGE).await?;
+        if status != 302 {
+            return Ok((status, None));
+        }
+        let code = code.context("a 302 carries a code")?;
+        let (status, body) = harness.exchange(&code, VERIFIER).await?;
+        Ok((status, Some(body)))
+    }
+
+    let signed_in = harness.sign_in().await?;
+    let session = signed_in.session;
+
+    // ---- (0) the TTL, on the wire and in the row --------------------------
+    let before = OffsetDateTime::now_utc();
+    let (status, body) = re_mint(&harness, &session).await?;
+    assert_eq!(status, 200, "the first mint: {body:?}");
+    let body = body.context("a body")?;
+    assert_eq!(
+        field(&body, "expires_in"),
+        &Value::from(TTL_SECONDS),
+        "`expires_in` must be staff_auth.access_token_ttl_seconds, not the /v1 constant: {body}"
+    );
+    let first_token = field(&body, "access_token")
+        .as_str()
+        .context("an access token")?
+        .to_owned();
+
+    let (stored, expires_at) = recorded(&pool, &session).await?;
+    assert_eq!(
+        stored.as_deref(),
+        Some(first_token.as_str()),
+        "the row carries the token that was just minted"
+    );
+    let expires_at = expires_at.context(
+        "access_token_expires_at must be written WITH the token; a NULL here is a token the \
+         dashboard cannot decide about and migration 0040's CHECK should have refused the row",
+    )?;
+    let recorded_ttl = (expires_at - before).whole_seconds();
+    assert!(
+        (TTL_SECONDS..=TTL_SECONDS + 5).contains(&recorded_ttl),
+        "the recorded expiry must be the configured TTL from the mint, not 900: {recorded_ttl}s"
+    );
+
+    // ---- (1) a live session mints a DIFFERENT token, and moves the expiry --
+    let (status, body) = re_mint(&harness, &session).await?;
+    assert_eq!(status, 200, "a live session re-mints: {body:?}");
+    let second_token = field(&body.context("a body")?, "access_token")
+        .as_str()
+        .context("an access token")?
+        .to_owned();
+    assert_ne!(
+        second_token, first_token,
+        "a re-mint must be a NEW token; the same string back would mean nothing was re-checked"
+    );
+    let (stored, second_expiry) = recorded(&pool, &session).await?;
+    assert_eq!(stored.as_deref(), Some(second_token.as_str()));
+    assert!(
+        second_expiry.context("an expiry")? >= expires_at,
+        "the recorded expiry moves forward with the token it belongs to"
+    );
+
+    // ---- (2) a disabled staff member's session cannot ---------------------
+    sqlx::query("UPDATE staff_members SET status = 'disabled' WHERE email = $1")
+        .bind(STAFF_EMAIL)
+        .execute(&pool)
+        .await
+        .context("disabling the staff member")?;
+    let (status, _) = re_mint(&harness, &session).await?;
+    assert_eq!(
+        status, 401,
+        "a disabled account must not be able to renew its dashboard token"
+    );
+    sqlx::query("UPDATE staff_members SET status = 'active' WHERE email = $1")
+        .bind(STAFF_EMAIL)
+        .execute(&pool)
+        .await?;
+    let (status, _) = re_mint(&harness, &session).await?;
+    assert_eq!(status, 200, "the control: the session itself is still good");
+
+    // ---- (3) a staff member moved to another merchant cannot --------------
+    sqlx::query("UPDATE staff_members SET merchant_id = $1 WHERE email = $2")
+        .bind(MERCHANT_B)
+        .bind(STAFF_EMAIL)
+        .execute(&pool)
+        .await
+        .context("moving the staff member")?;
+    let (status, _) = re_mint(&harness, &session).await?;
+    assert_eq!(
+        status, 401,
+        "a staff member who no longer belongs to the bound merchant must not be renewed a token \
+         for it"
+    );
+    sqlx::query("UPDATE staff_members SET merchant_id = $1 WHERE email = $2")
+        .bind(MERCHANT_A)
+        .bind(STAFF_EMAIL)
+        .execute(&pool)
+        .await?;
+    let (status, _) = re_mint(&harness, &session).await?;
+    assert_eq!(status, 200, "the control again");
+
+    // ---- (4) an idle session cannot ---------------------------------------
+    //
+    // Aged in the table rather than waited for: the idle bound is thirty
+    // minutes and `SessionRow::is_live_at` reads the column.
+    sqlx::query("UPDATE staff_sessions SET last_seen_at = $1 WHERE id = $2")
+        .bind(OffsetDateTime::now_utc() - time::Duration::minutes(31))
+        .bind(hex(&sha256(session.as_bytes())))
+        .execute(&pool)
+        .await
+        .context("aging the session past its idle bound")?;
+    let (status, _) = re_mint(&harness, &session).await?;
+    assert_eq!(status, 401, "an idle session must not renew a token");
+    sqlx::query("UPDATE staff_sessions SET last_seen_at = $1 WHERE id = $2")
+        .bind(OffsetDateTime::now_utc())
+        .bind(hex(&sha256(session.as_bytes())))
+        .execute(&pool)
+        .await?;
+    let (status, _) = re_mint(&harness, &session).await?;
+    assert_eq!(status, 200, "the last control");
+
+    // ---- (5) a signed-out session cannot ----------------------------------
+    let (status, body) = harness
+        .post_form("/dash/v1/staff/logout", Some(&session), &[])
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    let (status, _) = re_mint(&harness, &session).await?;
+    assert_eq!(
+        status, 401,
+        "SIGN-OUT IS THE REVOCATION. A session that can still renew its token has not been \
+         signed out of anything"
     );
     Ok(())
 }

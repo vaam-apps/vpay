@@ -152,6 +152,34 @@ lockout is a denial of service an attacker triggers by guessing at somebody
 else's address. ~~The limits are per replica; the honest reading of that is in
 Consequences.~~
 
+*Amended 2026-09-10 (issue #88 item 1).* The row also carries
+**`access_token_expires_at`** (migration `0040`), written in the same statement
+as the token and paired with it by a CHECK, and
+**the access token's TTL is a deployment setting** —
+`staff_auth.access_token_ttl_seconds`, 900 by default, bounded 10..=3600.
+
+Neither is a change to what this decision *decides*; both are what make its
+arithmetic survivable. The token lives fifteen minutes and the session up to
+twelve hours, and nothing re-minted: a quarter of an hour into every sign-in,
+every render was an error box (the exp28 review's finding F4). The dashboard
+now replaces the token when a fifth of its life is left, running **the same
+authorization-code leg** — which re-reads the staff row, the active status, the
+merchant binding and `password_change_required` on every mint, so a re-mint is
+*more* checking than carrying one token, not a way around any. There is still
+no refresh token on this surface and there is not going to be one.
+
+The TTL is configurable here and deliberately not on `/v1`, whose constant
+argues that a TTL varying by YAML is one more thing that can differ between a
+merchant's sandbox and their production. That argument is about a number
+merchants build against; nothing outside this deployment ever receives a
+dashboard token. What it buys is the case that could not otherwise be
+exercised at all — a browser run that crosses an expiry, which at 900 seconds
+no end-to-end suite was ever going to do, which is exactly why the fifteen
+minutes shipped.
+
+`docs/flows/dashboard-auth.md`, "Replacing the token before it expires",
+carries the mechanism and the proof.
+
 *Amended 2026-09-10 (issue #79 item 2).* The counters are rows in
 `rate_limit_windows` (migration `0038`), so **every replica spends from one
 budget**. This ADR's Consequences called the in-process version's cost "the

@@ -416,8 +416,8 @@ scoped work, not before.
 | Token | TTL knob | Notes |
 |---|---|---|
 | Authorization code | `OpConfig::authorization_code_ttl_secs`, **60 s** | Single use, enforced by a compare-and-swap on `oauth_authorization_codes.consumed_at`. A second exchange is refused whatever else about it is right, and a *failed* exchange spends the code too — so a captured code cannot be probed against candidate verifiers |
-| Access token | `OpConfig::access_token_ttl_secs` | Bearer, presented on every `/dash/v1/*` call |
-| Refresh token | **Not issued** | vpay does not use `RefreshTokenStore` for this flow. Staff re-run authorization-code + PKCE when the access token expires — a short-TTL access token with no refresh token, rather than a long-lived refresh token that `authkestra-op` has no endpoint to revoke |
+| Access token | `OpConfig::access_token_ttl_secs`, from **`staff_auth.access_token_ttl_seconds`** (900 by default, bounded 10..=3600) | Bearer, presented on every `/dash/v1/*` call. Configurable per deployment since 2026-09-10, unlike `/v1`'s, which is a constant and says why — see "Replacing the token before it expires" below |
+| Refresh token | **Not issued** | vpay does not use `RefreshTokenStore` for this flow. Staff re-run authorization-code + PKCE when the access token expires — a short-TTL access token with no refresh token, rather than a long-lived refresh token that `authkestra-op` has no endpoint to revoke. **The re-run is the refresh**, and it is the dashboard app's own server that performs it, before the expiry rather than after — below |
 | ID token | **Not issued** | The dashboard reads who is signed in from `GET /dash/v1/staff/session`, which answers from the session row rather than from a claim — so an id token would be a second, staler copy of the same fact. `openid` is not in the registration's single scope, so the grant does not mint one |
 
 **No revocation endpoint exists in `authkestra-op`.** A stolen or misused
@@ -432,6 +432,91 @@ the access token lives in the session row, the dashboard's own server reads it
 back on every render, and signing out deletes the row. So the *obtainability*
 of the token is revoked even though the JWT stays cryptographically valid for
 the rest of its TTL — see "The session, and what signing out actually does".
+
+### Replacing the token before it expires
+
+*Issue #88 item 1, 2026-09-10. The gap the exp28 review's finding F4 left half
+closed.*
+
+**The problem is an arithmetic one.** The access token lives 900 seconds by
+default; a session lives thirty minutes idle and twelve hours absolute. Until
+the exp28 review nothing re-minted at all — `requireStaff` ran the
+authorization-code leg only when the session row carried **no** token — so a
+quarter of an hour into every sign-in `/dash/v1` began answering
+
+    The bearer token is invalid, expired, or was not issued for this endpoint.
+
+on every render, until the person signed out and back in. That review added the
+**reactive** re-mint in `frontends/apps/dashboard/src/server/dash-read.ts`:
+one retry, on a `401` only. It works, and it costs a refused request in front
+of every read once a token has died.
+
+**There is no refresh token and there is not going to be one.** The refresh
+*is* the authorization-code leg, run again on the session the browser already
+holds. That is not a way around a check but strictly more checking than
+carrying one token for twelve hours: `vpay_api::staff::oauth::authorize`
+re-reads the staff row and re-checks the active status, the merchant binding
+and `password_change_required` on **every** mint. `authkestra-op` offers a
+`RefreshTokenStore` and this deployment gives it
+`vpay_api::op::refusing_stores`' fail-closed type; adding a refresh token would
+add a second long-lived credential with no endpoint to revoke it, which is the
+thing "Token lifetimes" above already refused.
+
+So what changed is *when* the leg runs, and three pieces make it possible:
+
+1. **`staff_sessions.access_token_expires_at`** (migration `0040`), written in
+   the same statement as the token and paired with it by
+   `staff_sessions_token_expiry_is_paired`. Migration 0040 clears every token
+   already stored rather than inventing an expiry for one — nobody is signed
+   out by that, because a session with no token is the state every session is
+   in between the second factor and its first render.
+2. **`GET /dash/v1/staff/session` carries it**, as `access_token_expires_at`
+   (RFC 3339) beside `access_token_ttl_seconds`. The app does not read the
+   JWT's own `exp`: it holds the token and presents it, it does not verify it,
+   and reading a claim out of an unverified credential is a habit worth not
+   having here.
+3. **`server/gate.ts` decides**, with `REMINT_AFTER_FRACTION = 0.8`: a token
+   with less than a fifth of its TTL left is `stale-token` rather than `ready`,
+   and `requireStaff` runs the leg it already ran for a session with no token
+   at all. A **fraction** and not a fixed number of seconds, because the TTL is
+   configuration now — sixty seconds of margin would be a fifteenth of one TTL
+   and three times another.
+
+`stale-token` is a separate arm from `needs-token` for one reason: there is
+something to fall back on. If vpay cannot be *reached* for the re-mint, the
+token in hand has not expired — that is what the margin bought — so the page
+renders with it instead of showing an outage box. A `401` is **not** fallen
+back on, stale or not: it means `/authorize` refused this session on this
+request, and reading on with a token that refusal has just invalidated is the
+hole the exp24 review's finding F1 closed one layer down.
+
+The reactive retry stays. A clock that disagrees with vpay's, a token revoked
+mid-render, and a render that arrives late are all things a margin cannot see.
+
+**The TTL is configuration** (`staff_auth.access_token_ttl_seconds`, bounded
+10..=3600) and `/v1`'s is not, which is deliberate: `vpay_api::op::ACCESS_TOKEN_TTL_SECS`
+argues that a TTL varying by YAML is one more thing that can differ between the
+sandbox a merchant integrates against and the production they go live on — and
+that argument is about a number *merchants* build against. Nothing outside this
+deployment ever receives a dashboard token. What it buys is the case nothing
+could otherwise exercise: `demo_staff_token_ttl` sets twenty seconds on the
+demo stack, and `dashboard.cy.ts` crosses both the margin and the expiry in one
+leg, in a real browser, without a re-login.
+
+Proof:
+`the_dashboard_token_is_re_minted_from_a_live_session_and_from_nothing_else`
+over a booted server — the TTL honoured on the wire and in the row, a live
+session minting a *different* token, and the leg refused for a disabled staff
+member, a staff member moved to another merchant, an idle session and a
+signed-out one, each with the same session restored afterwards as a control;
+`a_session_token_without_its_expiry_is_refused_by_the_database`; six
+`gateFor` cases in `gate.test.ts`; and the browser leg. Decisive mutations:
+writing `crate::op::ACCESS_TOKEN_TTL_SECS` back into the OP config (`expires_in`
+reads 900 against a configured 10), `staleTokenFor` answering `false` for an
+absent or unparseable expiry, and dropping the margin — for which the browser
+leg asserts that `access_token_expires_at` **moved while the old one had not
+yet passed**, because a page renders identically either way once `dash-read.ts`
+has retried.
 
 ## JWKS publication and key rotation
 

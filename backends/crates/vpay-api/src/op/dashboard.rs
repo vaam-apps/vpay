@@ -154,7 +154,14 @@ impl DashboardOp {
                 grant_types_supported: vec!["authorization_code".to_owned()],
                 id_token_signing_alg: "RS256".to_owned(),
                 authorization_code_ttl_secs: AUTHORIZATION_CODE_TTL_SECS,
-                access_token_ttl_secs: crate::op::ACCESS_TOKEN_TTL_SECS,
+                // `staff_auth.access_token_ttl_seconds`, and NOT
+                // `crate::op::ACCESS_TOKEN_TTL_SECS` since 2026-09-10 (issue
+                // #88 item 1). The merchant half's constant stays a constant
+                // and says why in its own doc comment; this one is an
+                // operational parameter of a surface whose only client is
+                // this deployment's own dashboard app. `u64` from the `u32`
+                // the configuration bounds to 10..=3600.
+                access_token_ttl_secs: u64::from(config.staff_auth.access_token_ttl_seconds),
                 // No device authorization endpoint on this surface either.
                 device_code_ttl_secs: 600,
                 // RFC 8693 delegation stays off on both halves.
@@ -177,6 +184,15 @@ impl DashboardOp {
     /// The OP configuration `handle_authorize` reads.
     pub(crate) fn config(&self) -> &OpConfig {
         &self.config
+    }
+
+    /// How long a token this grant mints lives, in seconds.
+    ///
+    /// Read back off [`Self::config`] rather than stored twice, so the number
+    /// the token is *signed* with and the number the session row records as
+    /// its expiry cannot drift apart — they are one field.
+    pub(crate) fn access_token_ttl_secs(&self) -> u64 {
+        self.config.access_token_ttl_secs
     }
 
     /// The store `handle_authorize` resolves the client and stores the code

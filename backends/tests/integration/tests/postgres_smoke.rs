@@ -169,8 +169,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 39,
-        "all thirty-nine migrations under backends/migrations should be recorded as applied \
+        applied, 40,
+        "all forty migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -247,7 +247,17 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          the reason 0023 states, that a value in a closed vocabulary no \
          code can produce is what the mechanism exists to prevent, and \
          POST /v1/customers and POST /v1/customers/{{id}} are transactional \
-         from this commit.)"
+         from this commit, \
+         and issue #88's 0040, which adds staff_sessions.access_token_expires_at \
+         -- the column that lets the dashboard replace its /dash/v1 token \
+         BEFORE the token expires rather than after a read has failed on it. \
+         It clears every access_token already stored rather than inventing an \
+         expiry for one, which costs nobody a sign-out: a session with no \
+         token is the state every session is in between the second factor and \
+         the first render, and the next render mints one. The paired CHECK is \
+         added AFTER that UPDATE, because it is validated against every \
+         existing row and a token with no expiry is exactly the row it \
+         refuses.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -615,6 +625,89 @@ async fn signing_out_cascades_onto_a_code_in_flight() -> anyhow::Result<()> {
         "signing out must take an unexchanged code with it, or a sign-out during a login race \
          leaves a code that can still be exchanged for a token"
     );
+
+    Ok(())
+}
+
+/// `staff_sessions_token_expiry_is_paired` fires against a real Postgres
+/// (migration 0040, issue #88 item 1).
+///
+/// **The only thing that can check it**, for
+/// `a_half_enrolled_staff_member_is_refused_by_the_database`'s reason: the
+/// constraint is multi-column, `cratestack migrate baseline` skips every
+/// multi-column CHECK in both directions, and
+/// `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` would
+/// therefore not move by one if it were deleted.
+///
+/// What it says is that a `/dash/v1` token and the instant it dies are one
+/// fact. Both directions matter and the first is the dangerous one:
+///
+/// * a **token with no expiry** is what the dashboard reads as "I cannot tell
+///   when this dies". `gate.ts` fails closed on it and re-mints on every
+///   render — a credential operation per page view — which is a bug that
+///   presents as latency rather than as an error;
+/// * an **expiry with no token** would have the session read publish a date
+///   for a credential that is not there.
+///
+/// And a row with **neither** is legal, which is what every session looks like
+/// between the second factor and its first render.
+#[tokio::test]
+async fn a_session_token_without_its_expiry_is_refused_by_the_database() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    sqlx::query(
+        "INSERT INTO staff_members (id, merchant_id, email, display_name, password_hash, \
+         password_change_required, last_totp_step, status, created_at, updated_at) \
+         VALUES ('stf_expiry', 'merchant_a', 'expiry@example.test', 'Ada', 'hash', true, 0, \
+         'active', now(), now())",
+    )
+    .execute(&pool)
+    .await
+    .context("seeding a staff member")?;
+
+    let insert = |suffix: char, columns: &str, values: &str| {
+        let sql = format!(
+            "INSERT INTO staff_sessions (id, staff_id, state, created_at, expires_at, \
+             last_seen_at{columns}) \
+             VALUES ('{}', 'stf_expiry', 'authenticated', now(), now() + interval '12 hours', \
+             now(){values})",
+            suffix.to_string().repeat(64)
+        );
+        sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&pool)
+    };
+
+    for (suffix, columns, values) in [
+        ('a', ", access_token", ", 'header.payload.sig'"),
+        (
+            'b',
+            ", access_token_expires_at",
+            ", now() + interval '900 seconds'",
+        ),
+    ] {
+        let err = insert(suffix, columns, values)
+            .await
+            .expect_err("half a token is not a token");
+        let db_err = err.as_database_error().expect("a database-level error");
+        eprintln!("observed rejection: {db_err}");
+        assert_eq!(
+            db_err.constraint(),
+            Some("staff_sessions_token_expiry_is_paired"),
+            "the rejection must come from the coherence CHECK specifically"
+        );
+    }
+
+    // Neither: every session between the second factor and its first render.
+    insert('c', "", "")
+        .await
+        .context("a session with no token yet is the ordinary case")?;
+    // Both: what the code exchange writes, in one statement.
+    insert(
+        'd',
+        ", access_token, access_token_expires_at",
+        ", 'header.payload.sig', now() + interval '900 seconds'",
+    )
+    .await
+    .context("a token and its expiry together is the other legal row")?;
 
     Ok(())
 }
@@ -2806,6 +2899,11 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // the drift report is blind to it in both directions — which is
             // exactly why this list is read from the live database.
             ("staff_members", "staff_members_totp_is_paired"),
+            // Migration 0040, issue #88 item 1. A `/dash/v1` token and the
+            // instant it dies are one fact: a token with no expiry is one the
+            // dashboard cannot decide about and re-mints on every render,
+            // which is a credential operation per page view.
+            ("staff_sessions", "staff_sessions_token_expiry_is_paired"),
         ],
         "the multi-column CHECK constraints backends/migrations builds. This list is read from \
          the live database rather than from the report precisely because the report cannot see \
@@ -2813,7 +2911,11 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
          and the drift count below cannot"
     );
 
-    // None of the eleven reaches the report.
+    // None of the eighteen reaches the report. (This line and the one below
+    // said "eleven" until 2026-09-10; the list had grown to seventeen by then
+    // and the counts had not been re-read. Corrected here rather than left,
+    // because a comment that miscounts the list beside it is the one a reader
+    // trusts instead of counting.)
     //
     // Matched as the shape the report renders a CHECK in — ``CHECK `name` ``,
     // from `cratestack-cli` 0.12.0's `src/migrate/drift_report.rs::describe`,
@@ -2839,7 +2941,7 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         );
     }
 
-    // Three of the eleven sit on tables the schema *does* model, so their absence
+    // Three of the eighteen sit on tables the schema *does* model, so their absence
     // is not the table being skipped: a single-column CHECK on each of those
     // very tables is reported, and pinning both lines is what separates "the
     // tool cannot see cross-column CHECKs" from "the tool said nothing about

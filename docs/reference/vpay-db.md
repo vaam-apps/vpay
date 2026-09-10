@@ -1780,7 +1780,7 @@ never on screen. Every row below was re-read off the source.
 | `load` | `staff_sessions` | `find_unique(id).run(ctx)` | `read` |
 | `touch` | `staff_sessions` | `update_many().where_(id).where_(last_seen_at.lt(now)).set(UpdateStaffSessionInput).run(ctx)` | `update` |
 | `mark_authenticated` | `staff_sessions` | `update_many().where_(id).where_(state.eq(pending_totp)).set(UpdateStaffSessionInput).run(ctx)` — the state filter is the swap | `update` |
-| `record_access_token` | `staff_sessions` | `update_many().where_(id).set(UpdateStaffSessionInput).run(ctx)` | `update` |
+| `record_access_token` | `staff_sessions` | `update_many().where_(id).set(UpdateStaffSessionInput).run(ctx)` — writes `access_token`, `access_token_expires_at` (migration `0040`) and `last_seen_at` in **one** statement, which is what makes `staff_sessions_token_expiry_is_paired` a property rather than a convention: there is no instant at which the token is stored and its expiry is not | `update` |
 | `delete` | `staff_sessions` | `delete_many().where_(id).run(ctx)` | `delete` |
 | `store_code` | `oauth_authorization_codes` | `create(CreateOauthAuthorizationCodeInput).run(ctx)` | `create` |
 | `consume_code` | `oauth_authorization_codes` | `find_unique(code_hash).run(ctx)` | `read` |

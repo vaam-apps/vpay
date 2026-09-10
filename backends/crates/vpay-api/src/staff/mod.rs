@@ -51,6 +51,7 @@ use axum::routing::{get, post};
 use axum::{Form, Router};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use vpay_db::{NewSession, SessionRow, SessionState, StaffRow, StaffSessions};
 
 use crate::ApiError;
@@ -275,6 +276,36 @@ pub struct SessionResponse {
     /// The `/dash/v1` access token, once the code exchange has minted one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_token: Option<String>,
+    /// When [`Self::access_token`] stops being accepted, RFC 3339. Absent
+    /// exactly when the token is.
+    ///
+    /// # Why a caller needs this and cannot compute it
+    ///
+    /// The token is a JWT and carries its own `exp`, but the dashboard app is
+    /// not a verifier of it: it holds the string and presents it, and reading
+    /// a claim out of a credential without checking the signature is a habit
+    /// worth not having in a payments app. So the instant is published beside
+    /// the token, out of `staff_sessions.access_token_expires_at` (migration
+    /// 0040), where the exchange wrote it.
+    ///
+    /// What it is *for* is issue #88 item 1: the app re-mints while the token
+    /// is still good, rather than after a read has failed on it. See
+    /// [`Self::access_token_ttl_seconds`] for the other half.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_token_expires_at: Option<String>,
+    /// How long a freshly minted token lives here, in seconds
+    /// (`staff_auth.access_token_ttl_seconds`).
+    ///
+    /// Published because the margin is a **fraction** of the TTL and the app
+    /// cannot divide by a number it does not have. An absolute margin instead
+    /// would be wrong at one end or the other: sixty seconds is a fifteenth
+    /// of the shipping 900 and three times the TTL an end-to-end run sets, so
+    /// it would either re-mint too late to matter or re-mint on every render.
+    ///
+    /// Not a secret and not a contract: nothing outside this deployment ever
+    /// receives a dashboard token, and this route is reachable only with a
+    /// session credential.
+    pub access_token_ttl_seconds: u64,
 }
 
 /// What `GET /dash/v1/staff/session/stage` answers.
@@ -696,6 +727,7 @@ pub(crate) async fn session(
     State(state): State<crate::AppState>,
     headers: HeaderMap,
 ) -> Result<Json<SessionResponse>, ApiError> {
+    let login = state.staff_login()?;
     let now = OffsetDateTime::now_utc();
     let (session, staff) = authenticated_session(&state, &headers, now).await?;
 
@@ -710,6 +742,14 @@ pub(crate) async fn session(
         merchant_id: staff.merchant_id,
         password_change_required: staff.password_change_required,
         access_token: session.access_token,
+        // Formatted here rather than sent as a Unix integer for the reason
+        // every other instant on this crate's wire is: `crate::model` renders
+        // times as RFC 3339, and one route answering seconds-since-epoch is
+        // one shape a reader has to learn twice.
+        access_token_expires_at: session
+            .access_token_expires_at
+            .and_then(|at| at.format(&Rfc3339).ok()),
+        access_token_ttl_seconds: login.dashboard_op.access_token_ttl_secs(),
     }))
 }
 
