@@ -90,8 +90,12 @@
 //! For the SIGTERM case a fifth record joins them, and it is the one a
 //! merchant actually experiences: **the receiver's own request journal**, which
 //! must hold exactly one POST. A drain that dropped the in-flight send would
-//! leave two — the one the receiver had already accepted, and the one a
-//! worker re-sent from the still-`pending` row.
+//! leave two — the one the receiver had already *received*, and the one a
+//! worker re-sent from the still-`pending` row. "Received", not "accepted":
+//! WireMock journals a request when it matches it and answers it
+//! [`RECEIVER_ACK_DELAY`] later, so what the merchant has when the signal
+//! lands is the bytes, not the acknowledgement — which is exactly why a
+//! cut-off send is a *duplicate* rather than a nothing.
 //!
 //! # No test doubles
 //!
@@ -165,8 +169,8 @@ const SLOW_SUBMIT_MSISDN: &str = "237600000cf9";
 /// would put a second unbounded wait inside the same test. It continues the
 /// `0ce9`/`0cf9` convention of the two above, with `c15` naming the signal
 /// (SIGTERM is 15) rather than a rail behaviour; no mapping mentions it, and
-/// `an_ordinary_msisdn_arms_no_mapping_in_the_shared_rail_tree` is what keeps
-/// that true if one ever does.
+/// [`the_sigterm_scenario_confirms_with_an_msisdn_that_arms_no_rail_mapping`]
+/// is what keeps that true if one ever does.
 const SIGTERM_MSISDN: &str = "237600000c15";
 
 /// The endpoint id and secret the SIGTERM scenario's receiver is registered
@@ -1069,6 +1073,39 @@ async fn deliveries(pool: &PgPool) -> anyhow::Result<Vec<StoredDelivery>> {
     .context("reading the webhook deliveries")
 }
 
+/// One probe for **"the delivery is in flight"**: the receiver has recorded
+/// the POST and the queue still holds a lease on the job behind it.
+///
+/// Two witnesses, and neither is this test's own bookkeeping. WireMock
+/// journals a request when it *matches* it, before it serves any
+/// `fixedDelayMilliseconds`, so the first is the merchant's receiver saying
+/// the bytes arrived; the second is the queue saying which process is inside
+/// `handle_deliver` right now. Both SIGTERM scenarios wait on this before
+/// they signal anything, because signalling a worker that is not mid-delivery
+/// proves nothing about a drain.
+///
+/// `None` is "not yet", never an error: every caller is inside a bounded poll
+/// loop that reports what it saw if it runs out.
+async fn delivery_in_flight(
+    pool: &PgPool,
+    receiver_url: &str,
+) -> anyhow::Result<Option<(StoredDelivery, String)>> {
+    if receiver_posts(receiver_url).await?.is_empty() {
+        return Ok(None);
+    }
+    let rows = deliveries(pool).await?;
+    let [delivery] = rows.as_slice() else {
+        return Ok(None);
+    };
+    if delivery.state != "pending" {
+        return Ok(None);
+    }
+    let owner = delivery_job(pool, delivery.id)
+        .await?
+        .and_then(|job| job.locked_by);
+    Ok(owner.map(|owner| (delivery.clone(), owner)))
+}
+
 /// Every attempt this charge has on record: `(operation, status_code,
 /// error_kind)`.
 ///
@@ -1765,7 +1802,7 @@ async fn a_server_killed_mid_submit_leaves_a_charge_the_worker_settles_without_a
 ///    and **exactly one POST at the receiver**, which verifies under the
 ///    configured secret with the Rust SDK a merchant installs. That count is
 ///    what the drain buys: a worker that exited on the signal instead of
-///    draining would leave the receiver's copy accepted and the row still
+///    draining would leave the receiver's copy delivered and the row still
 ///    `pending`, and the survivor would send it again;
 /// 7. the same four-record exactly-once invariant as the two cases above;
 /// 8. and the survivor — a worker that was running, unsignalled, throughout —
@@ -1852,28 +1889,20 @@ async fn a_worker_sigtermed_mid_delivery_drains_it_and_the_merchant_is_told_exac
     // delay), one is the lease the claiming worker took in the queue.
     let deadline = Instant::now() + DELIVERY_IN_FLIGHT_TIMEOUT;
     let (delivery, owner) = loop {
-        let posts = receiver_posts(&receiver_url).await?.len();
-        let rows = deliveries(&pool).await?;
-        let leased = match rows.as_slice() {
-            [delivery] if delivery.state == "pending" => delivery_job(&pool, delivery.id)
-                .await?
-                .and_then(|job| job.locked_by)
-                .map(|owner| (delivery.clone(), owner)),
-            _ => None,
-        };
-        if posts >= 1
-            && let Some(found) = leased
-        {
+        if let Some(found) = delivery_in_flight(&pool, &receiver_url).await? {
             break found;
         }
-        assert!(
-            Instant::now() < deadline,
-            "no webhook delivery was in flight within {DELIVERY_IN_FLIGHT_TIMEOUT:?} (the \
-             receiver saw {posts} POSTs on {RECEIVER_PATH}; deliveries: {rows:?}); signalling \
-             a worker now would prove nothing\n{}\n{}",
-            first.log(),
-            second.log()
-        );
+        if Instant::now() >= deadline {
+            let posts = receiver_posts(&receiver_url).await?.len();
+            let rows = deliveries(&pool).await?;
+            panic!(
+                "no webhook delivery was in flight within {DELIVERY_IN_FLIGHT_TIMEOUT:?} (the \
+                 receiver saw {posts} POSTs on {RECEIVER_PATH}; deliveries: {rows:?}); \
+                 signalling a worker now would prove nothing\n{}\n{}",
+                first.log(),
+                second.log()
+            );
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     assert_eq!(delivery.endpoint_id, RECEIVER_ENDPOINT_ID);
@@ -1966,10 +1995,11 @@ async fn a_worker_sigtermed_mid_delivery_drains_it_and_the_merchant_is_told_exac
     assert_eq!(
         posts.len(),
         1,
-        "**the double-send assertion.** The receiver accepted the in-flight POST before the \
-         signal arrived; if the drain had not finished it, the row would still be `pending` \
-         and a worker would send those same bytes again. A merchant must not be told twice \
-         about one payment because an operator restarted a worker: {posts:?}"
+        "**the double-send assertion.** The receiver had *received* the in-flight POST \
+         before the signal arrived — it answers {RECEIVER_ACK_DELAY:?} later, which is the \
+         whole staging — so if the drain had not finished the send, the row would still be \
+         `pending` and a worker would send those same bytes again. A merchant must not be \
+         told twice about one payment because an operator restarted a worker: {posts:?}"
     );
     let post = posts.first().expect("exactly one POST, just asserted");
     assert_eq!(post.url, RECEIVER_PATH);

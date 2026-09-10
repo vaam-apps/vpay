@@ -308,8 +308,10 @@ the merchant a second identical signed POST. Measured: `left: 2  right: 1` on
 the receiver's journal. **Remove the drain** (return `Drain::Clean` the
 instant the signal is seen) and the same case fails with *the worker never
 logged `webhook delivered`* — the send was cut off after the receiver had
-already accepted it, which is the lost delivery that becomes a double send as
-soon as anything retries.
+already *received* it (WireMock journals a request when it matches it and
+answers `slow-ack.json`'s 200 six seconds later, so "received" is the exact
+word and "accepted" would not be), which is the lost delivery that becomes a
+double send as soon as anything retries.
 
 The original hand measurement is unchanged and still recorded — `docker kill
 -s TERM` on the demo stack, exit **0**, `Drain::Clean` rather than the
