@@ -141,30 +141,42 @@ and reverted from a copy afterwards (`git status` clean between runs).
 * `just test-e2e` and `just helm-check` — outside `just ci` by design.
 * `just docs-check-citations` — needs the network and a token; this document
   cites issue #61 and PR #99 only, both read with `gh` during the review.
-* Whether a *rebase* onto #99 (exp39, `tests/cli.rs`) still applies cleanly:
-  #99 was still open at review time (`gh pr view 99` → OPEN), so STEP 0's
-  rebase was a no-op — `origin/master` is `970bfe0`, already the base.
+* Nothing about #99 beyond the rebase and the gate re-run: its own tests are
+  covered by the 1662, and its files were not read as part of this review.
 * The behaviour of a **real** incoherent adapter in a shipping binary: there
   is none, by construction (see § 1, "Not fixed").
 
 ## 5. Gate
 
-`just ci` end to end on `096c824` — the head carrying all four commits below —
-**exit 0**, read from a file, not from a banner. Under rustc 1.98.0
-(`rust-toolchain.toml`), Node 22.23.2 (`.nvmrc`) with `pnpm install
---frozen-lockfile`, the pinned CrateStack **0.12.0** CLI, rootless Docker.
+**The branch was rebased mid-review, and the gate below is the run after it.**
+PR #99 (exp39) merged at 14:01 UTC on 2026-09-10 — after this review's STEP 0
+had read it as `OPEN` and skipped the rebase, and while the first full gate was
+running. `git rebase origin/master` onto `231f51e` applied all six commits with
+**no conflict** (this branch touches none of #99's files; the one file both
+change is `docs/status.md`, in different rows), and the whole gate was re-run
+on the rebased head rather than the numbers from before it being reported.
+
+`just ci` end to end on `41d6549` — the rebased head, carrying every commit in
+§ 6 — **exit 0**, read from a file, not from a harness banner. Under rustc
+1.98.0 (`rust-toolchain.toml`), Node 22.23.2 (`.nvmrc`) with `pnpm install
+--frozen-lockfile`, the pinned CrateStack **0.12.0** CLI, rootless Docker, from
+a cleared `target/`.
 
 | Recipe | Result |
 |---|---|
 | `fmt-check` | ok |
 | `clippy` (`--workspace --all-targets -D warnings`) | ok |
 | `verify` | twelve gates ok; `verify-docs` advisory report printed |
-| `test-rust` | **1660 tests run, 1660 passed, 0 skipped** (1281 s). `boot_coherence` ran in 1.4 s inside the full run |
+| `test-rust` | **1662 tests run, 1662 passed, 0 skipped** (1385 s). `boot_coherence` ran in 1.3 s inside the full run |
 | `test-doc` | **111 passed, 1 ignored** (the ignored one is pre-existing) |
-| `verify-ignored` | 0 ignored (expected 0), **46** test binaries (expected 46), 1660 total |
+| `verify-ignored` | 0 ignored (expected 0), **46** test binaries (expected 46), 1662 total (1660 before the rebase; #99 added two `tests/cli.rs` cases and no binary) |
 | `lint-web` | ok (typecheck + `pnpm -r lint`) |
-| `test-web` | ok — 1284 tests across every package |
+| `test-web` | ok — **1284** tests across nine packages |
 | `deny` | `advisories ok, bans ok, licenses ok, sources ok` |
+
+The same recipe list was green end to end on the pre-rebase head `096c824`
+too (1660/1660, exit 0); both runs are in the transcript and the rebased one
+is the one that counts.
 
 **A flake, reported rather than papered over.** An earlier full run *on the
 draft head* (`e43530b`) failed `test-web` on `@vpay/ui`'s
@@ -181,16 +193,21 @@ Recorded because "the gate went red once" is part of the evidence.
 
 ## 6. Commits on this branch (base `970bfe0`)
 
+SHAs are the post-rebase ones (base `231f51e`); the pre-rebase SHAs are in
+each commit's own reflog entry and in the note above.
+
 | SHA | |
 |---|---|
-| `e43530b` | the haiku draft, untouched |
-| `ebc3b9e` | `fix(config,api)`: the refusal names the rule, and the test reads the message |
-| `5cb01a3` | `docs(api)`: `boot_seeds` returns two errors, and its own `# Errors` said one |
-| `d9308b1` | `test(integration)`: the 78 and the 1, measured against a real Postgres |
-| `096c824` | `docs`: the flow doc contradicted itself, and the decision it settles was still open |
+| `3d7c3d7` | the haiku draft, untouched (was `e43530b`) |
+| `b63129f` | `fix(config,api)`: the refusal names the rule, and the test reads the message |
+| `ff6a892` | `docs(api)`: `boot_seeds` returns two errors, and its own `# Errors` said one |
+| `42bb7d9` | `test(integration)`: the 78 and the 1, measured against a real Postgres |
+| `b990cd8` | `docs`: the flow doc contradicted itself, and the decision it settles was still open |
+| `41d6549` | this document, as it stood before the rebased gate's numbers were written into § 5 |
 
-This document is committed on top of `096c824` and changes nothing the gate
-compiles; `just verify` was re-run on the head that carries it.
+The commit carrying these final numbers sits on top of `41d6549` and changes
+nothing any gate compiles; `just verify` was re-run on the head that carries
+it.
 
 ## 7. Verdict
 
