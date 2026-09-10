@@ -1753,11 +1753,11 @@ fn validate_display_name(merchant: &MerchantClient) -> Result<(), ConfigError> {
 /// `authkestra-op`). The two rules that *decide* whether a payer may be sent
 /// somewhere — the scheme allow-list and the livemode `https` rule — are
 /// spelled the same way in both, and
-/// `a_configured_invoice_url_passes_the_same_rules_the_request_path_applies`
-/// in `vpay-api` is what holds them together: it feeds this validator's
-/// admitted values through `checked_forward_url` and asserts both accept.
-/// Duplication with a test across the seam, rather than a dependency edge
-/// this crate has deliberately never had.
+/// `every_invoice_url_shape_the_config_admits_is_admitted_by_the_request_path`
+/// in `vpay_api::v1::checkout_sessions` is what holds them together: it feeds
+/// this validator's admitted values through `checked_forward_url` and asserts
+/// both accept. Duplication with a test across the seam, rather than a
+/// dependency edge this crate has deliberately never had.
 ///
 /// # Errors
 ///
@@ -3982,6 +3982,91 @@ mod tests {
             Err(ConfigError::MalformedCheckoutBaseUrl {
                 url: "file:///srv".to_owned(),
                 reason: "its scheme must be http or https",
+            })
+        );
+    }
+
+    /// The shapes `merchant_clients[].invoices` admits and refuses (issue
+    /// #91, D2) — **and the list `vpay-api`'s own half of this seam reads**.
+    ///
+    /// The accepted set is deliberately wider than
+    /// `validate_checkout_base_url`'s in exactly one respect, and the last two
+    /// entries are it: a query string and a fragment are legal here because
+    /// vpay appends nothing to these values. `every_invoice_url_shape_the_config_admits_is_admitted_by_the_request_path`
+    /// in `vpay_api::v1::checkout_sessions` feeds the same four through
+    /// `checked_forward_url`, which is what stops the two rule sets — one per
+    /// crate, because `vpay-config` depends on no other vpay crate — from
+    /// drifting into a configured URL admitted by rules a passed one is not.
+    #[test]
+    fn an_invoice_url_is_bounded_http_s_and_may_carry_a_query_or_a_fragment() {
+        let with_urls = |success: Option<&str>, cancel: Option<&str>| {
+            let mut client = valid_config().merchant_clients.remove(0);
+            client.invoices = crate::oauth::InvoiceDefaults {
+                success_url: success.map(str::to_owned),
+                cancel_url: cancel.map(str::to_owned),
+            };
+            client
+        };
+
+        for raw in [
+            "https://shop.example/thanks",
+            "http://localhost:3000/thanks",
+            "https://shop.example/thanks?order=1234",
+            "https://shop.example/thanks#receipt",
+        ] {
+            assert_eq!(
+                validate_invoice_urls(&with_urls(Some(raw), Some(raw)), false),
+                Ok(()),
+                "{raw} is a destination a payer may be sent to"
+            );
+        }
+
+        // Absent is legal on both halves, and on either alone: a merchant may
+        // configure one and pass the other, and there is nothing incoherent
+        // about that. Boot refuses a *malformed* value, never a missing one.
+        assert_eq!(validate_invoice_urls(&with_urls(None, None), true), Ok(()));
+        assert_eq!(
+            validate_invoice_urls(&with_urls(Some("https://s.example/ok"), None), true),
+            Ok(())
+        );
+
+        // Blank is refused rather than treated as absent: it is what a YAML
+        // quoting mistake produces, and an operator who wrote the key meant
+        // to write a URL.
+        assert!(matches!(
+            validate_invoice_urls(&with_urls(Some("   "), None), false),
+            Err(ConfigError::MalformedInvoiceUrl {
+                param: "success_url",
+                ..
+            })
+        ));
+        assert!(matches!(
+            validate_invoice_urls(&with_urls(None, Some("javascript:alert(1)")), false),
+            Err(ConfigError::MalformedInvoiceUrl {
+                param: "cancel_url",
+                reason: "its scheme must be http or https",
+                ..
+            })
+        ));
+        assert!(matches!(
+            validate_invoice_urls(
+                &with_urls(Some("https://user:pw@shop.example/ok"), None),
+                false
+            ),
+            Err(ConfigError::MalformedInvoiceUrl {
+                reason: "it carries embedded credentials",
+                ..
+            })
+        ));
+
+        // The livemode rule is its own variant, not a `reason`, for
+        // `InsecureCheckoutOrigin`'s reason: the fix is different.
+        assert_eq!(
+            validate_invoice_urls(&with_urls(None, Some("http://shop.example/cancel")), true),
+            Err(ConfigError::InsecureInvoiceUrl {
+                client_id: valid_config().merchant_clients.remove(0).client_id,
+                param: "cancel_url",
+                url: "http://shop.example/cancel".to_owned(),
             })
         );
     }

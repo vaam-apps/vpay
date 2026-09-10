@@ -770,6 +770,58 @@ inside the transaction matches nothing and **no event is written at all** —
 the fail-closed direction, pinned by
 `a_settlement_whose_invoice_moved_emits_no_invoice_event`.
 
+### The refund settlement, and why it is a second transaction rather than a hook
+
+`Settlement::apply_refund_succeeded` (issue #91 D5, migration `0042`) opens one
+transaction and runs two statements in it:
+
+1. `refunds::settle_in_tx` — `UPDATE refunds SET status = 'succeeded' WHERE id
+   = $1 AND status = 'pending'`. `Ok(None)` is "already settled", the answer an
+   at-least-once retry has to get.
+2. `invoices::add_refund_for_intent_in_tx` — `UPDATE invoices SET
+   amount_refunded = amount_refunded + $2 WHERE payment_intent_id = $1 AND
+   status = 'paid'`. `Ok(None)` is "this intent pays no invoice", which is most
+   of them.
+
+Both are `pub(crate)`, so a consumer of this crate cannot settle a refund
+without the document update in the same commit — `mark_paid_for_intent_in_tx`'s
+visibility argument, applied to the other direction of the money.
+
+**The increment is an expression, not a value the caller computed.** A
+read-then-write would let two refunds settling concurrently both read `0` and
+both write their own amount, losing one. The expression makes the second writer
+block on the row lock MVCC already takes and re-evaluate against the first's
+committed value — which is also what makes migration `0042`'s
+`refunded_at_most_paid` a real ceiling rather than an advisory one.
+
+**It fails closed, and the abandon test is the over-refund.** A refund past
+`amount_paid` trips the CHECK on statement 2, after statement 1 has flipped the
+refund inside the same transaction; everything rolls back and the refund is
+still `pending`. Move the invoice write out — commit the flip, update on the
+pool — and
+`two_refunds_against_one_invoice_add_up_and_an_over_refund_is_refused` goes red
+with the refund `succeeded` and the invoice unmoved, which is the permanent
+inconsistency the transaction exists to prevent.
+
+**No event.** `invoice.paid` is not re-emitted (the invoice did not
+transition), and `charge.refunded` / `charge.refund.updated` stay types nothing
+writes: emitting one needs the wire object `vpay-api` shapes, which is the
+caller's to supply, and there is no caller.
+
+**There is no caller at all, and that is the honest part.** No rail can refund,
+`POST /v1/refunds` is unrouted and `Refunds` still exposes no `create`, so
+nothing in `vpay-server` reaches this method and every deployment's
+`invoices.amount_refunded` is `0`. It exists because D5 is a decision about
+what the database does when a refund lands, and the alternative was to leave
+that decision as a sentence in a document. `docs/status.md` carries the gap.
+
+`payment_intents.amount_refunded` and `amount_refund_pending` (migration
+`0003`) are deliberately **not** maintained here. Migration `0017`'s own GAP
+note pairs them with the `INSERT` that creates a `refunds` row, and that insert
+does not exist; incrementing one half of a paired total whose other half
+nothing writes would leave `no_over_refund` counting money twice the day the
+insert lands.
+
 ### `NO_LIVE_INTENT` is one rule with three call sites, and one of them cannot carry it
 
 Voiding an invoice somebody is paying, writing it off, and minting a _second_
@@ -788,6 +840,26 @@ written off.
 
 That is the one place in this module where a guard is not in the statement it
 guards, and it is stated here for that reason.
+
+### Migration 0042: what `amount_refunded` costs
+
+**+1 change, 173 over 24, unmappable still 19.** Two of that migration's three
+additions move nothing and the third is the whole of the +1:
+
+- the **column** costs zero. `BIGINT`, no DEFAULT, declared in `model Invoice`
+  as a plain `amount_refunded Int`, so both sides compare equal. The ADD's
+  backfill DEFAULT is dropped on the very next line for exactly this reason —
+  left in place it would have been a permanent
+  `column amount_refunded default value differs` line, migration `0033`'s
+  problem.
+- `refunded_at_most_paid` costs zero because it is **multi-column**, and
+  `migrate baseline` skips every multi-column CHECK in both directions. It is
+  the load-bearing half of the migration and the report cannot see it at all,
+  which is why it is in `postgres_smoke.rs`'s live-database CHECK inventory
+  instead.
+- `amount_refunded_non_negative` is the +1: single-column and hand-named, so
+  one `[safe] … exists in the live database but is not declared in the schema`
+  line, exactly like its six siblings on this table.
 
 ### Migration 0036: what the two tables cost
 
