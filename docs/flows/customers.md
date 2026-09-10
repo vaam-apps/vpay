@@ -250,25 +250,46 @@ schema, an intent has never carried a payer identifier: it carries an amount,
 a status and a `cus_…`. The copies that actually survived a deletion were
 somewhere else, and no code named them:
 
-| Where                                    | What was in it                                                                                         |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `customers.{name,email,phone}`           | the row could not be deleted at all                                                                    |
-| `events.data`                            | **every** `customer.*` body ever written stores the whole rendered object, and nothing prunes `events` |
-| `charges.payer_ref` / `payer_ref_masked` | the payer's MSISDN as the rail was given it — reachable from a customer only _through_ an intent       |
-| `idempotency_keys.response_body`         | the exact JSON a `POST /v1/customers` answered, kept 24 hours to replay                                |
+| Where                                         | What was in it                                                                                                            |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `customers.{name,email,phone}`                | the row could not be deleted at all                                                                                       |
+| `events.data`                                 | **every** `customer.*` body ever written stores the whole rendered object, and nothing prunes `events`                    |
+| `charges.payer_ref` / `payer_ref_masked`      | the payer's MSISDN as the rail was given it — reachable from a customer only _through_ an intent                          |
+| `charges.failure_raw` / `refunds.failure_raw` | **the rail's own message, verbatim** — a mobile-money rail declining a collection names the subscriber it declined it for |
+| `idempotency_keys.response_body`              | the exact JSON a `POST /v1/customers` answered, kept 24 hours to replay                                                   |
 
-`vpay_db::customers::erase_in_tx` rewrites all four **in the transaction that
+`vpay_db::customers::erase_in_tx` rewrites all five **in the transaction that
 erases the customer**, because "vpay erased this payer" may not be true of one
-table and false of three. `provider_requests` and `webhook_deliveries` need no
+table and false of four. `provider_requests` and `webhook_deliveries` need no
 statement and that is a property of their schemas rather than an oversight:
 the first stores a status code and an attempt number and no bodies (migration
 `0016`), the second a `payload_sha256` and not the payload (`0022`).
 
+**The two `failure_raw` columns were added to that list on 2026-09-11, by the
+review, after they survived an erasure in a test.** They are not identifier
+columns, which is why the enumeration that produced this table — an
+enumeration of "the copies that survived, in full" — did not have them: they
+hold `"{code}: {message}"` as MTN's `Reason` and Orange's `raw_reason`
+assemble it out of a body vpay does not author, kept so an unmapped decline
+survives for whoever fixes the mapping table
+([failures.md](failures.md)). A rail that answers
+`PAYER_NOT_FOUND: subscriber 2376… is not registered` has therefore put the
+payer's number in vpay's database in a column no redaction named. The marker
+replaces the whole string rather than the number inside it: a redaction that
+had to recognise every spelling a rail might use fails silently on the first
+one it has not seen. `failure_code` beside it survives, so _why_ the payment
+failed is still answerable once the payer is gone. `refunds.reason` is left
+alone — it is the **merchant's** free text about their own refund, the same
+kind of thing `metadata` is.
+
 `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table` is the
 proof, and its shape is the point: it scans **every** `text`, `varchar` and
-`jsonb` column `information_schema` reports, before and after, for three
-literals a fixture put there. A test that named tables would have named the
-wrong ones — which is exactly what happened to the issue.
+`jsonb` column `information_schema` reports, before and after, for four
+literals a fixture put there — including one the fixture writes into
+`charges.failure_raw` and `refunds.failure_raw`, which is the assertion that
+does not depend on anybody having thought of the column. A test that named
+tables would have named the wrong ones, which is exactly what happened to the
+issue.
 
 ### What the merchant is told, and what changed about it
 

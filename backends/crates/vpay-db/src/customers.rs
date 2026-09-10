@@ -24,10 +24,11 @@
 //!   person, and this one holds nothing of theirs.
 //!
 //!   [`erase_in_tx`] also rewrites every copy of those identifiers vpay keeps
-//!   *outside* this table — stored `customer.*` event bodies, `payer_ref` on
-//!   the customer's charges, and any stored `POST /v1/customers` response —
-//!   in the same transaction, because "vpay erased this payer" may not be
-//!   true of one table and false of four.
+//!   *outside* this table — stored `customer.*` event bodies, `payer_ref` and
+//!   the rail's own `failure_raw` prose on the customer's charges and their
+//!   refunds, and any stored `POST /v1/customers` response — in the same
+//!   transaction, because "vpay erased this payer" may not be true of one
+//!   table and false of five.
 //!
 //! # The split between CrateStack and hand-written SQL, and what decides it
 //!
@@ -870,7 +871,7 @@ const REDACT_CUSTOMER_KEY: &str = "CASE \
 ///
 /// # What else is written, and why each one is here rather than in a sweep
 ///
-/// Four more statements, all in this transaction:
+/// Five more statements, all in this transaction:
 ///
 /// 1. the `customer.deleted` event, whose body is the **redacted** object;
 /// 2. every stored `customer.*` event body for this object — see
@@ -878,17 +879,21 @@ const REDACT_CUSTOMER_KEY: &str = "CASE \
 ///    the invariant is "no `events` row holds this payer's identifiers" and
 ///    not "no `events` row except the newest one";
 /// 3. `charges.payer_ref` for every charge on this customer's intents,
-///    replaced by the marker, with `payer_ref_masked` cleared. That column is
-///    the payer's MSISDN as the rail was given it, and it is reachable from a
-///    customer only through an intent, which is why nothing looking at
-///    `customers` alone ever found it;
-/// 4. `idempotency_keys.response_body` for any stored `POST /v1/customers`
+///    replaced by the marker, with `payer_ref_masked` cleared and the rail's
+///    verbatim `failure_raw` prose replaced too. `payer_ref` is the payer's
+///    MSISDN as the rail was given it and is reachable from a customer only
+///    through an intent, which is why nothing looking at `customers` alone
+///    ever found it; `failure_raw` is unbounded text a rail wrote *about*
+///    this payer and may quote their number back;
+/// 4. `refunds.failure_raw` for the refunds of those charges, for step 3's
+///    reason and reached the same way;
+/// 5. `idempotency_keys.response_body` for any stored `POST /v1/customers`
 ///    response naming this customer — the exact JSON that was answered, kept
 ///    for 24 hours to replay. A replay after an erasure now answers the
 ///    redacted object, which is the same thing a fresh `GET` answers.
 ///
 /// A sweep over these afterwards would be a window in which "vpay erased this
-/// payer" is true of one table and false of four, on a promise a payer was
+/// payer" is true of one table and false of five, on a promise a payer was
 /// given. One transaction makes that window not exist.
 ///
 /// # `event_data` is the caller's
@@ -1052,13 +1057,39 @@ async fn hard_delete(
 /// Rewrites every copy of this payer's identifiers vpay keeps outside
 /// `customers`.
 ///
-/// Three statements, and the set is closed by measurement rather than by
+/// Four statements, and the set is closed by measurement rather than by
 /// intuition: `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`
 /// scans every `text`, `varchar` and `jsonb` column `information_schema`
-/// knows about, so a fourth store added later fails that test rather than
+/// knows about, so a fifth store added later fails that test rather than
 /// waiting to be noticed here.
 ///
-/// `provider_requests` deliberately has no statement: migration `0016` stores
+/// # The rail's own words are a copy too, and they were missed on 2026-09-10
+///
+/// `charges.failure_raw` and `refunds.failure_raw` hold **the rail's
+/// message, verbatim** — `"{code}: {message}"` from MTN's `Reason` and
+/// Orange's `raw_reason` — kept so an unmapped decline survives for whoever
+/// fixes the mapping table (`docs/flows/failures.md`). Neither is an
+/// identifier column and that is exactly why the first pass's enumeration of
+/// "the copies that survived a deletion, in full" did not list them: they are
+/// unbounded text a mobile-money rail wrote about this payer, and a rail that
+/// answers `PAYER_NOT_FOUND: subscriber 2376… is not registered` has put the
+/// payer's MSISDN in vpay's database in a column nothing redacts.
+///
+/// They are replaced by the marker rather than parsed for numbers, because a
+/// redaction that had to recognise every spelling a rail might use is a
+/// redaction that fails silently on the first one it has not seen. The
+/// `failure_code` beside each survives, so *why* the payment failed is still
+/// answerable after the payer is gone; only the rail's prose goes. `NULL`
+/// stays `NULL` — a charge that never failed must not grow a failure, and
+/// `refunds.failure_paired` would refuse the row if it did.
+///
+/// `refunds.reason` is deliberately left alone: it is the **merchant's** free
+/// text about their own refund ("duplicate", "requested\_by\_customer"), the
+/// same kind of thing `metadata` is, and the same argument keeps it.
+///
+/// # `provider_requests` and `webhook_deliveries`
+///
+/// `provider_requests` deliberately has no redaction: migration `0016` stores
 /// no request or response body, only a status code, an attempt number and an
 /// operator-facing `error_kind`. `webhook_deliveries` likewise keeps
 /// `payload_sha256` and not the payload.
@@ -1131,10 +1162,28 @@ async fn redact_stored_copies(
     // Reached through the intents, which is the only path from a customer to
     // a charge — and the reason this column survived every previous reading
     // of "what does a customer deletion leave behind?".
-    let charges = "UPDATE charges SET payer_ref = $2, payer_ref_masked = NULL \
+    let charges = "UPDATE charges SET payer_ref = $2, payer_ref_masked = NULL, \
+             failure_raw = CASE WHEN failure_raw IS NULL THEN NULL ELSE $2 END \
          WHERE payment_intent_id IN \
                (SELECT id FROM payment_intents WHERE customer_id = $1)";
     sqlx::query(charges)
+        .bind(customer_id)
+        .bind(REDACTED)
+        .execute(&mut **tx)
+        .await
+        .map_err(classify_write)?;
+
+    // The refund's half of the same column. Reached through the charges,
+    // which are reached through the intents. `failure_code` is untouched, so
+    // `refunds.failure_paired` — "a code with no raw text is a half-written
+    // failure" — still holds either way round.
+    let refunds = "UPDATE refunds SET \
+             failure_raw = CASE WHEN failure_raw IS NULL THEN NULL ELSE $2 END \
+         WHERE charge_id IN \
+               (SELECT c.id FROM charges c \
+                JOIN payment_intents p ON p.id = c.payment_intent_id \
+                WHERE p.customer_id = $1)";
+    sqlx::query(refunds)
         .bind(customer_id)
         .bind(REDACTED)
         .execute(&mut **tx)

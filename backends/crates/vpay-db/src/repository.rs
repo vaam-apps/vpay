@@ -461,10 +461,11 @@ pub trait TxRepositories: Send {
     /// intent, a session or an invoice does — migration `0041`, issues #68
     /// and #96 item 2. It also rewrites every copy of the payer's identifiers
     /// vpay keeps outside `customers`: the stored `customer.*` event bodies
-    /// (including the one it just wrote), `charges.payer_ref` for this
-    /// customer's intents, and any stored `POST /v1/customers` response. All
-    /// of it in the caller's transaction, because "vpay erased this payer" is
-    /// not allowed to be true of one table and false of four.
+    /// (including the one it just wrote), `charges.payer_ref` and the rail's
+    /// verbatim `failure_raw` prose on this customer's charges and their
+    /// refunds, and any stored `POST /v1/customers` response. All of it in
+    /// the caller's transaction, because "vpay erased this payer" is not
+    /// allowed to be true of one table and false of five.
     ///
     /// The transaction is opened by `vpay-api` rather than by `vpay-db` for
     /// [`TxRepositories::insert_customer_in_tx`]'s reason and one more: the

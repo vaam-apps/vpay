@@ -1413,10 +1413,22 @@ async fn a_customer_with_payment_history_is_anonymised_rather_than_deleted() -> 
 /// query that scanned no columns at all. So the same scan runs **first** and
 /// has to find each literal, and the column count is asserted non-trivial.
 ///
-/// The fixture is the shape the whole erasure is about: three unique
-/// literals, an update that writes a second `customer.*` event body, a paid
-/// intent with a charge carrying the payer's MSISDN, and a stored idempotent
+/// The fixture is the shape the whole erasure is about: four unique literals,
+/// an update that writes a second `customer.*` event body, a paid intent with
+/// a charge carrying the payer's MSISDN, a **failed** charge and refund
+/// carrying the rail's own prose about the payer, and a stored idempotent
 /// response.
+///
+/// # `failure_raw` is in the fixture because it was not in the design
+///
+/// `charges.failure_raw` and `refunds.failure_raw` are not identifier
+/// columns. They are the rail's message kept verbatim, and the first pass's
+/// enumeration of "the copies that survived a deletion, in full" listed four
+/// places and not these two — reasonably, by the logic that produced the
+/// list, and wrongly, because a mobile-money rail declining a collection
+/// writes the subscriber's number into the message. This test is the place
+/// that argument has to be settled, since it is the only assertion here that
+/// does not depend on somebody having thought of the column.
 #[tokio::test]
 async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> anyhow::Result<()> {
     let h = harness().await?;
@@ -1469,6 +1481,15 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
     // payer's MSISDN — the column reachable from a customer only through an
     // intent, and the reason nothing looking at `customers` alone ever found
     // it.
+    //
+    // And a `failure_raw` that quotes the payer back, which is what a rail
+    // actually writes there: `vpay_provider::ChargeStatus::Failed`'s `raw` is
+    // "the rail's own words", assembled by MTN's `Reason::raw` and Orange's
+    // `raw_reason` as `"{code}: {message}"` out of a body vpay does not
+    // author. A mobile-money rail declining a collection names the subscriber
+    // it declined it for. That column is not an identifier column, which is
+    // exactly why the first pass's enumeration of the surviving copies "in
+    // full" did not list it — and why this fixture puts a literal there.
     let intent = sdk
         .payment_intents()
         .create(
@@ -1479,18 +1500,35 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
         .expect("an intent for this customer");
     sqlx::query(
         "INSERT INTO charges (id, payment_intent_id, provider_code, provider_reference_id, \
-         state, amount, currency_code, payer_ref, payer_ref_masked) \
-         VALUES ('ch_scanner00000000000000', $1, $2, gen_random_uuid(), 'submitted', $3, \
-                 'XAF', $4, $5)",
+         state, amount, currency_code, payer_ref, payer_ref_masked, failure_code, \
+         failure_raw) \
+         VALUES ('ch_scanner00000000000000', $1, $2, gen_random_uuid(), 'failed', $3, \
+                 'XAF', $4, $5, 'invalid_payer', $6)",
     )
     .bind(&intent.id)
     .bind(RAIL)
     .bind(AMOUNT)
     .bind(PHONE)
     .bind(format!("*** *** {}", &PHONE[PHONE.len() - 3..]))
+    .bind(format!("PAYER_NOT_FOUND: subscriber {PHONE} is not registered"))
     .execute(&h.pool)
     .await
     .context("seeding the charge that carries the payer reference")?;
+
+    // The refund's copy of the same column, reached through the charge. Same
+    // rail, same prose, one more table.
+    sqlx::query(
+        "INSERT INTO refunds (id, payment_intent_id, charge_id, amount, currency_code, \
+         status, failure_code, failure_raw) \
+         VALUES ('re_scanner00000000000000', $1, 'ch_scanner00000000000000', $2, 'XAF', \
+                 'failed', 'invalid_payer', $3)",
+    )
+    .bind(&intent.id)
+    .bind(AMOUNT)
+    .bind(format!("REFUND_REFUSED: subscriber {PHONE} is not registered"))
+    .execute(&h.pool)
+    .await
+    .context("seeding the refund that carries the rail's words about the payer")?;
 
     let literals = [NAME, EMAIL, PHONE, STREET];
 
@@ -1515,6 +1553,8 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
         "customers.address_line1",
         "events.data",
         "charges.payer_ref",
+        "charges.failure_raw",
+        "refunds.failure_raw",
         "idempotency_keys.response_body",
     ] {
         assert!(
