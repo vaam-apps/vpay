@@ -128,6 +128,11 @@ pub fn boot_seeds(
                 }
             })?;
             let capabilities = adapter.capabilities();
+            if !capabilities.is_coherent() {
+                return Err(ConfigError::IncoherentCapabilities {
+                    code: provider.code.clone(),
+                });
+            }
             Ok(ProviderSeed {
                 code: provider.code.clone(),
                 display_name: display_name_for(&provider.code),
@@ -669,6 +674,90 @@ mod tests {
             credentials: BTreeMap::new(),
             connect_timeout: vpay_provider::DEFAULT_CONNECT_TIMEOUT,
             request_timeout: vpay_provider::DEFAULT_REQUEST_TIMEOUT,
+        }
+    }
+
+    /// An adapter that declares `supports_partial_refunds` without
+    /// `supports_refunds`, violating the constraint `partial_refunds ⇒
+    /// refunds`. Used to test that `boot_seeds` refuses incoherent
+    /// capabilities before a reconcile writes them to the database.
+    #[derive(Debug)]
+    struct IncoherentTestRail {
+        code: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl ProviderAdapter for IncoherentTestRail {
+        fn code(&self) -> &'static str {
+            self.code
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                flow: ProviderFlow::Push,
+                supports_refunds: false,        // False, but...
+                supports_partial_refunds: true, // ...this is true: incoherent.
+                delivers_callbacks: false,
+                requires_ip_allowlist: false,
+                supports_account_holder_lookup: false,
+            }
+        }
+
+        async fn submit(
+            &self,
+            _charge: &ChargeRef,
+            _config: &ProviderConfig,
+        ) -> Result<Submitted, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        async fn query_status(
+            &self,
+            _charge: &ChargeRef,
+            _config: &ProviderConfig,
+        ) -> Result<ChargeStatus, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        fn parse_callback(&self, _body: &[u8]) -> Result<CallbackRef, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        async fn refund(
+            &self,
+            _charge: &ChargeRef,
+            _amount: Money,
+            _config: &ProviderConfig,
+        ) -> Result<Refunded, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+    }
+
+    /// Boot step 4 refuses a configured provider whose capabilities are
+    /// incoherent: the constraint `partial_refunds ⇒ refunds` is enforced
+    /// in `vpay_provider::Capabilities::is_coherent`, in every adapter's
+    /// static capability table, and in the database's
+    /// `partial_refunds_imply_refunds` CHECK. A provider that reaches boot
+    /// with incoherent capabilities is a linking mistake, and boot refuses
+    /// it before reconcile writes the row. The error is
+    /// `ConfigError::IncoherentCapabilities`, which exits **78**
+    /// ("Configuration").
+    #[test]
+    fn a_provider_with_incoherent_capabilities_is_a_config_error() {
+        let adapters = adapters_by_code(vec![Box::new(IncoherentTestRail {
+            code: "broken_rail",
+        })]);
+        let error = boot_seeds(&config_with(&["broken_rail"]), &adapters)
+            .expect_err("a provider with incoherent capabilities must be refused");
+
+        match &error {
+            ConfigError::IncoherentCapabilities { code } => {
+                assert_eq!(code, "broken_rail");
+            }
+            other => panic!(
+                "expected IncoherentCapabilities, got {other:?}; the message must name the \
+                 provider and the violated rule"
+            ),
         }
     }
 }

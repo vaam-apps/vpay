@@ -900,6 +900,27 @@ pub enum ConfigError {
         client_id: String,
     },
 
+    /// A configured provider's capability set is incoherent: it declares
+    /// `supports_partial_refunds` without also declaring `supports_refunds`.
+    /// This violates the constraint `partial_refunds ⇒ refunds` that is
+    /// enforced at every layer: in `vpay_provider::Capabilities::is_coherent`,
+    /// in every adapter's static capability table, and in the database's
+    /// `partial_refunds_imply_refunds` CHECK constraint on the `providers`
+    /// table.
+    ///
+    /// Refusing to boot is the cheapest place to catch this: a coherent set
+    /// is a property of an adapter's code, not of a config file, so a
+    /// provider that reaches this point is a linking mistake — a definition
+    /// that contradicts itself at the source. Catching it here rather than
+    /// letting a later write fail against the CHECK avoids a reconcile that
+    /// would have written inconsistent data.
+    #[error(
+        "provider {code} has incoherent capabilities: supports_partial_refunds=true requires supports_refunds=true"
+    )]
+    IncoherentCapabilities {
+        /// The `providers[].code` from the YAML.
+        code: String,
+    },
     /// `webhooks.allow_private_targets: true` under
     /// `deployment.livemode: true`.
     ///

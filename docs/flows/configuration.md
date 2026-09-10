@@ -222,7 +222,7 @@ gateway that boots half-configured is worse than one that does not boot.
 | `livemode` ⇒ every host is `https://` | |
 | `livemode` ⇒ no host labelled `wiremock`/`stub`/`mock`/`localhost` | **The most valuable rule here.** It is what makes "the code cannot tell a stub from a real rail" safe to live with |
 | `livemode` ⇒ secrets come from `${}`, not literals | Stops a real key reaching git |
-| `partial-refunds` ⇒ `refunds` | Enforced both in Rust and by a database CHECK constraint — see below |
+| `partial-refunds` ⇒ `refunds` | Boot step 4 refuses an incoherent capability set; also enforced in Rust and by a database CHECK constraint — see below |
 | `checkout.public_base_url` is a well-formed origin, `https://` under `livemode` | Every payer link vpay mints is built on it; a malformed one is a `url` that resolves to nothing, with no log naming a port |
 | Every `checkout_origins` entry is an `https://` origin (`http://` only when `livemode: false`), with no path, no duplicate across merchants, and spelled **canonically** | It becomes `Content-Security-Policy: frame-ancestors`; anything a browser spells differently is dropped silently and the merchant cannot embed with nothing to read |
 | `checkout_origins` without a `checkout.public_base_url` | There is no page for those origins to frame |
@@ -303,17 +303,27 @@ Postgres 16 via testcontainers). So the original "mirrors the DB CHECK"
 framing was right after all — it just could not have been built through
 `schemas/vpay.cstack`.
 
-What has not changed: this is still not a `vpay-config` boot-time guard. It
-is enforced twice, independently — belt and braces, not one mechanism
-standing in for the other:
+**This is now a `vpay-config` boot-time guard** (2026-09-10, issue #61): boot
+step 4 calls `Capabilities::is_coherent` on every configured provider and
+refuses with `ConfigError::IncoherentCapabilities` (exit 78) if a provider's
+capabilities are incoherent. It is enforced three times, independently —
+belt and braces and belt:
 
+- **At boot**, in step 4: `boot_seeds` calls `Capabilities::is_coherent` on
+  every configured provider's capabilities and refuses with exit 78 if
+  incoherent, preventing a reconcile that would write inconsistent data.
+  Test: `a_provider_with_incoherent_capabilities_is_a_config_error` in
+  `backends/crates/vpay-api/src/v1/boot.rs`.
 - **In Rust**, on every adapter's static capability declaration:
   `Capabilities::is_coherent` in
   `backends/crates/vpay-provider/src/lib.rs` requires
   `supports_partial_refunds ⇒ supports_refunds`, tested by
   `vpay-provider::tests::partial_refunds_imply_refunds` and by the
   conformance suite's `every_adapter_declares_coherent_capabilities`.
-- **In the database**, on the `providers` table itself, as above.
+- **In the database**, on the `providers` table itself: `backends/migrations/0002_create-providers.sql`
+  declares the CHECK constraint `partial_refunds_imply_refunds`, tested by
+  `partial_refunds_without_refunds_is_rejected_by_the_database` in
+  `backends/tests/integration/tests/postgres_smoke.rs`.
 
 Neither has anything to do with `vpay-config` or a deployment's YAML. *That
 sentence used to end "there is still no YAML-loading or reconciliation code
