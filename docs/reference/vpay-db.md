@@ -1532,8 +1532,11 @@ issue #45, **39 since 2026-09-06**, when `refunds::list_for_intent` and
 and **45 since the same day**, when `customers` landed with S4a
 (`insert_in_tx`, `get_for_merchant`, `update_in_tx`, `list_page`,
 `idle_since`, `erase_idle` and, since migration `0041`, `erase_in_tx`'s
-anonymise branch and its three redaction statements; `touch_last_used` and the
-hard-delete branch go through CrateStack and build no string at all). Taking the
+branch query, its anonymising `UPDATE` and two of its three redaction
+statements — the third is a plain `&'static str`; `touch_last_used` and the
+hard-delete branch go through CrateStack and build no string at all).
+`EXPECTED_ASSERT_SITES` went **56 -> 60** in that change, a net +4 over five
+additions and one removal, and its own doc comment enumerates them. Taking the
 `String` **by value** rather than `AssertSqlSafe(&sql)` is
 deliberate: the borrowed form goes through `AssertSqlSafe<&str>`, which sqlx's
 own docs describe as copying the string.

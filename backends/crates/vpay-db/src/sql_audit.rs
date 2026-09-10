@@ -317,7 +317,27 @@ mod tests {
     /// it. A new site is worth exactly this much scrutiny — the audit in
     /// `docs/reference/vpay-db.md` § dynamic SQL strings and sqlx 0.9 was
     /// re-read against both statements before this number moved.
-    const EXPECTED_ASSERT_SITES: usize = 57;
+    /// **56 -> 60 on 2026-09-10** (issues #67, #68, #96 item 2), a net +4 over
+    /// five additions and one removal — the same reason this number is
+    /// reviewed rather than counted. `customers::delete_idle`'s
+    /// `DELETE … RETURNING` is gone, and the erasure that replaced it builds
+    /// five statements:
+    ///
+    ///   * `erase_in_tx`'s `SELECT NOT ({UNREFERENCED})`, which chooses
+    ///     between hard-deleting a customer and anonymising it;
+    ///   * `anonymize`'s `UPDATE customers`, which writes the redaction
+    ///     marker into all nine identifier columns;
+    ///   * two `jsonb_object_agg` rewrites in `redact_stored_copies`, over
+    ///     `events.data` and `idempotency_keys.response_body`;
+    ///   * `erase_idle`'s `SELECT … FOR UPDATE`, which re-evaluates the
+    ///     sweep's guard inside the transaction.
+    ///
+    /// Each interpolates crate constants and nothing else — `UNREFERENCED`,
+    /// `COLUMNS`, `REDACT_CUSTOMER_KEY` — and the values they write are
+    /// **bind parameters**: `REDACTED` and a JSON object built from it, never
+    /// anything a caller sent. The third redaction, over `charges.payer_ref`,
+    /// is a plain `&'static str` and needs no waiver at all.
+    const EXPECTED_ASSERT_SITES: usize = 60;
 
     /// **The gate.** No `format!` that becomes a statement interpolates
     /// anything but a crate constant.

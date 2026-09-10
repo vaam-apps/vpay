@@ -304,6 +304,11 @@ describe("the customer object", () => {
       name: null,
       email: null,
       phone: "237600000200",
+      // Required, not optional: the server renders `address` on every
+      // customer object — `null` when the payer has none — and a type that
+      // let it be omitted would let a merchant's handler read `undefined`
+      // for a key the wire always carries.
+      address: null,
       metadata: { order_id: "1234" },
       created: 1_700_000_000,
       livemode: false,
@@ -334,6 +339,14 @@ describe("the customer object", () => {
       name: "Ada",
       email: null,
       phone: "237600000200",
+      address: {
+        line1: "12 Rue Njo-Njo",
+        line2: null,
+        city: "Douala",
+        state: null,
+        postal_code: null,
+        country: "CM",
+      },
       metadata: { tier: "gold", order_id: "1234" },
       created: 1_700_000_000,
       livemode: false,

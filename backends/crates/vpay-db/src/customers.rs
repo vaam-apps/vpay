@@ -916,8 +916,14 @@ pub(crate) async fn erase_in_tx(
     event_id: &str,
     event_data: &serde_json::Value,
 ) -> Result<CustomerErasure, DbError> {
-    let has_history = format!("SELECT NOT ({UNREFERENCED}) FROM customers WHERE id = $1");
-    let has_history: bool = sqlx::query_scalar(AssertSqlSafe(has_history))
+    // The variable is `sql`, and shadowed per statement below, because
+    // `crate::sql_audit` requires it: the injection waiver must wrap a
+    // variable of exactly that name, so the interpolation audit and the
+    // waiver are looking at the same string. (This comment cannot spell the
+    // wrapper's name — the scanner matches the literal text and would read
+    // its own quotation as a site.)
+    let sql = format!("SELECT NOT ({UNREFERENCED}) FROM customers WHERE id = $1");
+    let has_history: bool = sqlx::query_scalar(AssertSqlSafe(sql))
         .bind(&row.id)
         .fetch_one(&mut **tx)
         .await
@@ -1075,14 +1081,14 @@ async fn redact_stored_copies(
     // `customer.*` body is never empty, so the fallback is unreachable — and
     // an unreachable fallback that keeps the row is the direction to fail in
     // when the alternative is a violated NOT NULL aborting the erasure.
-    let events = format!(
+    let sql = format!(
         "UPDATE events SET data = COALESCE( \
              (SELECT jsonb_object_agg(field.key, {REDACT_CUSTOMER_KEY}) \
               FROM jsonb_each(events.data) AS field(key, value)), \
              events.data) \
          WHERE object_id = $1 AND type LIKE 'customer.%'"
     );
-    sqlx::query(AssertSqlSafe(events))
+    sqlx::query(AssertSqlSafe(sql))
         .bind(customer_id)
         .bind(REDACTED)
         .bind(&address)
@@ -1097,7 +1103,7 @@ async fn redact_stored_copies(
     // identifiers. Merchant-scoped as well, because the primary key is
     // `(merchant_id, idempotency_key)` and this crate never reaches across a
     // tenant even when the id it holds could only belong to one.
-    let idempotency = format!(
+    let sql = format!(
         "UPDATE idempotency_keys SET response_body = COALESCE( \
              (SELECT jsonb_object_agg(field.key, {REDACT_CUSTOMER_KEY}) \
               FROM jsonb_each(idempotency_keys.response_body) AS field(key, value)), \
@@ -1106,7 +1112,7 @@ async fn redact_stored_copies(
            AND response_body->>'object' = 'customer' \
            AND response_body->>'id' = $1"
     );
-    sqlx::query(AssertSqlSafe(idempotency))
+    sqlx::query(AssertSqlSafe(sql))
         .bind(customer_id)
         .bind(REDACTED)
         .bind(&address)
@@ -2012,7 +2018,13 @@ mod tests {
     fn the_redaction_marker_is_the_one_the_migration_enforces() {
         let migration =
             include_str!("../../../migrations/0041_customers-address-and-anonymisation.sql");
-        let quoted = format!("'{}'", super::REDACTED);
+        // `concat`, not `format!`, and for `the_retention_stamp_moves_one_column_and_never_backwards`'s
+        // reason one line up rather than one line back: `crate::sql_audit`
+        // reads a `format!` as statement-building when the word `sql` appears
+        // in the forty characters before it, and the migration's own
+        // *filename* ends in `.sql`. The audit then reports a positional
+        // capture in a test that touches no database.
+        let quoted = ["'", super::REDACTED, "'"].concat();
         assert!(
             migration.contains(&quoted),
             "`vpay_db::customers::REDACTED` is {quoted}, which \
